@@ -155,7 +155,8 @@ mod tests {
         },
         bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
         bolt_v3_providers::{
-            binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
+            binance::ResolvedBoltV3BinanceSecrets, chainlink::ResolvedBoltV3ChainlinkSecrets,
+            polymarket::ResolvedBoltV3PolymarketSecrets,
         },
         bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
     };
@@ -208,6 +209,13 @@ mod tests {
         }
     }
 
+    fn fixture_chainlink_secrets() -> ResolvedBoltV3ChainlinkSecrets {
+        ResolvedBoltV3ChainlinkSecrets {
+            api_key: zeroize::Zeroizing::new("fixture-chainlink-api-key".to_string()),
+            api_secret: zeroize::Zeroizing::new("fixture-chainlink-api-secret".to_string()),
+        }
+    }
+
     fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
         clients.insert(
@@ -217,6 +225,10 @@ mod tests {
         clients.insert(
             "binance_reference".to_string(),
             Arc::new(fixture_binance_secrets()),
+        );
+        clients.insert(
+            "chainlink_strike".to_string(),
+            Arc::new(fixture_chainlink_secrets()),
         );
         ResolvedBoltV3Secrets { clients }
     }
@@ -239,13 +251,26 @@ mod tests {
     }
 
     #[test]
-    fn fixture_clients_register_one_data_and_one_exec_for_polymarket_and_one_data_for_binance() {
+    fn fixture_clients_register_strategy_data_exec_signal_and_probe_clients() {
         let adapters = fixture_adapters_with_binance_reference();
 
         let (_builder, summary) = register_bolt_v3_clients(fresh_builder(), adapters)
             .expect("registration should succeed");
 
-        assert_eq!(summary.clients.len(), 2);
+        // polymarket_main + binance_reference + okx_data + chainlink_strike.
+        assert_eq!(summary.clients.len(), 4);
+        let chainlink = summary
+            .clients
+            .get("chainlink_strike")
+            .expect("chainlink_strike must appear in summary");
+        assert!(
+            chainlink.data,
+            "chainlink_strike has a [data] block in the fixture"
+        );
+        assert!(
+            !chainlink.execution,
+            "chainlink_strike has no [execution] block in the fixture"
+        );
         let polymarket = summary
             .clients
             .get("polymarket_main")
@@ -269,6 +294,15 @@ mod tests {
         assert!(
             !binance.execution,
             "binance_reference has no [execution] block in the fixture"
+        );
+        let okx = summary
+            .clients
+            .get("okx_data")
+            .expect("okx_data must appear in summary");
+        assert!(okx.data, "okx_data has a [data] block in the fixture");
+        assert!(
+            !okx.execution,
+            "okx_data has no [execution] block in the fixture"
         );
     }
 

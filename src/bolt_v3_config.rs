@@ -23,7 +23,11 @@ use sha2::{Digest, Sha256};
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
 
 pub const TEST_DOUBLE_PROVIDER_KIND: &str = "test_double";
-pub const CHAINLINK_DATA_STREAMS_PROVIDER_KIND: &str = "chainlink_data_streams";
+// The `chainlink_data_streams` provider-kind literal is owned by the provider
+// binding (`crate::bolt_v3_providers::chainlink`) and re-exported here under its
+// legacy core name, so core config keeps a single import site without declaring
+// the provider-key literal itself.
+pub use crate::bolt_v3_providers::RESOLUTION_ORACLE_PROVIDER_KIND as CHAINLINK_DATA_STREAMS_PROVIDER_KIND;
 pub const NO_RESOLUTION_KIND: &str = "no_resolution";
 pub const NO_RESOLUTION_VALUE_KIND: &str = "none";
 pub const RESOLUTION_GATE_ROLE: &str = "resolution";
@@ -172,7 +176,6 @@ pub struct RiskBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NautilusRiskBlock {
-    pub bypass: bool,
     pub max_order_submit_rate: String,
     pub max_order_modify_rate: String,
     pub max_notional_per_order: BTreeMap<String, String>,
@@ -471,6 +474,13 @@ pub struct BoltV3StrategyConfig {
     /// strategy envelope itself is target-shape-neutral.
     pub target: toml::Value,
     pub reference_data: BTreeMap<String, ReferenceDataBlock>,
+    pub signal_data: BTreeMap<String, ReferenceDataBlock>,
+    /// Optional live resolution-strike (price-to-beat) data source. Mirrors the
+    /// `[reference_data]` block shape (`data_client_id` + `instrument_id`) but is
+    /// a single block rather than a role-keyed map, matching the strategy's
+    /// singular `resolution_client_id` / `resolution_instrument_id` runtime
+    /// fields. When absent, the live strike simply does not subscribe.
+    pub resolution_data: Option<ReferenceDataBlock>,
     pub parameters: toml::Value,
 }
 

@@ -2239,6 +2239,12 @@ fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> 
         for reference in strategy.config.reference_data.values() {
             client_keys.insert(reference.data_client_id.to_string());
         }
+        for signal in strategy.config.signal_data.values() {
+            client_keys.insert(signal.data_client_id.to_string());
+        }
+        if let Some(resolution) = strategy.config.resolution_data.as_ref() {
+            client_keys.insert(resolution.data_client_id.to_string());
+        }
     }
     if let Some(proof_policy) = loaded
         .root
@@ -3559,7 +3565,10 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         manage_own_order_books: exec.manage_own_order_books,
     };
     let risk_engine = nautilus_live::config::LiveRiskEngineConfig {
-        bypass: loaded.root.risk.nautilus.bypass,
+        // Mandated safety invariant: the NT live risk engine must never be
+        // bypassed. This is pinned in code with no config knob so no TOML edit
+        // or operator override can disable pre-trade risk checks.
+        bypass: false,
         max_order_submit_rate: loaded.root.risk.nautilus.max_order_submit_rate.clone(),
         max_order_modify_rate: loaded.root.risk.nautilus.max_order_modify_rate.clone(),
         // Bolt stores this as a BTreeMap for deterministic config/debug output;
@@ -5359,6 +5368,18 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             .root
             .clients
             .insert("reference_data".to_string(), reference_client);
+        let mut signal_client = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        signal_client.execution = None;
+        signal_client.secrets = None;
+        loaded
+            .root
+            .clients
+            .insert("signal_data".to_string(), signal_client);
         loaded
             .root
             .clients
@@ -5374,13 +5395,21 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
                 instrument_id: InstrumentId::from("REFERENCE.SOURCE"),
             },
         );
+        strategy.config.signal_data.insert(
+            "primary".to_string(),
+            ReferenceDataBlock {
+                data_client_id: ClientId::from("signal_data"),
+                instrument_id: InstrumentId::from("SIGNAL.SOURCE"),
+            },
+        );
 
         let scoped = trade_transport_loaded_config(&loaded)
             .expect("strategy-bound transport scope should be derived from config");
 
-        assert_eq!(scoped.root.clients.len(), 2);
+        assert_eq!(scoped.root.clients.len(), 3);
         assert!(scoped.root.clients.contains_key("polymarket_main"));
         assert!(scoped.root.clients.contains_key("reference_data"));
+        assert!(scoped.root.clients.contains_key("signal_data"));
         assert!(
             !scoped.root.clients.contains_key("unrelated_data"),
             "unrelated configured data clients must not block the selected trade path"
@@ -5551,7 +5580,8 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
     fn no_submit_adapter_mapping_preserves_strategy_derived_market_filters() {
         use crate::{
             bolt_v3_providers::{
-                binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
+                binance::ResolvedBoltV3BinanceSecrets, chainlink::ResolvedBoltV3ChainlinkSecrets,
+                polymarket::ResolvedBoltV3PolymarketSecrets,
             },
             bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
         };
@@ -5577,6 +5607,13 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             Arc::new(ResolvedBoltV3BinanceSecrets {
                 api_key: zeroize::Zeroizing::new("fixture-binance-api-key".to_string()),
                 api_secret: zeroize::Zeroizing::new("fixture-binance-api-secret".to_string()),
+            }),
+        );
+        clients.insert(
+            "chainlink_strike".to_string(),
+            Arc::new(ResolvedBoltV3ChainlinkSecrets {
+                api_key: zeroize::Zeroizing::new("fixture-chainlink-api-key".to_string()),
+                api_secret: zeroize::Zeroizing::new("fixture-chainlink-api-secret".to_string()),
             }),
         );
         let resolved = ResolvedBoltV3Secrets { clients };

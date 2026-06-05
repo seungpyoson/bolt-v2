@@ -145,7 +145,7 @@ Rules:
 - strategy-local notional limits are not sufficient by themselves
 - current root-level risk settings must be explicit in TOML
 - NautilusTrader live data-engine defaults must be explicit in TOML and mapped into `LiveDataEngineConfig`; the builder path must not inherit `LiveDataEngineConfig::default()` silently
-- NautilusTrader live risk-engine defaults must be explicit in TOML and mapped into `LiveRiskEngineConfig`; the builder path must not inherit `LiveRiskEngineConfig::default()` silently
+- every configurable NautilusTrader live risk-engine default must be explicit in TOML and mapped into `LiveRiskEngineConfig`; the `bypass` field is not configurable and is pinned to `false` in code (see the risk-engine bypass invariant below); the builder path must not inherit `LiveRiskEngineConfig::default()` silently
 - NautilusTrader live exec-engine defaults are explicit in TOML and mapped into `LiveExecEngineConfig`; the builder path must not inherit `LiveExecEngineConfig::default()` silently
 - NautilusTrader logger fields not represented in TOML must be explicit accepted defaults or disabled settings in the bolt-v3 builder path; the builder path must not inherit `LoggerConfig::default()` silently
 - remaining top-level `LiveNodeConfig` fields not represented in TOML must be explicit disabled/empty settings in the bolt-v3 builder path; the builder path must not inherit top-level `LiveNodeConfig::default()` silently
@@ -154,7 +154,7 @@ Current contract:
 
 - `default_max_notional_per_order` is explicit
 - every `LiveDataEngineConfig` field is explicit under `[nautilus.data_engine]` in TOML and mapped into NautilusTrader live data config
-- every `LiveRiskEngineConfig` field is explicit under `[risk]` in TOML and mapped into NautilusTrader live risk config
+- every configurable `LiveRiskEngineConfig` field is explicit under `[risk]` in TOML and mapped into NautilusTrader live risk config; the `bypass` field is not configurable and is pinned to `false` in code (see the risk-engine bypass invariant below)
 - every `LiveExecEngineConfig` field is explicit under `[nautilus.exec_engine]` in TOML and mapped into NautilusTrader live exec config
 - `[logging]` owns `stdout_level` and `fileout_level`; bolt-v3 owns the credential-log module filters and explicitly fixes the remaining pinned `LoggerConfig` fields to current accepted defaults or disabled settings before `LiveNodeBuilder::from_config`
 - unsupported or intentionally unowned top-level `LiveNodeConfig` surfaces (`instance_id`, `cache`, `msgbus`, `portfolio`, `emulator`, `streaming`, `loop_debug`, `data_clients`, and `exec_clients`) are set explicitly to `None`, `false`, or empty maps before `LiveNodeBuilder::from_config`
@@ -169,12 +169,13 @@ Current implementation behavior:
 
 - `default_max_notional_per_order` is enforced by Bolt-v3 config validation against each strategy's `parameters.order_notional_target`
 - Bolt-v3 maps the complete live data-engine block into NautilusTrader `LiveDataEngineConfig`
-- Bolt-v3 maps the complete live risk-engine block into NautilusTrader `LiveRiskEngineConfig`
+- Bolt-v3 maps the complete configurable live risk-engine block into NautilusTrader `LiveRiskEngineConfig` and pins the non-configurable `bypass` invariant to `false` in code (see below)
 - Bolt-v3 maps the complete live exec-engine block into NautilusTrader `LiveExecEngineConfig`
 - Bolt-v3 maps the complete pinned `LoggerConfig` field set without relying on `LoggerConfig::default()` inheritance; `file_config` stays `None` and `clear_log_file` stays `false` because the pinned Rust live runtime rejects any other value at build-time validation
 - Bolt-v3 maps the remaining top-level `LiveNodeConfig` residuals explicitly and does not rely on top-level `LiveNodeConfig::default()` inheritance
 - `scripts/verify_bolt_v3_runtime_literals.py` scans production root `src/bolt_v3_*.rs` files plus files under `src/bolt_v3_*` module directories and requires candidate runtime-bearing literals to be classified in `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`
-- the baseline fixture asserts all explicit data-engine values, `risk.nautilus.bypass = false`, `100/00:01:00` submit/modify rate limits (the per-minute submit/modify throttle is reconciled against the Polymarket REST egress cap; see `validate_order_rate_within_venue_egress`), an empty NT per-instrument notional map, `risk.nautilus.debug = false`, current NT-default `risk.nautilus.qsize`, and all explicit exec-engine values
+- the NautilusTrader risk-engine bypass invariant is not a fixture/config field; it is pinned to `false` in code in the live-node config construction (`make_live_node_config`), so no TOML edit can disable pre-trade risk checks
+- the baseline fixture asserts all explicit data-engine values, `100/00:01:00` submit/modify rate limits (the per-minute submit/modify throttle is reconciled against the Polymarket REST egress cap; see `validate_order_rate_within_venue_egress`), an empty NT per-instrument notional map, `risk.nautilus.debug = false`, current NT-default `risk.nautilus.qsize`, and all explicit exec-engine values
 
 Future synchronization behavior:
 

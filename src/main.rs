@@ -18,24 +18,17 @@ use bolt_v2::{
     },
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
     bolt_v3_operator_artifacts::{
-        CanaryProofArtifactsCollectionRequest, ChainlinkPriceReportSourceMaterializationRequest,
-        ChainlinkReferencePriceReportSourceFile,
-        ChainlinkReferenceQuoteObservationsSourceMaterializationRequest,
-        DataClientProductionReadinessMatrixSourceFileRequest,
-        EntryDecisionProofSourceMaterializationRequest, EntryDecisionSourceCollectionRequest,
-        FinalOperatorPacketVerificationScope, LiveCanaryPostRunProofInputs,
-        OperatorEvidenceJsonBuildInputs, PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
+        CanaryProofArtifactsCollectionRequest,
+        DataClientProductionReadinessMatrixSourceFileRequest, FinalOperatorPacketVerificationScope,
+        LiveCanaryPostRunProofInputs, OperatorEvidenceJsonBuildInputs,
+        PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
         assemble_operator_packet_from_static_manifest,
-        chainlink_data_streams_ssm_credential_parameters,
         collect_canary_proof_artifacts_from_configured_provider,
-        collect_entry_decision_source_inputs_from_configured_provider,
         compute_operator_approval_envelope_sha256,
         pre_run_clob_v2_collateral_accounting_source_requires_resolved_secrets,
         update_live_canary_operator_evidence_toml_from_json_file,
         verify_final_operator_packet_with_scope, write_abort_plan_artifact_from_source_bundle_file,
         write_abort_plan_artifact_from_source_collectors, write_base_static_operator_artifacts,
-        write_chainlink_price_report_source_from_configured_provider,
-        write_chainlink_reference_quote_observations_source_from_report_files,
         write_data_client_behavior_observation_artifact_from_source_file,
         write_data_client_behavior_observation_source_from_probe_events,
         write_data_client_behavior_observation_source_from_probe_events_and_policy_source,
@@ -46,7 +39,7 @@ use bolt_v2::{
         write_data_client_production_readiness_matrix_artifact_from_source_files,
         write_data_client_readiness_source_artifact_from_config,
         write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence,
-        write_entry_decision_evidence_from_source_file, write_entry_decision_proof_source_files,
+        write_entry_decision_evidence_from_source_file,
         write_entry_readiness_gate_session_artifact_from_decision_source_file,
         write_live_canary_post_run_proof_artifacts_from_config,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
@@ -77,12 +70,6 @@ use bolt_v2::{
     secrets::SsmResolverSession,
 };
 
-const ENTRY_DECISION_SOURCE_OUTPUT_FIELD: &str = "decision_source";
-const ENTRY_DECISION_INSTRUMENT_SOURCE_OUTPUT_FIELD: &str = "instrument_source";
-const ENTRY_DECISION_PRICE_SOURCE_OUTPUT_FIELD: &str = "price_to_beat_source";
-const ENTRY_DECISION_REFERENCE_QUOTE_SOURCE_OUTPUT_FIELD: &str = "reference_quote_source";
-const ENTRY_DECISION_REALIZED_VOLATILITY_SOURCE_OUTPUT_FIELD: &str = "realized_volatility_source";
-const ENTRY_DECISION_FEE_RATE_SOURCE_OUTPUT_FIELD: &str = "fee_rate_source";
 const CANARY_PROOF_GATE_SESSION_OUTPUT_FIELD: &str = "gate_session";
 const CANARY_PROOF_CANDIDATE_SOURCE_OUTPUT_FIELD: &str = "canary_proof_candidate_source";
 const CANARY_PROOF_ORDER_INTENT_OUTPUT_FIELD: &str = "canary_proof_order_intent";
@@ -574,18 +561,6 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         output: PathBuf,
     },
-    CollectChainlinkPriceReportSource {
-        #[arg(short, long)]
-        config: PathBuf,
-        #[arg(long)]
-        strategy_instance_id: String,
-        #[arg(long)]
-        report_timestamp_unix_seconds: u64,
-        #[arg(long)]
-        max_report_response_bytes: u64,
-        #[arg(long)]
-        output: PathBuf,
-    },
     CollectReferenceQuoteObservationsSource {
         #[arg(short, long)]
         config: PathBuf,
@@ -593,44 +568,6 @@ enum OperatorArtifactsCommand {
         strategy_instance_id: String,
         #[arg(long)]
         output: PathBuf,
-    },
-    CollectChainlinkReferenceQuoteObservationsSource {
-        #[arg(short, long)]
-        config: PathBuf,
-        #[arg(long)]
-        strategy_instance_id: String,
-        #[arg(long)]
-        price_report: Vec<PathBuf>,
-        #[arg(long)]
-        expected_price_report_sha256: Vec<String>,
-        #[arg(long)]
-        max_price_report_bytes: u64,
-        #[arg(long)]
-        output: PathBuf,
-    },
-    CollectChainlinkEntryDecisionSourceInputs {
-        #[arg(short, long)]
-        config: PathBuf,
-        #[arg(long)]
-        strategy_instance_id: String,
-        #[arg(long)]
-        price_to_beat_source: PathBuf,
-        #[arg(long)]
-        max_price_to_beat_source_bytes: u64,
-        #[arg(long)]
-        reference_quote_source: PathBuf,
-        #[arg(long)]
-        max_reference_quote_source_bytes: u64,
-        #[arg(long)]
-        realized_volatility_source: PathBuf,
-        #[arg(long)]
-        max_realized_volatility_source_bytes: u64,
-        #[arg(long)]
-        decision_source_output: PathBuf,
-        #[arg(long)]
-        instrument_source_output: PathBuf,
-        #[arg(long)]
-        fee_rate_source_output: PathBuf,
     },
     CollectCanaryProofArtifacts {
         #[arg(short, long)]
@@ -645,6 +582,10 @@ enum OperatorArtifactsCommand {
         reference_quote_source: PathBuf,
         #[arg(long)]
         max_reference_quote_source_bytes: u64,
+        #[arg(long)]
+        signal_quote_source: PathBuf,
+        #[arg(long)]
+        max_signal_quote_source_bytes: u64,
         #[arg(long)]
         realized_volatility_source: PathBuf,
         #[arg(long)]
@@ -675,32 +616,6 @@ enum OperatorArtifactsCommand {
         scanned_artifact: Vec<PathBuf>,
         #[arg(long)]
         retention_purge_path: PathBuf,
-    },
-    CollectChainlinkEntryDecisionProofSources {
-        #[arg(short, long)]
-        config: PathBuf,
-        #[arg(long)]
-        strategy_instance_id: String,
-        #[arg(long)]
-        price_report: PathBuf,
-        #[arg(long)]
-        max_price_report_bytes: u64,
-        #[arg(long)]
-        expected_price_report_sha256: String,
-        #[arg(long)]
-        market_selection_timestamp_ms: u64,
-        #[arg(long)]
-        decision_timestamp_ms: u64,
-        #[arg(long)]
-        reference_quote_observations_source: PathBuf,
-        #[arg(long)]
-        max_reference_quote_observations_source_bytes: u64,
-        #[arg(long)]
-        price_to_beat_source_output: PathBuf,
-        #[arg(long)]
-        reference_quote_source_output: PathBuf,
-        #[arg(long)]
-        realized_volatility_source_output: PathBuf,
     },
     GenerateStrategyInputFromDecisionEvidence {
         #[arg(short, long)]
@@ -1633,43 +1548,6 @@ fn run_operator_artifacts_command(
             )?;
             print_written_operator_artifact(&written)
         }
-        OperatorArtifactsCommand::CollectChainlinkPriceReportSource {
-            config,
-            strategy_instance_id,
-            report_timestamp_unix_seconds,
-            max_report_response_bytes,
-            output,
-        } => {
-            let loaded = load_bolt_v3_config(&config)?;
-            let credential_parameters =
-                chainlink_data_streams_ssm_credential_parameters(&loaded, &strategy_instance_id)?;
-            let ssm_resolver_session = SsmResolverSession::new()?;
-            let credential_api_key = ssm_resolver_session.resolve(
-                &loaded.root.aws.region,
-                &credential_parameters.api_key_parameter,
-            )?;
-            let credential_api_secret = ssm_resolver_session.resolve(
-                &loaded.root.aws.region,
-                &credential_parameters.api_secret_parameter,
-            )?;
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?;
-            let written = runtime.block_on(
-                write_chainlink_price_report_source_from_configured_provider(
-                    &loaded,
-                    &strategy_instance_id,
-                    ChainlinkPriceReportSourceMaterializationRequest {
-                        credential_api_key: &credential_api_key,
-                        credential_api_secret: &credential_api_secret,
-                        report_timestamp_unix_seconds,
-                        max_report_response_bytes,
-                        output_path: &output,
-                    },
-                ),
-            )?;
-            print_written_operator_artifact(&written)
-        }
         OperatorArtifactsCommand::CollectReferenceQuoteObservationsSource {
             config,
             strategy_instance_id,
@@ -1692,85 +1570,6 @@ fn run_operator_artifacts_command(
             )?;
             print_written_operator_artifact(&written)
         }
-        OperatorArtifactsCommand::CollectChainlinkReferenceQuoteObservationsSource {
-            config,
-            strategy_instance_id,
-            price_report,
-            expected_price_report_sha256,
-            max_price_report_bytes,
-            output,
-        } => {
-            if price_report.len() != expected_price_report_sha256.len() {
-                return Err(
-                    "each --price-report requires one --expected-price-report-sha256".into(),
-                );
-            }
-            let loaded = load_bolt_v3_config(&config)?;
-            let report_sources = price_report
-                .iter()
-                .zip(expected_price_report_sha256.iter())
-                .map(
-                    |(path, expected_sha256)| ChainlinkReferencePriceReportSourceFile {
-                        path,
-                        expected_sha256,
-                    },
-                )
-                .collect::<Vec<_>>();
-            let written = write_chainlink_reference_quote_observations_source_from_report_files(
-                &loaded,
-                &strategy_instance_id,
-                ChainlinkReferenceQuoteObservationsSourceMaterializationRequest {
-                    price_reports: &report_sources,
-                    max_price_report_bytes,
-                    output_path: &output,
-                },
-            )?;
-            print_written_operator_artifact(&written)
-        }
-        OperatorArtifactsCommand::CollectChainlinkEntryDecisionSourceInputs {
-            config,
-            strategy_instance_id,
-            price_to_beat_source,
-            max_price_to_beat_source_bytes,
-            reference_quote_source,
-            max_reference_quote_source_bytes,
-            realized_volatility_source,
-            max_realized_volatility_source_bytes,
-            decision_source_output,
-            instrument_source_output,
-            fee_rate_source_output,
-        } => {
-            let loaded = load_bolt_v3_config(&config)?;
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()?;
-            let written = runtime.block_on(
-                collect_entry_decision_source_inputs_from_configured_provider(
-                    &loaded,
-                    &strategy_instance_id,
-                    EntryDecisionSourceCollectionRequest {
-                        price_to_beat_source_path: &price_to_beat_source,
-                        max_price_to_beat_source_bytes,
-                        reference_quote_source_path: &reference_quote_source,
-                        max_reference_quote_source_bytes,
-                        realized_volatility_source_path: &realized_volatility_source,
-                        max_realized_volatility_source_bytes,
-                        decision_source_output_path: &decision_source_output,
-                        instrument_source_output_path: &instrument_source_output,
-                        fee_rate_source_output_path: &fee_rate_source_output,
-                    },
-                ),
-            )?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    ENTRY_DECISION_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.decision_source),
-                    ENTRY_DECISION_INSTRUMENT_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.instrument_source),
-                    ENTRY_DECISION_FEE_RATE_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.fee_rate_source),
-                }))?
-            );
-            Ok(())
-        }
         OperatorArtifactsCommand::CollectCanaryProofArtifacts {
             config,
             strategy_instance_id,
@@ -1778,6 +1577,8 @@ fn run_operator_artifacts_command(
             max_price_to_beat_source_bytes,
             reference_quote_source,
             max_reference_quote_source_bytes,
+            signal_quote_source,
+            max_signal_quote_source_bytes,
             realized_volatility_source,
             max_realized_volatility_source_bytes,
             gate_session_output,
@@ -1797,6 +1598,8 @@ fn run_operator_artifacts_command(
                         max_price_to_beat_source_bytes,
                         reference_quote_source_path: &reference_quote_source,
                         max_reference_quote_source_bytes,
+                        signal_quote_source_path: &signal_quote_source,
+                        max_signal_quote_source_bytes,
                         realized_volatility_source_path: &realized_volatility_source,
                         max_realized_volatility_source_bytes,
                         gate_session_output_path: &gate_session_output,
@@ -1855,47 +1658,6 @@ fn run_operator_artifacts_command(
                     "venue_order_state": written_operator_artifact_json(&written.venue_order_state),
                     "restart_reconciliation": written_operator_artifact_json(&written.restart_reconciliation),
                     "post_run_hygiene": written_operator_artifact_json(&written.post_run_hygiene),
-                }))?
-            );
-            Ok(())
-        }
-        OperatorArtifactsCommand::CollectChainlinkEntryDecisionProofSources {
-            config,
-            strategy_instance_id,
-            price_report,
-            max_price_report_bytes,
-            expected_price_report_sha256,
-            market_selection_timestamp_ms,
-            decision_timestamp_ms,
-            reference_quote_observations_source,
-            max_reference_quote_observations_source_bytes,
-            price_to_beat_source_output,
-            reference_quote_source_output,
-            realized_volatility_source_output,
-        } => {
-            let loaded = load_bolt_v3_config(&config)?;
-            let written = write_entry_decision_proof_source_files(
-                &loaded,
-                &strategy_instance_id,
-                EntryDecisionProofSourceMaterializationRequest {
-                    price_report_path: &price_report,
-                    max_price_report_bytes,
-                    expected_price_report_sha256: &expected_price_report_sha256,
-                    market_selection_timestamp_ms,
-                    decision_timestamp_ms,
-                    reference_quote_observations_source_path: &reference_quote_observations_source,
-                    max_reference_quote_observations_source_bytes,
-                    price_to_beat_source_output_path: &price_to_beat_source_output,
-                    reference_quote_source_output_path: &reference_quote_source_output,
-                    realized_volatility_source_output_path: &realized_volatility_source_output,
-                },
-            )?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    ENTRY_DECISION_PRICE_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.price_to_beat_source),
-                    ENTRY_DECISION_REFERENCE_QUOTE_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.reference_quote_source),
-                    ENTRY_DECISION_REALIZED_VOLATILITY_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.realized_volatility_source),
                 }))?
             );
             Ok(())

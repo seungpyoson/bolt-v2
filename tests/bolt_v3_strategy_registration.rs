@@ -154,113 +154,6 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
     );
 }
 
-#[test]
-fn bolt_v3_registration_context_includes_operator_readiness_gate_session() {
-    fn register_stub(
-        node: &mut LiveNode,
-        context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
-    ) -> Result<StrategyId, bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError>
-    {
-        let readiness = context
-            .readiness_evidence
-            .as_ref()
-            .expect("registration context should include normalized readiness evidence");
-        assert_eq!(readiness.gate_session_hash, "a".repeat(64));
-        assert_eq!(readiness.selected_market_key, "b".repeat(64));
-        let resolution = readiness
-            .gate_evidence
-            .get("resolution")
-            .expect("readiness evidence should include the resolution role");
-        assert_eq!(resolution.satisfaction_kind, "no_resolution");
-        assert_eq!(
-            resolution.resolution_identity.as_deref(),
-            Some("configured-reference-price")
-        );
-        assert!(resolution.provider_kind.is_none());
-        let runtime_seed = context
-            .runtime_readiness_seed
-            .as_ref()
-            .expect("source-owned decision_reference should provide a runtime readiness seed");
-        assert_eq!(runtime_seed.gate_session_hash, "a".repeat(64));
-        assert_eq!(runtime_seed.selected_market_key, "b".repeat(64));
-        assert_eq!(runtime_seed.price_to_beat_value, 3_100.0);
-        assert_eq!(runtime_seed.reference_price, 3_101.0);
-        assert_eq!(
-            runtime_seed.reference_quote_ts_event,
-            runtime_seed.market_start_timestamp_ms
-        );
-        assert!(
-            runtime_seed.market_end_timestamp_ms > runtime_seed.market_start_timestamp_ms,
-            "runtime readiness seed should preserve a forward market window"
-        );
-        assert_eq!(runtime_seed.realized_volatility, 1.5);
-        assert_eq!(runtime_seed.reference_venue, "resolution_oracle_primary");
-
-        let strategy_id = StrategyId::from("BOLT-V3-READINESS-CONTEXT");
-        node.add_strategy(support::stub_runtime_strategy::StubRuntimeStrategy::new(
-            strategy_id.as_str(),
-        ))
-        .map_err(|source| {
-            bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError::Binding {
-                strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
-                strategy_archetype: context
-                    .strategy
-                    .config
-                    .strategy_archetype
-                    .as_str()
-                    .to_string(),
-                message: source.to_string(),
-            }
-        })?;
-        Ok(strategy_id)
-    }
-
-    fn stub_strategy_kind() -> &'static str {
-        "stub_runtime_strategy"
-    }
-
-    const TEST_BINDINGS: &[bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeBinding] = &[
-        bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeBinding {
-            key: "binary_oracle_edge_taker",
-            strategy_kind: stub_strategy_kind,
-            register: register_stub,
-        },
-    ];
-
-    let loaded = support::loaded_bolt_v3_live_canary_with_satisfied_report(1, Decimal::new(1, 0));
-    let mut empty_loaded = loaded.clone();
-    empty_loaded.strategies.clear();
-    let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
-        .expect("fixture secrets should resolve");
-    let decision_evidence: Arc<
-        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
-    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(
-        decision_evidence.clone(),
-    ));
-    let mut node = make_bolt_v3_live_node_builder(&empty_loaded)
-        .expect("v3 LiveNodeBuilder should construct before strategy registration")
-        .build()
-        .expect("v3 LiveNode should build before strategy registration");
-
-    let summary =
-        bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
-            &mut node,
-            &loaded,
-            &resolved,
-            TEST_BINDINGS,
-            admission,
-            decision_evidence,
-        )
-        .expect("configured strategy should receive readiness evidence during registration");
-
-    assert_eq!(summary.registered.len(), loaded.strategies.len());
-    assert_eq!(
-        node.kernel().trader().borrow().strategy_ids(),
-        vec![StrategyId::from("BOLT-V3-READINESS-CONTEXT")]
-    );
-}
-
 fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
     BoltV3SubmitAdmissionRequest {
         strategy_id: "strategy-a".to_string(),
@@ -432,6 +325,27 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
             .and_then(|order| order.get("time_in_force"))
             .and_then(|value| value.as_str()),
         Some("ioc")
+    );
+}
+
+#[test]
+fn binary_oracle_runtime_mapping_rejects_missing_signal_data_role() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    loaded.strategies[strategy_index].config.signal_data.clear();
+
+    let error =
+        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
+            .expect_err("binary oracle strategy should reject missing signal_data role");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("signal_data") && rendered.contains("requires exactly one"),
+        "rejection should explain that signal_data is required, got: {rendered}"
     );
 }
 
@@ -1403,6 +1317,317 @@ fn binary_oracle_runtime_mapping_uses_configured_reference_data_role_key() {
 }
 
 #[test]
+fn binary_oracle_runtime_mapping_allows_signal_data_with_decision_reference() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.insert(
+        "binance_reference".to_string(),
+        toml::from_str(&support::repo_text(
+            "tests/fixtures/bolt_v3/binance_reference_client.toml",
+        ))
+        .expect("binance provider fixture client should parse"),
+    );
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    loaded.strategies[strategy_index].config.signal_data.insert(
+        "primary".to_string(),
+        ReferenceDataBlock {
+            data_client_id: ClientId::from("binance_reference"),
+            instrument_id: InstrumentId::from("BTCUSDT.BINANCE"),
+        },
+    );
+
+    let strategy = &loaded.strategies[strategy_index];
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+        .expect("signal_data and decision_reference should be independent roles");
+    let table = raw
+        .as_table()
+        .expect("mapped raw taker config should be a table");
+
+    assert_eq!(
+        table
+            .get("reference_venue")
+            .and_then(|value| value.as_str()),
+        Some("resolution_oracle_primary")
+    );
+    assert_eq!(
+        table
+            .get("reference_instrument_id")
+            .and_then(|value| value.as_str()),
+        Some("configured-reference-price")
+    );
+    assert_eq!(
+        table.get("signal_venue").and_then(|value| value.as_str()),
+        Some("binance_reference")
+    );
+    assert_eq!(
+        table
+            .get("signal_instrument_id")
+            .and_then(|value| value.as_str()),
+        Some("BTCUSDT.BINANCE")
+    );
+}
+
+#[test]
+fn binary_oracle_runtime_mapping_emits_resolution_data_when_present() {
+    // With a `[resolution_data]` block bound to the shipped `chainlink_strike`
+    // client, the archetype emits `resolution_client_id` + `resolution_instrument_id`
+    // into the runtime config, and the strategy builder validates them.
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    // Align the target's underlying_asset with the BTC-USD.CHAINLINK feed_binding
+    // so the load-time resolution_data binding validation (asset prefix + feed
+    // binding) passes for this happy-path emit test.
+    loaded.strategies[strategy_index]
+        .config
+        .target
+        .as_table_mut()
+        .expect("fixture target should be a table")
+        .insert(
+            "underlying_asset".to_string(),
+            toml::Value::String("BTC".to_string()),
+        );
+    loaded.strategies[strategy_index].config.resolution_data = Some(ReferenceDataBlock {
+        data_client_id: ClientId::from("chainlink_strike"),
+        instrument_id: InstrumentId::from("BTC-USD.CHAINLINK"),
+    });
+
+    let strategy = &loaded.strategies[strategy_index];
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+        .expect("binary oracle strategy with resolution_data should map into runtime config");
+
+    let mut errors: Vec<ValidationError> = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(
+        &raw,
+        "strategies.configured_updown_main.parameters.runtime",
+        &mut errors,
+    );
+    assert!(
+        errors.is_empty(),
+        "runtime config with resolution_data should validate: {errors:?}"
+    );
+
+    let table = raw
+        .as_table()
+        .expect("mapped raw taker config should be a table");
+    assert_eq!(
+        table
+            .get("resolution_client_id")
+            .and_then(|value| value.as_str()),
+        Some("chainlink_strike")
+    );
+    assert_eq!(
+        table
+            .get("resolution_instrument_id")
+            .and_then(|value| value.as_str()),
+        Some("BTC-USD.CHAINLINK")
+    );
+}
+
+#[test]
+fn binary_oracle_runtime_mapping_omits_resolution_data_when_absent() {
+    // The shipped fixture strategy declares no `[resolution_data]`, so the
+    // archetype emits neither resolution key and the strategy still validates.
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    assert!(
+        strategy.config.resolution_data.is_none(),
+        "fixture strategy should not declare resolution_data"
+    );
+
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+        .expect("binary oracle strategy without resolution_data should map into runtime config");
+
+    let mut errors: Vec<ValidationError> = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(
+        &raw,
+        "strategies.configured_updown_main.parameters.runtime",
+        &mut errors,
+    );
+    assert!(
+        errors.is_empty(),
+        "runtime config without resolution_data should validate: {errors:?}"
+    );
+
+    let table = raw
+        .as_table()
+        .expect("mapped raw taker config should be a table");
+    assert!(
+        !table.contains_key("resolution_client_id"),
+        "resolution_client_id must be absent when [resolution_data] is omitted"
+    );
+    assert!(
+        !table.contains_key("resolution_instrument_id"),
+        "resolution_instrument_id must be absent when [resolution_data] is omitted"
+    );
+}
+
+#[test]
+fn binary_oracle_runtime_mapping_rejects_resolution_data_with_unknown_client() {
+    // A `[resolution_data]` block whose data_client_id is not a loaded client
+    // fails closed during runtime mapping (mirrors the signal_data existence check).
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    loaded.strategies[strategy_index].config.resolution_data = Some(ReferenceDataBlock {
+        data_client_id: ClientId::from("not_a_configured_client"),
+        instrument_id: InstrumentId::from("BTC-USD.CHAINLINK"),
+    });
+
+    let strategy = &loaded.strategies[strategy_index];
+    let error = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+        .expect_err("resolution_data with an unknown data client must fail closed");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("resolution_data")
+            && rendered.contains("not_a_configured_client")
+            && rendered.contains("not present in loaded clients"),
+        "unknown resolution data client should fail with a clear message, got: {rendered}"
+    );
+}
+
+// DF-load-validate (#553): load-time validation of the `[resolution_data]`
+// binding. A live-money strategy must NOT load if its resolution-strike binding
+// is wrong; the existing runtime asset/subscribe guards only fire much later (at
+// the first interval subscribe), which silently leaves `price_to_beat = None`
+// instead of failing the operator's deploy. These three tests assert the
+// archetype bridge `raw_taker_config` rejects, at load time, a `[resolution_data]`
+// block whose:
+//   (a) data_client_id resolves to a client whose venue is NOT the Chainlink
+//       strike provider (CHAINLINK_DATA_STREAMS),
+//   (b) instrument_id asset prefix does not match the target's underlying_asset,
+//   (c) instrument_id has no matching feed_binding in that client.
+// Today only client-existence is checked in `raw_taker_config`, so all three
+// MUST fail until the load-time binding validation is added.
+
+/// (a) The resolution_data client exists, but its venue is not the Chainlink
+/// strike provider. Binding the strike source to a non-Chainlink venue must fail
+/// closed at load time (the strike index-price subscribe only flows through the
+/// Chainlink strike client).
+#[test]
+fn binary_oracle_runtime_mapping_rejects_resolution_data_with_non_chainlink_client_venue() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    // `okx_data` is a loaded client (venue = OKX), so the existence check passes,
+    // but OKX is not the Chainlink strike provider.
+    loaded.strategies[strategy_index].config.resolution_data = Some(ReferenceDataBlock {
+        data_client_id: ClientId::from("okx_data"),
+        instrument_id: InstrumentId::from("BTC-USD.CHAINLINK"),
+    });
+
+    let strategy = &loaded.strategies[strategy_index];
+    let error = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded).expect_err(
+        "resolution_data bound to a non-Chainlink client venue must fail closed at load time",
+    );
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("resolution_data")
+            && rendered.contains("okx_data")
+            && rendered.contains("CHAINLINK_DATA_STREAMS"),
+        "non-Chainlink resolution client venue should fail with a clear message naming the client and the required Chainlink venue, got: {rendered}"
+    );
+}
+
+/// (b) The resolution_data client is the Chainlink strike client and the
+/// instrument exists as a feed_binding, but its asset prefix (`BTC`) does not
+/// match the target's `underlying_asset` (`CONFIGURED_ASSET`). A wrong-asset
+/// strike feed must fail closed at load time, not silently at subscribe time.
+#[test]
+fn binary_oracle_runtime_mapping_rejects_resolution_data_instrument_asset_mismatch() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    // The fixture target's underlying_asset is "CONFIGURED_ASSET"; the Chainlink
+    // strike feed_binding instrument is "BTC-USD.CHAINLINK" (asset prefix "BTC").
+    loaded.strategies[strategy_index].config.resolution_data = Some(ReferenceDataBlock {
+        data_client_id: ClientId::from("chainlink_strike"),
+        instrument_id: InstrumentId::from("BTC-USD.CHAINLINK"),
+    });
+
+    let strategy = &loaded.strategies[strategy_index];
+    let error = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded).expect_err(
+        "resolution_data instrument whose asset prefix does not match underlying_asset must fail closed at load time",
+    );
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("resolution_data")
+            && rendered.contains("BTC-USD.CHAINLINK")
+            && rendered.contains("CONFIGURED_ASSET"),
+        "asset-mismatched resolution instrument should fail with a clear message naming the instrument and the underlying_asset, got: {rendered}"
+    );
+}
+
+/// (c) The resolution_data client is the Chainlink strike client and the
+/// underlying_asset matches the instrument's asset prefix, but the instrument has
+/// no matching feed_binding in that client. A strike instrument with no feed_id
+/// binding can never produce a report, so it must fail closed at load time.
+#[test]
+fn binary_oracle_runtime_mapping_rejects_resolution_data_instrument_without_feed_binding() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    // Make the target's underlying_asset match the instrument asset prefix (ETH)
+    // so the asset-prefix check (b) passes and this test isolates the missing
+    // feed_binding gap (c). The chainlink_strike client only binds
+    // "BTC-USD.CHAINLINK", so "ETH-USD.CHAINLINK" has no feed_binding.
+    loaded.strategies[strategy_index]
+        .config
+        .target
+        .as_table_mut()
+        .expect("fixture target should be a table")
+        .insert(
+            "underlying_asset".to_string(),
+            toml::Value::String("ETH".to_string()),
+        );
+    loaded.strategies[strategy_index].config.resolution_data = Some(ReferenceDataBlock {
+        data_client_id: ClientId::from("chainlink_strike"),
+        instrument_id: InstrumentId::from("ETH-USD.CHAINLINK"),
+    });
+
+    let strategy = &loaded.strategies[strategy_index];
+    let error = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded).expect_err(
+        "resolution_data instrument with no matching feed_binding in the client must fail closed at load time",
+    );
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("resolution_data")
+            && rendered.contains("ETH-USD.CHAINLINK")
+            && rendered.contains("feed_binding"),
+        "resolution instrument with no feed_binding should fail with a clear message naming the instrument and feed_binding, got: {rendered}"
+    );
+}
+
+#[test]
 fn binary_oracle_runtime_mapping_uses_market_family_target_projection() {
     let source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
 
@@ -1451,7 +1676,8 @@ fn bolt_v3_live_node_build_registers_only_generic_canary_proof_executor_when_ena
 
 #[test]
 fn binary_oracle_strategy_source_does_not_own_canary_proof_claim() {
-    let source = include_str!("../src/strategies/binary_oracle_edge_taker.rs");
+    let source = support::module_source_text(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
+    let source = source.as_str();
 
     assert!(
         !source.contains("CANARY_PROOF_CLAIM"),
@@ -1659,20 +1885,6 @@ fn fee_provider_resolution_does_not_warm_during_registration() {
     assert!(
         !archetype_source.contains(".warm("),
         "runtime registration must not warm fee providers"
-    );
-}
-
-#[test]
-fn binary_oracle_registration_forwards_readiness_gate_session_to_build_context() {
-    let archetype_source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
-
-    assert!(
-        archetype_source.contains("context.readiness_evidence.clone()"),
-        "binary oracle registration should consume readiness evidence from the generic context"
-    );
-    assert!(
-        archetype_source.contains(".with_readiness_evidence(readiness_evidence)"),
-        "binary oracle registration should pass readiness evidence into StrategyBuildContext"
     );
 }
 

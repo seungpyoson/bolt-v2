@@ -12,7 +12,6 @@ use nautilus_polymarket::{
     },
     http::query::{AssetType, GetBalanceAllowanceParams},
 };
-use sha2::{Digest, Sha256};
 
 use crate::{
     bolt_v3_operator_artifacts::BoltV3OperatorArtifactError,
@@ -157,5 +156,5 @@ fn current_unix_timestamp_seconds() -> Result<String, BoltV3OperatorArtifactErro
 }
 
 fn sha256_text(value: &str) -> String {
-    hex::encode(Sha256::digest(value.as_bytes()))
+    crate::bolt_v3_source_integrity::sha256_hex_lower(value.as_bytes())
 }

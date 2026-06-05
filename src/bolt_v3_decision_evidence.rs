@@ -33,25 +33,6 @@ pub struct BoltV3ReadinessGateEvidenceSnapshot {
     pub gate_evidence: BTreeMap<String, BoltV3GateEvidenceIdentity>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct BoltV3RuntimeReadinessSeed {
-    pub strategy_instance_id: String,
-    pub gate_session_hash: String,
-    pub selected_market_key: String,
-    pub polymarket_condition_id: String,
-    pub polymarket_market_slug: String,
-    pub polymarket_question_id: String,
-    pub up_instrument_id: String,
-    pub down_instrument_id: String,
-    pub market_start_timestamp_ms: u64,
-    pub market_end_timestamp_ms: u64,
-    pub price_to_beat_value: f64,
-    pub reference_venue: String,
-    pub reference_price: f64,
-    pub reference_quote_ts_event: u64,
-    pub realized_volatility: f64,
-}
-
 impl BoltV3ReadinessGateEvidenceSnapshot {
     pub fn from_entry_readiness_gate_session(
         session: &crate::bolt_v3_operator_artifacts::EntryReadinessGateSession,

@@ -61,8 +61,8 @@ use crate::{
         selected_market_requirement_from_parts,
     },
     bolt_v3_numeric::{
-        POWER_OF_TWO, SECONDS_PER_YEAR_F64, UNIT_F64, ZERO_F64, is_positive_finite,
-        sanitize_probability,
+        MILLIS_PER_SECOND_U64, POWER_OF_TWO, SECONDS_PER_YEAR_F64, UNIT_F64, ZERO_F64,
+        is_positive_finite, sanitize_probability,
     },
 };
 
@@ -1201,6 +1201,16 @@ fn candidate_market_for_slug(
     let start_timestamp_milliseconds = period_start_milliseconds
         .max(up.activation_milliseconds)
         .max(down.activation_milliseconds);
+    // The live resolution strike is queried at this interval-open boundary in
+    // whole seconds (Chainlink Data Streams reports are second-resolution), and
+    // the strategy requires the returned report's `valid_from` to equal this
+    // millisecond boundary exactly. A boundary carrying a sub-second component
+    // (a non-second-aligned instrument activation surfaced via `.max` above)
+    // could never bind a strike, so reject the candidate fail-closed rather than
+    // select a market that can never trade.
+    if !start_timestamp_milliseconds.is_multiple_of(MILLIS_PER_SECOND_U64) {
+        return None;
+    }
 
     Some(SelectedUpdownMarket {
         market_id: up.market_id,
@@ -1609,6 +1619,60 @@ mod tests {
         .expect("configured current updown market should select");
 
         assert_eq!(selected.start_timestamp_milliseconds, 660_000);
+    }
+
+    #[test]
+    fn selected_updown_market_rejects_non_second_aligned_open_boundary() {
+        // F7b regression lock. The live Chainlink resolution strike is queried at
+        // the interval-open boundary in whole seconds (the Data Streams "report at
+        // T" endpoint is second-resolution); the strategy derives that second by
+        // truncating `start_timestamp_milliseconds / 1000` and then requires the
+        // returned report's `valid_from` to equal the original millisecond
+        // boundary. When `start_timestamp_milliseconds` carries a sub-second
+        // component (an instrument activation that is not second-aligned, surfaced
+        // through `.max(activation_milliseconds)`), that ms->s->ms round-trip can
+        // never match and `price_to_beat` is stranded for the market's whole life.
+        // Such a market must be rejected fail-closed at selection, not selected and
+        // then silently never traded.
+        let market_slug = updown_market_slug(TEST_UNDERLYING_ASSET, TEST_CADENCE_SLUG_TOKEN, 600);
+        let instruments = vec![
+            test_binary_option(
+                "configured-condition-up.POLYMARKET",
+                &market_slug,
+                "market-1",
+                TEST_CONDITION_ID,
+                "question-1",
+                "Up",
+                650_000,
+                900_000,
+            ),
+            test_binary_option(
+                "configured-condition-down.POLYMARKET",
+                &market_slug,
+                "market-1",
+                TEST_CONDITION_ID,
+                "question-1",
+                "Down",
+                660_500,
+                900_000,
+            ),
+        ];
+
+        let selected = select_market_from_instruments(
+            UpdownSelectionTarget {
+                underlying_asset: TEST_UNDERLYING_ASSET,
+                cadence_secs: 300,
+                cadence_slug_token: TEST_CADENCE_SLUG_TOKEN,
+            },
+            &instruments,
+            600_001,
+        );
+
+        assert!(
+            selected.is_none(),
+            "a market whose interval-open boundary is not second-aligned (660_500 ms) must be \
+             rejected fail-closed; no second-resolution Chainlink strike can ever bind it",
+        );
     }
 
     #[test]

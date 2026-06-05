@@ -81,6 +81,17 @@ verify-bolt-v3-strategy-policy-fence: check-workspace
     python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/verify_bolt_v3_strategy_policy_fence.py
 
+verify-bolt-v3-dependency-direction: check-workspace
+    python3 scripts/test_verify_bolt_v3_dependency_direction.py
+    python3 scripts/verify_bolt_v3_dependency_direction.py
+
+# Enforces "allowlist may only shrink" against the protected mainline: fails if
+# the in-tree dependency allowlist is not a subset of the one on origin/main.
+# No-op on the PR that first introduces the fence; active on every PR after merge.
+verify-bolt-v3-dependency-shrink-only: check-workspace
+    git fetch -q origin main 2>/dev/null
+    python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main
+
 test-verify-runtime-capture-yaml: check-workspace
     python3 scripts/test_verify_runtime_capture_yaml.py
 
@@ -158,6 +169,10 @@ source-fence: check-workspace require-rust-verification-owner
     python3 scripts/verify_bolt_v3_core_boundary.py
     python3 scripts/test_verify_bolt_v3_naming.py
     python3 scripts/verify_bolt_v3_naming.py
+    python3 scripts/test_verify_bolt_v3_dependency_direction.py
+    python3 scripts/verify_bolt_v3_dependency_direction.py
+    git fetch -q origin main 2>/dev/null
+    python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main
     python3 scripts/test_verify_bolt_v3_status_map_current.py
     python3 scripts/verify_bolt_v3_status_map_current.py
     python3 scripts/test_verify_bolt_v3_schema_current.py

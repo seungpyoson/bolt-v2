@@ -2,7 +2,12 @@ schema_version = 1
 trader_id = "BOLT-001"
 
 strategy_files = [
-  "strategies/binary_oracle.toml",
+  "strategies/binary_oracle_btc.toml",
+  "strategies/binary_oracle_eth.toml",
+  "strategies/binary_oracle_sol.toml",
+  "strategies/binary_oracle_bnb.toml",
+  "strategies/binary_oracle_xrp.toml",
+  "strategies/binary_oracle_doge.toml",
 ]
 
 [runtime]
@@ -80,7 +85,6 @@ manage_own_order_books = false
 default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
-bypass = false
 max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
@@ -424,3 +428,64 @@ quote_target_source = "metadata_response"
 chunk_size = 200
 chunk_observation_window_seconds = 45
 min_observed_targets = 10
+
+# Live Chainlink Data Streams resolution-strike (price-to-beat) source. One
+# point-in-time strike per window-open timestamp, delivered as an NT
+# IndexPriceUpdate on the bound resolution instrument. Routes to the
+# chainlink::map_adapters provider binding via venue = "CHAINLINK_DATA_STREAMS"
+# (the chainlink::KEY matched in bolt_v3_providers::binding_for_provider_key).
+# Each strategy instance subscribes its asset's feed via the per-asset
+# [resolution_data] block in strategies/binary_oracle_<asset>.toml.
+[clients.chainlink_strike]
+venue = "CHAINLINK_DATA_STREAMS"
+
+[clients.chainlink_strike.data]
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+
+[[clients.chainlink_strike.data.feed_bindings]]
+feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+instrument_id = "BTC-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
+[[clients.chainlink_strike.data.feed_bindings]]
+feed_id = "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782"
+instrument_id = "ETH-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
+[[clients.chainlink_strike.data.feed_bindings]]
+feed_id = "0x0003d338ea2ac3be9e026033b1aa601673c37bab5e13851c59966f9f820754d6"
+instrument_id = "SOL-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
+[[clients.chainlink_strike.data.feed_bindings]]
+feed_id = "0x000387d7c042a9d5c97c15354b531bd01bf6d3a351e190f2394403cf2f79bde9"
+instrument_id = "BNB-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
+[[clients.chainlink_strike.data.feed_bindings]]
+feed_id = "0x00035e3ddda6345c3c8ce45639d4449451f1d5828d7a70845e446f04905937cd"
+instrument_id = "XRP-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
+[[clients.chainlink_strike.data.feed_bindings]]
+feed_id = "0x00032057c7f224d0266b4311a81cdc3e38145e36442713350d3300fb12e85c99"
+instrument_id = "DOGE-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
+[clients.chainlink_strike.secrets]
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"

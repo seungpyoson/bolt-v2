@@ -3,12 +3,41 @@
 
 from __future__ import annotations
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
 
+import bolt_v3_source_roots as source_roots
 import verify_bolt_v3_legacy_default_fence as fence
+from bolt_v3_source_roots import STRATEGY_SOURCE_ROOT, STRATEGY_SOURCE_ROOTS, module_text, source_files
 from verify_bolt_v3_pure_rust_runtime import production_text
+
+# A current strategy source file, resolved layout-independently (the strategy
+# root is a directory after the A3 split); used as a representative path label in
+# synthetic find_violations_in_text cases and as the runtime-path-membership anchor.
+STRATEGY_SOURCE_FILE = source_files(STRATEGY_SOURCE_ROOT)[0].relative_to(
+    fence.REPO_ROOT
+).as_posix()
+
+
+def rust_registry_relative_roots(registry_source: str) -> set[str]:
+    roots: set[str] = set()
+    for block in re.findall(
+        r"\brelative_roots\s*:\s*&\[(.*?)\]", registry_source, flags=re.DOTALL
+    ):
+        roots.update(re.findall(r'"([^"]+)"', block))
+    return roots
+
+
+def rust_text_accessor_max_bytes(source: str) -> int:
+    match = re.search(r"\bconst\s+TEXT_ACCESSOR_MAX_BYTES:\s*u64\s*=\s*([^;]+);", source)
+    if not match:
+        raise AssertionError("TEXT_ACCESSOR_MAX_BYTES constant not found")
+    product = 1
+    for factor in match.group(1).split("*"):
+        product *= int(factor.strip())
+    return product
 
 
 class LegacyDefaultFenceTests(unittest.TestCase):
@@ -69,7 +98,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         labels = [
             violation.label
             for violation in fence.find_violations_in_text(
-                "src/strategies/binary_oracle_edge_taker.rs",
+                STRATEGY_SOURCE_FILE,
                 source,
             )
         ]
@@ -77,11 +106,11 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         self.assertEqual(labels, ["legacy Polymarket catalog defaults"])
 
     def test_strategy_does_not_reach_legacy_polymarket_catalog(self) -> None:
-        strategy = Path("src/strategies/binary_oracle_edge_taker.rs").read_text(
-            encoding="utf-8"
-        )
+        # Resolve the strategy module layout-independently (a directory after the
+        # A3 split) and scan every file's production text.
+        strategy = production_text_from_string(module_text(STRATEGY_SOURCE_ROOTS))
 
-        self.assertNotIn("polymarket_catalog", production_text_from_string(strategy))
+        self.assertNotIn("polymarket_catalog", strategy)
 
     def test_detects_external_crate_legacy_provider_modules(self) -> None:
         source = "\n".join(
@@ -129,6 +158,151 @@ class LegacyDefaultFenceTests(unittest.TestCase):
             ],
         )
 
+    def test_source_root_helper_rejects_symlink_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "real.rs"
+            target.write_text("fn real() {}\n", encoding="utf-8")
+            link = root / "linked.rs"
+            try:
+                link.symlink_to(target)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+
+            original_root = source_roots.REPO_ROOT
+            source_roots.REPO_ROOT = root
+            try:
+                with self.assertRaisesRegex(ValueError, "source root is a symlink"):
+                    source_roots.source_files("linked.rs")
+            finally:
+                source_roots.REPO_ROOT = original_root
+
+    def test_source_root_helper_rejects_symlink_inside_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "module"
+            module.mkdir()
+            target = module / "real.rs"
+            target.write_text("fn real() {}\n", encoding="utf-8")
+            link = module / "linked.rs"
+            try:
+                link.symlink_to(target)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+
+            original_root = source_roots.REPO_ROOT
+            source_roots.REPO_ROOT = root
+            try:
+                with self.assertRaisesRegex(ValueError, "source root contains a symlink"):
+                    source_roots.source_files("module")
+            finally:
+                source_roots.REPO_ROOT = original_root
+
+    def test_source_root_helper_rejects_symlink_directory_inside_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "module"
+            module.mkdir()
+            target = root / "outside"
+            target.mkdir()
+            (target / "evil.rs").write_text("fn evil() {}\n", encoding="utf-8")
+            link = module / "linked_dir"
+            try:
+                link.symlink_to(target, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+
+            original_root = source_roots.REPO_ROOT
+            source_roots.REPO_ROOT = root
+            try:
+                with self.assertRaisesRegex(ValueError, "source root contains a symlink"):
+                    source_roots.source_files("module")
+            finally:
+                source_roots.REPO_ROOT = original_root
+
+    def test_source_root_helper_rejects_backslash_path_component(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "module"
+            module.mkdir()
+            bad = module / "a\\b.rs"
+            if bad.name != "a\\b.rs":
+                self.skipTest("platform does not permit backslash in a file name")
+            bad.write_text("fn bad() {}\n", encoding="utf-8")
+
+            original_root = source_roots.REPO_ROOT
+            source_roots.REPO_ROOT = root
+            try:
+                with self.assertRaisesRegex(ValueError, "contains a backslash"):
+                    source_roots.source_files("module")
+            finally:
+                source_roots.REPO_ROOT = original_root
+
+    def test_python_source_roots_match_rust_registry_relative_roots(self) -> None:
+        registry = (
+            source_roots.REPO_ROOT / "src/source_canonicalization.rs"
+        ).read_text(encoding="utf-8")
+        rust_roots = rust_registry_relative_roots(registry)
+
+        self.assertEqual(
+            rust_roots,
+            {
+                *source_roots.STRATEGY_SOURCE_ROOTS,
+                source_roots.SUBMIT_ADMISSION_SOURCE_ROOT,
+            },
+        )
+
+    def test_rust_registry_relative_root_parser_accepts_wrapped_fields(self) -> None:
+        registry = """
+            GatedSourceRoot {
+                key: STRATEGY_KEY,
+                relative_roots: &[
+                    "src/strategies/binary_oracle_edge_taker",
+                    "src/bolt_v3_book_sizing.rs",
+                ],
+            },
+            GatedSourceRoot {
+                key: SUBMIT_ADMISSION_KEY,
+                relative_roots: &["src/bolt_v3_submit_admission.rs"],
+            },
+        """
+
+        self.assertEqual(
+            rust_registry_relative_roots(registry),
+            {
+                *source_roots.STRATEGY_SOURCE_ROOTS,
+                source_roots.SUBMIT_ADMISSION_SOURCE_ROOT,
+            },
+        )
+
+    def test_python_source_root_file_cap_matches_rust_text_accessor_cap(self) -> None:
+        source = (
+            source_roots.REPO_ROOT / "src/bolt_v3_source_integrity.rs"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(
+            source_roots.MAX_SOURCE_FILE_BYTES,
+            rust_text_accessor_max_bytes(source),
+        )
+
+    def test_source_root_helper_rejects_oversized_module_text_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "module"
+            module.mkdir()
+            (module / "big.rs").write_text(
+                "x" * (source_roots.MAX_SOURCE_FILE_BYTES + 1),
+                encoding="utf-8",
+            )
+
+            original_root = source_roots.REPO_ROOT
+            source_roots.REPO_ROOT = root
+            try:
+                with self.assertRaisesRegex(ValueError, "source file exceeds 8 MiB limit"):
+                    source_roots.module_text("module")
+            finally:
+                source_roots.REPO_ROOT = original_root
+
     def test_detects_production_default_residues(self) -> None:
         source = "\n".join(
             [
@@ -144,7 +318,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         labels = [
             violation.label
             for violation in fence.find_violations_in_text(
-                "src/strategies/binary_oracle_edge_taker.rs",
+                STRATEGY_SOURCE_FILE,
                 source,
             )
         ]
@@ -174,7 +348,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         labels = [
             violation.label
             for violation in fence.find_violations_in_text(
-                "src/strategies/binary_oracle_edge_taker.rs",
+                STRATEGY_SOURCE_FILE,
                 source,
             )
         ]
@@ -231,7 +405,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         self.assertIn("src/venue_contract.rs", fence.RUNTIME_SOURCE_PATHS)
         self.assertIn("src/strategies/registry.rs", fence.RUNTIME_SOURCE_PATHS)
         self.assertIn(
-            "src/strategies/binary_oracle_edge_taker.rs",
+            STRATEGY_SOURCE_FILE,
             fence.RUNTIME_SOURCE_PATHS,
         )
 

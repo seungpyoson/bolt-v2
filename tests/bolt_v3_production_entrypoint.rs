@@ -152,10 +152,10 @@ fn codebase_does_not_expose_dead_platform_runtime_actor_or_catalog_modules() {
         "lib must not expose dead legacy validator"
     );
 
-    let strategy = include_str!("../src/strategies/binary_oracle_edge_taker.rs")
-        .split("\n#[cfg(test)]\nmod tests")
-        .next()
-        .expect("strategy source should contain production code before tests");
+    let strategy = bolt_v2::bolt_v3_source_integrity::production_module_source_text(
+        bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY,
+    );
+    let strategy = strategy.as_str();
     for forbidden in [
         "runtime_selection_topic",
         "platform.runtime.selection",

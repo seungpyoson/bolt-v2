@@ -188,18 +188,19 @@ transport_backend = "sockudo"
 }
 
 #[test]
-fn live_node_build_path_registers_only_strategy_bound_polymarket_data_and_exec() {
+fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
     // The trade build path (`build_bolt_v3_live_node_with_summary`) registers
     // ONLY strategy-bound clients: the strategy `execution_client_id`, its
-    // `[reference_data].*.data_client_id`, and the proof-policy
-    // `execution_client_id`. The fixture strategy
+    // `[reference_data].*.data_client_id`, its `[signal_data].*.data_client_id`,
+    // and the proof-policy `execution_client_id`. The fixture strategy
     // (tests/fixtures/bolt_v3/strategies/binary_oracle.toml) sets
-    // `execution_client_id = "polymarket_main"` and has an EMPTY
-    // `[reference_data]` block; its reference comes from a source-owned
-    // `decision_reference` (provider id "resolution_oracle_primary"), NOT an NT
-    // data client. So `binance_reference` is a broad-readiness PROBE client that
-    // is configured but unbound, and the scoped trade runner correctly EXCLUDES
-    // it from both the registration summary and the NT engines.
+    // `execution_client_id = "polymarket_main"`, an EMPTY `[reference_data]`
+    // block, and a strategy-bound signal feed at `okx_data`. Its reference comes
+    // from a source-owned `decision_reference` (provider id
+    // "resolution_oracle_primary"), NOT an NT data client. So `binance_reference`
+    // is a broad-readiness PROBE client that is configured but unbound, and the
+    // scoped trade runner correctly EXCLUDES it from both the registration
+    // summary and the NT engines.
     //
     // We keep `fixture_loaded_config_with_binance_reference` so the exclusion is
     // meaningful: an unbound client is present in config yet must NOT register.
@@ -221,10 +222,11 @@ fn live_node_build_path_registers_only_strategy_bound_polymarket_data_and_exec()
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("v3 LiveNode should build through the registration boundary");
 
-    // The scoped trade runner records exactly one strategy-bound client.
+    // The scoped trade runner records exactly the strategy-bound execution/data
+    // client and the strategy-bound signal data client.
     assert_eq!(
         summary.clients.len(),
-        1,
+        2,
         "scoped trade path registers only strategy-bound clients; got {:?}",
         summary.clients.keys().collect::<Vec<_>>()
     );
@@ -240,6 +242,12 @@ fn live_node_build_path_registers_only_strategy_bound_polymarket_data_and_exec()
         polymarket.execution,
         "fixture polymarket_main has an [execution] block"
     );
+    let okx = summary
+        .clients
+        .get("okx_data")
+        .expect("okx_data (strategy signal_data client) must appear in summary");
+    assert!(okx.data, "fixture okx_data has a [data] block");
+    assert!(!okx.execution, "fixture okx_data has no [execution] block");
     assert!(
         !summary.clients.contains_key("binance_reference"),
         "binance_reference is unbound (no strategy reference_data binding) and must be excluded from the scoped summary; got {:?}",
@@ -255,6 +263,10 @@ fn live_node_build_path_registers_only_strategy_bound_polymarket_data_and_exec()
     assert!(
         registered_data.contains(&ClientId::from("polymarket_main")),
         "data engine should expose polymarket_main; got {registered_data:?}"
+    );
+    assert!(
+        registered_data.contains(&ClientId::from("okx_data")),
+        "data engine should expose strategy signal data client okx_data; got {registered_data:?}"
     );
     assert!(
         !registered_data.contains(&ClientId::from("binance_reference")),

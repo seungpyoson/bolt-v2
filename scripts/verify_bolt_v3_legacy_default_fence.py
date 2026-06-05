@@ -22,8 +22,13 @@ def _runtime_source_paths() -> tuple[str, ...]:
         "src/secrets.rs",
         "src/venue_contract.rs",
         *(
+            # rglob (not glob) so the strategy module's submodule files are
+            # scanned after the A3/A8 split moved them into the strategy
+            # directory module.
+            # A non-recursive glob would silently drop the strategy production
+            # source and weaken this fence.
             path.relative_to(REPO_ROOT).as_posix()
-            for path in (REPO_ROOT / "src" / "strategies").glob("*.rs")
+            for path in (REPO_ROOT / "src" / "strategies").rglob("*.rs")
             if path.is_file()
         ),
         *(

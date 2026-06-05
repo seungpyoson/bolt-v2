@@ -192,6 +192,46 @@ pub fn repo_text(relative: &str) -> String {
         .unwrap_or_else(|error| panic!("repo text `{relative}` should read: {error}"))
 }
 
+/// Generous bound used by the test-side source-integrity forwarders. The
+/// strategy root is 732_776 bytes today; this is comfortably above it and
+/// matches the lib's text-accessor bound. Tests are separate compilation units
+/// and cannot read the lib's `$OUT_DIR`, so they consume the lib's pub fns — the
+/// ONE owner — rather than re-canonicalizing.
+pub const SOURCE_INTEGRITY_TEST_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Lowercase-hex SHA-256 of a gated registry root's canonical bytes, via the lib
+/// integrity owner (`bolt_v2::bolt_v3_source_integrity`). This is exactly the
+/// digest the compile-time abort-plan gate enforces.
+pub fn registry_source_digest(key: &str) -> String {
+    bolt_v2::bolt_v3_source_integrity::registry_source_digest(key, SOURCE_INTEGRITY_TEST_MAX_BYTES)
+        .unwrap_or_else(|error| panic!("registry source digest `{key}` should compute: {error}"))
+}
+
+/// Repo-relative root path for a gated registry key (file or directory), via the
+/// lib integrity owner. Tests feed this straight into the producer write-side so
+/// the path can never diverge from the registry across a split.
+pub fn registry_relative_root(key: &str) -> &'static str {
+    bolt_v2::bolt_v3_source_integrity::registry_relative_root(key)
+}
+
+/// Absolute path of a gated registry root, via the lib integrity owner.
+pub fn registry_root_path(key: &str) -> PathBuf {
+    repo_path(registry_relative_root(key))
+}
+
+/// Whole-module source text for a gated registry key, via the lib integrity
+/// owner. Replaces the scattered `include_str!` of a monolith root in text-scan
+/// tests.
+pub fn module_source_text(key: &str) -> String {
+    bolt_v2::bolt_v3_source_integrity::module_source_text(key)
+}
+
+/// Production-only module source text for a gated registry key (the bottom
+/// `#[cfg(test)] mod tests` submodule excluded), via the lib integrity owner.
+pub fn production_module_source_text(key: &str) -> String {
+    bolt_v2::bolt_v3_source_integrity::production_module_source_text(key)
+}
+
 /// Path of the lexically-first venue contract under the repo's `contracts/`
 /// directory. Venue-agnostic: no venue name is written here. It is an arbitrary
 /// valid envelope for machinery/negative tests; a second contract that sorts
@@ -1237,6 +1277,8 @@ pub fn fake_bolt_v3_resolver(_region: &str, path: &str) -> Result<String, &'stat
         "/bolt/polymarket_main/passphrase" => Ok("polymarket-passphrase".to_string()),
         "/bolt/binance_reference/api_key" => Ok("binance-api-key".to_string()),
         "/bolt/binance_reference/api_secret" => Ok(FAKE_BOLT_V3_BINANCE_API_SECRET.to_string()),
+        "/bolt/testnet/chainlink/api-key" => Ok("chainlink-api-key".to_string()),
+        "/bolt/testnet/chainlink/api-secret" => Ok("chainlink-api-secret".to_string()),
         _ => Err("unexpected SSM path requested by bolt-v3 fake resolver"),
     }
 }

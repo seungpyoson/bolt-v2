@@ -437,6 +437,8 @@ transport_backend = "sockudo"
             "/bolt/polymarket_main/passphrase" => "poly-passphrase".to_string(),
             "/bolt/binance_reference/api_key" => "binance-api-key".to_string(),
             "/bolt/binance_reference/api_secret" => synthetic_binance_secret(),
+            "/bolt/testnet/chainlink/api-key" => "chainlink-api-key".to_string(),
+            "/bolt/testnet/chainlink/api-secret" => "chainlink-api-secret".to_string(),
             _ => panic!("unexpected SSM path: {path}"),
         }
     }
@@ -538,7 +540,9 @@ transport_backend = "sockudo"
         })
         .expect("fixture secrets should resolve");
 
-        assert_eq!(resolved.clients.len(), 2);
+        // polymarket_main + binance_reference + chainlink_strike (shipped live
+        // resolution-strike client).
+        assert_eq!(resolved.clients.len(), 3);
         assert!(
             calls.iter().all(|(region, _)| region == "eu-west-1"),
             "all SSM calls must use [aws].region from the fixture root.toml: {calls:#?}"
@@ -550,6 +554,8 @@ transport_backend = "sockudo"
             "/bolt/polymarket_main/passphrase",
             "/bolt/binance_reference/api_key",
             "/bolt/binance_reference/api_secret",
+            "/bolt/testnet/chainlink/api-key",
+            "/bolt/testnet/chainlink/api-secret",
         ] {
             assert!(
                 calls.iter().any(|(_, called_path)| called_path == path),

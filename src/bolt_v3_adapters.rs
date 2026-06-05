@@ -502,7 +502,6 @@ mod tests {
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     };
 
@@ -522,7 +521,6 @@ mod tests {
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     };
 
@@ -542,7 +540,6 @@ mod tests {
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     };
 
@@ -583,6 +580,14 @@ mod tests {
         }
     }
 
+    fn fixture_chainlink_secrets()
+    -> crate::bolt_v3_providers::chainlink::ResolvedBoltV3ChainlinkSecrets {
+        crate::bolt_v3_providers::chainlink::ResolvedBoltV3ChainlinkSecrets {
+            api_key: zeroize::Zeroizing::new("fixture-chainlink-api-key".to_string()),
+            api_secret: zeroize::Zeroizing::new("fixture-chainlink-api-secret".to_string()),
+        }
+    }
+
     fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
         clients.insert(
@@ -592,6 +597,10 @@ mod tests {
         clients.insert(
             "binance_reference".to_string(),
             Arc::new(fixture_binance_secrets()),
+        );
+        clients.insert(
+            "chainlink_strike".to_string(),
+            Arc::new(fixture_chainlink_secrets()),
         );
         ResolvedBoltV3Secrets { clients }
     }
@@ -888,9 +897,17 @@ mod tests {
     #[test]
     fn missing_resolved_secrets_for_polymarket_execution_is_a_mapping_error() {
         let loaded = fixture_loaded_config();
-        let resolved = ResolvedBoltV3Secrets {
-            clients: BTreeMap::new(),
-        };
+        // Provide secrets for every other secret-requiring client so the mapper
+        // reaches `polymarket_main` and fails specifically there. The fixture
+        // also ships `chainlink_strike` (alphabetically before polymarket_main in
+        // the BTreeMap iteration), so its secrets must be present or the error
+        // would otherwise surface for chainlink first.
+        let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
+        clients.insert(
+            "chainlink_strike".to_string(),
+            Arc::new(fixture_chainlink_secrets()),
+        );
+        let resolved = ResolvedBoltV3Secrets { clients };
 
         let error = map_bolt_v3_adapters(&loaded, &resolved)
             .expect_err("missing resolved secrets must surface as a mapper error");
@@ -953,6 +970,13 @@ mod tests {
         clients.insert(
             "binance_reference".to_string(),
             Arc::new(fixture_binance_secrets()),
+        );
+        // The fixture ships `chainlink_strike` (iterated before polymarket_main);
+        // supply its matching secrets so the mapper reaches polymarket_main and
+        // surfaces the provider MISMATCH there rather than a chainlink miss.
+        clients.insert(
+            "chainlink_strike".to_string(),
+            Arc::new(fixture_chainlink_secrets()),
         );
         let resolved = ResolvedBoltV3Secrets { clients };
 

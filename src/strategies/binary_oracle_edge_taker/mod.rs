@@ -15,7 +15,7 @@ use nautilus_core::{Params, UnixNanos};
 #[cfg(not(test))]
 use nautilus_model::enums::BookType;
 use nautilus_model::{
-    data::{QuoteTick, TradeTick},
+    data::{IndexPriceUpdate, QuoteTick, TradeTick},
     enums::PositionSide,
 };
 use nautilus_model::{
@@ -41,8 +41,8 @@ use toml::Value;
 use crate::{
     bolt_v3_decision_evidence::{
         BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3ReadinessGateEvidenceSnapshot,
-        BoltV3RuntimeReadinessSeed, BoltV3StrategyInputEvidenceSnapshot,
-        compiled_order_price_source, validate_readiness_gate_evidence_snapshot,
+        BoltV3StrategyInputEvidenceSnapshot, compiled_order_price_source,
+        validate_readiness_gate_evidence_snapshot,
     },
     bolt_v3_market_families::{
         self, FairProbabilityInputs, MarketSelectionOutcome, OutcomeSide,
@@ -59,7 +59,10 @@ use crate::{
         is_observed_open_side,
     },
     bolt_v3_price_to_beat::price_to_beat_from_readiness_session,
-    bolt_v3_providers::normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
+    bolt_v3_providers::{
+        STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
+        normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
+    },
     bolt_v3_submit_admission::{
         BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind,
         BoltV3SubmitLifecyclePolicy, admission_base_notional_from_order,
@@ -544,6 +547,12 @@ struct ActiveMarketState {
     seconds_to_expiry_at_selection: Option<u64>,
     interval_open: Option<f64>,
     last_reference_ts_ms: Option<u64>,
+    last_resolution_ts_ms: Option<u64>,
+    /// Observable count of resolution-strike updates rejected because their
+    /// `window_open_ms` did not match this market's interval-open while the
+    /// market was configured (non-Idle). A configured mismatch is a fail-closed
+    /// anomaly distinct from an Idle drop; this counter makes it observable.
+    resolution_strike_window_mismatch_count: u64,
     warmup_count: u64,
     warmup_target: u64,
     books: OutcomePreparedBooks,
@@ -1336,6 +1345,8 @@ impl ActiveMarketState {
             seconds_to_expiry_at_selection: None,
             interval_open: None,
             last_reference_ts_ms: None,
+            last_resolution_ts_ms: None,
+            resolution_strike_window_mismatch_count: INITIAL_COUNTER_U64,
             warmup_count: INITIAL_COUNTER_U64,
             warmup_target: INITIAL_COUNTER_U64,
             books: OutcomePreparedBooks::empty(),
@@ -1382,6 +1393,8 @@ impl ActiveMarketState {
             seconds_to_expiry_at_selection: Some(market.seconds_to_end),
             interval_open: None,
             last_reference_ts_ms: None,
+            last_resolution_ts_ms: None,
+            resolution_strike_window_mismatch_count: INITIAL_COUNTER_U64,
             warmup_count: INITIAL_COUNTER_U64,
             warmup_target,
             books: OutcomePreparedBooks::from_market(market),
@@ -1465,6 +1478,45 @@ impl ActiveMarketState {
         self.warmup_count += COUNTER_INCREMENT as u64;
     }
 
+    /// Binds the live resolution strike (Chainlink `IndexPriceUpdate`) to the
+    /// market's interval-open boundary and sets it as the `price_to_beat`.
+    ///
+    /// Fail-closed: a strike whose `window_open_ms` does not equal this market's
+    /// `interval_start_ms`, or a non-positive/non-finite value, or an idle/
+    /// unbound state, is ignored and leaves `price_to_beat` unchanged. The entry
+    /// gate stays blocked while `price_to_beat` is `None`.
+    fn observe_resolution_strike(&mut self, strike: f64, window_open_ms: u64, observed_ts_ms: u64) {
+        if self.phase == SelectionPhase::Idle {
+            return;
+        }
+        let Some(interval_start_ms) = self.interval_start_ms else {
+            return;
+        };
+        if window_open_ms != interval_start_ms {
+            // Configured (non-Idle, interval-bound) market whose strike report
+            // disagrees with the selected interval-open. This is a fail-closed
+            // anomaly — the strike feed is reporting for the wrong window — and
+            // must be observable rather than a silent drop. Record it and warn;
+            // `price_to_beat` is left untouched so entry stays fail-closed.
+            self.resolution_strike_window_mismatch_count = self
+                .resolution_strike_window_mismatch_count
+                .saturating_add(1);
+            log::warn!(
+                "binary_oracle_edge_taker resolution-strike window mismatch (fail-closed): market_id={:?} window_open_ms={} interval_start_ms={} strike={} — strike rejected, price_to_beat unchanged",
+                self.market_id,
+                window_open_ms,
+                interval_start_ms,
+                strike,
+            );
+            return;
+        }
+        if !is_positive_finite(strike) {
+            return;
+        }
+        self.price_to_beat = Some(strike);
+        self.last_resolution_ts_ms = Some(observed_ts_ms);
+    }
+
     #[cfg(test)]
     fn observe_reference_snapshot(&mut self, snapshot: &ReferenceSnapshot) {
         if self.phase == SelectionPhase::Idle {
@@ -1510,6 +1562,18 @@ pub struct BinaryOracleEdgeTaker {
     selection_missing_since_ms: Option<u64>,
     #[cfg(test)]
     book_subscription_events: Vec<BookSubscriptionEvent>,
+    /// Test-only observability for live-strike (re)subscribe attempts. Records,
+    /// in order, the index-price unsubscribe/subscribe events
+    /// `subscribe_resolution_strike` issues, so a test can assert that every
+    /// strike re-subscribe is preceded by an unsubscribe of the same resolution
+    /// instrument. That pairing is mandatory: NT's `DataClientAdapter` keys
+    /// index-price subscriptions by `instrument_id` and ignores the params map
+    /// (`nautilus_data` `client.rs:494-498`, rev `6e059dc`), so a bare
+    /// re-subscribe with the constant resolution instrument is silently swallowed
+    /// and the point-in-time strike source never re-fetches for later
+    /// windows/retries.
+    #[cfg(test)]
+    resolution_strike_subscribe_events: Vec<ResolutionStrikeSubscribeEvent>,
 }
 
 impl BinaryOracleEdgeTaker {
@@ -1553,6 +1617,8 @@ impl BinaryOracleEdgeTaker {
             selection_missing_since_ms: None,
             #[cfg(test)]
             book_subscription_events: Vec::new(),
+            #[cfg(test)]
+            resolution_strike_subscribe_events: Vec::new(),
         }
     }
 
@@ -1570,7 +1636,32 @@ impl BinaryOracleEdgeTaker {
         self.active.books.up.instrument_id = next_selection_books.up_instrument_id;
         self.active.books.down.instrument_id = next_selection_books.down_instrument_id;
         self.active.apply_selection_timing(&snapshot);
-        self.apply_source_owned_readiness_seed();
+        // Bind the live strike to the market's interval-open boundary.
+        //
+        // Re-issue the strike subscribe whenever the strike is unresolved
+        // (`price_to_beat` is `None`) and either a new interval was just selected
+        // (the first attempt — for a future "Next" selection the Chainlink report
+        // does not exist yet, so the pre-open attempt cannot bind) or wall-clock
+        // has reached the interval-open boundary (`now_ms >= interval_start_ms`).
+        //
+        // This block runs only on the bounded selection-retry cadence (`on_start`
+        // once plus the selection-retry timer), never per market-data tick, so
+        // retrying on every open tick makes the fetch self-healing — a transient
+        // REST failure at the open second no longer strands the strike for the
+        // whole interval — without hammering the endpoint. The
+        // `price_to_beat.is_none()` guard stops the retries the moment a strike
+        // binds.
+        if self.active.phase != SelectionPhase::Idle
+            && let Some(interval_start_ms) = self.active.interval_start_ms
+            && self.active.price_to_beat.is_none()
+        {
+            let interval_changed =
+                self.active.interval_start_ms != previous_active.interval_start_ms;
+            let interval_open = now_ms >= interval_start_ms;
+            if interval_changed || interval_open {
+                self.subscribe_resolution_strike();
+            }
+        }
         let reactivated_into_active =
             previous_phase != SelectionPhase::Active && self.active.phase == SelectionPhase::Active;
         let same_market_interval_rollover =
@@ -1597,65 +1688,6 @@ impl BinaryOracleEdgeTaker {
                 error,
             );
         }
-    }
-
-    fn apply_source_owned_readiness_seed(&mut self) {
-        let Some(seed) = self.context.runtime_readiness_seed().cloned() else {
-            return;
-        };
-        if !self.source_owned_readiness_seed_matches_active(&seed) {
-            return;
-        }
-        if !is_positive_finite(seed.price_to_beat_value)
-            || !is_positive_finite(seed.reference_price)
-            || !is_positive_finite(seed.realized_volatility)
-        {
-            return;
-        }
-
-        self.active.price_to_beat = Some(seed.price_to_beat_value);
-        self.observe_reference_quote(&FastSpotObservation {
-            venue: seed.reference_venue.clone(),
-            price: seed.reference_price,
-            observed_ts_ms: seed.reference_quote_ts_event,
-        });
-        self.active.warmup_count = self.active.warmup_count.max(self.active.warmup_target);
-        self.pricing.seed_ready_realized_vol(
-            Some(seed.reference_venue),
-            seed.realized_volatility,
-            seed.reference_quote_ts_event,
-        );
-    }
-
-    fn source_owned_readiness_seed_matches_active(
-        &self,
-        seed: &BoltV3RuntimeReadinessSeed,
-    ) -> bool {
-        if self.active.phase != SelectionPhase::Active {
-            return false;
-        }
-        let Some(identity) = self.active.source_identity.as_ref() else {
-            return false;
-        };
-        if identity.condition_id != seed.polymarket_condition_id
-            || identity.market_slug != seed.polymarket_market_slug
-            || identity.question_id != seed.polymarket_question_id
-        {
-            return false;
-        }
-        if self.active.interval_start_ms != Some(seed.market_start_timestamp_ms)
-            || self.active.interval_end_ms != Some(seed.market_end_timestamp_ms)
-        {
-            return false;
-        }
-        let Some(up_instrument_id) = self.active.books.up.instrument_id else {
-            return false;
-        };
-        let Some(down_instrument_id) = self.active.books.down.instrument_id else {
-            return false;
-        };
-        up_instrument_id.to_string() == seed.up_instrument_id
-            && down_instrument_id.to_string() == seed.down_instrument_id
     }
 
     fn observe_reference_quote(&mut self, quote: &FastSpotObservation) {
@@ -1872,6 +1904,35 @@ impl BinaryOracleEdgeTaker {
             .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
     }
 
+    fn resolution_instrument_id(&self) -> Option<InstrumentId> {
+        self.config
+            .resolution_instrument_id
+            .as_deref()
+            .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
+    }
+
+    fn resolution_client_id(&self) -> Option<ClientId> {
+        self.config
+            .resolution_client_id
+            .as_deref()
+            .map(ClientId::from)
+    }
+
+    /// True when the configured resolution instrument resolves THIS instance's
+    /// `underlying_asset`: its leading symbol segment (before the `-USD` quote)
+    /// must equal `underlying_asset` (e.g. `BTC-USD.CHAINLINK` for a `BTC`
+    /// instance). One strategy instance trades exactly one asset, so this is the
+    /// fail-closed binding that stops a wrong-asset feed (or a wrapped-asset
+    /// variant) from ever supplying the strike.
+    fn resolution_instrument_resolves_underlying_asset(&self, instrument_id: InstrumentId) -> bool {
+        instrument_id
+            .symbol
+            .as_str()
+            .split('-')
+            .next()
+            .is_some_and(|asset| asset.eq_ignore_ascii_case(self.config.underlying_asset.as_str()))
+    }
+
     fn subscribe_reference_quotes(&mut self) {
         if let Some(instrument_id) = self.reference_instrument_id() {
             #[cfg(not(test))]
@@ -1906,6 +1967,68 @@ impl BinaryOracleEdgeTaker {
             #[cfg(test)]
             let _ = instrument_id;
         }
+    }
+
+    /// Subscribes to the live resolution strike for the current market interval.
+    ///
+    /// Issues ONE point-in-time index-price subscribe to the explicit Chainlink
+    /// strike client, carrying the interval-open boundary (unix seconds) in the
+    /// NT `params` map under [`STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM`] — the same
+    /// key the strike source reads with `params.get_u64`. Only subscribes when
+    /// the resolution instrument, the explicit strike client, and the market's
+    /// interval-open are all configured/known; otherwise it is a no-op and the
+    /// fail-closed entry gate keeps blocking.
+    fn subscribe_resolution_strike(&mut self) {
+        let (Some(resolution_instrument_id), Some(resolution_client_id), Some(interval_start_ms)) = (
+            self.resolution_instrument_id(),
+            self.resolution_client_id(),
+            self.active.interval_start_ms,
+        ) else {
+            return;
+        };
+        // Fail-closed asset binding: refuse to subscribe a resolution instrument
+        // that does not resolve this instance's underlying asset, so a
+        // misconfigured (wrong-asset or wrapped-variant) feed can never bind the
+        // strike. The entry gate stays blocked while price_to_beat is None.
+        if !self.resolution_instrument_resolves_underlying_asset(resolution_instrument_id) {
+            log::error!(
+                "binary_oracle_edge_taker resolution instrument {} does not resolve underlying asset {}; refusing live strike subscribe (fail-closed): strategy_id={}",
+                resolution_instrument_id,
+                self.config.underlying_asset,
+                self.config.strategy_id,
+            );
+            return;
+        }
+        let window_open_unix_seconds = interval_start_ms / MILLIS_PER_SECOND_U64;
+        // Defeat NT's per-instrument index-price subscribe dedup: `DataClientAdapter`
+        // keys subscriptions by `instrument_id` and ignores the params map
+        // (`nautilus_data` client.rs:494-498, rev 6e059dc), so a bare re-subscribe
+        // with the constant resolution instrument is silently swallowed and the
+        // point-in-time strike source would never re-fetch for later windows or
+        // retries. Clear the subscription first, then re-subscribe carrying the new
+        // window-open boundary in the params map.
+        #[cfg(not(test))]
+        self.unsubscribe_index_prices(resolution_instrument_id, Some(resolution_client_id), None);
+        self.record_resolution_strike_subscribe_event(ResolutionStrikeSubscribeEvent::unsubscribe(
+            resolution_instrument_id,
+        ));
+        let mut params = Params::new();
+        params.insert(
+            STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM.to_string(),
+            serde_json::json!(window_open_unix_seconds),
+        );
+        #[cfg(not(test))]
+        self.subscribe_index_prices(
+            resolution_instrument_id,
+            Some(resolution_client_id),
+            Some(params),
+        );
+        #[cfg(test)]
+        let _ = (resolution_client_id, params);
+        self.record_resolution_strike_subscribe_event(ResolutionStrikeSubscribeEvent::subscribe(
+            resolution_instrument_id,
+            window_open_unix_seconds,
+        ));
     }
 
     fn replace_book_subscriptions(&mut self, next: OutcomeBookSubscriptions) {
@@ -4138,19 +4261,27 @@ impl BinaryOracleEdgeTaker {
         let order_side = decision.order_side.ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires submission order side")
         })?;
-        let readiness_evidence = self.context.readiness_evidence().ok_or_else(|| {
-            anyhow::anyhow!(
-                "entry strategy input evidence requires readiness gate session evidence"
-            )
-        })?;
+        // The operator readiness gate session is an offline-replay artifact; the
+        // live runtime derives its strike from the configured resolution oracle
+        // and carries no operator gate identity. Record an empty gate identity
+        // rather than blocking the live entry path on operator evidence.
+        let (gate_session_hash, selected_market_key, gate_evidence) =
+            match self.context.readiness_evidence() {
+                Some(readiness_evidence) => (
+                    readiness_evidence.gate_session_hash.clone(),
+                    readiness_evidence.selected_market_key.clone(),
+                    readiness_evidence.gate_evidence.clone(),
+                ),
+                None => (String::new(), String::new(), BTreeMap::new()),
+            };
 
         Ok(BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: self.config.strategy_id.clone(),
             configured_target_id: self.config.configured_target_id.clone(),
             market_selection_ruleset_id: self.config.configured_target_id.clone(),
-            gate_session_hash: readiness_evidence.gate_session_hash.clone(),
-            selected_market_key: readiness_evidence.selected_market_key.clone(),
-            gate_evidence: readiness_evidence.gate_evidence.clone(),
+            gate_session_hash,
+            selected_market_key,
+            gate_evidence,
             market_selection_outcome: market_selection_outcome.to_string(),
             market_id: self.active.market_id.clone(),
             polymarket_condition_id: self
@@ -4880,6 +5011,20 @@ impl DataActor for BinaryOracleEdgeTaker {
             && let Some(signal_quote) = self.signal_quote_from_tick(quote)
         {
             self.observe_signal_quote(&signal_quote);
+        }
+        Ok(())
+    }
+
+    fn on_index_price(&mut self, update: &IndexPriceUpdate) -> anyhow::Result<()> {
+        if self
+            .resolution_instrument_id()
+            .is_some_and(|instrument_id| update.instrument_id == instrument_id)
+        {
+            let window_open_ms = update.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+            let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
+            self.active
+                .observe_resolution_strike(update.value.as_f64(), window_open_ms, now_ms);
+            self.sync_exposure_context_from_active();
         }
         Ok(())
     }
@@ -5780,6 +5925,58 @@ impl BinaryOracleEdgeTaker {
         self.book_subscription_events.push(event);
         #[cfg(not(test))]
         let _ = event;
+    }
+}
+
+/// One recorded index-price (un)subscribe the resolution-strike re-arm path
+/// issued. Constructed unconditionally so the production ordering is the same
+/// code the test observes; only the storage is test-only (see
+/// [`BinaryOracleEdgeTaker::record_resolution_strike_subscribe_event`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolutionStrikeSubscribeEvent {
+    action: &'static str,
+    instrument_id: InstrumentId,
+    window_open_unix_seconds: u64,
+}
+
+const RESOLUTION_STRIKE_SUBSCRIBE_ACTION: &str = stringify!(subscribe);
+const RESOLUTION_STRIKE_UNSUBSCRIBE_ACTION: &str = stringify!(unsubscribe);
+
+impl ResolutionStrikeSubscribeEvent {
+    fn subscribe(instrument_id: InstrumentId, window_open_unix_seconds: u64) -> Self {
+        Self {
+            action: RESOLUTION_STRIKE_SUBSCRIBE_ACTION,
+            instrument_id,
+            window_open_unix_seconds,
+        }
+    }
+
+    fn unsubscribe(instrument_id: InstrumentId) -> Self {
+        Self {
+            action: RESOLUTION_STRIKE_UNSUBSCRIBE_ACTION,
+            instrument_id,
+            window_open_unix_seconds: 0,
+        }
+    }
+}
+
+impl BinaryOracleEdgeTaker {
+    fn record_resolution_strike_subscribe_event(&mut self, event: ResolutionStrikeSubscribeEvent) {
+        #[cfg(test)]
+        self.resolution_strike_subscribe_events.push(event);
+        #[cfg(not(test))]
+        let _ = event;
+    }
+
+    #[cfg(test)]
+    fn resolution_strike_subscribe_count(&self) -> u32 {
+        u32::try_from(
+            self.resolution_strike_subscribe_events
+                .iter()
+                .filter(|event| event.action == RESOLUTION_STRIKE_SUBSCRIBE_ACTION)
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
     }
 }
 
@@ -6881,14 +7078,6 @@ mod tests {
         test_strategy_with_fee_provider(RecordingFeeProvider::cold())
     }
 
-    fn test_strategy_with_runtime_readiness_seed(
-        seed: BoltV3RuntimeReadinessSeed,
-    ) -> BinaryOracleEdgeTaker {
-        let mut strategy = test_strategy();
-        strategy.context = strategy.context.clone().with_runtime_readiness_seed(seed);
-        strategy
-    }
-
     fn register_test_strategy(strategy: &mut BinaryOracleEdgeTaker) -> Rc<RefCell<Cache>> {
         let clock = Rc::new(RefCell::new(TestClock::new()));
         clock
@@ -7007,6 +7196,8 @@ mod tests {
                 reference_instrument_id: Some("REFERENCE.SOURCE".to_string()),
                 signal_venue: Some("signal_data_client".to_string()),
                 signal_instrument_id: Some("SIGNAL.SOURCE".to_string()),
+                resolution_client_id: Some("CHAINLINK_DATA_STREAMS".to_string()),
+                resolution_instrument_id: Some("RESOLUTION.SOURCE".to_string()),
                 use_uuid_client_order_ids: true,
                 use_hyphens_in_client_order_ids: false,
                 external_order_claims: vec!["AUXILIARY.SOURCE".to_string()],
@@ -7282,6 +7473,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn validate_config_rejects_resolution_data_with_only_one_field_set() {
+        // The live Chainlink strike binding is optional, but both-or-neither: a
+        // strategy either declares BOTH `resolution_client_id` +
+        // `resolution_instrument_id` (the live strike route) or NEITHER. Setting
+        // exactly one is a fail-closed config error — a half-configured resolution
+        // route must never load, since it would leave `price_to_beat` permanently
+        // unbindable and silently disable the live strike. Mirrors the
+        // reference/signal pair guards. Baseline `valid_raw_config()` sets neither.
+        for (present, absent) in [
+            ("resolution_client_id", "resolution_instrument_id"),
+            ("resolution_instrument_id", "resolution_client_id"),
+        ] {
+            let mut raw = valid_raw_config();
+            let table = raw
+                .as_table_mut()
+                .expect("valid raw config should be a TOML table");
+            table.insert(
+                present.to_string(),
+                Value::String("RESOLUTION.SOURCE".to_string()),
+            );
+
+            let mut errors = Vec::new();
+            BinaryOracleEdgeTakerBuilder::validate_config(
+                &raw,
+                "strategies[0].config",
+                &mut errors,
+            );
+
+            assert!(
+                errors.iter().any(|error| {
+                    error.field == format!("strategies[0].config.{absent}")
+                        && error.code == "missing_resolution_data_pair"
+                }),
+                "setting only `{present}` must fail validation on missing `{absent}`: {errors:#?}"
+            );
+        }
+    }
+
     fn quote_tick(instrument_id: &str, bid: f64, ask: f64, ts_ms: u64) -> QuoteTick {
         QuoteTick::new_checked(
             InstrumentId::from(instrument_id),
@@ -7402,23 +7632,6 @@ mod tests {
 
         assert_eq!(strategy.pricing.last_reference_fair_value, None);
         assert_eq!(strategy.pricing.fast_spot, None);
-    }
-
-    #[test]
-    fn source_owned_readiness_seed_warms_matching_runtime_market() {
-        let market = candidate_market("market-1", 1_000);
-        let seed = runtime_readiness_seed_for_market(&market, 3_100.0, 3_101.0, 1_200, 1.5);
-        let mut strategy = test_strategy_with_runtime_readiness_seed(seed);
-
-        strategy
-            .apply_selection_snapshot(selection_snapshot(1_200, SelectionState::Active { market }));
-
-        assert_eq!(strategy.active.price_to_beat, Some(3_100.0));
-        assert_eq!(strategy.active.interval_open, Some(3_100.0));
-        assert_eq!(strategy.active.last_reference_ts_ms, Some(1_200));
-        assert_eq!(strategy.pricing.last_reference_fair_value, Some(3_101.0));
-        assert_eq!(strategy.pricing.fast_spot, None);
-        assert_eq!(strategy.current_realized_vol_at(1_200), Some(1.5));
     }
 
     fn live_canary_gate_report(
@@ -8968,6 +9181,23 @@ mod tests {
         strategy
     }
 
+    fn ready_to_trade_strategy_with_decision_evidence_and_submit_admission_without_readiness_evidence(
+        decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+        submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
+    ) -> BinaryOracleEdgeTaker {
+        let (mut strategy, fee_provider) =
+            ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.context = StrategyBuildContext::new(
+            fee_provider,
+            decision_evidence,
+            submit_admission,
+            fixture_execution_venue(),
+        );
+        strategy.config.edge_threshold_basis_points = 1;
+        strategy.active.price_to_beat = Some(3_100.0);
+        strategy
+    }
+
     fn selected_entry_side(strategy: &BinaryOracleEdgeTaker) -> OutcomeSide {
         let evaluation = strategy.entry_evaluation_at(1_200);
         evaluation
@@ -9354,32 +9584,6 @@ mod tests {
             start_ts_ms: interval_start_ms,
             expiration_ts_ms: interval_start_ms.saturating_add(300 * MILLIS_PER_SECOND_U64),
             seconds_to_end: 300,
-        }
-    }
-
-    fn runtime_readiness_seed_for_market(
-        market: &CandidateMarket,
-        price_to_beat_value: f64,
-        reference_price: f64,
-        reference_quote_ts_event: u64,
-        realized_volatility: f64,
-    ) -> BoltV3RuntimeReadinessSeed {
-        BoltV3RuntimeReadinessSeed {
-            strategy_instance_id: "configured_updown_main".to_string(),
-            gate_session_hash: "gate-session-hash-one".to_string(),
-            selected_market_key: "selected-market-key-one".to_string(),
-            polymarket_condition_id: market.source_identity.condition_id.clone(),
-            polymarket_market_slug: market.source_identity.market_slug.clone(),
-            polymarket_question_id: market.source_identity.question_id.clone(),
-            up_instrument_id: market.up.instrument_id.clone(),
-            down_instrument_id: market.down.instrument_id.clone(),
-            market_start_timestamp_ms: market.start_ts_ms,
-            market_end_timestamp_ms: market.expiration_ts_ms,
-            price_to_beat_value,
-            reference_venue: "reference_data_client".to_string(),
-            reference_price,
-            reference_quote_ts_event,
-            realized_volatility,
         }
     }
 
@@ -9788,6 +9992,117 @@ mod tests {
 
         let error = find_error(&errors, "strategies[0].config.stray_flag", "unknown_field");
         assert!(error.message.contains("unknown field `stray_flag`"));
+    }
+
+    /// Single source of truth for the binary-oracle-taker top-level config field
+    /// set: the serde-derived `deny_unknown_fields` deserializer for
+    /// `BinaryOracleEdgeTakerConfig`. When an unknown key is fed, serde's error
+    /// enumerates every field the struct accepts (`expected one of `a`, `b`,
+    /// ...`). This is the ONLY authoritative list of valid field names, generated
+    /// directly from the struct definition.
+    fn serde_known_top_level_config_fields() -> std::collections::BTreeSet<String> {
+        let mut raw = valid_raw_config();
+        let sentinel = "definitely_not_a_real_field_sentinel";
+        raw.as_table_mut()
+            .expect("valid config must be a table")
+            .insert(sentinel.to_string(), Value::Boolean(true));
+
+        let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("config with an unknown key must fail serde deny_unknown_fields");
+        let message = format!("{err:#}");
+
+        let marker = "expected one of ";
+        let list_start = message.find(marker).unwrap_or_else(|| {
+            panic!("serde error must enumerate the expected field list, got: {message}")
+        }) + marker.len();
+        let list = &message[list_start..];
+
+        let fields: std::collections::BTreeSet<String> = list
+            .split('`')
+            .filter(|segment| {
+                // The backtick-delimited segments alternate between field names and
+                // separators (", "); keep only the identifier-shaped segments.
+                !segment.is_empty()
+                    && segment
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+            .map(|segment| segment.to_string())
+            .collect();
+
+        assert!(
+            !fields.is_empty(),
+            "serde SSOT field extraction produced no fields from: {message}"
+        );
+        fields
+    }
+
+    /// Returns the set of top-level field names the runtime `validate_table`
+    /// allowlist accepts, probed behaviorally: a name is accepted iff inserting it
+    /// into an otherwise-valid config does not produce an `unknown_field` error.
+    fn validate_table_accepted_top_level_fields(
+        candidates: &std::collections::BTreeSet<String>,
+    ) -> std::collections::BTreeSet<String> {
+        let mut accepted = std::collections::BTreeSet::new();
+        for name in candidates {
+            let mut raw = valid_raw_config();
+            let table = raw.as_table_mut().expect("valid config must be a table");
+            if !table.contains_key(name.as_str()) {
+                // Use a string value: order-table fields are validated separately,
+                // but for the allowlist gate only the key presence matters.
+                table.insert(name.clone(), Value::String("probe".to_string()));
+            }
+            let mut errors = Vec::new();
+            BinaryOracleEdgeTakerBuilder::validate_config(
+                &raw,
+                "strategies[0].config",
+                &mut errors,
+            );
+            let flagged_unknown = errors.iter().any(|e| {
+                e.field == format!("strategies[0].config.{name}") && e.code == "unknown_field"
+            });
+            if !flagged_unknown {
+                accepted.insert(name.clone());
+            }
+        }
+        accepted
+    }
+
+    /// G-field-ssot: the runtime `validate_table` allowlist must be single-sourced
+    /// from the `BinaryOracleEdgeTakerConfig` serde struct — it cannot drift.
+    ///
+    /// The optional-string field set is emitted once by the
+    /// `binary_oracle_edge_taker_extra_string_fields!` macro and expanded into
+    /// both the struct tail and the `validate_table` allowlist, so the two cannot
+    /// diverge. This test is the regression lock: it fails if any future change
+    /// reintroduces a hand-maintained allowlist that drifts from the struct.
+    #[test]
+    fn validate_table_allowlist_is_single_sourced_from_config_struct() {
+        let serde_ssot = serde_known_top_level_config_fields();
+
+        // Sanity: a known optional-string field is part of the serde SSOT set.
+        assert!(
+            serde_ssot.contains("resolution_instrument_id"),
+            "a known optional field must be part of the serde SSOT field set: {serde_ssot:?}"
+        );
+
+        let validate_accepted = validate_table_accepted_top_level_fields(&serde_ssot);
+
+        // The allowlist must accept EXACTLY the serde-known field set: no field the
+        // struct accepts may be rejected, and no field outside the struct may be
+        // silently allowed. Both directions prove single-sourcing.
+        let serde_only: Vec<&String> = serde_ssot.difference(&validate_accepted).collect();
+        let validate_only: Vec<&String> = validate_accepted.difference(&serde_ssot).collect();
+
+        assert!(
+            serde_only.is_empty(),
+            "validate_table rejects serde-known config fields (allowlist drifted from \
+             struct SSOT): {serde_only:?}"
+        );
+        assert!(
+            validate_only.is_empty(),
+            "validate_table accepts fields the struct SSOT does not define: {validate_only:?}"
+        );
     }
 
     #[test]
@@ -12710,6 +13025,32 @@ mod tests {
     }
 
     #[test]
+    fn production_strategy_has_no_offline_readiness_seed_arming() {
+        // #551 regression lock: the offline operator readiness seed must never
+        // again arm `price_to_beat`, the reference quote, or the realized-vol
+        // bootstrap. Once #553 wired the live Chainlink strike, the live strike
+        // (`observe_resolution_strike`) and live quotes are the ONLY sources.
+        // `production_module_source_text` returns the strategy directory's
+        // production halves only (each file's `#[cfg(test)] mod tests` excluded),
+        // so these needle literals (which live in this test) cannot match the
+        // production source they guard.
+        let production = crate::bolt_v3_source_integrity::production_module_source_text(
+            crate::bolt_v3_source_integrity::STRATEGY_KEY,
+        );
+        for forbidden in [
+            "apply_source_owned_readiness_seed",
+            "runtime_readiness_seed",
+            "BoltV3RuntimeReadinessSeed",
+        ] {
+            assert!(
+                !production.contains(forbidden),
+                "offline readiness-seed symbol `{forbidden}` reappeared in production strategy \
+                 code; #551 removed it — price_to_beat must come only from the live Chainlink strike"
+            );
+        }
+    }
+
+    #[test]
     fn book_impact_cap_is_derived_from_vwap_slippage_against_best_touch() {
         let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let mut state = OutcomeBookState::from_instrument_id(instrument_id);
@@ -15316,6 +15657,310 @@ mod tests {
     }
 
     #[test]
+    fn strike_fetch_reissues_at_interval_open_for_future_next_selection() {
+        // B-fetch-at-open regression lock. With `market_selection_rule =
+        // "active_or_next"`, the configured target can select a FUTURE "Next"
+        // interval whose open boundary is still ahead of wall-clock. The live
+        // Chainlink strike report for that interval does not exist yet, so a
+        // strike fetch issued before the interval opens cannot bind
+        // `price_to_beat`. The strategy must (re)issue the strike fetch once
+        // wall-clock reaches the interval open. Today `apply_selection_snapshot`
+        // fires `subscribe_resolution_strike` exactly once — when
+        // `interval_start_ms` first changes — and never again while the same
+        // interval stays selected, so the one-shot fetch fired before open is the
+        // only attempt and the strike is permanently stranded. This test drives
+        // the production selection path across an interval-open boundary and
+        // asserts a SECOND fetch attempt at/after open. It MUST fail until the
+        // strategy re-issues the strike fetch at interval open.
+        let mut strategy = test_strategy();
+        assert_eq!(
+            strategy.context.execution_venue(),
+            fixture_execution_venue(),
+            "harness precondition: production execution venue must be the POLYMARKET fixture",
+        );
+        // Bind the resolution (strike) instrument to this instance's underlying
+        // asset so it clears the fail-closed asset-binding guard inside
+        // `subscribe_resolution_strike`; the symbol's leading `-`-segment must
+        // equal `underlying_asset`. Without this the live-strike subscribe is a
+        // no-op for an unrelated reason (asset mismatch), masking the boundary
+        // bug under test.
+        strategy.config.resolution_instrument_id = Some(format!(
+            "{}-USD.CHAINLINK",
+            strategy.config.underlying_asset
+        ));
+        let cache = register_test_strategy(&mut strategy);
+
+        // Only the FUTURE "Next" interval's instruments exist in the cache. With
+        // 300s cadence and a period-aligned base, `next_start` is one full cadence
+        // period ahead of the period containing `now_before_open`.
+        let cadence_seconds = strategy.config.cadence_seconds as i64;
+        let current_period_start = 1_746_000_000_i64;
+        let next_period_start = current_period_start + cadence_seconds;
+        let next_start_ms = next_period_start as u64 * MILLIS_PER_SECOND_U64;
+        let next_end_ms = next_start_ms + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64;
+        let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+            &strategy.config.underlying_asset,
+            &strategy.config.cadence_slug_token,
+            next_period_start,
+        );
+        let instruments = [
+            updown_binary_option(
+                "token-up.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Up",
+                next_start_ms,
+                next_end_ms,
+            ),
+            updown_binary_option(
+                "token-down.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Down",
+                next_start_ms,
+                next_end_ms,
+            ),
+        ];
+        {
+            let mut cache_mut = cache.borrow_mut();
+            for instrument in &instruments {
+                cache_mut
+                    .add_instrument(instrument.clone())
+                    .expect("test cache should accept the seeded instrument");
+            }
+        }
+
+        // 1) Refresh BEFORE the interval opens. `now_before_open` sits in the
+        //    period preceding `next_start`, so the configured target selects the
+        //    future "Next" interval. The strategy issues its single one-shot
+        //    strike fetch here — but the live report for `next_start` does not
+        //    exist yet, so this attempt cannot bind the strike.
+        let now_before_open_ms = current_period_start as u64 * MILLIS_PER_SECOND_U64 + 1;
+        strategy.refresh_selection_from_cache(now_before_open_ms);
+        assert_eq!(
+            strategy.active.interval_start_ms,
+            Some(next_start_ms),
+            "precondition: a future Next interval must be selected before its open",
+        );
+        assert_eq!(
+            strategy.active.market_selection_outcome,
+            MarketSelectionOutcome::Next,
+            "precondition: the selected interval must be the future Next interval",
+        );
+        assert!(
+            strategy.active.price_to_beat.is_none(),
+            "precondition: no live strike can exist before the interval opens",
+        );
+        let fetches_before_open = strategy.resolution_strike_subscribe_count();
+        assert_eq!(
+            fetches_before_open, 1,
+            "the one-shot fetch must fire once when the future interval is first selected",
+        );
+
+        // 2) Wall-clock reaches the interval open. The retry-timer path re-runs
+        //    selection with `now >= next_start`; the SAME market is now the
+        //    Current interval and its live strike report exists. The strategy must
+        //    (re)issue the strike fetch for this now-open interval.
+        let now_at_open_ms = next_start_ms + 1;
+        strategy.refresh_selection_from_cache(now_at_open_ms);
+        assert_eq!(
+            strategy.active.interval_start_ms,
+            Some(next_start_ms),
+            "the same interval must still be selected once it opens",
+        );
+
+        let fetches_after_open = strategy.resolution_strike_subscribe_count();
+        assert!(
+            fetches_after_open > fetches_before_open,
+            "strike fetch must be re-issued once wall-clock reaches interval open for a future-selected interval that has no strike yet \
+             (before-open fetches={fetches_before_open}, after-open fetches={fetches_after_open})",
+        );
+    }
+
+    #[test]
+    fn strike_fetch_retries_each_open_tick_until_price_to_beat_binds() {
+        // F4 regression lock. When the at-open strike fetch fails to bind
+        // `price_to_beat` (transient REST error, rate-limit, or the report for the
+        // exact window-open second has not propagated yet), the strategy must keep
+        // re-issuing the fetch on subsequent selection-retry ticks while the
+        // interval stays open and `price_to_beat` is still None. The previous
+        // implementation marked the interval "subscribed at open" the instant it
+        // FIRED the fetch (not when it BOUND), so a single transient failure at the
+        // open boundary stranded `price_to_beat = None` for the whole interval and
+        // blocked every entry. This drives three retry ticks across the open
+        // boundary with no strike ever binding and asserts the fetch is re-issued on
+        // each open tick. It MUST fail until the at-open guard tracks binding
+        // success rather than fetch-issued.
+        let mut strategy = test_strategy();
+        strategy.config.resolution_instrument_id = Some(format!(
+            "{}-USD.CHAINLINK",
+            strategy.config.underlying_asset
+        ));
+        let cache = register_test_strategy(&mut strategy);
+
+        let cadence_seconds = strategy.config.cadence_seconds as i64;
+        let current_period_start = 1_746_000_000_i64;
+        let next_period_start = current_period_start + cadence_seconds;
+        let next_start_ms = next_period_start as u64 * MILLIS_PER_SECOND_U64;
+        let next_end_ms = next_start_ms + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64;
+        let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+            &strategy.config.underlying_asset,
+            &strategy.config.cadence_slug_token,
+            next_period_start,
+        );
+        let instruments = [
+            updown_binary_option(
+                "token-up.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Up",
+                next_start_ms,
+                next_end_ms,
+            ),
+            updown_binary_option(
+                "token-down.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Down",
+                next_start_ms,
+                next_end_ms,
+            ),
+        ];
+        {
+            let mut cache_mut = cache.borrow_mut();
+            for instrument in &instruments {
+                cache_mut
+                    .add_instrument(instrument.clone())
+                    .expect("test cache should accept the seeded instrument");
+            }
+        }
+
+        // Pre-open: the future Next interval is selected; one one-shot fetch fires.
+        let now_before_open_ms = current_period_start as u64 * MILLIS_PER_SECOND_U64 + 1;
+        strategy.refresh_selection_from_cache(now_before_open_ms);
+        assert!(
+            strategy.active.price_to_beat.is_none(),
+            "precondition: no live strike can exist before the interval opens",
+        );
+        let fetches_pre_open = strategy.resolution_strike_subscribe_count();
+
+        // First open tick: the at-open fetch fires but never binds (the test
+        // subscribe is a no-op that does not deliver an IndexPriceUpdate).
+        strategy.refresh_selection_from_cache(next_start_ms + 1);
+        let fetches_after_first_open_tick = strategy.resolution_strike_subscribe_count();
+        assert!(
+            fetches_after_first_open_tick > fetches_pre_open,
+            "the strike fetch must be re-issued when the interval first opens",
+        );
+        assert!(
+            strategy.active.price_to_beat.is_none(),
+            "precondition: the first at-open fetch did not bind price_to_beat",
+        );
+
+        // Second open tick (next retry-timer fire): same interval still open, strike
+        // still unbound -> the fetch MUST be re-issued again rather than stranded.
+        strategy.refresh_selection_from_cache(next_start_ms + 2);
+        let fetches_after_second_open_tick = strategy.resolution_strike_subscribe_count();
+        assert!(
+            fetches_after_second_open_tick > fetches_after_first_open_tick,
+            "strike fetch must keep retrying on each open retry tick while price_to_beat is \
+             unbound (after first open tick={fetches_after_first_open_tick}, after \
+             second={fetches_after_second_open_tick})",
+        );
+    }
+
+    #[test]
+    fn resolution_strike_reissue_unsubscribes_before_each_subscribe_to_defeat_nt_dedup() {
+        // NT's `DataClientAdapter` keys index-price subscriptions by `instrument_id`
+        // and ignores the params map (`nautilus_data` client.rs:494-498, rev 6e059dc),
+        // so a bare re-subscribe with the constant resolution instrument is silently
+        // swallowed and the point-in-time strike source never re-fetches for later
+        // windows or retries. `subscribe_resolution_strike` must therefore unsubscribe
+        // the resolution instrument immediately before every re-subscribe. This drives
+        // the pre-open + at-open reissue path and asserts that pairing; it MUST fail
+        // until the unsubscribe-before-subscribe is in place.
+        let mut strategy = test_strategy();
+        strategy.config.resolution_instrument_id = Some(format!(
+            "{}-USD.CHAINLINK",
+            strategy.config.underlying_asset
+        ));
+        let cache = register_test_strategy(&mut strategy);
+
+        let cadence_seconds = strategy.config.cadence_seconds as i64;
+        let current_period_start = 1_746_000_000_i64;
+        let next_period_start = current_period_start + cadence_seconds;
+        let next_start_ms = next_period_start as u64 * MILLIS_PER_SECOND_U64;
+        let next_end_ms = next_start_ms + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64;
+        let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+            &strategy.config.underlying_asset,
+            &strategy.config.cadence_slug_token,
+            next_period_start,
+        );
+        let instruments = [
+            updown_binary_option(
+                "token-up.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Up",
+                next_start_ms,
+                next_end_ms,
+            ),
+            updown_binary_option(
+                "token-down.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Down",
+                next_start_ms,
+                next_end_ms,
+            ),
+        ];
+        {
+            let mut cache_mut = cache.borrow_mut();
+            for instrument in &instruments {
+                cache_mut
+                    .add_instrument(instrument.clone())
+                    .expect("test cache should accept the seeded instrument");
+            }
+        }
+
+        // Pre-open selection then an at-open tick: each reissue must clear the
+        // subscription before re-subscribing.
+        strategy
+            .refresh_selection_from_cache(current_period_start as u64 * MILLIS_PER_SECOND_U64 + 1);
+        strategy.refresh_selection_from_cache(next_start_ms + 1);
+
+        let events = &strategy.resolution_strike_subscribe_events;
+        assert!(
+            !events.is_empty(),
+            "the strike (re)subscribe path must record at least one event",
+        );
+        let subscribes = events
+            .iter()
+            .filter(|event| event.action == RESOLUTION_STRIKE_SUBSCRIBE_ACTION)
+            .count();
+        let unsubscribes = events
+            .iter()
+            .filter(|event| event.action == RESOLUTION_STRIKE_UNSUBSCRIBE_ACTION)
+            .count();
+        assert_eq!(
+            unsubscribes, subscribes,
+            "every strike subscribe must be paired with a preceding unsubscribe to clear NT's \
+             per-instrument index-price dedup (subscribes={subscribes}, unsubscribes={unsubscribes})",
+        );
+        for pair in events.chunks(2) {
+            assert_eq!(
+                pair[0].action, RESOLUTION_STRIKE_UNSUBSCRIBE_ACTION,
+                "each reissue must unsubscribe before subscribing",
+            );
+            assert_eq!(pair[1].action, RESOLUTION_STRIKE_SUBSCRIBE_ACTION);
+            assert_eq!(
+                pair[0].instrument_id, pair[1].instrument_id,
+                "the unsubscribe and subscribe must target the same resolution instrument",
+            );
+        }
+    }
+
+    #[test]
     fn bootstrap_recovery_from_cache_ignores_foreign_venue_position() {
         // P5-5 / Codex P5 — RECOVERY-PATH regression lock. The entry path scopes selection to the
         // execution venue; the recovery path must do the same. A foreign-venue cached position with
@@ -16341,6 +16986,57 @@ mod tests {
     }
 
     #[test]
+    fn entry_strategy_input_evidence_records_empty_gate_identity_without_readiness_evidence() {
+        let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+        let submit_admission =
+            submit_admission_armed_with_cap(Decimal::new(1, 2), evidence.clone());
+        let mut strategy =
+            ready_to_trade_strategy_with_decision_evidence_and_submit_admission_without_readiness_evidence(
+                evidence.clone(),
+                submit_admission,
+            );
+        register_test_strategy_with_active_instruments(&mut strategy);
+
+        let error = strategy
+            .try_submit_entry_order(1_200)
+            .expect_err("submit admission should reject after evidence capture");
+        assert!(
+            error.to_string().contains("notional cap is exceeded"),
+            "regular live path must reach submit_admission without operator readiness evidence: {error:#}"
+        );
+
+        let events = evidence.events();
+        let [
+            RecordedDecisionEvidenceEvent::StrategyInput(snapshot),
+            RecordedDecisionEvidenceEvent::OrderIntent(_),
+            RecordedDecisionEvidenceEvent::AdmissionDecision(_),
+        ] = events.as_slice()
+        else {
+            panic!("expected strategy input, order intent, admission sequence; got {events:#?}");
+        };
+
+        assert!(
+            snapshot.gate_session_hash.is_empty(),
+            "regular path carries no operator gate session hash: {:?}",
+            snapshot.gate_session_hash
+        );
+        assert!(
+            snapshot.selected_market_key.is_empty(),
+            "regular path carries no operator selected-market key: {:?}",
+            snapshot.selected_market_key
+        );
+        assert!(
+            snapshot.gate_evidence.is_empty(),
+            "regular path carries no operator gate evidence: {:?}",
+            snapshot.gate_evidence
+        );
+        assert_eq!(
+            snapshot.price_to_beat_value, "3100",
+            "live source-bound entry snapshot is still captured"
+        );
+    }
+
+    #[test]
     fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_intent() {
         let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
         let submit_admission =
@@ -16500,6 +17196,95 @@ mod tests {
             MarketSelectionOutcome::Next
         );
         assert_eq!(active.interval_end_ms, Some(301_999));
+    }
+
+    #[test]
+    fn observe_resolution_strike_binds_strike_at_interval_open() {
+        let mut active =
+            ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+        assert_eq!(active.phase, SelectionPhase::Active);
+        assert_eq!(active.interval_start_ms, Some(1_000));
+        assert_eq!(active.price_to_beat, None);
+
+        active.observe_resolution_strike(3_100.5, 1_000, 1_250);
+
+        assert_eq!(
+            active.price_to_beat,
+            Some(3_100.5),
+            "a positive strike bound to the interval-open must set price_to_beat"
+        );
+        assert_eq!(active.last_resolution_ts_ms, Some(1_250));
+    }
+
+    #[test]
+    fn observe_resolution_strike_rejects_mismatched_window_fail_closed() {
+        let mut active =
+            ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+        assert_eq!(active.interval_start_ms, Some(1_000));
+
+        // Window-open boundary does not match the market's interval-open.
+        active.observe_resolution_strike(3_100.5, 2_000, 2_250);
+
+        assert_eq!(
+            active.price_to_beat, None,
+            "a strike whose window-open does not match the interval-open must be ignored (fail-closed)"
+        );
+        assert_eq!(active.last_resolution_ts_ms, None);
+    }
+
+    /// H-observe-log: a window-mismatch rejection in a *configured* (non-Idle,
+    /// interval-bound) market is an actionable fail-closed anomaly — the strike
+    /// feed disagrees with the selected interval. It must be observable, and it
+    /// must be observably distinct from an Idle drop (where nothing is running,
+    /// so a mismatched update is simply not relevant).
+    ///
+    /// Behavioral contract under both cases: `price_to_beat` stays `None`. The
+    /// distinguishing observable: a non-Idle mismatch records an observable
+    /// rejection, while an Idle drop does not.
+    #[test]
+    fn observe_resolution_strike_window_mismatch_is_observable_and_distinct_from_idle() {
+        // Configured (non-Idle) market whose interval-open is 1_000.
+        let mut active =
+            ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+        assert_eq!(active.phase, SelectionPhase::Active);
+        assert_eq!(active.interval_start_ms, Some(1_000));
+        assert_eq!(active.price_to_beat, None);
+        assert_eq!(active.resolution_strike_window_mismatch_count, 0);
+
+        // A strike whose window-open (2_000) does not match the interval-open.
+        active.observe_resolution_strike(3_100.5, 2_000, 2_250);
+
+        // Behavioral contract: fail-closed, price_to_beat untouched.
+        assert_eq!(
+            active.price_to_beat, None,
+            "configured window mismatch must leave price_to_beat None (fail-closed)"
+        );
+        assert_eq!(active.last_resolution_ts_ms, None);
+
+        // Observable rejection: a configured mismatch must be recorded so the
+        // anomaly is visible, not silently dropped.
+        assert_eq!(
+            active.resolution_strike_window_mismatch_count, 1,
+            "a configured (non-Idle) window mismatch must record an observable rejection"
+        );
+
+        // An Idle drop is NOT the same event: nothing is configured, so a
+        // mismatched update is irrelevant and must not be recorded as an anomaly.
+        let mut idle = ActiveMarketState::idle();
+        assert_eq!(idle.phase, SelectionPhase::Idle);
+        assert_eq!(idle.resolution_strike_window_mismatch_count, 0);
+
+        idle.observe_resolution_strike(3_100.5, 2_000, 2_250);
+
+        assert_eq!(
+            idle.price_to_beat, None,
+            "Idle drop must leave price_to_beat None"
+        );
+        assert_eq!(
+            idle.resolution_strike_window_mismatch_count, 0,
+            "an Idle drop must be handled distinctly from a configured mismatch \
+             (no observable rejection recorded)"
+        );
     }
 
     #[test]

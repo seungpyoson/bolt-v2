@@ -309,6 +309,10 @@ pub enum BinaryOracleEdgeTakerRuntimeConfigError {
         strategy_instance_id: String,
         message: String,
     },
+    ResolutionData {
+        strategy_instance_id: String,
+        message: String,
+    },
     Numeric {
         strategy_instance_id: String,
         field: &'static str,
@@ -357,6 +361,13 @@ impl std::fmt::Display for BinaryOracleEdgeTakerRuntimeConfigError {
             } => write!(
                 f,
                 "strategies.{strategy_instance_id} signal_data is invalid: {message}"
+            ),
+            Self::ResolutionData {
+                strategy_instance_id,
+                message,
+            } => write!(
+                f,
+                "strategies.{strategy_instance_id} resolution_data is invalid: {message}"
             ),
             Self::Numeric {
                 strategy_instance_id,
@@ -407,18 +418,12 @@ pub fn register_runtime_strategy(
                 ),
             )
         })?;
-    let mut build_context = StrategyBuildContext::new(
+    let build_context = StrategyBuildContext::new(
         fee_provider,
         context.decision_evidence.clone(),
         context.submit_admission.clone(),
         execution_venue,
     );
-    if let Some(readiness_evidence) = context.readiness_evidence.clone() {
-        build_context = build_context.with_readiness_evidence(readiness_evidence);
-    }
-    if let Some(runtime_readiness_seed) = context.runtime_readiness_seed.clone() {
-        build_context = build_context.with_runtime_readiness_seed(runtime_readiness_seed);
-    }
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry
@@ -497,6 +502,26 @@ pub fn raw_taker_config(
                 signal_data.data_client_id
             ),
         })?;
+    let resolution_data = configured_resolution_data(strategy);
+    if let Some(resolution_data) = resolution_data {
+        let resolution_client = loaded
+            .root
+            .clients
+            .get(resolution_data.data_client_id.as_str())
+            .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::ResolutionData {
+                strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+                message: format!(
+                    "resolution_data data_client_id `{}` is not present in loaded clients",
+                    resolution_data.data_client_id
+                ),
+            })?;
+        validate_resolution_data_binding(
+            strategy,
+            resolution_data,
+            resolution_client,
+            &target.underlying_asset,
+        )?;
+    }
 
     let order_notional_target = decimal_string_to_f64(
         &strategy.config.strategy_instance_id,
@@ -656,6 +681,18 @@ pub fn raw_taker_config(
         "signal_instrument_id",
         signal_data.instrument_id.to_string(),
     );
+    if let Some(resolution_data) = resolution_data {
+        insert_string(
+            &mut table,
+            "resolution_client_id",
+            resolution_data.data_client_id.to_string(),
+        );
+        insert_string(
+            &mut table,
+            "resolution_instrument_id",
+            resolution_data.instrument_id.to_string(),
+        );
+    }
     insert_order_config(
         &mut table,
         strategy_instance_id,
@@ -1252,6 +1289,78 @@ fn configured_signal_data(
             ),
         }),
     }
+}
+
+fn configured_resolution_data(
+    strategy: &LoadedStrategy,
+) -> Option<&crate::bolt_v3_config::ReferenceDataBlock> {
+    strategy.config.resolution_data.as_ref()
+}
+
+/// Fail-closed load-time validation of a `resolution_data` strike binding.
+///
+/// The resolution (strike) feed is the Chainlink Data Streams source, so a
+/// `resolution_data` block must (a) point at a client whose venue is the
+/// Chainlink venue, (b) name an instrument whose asset prefix matches the
+/// target's `underlying_asset`, and (c) name an instrument that has a
+/// `feed_binding` in that client's `data.feed_bindings`. Any mismatch can only
+/// ever fail at subscribe time (no report, or the wrong asset's strike), so it
+/// is rejected here at config load.
+fn validate_resolution_data_binding(
+    strategy: &LoadedStrategy,
+    resolution_data: &crate::bolt_v3_config::ReferenceDataBlock,
+    resolution_client: &crate::bolt_v3_config::ClientBlock,
+    underlying_asset: &str,
+) -> Result<(), BinaryOracleEdgeTakerRuntimeConfigError> {
+    let reject = |message: String| BinaryOracleEdgeTakerRuntimeConfigError::ResolutionData {
+        strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+        message,
+    };
+
+    // (a) venue must be the resolution-oracle (Chainlink Data Streams) strike provider.
+    if resolution_client.venue.as_str() != crate::bolt_v3_providers::RESOLUTION_ORACLE_VENUE_KEY {
+        return Err(reject(format!(
+            "data_client_id `{}` has venue `{}`, but the strike feed must be served by a `{}` client",
+            resolution_data.data_client_id,
+            resolution_client.venue,
+            crate::bolt_v3_providers::RESOLUTION_ORACLE_VENUE_KEY
+        )));
+    }
+
+    // (b) instrument asset prefix must match the target's underlying_asset.
+    let symbol = resolution_data.instrument_id.symbol.as_str();
+    let instrument_asset = symbol.split_once('-').map_or(symbol, |(asset, _)| asset);
+    if instrument_asset != underlying_asset {
+        return Err(reject(format!(
+            "instrument_id `{}` resolves to asset `{instrument_asset}`, which does not match the target underlying_asset `{underlying_asset}`",
+            resolution_data.instrument_id
+        )));
+    }
+
+    // (c) instrument must have a feed_binding in the Chainlink client.
+    let has_feed_binding = resolution_client
+        .data
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .and_then(|data| data.get("feed_bindings"))
+        .and_then(toml::Value::as_array)
+        .is_some_and(|bindings| {
+            bindings.iter().any(|binding| {
+                binding
+                    .as_table()
+                    .and_then(|binding| binding.get("instrument_id"))
+                    .and_then(toml::Value::as_str)
+                    == Some(resolution_data.instrument_id.to_string().as_str())
+            })
+        });
+    if !has_feed_binding {
+        return Err(reject(format!(
+            "instrument_id `{}` has no matching feed_binding in client `{}` (data.feed_bindings)",
+            resolution_data.instrument_id, resolution_data.data_client_id
+        )));
+    }
+
+    Ok(())
 }
 
 fn reference_data_role_names(strategy: &BoltV3StrategyConfig) -> String {

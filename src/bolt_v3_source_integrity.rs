@@ -108,13 +108,23 @@ mod tests {
     // state moved out of `mod.rs`: the strategy source remains a directory
     // whose framed DIRECTORY concatenation is over
     // `{config.rs, mod.rs, selection.rs}` (sorted by relative path). This is a
-    // legitimate behavior-preserving source move, not a fixture regeneration:
-    // the value is re-derived from the live build-emitted
-    // `OUT_DIR/strategy.canonical` and independently confirmed by hand-framing
-    // the live source files (`shasum -a256 OUT_DIR/strategy.canonical` == this
-    // constant).
+    // legitimate behavior-preserving source move, not a fixture regeneration — the
+    // value is re-derived from the live build-emitted `OUT_DIR/strategy.canonical`
+    // and independently confirmed by hand-framing the live source files
+    // (`shasum -a256 OUT_DIR/strategy.canonical` == this constant).
+    //
+    // RE-DERIVED again by the #553 merge of `origin/main` (which includes slice A5's
+    // pricing extraction) into the live Chainlink strike branch. The merged strategy
+    // directory BOTH drops the offline readiness seed (`apply_source_owned_readiness_seed`
+    // — the live Chainlink strike is now the single `price_to_beat` source) AND adds
+    // resolution-strike code (`config.rs` resolution_client_id/resolution_instrument_id
+    // + pair guard; `mod.rs` observe/subscribe/on_index_price + the resolution-pair
+    // fail-closed test). Legitimate source change, not a fixture regeneration, so the
+    // framed DIRECTORY digest over `{config.rs, mod.rs, selection.rs}` (765_776-byte
+    // canonical stream) is re-derived to this value; confirmed equal to the Rust
+    // canonicalizer by the digest tests.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "cf8b8d9955fb82dce0d13040ce257eee5793f15d38e2709a59068c8f6f06df31";
+        "22f07549c0e3ba8a295c187129a3b8ec5b431432c0314bef368a72f12dfb0ca5";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 

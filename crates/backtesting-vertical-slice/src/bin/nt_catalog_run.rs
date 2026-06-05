@@ -15,6 +15,7 @@
 //!   go through `object_store` (the same backend NautilusTrader uses), so a
 //!   `file://` staging tree and an `s3://` lake share one code path.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -42,7 +43,8 @@ use backtesting_vertical_slice::canonical_binance::{
     kline_bar_spec_from_object_key,
 };
 use backtesting_vertical_slice::canonical_book::{
-    append_polymarket_book_archive, append_polymarket_trades_archive,
+    append_polymarket_book_archive, append_polymarket_book_archive_for_assets,
+    append_polymarket_trades_archive,
 };
 use backtesting_vertical_slice::canonical_bybit::{
     append_bybit_deriv_tick_trades_archive, append_bybit_mark_price_kline_1m_archive,
@@ -313,6 +315,14 @@ enum Command {
         /// Optional family filter (for example `trades`).
         #[arg(long)]
         family: Option<String>,
+        /// Newline-delimited Polymarket CLOB asset IDs to convert. Applies only
+        /// to `venue=polymarket`; blank lines and `#` comments are ignored.
+        #[arg(long)]
+        polymarket_asset_allowlist: Option<PathBuf>,
+        /// Optional object-key substring filter. Repeat to require multiple
+        /// substrings, for example `--object-key-contains dt=2026-05-20/`.
+        #[arg(long)]
+        object_key_contains: Vec<String>,
     },
 }
 
@@ -363,16 +373,53 @@ fn main() -> Result<()> {
             ingest_run_id,
             venue,
             family,
-        } => convert(
-            &cli.catalog_uri,
-            opts,
-            &staging_uri,
-            &staging_date,
-            &ingest_run_id,
-            venue.as_deref(),
-            family.as_deref(),
-        ),
+            polymarket_asset_allowlist,
+            object_key_contains,
+        } => {
+            let polymarket_asset_allowlist = polymarket_asset_allowlist
+                .as_ref()
+                .map(|path| {
+                    fs::read_to_string(path)
+                        .with_context(|| {
+                            format!("read Polymarket asset allowlist {}", path.display())
+                        })
+                        .and_then(|text| parse_polymarket_asset_allowlist(&text))
+                })
+                .transpose()?;
+            convert(
+                &cli.catalog_uri,
+                opts,
+                &staging_uri,
+                &staging_date,
+                &ingest_run_id,
+                venue.as_deref(),
+                family.as_deref(),
+                polymarket_asset_allowlist.as_ref(),
+                &object_key_contains,
+            )
+        }
     }
+}
+
+fn parse_polymarket_asset_allowlist(text: &str) -> Result<HashSet<String>> {
+    let mut assets = HashSet::new();
+    for (index, line) in text.lines().enumerate() {
+        let asset = line.trim();
+        if asset.is_empty() || asset.starts_with('#') {
+            continue;
+        }
+        ensure!(
+            !asset.chars().any(char::is_whitespace),
+            "Polymarket asset allowlist line {} contains whitespace inside asset id",
+            index + 1
+        );
+        assets.insert(asset.to_string());
+    }
+    ensure!(
+        !assets.is_empty(),
+        "Polymarket asset allowlist contains no asset ids"
+    );
+    Ok(assets)
 }
 
 /// Prove the catalog's object-store write + read-back path end to end.
@@ -441,7 +488,13 @@ fn convert(
     ingest_run_id: &str,
     venue: Option<&str>,
     family: Option<&str>,
+    polymarket_asset_allowlist: Option<&HashSet<String>>,
+    object_key_contains: &[String],
 ) -> Result<()> {
+    ensure!(
+        polymarket_asset_allowlist.is_none() || venue.is_none_or(|v| v == "polymarket"),
+        "--polymarket-asset-allowlist applies only when venue is absent or venue=polymarket"
+    );
     let catalog_opts = is_remote(catalog_uri).then(|| opts.clone());
     let mut catalog = ParquetDataCatalog::from_uri(catalog_uri, catalog_opts, None, None, None)
         .context("open catalog from uri")?;
@@ -495,6 +548,7 @@ fn convert(
             prefix.clone(),
             binding.extension,
             binding.key_filters,
+            object_key_contains,
         )) {
             Ok(keys) => keys,
             Err(err) => {
@@ -567,9 +621,15 @@ fn convert(
                     let bytes = runtime
                         .block_on(get_bytes(store.clone(), ObjectPath::from(key.to_string())))
                         .with_context(|| format!("read {key}"))?;
-                    let converted =
-                        convert_object(binding, key, &bytes, ingest_run_id, &mut catalog)
-                            .with_context(|| format!("convert {key}"))?;
+                    let converted = convert_object(
+                        binding,
+                        key,
+                        &bytes,
+                        ingest_run_id,
+                        &mut catalog,
+                        polymarket_asset_allowlist,
+                    )
+                    .with_context(|| format!("convert {key}"))?;
                     let mut records = 0usize;
                     let mut instruments = Vec::new();
                     for instrument in converted {
@@ -682,6 +742,68 @@ fn as_text(bytes: &[u8], object_key: &str) -> Result<String> {
         .with_context(|| format!("object {object_key} is not valid UTF-8"))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{object_key_matches_filters, parse_polymarket_asset_allowlist};
+    use std::collections::HashSet;
+
+    #[test]
+    fn parse_polymarket_asset_allowlist_accepts_newline_ids() {
+        let assets = parse_polymarket_asset_allowlist(
+            "\n\
+             # selected crypto outcomes\n\
+             1111111111111111111111111111111111111111\n\
+             2222222222222222222222222222222222222222  \n",
+        )
+        .expect("valid allowlist");
+
+        assert_eq!(
+            assets,
+            HashSet::from([
+                "1111111111111111111111111111111111111111".to_string(),
+                "2222222222222222222222222222222222222222".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_polymarket_asset_allowlist_rejects_empty_lists() {
+        let error = parse_polymarket_asset_allowlist("\n# no assets\n")
+            .expect_err("empty allowlist should be rejected");
+
+        assert!(
+            format!("{error:#}").contains("contains no asset ids"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn object_key_filter_requires_extension_static_and_runtime_segments() {
+        let key = "backfill-staging/2026-06-01/polymarket/family=order_book_snapshots_fixed_depth/dt=2026-05-20/object=a.parquet";
+        let matching_runtime_filter = vec!["dt=2026-05-20/".to_string()];
+        let missing_runtime_filter = vec!["dt=2026-05-21/".to_string()];
+
+        assert!(object_key_matches_filters(
+            key,
+            ".parquet",
+            &["family=order_book_snapshots_fixed_depth"],
+            &matching_runtime_filter,
+        ));
+        assert!(!object_key_matches_filters(
+            key,
+            ".parquet",
+            &["family=order_book_snapshots_fixed_depth"],
+            &missing_runtime_filter,
+        ));
+        assert!(!object_key_matches_filters(
+            key,
+            ".json",
+            &["family=order_book_snapshots_fixed_depth"],
+            &matching_runtime_filter,
+        ));
+    }
+}
+
 /// Build the venue-agnostic coverage row from a summary's id + record count.
 fn instrument(nt_instrument_id: String, record_count: usize) -> ConvertedInstrument {
     ConvertedInstrument {
@@ -791,6 +913,7 @@ fn convert_object(
     bytes: &[u8],
     ingest_run_id: &str,
     catalog: &mut ParquetDataCatalog,
+    polymarket_asset_allowlist: Option<&HashSet<String>>,
 ) -> Result<Vec<ConvertedInstrument>> {
     let rows = match (binding.venue, binding.family) {
         ("okx", "trades") => append_okx_trades_archive(bytes, catalog)?
@@ -892,7 +1015,16 @@ fn convert_object(
         .collect(),
         ("polymarket", "book") => {
             let tmp = TempObject::new(object_key, bytes)?;
-            append_polymarket_book_archive(tmp.path(), object_key, catalog)?
+            let summaries = match polymarket_asset_allowlist {
+                Some(allowed_assets) => append_polymarket_book_archive_for_assets(
+                    tmp.path(),
+                    object_key,
+                    catalog,
+                    allowed_assets,
+                )?,
+                None => append_polymarket_book_archive(tmp.path(), object_key, catalog)?,
+            };
+            summaries
                 .into_iter()
                 .map(|s| instrument(s.nt_instrument_id, s.delta_count + s.trade_count))
                 .collect()
@@ -918,6 +1050,7 @@ async fn list_objects(
     prefix: ObjectPath,
     extension: &str,
     key_filters: &[&str],
+    runtime_key_filters: &[String],
 ) -> Result<Vec<ObjectPath>> {
     let mut stream = store.list(Some(&prefix));
     let mut keys = Vec::new();
@@ -925,16 +1058,26 @@ async fn list_objects(
         let meta = meta.context("list object metadata")?;
         let location = meta.location;
         let key = location.as_ref();
-        if !key.ends_with(extension) {
-            continue;
-        }
-        if !key_filters.iter().all(|seg| key.contains(seg)) {
+        if !object_key_matches_filters(key, extension, key_filters, runtime_key_filters) {
             continue;
         }
         keys.push(location);
     }
     keys.sort();
     Ok(keys)
+}
+
+fn object_key_matches_filters(
+    key: &str,
+    extension: &str,
+    key_filters: &[&str],
+    runtime_key_filters: &[String],
+) -> bool {
+    key.ends_with(extension)
+        && key_filters.iter().all(|segment| key.contains(segment))
+        && runtime_key_filters
+            .iter()
+            .all(|segment| key.contains(segment.as_str()))
 }
 
 /// Read one object's bytes.

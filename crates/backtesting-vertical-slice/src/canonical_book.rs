@@ -31,22 +31,29 @@
 //! Input is only ever an [`AcceptedDataset`] from gate 1 — raw staged data never
 //! reaches this module without first passing source-proof acceptance.
 
-use std::{collections::HashSet, fs::File, path::Path};
+use std::{collections::HashSet, fs::File, path::Path, sync::Arc};
 
 use anyhow::{Context, Result, bail, ensure};
 use arrow::{
     array::{
-        Array, Decimal128Array, StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
-        TimestampNanosecondArray, TimestampSecondArray,
+        Array, BooleanArray, Decimal128Array, Int64Array, StringArray, TimestampMicrosecondArray,
+        TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
     },
-    datatypes::{DataType, TimeUnit},
+    datatypes::{DataType, Field, TimeUnit},
+    error::ArrowError,
+    record_batch::RecordBatch,
 };
 use nautilus_model::{
     data::{OrderBookDelta, TradeTick},
     instruments::InstrumentAny,
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::{
+    ProjectionMask, RowNumber,
+    arrow_reader::{
+        ArrowPredicateFn, ArrowReaderOptions, ParquetRecordBatchReaderBuilder, RowFilter,
+    },
+};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -747,6 +754,8 @@ enum PolymarketAppendProjection {
     TradesOnly,
 }
 
+const POLYMARKET_SOURCE_ROW_NUMBER_COLUMN: &str = "__bolt_source_row_number";
+
 /// Extract the archive partition date (`YYYY-MM-DD`) from a staged object key's
 /// `dt=<date>/` segment.
 ///
@@ -842,19 +851,31 @@ pub fn decode_polymarket_clob_parquet_for_asset(
     object_path: &Path,
     asset_id: &str,
 ) -> Result<Vec<RawClobEventRow>> {
-    decode_polymarket_clob_parquet_filtered(object_path, Some(asset_id))
+    let allowed_assets = HashSet::from([asset_id.to_string()]);
+    decode_polymarket_clob_parquet_filtered(object_path, Some(&allowed_assets))
+}
+
+/// Decode only selected `asset_id`s from a staged Polymarket CLOB Parquet
+/// object, preserving raw source row indexes for the returned rows.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened/read as Parquet, a required
+/// column is missing, or a column has an unexpected Arrow type.
+pub fn decode_polymarket_clob_parquet_for_assets(
+    object_path: &Path,
+    allowed_assets: &HashSet<String>,
+) -> Result<Vec<RawClobEventRow>> {
+    decode_polymarket_clob_parquet_filtered(object_path, Some(allowed_assets))
 }
 
 fn decode_polymarket_clob_parquet_filtered(
     object_path: &Path,
-    asset_filter: Option<&str>,
+    allowed_assets: Option<&HashSet<String>>,
 ) -> Result<Vec<RawClobEventRow>> {
     let file = File::open(object_path)
         .with_context(|| format!("open Polymarket parquet {}", object_path.display()))?;
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-        .with_context(|| format!("open Polymarket parquet reader {}", object_path.display()))?
-        .build()
-        .with_context(|| format!("build Polymarket parquet reader {}", object_path.display()))?;
+    let reader = polymarket_record_batch_reader(file, object_path, allowed_assets)?;
 
     let mut rows = Vec::new();
     let mut source_row_index: u64 = 0;
@@ -886,10 +907,13 @@ fn decode_polymarket_clob_parquet_filtered(
             .context("size column is not decimal")?;
         let price_scale = price.scale();
         let size_scale = size.scale();
+        let source_row_number = source_row_number_column(&batch)?;
 
         for index in 0..batch.num_rows() {
             let asset = string_cell(asset_id, index);
-            if asset_filter.is_some_and(|filter| asset != filter) {
+            let raw_source_row_index =
+                source_row_index_value(source_row_number, index, source_row_index)?;
+            if allowed_assets.is_some_and(|assets| !assets.contains(asset.as_str())) {
                 source_row_index += 1;
                 continue;
             }
@@ -898,7 +922,7 @@ fn decode_polymarket_clob_parquet_filtered(
                 event_type: string_cell(event_type, index),
                 timestamp_received: timestamp_received[index],
                 event_time: event_time[index],
-                source_row_index,
+                source_row_index: raw_source_row_index,
                 bids: string_cell(bids, index),
                 asks: string_cell(asks, index),
                 price: decimal_cell(price, index, price_scale)?,
@@ -910,6 +934,80 @@ fn decode_polymarket_clob_parquet_filtered(
         }
     }
     Ok(rows)
+}
+
+fn polymarket_record_batch_reader(
+    file: File,
+    object_path: &Path,
+    allowed_assets: Option<&HashSet<String>>,
+) -> Result<parquet::arrow::arrow_reader::ParquetRecordBatchReader> {
+    let row_number_field = Arc::new(
+        Field::new(POLYMARKET_SOURCE_ROW_NUMBER_COLUMN, DataType::Int64, false)
+            .with_extension_type(RowNumber),
+    );
+    let mut builder = if allowed_assets.is_some() {
+        let options = ArrowReaderOptions::new()
+            .with_virtual_columns(vec![row_number_field])
+            .context("configure Polymarket row-number virtual column")?;
+        ParquetRecordBatchReaderBuilder::try_new_with_options(file, options)
+    } else {
+        ParquetRecordBatchReaderBuilder::try_new(file)
+    }
+    .with_context(|| format!("open Polymarket parquet reader {}", object_path.display()))?;
+
+    if let Some(allowed_assets) = allowed_assets {
+        let schema_desc = builder.metadata().file_metadata().schema_descr_ptr();
+        let asset_id_column = schema_desc
+            .columns()
+            .iter()
+            .position(|column| column.path().string() == "asset_id")
+            .context("Polymarket CLOB parquet schema has no asset_id leaf column")?;
+        let projection = ProjectionMask::leaves(&schema_desc, [asset_id_column]);
+        let allowed_assets = allowed_assets.clone();
+        let predicate = ArrowPredicateFn::new(projection, move |batch| {
+            let asset_id = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| ArrowError::CastError("asset_id column is not utf8".to_string()))?;
+            let mask = (0..asset_id.len())
+                .map(|index| {
+                    !asset_id.is_null(index)
+                        && allowed_assets.contains(asset_id.value(index).trim())
+                })
+                .collect::<Vec<bool>>();
+            Ok(BooleanArray::from(mask))
+        });
+        builder = builder.with_row_filter(RowFilter::new(vec![Box::new(predicate)]));
+    }
+
+    builder
+        .build()
+        .with_context(|| format!("build Polymarket parquet reader {}", object_path.display()))
+}
+
+fn source_row_number_column(batch: &RecordBatch) -> Result<Option<&Int64Array>> {
+    batch
+        .column_by_name(POLYMARKET_SOURCE_ROW_NUMBER_COLUMN)
+        .map(|column| {
+            column
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .context("Polymarket source row-number column is not int64")
+        })
+        .transpose()
+}
+
+fn source_row_index_value(
+    source_row_number: Option<&Int64Array>,
+    index: usize,
+    fallback: u64,
+) -> Result<u64> {
+    match source_row_number {
+        Some(row_number) => u64::try_from(row_number.value(index))
+            .context("Polymarket source row number is negative"),
+        None => Ok(fallback),
+    }
 }
 
 /// Stream distinct outcome-token `asset_id`s from a staged Polymarket CLOB
@@ -1193,15 +1291,13 @@ fn append_polymarket_contiguous_asset_runs_archive(
     object_path: &Path,
     object_key: &str,
     catalog: &mut ParquetDataCatalog,
+    allowed_assets: Option<&HashSet<String>>,
     projection: PolymarketAppendProjection,
 ) -> Result<Vec<PolymarketAppendSummary>> {
     let accepted = polymarket_accepted_dataset(object_path, object_key)?;
     let file = File::open(object_path)
         .with_context(|| format!("open Polymarket parquet {}", object_path.display()))?;
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-        .with_context(|| format!("open Polymarket parquet reader {}", object_path.display()))?
-        .build()
-        .with_context(|| format!("build Polymarket parquet reader {}", object_path.display()))?;
+    let reader = polymarket_record_batch_reader(file, object_path, allowed_assets)?;
 
     let mut summaries = Vec::new();
     let mut finished_assets = HashSet::new();
@@ -1234,13 +1330,34 @@ fn append_polymarket_contiguous_asset_runs_archive(
             .context("size column is not decimal")?;
         let price_scale = price.scale();
         let size_scale = size.scale();
+        let source_row_number = source_row_number_column(&batch)?;
 
         for index in 0..batch.num_rows() {
+            let raw_source_row_index =
+                source_row_index_value(source_row_number, index, source_row_index)?;
             let asset = string_cell(asset_id, index).trim().to_string();
             ensure!(
                 !asset.is_empty(),
-                "Polymarket CLOB row {source_row_index} in {object_key:?} has empty asset_id"
+                "Polymarket CLOB row {raw_source_row_index} in {object_key:?} has empty asset_id"
             );
+            if allowed_assets.is_some_and(|assets| !assets.contains(asset.as_str())) {
+                if current_asset.as_deref() != Some(asset.as_str())
+                    && let Some(flush_asset) = current_asset.take()
+                {
+                    if let Some(summary) = append_polymarket_asset_run(
+                        &accepted,
+                        &flush_asset,
+                        std::mem::take(&mut current_rows),
+                        catalog,
+                        projection,
+                    )? {
+                        summaries.push(summary);
+                    }
+                    finished_assets.insert(flush_asset);
+                }
+                source_row_index += 1;
+                continue;
+            }
             if current_asset.as_deref() != Some(asset.as_str()) {
                 if let Some(flush_asset) = current_asset.take() {
                     if let Some(summary) = append_polymarket_asset_run(
@@ -1267,7 +1384,7 @@ fn append_polymarket_contiguous_asset_runs_archive(
                 event_type: string_cell(event_type, index),
                 timestamp_received: timestamp_received[index],
                 event_time: event_time[index],
-                source_row_index,
+                source_row_index: raw_source_row_index,
                 bids: string_cell(bids, index),
                 asks: string_cell(asks, index),
                 price: decimal_cell(price, index, price_scale)?,
@@ -1287,6 +1404,9 @@ fn append_polymarket_contiguous_asset_runs_archive(
     }
 
     if summaries.is_empty() {
+        if allowed_assets.is_some() {
+            return Ok(summaries);
+        }
         match projection {
             PolymarketAppendProjection::BookAndTrades => {
                 bail!("Polymarket book object {object_key:?} yielded no instruments")
@@ -1332,6 +1452,31 @@ pub fn append_polymarket_book_archive(
         object_path,
         object_key,
         catalog,
+        None,
+        PolymarketAppendProjection::BookAndTrades,
+    )
+}
+
+/// Append only selected Polymarket outcome-token CLOB streams from one staged
+/// object. Objects with no selected asset IDs are successful no-op appends so a
+/// sparse market allowlist can be applied across a broad archive prefix.
+///
+/// # Errors
+///
+/// Returns an error if the selected rows fail decoding, provenance
+/// construction, normalization, projection, catalog write, or grouped-run
+/// validation.
+pub fn append_polymarket_book_archive_for_assets(
+    object_path: &Path,
+    object_key: &str,
+    catalog: &mut ParquetDataCatalog,
+    allowed_assets: &HashSet<String>,
+) -> Result<Vec<PolymarketAppendSummary>> {
+    append_polymarket_contiguous_asset_runs_archive(
+        object_path,
+        object_key,
+        catalog,
+        Some(allowed_assets),
         PolymarketAppendProjection::BookAndTrades,
     )
 }
@@ -1361,6 +1506,7 @@ pub fn append_polymarket_trades_archive(
         object_path,
         object_key,
         catalog,
+        None,
         PolymarketAppendProjection::TradesOnly,
     )
 }

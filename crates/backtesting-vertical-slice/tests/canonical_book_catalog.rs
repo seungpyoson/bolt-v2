@@ -9,7 +9,7 @@
 //! BOTH data types back from the same catalog. CI-safe: no network, no S3 — the
 //! committed fixture is the only input.
 
-use std::{fs::File, path::PathBuf, sync::Arc};
+use std::{collections::HashSet, fs::File, path::PathBuf, sync::Arc};
 
 use arrow::{
     array::{ArrayRef, Decimal128Array, StringArray, TimestampMillisecondArray},
@@ -20,8 +20,9 @@ use arrow::{
 use backtesting_vertical_slice::{
     canonical_book::{
         CanonicalBookTable, POLYMARKET_VENUE, RawClobEventRow, append_polymarket_book_archive,
-        append_polymarket_trades_archive, decode_polymarket_clob_parquet,
-        decode_polymarket_clob_parquet_for_asset, normalize_polymarket_clob_book,
+        append_polymarket_book_archive_for_assets, append_polymarket_trades_archive,
+        decode_polymarket_clob_parquet, decode_polymarket_clob_parquet_for_asset,
+        decode_polymarket_clob_parquet_for_assets, normalize_polymarket_clob_book,
         polymarket_book_spec_from_table, polymarket_clob_assets_from_parquet,
     },
     catalog_projection::{
@@ -446,6 +447,114 @@ fn book_append_accepts_contiguous_multi_asset_runs() {
     assert_eq!(summaries[0].trade_count, 0);
     assert_eq!(summaries[1].delta_count, 1);
     assert_eq!(summaries[1].trade_count, 0);
+}
+
+#[test]
+fn asset_set_filtered_parquet_decode_preserves_source_row_indexes() {
+    let selected_asset = "2222222222222222222222222222222222222222";
+    let input_dir = TempDir::new().expect("temp parquet root");
+    let object_path = write_tiny_clob_parquet(
+        &input_dir,
+        &[
+            tiny_price_change(
+                "1111111111111111111111111111111111111111",
+                1_716_400_000_000,
+                5100,
+                1_000_000,
+                "BUY",
+            ),
+            tiny_price_change(selected_asset, 1_716_400_000_001, 5200, 2_000_000, "SELL"),
+        ],
+    );
+    let allowed_assets = HashSet::from([selected_asset.to_string()]);
+
+    let rows = decode_polymarket_clob_parquet_for_assets(&object_path, &allowed_assets)
+        .expect("decode selected asset set");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].asset_id, selected_asset);
+    assert_eq!(rows[0].source_row_index, 1);
+}
+
+#[test]
+fn book_append_filters_to_selected_asset_ids() {
+    let selected_asset = "1111111111111111111111111111111111111111";
+    let skipped_asset = "2222222222222222222222222222222222222222";
+    let input_dir = TempDir::new().expect("temp parquet root");
+    let object_path = write_tiny_clob_parquet(
+        &input_dir,
+        &[
+            tiny_price_change(selected_asset, 1_716_400_000_000, 5100, 1_000_000, "BUY"),
+            tiny_price_change(skipped_asset, 1_716_400_000_001, 5200, 2_000_000, "SELL"),
+        ],
+    );
+    let catalog_dir = TempDir::new().expect("temp catalog root");
+    let mut catalog = ParquetDataCatalog::new(catalog_dir.path(), None, None, None, None);
+    let allowed_assets = HashSet::from([selected_asset.to_string()]);
+
+    let summaries = append_polymarket_book_archive_for_assets(
+        &object_path,
+        TINY_OBJECT_KEY,
+        &mut catalog,
+        &allowed_assets,
+    )
+    .expect("append selected asset");
+
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(
+        summaries[0].nt_instrument_id,
+        format!("{selected_asset}.POLYMARKET")
+    );
+    assert_eq!(summaries[0].delta_count, 1);
+    assert_eq!(summaries[0].trade_count, 0);
+    assert!(
+        catalog_dir
+            .path()
+            .join(format!(
+                "data/order_book_deltas/{selected_asset}.POLYMARKET"
+            ))
+            .exists(),
+        "selected asset should be written"
+    );
+    assert!(
+        !catalog_dir
+            .path()
+            .join(format!("data/order_book_deltas/{skipped_asset}.POLYMARKET"))
+            .exists(),
+        "unselected asset should not be written"
+    );
+}
+
+#[test]
+fn book_append_for_selected_assets_allows_objects_without_matches() {
+    let input_dir = TempDir::new().expect("temp parquet root");
+    let object_path = write_tiny_clob_parquet(
+        &input_dir,
+        &[tiny_price_change(
+            "1111111111111111111111111111111111111111",
+            1_716_400_000_000,
+            5100,
+            1_000_000,
+            "BUY",
+        )],
+    );
+    let catalog_dir = TempDir::new().expect("temp catalog root");
+    let mut catalog = ParquetDataCatalog::new(catalog_dir.path(), None, None, None, None);
+    let allowed_assets = HashSet::from(["2222222222222222222222222222222222222222".to_string()]);
+
+    let summaries = append_polymarket_book_archive_for_assets(
+        &object_path,
+        TINY_OBJECT_KEY,
+        &mut catalog,
+        &allowed_assets,
+    )
+    .expect("empty filtered object should not fail");
+
+    assert!(summaries.is_empty());
+    assert!(
+        !catalog_dir.path().join("data/order_book_deltas").exists(),
+        "no book delta table should be written"
+    );
 }
 
 #[test]

@@ -1878,6 +1878,132 @@ pub fn append_hip4_bars_archive(
     Ok(summaries)
 }
 
+/// Append every coin's candles from SEVERAL staged `table=bars` objects into an
+/// already-open [`ParquetDataCatalog`], deduplicating candles by `open_time` per
+/// `(coin, interval)` stream across all objects.
+///
+/// HL `candleSnapshot` is a rolling buffer like `recentTrades`: successive `run=`
+/// partitions re-fetch overlapping candles for the same `(coin, interval)`, so
+/// writing each object's stream as its own catalog file produces non-disjoint
+/// time intervals and NautilusTrader's `write_to_parquet` rejects the overlapping
+/// write. This collects every object's candles keyed by
+/// `(coin, interval, open_time)` (the per-stream unique candle key) so duplicates
+/// collapse, derives one uniform precision per stream, then writes one ascending
+/// `Bar` stream per `(coin, interval)`. The bars analogue of
+/// [`append_hip4_trades_archive_batch`].
+///
+/// An `open_time` seen twice within a stream with disagreeing OHLCV is corrupt
+/// and fails loud rather than silently keeping last-seen.
+///
+/// # Errors
+///
+/// Returns an error if an object is not UTF-8 or valid JSON, the
+/// `(outcome, side)` <-> coin mapping is inconsistent across objects, an interval
+/// is unsupported, a duplicate candle disagrees, a value cannot be represented at
+/// the derived precision, table validation fails, or a catalog write fails.
+pub fn append_hip4_bars_archive_batch(
+    objects: &[(String, Vec<u8>)],
+    naming: &Hip4InstrumentNaming,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<Hip4AppendSummary>> {
+    // (coin handle, interval) -> (open_time -> row); the inner BTreeMap key dedups
+    // by the per-stream unique open_time and keeps candles ascending. coin handle
+    // -> Hip4Coin keeps the (outcome, side) identity, asserted consistent.
+    let mut rows_by_stream: BTreeMap<(String, String), BTreeMap<i64, Hip4BarRow>> = BTreeMap::new();
+    let mut coin_meta: BTreeMap<String, Hip4Coin> = BTreeMap::new();
+
+    for (object_key, bytes) in objects {
+        let jsonl = std::str::from_utf8(bytes)
+            .with_context(|| format!("HIP-4 bars object {object_key} is not UTF-8"))?;
+        for coin in hip4_distinct_coins(jsonl)? {
+            match coin_meta.get(&coin.trade_coin) {
+                Some(existing) => ensure!(
+                    existing == &coin,
+                    "coin {} maps to different (outcome, side) across objects",
+                    coin.trade_coin,
+                ),
+                None => {
+                    coin_meta.insert(coin.trade_coin.clone(), coin.clone());
+                }
+            }
+            for interval in hip4_bar_intervals_for_coin(jsonl, &coin.trade_coin)? {
+                let (bar_step, bar_aggregation) = parse_hip4_bar_interval(&interval)?;
+                let probe =
+                    hip4_spec_from_precision(&coin, naming, 0, 0, bar_step, bar_aggregation);
+                let table = normalize_hip4_bars(jsonl, &probe)?;
+                let dedup = rows_by_stream
+                    .entry((coin.trade_coin.clone(), interval.clone()))
+                    .or_default();
+                for row in &table.rows {
+                    if let Some(existing) = dedup.get(&row.open_time) {
+                        ensure!(
+                            existing == row,
+                            "coin {} interval {} open_time {} disagrees on OHLCV across overlapping objects",
+                            coin.trade_coin,
+                            interval,
+                            row.open_time,
+                        );
+                        continue;
+                    }
+                    dedup.insert(row.open_time, row.clone());
+                }
+            }
+        }
+    }
+
+    let mut summaries = Vec::new();
+    for ((coin_handle, interval), rows_map) in rows_by_stream {
+        let coin = coin_meta
+            .get(&coin_handle)
+            .expect("coin has a metadata template")
+            .clone();
+        let (bar_step, bar_aggregation) = parse_hip4_bar_interval(&interval)?;
+        // The dedup map is keyed by open_time, so the values are already ascending.
+        let rows: Vec<Hip4BarRow> = rows_map.into_values().collect();
+        let mut price_precision = 0u8;
+        let mut size_precision = 0u8;
+        for row in &rows {
+            for field in [&row.open, &row.high, &row.low, &row.close] {
+                price_precision = price_precision.max(decimal_places(field));
+            }
+            size_precision = size_precision.max(decimal_places(&row.volume));
+        }
+        let spec = hip4_spec_from_precision(
+            &coin,
+            naming,
+            price_precision,
+            size_precision,
+            bar_step,
+            bar_aggregation,
+        );
+        let table = Hip4BarsTable {
+            nt_instrument_id: spec.nt_instrument_id.clone(),
+            trade_coin: coin.trade_coin.clone(),
+            rows,
+        };
+        table.validate()?;
+        let bars = table.to_bars(&spec)?;
+        let record_count = bars.len();
+        catalog
+            .write_to_parquet(bars, None, None, None)
+            .with_context(|| {
+                format!(
+                    "append deduplicated HIP-4 bars for {} interval {interval}",
+                    coin.trade_coin
+                )
+            })?;
+        summaries.push(Hip4AppendSummary {
+            nt_identifier: table.bar_type_string(&spec)?,
+            data_type: NT_DATA_TYPE_BAR.to_string(),
+            record_count,
+            price_precision,
+            size_precision,
+        });
+    }
+    ensure!(!summaries.is_empty(), "HIP-4 bars batch yielded no coins");
+    Ok(summaries)
+}
+
 /// The distinct candle intervals carried for one `trade_coin` in a staged bars
 /// object, in deterministic (sorted) order.
 ///
@@ -2411,6 +2537,122 @@ mod tests {
         ];
         let err = append_hip4_trades_archive_batch(&batch, &hip4_canonical_naming(), &mut catalog)
             .expect_err("disagreeing duplicate tid must fail loud");
+        assert!(err.to_string().contains("disagree"), "{err}");
+    }
+
+    /// A staged `candleSnapshot` object for coin `#1010` at one `interval`, with
+    /// the given `(open_time_ms, open_price)` candles (close = open_time + an
+    /// interval span, OHLC fixed). Carries `outcome`/`side` for the catalog id.
+    fn bars_object(interval: &str, candles: &[(i64, &str)]) -> String {
+        candles
+            .iter()
+            .map(|(open_time, o)| {
+                format!(
+                    "{{\"source_family\":\"info.candleSnapshot\",\"venue\":\"hyperliquid\",\
+                     \"trade_coin\":\"#1010\",\"outcome\":101,\"side\":0,\"interval\":\"{interval}\",\
+                     \"open_time\":{open_time},\"close_time\":{},\
+                     \"open\":\"{o}\",\"high\":\"0.99\",\"low\":\"0.10\",\"close\":\"0.50\",\"volume\":\"1.0\"}}",
+                    open_time + 3_599_999
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn hip4_bars_batch_dedups_overlapping_open_times_one_stream_per_interval() {
+        // Two run= partitions re-fetch overlapping candles for the same (coin,
+        // interval). Object A has open_times t1,t2,t3; object B has t2,t3,t4
+        // (t2,t3 shared, identical). Per-object writes overlap in time and
+        // NautilusTrader rejects the second; the batch dedups by open_time into
+        // one ascending Bar stream.
+        let (t1, t2, t3, t4) = (
+            1_779_700_400_000i64,
+            1_779_704_000_000,
+            1_779_707_600_000,
+            1_779_711_200_000,
+        );
+        let object_a = bars_object("1h", &[(t1, "0.41"), (t2, "0.42"), (t3, "0.43")]);
+        let object_b = bars_object("1h", &[(t2, "0.42"), (t3, "0.43"), (t4, "0.44")]);
+
+        // Baseline: per-object writes collide on the overlapping second object.
+        {
+            let dir = tempfile::TempDir::new().expect("temp dir");
+            let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+            append_hip4_bars_archive(&object_a, &hip4_canonical_naming(), &mut catalog)
+                .expect("first object writes");
+            let err = append_hip4_bars_archive(&object_b, &hip4_canonical_naming(), &mut catalog)
+                .expect_err("overlapping second object must collide");
+            let chain = format!("{err:#}").to_lowercase();
+            assert!(
+                chain.contains("disjoint") || chain.contains("interval"),
+                "expected a non-disjoint-intervals rejection, got: {err:#}"
+            );
+        }
+
+        // Batch: dedup by open_time, one disjoint write per (coin, interval).
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+        let batch = vec![
+            ("a.jsonl".to_string(), object_a.into_bytes()),
+            ("b.jsonl".to_string(), object_b.into_bytes()),
+        ];
+        let summaries =
+            append_hip4_bars_archive_batch(&batch, &hip4_canonical_naming(), &mut catalog)
+                .expect("batch append");
+        assert_eq!(
+            summaries.len(),
+            1,
+            "one bar stream for the one (coin, interval)"
+        );
+        // Union of open_times {t1,t2,t3,t4} = 4 candles; shared t2,t3 deduped.
+        assert_eq!(summaries[0].record_count, 4, "deduped union count");
+
+        let loaded = read_back_bars(dir.path(), &summaries[0].nt_identifier).expect("read back");
+        assert_eq!(loaded.len(), 4);
+        let mut prev = 0u64;
+        for bar in &loaded {
+            let ts = bar.ts_event.as_u64();
+            assert!(ts >= prev, "ascending ts");
+            prev = ts;
+        }
+    }
+
+    #[test]
+    fn hip4_bars_batch_keeps_each_interval_its_own_stream() {
+        // One coin staged at two intervals across two objects: the batch must keep
+        // them as two distinct bar streams (not merge intervals).
+        let object_a = bars_object("1h", &[(1_779_700_400_000, "0.41")]);
+        let object_b = bars_object("1m", &[(1_779_700_400_000, "0.42")]);
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+        let batch = vec![
+            ("a.jsonl".to_string(), object_a.into_bytes()),
+            ("b.jsonl".to_string(), object_b.into_bytes()),
+        ];
+        let summaries =
+            append_hip4_bars_archive_batch(&batch, &hip4_canonical_naming(), &mut catalog)
+                .expect("batch append");
+        assert_eq!(summaries.len(), 2, "one stream per (coin, interval)");
+        let ids: std::collections::BTreeSet<&str> =
+            summaries.iter().map(|s| s.nt_identifier.as_str()).collect();
+        assert_eq!(ids.len(), 2, "two distinct bar-type identifiers");
+    }
+
+    #[test]
+    fn hip4_bars_batch_fails_loud_on_disagreeing_open_time() {
+        // Same (coin, interval, open_time) with different OHLC across objects is
+        // corrupt; fail loud rather than silently keeping last-seen.
+        let object_a = bars_object("1h", &[(1_779_700_400_000, "0.41")]);
+        let object_b = bars_object("1h", &[(1_779_700_400_000, "0.88")]);
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+        let batch = vec![
+            ("a.jsonl".to_string(), object_a.into_bytes()),
+            ("b.jsonl".to_string(), object_b.into_bytes()),
+        ];
+        let err = append_hip4_bars_archive_batch(&batch, &hip4_canonical_naming(), &mut catalog)
+            .expect_err("disagreeing duplicate open_time must fail loud");
         assert!(err.to_string().contains("disagree"), "{err}");
     }
 }

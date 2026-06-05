@@ -104,26 +104,27 @@ mod tests {
     // identity digest captured live from `origin/main` raw bytes
     // (`git show origin/main:<path> | shasum -a 256`); that root did not move.
     //
-    // GOLDEN_STRATEGY_DIGEST was RE-DERIVED again by slice A8 (first by A3): the
-    // strategy source is a directory whose `*.rs` membership grows as each slice
-    // extracts a concern. A3 first split it into a directory module; A8 adds
-    // `config.rs`, so the framed DIRECTORY concatenation is now over
+    // GOLDEN_STRATEGY_DIGEST was RE-DERIVED again by slice A5 after pricing
+    // state moved out of `mod.rs`: the strategy source remains a directory
+    // whose framed DIRECTORY concatenation is over
     // `{config.rs, mod.rs, selection.rs}` (sorted by relative path). This is a
     // legitimate behavior-preserving source move, not a fixture regeneration — the
     // value is re-derived from the live build-emitted `OUT_DIR/strategy.canonical`
     // and independently confirmed by hand-framing the live source files
     // (`shasum -a256 OUT_DIR/strategy.canonical` == this constant).
     //
-    // RE-DERIVED again by the #553 merge of `origin/main` into the live Chainlink
-    // strike branch: that branch adds resolution-strike code to the strategy
-    // directory (`config.rs` resolution_client_id/resolution_instrument_id fields +
-    // pair guard; `mod.rs` observe/subscribe/on_index_price + the resolution-pair
-    // fail-closed test). That is a legitimate source addition, not a fixture
-    // regeneration, so the framed DIRECTORY digest over `{config.rs, mod.rs,
-    // selection.rs}` is re-derived to this value (hand-framed canonical stream =
-    // 774_926 bytes; confirmed equal to the Rust canonicalizer by the digest tests).
+    // RE-DERIVED again by the #553 merge of `origin/main` (which includes slice A5's
+    // pricing extraction) into the live Chainlink strike branch. The merged strategy
+    // directory BOTH drops the offline readiness seed (`apply_source_owned_readiness_seed`
+    // — the live Chainlink strike is now the single `price_to_beat` source) AND adds
+    // resolution-strike code (`config.rs` resolution_client_id/resolution_instrument_id
+    // + pair guard; `mod.rs` observe/subscribe/on_index_price + the resolution-pair
+    // fail-closed test). Legitimate source change, not a fixture regeneration, so the
+    // framed DIRECTORY digest over `{config.rs, mod.rs, selection.rs}` (765_776-byte
+    // canonical stream) is re-derived to this value; confirmed equal to the Rust
+    // canonicalizer by the digest tests.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "df7473857d735de747b72aa2088b59c3da7dff08acc0cb391b0edd3ce8d77503";
+        "22f07549c0e3ba8a295c187129a3b8ec5b431432c0314bef368a72f12dfb0ca5";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 
@@ -361,8 +362,12 @@ mod tests {
         let canonical_len = registry_source_bytes(STRATEGY_KEY, TEST_MAX_BYTES)
             .unwrap()
             .len() as u64;
+        let raw_len: u64 = strategy_dir_files_in_canonical_order()
+            .iter()
+            .map(|path| std::fs::metadata(path).unwrap().len())
+            .sum();
         assert!(
-            canonical_len > 732_776,
+            canonical_len > raw_len,
             "directory framing adds path/length frames over raw content"
         );
         assert!(registry_source_digest(STRATEGY_KEY, canonical_len).is_ok());

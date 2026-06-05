@@ -50,7 +50,7 @@ use crate::{
     },
     bolt_v3_numeric::{
         BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64,
-        clamp_probability, is_non_negative_finite, is_positive_finite, sanitize_probability,
+        clamp_probability, is_non_negative_finite, is_positive_finite,
     },
     bolt_v3_operator_artifacts::EntryReadinessGateSession,
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
@@ -69,16 +69,26 @@ use crate::{
         base_quantity_admission_notional, fee_inclusive_admission_notional,
         market_style_admission_ceiling_notional,
     },
+    bolt_v3_taker_pricing::{
+        FastSpotObservation, TakerPricingBlockReason, TakerPricingConfig, TakerPricingRequest,
+        TakerPricingState as PricingState,
+    },
     bolt_v3_taker_signal::{
-        RobustSizingInputs, SideSelectionInputs, ThetaScalerInputs, UncertaintyBandInputs,
-        WorstCaseEvInputs, choose_entry_side, choose_robust_size, compute_theta_scaler,
-        compute_worst_case_ev_bps, outcome_side_evidence_label, price_agreement_corr,
-        price_gap_probability, uncertainty_band_probability,
+        RobustSizingInputs, SideSelectionInputs, UncertaintyBandInputs, WorstCaseEvInputs,
+        choose_entry_side, choose_robust_size, compute_worst_case_ev_bps,
+        outcome_side_evidence_label, uncertainty_band_probability,
     },
     bolt_v3_volatility::{RealizedVolConfig, RealizedVolEstimator},
     strategies::registry::{
         BoxedStrategy, FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError,
     },
+};
+
+#[cfg(test)]
+use crate::{
+    bolt_v3_numeric::sanitize_probability,
+    bolt_v3_taker_pricing::VenueTimingState,
+    bolt_v3_taker_signal::{price_agreement_corr, price_gap_probability},
 };
 
 mod selection;
@@ -551,28 +561,6 @@ struct ActiveMarketState {
     forced_flat: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct FastSpotObservation {
-    venue_name: String,
-    price: f64,
-    observed_ts_ms: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct VenueTimingState {
-    last_observed_ts_ms: Option<u64>,
-    last_interval_ms: Option<u64>,
-}
-
-impl VenueTimingState {
-    fn empty() -> Self {
-        Self {
-            last_observed_ts_ms: None,
-            last_interval_ms: None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ImpactCappedExecution {
     quantity: f64,
@@ -704,27 +692,6 @@ impl SignedTradeFlow {
             .iter()
             .filter(move |trade| trade.ts_ms >= cutoff_ms)
     }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct PricingState {
-    last_reference_fair_value: Option<f64>,
-    fast_spot: Option<FastSpotObservation>,
-    realized_vol: RealizedVolEstimator,
-    realized_vol_source_venue: Option<String>,
-    realized_vol_by_venue: BTreeMap<String, RealizedVolEstimator>,
-    venue_timing: BTreeMap<String, VenueTimingState>,
-    last_lead_gap_probability: Option<f64>,
-    last_jitter_penalty_probability: Option<f64>,
-    last_lead_agreement_corr: Option<f64>,
-    last_fast_venue_age_ms: Option<u64>,
-    last_fast_venue_jitter_ms: Option<u64>,
-    fast_venue_incoherent: bool,
-    lead_quality_policy_applied: bool,
-    /// Reference-spot spike cooldown deadline (ms). When set, entry is blocked
-    /// until `now_ms >= spike_until_ms`. Set when a single-step reference-spot
-    /// move clears the configured spike threshold; `None` outside any cooldown.
-    spike_until_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1097,168 +1064,22 @@ fn realized_vol_config(config: &BinaryOracleEdgeTakerConfig) -> RealizedVolConfi
     }
 }
 
+fn taker_pricing_config(config: &BinaryOracleEdgeTakerConfig) -> TakerPricingConfig<'_> {
+    TakerPricingConfig {
+        realized_vol: realized_vol_config(config),
+        lead_agreement_min_corr: config.lead_agreement_min_corr,
+        lead_jitter_max_ms: config.lead_jitter_max_ms,
+        spike_guard_return_threshold: config.spike_guard_return_threshold,
+        spike_guard_cooldown_secs: config.spike_guard_cooldown_secs,
+        cadence_seconds: config.cadence_seconds,
+        theta_decay_factor: config.theta_decay_factor,
+        edge_threshold_basis_points: config.edge_threshold_basis_points,
+        pricing_kurtosis: config.pricing_kurtosis,
+        rotating_market_family: config.rotating_market_family.as_str(),
+    }
+}
+
 impl PricingState {
-    fn from_config(config: &BinaryOracleEdgeTakerConfig) -> Self {
-        Self {
-            last_reference_fair_value: None,
-            fast_spot: None,
-            realized_vol: RealizedVolEstimator::from_config(&realized_vol_config(config)),
-            realized_vol_source_venue: None,
-            realized_vol_by_venue: BTreeMap::new(),
-            venue_timing: BTreeMap::new(),
-            last_lead_gap_probability: None,
-            last_jitter_penalty_probability: None,
-            last_lead_agreement_corr: None,
-            last_fast_venue_age_ms: None,
-            last_fast_venue_jitter_ms: None,
-            fast_venue_incoherent: false,
-            lead_quality_policy_applied: false,
-            spike_until_ms: None,
-        }
-    }
-
-    fn observe_reference_quote(&mut self, quote: &FastSpotObservation) {
-        if !is_positive_finite(quote.price) {
-            return;
-        }
-
-        self.last_reference_fair_value = Some(quote.price);
-    }
-
-    fn observe_signal_quote(
-        &mut self,
-        quote: &FastSpotObservation,
-        min_agreement_corr: f64,
-        max_jitter_ms: u64,
-        spike_return_threshold: f64,
-        spike_cooldown_secs: u64,
-    ) {
-        if !is_positive_finite(quote.price) {
-            return;
-        }
-
-        self.detect_signal_spike(quote, spike_return_threshold, spike_cooldown_secs);
-
-        self.lead_quality_policy_applied = true;
-
-        let jitter_ms = self.record_signal_quote_timing(&quote.venue_name, quote.observed_ts_ms);
-        let Some(reference_fair_value) = self
-            .last_reference_fair_value
-            .filter(|value| is_positive_finite(*value))
-        else {
-            self.fast_spot = None;
-            self.last_lead_gap_probability = None;
-            self.last_jitter_penalty_probability = None;
-            self.last_lead_agreement_corr = None;
-            self.last_fast_venue_age_ms = Some(INITIAL_COUNTER_U64);
-            self.last_fast_venue_jitter_ms = Some(jitter_ms);
-            self.fast_venue_incoherent = true;
-            return;
-        };
-        let agreement_corr = price_agreement_corr(quote.price, reference_fair_value)
-            .expect("validated signal/reference prices should yield agreement");
-        let lead_gap_probability = price_gap_probability(quote.price, reference_fair_value)
-            .expect("validated signal/reference prices should yield a gap");
-        let eligible = agreement_corr >= min_agreement_corr
-            && jitter_ms <= max_jitter_ms
-            && sanitize_probability(lead_gap_probability).is_some();
-
-        if eligible {
-            let selected_realized_vol = {
-                let estimator_template = self.realized_vol.empty_like();
-                let estimator = self
-                    .realized_vol_by_venue
-                    .entry(quote.venue_name.clone())
-                    .or_insert_with(|| estimator_template.clone());
-                let _ = estimator.observe(&quote.venue_name, quote.price, quote.observed_ts_ms);
-                estimator.clone()
-            };
-            self.realized_vol = selected_realized_vol;
-            self.realized_vol_source_venue = Some(quote.venue_name.clone());
-            self.fast_spot = Some(quote.clone());
-            self.last_lead_gap_probability = Some(lead_gap_probability);
-            self.last_jitter_penalty_probability = Some(if max_jitter_ms == 0 {
-                ZERO_F64
-            } else {
-                clamp_probability(jitter_ms as f64 / max_jitter_ms as f64)
-            });
-            self.last_lead_agreement_corr = Some(agreement_corr);
-            self.last_fast_venue_age_ms = Some(INITIAL_COUNTER_U64);
-            self.last_fast_venue_jitter_ms = Some(jitter_ms);
-            self.fast_venue_incoherent = false;
-        } else {
-            self.fast_spot = None;
-            self.last_lead_gap_probability = Some(lead_gap_probability);
-            self.last_jitter_penalty_probability = Some(if max_jitter_ms == 0 {
-                ZERO_F64
-            } else {
-                clamp_probability(jitter_ms as f64 / max_jitter_ms as f64)
-            });
-            self.last_lead_agreement_corr = Some(agreement_corr);
-            self.last_fast_venue_age_ms = Some(INITIAL_COUNTER_U64);
-            self.last_fast_venue_jitter_ms = Some(jitter_ms);
-            self.fast_venue_incoherent = true;
-        }
-    }
-
-    /// Arm the spike cooldown when a new signal-price observation jumps past
-    /// the configured single-step return threshold.
-    ///
-    /// Reads the still-current `fast_spot` as the previous observation, before
-    /// `observe_reference_quote` overwrites it. The single-step relative move is
-    /// `m = (new_price / prev_price - 1).abs()`; when `m >=
-    /// spike_return_threshold` the cooldown deadline is extended to the later of
-    /// its current value and `new_observed_ts_ms + spike_cooldown_secs *
-    /// MILLIS_PER_SECOND_U64`, so an out-of-order quote can never retract an
-    /// active cooldown. With no valid previous observation there is no spike.
-    /// This is an additive read of
-    /// previous vs new and does not alter `fast_spot` or realized-vol behavior.
-    fn detect_signal_spike(
-        &mut self,
-        quote: &FastSpotObservation,
-        spike_return_threshold: f64,
-        spike_cooldown_secs: u64,
-    ) {
-        let Some(previous) = self.fast_spot.as_ref() else {
-            return;
-        };
-        if !is_positive_finite(previous.price) || !is_positive_finite(quote.price) {
-            return;
-        }
-        let relative_move = (quote.price / previous.price - UNIT_F64).abs();
-        if relative_move >= spike_return_threshold {
-            let new_deadline = quote
-                .observed_ts_ms
-                .saturating_add(spike_cooldown_secs.saturating_mul(MILLIS_PER_SECOND_U64));
-            // Fail closed: the cooldown deadline only ever extends. An
-            // out-of-order spike carrying an earlier timestamp must never shorten
-            // an active cooldown and re-enable entry during volatility.
-            self.spike_until_ms = Some(match self.spike_until_ms {
-                Some(existing) => existing.max(new_deadline),
-                None => new_deadline,
-            });
-        }
-    }
-
-    fn record_signal_quote_timing(&mut self, venue_name: &str, observed_ts_ms: u64) -> u64 {
-        let timing = self
-            .venue_timing
-            .entry(venue_name.to_string())
-            .or_insert_with(VenueTimingState::empty);
-        let current_interval_ms = timing
-            .last_observed_ts_ms
-            .map(|last_ts_ms| observed_ts_ms.saturating_sub(last_ts_ms));
-        let jitter_ms = match (current_interval_ms, timing.last_interval_ms) {
-            (Some(current_interval_ms), Some(last_interval_ms)) => {
-                current_interval_ms.abs_diff(last_interval_ms)
-            }
-            _ => INITIAL_COUNTER_U64,
-        };
-        timing.last_observed_ts_ms = Some(observed_ts_ms);
-        timing.last_interval_ms = current_interval_ms;
-        jitter_ms
-    }
-
     #[cfg(test)]
     fn observe_reference_snapshot(
         &mut self,
@@ -1280,7 +1101,7 @@ impl PricingState {
             arbitrate_lead_reference(&candidates, min_agreement_corr, max_jitter_ms)
         {
             let fast_spot = FastSpotObservation {
-                venue_name: candidate.venue_name.clone(),
+                venue: candidate.venue_name.clone(),
                 price: candidate
                     .price
                     .expect("selected lead venue should carry price"),
@@ -1353,24 +1174,6 @@ impl PricingState {
                 );
                 self.realized_vol.empty_like()
             })
-    }
-
-    fn spot_price(&self) -> Option<f64> {
-        self.fast_spot.as_ref().map(|spot| spot.price)
-    }
-
-    fn current_realized_vol_source_at(&self, now_ms: u64) -> (Option<String>, Option<u64>) {
-        if self.realized_vol.current_vol_at(now_ms).is_none() {
-            return (None, None);
-        }
-
-        (
-            self.realized_vol_source_venue
-                .clone()
-                .or_else(|| self.fast_spot.as_ref().map(|spot| spot.venue_name.clone()))
-                .or_else(|| self.realized_vol.active_venue.clone()),
-            self.realized_vol.last_ready_ts_ms,
-        )
     }
 
     #[cfg(test)]
@@ -1775,7 +1578,7 @@ pub struct BinaryOracleEdgeTaker {
 
 impl BinaryOracleEdgeTaker {
     fn new(config: BinaryOracleEdgeTakerConfig, context: StrategyBuildContext) -> Self {
-        let pricing = PricingState::from_config(&config);
+        let pricing = PricingState::from_config(&taker_pricing_config(&config));
         let oms_type = parse_configured_oms_type(CONFIG_FIELD_OMS_TYPE, &config.oms_type)
             .expect("validated binary_oracle_edge_taker oms_type");
         let market_exit_time_in_force = config.forced_exit_order.time_in_force;
@@ -1896,13 +1699,8 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn observe_signal_quote(&mut self, quote: &FastSpotObservation) {
-        self.pricing.observe_signal_quote(
-            quote,
-            self.config.lead_agreement_min_corr,
-            self.config.lead_jitter_max_ms,
-            self.config.spike_guard_return_threshold,
-            self.config.spike_guard_cooldown_secs,
-        );
+        self.pricing
+            .observe_signal_quote(quote, &taker_pricing_config(&self.config));
         self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
         self.refresh_fee_readiness();
         self.sync_exposure_context_from_active();
@@ -1956,7 +1754,7 @@ impl BinaryOracleEdgeTaker {
         let observed_ts_ms = quote.ts_event.as_u64() / NANOS_PER_MILLI_U64;
         let venue_name = self.config.reference_venue.as_ref()?;
         Some(FastSpotObservation {
-            venue_name: venue_name.clone(),
+            venue: venue_name.clone(),
             price: midpoint,
             observed_ts_ms,
         })
@@ -1975,7 +1773,7 @@ impl BinaryOracleEdgeTaker {
         let observed_ts_ms = quote.ts_event.as_u64() / NANOS_PER_MILLI_U64;
         let venue_name = self.config.signal_venue.as_ref()?;
         Some(FastSpotObservation {
-            venue_name: venue_name.clone(),
+            venue: venue_name.clone(),
             price: midpoint,
             observed_ts_ms,
         })
@@ -2732,7 +2530,7 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn current_realized_vol_at(&self, now_ms: u64) -> Option<f64> {
-        self.pricing.realized_vol.current_vol_at(now_ms)
+        self.pricing.current_realized_vol_at(now_ms)
     }
 
     fn current_seconds_to_expiry_at(&self, now_ms: u64) -> Option<u64> {
@@ -2743,73 +2541,42 @@ impl BinaryOracleEdgeTaker {
         &self,
         now_ms: u64,
     ) -> std::result::Result<EntryPricingInputs, Vec<EntryPricingBlockReason>> {
-        let mut blocked_by = Vec::new();
-
-        let spot_price = self
-            .pricing
-            .spot_price()
-            .filter(|value| is_positive_finite(*value));
-        if spot_price.is_none() {
-            blocked_by.push(EntryPricingBlockReason::SpotPriceMissing);
-        }
-
-        let strike_price = self
-            .active
-            .interval_open
-            .filter(|value| is_positive_finite(*value));
-        if strike_price.is_none() {
-            blocked_by.push(EntryPricingBlockReason::StrikePriceMissing);
-        }
-
-        let seconds_to_expiry = self.current_seconds_to_expiry_at(now_ms);
-        if seconds_to_expiry.is_none() {
-            blocked_by.push(EntryPricingBlockReason::SecondsToExpiryMissing);
-        }
-
-        let realized_vol = self
-            .current_realized_vol_at(now_ms)
-            .filter(|value| is_positive_finite(*value));
-        if realized_vol.is_none() {
-            blocked_by.push(EntryPricingBlockReason::RealizedVolNotReady);
-        }
-
-        let theta_scaled_min_edge_bps = seconds_to_expiry.and_then(|seconds_to_expiry| {
-            compute_theta_scaler(&ThetaScalerInputs {
-                seconds_to_market_end: seconds_to_expiry,
-                cadence_seconds: self.config.cadence_seconds,
-                theta_decay_factor: self.config.theta_decay_factor,
+        self.pricing
+            .entry_pricing_inputs_at(
+                &taker_pricing_config(&self.config),
+                TakerPricingRequest {
+                    now_ms,
+                    strike_price: self.active.interval_open,
+                    seconds_to_market_end: self.current_seconds_to_expiry_at(now_ms),
+                },
+            )
+            .map(|result| EntryPricingInputs {
+                spot_price: result.spot_price,
+                strike_price: result.strike_price,
+                seconds_to_expiry: result.seconds_to_market_end,
+                realized_vol: result.realized_vol,
+                theta_scaled_min_edge_bps: result.theta_scaled_min_edge_bps,
             })
-            .map(|theta| self.config.edge_threshold_basis_points as f64 * theta)
-        });
-        if theta_scaled_min_edge_bps.is_none() {
-            blocked_by.push(EntryPricingBlockReason::ThetaScalerUnavailable);
-        }
-
-        if !blocked_by.is_empty() {
-            return Err(blocked_by);
-        }
-
-        Ok(EntryPricingInputs {
-            spot_price: spot_price.expect("validated above"),
-            strike_price: strike_price.expect("validated above"),
-            seconds_to_expiry: seconds_to_expiry.expect("validated above"),
-            realized_vol: realized_vol.expect("validated above"),
-            theta_scaled_min_edge_bps: theta_scaled_min_edge_bps.expect("validated above"),
-        })
+            .map_err(|blocked_by| {
+                blocked_by
+                    .into_iter()
+                    .map(entry_pricing_block_reason_from_taker)
+                    .collect()
+            })
     }
 
     fn current_fair_probability_up_at(&self, now_ms: u64) -> Option<f64> {
-        let inputs = self.current_entry_pricing_inputs_at(now_ms).ok()?;
-        bolt_v3_market_families::fair_probability_up_for_family(
-            &self.config.rotating_market_family,
-            &FairProbabilityInputs {
-                spot_price: inputs.spot_price,
-                strike_price: inputs.strike_price,
-                seconds_to_market_end: inputs.seconds_to_expiry,
-                realized_vol: inputs.realized_vol,
-                pricing_kurtosis: self.config.pricing_kurtosis,
-            },
-        )
+        self.pricing
+            .entry_pricing_at(
+                &taker_pricing_config(&self.config),
+                TakerPricingRequest {
+                    now_ms,
+                    strike_price: self.active.interval_open,
+                    seconds_to_market_end: self.current_seconds_to_expiry_at(now_ms),
+                },
+            )
+            .ok()
+            .map(|result| result.fair_probability_up)
     }
 
     fn current_position_fast_spot(&self) -> Option<&FastSpotObservation> {
@@ -2827,12 +2594,10 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn current_scaled_min_edge_bps_at(&self, now_ms: u64) -> Option<f64> {
-        compute_theta_scaler(&ThetaScalerInputs {
-            seconds_to_market_end: self.current_seconds_to_expiry_at(now_ms)?,
-            cadence_seconds: self.config.cadence_seconds,
-            theta_decay_factor: self.config.theta_decay_factor,
-        })
-        .map(|theta| self.config.edge_threshold_basis_points as f64 * theta)
+        self.pricing.theta_scaled_min_edge_bps_for(
+            &taker_pricing_config(&self.config),
+            self.current_seconds_to_expiry_at(now_ms),
+        )
     }
 
     fn current_uncertainty_band_probability_at(
@@ -2881,7 +2646,7 @@ impl BinaryOracleEdgeTaker {
             .pricing
             .fast_spot
             .as_ref()
-            .map(|spot| spot.venue_name.clone());
+            .map(|spot| spot.venue.clone());
         let fast_venue_available = spot_venue_name.is_some();
         let (realized_vol_source_venue, realized_vol_source_ts_ms) =
             self.pricing.current_realized_vol_source_at(now_ms);
@@ -3981,7 +3746,7 @@ impl BinaryOracleEdgeTaker {
             spot_price: self.current_position_spot_price(),
             spot_venue_name: self
                 .current_position_fast_spot()
-                .map(|spot| spot.venue_name.clone()),
+                .map(|spot| spot.venue.clone()),
             reference_fair_value: self.pricing.last_reference_fair_value,
             interval_open: open_position.and_then(|position| position.interval_open),
             seconds_to_expiry: self.current_position_seconds_to_expiry_at(now_ms),
@@ -5724,11 +5489,11 @@ pub fn derive_entry_reference_proofs_from_quote_observations(
             anyhow::bail!("reference quote observation source midpoint is invalid");
         }
         let quote = FastSpotObservation {
-            venue_name: reference_venue.clone(),
+            venue: reference_venue.clone(),
             price: midpoint,
             observed_ts_ms,
         };
-        if let Some(value) = estimator.observe(&quote.venue_name, quote.price, quote.observed_ts_ms)
+        if let Some(value) = estimator.observe(&quote.venue, quote.price, quote.observed_ts_ms)
             && observed_ts_ms >= market_selection_timestamp_ms
         {
             latest_ready_volatility = Some(BinaryOracleEntryRealizedVolatilitySource {
@@ -5864,18 +5629,24 @@ pub fn record_entry_decision_evidence_from_source(
     selection.published_at_ms = source.market_selection_timestamp_ms;
     strategy.apply_selection_snapshot(selection);
     strategy.observe_reference_quote(&FastSpotObservation {
-        venue_name: source.reference_quote.venue.clone(),
+        venue: source.reference_quote.venue.clone(),
         price: source.reference_quote.price,
         observed_ts_ms: source.reference_quote.observed_ts_ms,
     });
     strategy.observe_signal_quote(&FastSpotObservation {
-        venue_name: source.signal_quote.venue.clone(),
+        venue: source.signal_quote.venue.clone(),
         price: source.signal_quote.price,
         observed_ts_ms: source.signal_quote.observed_ts_ms,
     });
     strategy.active.warmup_count = source.warmup_count;
-    strategy.pricing.realized_vol.last_ready_vol = Some(source.realized_volatility.value);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(source.realized_volatility.ready_ts_ms);
+    // The replay source owns this ready RV value; a missing venue deliberately
+    // clears stale attribution and lets source reporting fall back to the
+    // just-observed signal quote when that quote is still selected.
+    strategy.pricing.seed_ready_realized_vol(
+        None,
+        source.realized_volatility.value,
+        source.realized_volatility.ready_ts_ms,
+    );
     strategy.refresh_fee_readiness();
     apply_entry_decision_source_books(&mut strategy, &source.books)?;
 
@@ -6525,6 +6296,27 @@ enum EntryPricingBlockReason {
     FeeUnavailable(OutcomeSide),
     ExecutableEntryCostUnavailable(OutcomeSide),
     WorstCaseEvUnavailable(OutcomeSide),
+}
+
+fn entry_pricing_block_reason_from_taker(
+    reason: TakerPricingBlockReason,
+) -> EntryPricingBlockReason {
+    match reason {
+        TakerPricingBlockReason::SpotPriceMissing => EntryPricingBlockReason::SpotPriceMissing,
+        TakerPricingBlockReason::StrikePriceMissing => EntryPricingBlockReason::StrikePriceMissing,
+        TakerPricingBlockReason::SecondsToExpiryMissing => {
+            EntryPricingBlockReason::SecondsToExpiryMissing
+        }
+        TakerPricingBlockReason::RealizedVolNotReady => {
+            EntryPricingBlockReason::RealizedVolNotReady
+        }
+        TakerPricingBlockReason::ThetaScalerUnavailable => {
+            EntryPricingBlockReason::ThetaScalerUnavailable
+        }
+        TakerPricingBlockReason::FairProbabilityUnavailable => {
+            EntryPricingBlockReason::FairProbabilityUnavailable
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -9907,7 +9699,7 @@ mod tests {
 
     fn fast_spot(venue_name: &str, price: f64, observed_ts_ms: u64) -> FastSpotObservation {
         FastSpotObservation {
-            venue_name: venue_name.to_string(),
+            venue: venue_name.to_string(),
             price,
             observed_ts_ms,
         }
@@ -10535,7 +10327,7 @@ mod tests {
     #[test]
     fn pricing_state_requires_fast_spot_for_pricing_and_keeps_reference_separate() {
         let config = test_strategy().config.clone();
-        let mut pricing = PricingState::from_config(&config);
+        let mut pricing = PricingState::from_config(&taker_pricing_config(&config));
 
         pricing.observe_reference_snapshot(
             &reference_tick(1_000, 3_100.0),
@@ -10566,7 +10358,7 @@ mod tests {
     #[test]
     fn pricing_state_requires_reference_anchor_for_fast_spot_selection() {
         let config = test_strategy().config.clone();
-        let mut pricing = PricingState::from_config(&config);
+        let mut pricing = PricingState::from_config(&taker_pricing_config(&config));
 
         pricing.observe_reference_snapshot(
             &ReferenceSnapshot {
@@ -10590,7 +10382,7 @@ mod tests {
     fn pricing_state_applies_lead_quality_thresholds() {
         let mut config = test_strategy().config.clone();
         config.lead_agreement_min_corr = 0.9999;
-        let mut pricing = PricingState::from_config(&config);
+        let mut pricing = PricingState::from_config(&taker_pricing_config(&config));
 
         let snapshot = ReferenceSnapshot {
             ts_ms: 1_000,
@@ -10618,7 +10410,7 @@ mod tests {
     #[test]
     fn pricing_state_clears_fast_spot_when_no_fast_venue_remains() {
         let config = test_strategy().config.clone();
-        let mut pricing = PricingState::from_config(&config);
+        let mut pricing = PricingState::from_config(&taker_pricing_config(&config));
 
         pricing.observe_reference_snapshot(
             &ReferenceSnapshot {
@@ -10681,7 +10473,7 @@ mod tests {
     #[test]
     fn selected_realized_vol_for_candidate_falls_closed_when_state_is_missing() {
         let config = test_strategy().config.clone();
-        let pricing = PricingState::from_config(&config);
+        let pricing = PricingState::from_config(&taker_pricing_config(&config));
 
         let estimator = pricing
             .selected_realized_vol_for_candidate(&lead_signal("bybit", 0, 0, 1.0, 1.0, 0.01));
@@ -10694,7 +10486,7 @@ mod tests {
     fn realized_vol_warms_across_lead_venue_switches_when_each_venue_has_history() {
         let mut strategy = ready_to_trade_strategy();
         strategy.config.vol_min_observations = 3;
-        strategy.pricing = PricingState::from_config(&strategy.config);
+        strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
         for (ts_ms, venue_name, fair_value, fast_price) in [
             (1_000, "bybit", 3_100.0, 3_100.0),
@@ -10732,7 +10524,7 @@ mod tests {
         let mut strategy = ready_to_trade_strategy();
         strategy.config.vol_min_observations = 2;
         strategy.config.lead_agreement_min_corr = 0.999;
-        strategy.pricing = PricingState::from_config(&strategy.config);
+        strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
         for (ts_ms, fair_value, bybit_price, okx_price) in [
             (1_000, 3_100.0, 3_100.0, 3_100.3),
@@ -10792,7 +10584,7 @@ mod tests {
         let mut strategy = ready_to_trade_strategy();
         strategy.config.vol_min_observations = 2;
         strategy.config.lead_agreement_min_corr = 0.999;
-        strategy.pricing = PricingState::from_config(&strategy.config);
+        strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
         for (ts_ms, fair_value, bybit_price, okx_price) in [
             (1_000, 3_100.0, 3_100.0, 3_000.0),
@@ -10842,7 +10634,7 @@ mod tests {
     fn realized_vol_does_not_borrow_ready_state_from_a_different_venue() {
         let mut strategy = ready_to_trade_strategy();
         strategy.config.vol_min_observations = 2;
-        strategy.pricing = PricingState::from_config(&strategy.config);
+        strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
         for (ts_ms, fair_value, fast_price) in [
             (1_000, 3_100.0, 3_100.0),
@@ -10894,7 +10686,7 @@ mod tests {
         strategy.config.vol_gap_reset_secs = 1;
         strategy.config.vol_bridge_valid_secs = 10;
         strategy.config.lead_jitter_max_ms = 10_000;
-        strategy.pricing = PricingState::from_config(&strategy.config);
+        strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
         for (ts_ms, venue_name, fair_value, fast_price) in [
             (1_000, "bybit", 3_100.0, 3_100.0),
@@ -10947,7 +10739,7 @@ mod tests {
     #[test]
     fn pricing_state_reports_realized_vol_source_during_bridge_without_fast_spot() {
         let config = test_strategy().config.clone();
-        let mut pricing = PricingState::from_config(&config);
+        let mut pricing = PricingState::from_config(&taker_pricing_config(&config));
         pricing.realized_vol_source_venue = Some("bybit".to_string());
         pricing.realized_vol.last_ready_vol = Some(1.5);
         pricing.realized_vol.last_ready_ts_ms = Some(1_200);
@@ -11002,7 +10794,7 @@ mod tests {
     fn live_fair_probability_is_computed_from_strategy_state_once_vol_warms() {
         let mut strategy = ready_to_trade_strategy();
         strategy.config.vol_min_observations = 3;
-        strategy.pricing = PricingState::from_config(&strategy.config);
+        strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
         for (ts_ms, fair_value, fast_spot_price) in [
             (1_000, 3_100.0, 3_100.0),
@@ -16628,10 +16420,7 @@ mod tests {
         // A jump from 100.0 -> 110.0 is a 10% single-step move, >= the 5% threshold.
         strategy.pricing.observe_signal_quote(
             &fast_spot("bybit", 110.0, 2_000),
-            strategy.config.lead_agreement_min_corr,
-            strategy.config.lead_jitter_max_ms,
-            strategy.config.spike_guard_return_threshold,
-            strategy.config.spike_guard_cooldown_secs,
+            &taker_pricing_config(&strategy.config),
         );
 
         // Cooldown deadline = observed_ts (2_000ms) + 5s * 1_000ms = 7_000ms.
@@ -16671,10 +16460,7 @@ mod tests {
         // A 2% move (100.0 -> 102.0) is below the 5% threshold.
         strategy.pricing.observe_signal_quote(
             &fast_spot("bybit", 102.0, 2_000),
-            strategy.config.lead_agreement_min_corr,
-            strategy.config.lead_jitter_max_ms,
-            strategy.config.spike_guard_return_threshold,
-            strategy.config.spike_guard_cooldown_secs,
+            &taker_pricing_config(&strategy.config),
         );
 
         assert_eq!(
@@ -16698,10 +16484,7 @@ mod tests {
         // First observation has no baseline; a spike cannot be inferred.
         strategy.pricing.observe_signal_quote(
             &fast_spot("bybit", 110.0, 2_000),
-            strategy.config.lead_agreement_min_corr,
-            strategy.config.lead_jitter_max_ms,
-            strategy.config.spike_guard_return_threshold,
-            strategy.config.spike_guard_cooldown_secs,
+            &taker_pricing_config(&strategy.config),
         );
 
         assert_eq!(
@@ -16726,10 +16509,7 @@ mod tests {
         // active 7_000ms and must not retract it.
         strategy.pricing.observe_signal_quote(
             &fast_spot("bybit", 130.0, 1_500),
-            strategy.config.lead_agreement_min_corr,
-            strategy.config.lead_jitter_max_ms,
-            strategy.config.spike_guard_return_threshold,
-            strategy.config.spike_guard_cooldown_secs,
+            &taker_pricing_config(&strategy.config),
         );
         assert_eq!(
             strategy.pricing.spike_until_ms,
@@ -16742,10 +16522,7 @@ mod tests {
         strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
         strategy.pricing.observe_signal_quote(
             &fast_spot("bybit", 130.0, 4_000),
-            strategy.config.lead_agreement_min_corr,
-            strategy.config.lead_jitter_max_ms,
-            strategy.config.spike_guard_return_threshold,
-            strategy.config.spike_guard_cooldown_secs,
+            &taker_pricing_config(&strategy.config),
         );
         assert_eq!(
             strategy.pricing.spike_until_ms,

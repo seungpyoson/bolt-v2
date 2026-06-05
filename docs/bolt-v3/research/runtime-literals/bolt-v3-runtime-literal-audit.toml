@@ -8675,6 +8675,22 @@ reason = "This diagnostic context points to the TOML-owned Chainlink feed bindin
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
 kind = "string"
+literal = '''"{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD}"'''
+context = '''"{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD}"'''
+classification = "chainlink_data_streams_validation_context_template"
+reason = "Diagnostic field path for the gate-provider rest_base_url https-scheme check (shared validate_https_rest_base_url helper); the URL value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/auth.rs"
+kind = "string"
+literal = '''"https"'''
+context = '''if base_url.scheme() != "https" {'''
+classification = "url_scheme_validation_literal"
+reason = "Defense-in-depth transport-scheme guard in the signed report-request URL builder; refuses to build a credentialed request over any non-https base. The scheme is a protocol constant, not a TOML value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
 literal = '''"{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]"'''
 context = '''"{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]"'''
 classification = "target_gate_validation_context_template"

@@ -155,17 +155,11 @@ fn validate_data_bounds(key: &str, data: &ChainlinkDataConfig) -> Vec<String> {
             "clients.{key}.data.rest_base_url must be a non-empty URL"
         ));
     } else {
-        match url::Url::parse(&data.rest_base_url) {
-            Ok(parsed) if parsed.scheme() != "https" => errors.push(format!(
-                "clients.{key}.data.rest_base_url must use the https scheme (got `{scheme}`); \
-                 signed Chainlink Data Streams credentials must never be sent over an insecure transport",
-                scheme = parsed.scheme()
-            )),
-            Ok(_) => {}
-            Err(_) => errors.push(format!(
-                "clients.{key}.data.rest_base_url must be a valid URL"
-            )),
-        }
+        crate::bolt_v3_validate::validate_https_rest_base_url(
+            &format!("clients.{key}.data.rest_base_url"),
+            &data.rest_base_url,
+            &mut errors,
+        );
     }
     if data.report_endpoint_path.trim().is_empty() {
         errors.push(format!(
@@ -437,7 +431,12 @@ pub(crate) fn validate_client_gate_provider_consistency(root: &BoltV3RootConfig)
             continue;
         };
 
-        let check_str = |field: &str, client_value: &str| -> Option<String> {
+        // Section-scoped closures so a divergence error names the TOML subtable
+        // the field actually lives in: `data` for the endpoint fields, `secrets`
+        // for the SSM credential parameters (which live under
+        // [clients.<id>.secrets], not [clients.<id>.data]). The section word
+        // stays inside the message template — same shape, two prefixes.
+        let check_data_str = |field: &str, client_value: &str| -> Option<String> {
             let gate_value = gate_table.get(field).and_then(toml::Value::as_str);
             if gate_value == Some(client_value) {
                 None
@@ -448,12 +447,23 @@ pub(crate) fn validate_client_gate_provider_consistency(root: &BoltV3RootConfig)
                 ))
             }
         };
+        let check_secrets_str = |field: &str, client_value: &str| -> Option<String> {
+            let gate_value = gate_table.get(field).and_then(toml::Value::as_str);
+            if gate_value == Some(client_value) {
+                None
+            } else {
+                Some(format!(
+                    "clients.{client_id}.secrets.{field} (`{client_value}`) must match gate_providers.{gate_provider_id}.chainlink_data_streams.{field} (`{}`); the live strike client and the resolution-oracle gate provider must reference one source",
+                    gate_value.unwrap_or("<missing>")
+                ))
+            }
+        };
 
-        errors.extend(check_str(
+        errors.extend(check_data_str(
             CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD,
             &data.rest_base_url,
         ));
-        errors.extend(check_str(
+        errors.extend(check_data_str(
             CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD,
             &data.report_endpoint_path,
         ));
@@ -474,11 +484,11 @@ pub(crate) fn validate_client_gate_provider_consistency(root: &BoltV3RootConfig)
         if let Some(secrets_value) = client.secrets.as_ref()
             && let Ok(secrets) = secrets_value.clone().try_into::<ChainlinkSecretsConfig>()
         {
-            errors.extend(check_str(
+            errors.extend(check_secrets_str(
                 CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD,
                 &secrets.api_key_ssm_parameter,
             ));
-            errors.extend(check_str(
+            errors.extend(check_secrets_str(
                 CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD,
                 &secrets.api_secret_ssm_parameter,
             ));

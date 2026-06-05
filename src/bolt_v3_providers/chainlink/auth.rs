@@ -68,6 +68,14 @@ pub(crate) fn chainlink_data_streams_report_request_url(
 ) -> Result<(String, String), BoltV3OperatorArtifactError> {
     let base_url = url::Url::parse(rest_base_url)
         .map_err(|_| price_to_beat_report_provenance_config_invalid())?;
+    // Defense-in-depth at the credential-bearing chokepoint: this request URL
+    // accompanies HMAC-signed Data Streams credentials, so refuse to build one
+    // over any non-https transport. Config validation already enforces https on
+    // the strike client, so this is a redundant fail-closed guard that protects
+    // any caller reaching the builder without that validation.
+    if base_url.scheme() != "https" {
+        return Err(price_to_beat_report_provenance_config_invalid());
+    }
     let mut url = base_url
         .join(report_endpoint_path)
         .map_err(|_| price_to_beat_report_provenance_config_invalid())?;
@@ -196,6 +204,20 @@ mod tests {
             TEST_REPORT_TIMESTAMP_SECONDS,
         )
         .expect_err("a non-URL base must fail closed");
+    }
+
+    #[test]
+    fn report_request_url_rejects_non_https_base_url() {
+        // The request URL accompanies HMAC-signed Data Streams credentials, so
+        // the builder must fail closed on a non-https base even if config
+        // validation is bypassed — credentials must never travel plaintext.
+        chainlink_data_streams_report_request_url(
+            "http://api.example.com/",
+            TEST_ENDPOINT_PATH,
+            TEST_FEED_ID,
+            TEST_REPORT_TIMESTAMP_SECONDS,
+        )
+        .expect_err("a non-https base must fail closed");
     }
 
     #[test]

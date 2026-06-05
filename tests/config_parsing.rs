@@ -3702,10 +3702,42 @@ fn chainlink_client_api_key_ssm_diverging_from_gate_provider_fails_single_source
     let messages = validate_root_only(&root);
     assert!(
         messages.iter().any(|message| {
-            message.contains("clients.chainlink_strike.data.api_key_ssm_parameter")
+            message.contains("clients.chainlink_strike.secrets.api_key_ssm_parameter")
                 && message.contains("must match gate_providers")
         }),
         "a chainlink client whose api_key_ssm_parameter diverges from the gate provider must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn chainlink_gate_provider_non_https_rest_base_url_fails_closed() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // The resolution-oracle gate provider names the SAME Chainlink Data Streams
+    // endpoint as the live strike client and must be held to the same transport
+    // standard. A gate provider declaring an http:// rest_base_url must fail
+    // closed on https grounds at config load — signed credentials must never
+    // traverse plaintext regardless of which config block names the endpoint.
+    // This is the gate-side companion to the client-side https check; before the
+    // shared validator was wired into the gate validator, only a client/gate
+    // mismatch fired and the gate's own transport was unchecked.
+    let mutated = replace_in_fixture_section(
+        "[gate_providers.resolution_oracle_primary.chainlink_data_streams]",
+        &[(
+            "rest_base_url = \"https://api.testnet-dataengine.chain.link\"",
+            "rest_base_url = \"http://api.testnet-dataengine.chain.link\"",
+        )],
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("gate provider http fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains(
+                "gate_providers.resolution_oracle_primary.chainlink_data_streams.rest_base_url",
+            ) && message.contains("https scheme")
+        }),
+        "a gate provider whose rest_base_url is not https must fail closed on https grounds: {messages:#?}"
     );
 }
 

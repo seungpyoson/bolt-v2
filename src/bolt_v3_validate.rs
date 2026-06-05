@@ -483,6 +483,29 @@ fn validate_gate_providers(
     errors
 }
 
+/// Validates that a Chainlink Data Streams `rest_base_url` parses as a URL and
+/// uses the `https` scheme. The signed Data Streams credentials travel in the
+/// request `Authorization` header, so any non-https (or unparseable) endpoint
+/// fails closed at config load — credentials must never traverse plaintext.
+/// Shared by the live-strike client validator and the resolution-oracle
+/// gate-provider validator so both config blocks that name the same endpoint are
+/// held to one transport standard.
+pub(crate) fn validate_https_rest_base_url(
+    field_path: &str,
+    rest_base_url: &str,
+    errors: &mut Vec<String>,
+) {
+    match url::Url::parse(rest_base_url) {
+        Ok(parsed) if parsed.scheme() != "https" => errors.push(format!(
+            "{field_path} must use the https scheme (got `{scheme}`); \
+             signed credentials must never be sent over an insecure transport",
+            scheme = parsed.scheme()
+        )),
+        Ok(_) => {}
+        Err(_) => errors.push(format!("{field_path} must be a valid absolute URL")),
+    }
+}
+
 fn validate_chainlink_data_streams_gate_provider(
     context: &str,
     table: &toml::map::Map<String, toml::Value>,
@@ -519,11 +542,14 @@ fn validate_chainlink_data_streams_gate_provider(
         &format!("{context}.chainlink_data_streams"),
         CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD,
         &mut errors,
-    ) && url::Url::parse(rest_base_url).is_err()
-    {
-        errors.push(format!(
-            "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD} must be an absolute URL"
-        ));
+    ) {
+        validate_https_rest_base_url(
+            &format!(
+                "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD}"
+            ),
+            rest_base_url,
+            &mut errors,
+        );
     }
     if let Some(report_endpoint_path) = required_string_field(
         table,

@@ -58,10 +58,7 @@ use crate::{
     },
     bolt_v3_operator_artifacts::EntryReadinessGateSession,
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
-    bolt_v3_position_contract::{
-        expected_exit_order_side_for_position, expected_position_side_for_entry_order,
-        is_observed_open_side,
-    },
+    bolt_v3_position_contract::is_observed_open_side,
     bolt_v3_price_to_beat::price_to_beat_from_readiness_session,
     bolt_v3_providers::{
         STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
@@ -113,6 +110,18 @@ mod config;
 pub use self::config::BinaryOracleEdgeTakerBuilder;
 use self::config::{
     BinaryOracleEdgeTakerConfig, BinaryOracleEdgeTakerFieldType, BinaryOracleEdgeTakerOrderConfig,
+};
+
+mod exposure;
+
+use self::exposure::{
+    BlindRecoveryReason, BlindRecoveryState, ConfiguredPositionContract, EntryReconcileReason,
+    ExitPendingState, ExposureOccupancy, ExposureState, ForcedFlatInputs, ForcedFlatReason,
+    ManagedPositionOrigin, ManagedPositionState, OpenPositionState, PendingEntryState,
+    PendingExitState, PositionMaterializationSpec, UnsupportedObservedReason,
+    UnsupportedObservedState, evaluate_forced_flat_predicates,
+    infer_strategy_position_side_from_entry_fill, managed_position_effective_entry_cost,
+    supports_strategy_managed_position,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -423,322 +432,6 @@ impl SignedTradeFlow {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct OpenPositionState {
-    market_id: Option<String>,
-    instrument_id: InstrumentId,
-    position_id: PositionId,
-    outcome_side: Option<OutcomeSide>,
-    outcome_fees: OutcomeFeeState,
-    historical_entry_fee_bps: Option<f64>,
-    entry_order_side: OrderSide,
-    side: PositionSide,
-    quantity: Quantity,
-    avg_px_open: f64,
-    interval_open: Option<f64>,
-    selection_published_at_ms: Option<u64>,
-    seconds_to_expiry_at_selection: Option<u64>,
-    book: OutcomeBookState,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct PendingEntryState {
-    client_order_id: ClientOrderId,
-    market_id: Option<String>,
-    instrument_id: InstrumentId,
-    outcome_side: Option<OutcomeSide>,
-    outcome_fees: OutcomeFeeState,
-    historical_entry_fee_bps: Option<f64>,
-    interval_open: Option<f64>,
-    selection_published_at_ms: Option<u64>,
-    seconds_to_expiry_at_selection: Option<u64>,
-    book: OutcomeBookState,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct PositionMaterializationSpec {
-    instrument_id: InstrumentId,
-    position_id: PositionId,
-    entry_order_side: OrderSide,
-    side: PositionSide,
-    quantity: Quantity,
-    avg_px_open: f64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct PendingExitState {
-    client_order_id: ClientOrderId,
-    market_id: Option<String>,
-    position_id: Option<PositionId>,
-    fill_received: bool,
-    close_received: bool,
-    terminal_received: bool,
-    residual_position_observed_after_fill: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ManagedPositionOrigin {
-    StrategyEntry,
-    RecoveryBootstrap,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ManagedPositionState {
-    position: OpenPositionState,
-    origin: ManagedPositionOrigin,
-    pending_entry: Option<PendingEntryState>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct ExitPendingState {
-    position: Option<ManagedPositionState>,
-    pending_exit: PendingExitState,
-}
-
-impl ExitPendingState {
-    fn is_terminal(&self) -> bool {
-        self.pending_exit.fill_received && self.pending_exit.close_received
-    }
-
-    fn into_state_after_exit_update(self) -> ExposureState {
-        if self.is_terminal() {
-            return ExposureState::Flat;
-        }
-        if self.pending_exit.terminal_received
-            && (!self.pending_exit.fill_received
-                || self.pending_exit.residual_position_observed_after_fill)
-        {
-            return match self.position {
-                Some(position) => ExposureState::Managed(position),
-                None => ExposureState::Flat,
-            };
-        }
-        ExposureState::ExitPending(self)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EntryReconcileReason {
-    AwaitingPositionMaterialization,
-    UnsupportedEntryFillSide {
-        order_side: OrderSide,
-    },
-    InvalidObservedPosition {
-        entry_order_side: OrderSide,
-        side: PositionSide,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UnsupportedObservedReason {
-    BootstrappedUnsupportedContract,
-    LiveUnsupportedContract,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BlindRecoveryReason {
-    CacheProbeFailed,
-    MultipleOpenPositions {
-        count: usize,
-    },
-    InvalidBootstrappedPosition {
-        entry_order_side: OrderSide,
-        side: PositionSide,
-    },
-    InvalidLivePosition {
-        entry_order_side: OrderSide,
-        side: Option<PositionSide>,
-    },
-    ForeignVenuePosition {
-        instrument_venue: Venue,
-        execution_venue: Venue,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct UnsupportedObservedState {
-    observed: OpenPositionState,
-    reason: UnsupportedObservedReason,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct BlindRecoveryState {
-    reason: BlindRecoveryReason,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum ExposureState {
-    Flat,
-    PendingEntry(PendingEntryState),
-    EntryReconcilePending {
-        pending: PendingEntryState,
-        reason: EntryReconcileReason,
-    },
-    Managed(ManagedPositionState),
-    ExitPending(ExitPendingState),
-    UnsupportedObserved(UnsupportedObservedState),
-    BlindRecovery(BlindRecoveryState),
-}
-
-impl ExposureState {
-    fn pending_entry(&self) -> Option<&PendingEntryState> {
-        match self {
-            Self::PendingEntry(pending) | Self::EntryReconcilePending { pending, .. } => {
-                Some(pending)
-            }
-            Self::Managed(position) => position.pending_entry.as_ref(),
-            Self::ExitPending(exit) => exit
-                .position
-                .as_ref()
-                .and_then(|position| position.pending_entry.as_ref()),
-            _ => None,
-        }
-    }
-
-    fn pending_entry_mut(&mut self) -> Option<&mut PendingEntryState> {
-        match self {
-            Self::PendingEntry(pending) | Self::EntryReconcilePending { pending, .. } => {
-                Some(pending)
-            }
-            Self::Managed(position) => position.pending_entry.as_mut(),
-            Self::ExitPending(exit) => exit
-                .position
-                .as_mut()
-                .and_then(|position| position.pending_entry.as_mut()),
-            _ => None,
-        }
-    }
-
-    fn managed_position(&self) -> Option<&ManagedPositionState> {
-        match self {
-            Self::Managed(position) => Some(position),
-            Self::ExitPending(exit) => exit.position.as_ref(),
-            _ => None,
-        }
-    }
-
-    fn managed_position_mut(&mut self) -> Option<&mut ManagedPositionState> {
-        match self {
-            Self::Managed(position) => Some(position),
-            Self::ExitPending(exit) => exit.position.as_mut(),
-            _ => None,
-        }
-    }
-
-    fn observed_position(&self) -> Option<&OpenPositionState> {
-        match self {
-            Self::Managed(position) => Some(&position.position),
-            Self::ExitPending(exit) => exit.position.as_ref().map(|position| &position.position),
-            Self::UnsupportedObserved(observed) => Some(&observed.observed),
-            _ => None,
-        }
-    }
-
-    fn held_instrument_id(&self) -> Option<InstrumentId> {
-        self.observed_position()
-            .map(|position| position.instrument_id)
-            .or_else(|| self.pending_entry().map(|pending| pending.instrument_id))
-    }
-
-    fn observed_position_mut(&mut self) -> Option<&mut OpenPositionState> {
-        match self {
-            Self::Managed(position) => Some(&mut position.position),
-            Self::ExitPending(exit) => exit
-                .position
-                .as_mut()
-                .map(|position| &mut position.position),
-            Self::UnsupportedObserved(observed) => Some(&mut observed.observed),
-            _ => None,
-        }
-    }
-
-    fn exit_pending(&self) -> Option<&ExitPendingState> {
-        match self {
-            Self::ExitPending(exit) => Some(exit),
-            _ => None,
-        }
-    }
-
-    fn exit_pending_mut(&mut self) -> Option<&mut ExitPendingState> {
-        match self {
-            Self::ExitPending(exit) => Some(exit),
-            _ => None,
-        }
-    }
-
-    fn occupancy(&self) -> Option<ExposureOccupancy> {
-        match self {
-            Self::Flat => None,
-            Self::PendingEntry(_) => Some(ExposureOccupancy::PendingEntry),
-            Self::EntryReconcilePending { .. } => Some(ExposureOccupancy::EntryReconcilePending),
-            Self::Managed(_) => Some(ExposureOccupancy::ManagedPosition),
-            Self::ExitPending(_) => Some(ExposureOccupancy::ExitPending),
-            Self::UnsupportedObserved(_) => Some(ExposureOccupancy::UnsupportedObserved),
-            Self::BlindRecovery(_) => Some(ExposureOccupancy::BlindRecovery),
-        }
-    }
-
-    #[cfg(test)]
-    fn blocks_new_entries(&self) -> bool {
-        !matches!(self, Self::Flat)
-    }
-
-    fn is_recovering(&self) -> bool {
-        match self {
-            Self::Managed(position) => position.origin == ManagedPositionOrigin::RecoveryBootstrap,
-            Self::ExitPending(exit) => exit.position.as_ref().is_some_and(|position| {
-                position.origin == ManagedPositionOrigin::RecoveryBootstrap
-            }),
-            Self::EntryReconcilePending { .. }
-            | Self::UnsupportedObserved(_)
-            | Self::BlindRecovery(_) => true,
-            Self::Flat | Self::PendingEntry(_) => false,
-        }
-    }
-
-    fn current_position_market_id(&self) -> Option<String> {
-        self.managed_position()
-            .and_then(|position| position.position.market_id.clone())
-            .or_else(|| {
-                self.exit_pending()
-                    .and_then(|exit| exit.pending_exit.market_id.clone())
-            })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ConfiguredPositionContract {
-    entry_order_side: OrderSide,
-    entry_position_side: PositionSide,
-    exit_order_side: OrderSide,
-    exit_position_side: PositionSide,
-}
-
-fn supports_strategy_managed_position(
-    entry_order_side: OrderSide,
-    side: PositionSide,
-    contract: ConfiguredPositionContract,
-) -> bool {
-    supports_strategy_position_contract(contract)
-        && entry_order_side == contract.entry_order_side
-        && side == contract.entry_position_side
-        && is_observed_open_side(side)
-}
-
-fn supports_strategy_position_contract(contract: ConfiguredPositionContract) -> bool {
-    if contract.entry_position_side == PositionSide::Short
-        || contract.exit_position_side == PositionSide::Short
-    {
-        return false;
-    }
-    expected_position_side_for_entry_order(contract.entry_order_side)
-        .is_some_and(|side| side == contract.entry_position_side)
-        && expected_exit_order_side_for_position(contract.exit_position_side)
-            .is_some_and(|side| side == contract.exit_order_side)
-        && contract.entry_position_side == contract.exit_position_side
-        && is_observed_open_side(contract.entry_position_side)
-}
-
 fn order_price_for_side(
     book: &OutcomeBookState,
     order_side: OrderSide,
@@ -760,25 +453,6 @@ fn visible_book_depth_side_for_order(
         (OrderSide::Sell, false) | (OrderSide::Buy, true) => Some(OrderSide::Sell),
         _ => None,
     }
-}
-
-fn infer_strategy_position_side_from_entry_fill(
-    entry_order_side: OrderSide,
-    configured_entry_order_side: OrderSide,
-    configured_position_side: PositionSide,
-) -> Option<PositionSide> {
-    (entry_order_side == configured_entry_order_side).then_some(configured_position_side)
-}
-
-fn managed_position_effective_entry_cost(
-    position: &OpenPositionState,
-    configured_entry_order_side: OrderSide,
-    configured_position_side: PositionSide,
-) -> Option<f64> {
-    (position.entry_order_side == configured_entry_order_side
-        && position.side == configured_position_side)
-        .then_some(position.avg_px_open)
-        .filter(|effective_cost| is_positive_finite(*effective_cost))
 }
 
 /// Project the strategy's volatility-window TOML knobs into the foundational
@@ -5936,25 +5610,6 @@ fn best_healthy_oracle_price(snapshot: &ReferenceSnapshot) -> Option<f64> {
         .and_then(|venue| venue.observed_price)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExposureOccupancy {
-    PendingEntry,
-    EntryReconcilePending,
-    ManagedPosition,
-    ExitPending,
-    UnsupportedObserved,
-    BlindRecovery,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ForcedFlatReason {
-    Freeze,
-    StaleReference,
-    ThinBook,
-    MetadataMismatch,
-    FastVenueIncoherent,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum EntryBlockReason {
     PhaseNotActive,
@@ -6306,51 +5961,6 @@ fn evaluate_exit_decision(
     } else {
         ExitDecision::Hold
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ForcedFlatInputs {
-    phase: SelectionPhase,
-    metadata_matches_selection: bool,
-    last_reference_ts_ms: Option<u64>,
-    now_ms: u64,
-    stale_reference_after_ms: u64,
-    liquidity_available: Option<f64>,
-    min_liquidity_required: f64,
-    fast_venue_incoherent: bool,
-}
-
-fn evaluate_forced_flat_predicates(inputs: &ForcedFlatInputs) -> Vec<ForcedFlatReason> {
-    let mut reasons = Vec::new();
-    // Defense-in-depth (A14): a MISSING reference timestamp is the maximally
-    // stale condition — the strategy has never observed a reference quote — so
-    // it must classify as stale, not fresh. `is_none_or` returns `true` for the
-    // `None` case (no reference ever) AND for an observed-but-aged reference,
-    // and `false` only for a reference observed within the freshness bound.
-    let reference_stale = inputs.last_reference_ts_ms.is_none_or(|last_ts_ms| {
-        inputs.now_ms.saturating_sub(last_ts_ms) > inputs.stale_reference_after_ms
-    });
-
-    if inputs.phase == SelectionPhase::Freeze {
-        reasons.push(ForcedFlatReason::Freeze);
-    }
-    if reference_stale {
-        reasons.push(ForcedFlatReason::StaleReference);
-    }
-    if inputs
-        .liquidity_available
-        .is_none_or(|liquidity| !liquidity.is_finite() || liquidity < inputs.min_liquidity_required)
-    {
-        reasons.push(ForcedFlatReason::ThinBook);
-    }
-    if !inputs.metadata_matches_selection {
-        reasons.push(ForcedFlatReason::MetadataMismatch);
-    }
-    if inputs.fast_venue_incoherent && reference_stale {
-        reasons.push(ForcedFlatReason::FastVenueIncoherent);
-    }
-
-    reasons
 }
 
 #[cfg(test)]
@@ -17441,6 +17051,43 @@ mod tests {
                 .map(|state| state.position.position_id),
             Some(PositionId::from("P-EXIT-STATE-001"))
         );
+    }
+
+    #[test]
+    fn exposure_exit_pending_terminal_with_residual_position_restores_managed_state() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            PositionId::from("P-EXIT-RESIDUAL-001"),
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        let exit_pending = ExitPendingState {
+            position: Some(ManagedPositionState {
+                position: open_position.clone(),
+                origin: ManagedPositionOrigin::StrategyEntry,
+                pending_entry: None,
+            }),
+            pending_exit: PendingExitState {
+                client_order_id: ClientOrderId::from("EXIT-RESIDUAL-001"),
+                market_id: open_position.market_id.clone(),
+                position_id: Some(open_position.position_id),
+                fill_received: true,
+                close_received: false,
+                terminal_received: true,
+                residual_position_observed_after_fill: true,
+            },
+        };
+
+        let state = exit_pending.into_state_after_exit_update();
+
+        let ExposureState::Managed(restored) = state else {
+            panic!("terminal residual position must restore managed exposure");
+        };
+        assert_eq!(restored.position.position_id, open_position.position_id);
+        assert_eq!(restored.origin, ManagedPositionOrigin::StrategyEntry);
     }
 
     #[test]

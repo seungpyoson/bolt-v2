@@ -2096,21 +2096,20 @@ pub struct BinaryOracleEdgeTaker {
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
     pricing: PricingState,
     selection_missing_since_ms: Option<u64>,
-    /// Interval-open boundary (`interval_start_ms`) for which an at/after-open
-    /// live-strike subscribe has already been issued. With
-    /// `market_selection_rule = "active_or_next"` the configured target can
-    /// select a FUTURE "Next" interval whose Chainlink report does not exist
-    /// yet; a subscribe issued before that interval opens strands the strike.
     #[cfg(test)]
     book_subscription_events: Vec<BookSubscriptionEvent>,
-    /// Test-only observability for live-strike fetch attempts. Incremented once
-    /// each time `subscribe_resolution_strike` clears its asset-binding guard and
-    /// would issue the index-price subscribe in production. Lets a test assert
-    /// that the strategy (re)issues the strike fetch at interval open rather than
-    /// firing a single one-shot subscribe that strands a future-selected (Next)
-    /// interval.
+    /// Test-only observability for live-strike (re)subscribe attempts. Records,
+    /// in order, the index-price unsubscribe/subscribe events
+    /// `subscribe_resolution_strike` issues, so a test can assert that every
+    /// strike re-subscribe is preceded by an unsubscribe of the same resolution
+    /// instrument. That pairing is mandatory: NT's `DataClientAdapter` keys
+    /// index-price subscriptions by `instrument_id` and ignores the params map
+    /// (`nautilus_data` `client.rs:494-498`, rev `6e059dc`), so a bare
+    /// re-subscribe with the constant resolution instrument is silently swallowed
+    /// and the point-in-time strike source never re-fetches for later
+    /// windows/retries.
     #[cfg(test)]
-    resolution_strike_subscribe_count: u32,
+    resolution_strike_subscribe_events: Vec<ResolutionStrikeSubscribeEvent>,
 }
 
 impl BinaryOracleEdgeTaker {
@@ -2155,7 +2154,7 @@ impl BinaryOracleEdgeTaker {
             #[cfg(test)]
             book_subscription_events: Vec::new(),
             #[cfg(test)]
-            resolution_strike_subscribe_count: 0,
+            resolution_strike_subscribe_events: Vec::new(),
         }
     }
 
@@ -2542,6 +2541,18 @@ impl BinaryOracleEdgeTaker {
             return;
         }
         let window_open_unix_seconds = interval_start_ms / MILLIS_PER_SECOND_U64;
+        // Defeat NT's per-instrument index-price subscribe dedup: `DataClientAdapter`
+        // keys subscriptions by `instrument_id` and ignores the params map
+        // (`nautilus_data` client.rs:494-498, rev 6e059dc), so a bare re-subscribe
+        // with the constant resolution instrument is silently swallowed and the
+        // point-in-time strike source would never re-fetch for later windows or
+        // retries. Clear the subscription first, then re-subscribe carrying the new
+        // window-open boundary in the params map.
+        #[cfg(not(test))]
+        self.unsubscribe_index_prices(resolution_instrument_id, Some(resolution_client_id), None);
+        self.record_resolution_strike_subscribe_event(ResolutionStrikeSubscribeEvent::unsubscribe(
+            resolution_instrument_id,
+        ));
         let mut params = Params::new();
         params.insert(
             STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM.to_string(),
@@ -2554,11 +2565,11 @@ impl BinaryOracleEdgeTaker {
             Some(params),
         );
         #[cfg(test)]
-        {
-            let _ = (resolution_instrument_id, resolution_client_id, params);
-            self.resolution_strike_subscribe_count =
-                self.resolution_strike_subscribe_count.saturating_add(1);
-        }
+        let _ = (resolution_client_id, params);
+        self.record_resolution_strike_subscribe_event(ResolutionStrikeSubscribeEvent::subscribe(
+            resolution_instrument_id,
+            window_open_unix_seconds,
+        ));
     }
 
     fn replace_book_subscriptions(&mut self, next: OutcomeBookSubscriptions) {
@@ -7075,6 +7086,58 @@ impl BinaryOracleEdgeTaker {
         self.book_subscription_events.push(event);
         #[cfg(not(test))]
         let _ = event;
+    }
+}
+
+/// One recorded index-price (un)subscribe the resolution-strike re-arm path
+/// issued. Constructed unconditionally so the production ordering is the same
+/// code the test observes; only the storage is test-only (see
+/// [`BinaryOracleEdgeTaker::record_resolution_strike_subscribe_event`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolutionStrikeSubscribeEvent {
+    action: &'static str,
+    instrument_id: InstrumentId,
+    window_open_unix_seconds: u64,
+}
+
+const RESOLUTION_STRIKE_SUBSCRIBE_ACTION: &str = stringify!(subscribe);
+const RESOLUTION_STRIKE_UNSUBSCRIBE_ACTION: &str = stringify!(unsubscribe);
+
+impl ResolutionStrikeSubscribeEvent {
+    fn subscribe(instrument_id: InstrumentId, window_open_unix_seconds: u64) -> Self {
+        Self {
+            action: RESOLUTION_STRIKE_SUBSCRIBE_ACTION,
+            instrument_id,
+            window_open_unix_seconds,
+        }
+    }
+
+    fn unsubscribe(instrument_id: InstrumentId) -> Self {
+        Self {
+            action: RESOLUTION_STRIKE_UNSUBSCRIBE_ACTION,
+            instrument_id,
+            window_open_unix_seconds: 0,
+        }
+    }
+}
+
+impl BinaryOracleEdgeTaker {
+    fn record_resolution_strike_subscribe_event(&mut self, event: ResolutionStrikeSubscribeEvent) {
+        #[cfg(test)]
+        self.resolution_strike_subscribe_events.push(event);
+        #[cfg(not(test))]
+        let _ = event;
+    }
+
+    #[cfg(test)]
+    fn resolution_strike_subscribe_count(&self) -> u32 {
+        u32::try_from(
+            self.resolution_strike_subscribe_events
+                .iter()
+                .filter(|event| event.action == RESOLUTION_STRIKE_SUBSCRIBE_ACTION)
+                .count(),
+        )
+        .unwrap_or(u32::MAX)
     }
 }
 
@@ -16787,7 +16850,7 @@ mod tests {
             strategy.active.price_to_beat.is_none(),
             "precondition: no live strike can exist before the interval opens",
         );
-        let fetches_before_open = strategy.resolution_strike_subscribe_count;
+        let fetches_before_open = strategy.resolution_strike_subscribe_count();
         assert_eq!(
             fetches_before_open, 1,
             "the one-shot fetch must fire once when the future interval is first selected",
@@ -16805,7 +16868,7 @@ mod tests {
             "the same interval must still be selected once it opens",
         );
 
-        let fetches_after_open = strategy.resolution_strike_subscribe_count;
+        let fetches_after_open = strategy.resolution_strike_subscribe_count();
         assert!(
             fetches_after_open > fetches_before_open,
             "strike fetch must be re-issued once wall-clock reaches interval open for a future-selected interval that has no strike yet \
@@ -16878,12 +16941,12 @@ mod tests {
             strategy.active.price_to_beat.is_none(),
             "precondition: no live strike can exist before the interval opens",
         );
-        let fetches_pre_open = strategy.resolution_strike_subscribe_count;
+        let fetches_pre_open = strategy.resolution_strike_subscribe_count();
 
         // First open tick: the at-open fetch fires but never binds (the test
         // subscribe is a no-op that does not deliver an IndexPriceUpdate).
         strategy.refresh_selection_from_cache(next_start_ms + 1);
-        let fetches_after_first_open_tick = strategy.resolution_strike_subscribe_count;
+        let fetches_after_first_open_tick = strategy.resolution_strike_subscribe_count();
         assert!(
             fetches_after_first_open_tick > fetches_pre_open,
             "the strike fetch must be re-issued when the interval first opens",
@@ -16896,13 +16959,104 @@ mod tests {
         // Second open tick (next retry-timer fire): same interval still open, strike
         // still unbound -> the fetch MUST be re-issued again rather than stranded.
         strategy.refresh_selection_from_cache(next_start_ms + 2);
-        let fetches_after_second_open_tick = strategy.resolution_strike_subscribe_count;
+        let fetches_after_second_open_tick = strategy.resolution_strike_subscribe_count();
         assert!(
             fetches_after_second_open_tick > fetches_after_first_open_tick,
             "strike fetch must keep retrying on each open retry tick while price_to_beat is \
              unbound (after first open tick={fetches_after_first_open_tick}, after \
              second={fetches_after_second_open_tick})",
         );
+    }
+
+    #[test]
+    fn resolution_strike_reissue_unsubscribes_before_each_subscribe_to_defeat_nt_dedup() {
+        // NT's `DataClientAdapter` keys index-price subscriptions by `instrument_id`
+        // and ignores the params map (`nautilus_data` client.rs:494-498, rev 6e059dc),
+        // so a bare re-subscribe with the constant resolution instrument is silently
+        // swallowed and the point-in-time strike source never re-fetches for later
+        // windows or retries. `subscribe_resolution_strike` must therefore unsubscribe
+        // the resolution instrument immediately before every re-subscribe. This drives
+        // the pre-open + at-open reissue path and asserts that pairing; it MUST fail
+        // until the unsubscribe-before-subscribe is in place.
+        let mut strategy = test_strategy();
+        strategy.config.resolution_instrument_id = Some(format!(
+            "{}-USD.CHAINLINK",
+            strategy.config.underlying_asset
+        ));
+        let cache = register_test_strategy(&mut strategy);
+
+        let cadence_seconds = strategy.config.cadence_seconds as i64;
+        let current_period_start = 1_746_000_000_i64;
+        let next_period_start = current_period_start + cadence_seconds;
+        let next_start_ms = next_period_start as u64 * MILLIS_PER_SECOND_U64;
+        let next_end_ms = next_start_ms + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64;
+        let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+            &strategy.config.underlying_asset,
+            &strategy.config.cadence_slug_token,
+            next_period_start,
+        );
+        let instruments = [
+            updown_binary_option(
+                "token-up.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Up",
+                next_start_ms,
+                next_end_ms,
+            ),
+            updown_binary_option(
+                "token-down.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Down",
+                next_start_ms,
+                next_end_ms,
+            ),
+        ];
+        {
+            let mut cache_mut = cache.borrow_mut();
+            for instrument in &instruments {
+                cache_mut
+                    .add_instrument(instrument.clone())
+                    .expect("test cache should accept the seeded instrument");
+            }
+        }
+
+        // Pre-open selection then an at-open tick: each reissue must clear the
+        // subscription before re-subscribing.
+        strategy
+            .refresh_selection_from_cache(current_period_start as u64 * MILLIS_PER_SECOND_U64 + 1);
+        strategy.refresh_selection_from_cache(next_start_ms + 1);
+
+        let events = &strategy.resolution_strike_subscribe_events;
+        assert!(
+            !events.is_empty(),
+            "the strike (re)subscribe path must record at least one event",
+        );
+        let subscribes = events
+            .iter()
+            .filter(|event| event.action == RESOLUTION_STRIKE_SUBSCRIBE_ACTION)
+            .count();
+        let unsubscribes = events
+            .iter()
+            .filter(|event| event.action == RESOLUTION_STRIKE_UNSUBSCRIBE_ACTION)
+            .count();
+        assert_eq!(
+            unsubscribes, subscribes,
+            "every strike subscribe must be paired with a preceding unsubscribe to clear NT's \
+             per-instrument index-price dedup (subscribes={subscribes}, unsubscribes={unsubscribes})",
+        );
+        for pair in events.chunks(2) {
+            assert_eq!(
+                pair[0].action, RESOLUTION_STRIKE_UNSUBSCRIBE_ACTION,
+                "each reissue must unsubscribe before subscribing",
+            );
+            assert_eq!(pair[1].action, RESOLUTION_STRIKE_SUBSCRIBE_ACTION);
+            assert_eq!(
+                pair[0].instrument_id, pair[1].instrument_id,
+                "the unsubscribe and subscribe must target the same resolution instrument",
+            );
+        }
     }
 
     #[test]

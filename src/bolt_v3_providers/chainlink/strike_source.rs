@@ -20,9 +20,10 @@
 use std::{
     any::Any,
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     rc::Rc,
     str::FromStr,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -171,6 +172,14 @@ struct ChainlinkStrikeSourceClient {
     config: ChainlinkStrikeSourceConfig,
     connected: bool,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
+    /// Resolution instruments whose strike fetch is currently in flight. The
+    /// strategy re-issues the strike subscribe on every selection-retry tick
+    /// (unsubscribe-then-resubscribe to defeat NT's per-instrument index-price
+    /// dedup), so without this guard a stalled REST call would let those retries
+    /// stack concurrent fetches against the live endpoint. At most one fetch per
+    /// instrument runs until it finishes; the spawned task clears its entry on
+    /// completion. Shared across the spawned task, hence `Arc<Mutex<..>>`.
+    in_flight: Arc<Mutex<HashSet<InstrumentId>>>,
 }
 
 impl ChainlinkStrikeSourceClient {
@@ -180,6 +189,7 @@ impl ChainlinkStrikeSourceClient {
             config,
             connected: false,
             data_sender: get_data_event_sender(),
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
         })
     }
 
@@ -188,6 +198,32 @@ impl ChainlinkStrikeSourceClient {
             .feed_bindings
             .iter()
             .find(|binding| binding.instrument_id == instrument_id)
+    }
+
+    /// Admits a strike fetch for `instrument_id` only when none is already in
+    /// flight, recording it as in flight. Returns `true` when the caller may
+    /// spawn the fetch, `false` when one is already running (skip — the bounded
+    /// selection-retry cadence re-issues after it finishes). Fails closed
+    /// (returns `false`, no fetch) if the shared guard lock is poisoned.
+    fn begin_strike_fetch_if_idle(
+        in_flight: &Arc<Mutex<HashSet<InstrumentId>>>,
+        instrument_id: InstrumentId,
+    ) -> bool {
+        match in_flight.lock() {
+            Ok(mut in_flight) => in_flight.insert(instrument_id),
+            Err(_) => false,
+        }
+    }
+
+    /// Clears the in-flight marker for `instrument_id` once its fetch completes
+    /// (success or failure), so the next retry tick may re-issue.
+    fn finish_strike_fetch(
+        in_flight: &Arc<Mutex<HashSet<InstrumentId>>>,
+        instrument_id: InstrumentId,
+    ) {
+        if let Ok(mut in_flight) = in_flight.lock() {
+            in_flight.remove(&instrument_id);
+        }
     }
 }
 
@@ -262,8 +298,21 @@ impl DataClient for ChainlinkStrikeSourceClient {
             price_precision: binding.price_precision,
             window_open_unix_seconds,
         };
+        // Admit at most one in-flight fetch per resolution instrument: the
+        // strategy re-issues this subscribe on every retry tick while the strike
+        // is unbound, so a stalled REST call must not stack concurrent requests.
+        if !Self::begin_strike_fetch_if_idle(&self.in_flight, binding.instrument_id) {
+            log::debug!(
+                "Chainlink strike source {} skipping strike subscribe for {}: a fetch is already in flight",
+                self.client_id,
+                cmd.instrument_id
+            );
+            return Ok(());
+        }
         let sender = self.data_sender.clone();
         let client_id = self.client_id;
+        let in_flight = Arc::clone(&self.in_flight);
+        let fetch_instrument_id = binding.instrument_id;
 
         get_runtime().spawn(async move {
             match fetch_strike_index_price(&request).await {
@@ -286,6 +335,7 @@ impl DataClient for ChainlinkStrikeSourceClient {
                     );
                 }
             }
+            ChainlinkStrikeSourceClient::finish_strike_fetch(&in_flight, fetch_instrument_id);
         });
         Ok(())
     }
@@ -757,5 +807,30 @@ mod tests {
             UnixNanos::from(TEST_TS_INIT_NANOS),
         )
         .expect_err("a report whose validFrom is not the window-open boundary must fail closed");
+    }
+
+    #[test]
+    fn in_flight_guard_admits_one_fetch_per_instrument_until_finished() {
+        // After the strategy's unsubscribe-before-subscribe re-arm reaches the source
+        // on every retry tick, a stalled REST call must not let retries stack
+        // concurrent fetches against the live endpoint. The in-flight guard admits at
+        // most one fetch per resolution instrument until the prior one finishes.
+        let in_flight: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<InstrumentId>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let instrument_id =
+            InstrumentId::from_str(TEST_INSTRUMENT_ID).expect("resolution instrument id parses");
+        assert!(
+            ChainlinkStrikeSourceClient::begin_strike_fetch_if_idle(&in_flight, instrument_id),
+            "the first fetch for an idle resolution instrument must be admitted",
+        );
+        assert!(
+            !ChainlinkStrikeSourceClient::begin_strike_fetch_if_idle(&in_flight, instrument_id),
+            "a second fetch must be skipped while one is already in flight",
+        );
+        ChainlinkStrikeSourceClient::finish_strike_fetch(&in_flight, instrument_id);
+        assert!(
+            ChainlinkStrikeSourceClient::begin_strike_fetch_if_idle(&in_flight, instrument_id),
+            "after the in-flight fetch finishes, a new fetch may be admitted",
+        );
     }
 }

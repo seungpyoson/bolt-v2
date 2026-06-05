@@ -19,9 +19,9 @@ evidence_state = "directly_backfillable"
 table_families = ["instruments"]
 
 [[source_binding]]
-key = "binance-usd-m-instruments"
+key = "binance-usd-m-perpetual-instruments"
 venue = "binance"
-product_family = "usd_m_perpetual_or_delivery"
+product_family = "usd_m_perpetual"
 fixture = "mixed"
 family = "instrument_universe"
 method = "GET"
@@ -32,9 +32,35 @@ evidence_state = "directly_backfillable"
 table_families = ["instruments"]
 
 [[source_binding]]
-key = "binance-coin-m-instruments"
+key = "binance-usd-m-delivery-instruments"
 venue = "binance"
-product_family = "coin_m_perpetual_or_delivery"
+product_family = "usd_m_delivery"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+payload_extension = "json"
+extractor = "binance_exchange_info"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "binance-coin-m-perpetual-instruments"
+venue = "binance"
+product_family = "coin_m_perpetual"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://dapi.binance.com/dapi/v1/exchangeInfo"
+payload_extension = "json"
+extractor = "binance_exchange_info"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "binance-coin-m-delivery-instruments"
+venue = "binance"
+product_family = "coin_m_delivery"
 fixture = "mixed"
 family = "instrument_universe"
 method = "GET"
@@ -73,7 +99,7 @@ table_families = ["instruments"]
 [[source_binding]]
 key = "okx-futures-instruments"
 venue = "okx"
-product_family = "futures"
+product_family = "future"
 fixture = "mixed"
 family = "instrument_universe"
 method = "GET"
@@ -86,7 +112,7 @@ table_families = ["instruments"]
 [[source_binding]]
 key = "okx-option-underlyings"
 venue = "okx"
-product_family = "option_underlying"
+product_family = "option"
 fixture = "mixed"
 family = "instrument_universe"
 method = "GET"

@@ -9,6 +9,7 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const STATIC_FEE_BPS_ABSOLUTE_LIMIT: u32 = 10_000;
 
 pub const STREAM_CLASS_QUOTES: &str = "quotes";
 pub const STREAM_CLASS_TRADES: &str = "trades";
@@ -177,9 +178,9 @@ pub struct FeeSchedule {
     /// Settlement/fee currency used by this venue adapter.
     pub settlement_currency: String,
     /// Static maker fee rate in basis points when sourced from the contract.
-    pub maker_fee_bps: Option<u32>,
+    pub maker_fee_bps: Option<i32>,
     /// Static taker fee rate in basis points when sourced from the contract.
-    pub taker_fee_bps: Option<u32>,
+    pub taker_fee_bps: Option<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -450,11 +451,14 @@ impl VenueContract {
         }
 
         let depth_stream_class = self.depth_availability.book_depth_source.stream_class();
+        let depth_stream = self.streams.get(depth_stream_class);
         ensure!(
-            self.streams
-                .get(depth_stream_class)
-                .is_some_and(|stream| stream.capability != Capability::Unsupported),
+            depth_stream.is_some_and(|stream| stream.capability != Capability::Unsupported),
             "depth_availability.book_depth_source references unsupported stream {depth_stream_class}"
+        );
+        ensure!(
+            depth_stream.is_some_and(|stream| stream.policy != Policy::Disabled),
+            "depth_availability.book_depth_source references disabled stream {depth_stream_class}"
         );
 
         ensure!(
@@ -463,12 +467,12 @@ impl VenueContract {
         );
         validate_fee_rate_source(
             "maker",
-            self.fee_schedule.maker_fee_rate_source.clone(),
+            &self.fee_schedule.maker_fee_rate_source,
             self.fee_schedule.maker_fee_bps,
         )?;
         validate_fee_rate_source(
             "taker",
-            self.fee_schedule.taker_fee_rate_source.clone(),
+            &self.fee_schedule.taker_fee_rate_source,
             self.fee_schedule.taker_fee_bps,
         )?;
 
@@ -548,12 +552,19 @@ fn ensure_current_schema_version(schema_version: u32) -> Result<()> {
     Ok(())
 }
 
-fn validate_fee_rate_source(side: &str, source: FeeRateSource, bps: Option<u32>) -> Result<()> {
+fn validate_fee_rate_source(side: &str, source: &FeeRateSource, bps: Option<i32>) -> Result<()> {
     match source {
-        FeeRateSource::Contract => ensure!(
-            bps.is_some(),
-            "fee_schedule.{side}_fee_bps required when {side}_fee_rate_source is contract"
-        ),
+        FeeRateSource::Contract => {
+            let Some(bps) = bps else {
+                anyhow::bail!(
+                    "fee_schedule.{side}_fee_bps required when {side}_fee_rate_source is contract"
+                );
+            };
+            ensure!(
+                bps.unsigned_abs() <= STATIC_FEE_BPS_ABSOLUTE_LIMIT,
+                "fee_schedule.{side}_fee_bps must be within {STATIC_FEE_BPS_ABSOLUTE_LIMIT} bps of zero when {side}_fee_rate_source is contract"
+            );
+        }
         FeeRateSource::Instrument => ensure!(
             bps.is_none(),
             "fee_schedule.{side}_fee_bps must be absent when {side}_fee_rate_source is instrument"

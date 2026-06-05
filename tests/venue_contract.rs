@@ -12,8 +12,8 @@ use bolt_v2::{
     nt_runtime_capture,
     venue_contract::{
         BookDepthSource, CURRENT_SCHEMA_VERSION, Capability, CompletenessReport, FeeRateSource,
-        MaintenancePolicy, Policy, Provenance, ScheduledMaintenanceWindow, SettlementKind,
-        StreamContract, VenueContract, Weekday,
+        MaintenancePolicy, Policy, Provenance, STATIC_FEE_BPS_ABSOLUTE_LIMIT,
+        ScheduledMaintenanceWindow, SettlementKind, StreamContract, VenueContract, Weekday,
     },
 };
 mod support;
@@ -333,6 +333,40 @@ fn rejects_previous_schema_before_full_contract_parse() {
 }
 
 #[test]
+fn rejects_missing_schema_version_before_full_contract_parse() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("missing-schema-version.toml");
+    std::fs::write(&path, contract_text_without_line("schema_version")).unwrap();
+
+    let err = VenueContract::load_and_validate(&path).unwrap_err();
+    assert!(
+        err.to_string().contains("missing field `schema_version`"),
+        "schema envelope must fail closed before full contract parsing, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_future_schema_before_full_contract_parse() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("future-schema.toml");
+    let future_schema_version = CURRENT_SCHEMA_VERSION + 1;
+    let current_schema_line = format!("schema_version = {CURRENT_SCHEMA_VERSION}");
+    let future_schema_line = format!("schema_version = {future_schema_version}");
+    let text = std::fs::read_to_string(support::first_contract_path())
+        .unwrap()
+        .replacen(&current_schema_line, &future_schema_line, 1);
+    std::fs::write(&path, text).unwrap();
+
+    let err = VenueContract::load_and_validate(&path).unwrap_err();
+    assert!(
+        err.to_string().contains(&format!(
+            "unsupported contract schema_version {future_schema_version}, expected {CURRENT_SCHEMA_VERSION}"
+        )),
+        "future schema must be rejected before full contract parsing, got: {err}"
+    );
+}
+
+#[test]
 fn rejects_zero_rate_budget() {
     fn assert_zero_rejected(zero_field: impl FnOnce(&mut VenueContract), name: &str) {
         let mut contract = make_contract(base_polymarket_streams());
@@ -381,24 +415,29 @@ fn rejects_contract_missing_settlement() {
 
 #[test]
 fn rejects_legacy_flat_capability_fields() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("legacy-flat-capability-fields.toml");
-    let text = std::fs::read_to_string(support::first_contract_path())
-        .unwrap()
-        .replacen(
-            "[execution]",
-            "supports_modify = false\nsettlement_kind = \"binary\"\n\n[execution]",
-            1,
-        );
-    std::fs::write(&path, text).unwrap();
+    let cases = [
+        ("supports_modify", "supports_modify = false\n\n[execution]"),
+        (
+            "settlement_kind",
+            "settlement_kind = \"binary\"\n\n[execution]",
+        ),
+    ];
 
-    let err = VenueContract::load_and_validate(&path).unwrap_err();
-    let rendered = err.to_string();
-    assert!(
-        rendered.contains("unknown field `supports_modify`")
-            || rendered.contains("unknown field `settlement_kind`"),
-        "legacy flat capability fields must be rejected, got: {err}"
-    );
+    for (field, replacement) in cases {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(format!("legacy-flat-{field}.toml"));
+        let text = std::fs::read_to_string(support::first_contract_path())
+            .unwrap()
+            .replacen("[execution]", replacement, 1);
+        std::fs::write(&path, text).unwrap();
+
+        let err = VenueContract::load_and_validate(&path).unwrap_err();
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains(&format!("unknown field `{field}`")),
+            "legacy flat capability field {field} must be rejected, got: {err}"
+        );
+    }
 }
 
 #[test]
@@ -484,6 +523,43 @@ fn rejects_scheduled_maintenance_without_windows() {
 }
 
 #[test]
+fn rejects_none_configured_maintenance_with_pull_lead() {
+    let mut contract = make_contract(base_polymarket_streams());
+    contract.maintenance_window.policy = MaintenancePolicy::NoneConfigured;
+    contract.maintenance_window.pull_before_start_seconds = 60;
+
+    let err = contract.validate().unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "maintenance_window.pull_before_start_seconds must be 0 when policy is none_configured"
+        ),
+        "none_configured maintenance must reject a pull lead, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_none_configured_maintenance_with_windows() {
+    let mut contract = make_contract(base_polymarket_streams());
+    contract.maintenance_window.policy = MaintenancePolicy::NoneConfigured;
+    contract.maintenance_window.pull_before_start_seconds = 0;
+    contract
+        .maintenance_window
+        .windows
+        .push(ScheduledMaintenanceWindow {
+            weekday: Weekday::Sunday,
+            start_time_utc: "04:00".to_string(),
+            duration_seconds: 900,
+        });
+
+    let err = contract.validate().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("maintenance_window.windows must be empty when policy is none_configured"),
+        "none_configured maintenance must reject concrete windows, got: {err}"
+    );
+}
+
+#[test]
 fn scheduled_maintenance_window_with_positive_duration_validates() {
     let mut contract = make_contract(base_polymarket_streams());
     contract.maintenance_window.policy = MaintenancePolicy::Scheduled;
@@ -500,6 +576,28 @@ fn scheduled_maintenance_window_with_positive_duration_validates() {
     contract
         .validate()
         .expect("scheduled window with pull lead and duration should validate");
+}
+
+#[test]
+fn rejects_scheduled_maintenance_zero_duration() {
+    let mut contract = make_contract(base_polymarket_streams());
+    contract.maintenance_window.policy = MaintenancePolicy::Scheduled;
+    contract.maintenance_window.pull_before_start_seconds = 60;
+    contract
+        .maintenance_window
+        .windows
+        .push(ScheduledMaintenanceWindow {
+            weekday: Weekday::Sunday,
+            start_time_utc: "04:00".to_string(),
+            duration_seconds: 0,
+        });
+
+    let err = contract.validate().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("maintenance_window.windows[0].duration_seconds must be positive"),
+        "scheduled maintenance duration must fail closed, got: {err}"
+    );
 }
 
 #[test]
@@ -525,6 +623,30 @@ fn rejects_malformed_maintenance_start_time() {
 }
 
 #[test]
+fn rejects_maintenance_start_time_boundaries() {
+    for bad_time in ["24:00", "23:60", "1:02"] {
+        let mut contract = make_contract(base_polymarket_streams());
+        contract.maintenance_window.policy = MaintenancePolicy::Scheduled;
+        contract.maintenance_window.pull_before_start_seconds = 60;
+        contract
+            .maintenance_window
+            .windows
+            .push(ScheduledMaintenanceWindow {
+                weekday: Weekday::Sunday,
+                start_time_utc: bad_time.to_string(),
+                duration_seconds: 900,
+            });
+
+        let err = contract.validate().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("maintenance_window.windows[0].start_time_utc must be HH:MM"),
+            "maintenance start time {bad_time} must fail closed, got: {err}"
+        );
+    }
+}
+
+#[test]
 fn rejects_depth_source_not_supported_by_stream_contract() {
     let mut contract = make_contract(base_polymarket_streams());
     contract.depth_availability.book_depth_source = BookDepthSource::OrderBookDepths;
@@ -539,6 +661,36 @@ fn rejects_depth_source_not_supported_by_stream_contract() {
 }
 
 #[test]
+fn rejects_depth_source_disabled_by_stream_contract() {
+    let mut streams = base_polymarket_streams();
+    streams.get_mut("order_book_deltas").unwrap().policy = Policy::Disabled;
+    let contract = make_contract(streams);
+
+    let err = contract.validate().unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "depth_availability.book_depth_source references disabled stream order_book_deltas"
+        ),
+        "depth source must require an enabled stream, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_derived_from_unsupported_source_stream() {
+    let mut streams = base_polymarket_streams();
+    streams.get_mut("quotes").unwrap().provenance = Provenance::Derived;
+    streams.get_mut("quotes").unwrap().derived_from = Some(vec!["mark_prices".to_string()]);
+    let contract = make_contract(streams);
+
+    let err = contract.validate().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("stream quotes: derived_from references mark_prices which is not supported"),
+        "derived stream must reject unsupported source stream, got: {err}"
+    );
+}
+
+#[test]
 fn rejects_contract_fee_source_without_static_bps() {
     let mut contract = make_contract(base_polymarket_streams());
     contract.fee_schedule.maker_fee_rate_source = FeeRateSource::Contract;
@@ -549,6 +701,90 @@ fn rejects_contract_fee_source_without_static_bps() {
         err.to_string()
             .contains("fee_schedule.maker_fee_bps required when maker_fee_rate_source is contract"),
         "contract-sourced maker fees must provide static bps, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_taker_contract_fee_source_without_static_bps() {
+    let mut contract = make_contract(base_polymarket_streams());
+    contract.fee_schedule.taker_fee_rate_source = FeeRateSource::Contract;
+    contract.fee_schedule.taker_fee_bps = None;
+
+    let err = contract.validate().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("fee_schedule.taker_fee_bps required when taker_fee_rate_source is contract"),
+        "contract-sourced taker fees must provide static bps, got: {err}"
+    );
+}
+
+#[test]
+fn contract_fee_source_with_bounded_static_bps_validates() {
+    let mut contract = make_contract(base_polymarket_streams());
+    contract.fee_schedule.maker_fee_rate_source = FeeRateSource::Contract;
+    contract.fee_schedule.maker_fee_bps = Some(-(STATIC_FEE_BPS_ABSOLUTE_LIMIT as i32));
+    contract.fee_schedule.taker_fee_rate_source = FeeRateSource::Contract;
+    contract.fee_schedule.taker_fee_bps = Some(STATIC_FEE_BPS_ABSOLUTE_LIMIT as i32);
+
+    contract
+        .validate()
+        .expect("contract-sourced static bps inside bounds should validate");
+}
+
+#[test]
+fn rejects_contract_fee_source_with_out_of_bounds_static_bps() {
+    fn assert_out_of_bounds_rejected(update: impl FnOnce(&mut VenueContract), side: &str) {
+        let mut contract = make_contract(base_polymarket_streams());
+        update(&mut contract);
+
+        let err = contract.validate().unwrap_err();
+        assert!(
+            err.to_string().contains(&format!(
+                "fee_schedule.{side}_fee_bps must be within {STATIC_FEE_BPS_ABSOLUTE_LIMIT} bps of zero"
+            )),
+            "out-of-bounds {side} fee bps must fail closed, got: {err}"
+        );
+    }
+
+    assert_out_of_bounds_rejected(
+        |contract| {
+            contract.fee_schedule.maker_fee_rate_source = FeeRateSource::Contract;
+            contract.fee_schedule.maker_fee_bps = Some(STATIC_FEE_BPS_ABSOLUTE_LIMIT as i32 + 1);
+        },
+        "maker",
+    );
+    assert_out_of_bounds_rejected(
+        |contract| {
+            contract.fee_schedule.taker_fee_rate_source = FeeRateSource::Contract;
+            contract.fee_schedule.taker_fee_bps =
+                Some(-((STATIC_FEE_BPS_ABSOLUTE_LIMIT as i32) + 1));
+        },
+        "taker",
+    );
+}
+
+#[test]
+fn rejects_instrument_fee_source_with_static_bps() {
+    fn assert_static_bps_rejected(update: impl FnOnce(&mut VenueContract), side: &str) {
+        let mut contract = make_contract(base_polymarket_streams());
+        update(&mut contract);
+
+        let err = contract.validate().unwrap_err();
+        assert!(
+            err.to_string().contains(&format!(
+                "fee_schedule.{side}_fee_bps must be absent when {side}_fee_rate_source is instrument"
+            )),
+            "instrument-sourced {side} fees must not provide static bps, got: {err}"
+        );
+    }
+
+    assert_static_bps_rejected(
+        |contract| contract.fee_schedule.maker_fee_bps = Some(5),
+        "maker",
+    );
+    assert_static_bps_rejected(
+        |contract| contract.fee_schedule.taker_fee_bps = Some(5),
+        "taker",
     );
 }
 

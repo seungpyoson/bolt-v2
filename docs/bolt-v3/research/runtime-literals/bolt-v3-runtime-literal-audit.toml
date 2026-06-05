@@ -5042,6 +5042,14 @@ reason = "This is the venue contract schema version accepted by the parser, not 
 [[allowed]]
 path = "src/venue_contract.rs"
 kind = "number"
+literal = '''10_000'''
+context = '''pub const STATIC_FEE_BPS_ABSOLUTE_LIMIT: u32 = 10_000;'''
+classification = "venue_contract_static_fee_bps_bound"
+reason = "This is the fixed absolute sanity bound for contract-sourced static fee and rebate rates in basis points, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "number"
 literal = '''0'''
 context = '''self.rate_budget.clob_per_minute > 0,'''
 classification = "venue_contract_rate_budget_floor"
@@ -5118,6 +5126,14 @@ literal = '''60'''
 context = '''&& minute.parse::<u8>().is_ok_and(|v| v < 60)'''
 classification = "venue_contract_maintenance_time_grammar"
 reason = "This is the minute upper bound for the venue contract UTC maintenance-window time grammar, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"depth_availability.book_depth_source references disabled stream {depth_stream_class}"'''
+context = '''"depth_availability.book_depth_source references disabled stream {depth_stream_class}"'''
+classification = "venue_contract_depth_source_diagnostic"
+reason = "This is a fail-closed validation diagnostic for a disabled configured depth stream, not an operator runtime value."
 
 [[allowed]]
 path = "src/venue_contract.rs"

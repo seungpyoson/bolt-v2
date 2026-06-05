@@ -24,6 +24,10 @@ mod source_canonicalization;
 // `max_source_bytes` instead. This only bounds the bytes embedded into the
 // binary at build time.
 const BUILD_CANONICAL_MAX_BYTES: u64 = 8 * 1024 * 1024;
+// Bind source embeds to the checkout that compiled this build script. Cargo
+// tracks the `env!` dependency and `build_script_rerun_env_vars` emits the
+// matching rerun hint, so shared target dirs recompile/re-run when the manifest
+// dir changes across worktrees.
 const BUILD_SCRIPT_MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
 fn main() {
@@ -130,6 +134,14 @@ fn collect_canonical_source_rerun_paths(path: &Path, paths: &mut Vec<PathBuf>) -
         for entry in entries {
             collect_canonical_source_rerun_paths(&entry, paths)?;
         }
+    } else if file_type.is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "canonical source rerun path rejects symlink: {}",
+                path.display()
+            ),
+        ));
     } else if file_type.is_file()
         && path.extension().and_then(|extension| extension.to_str()) == Some("rs")
     {

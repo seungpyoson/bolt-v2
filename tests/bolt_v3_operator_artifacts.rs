@@ -4298,6 +4298,12 @@ fn abort_plan_writer_hashes_strategy_source_set_from_caller_checkout() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let caller_checkout = temp.path().join("reviewed-checkout");
     let strategy_source_path = copy_registered_strategy_source_set_to(&caller_checkout);
+    let copied_book_sizing = caller_checkout.join("src/bolt_v3_book_sizing.rs");
+    let mut copied_book_sizing_bytes =
+        std::fs::read(&copied_book_sizing).expect("copied book sizing source should read");
+    copied_book_sizing_bytes.extend_from_slice(b"\n// caller checkout mutation\n");
+    std::fs::write(&copied_book_sizing, copied_book_sizing_bytes)
+        .expect("copied book sizing source should mutate");
     let submit_admission_source_path =
         registry_root_path(bolt_v2::bolt_v3_source_integrity::SUBMIT_ADMISSION_KEY);
     let abort_plan_path = temp.path().join("abort-plan.json");
@@ -4328,6 +4334,15 @@ fn abort_plan_writer_hashes_strategy_source_set_from_caller_checkout() {
     .expect("copied strategy source set should digest");
 
     assert_eq!(json["strategy_source_sha256"], expected);
+    let registry_digest = bolt_v2::bolt_v3_source_integrity::registry_source_digest(
+        bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY,
+        max_source_bytes,
+    )
+    .expect("registry strategy source set should digest");
+    assert_ne!(
+        expected, registry_digest,
+        "copied-checkout mutation must distinguish caller tree reads from build-checkout reads"
+    );
 }
 
 #[test]

@@ -160,7 +160,7 @@ mod tests {
     // match the live build-emitted `OUT_DIR/strategy.canonical` and the
     // independent hand-framed source-set stream in these tests.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "4e6f6dcc9abe68db2efa44e464c55219d64c23690325215ca908a02daef60015";
+        "5e69a876a3f4df28bbb3796311a36eed10991133c120cec57abe2062d3c610f6";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 

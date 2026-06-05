@@ -353,10 +353,11 @@ fn decode_event(row: &RawClobEventRow) -> Result<Option<CanonicalBookEvent>> {
             ensure!(!row.asks.trim().is_empty(), "book row: empty asks");
             let bids = decode_levels(&row.bids, "bids")?;
             let asks = decode_levels(&row.asks, "asks")?;
-            ensure!(
-                !bids.is_empty() || !asks.is_empty(),
-                "book row: snapshot has no levels"
-            );
+            // A both-sides-empty book ("[]"/"[]") is a genuine empty-book state: a
+            // market that opened with no resting liquidity. It is the first event
+            // for the asset and projects to NautilusTrader's empty-book Clear
+            // delta. The string guards above still reject null/empty `bids`/`asks`
+            // (malformed); the literal empty JSON arrays pass them.
             Ok(Some(CanonicalBookEvent::Snapshot(BookSnapshot {
                 bids,
                 asks,
@@ -593,10 +594,9 @@ impl CanonicalBookTable {
 fn validate_event(event: &CanonicalBookEvent, index: usize) -> Result<()> {
     match event {
         CanonicalBookEvent::Snapshot(snapshot) => {
-            ensure!(
-                !snapshot.bids.is_empty() || !snapshot.asks.is_empty(),
-                "row {index}: snapshot has no levels"
-            );
+            // A zero-level snapshot is a valid empty-book state (market open with
+            // no resting liquidity); only the per-level price/size strings are
+            // validated. The loop is vacuously satisfied for an empty book.
             for level in snapshot.bids.iter().chain(snapshot.asks.iter()) {
                 ensure!(
                     !level.price.trim().is_empty() && !level.size.trim().is_empty(),

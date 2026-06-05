@@ -253,3 +253,62 @@ fn first_trade_decodes_with_side_and_tx_hash() {
     assert!(!trade.transaction_hash.is_empty());
     assert!(trade.transaction_hash.starts_with("0x"));
 }
+
+#[test]
+fn normalize_empty_book_snapshot_at_sequence_0_is_valid() {
+    // A genuine market-open empty-book CLOB snapshot (bids="[]" AND asks="[]") is
+    // the FIRST event for its asset; both sides are literal empty JSON arrays, not
+    // null. The over-strict decode + validate guards rejected it as
+    // "sequence 0: failed to decode CLOB event -> book row: snapshot has no
+    // levels", aborting the whole object (the RUN2 polymarket failure). A
+    // zero-level snapshot is a valid empty-book state and must normalize. This
+    // exercises BOTH guards: normalize calls decode_event AND table.validate().
+    let rows = vec![
+        RawClobEventRow {
+            asset_id: FIXTURE_ASSET_ID.to_string(),
+            event_type: EVENT_TYPE_BOOK.to_string(),
+            timestamp_received: 1_700_000_000_000_000_000,
+            event_time: 1_700_000_000_000_000_000,
+            source_row_index: 0,
+            bids: "[]".to_string(),
+            asks: "[]".to_string(),
+            price: String::new(),
+            size: String::new(),
+            side: String::new(),
+            transaction_hash: String::new(),
+        },
+        RawClobEventRow {
+            asset_id: FIXTURE_ASSET_ID.to_string(),
+            event_type: EVENT_TYPE_PRICE_CHANGE.to_string(),
+            timestamp_received: 1_700_000_000_000_000_001,
+            event_time: 1_700_000_000_000_000_001,
+            source_row_index: 1,
+            bids: String::new(),
+            asks: String::new(),
+            price: "0.5000".to_string(),
+            size: "10.000000".to_string(),
+            side: "buy".to_string(),
+            transaction_hash: String::new(),
+        },
+    ];
+    let table = normalize_polymarket_clob_book(
+        &accepted_dataset(),
+        FIXTURE_ASSET_ID,
+        &rows,
+        rows[0].timestamp_received,
+        "ingest-run-empty",
+    )
+    .expect("empty-book snapshot at sequence 0 must normalize");
+
+    assert_eq!(table.snapshot_count(), 1);
+    let snapshot = table
+        .rows
+        .iter()
+        .find_map(|r| match &r.event {
+            CanonicalBookEvent::Snapshot(s) => Some(s),
+            _ => None,
+        })
+        .expect("one empty book snapshot");
+    assert!(snapshot.bids.is_empty(), "market-open snapshot has no bids");
+    assert!(snapshot.asks.is_empty(), "market-open snapshot has no asks");
+}

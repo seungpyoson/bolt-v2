@@ -427,3 +427,68 @@ fn trades_data_derived_append_round_trips() {
         "present transaction_hash must become the NT TradeId"
     );
 }
+
+#[test]
+fn empty_book_snapshot_projects_to_single_clear_with_f_last() {
+    // A genuine market-open empty-book snapshot (bids="[]" AND asks="[]") must
+    // convert to NautilusTrader's empty-book delta: exactly one Clear carrying
+    // F_SNAPSHOT|F_MBP|F_LAST and zero Adds (NT's own OrderBook::to_deltas
+    // empty-book contract), and round-trip through the catalog — proving
+    // write_to_parquet accepts a stream whose first and only delta is a Clear.
+    let rows = vec![RawClobEventRow {
+        asset_id: FIXTURE_ASSET_ID.to_string(),
+        event_type: "book".to_string(),
+        timestamp_received: 1_700_000_000_000_000_000,
+        event_time: 1_700_000_000_000_000_000,
+        source_row_index: 0,
+        bids: "[]".to_string(),
+        asks: "[]".to_string(),
+        price: String::new(),
+        size: String::new(),
+        side: String::new(),
+        transaction_hash: String::new(),
+    }];
+    let table = normalize_polymarket_clob_book(
+        &accepted_dataset(),
+        FIXTURE_ASSET_ID,
+        &rows,
+        rows[0].timestamp_received,
+        "ingest-run-empty",
+    )
+    .expect("normalize empty-book snapshot");
+    assert_eq!(table.snapshot_count(), 1);
+
+    let instrument = build_binary_option(&instrument_spec()).expect("build binary option");
+    let deltas = canonical_rows_to_order_book_deltas(&table, &instrument).expect("project deltas");
+    assert_eq!(deltas.len(), 1, "empty snapshot expands to a lone Clear");
+    assert_eq!(deltas[0].action, BookAction::Clear);
+    let flags = deltas[0].flags;
+    assert_ne!(
+        flags & RecordFlag::F_LAST as u8,
+        0,
+        "the Clear closes the snapshot event (F_LAST)"
+    );
+    assert_ne!(
+        flags & RecordFlag::F_SNAPSHOT as u8,
+        0,
+        "the Clear is replayed-snapshot data (F_SNAPSHOT)"
+    );
+    assert_ne!(
+        flags & RecordFlag::F_MBP as u8,
+        0,
+        "the Clear is aggregated price-level data (F_MBP)"
+    );
+
+    // End-to-end: the lone-Clear stream writes and reads back through the
+    // NautilusTrader catalog (closes the "does write_to_parquet accept a
+    // first-and-only Clear delta?" question).
+    let dir = TempDir::new().expect("temp dir");
+    let projection = project_canonical_book_to_catalog(&table, &instrument_spec(), dir.path())
+        .expect("project empty-book snapshot to catalog");
+    assert_eq!(projection.delta_count, 1);
+    assert_eq!(projection.trade_count, 0);
+    let read_deltas = read_back_order_book_deltas(dir.path(), FIXTURE_NT_INSTRUMENT_ID)
+        .expect("read deltas back");
+    assert_eq!(read_deltas.len(), 1);
+    assert_eq!(read_deltas[0].action, BookAction::Clear);
+}

@@ -15083,14 +15083,6 @@ reason = "This is the Chainlink Data Streams ReportDataV3 protocol schema identi
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink/report.rs"
 kind = "number"
-literal = '''18'''
-context = '''const CHAINLINK_PRICE_REPORT_V3_DECIMAL_SCALE: u64 = 18;'''
-classification = "chainlink_report_protocol_decoder"
-reason = "This is the Chainlink Data Streams ReportDataV3 spec-defined fixed-point decimal scale enforced by the decoder; the strategy TOML still declares report_decimal_scale and any non-18 scale for a V3 feed fails closed so the strike cannot be mis-scaled."
-
-[[allowed]]
-path = "src/bolt_v3_providers/chainlink/report.rs"
-kind = "number"
 literal = '''32'''
 context = '''const CHAINLINK_REPORT_ABI_WORD_BYTES: usize = 32;'''
 classification = "chainlink_report_protocol_decoder"

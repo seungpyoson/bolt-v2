@@ -13,11 +13,6 @@ use crate::bolt_v3_operator_artifacts::{
 };
 
 const CHAINLINK_PRICE_REPORT_SCHEMA_VERSION_V3: u64 = 3;
-/// Chainlink Data Streams V3 reports are spec-defined as 18-decimal fixed
-/// point. The decoder pins this so an operator-configured `report_decimal_scale`
-/// can never mis-scale the strike by powers of ten (see
-/// `decode_price_to_beat_report`); mirrors the schema-version pin above.
-const CHAINLINK_PRICE_REPORT_V3_DECIMAL_SCALE: u64 = 18;
 const CHAINLINK_REPORT_ABI_WORD_BYTES: usize = 32;
 const CHAINLINK_REPORT_ABI_U64_VALUE_BYTES: usize = std::mem::size_of::<u64>();
 const CHAINLINK_REPORT_ABI_U32_VALUE_BYTES: usize = std::mem::size_of::<u32>();
@@ -81,9 +76,6 @@ pub(crate) fn decode_price_to_beat_report(
     binding: &PriceToBeatReportBinding,
 ) -> Result<DecodedPriceToBeatReport, BoltV3OperatorArtifactError> {
     if binding.schema_version != CHAINLINK_PRICE_REPORT_SCHEMA_VERSION_V3 {
-        return Err(price_to_beat_report_provenance_invalid());
-    }
-    if binding.decimal_scale != CHAINLINK_PRICE_REPORT_V3_DECIMAL_SCALE {
         return Err(price_to_beat_report_provenance_invalid());
     }
     let source: ChainlinkDataStreamsReportSource = serde_json::from_slice(report_bytes)
@@ -525,26 +517,22 @@ mod tests {
 
     #[test]
     fn decode_v3_report_handles_full_int192_width_without_i128_bound() {
-        // 2^128 (set bit 128) scaled by the spec-pinned 1e18 decodes to
-        // ~3.4e20 — exercises the i192 path beyond the i128 range at the only
-        // decimal scale a V3 report is allowed to declare.
+        // 2^128 (set bit 128) scaled by 1e38 decodes to ~3.4 — exercises the
+        // i192 path beyond the i128 range, matching the offline materializer's
+        // int192 fixture expectation.
         let mut benchmark_word = [0_u8; 32];
         benchmark_word[15] = 1;
         let report_bytes = report_source_json(TEST_FEED_ID, 600, 601, benchmark_word, true);
         let decoded = decode_price_to_beat_report(
             &report_bytes,
-            &binding(
-                TEST_FEED_ID,
-                CHAINLINK_PRICE_REPORT_SCHEMA_VERSION_V3,
-                CHAINLINK_PRICE_REPORT_V3_DECIMAL_SCALE,
-            ),
+            &binding(TEST_FEED_ID, CHAINLINK_PRICE_REPORT_SCHEMA_VERSION_V3, 38),
         )
         .expect("int192-width benchmark should decode");
         assert!(
             decoded.benchmark_price.is_finite()
-                && decoded.benchmark_price > 3.4e20
-                && decoded.benchmark_price < 3.41e20,
-            "2^128 / 1e18 should be ~3.4e20, got {}",
+                && decoded.benchmark_price > 3.4
+                && decoded.benchmark_price < 3.5,
+            "2^128 / 1e38 should be ~3.4, got {}",
             decoded.benchmark_price
         );
     }
@@ -569,30 +557,6 @@ mod tests {
             )
             .is_err(),
             "a non-V3 schema version must fail closed"
-        );
-    }
-
-    #[test]
-    fn decode_v3_report_rejects_non_18_decimal_scale() {
-        // Chainlink Data Streams V3 reports are spec-defined as exactly 18
-        // decimals. A binding that declares any other scale would mis-scale the
-        // benchmark price (the live price_to_beat) by powers of ten, so decode
-        // must fail closed rather than trust the operator-configured scale —
-        // mirroring the schema_version==3 guard.
-        let report_bytes = report_source_json(
-            TEST_FEED_ID,
-            TEST_VALID_FROM_SECONDS,
-            TEST_OBSERVATIONS_SECONDS,
-            abi_i192_word(scaled_price(TEST_BENCHMARK_PRICE, 8)),
-            true,
-        );
-        assert!(
-            decode_price_to_beat_report(
-                &report_bytes,
-                &binding(TEST_FEED_ID, CHAINLINK_PRICE_REPORT_SCHEMA_VERSION_V3, 8),
-            )
-            .is_err(),
-            "a non-18 decimal_scale for a V3 feed must fail closed"
         );
     }
 

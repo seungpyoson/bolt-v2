@@ -510,10 +510,12 @@ pub(crate) fn validate_https_rest_base_url(
 /// `rest_base_url`, failing closed against any value that would redirect the
 /// credential-bearing report request off the configured endpoint. The HMAC-signed
 /// Data Streams credentials travel with this request, so the path must be a rooted
-/// absolute path and the joined URL must keep the base scheme, host, and port and
-/// introduce no query or fragment of its own. `url::Url::join` otherwise accepts
-/// absolute URLs (`https://other/...`) and scheme-relative paths (`//other/...`)
-/// that silently swap the host while still receiving the signed credentials.
+/// absolute path and the joined URL must keep the base scheme, host, port, and
+/// userinfo (username/password) and introduce no query or fragment of its own.
+/// `url::Url::join` otherwise accepts absolute URLs (`https://other/...`) and
+/// scheme-relative/authority paths (`//other/...`, `//user:pass@host/...`) that
+/// silently swap the host or inject userinfo while still receiving the signed
+/// credentials.
 /// Shared by the live-strike client validator, the resolution-oracle gate-provider
 /// validator, and the request-URL builder so the endpoint can only ever resolve to
 /// the configured host. Returns the safe joined URL so the builder reuses one

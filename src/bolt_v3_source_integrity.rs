@@ -82,6 +82,15 @@ pub fn registry_source_bytes(key: &str, max_bytes: u64) -> io::Result<Vec<u8>> {
     )
 }
 
+/// Whole-module source text for a registry source set, bounded by `max_bytes`.
+pub fn registry_module_source_text(key: &str, max_bytes: u64) -> io::Result<String> {
+    canonical_module_source_set_text(
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        registry_relative_roots(key),
+        max_bytes,
+    )
+}
+
 /// A bound large enough to admit either gated root: the submit_admission single
 /// file and the strategy source set (strategy directory plus shared book sizing
 /// source, whose framed canonical stream is the raw content plus per-file

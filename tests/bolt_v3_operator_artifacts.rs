@@ -4116,37 +4116,38 @@ fn abort_plan_writer_emits_artifact_from_source_owned_collectors() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let abort_plan_path = temp.path().join("abort-plan.json");
     let strategy_source_path = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
+    let strategy_source_max_bytes = 1_000_000;
     let submit_admission_source_path =
         registry_root_path(bolt_v2::bolt_v3_source_integrity::SUBMIT_ADMISSION_KEY);
 
     let cancel_if_open =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
             &strategy_source_path,
-            1_000_000,
+            strategy_source_max_bytes,
         )
         .expect("cancel-if-open source proof should collect");
     let venue_pending = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
         &strategy_source_path,
-        1_000_000,
+        strategy_source_max_bytes,
     )
     .expect("NT-accepted venue-pending source proof should collect");
     let partial_fill =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
             &strategy_source_path,
-            1_000_000,
+            strategy_source_max_bytes,
         )
         .expect("partial-fill source proof should collect");
     let network_partition =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_network_partition_source_proof(
             &strategy_source_path,
-            1_000_000,
+            strategy_source_max_bytes,
         )
         .expect("network-partition source proof should collect");
     let panic_gate =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_panic_gate_service_policy_source_proof(
             &strategy_source_path,
             &submit_admission_source_path,
-            1_000_000,
+            strategy_source_max_bytes,
         )
         .expect("panic-gate/service-policy source proof should collect");
 
@@ -4156,7 +4157,7 @@ fn abort_plan_writer_emits_artifact_from_source_owned_collectors() {
             strategy_instance_id,
             &strategy_source_path,
             &submit_admission_source_path,
-            1_000_000,
+            strategy_source_max_bytes,
             &abort_plan_path,
         )
         .expect("source-owned collectors should write abort-plan artifact");
@@ -4167,15 +4168,13 @@ fn abort_plan_writer_emits_artifact_from_source_owned_collectors() {
     let json: serde_json::Value =
         serde_json::from_slice(&artifact_bytes).expect("abort plan should be JSON");
     assert_eq!(json["source_collector_derived"], true);
-    // The strategy root is now a directory module; reading it as a single file
-    // (sha256_file) would panic with IsADirectory and would not match the
-    // producer. Compute the expected digest the SAME way the producer does at
-    // src/bolt_v3_operator_artifacts.rs:6644 — canonical_source_digest over the
-    // root with the identical cap passed to the writer above (1_000_000).
     assert_eq!(
         json["strategy_source_sha256"],
-        bolt_v2::source_canonicalization::canonical_source_digest(&strategy_source_path, 1_000_000)
-            .expect("strategy directory canonical digest should compute")
+        bolt_v2::bolt_v3_source_integrity::registry_source_digest(
+            bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY,
+            strategy_source_max_bytes,
+        )
+        .expect("strategy registry source-set digest should compute")
     );
     assert_eq!(
         json["submit_admission_source_sha256"],

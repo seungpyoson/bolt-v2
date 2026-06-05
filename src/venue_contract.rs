@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 pub const STREAM_CLASS_QUOTES: &str = "quotes";
 pub const STREAM_CLASS_TRADES: &str = "trades";
@@ -215,6 +215,11 @@ pub struct VenueContract {
     pub streams: BTreeMap<String, StreamContract>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SchemaVersionEnvelope {
+    schema_version: u32,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ClassReportStatus {
@@ -385,6 +390,9 @@ impl VenueContract {
     pub fn load_and_validate(path: &Path) -> Result<Self> {
         let contents = fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("failed to read contract {}: {e}", path.display()))?;
+        let envelope: SchemaVersionEnvelope = toml::from_str(&contents)
+            .map_err(|e| anyhow::anyhow!("failed to parse contract {}: {e}", path.display()))?;
+        ensure_current_schema_version(envelope.schema_version)?;
         let contract: VenueContract = toml::from_str(&contents)
             .map_err(|e| anyhow::anyhow!("failed to parse contract {}: {e}", path.display()))?;
         contract.validate()?;
@@ -392,11 +400,7 @@ impl VenueContract {
     }
 
     pub fn validate(&self) -> Result<()> {
-        ensure!(
-            self.schema_version == CURRENT_SCHEMA_VERSION,
-            "unsupported contract schema_version {}, expected {CURRENT_SCHEMA_VERSION}",
-            self.schema_version
-        );
+        ensure_current_schema_version(self.schema_version)?;
 
         ensure!(
             self.rate_budget.clob_per_minute > 0,
@@ -534,6 +538,14 @@ fn is_hh_mm_utc(value: &str) -> bool {
         && minute.chars().all(|c| c.is_ascii_digit())
         && hour.parse::<u8>().is_ok_and(|v| v < 24)
         && minute.parse::<u8>().is_ok_and(|v| v < 60)
+}
+
+fn ensure_current_schema_version(schema_version: u32) -> Result<()> {
+    ensure!(
+        schema_version == CURRENT_SCHEMA_VERSION,
+        "unsupported contract schema_version {schema_version}, expected {CURRENT_SCHEMA_VERSION}"
+    );
+    Ok(())
 }
 
 fn validate_fee_rate_source(side: &str, source: FeeRateSource, bps: Option<u32>) -> Result<()> {

@@ -11,9 +11,9 @@ use bolt_v2::{
     lake_batch::convert_live_spool_to_parquet,
     nt_runtime_capture,
     venue_contract::{
-        BookDepthSource, Capability, CompletenessReport, FeeRateSource, MaintenancePolicy, Policy,
-        Provenance, ScheduledMaintenanceWindow, SettlementKind, StreamContract, VenueContract,
-        Weekday,
+        BookDepthSource, CURRENT_SCHEMA_VERSION, Capability, CompletenessReport, FeeRateSource,
+        MaintenancePolicy, Policy, Provenance, ScheduledMaintenanceWindow, SettlementKind,
+        StreamContract, VenueContract, Weekday,
     },
 };
 mod support;
@@ -187,7 +187,7 @@ fn loads_polymarket_contract() {
             .expect("polymarket contract should load");
 
     assert_eq!(contract.venue, "polymarket");
-    assert_eq!(contract.schema_version, 2);
+    assert_eq!(contract.schema_version, CURRENT_SCHEMA_VERSION);
     assert_eq!(contract.streams.len(), 7);
 
     // Execution-capability facts (sourced from the NT Polymarket adapter).
@@ -303,6 +303,32 @@ fn rejects_wrong_schema_version() {
         err.to_string()
             .contains("unsupported contract schema_version"),
         "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_previous_schema_before_full_contract_parse() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("legacy-v2-flat-fields.toml");
+    let previous_schema_version = CURRENT_SCHEMA_VERSION - 1;
+    let current_schema_line = format!("schema_version = {CURRENT_SCHEMA_VERSION}");
+    let previous_schema_line = format!("schema_version = {previous_schema_version}");
+    let text = std::fs::read_to_string(support::first_contract_path())
+        .unwrap()
+        .replacen(&current_schema_line, &previous_schema_line, 1)
+        .replacen(
+            "[execution]",
+            "supports_modify = false\nsettlement_kind = \"binary\"\n\n[execution]",
+            1,
+        );
+    std::fs::write(&path, text).unwrap();
+
+    let err = VenueContract::load_and_validate(&path).unwrap_err();
+    assert!(
+        err.to_string().contains(&format!(
+            "unsupported contract schema_version {previous_schema_version}, expected {CURRENT_SCHEMA_VERSION}"
+        )),
+        "previous schema must be rejected before full contract parsing, got: {err}"
     );
 }
 

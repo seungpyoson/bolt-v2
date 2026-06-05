@@ -5034,8 +5034,8 @@ reason = "This is a stable evidence reason code for missing uncertainty-band inp
 [[allowed]]
 path = "src/venue_contract.rs"
 kind = "number"
-literal = '''2'''
-context = '''pub const CURRENT_SCHEMA_VERSION: u32 = 2;'''
+literal = '''3'''
+context = '''pub const CURRENT_SCHEMA_VERSION: u32 = 3;'''
 classification = "venue_contract_schema_version"
 reason = "This is the venue contract schema version accepted by the parser, not an operator runtime value."
 

@@ -3,7 +3,7 @@
 `reviews_of`: `normalization-catalog-plan.v2.md` (content_hash sha256 `746db046564aaca9d0d56cc425e1d94cdce9886a9d065f3bd656e433e8a11d19`, 90,784 B)
 `panel`: Codex, GLM, DeepSeek, Kimi (relay), Grok (relay), Gemini (relay) — each an independent single-doc adversarial challenge (F1–F15 RESOLVED/PARTIAL/NOT-RESOLVED + design challenge + missed-items).
 `raw_reviews`: `normalization-catalog-plan.v2-reviews/{codex,glm,deepseek,kimi,grok,gemini}.md`
-`NT verified at`: rev `6e059dcbb59ac1e582132fc431a581936c216c3c` (the bolt-v2 pin), checkout `~/.cargo/git/checkouts/nautilus_trader-3c6af4345b4d438b/6e059dc/`.
+`NT verified at`: rev `6e059dcbb59ac1e582132fc431a581936c216c3c` (the bolt-v2 pin), checkout `USER_HOME_DIR/.cargo/git/checkouts/nautilus_trader-3c6af4345b4d438b/6e059dc/`.
 `status`: drives plan **v3**. Note the relay reviews contain `[redacted_source_excerpt]` tokens — the relay scrubs source-derived excerpts; finding structure is intact.
 
 ## 1. Verdict spread

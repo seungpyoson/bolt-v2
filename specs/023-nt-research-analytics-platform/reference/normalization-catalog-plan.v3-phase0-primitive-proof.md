@@ -4,14 +4,14 @@ Empirical proof that the panel's "load-bearing wall" (plan v3 §4.3 ConditionalC
 
 ## What it proves
 - **PROOF 1 (R-5):** arrow→parquet encode + read-back roundtrip using ONLY public `arrow`/`parquet` — confirms NT's `write_batches_to_object_store` (parquet.rs:170, put baked in at :197) does NOT need to be reused; the ~20-line encode is replicable.
-- **PROOF 2 (R-3):** logical-content digest over arrow `RowConverter` rows is deterministic — the idempotency key is logical rows, not non-deterministic parquet bytes.
+- **PROOF 2 (R-3):** logical-content digest over canonical-sorted arrow `RowConverter` rows is deterministic — the idempotency key is logical rows, not non-deterministic parquet bytes.
 - **PROOF 3 (THE BLOCKER, B-1/F2):** 24 concurrent `put_opts(PutMode::Create)` on one path → exactly 1 wins, 23 `AlreadyExists`, stored bytes are the single winner's. `LocalFileSystem` Create == `std::fs::hard_link` (object_store local.rs:372, atomically exclusive) == the same create-only contract as S3 If-None-Match (aws/mod.rs:189). No TOCTOU, no torn write.
 - **PROOF 4 (B-1):** canonical roots use NT-native `<start>_<end>.parquet`; content/transform-hash keying is staging-only (NT never reads staging).
 
 ## Verified run output
 ```
 PROOF 1 PASS: arrow->parquet encode + read-back roundtrip (3 rows, 784 bytes; public arrow/parquet only, no NT-private API)
-PROOF 2 PASS: logical-content digest deterministic over RowConverter image (sha256=4fce..; keyed on logical rows, not parquet bytes)
+PROOF 2 PASS: logical-content digest deterministic over canonical sorted RowConverter image (keyed on logical rows, not parquet bytes)
 PROOF 3 PASS (BLOCKER): 24 concurrent put_opts(PutMode::Create) -> exactly 1 wrote, 23 got AlreadyExists, stored bytes intact (LocalFileSystem hard_link == S3 If-None-Match contract)
 PROOF 4 PASS: canonical roots use NT-native '<start>_<end>.parquet'; content/transform-hash keying is staging-only
 
@@ -46,7 +46,7 @@ path = "src/main.rs"
 // Phase-0 load-bearing-primitive proof for the ConditionalCatalogWriter (plan v3 §4.3).
 // Proves, against object_store 0.13.2 + arrow/parquet 58.3.0 (the live bolt-v2 pins):
 //   1. arrow->parquet encode + read-back roundtrip using ONLY public arrow/parquet (R-5: no NT-private API).
-//   2. logical-content digest over arrow RowConverter rows is deterministic (R-3: key on logical rows, not parquet bytes).
+//   2. logical-content digest over canonical-sorted arrow RowConverter rows is deterministic (R-3: key on logical rows, not parquet bytes).
 //   3. THE BLOCKER: N concurrent put_opts(PutMode::Create) -> exactly one writer wins, rest get AlreadyExists,
 //      stored bytes are the single winner's (LocalFileSystem Create == hard_link, atomically exclusive == S3 If-None-Match contract).
 //   4. canonical roots use NT-native '<start>_<end>.parquet' names (B-1); content/transform-hash keying is staging-only.
@@ -74,6 +74,16 @@ fn sample_batch() -> RecordBatch {
     .unwrap()
 }
 
+fn reordered_batch() -> RecordBatch {
+    let px = StringArray::from(vec!["99.75", "101.0", "100.5"]);
+    let ts = Int64Array::from(vec![3000i64, 2000, 1000]);
+    RecordBatch::try_from_iter(vec![
+        ("price", Arc::new(px) as ArrayRef),
+        ("ts_event", Arc::new(ts) as ArrayRef),
+    ])
+    .unwrap()
+}
+
 // Replicates NT's encode (parquet.rs:181-194): SNAPPY + max_row_group_row_count 5000, public arrow/parquet only.
 fn encode_batch_to_parquet(batch: &RecordBatch) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
@@ -87,23 +97,43 @@ fn encode_batch_to_parquet(batch: &RecordBatch) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-// R-3: logical-content digest over the schema image + RowConverter row bytes (NOT parquet bytes).
+// R-3: logical-content digest over the canonical schema image + sorted RowConverter row bytes (NOT parquet bytes).
 fn logical_digest(batch: &RecordBatch) -> Result<[u8; 32]> {
-    let fields: Vec<SortField> = batch
+    let mut columns: Vec<_> = batch
         .schema()
         .fields()
         .iter()
-        .map(|f| SortField::new(f.data_type().clone()))
+        .enumerate()
+        .map(|(idx, f)| {
+            (f.name().clone(), f.data_type().clone(), batch.column(idx).clone())
+        })
+        .collect();
+    columns.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let fields: Vec<SortField> = columns
+        .iter()
+        .map(|(_, data_type, _)| SortField::new(data_type.clone()))
+        .collect();
+    let sorted_columns: Vec<ArrayRef> = columns
+        .iter()
+        .map(|(_, _, column)| column.clone())
         .collect();
     let converter = RowConverter::new(fields)?;
-    let rows = converter.convert_columns(batch.columns())?;
+    let rows = converter.convert_columns(&sorted_columns)?;
+    let mut row_images: Vec<Vec<u8>> = rows.iter().map(|row| row.as_ref().to_vec()).collect();
+    row_images.sort();
+
     let mut hasher = Sha256::new();
-    for f in batch.schema().fields() {
-        hasher.update(f.name().as_bytes());
-        hasher.update(format!("{:?}", f.data_type()).as_bytes());
+    for (name, data_type, _) in columns.iter() {
+        hasher.update((name.len() as u64).to_le_bytes());
+        hasher.update(name.as_bytes());
+        let data_type_image = format!("{data_type:?}");
+        hasher.update((data_type_image.len() as u64).to_le_bytes());
+        hasher.update(data_type_image.as_bytes());
     }
-    for row in rows.iter() {
-        hasher.update(row.as_ref());
+    for row in row_images {
+        hasher.update((row.len() as u64).to_le_bytes());
+        hasher.update(row);
     }
     Ok(hasher.finalize().into())
 }
@@ -148,10 +178,14 @@ async fn main() -> Result<()> {
     // PROOF 2 — logical digest deterministic (R-3)
     let d1 = logical_digest(&batch)?;
     let d2 = logical_digest(&sample_batch())?;
+    let d3 = logical_digest(&reordered_batch())?;
     assert_eq!(d1, d2, "logical digest stable for identical logical rows");
+    assert_eq!(
+        d1, d3,
+        "logical digest stable across column ordering and row ordering"
+    );
     println!(
-        "PROOF 2 PASS: logical-content digest deterministic over RowConverter image (sha256={:02x}{:02x}..; keyed on logical rows, not parquet bytes)",
-        d1[0], d1[1]
+        "PROOF 2 PASS: logical-content digest deterministic over canonical sorted RowConverter image (keyed on logical rows, not parquet bytes)"
     );
 
     // PROOF 3 — THE BLOCKER: N-writer conditional-create race

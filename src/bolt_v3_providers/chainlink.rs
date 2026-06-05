@@ -165,6 +165,13 @@ fn validate_data_bounds(key: &str, data: &ChainlinkDataConfig) -> Vec<String> {
         errors.push(format!(
             "clients.{key}.data.report_endpoint_path must be a non-empty path"
         ));
+    } else {
+        crate::bolt_v3_validate::validate_chainlink_report_endpoint_path(
+            &format!("clients.{key}.data.report_endpoint_path"),
+            &data.rest_base_url,
+            &data.report_endpoint_path,
+            &mut errors,
+        );
     }
     if data.http_timeout_secs == 0 {
         errors.push(format!(

@@ -3742,6 +3742,61 @@ fn chainlink_gate_provider_non_https_rest_base_url_fails_closed() {
 }
 
 #[test]
+fn chainlink_client_scheme_relative_report_endpoint_path_fails_closed() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // A `//host` report_endpoint_path is scheme-relative: joined against the base
+    // it swaps the host while keeping https, redirecting the HMAC-signed strike
+    // request off the configured endpoint. The non-empty check alone never caught
+    // this; config load must fail closed on the endpoint-path resolver.
+    let mutated = replace_in_fixture_section(
+        "[clients.chainlink_strike.data]",
+        &[(
+            "report_endpoint_path = \"/api/v1/reports\"",
+            "report_endpoint_path = \"//attacker.example/api/v1/reports\"",
+        )],
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("scheme-relative endpoint fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.chainlink_strike.data.report_endpoint_path")
+                && message.contains("must not redirect off the base URL host")
+        }),
+        "a chainlink client report_endpoint_path that changes host must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn chainlink_gate_provider_scheme_relative_report_endpoint_path_fails_closed() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // The gate provider names the same endpoint and must be held to the same
+    // resolver. Its prior check accepted `//host` (it starts with `/` and has no
+    // `?`), so a scheme-relative path could redirect the resolution-oracle proof
+    // request off-host. Config load must fail closed.
+    let mutated = replace_in_fixture_section(
+        "[gate_providers.resolution_oracle_primary.chainlink_data_streams]",
+        &[(
+            "report_endpoint_path = \"/api/v1/reports\"",
+            "report_endpoint_path = \"//attacker.example/api/v1/reports\"",
+        )],
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("scheme-relative gate endpoint fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains(
+                "gate_providers.resolution_oracle_primary.chainlink_data_streams.report_endpoint_path",
+            ) && message.contains("must not redirect off the base URL host")
+        }),
+        "a gate provider report_endpoint_path that changes host must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_gate_provider_client_id_without_configured_client() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

@@ -66,19 +66,22 @@ pub(crate) fn chainlink_data_streams_report_request_url(
     feed_id: &str,
     report_timestamp_unix_seconds: u64,
 ) -> Result<(String, String), BoltV3OperatorArtifactError> {
-    let base_url = url::Url::parse(rest_base_url)
-        .map_err(|_| price_to_beat_report_provenance_config_invalid())?;
-    // Defense-in-depth at the credential-bearing chokepoint: this request URL
-    // accompanies HMAC-signed Data Streams credentials, so refuse to build one
-    // over any non-https transport. Config validation already enforces https on
-    // the strike client, so this is a redundant fail-closed guard that protects
-    // any caller reaching the builder without that validation.
-    if base_url.scheme() != "https" {
+    // Resolve the endpoint path against the base fail-closed: the shared resolver
+    // rejects any value that would redirect this credential-bearing request off
+    // the configured host (absolute URLs, scheme-relative `//host` paths, or an
+    // injected query/fragment) and returns the safe joined URL. Config validation
+    // enforces the same rule, so this is the redundant guard protecting any caller
+    // that reaches the builder without that validation.
+    let mut url = crate::bolt_v3_validate::resolve_chainlink_report_endpoint_url(
+        rest_base_url,
+        report_endpoint_path,
+    )
+    .map_err(|_| price_to_beat_report_provenance_config_invalid())?;
+    // The HMAC-signed Data Streams credentials travel in the request headers, so
+    // refuse to build the request over any non-https transport.
+    if url.scheme() != "https" {
         return Err(price_to_beat_report_provenance_config_invalid());
     }
-    let mut url = base_url
-        .join(report_endpoint_path)
-        .map_err(|_| price_to_beat_report_provenance_config_invalid())?;
     url.query_pairs_mut()
         .append_pair(CHAINLINK_DATA_STREAMS_REPORT_FEED_ID_QUERY_FIELD, feed_id)
         .append_pair(
@@ -167,7 +170,10 @@ mod tests {
     use super::*;
 
     const TEST_BASE_URL: &str = "https://api.example.com/";
-    const TEST_ENDPOINT_PATH: &str = "api/v1/reports";
+    // A rooted absolute path, matching the shipped config convention
+    // (`config/root.toml` uses `/api/v1/reports`). The resolver requires a single
+    // leading slash so the endpoint can only resolve against the base host.
+    const TEST_ENDPOINT_PATH: &str = "/api/v1/reports";
     const TEST_FEED_ID: &str = "0x000362205e10b3a147d02792eccee483dca6c7b44ecce7012cb8c6e0b68b3ae9";
     const TEST_REPORT_TIMESTAMP_SECONDS: u64 = 600;
     const TEST_API_KEY: &str = "test-api-key";
@@ -218,6 +224,33 @@ mod tests {
             TEST_REPORT_TIMESTAMP_SECONDS,
         )
         .expect_err("a non-https base must fail closed");
+    }
+
+    #[test]
+    fn report_request_url_rejects_scheme_relative_endpoint_path() {
+        // A `//host` path is scheme-relative: `Url::join` keeps the base scheme
+        // (https) but swaps the authority, redirecting the HMAC-signed request to
+        // an attacker-controlled host. The builder must fail closed.
+        chainlink_data_streams_report_request_url(
+            TEST_BASE_URL,
+            "//attacker.example/api/v1/reports",
+            TEST_FEED_ID,
+            TEST_REPORT_TIMESTAMP_SECONDS,
+        )
+        .expect_err("a scheme-relative endpoint path that changes host must fail closed");
+    }
+
+    #[test]
+    fn report_request_url_rejects_absolute_url_endpoint_path() {
+        // An absolute-URL path replaces the entire base via `Url::join`, sending
+        // signed credentials to an arbitrary host. The builder must fail closed.
+        chainlink_data_streams_report_request_url(
+            TEST_BASE_URL,
+            "https://attacker.example/api/v1/reports",
+            TEST_FEED_ID,
+            TEST_REPORT_TIMESTAMP_SECONDS,
+        )
+        .expect_err("an absolute-URL endpoint path that changes host must fail closed");
     }
 
     #[test]

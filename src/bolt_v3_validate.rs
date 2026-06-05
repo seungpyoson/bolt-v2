@@ -506,6 +506,64 @@ pub(crate) fn validate_https_rest_base_url(
     }
 }
 
+/// Resolves a Chainlink Data Streams `report_endpoint_path` against its
+/// `rest_base_url`, failing closed against any value that would redirect the
+/// credential-bearing report request off the configured endpoint. The HMAC-signed
+/// Data Streams credentials travel with this request, so the path must be a rooted
+/// absolute path and the joined URL must keep the base scheme, host, and port and
+/// introduce no query or fragment of its own. `url::Url::join` otherwise accepts
+/// absolute URLs (`https://other/...`) and scheme-relative paths (`//other/...`)
+/// that silently swap the host while still receiving the signed credentials.
+/// Shared by the live-strike client validator, the resolution-oracle gate-provider
+/// validator, and the request-URL builder so the endpoint can only ever resolve to
+/// the configured host. Returns the safe joined URL so the builder reuses one
+/// resolution rather than re-joining.
+pub(crate) fn resolve_chainlink_report_endpoint_url(
+    rest_base_url: &str,
+    report_endpoint_path: &str,
+) -> Result<url::Url, String> {
+    let base = url::Url::parse(rest_base_url)
+        .map_err(|_| "must resolve against a valid absolute base URL".to_string())?;
+    if !report_endpoint_path.starts_with('/') {
+        return Err("must be a rooted absolute path beginning with a single slash".to_string());
+    }
+    let joined = base
+        .join(report_endpoint_path)
+        .map_err(|_| "must be a path that resolves against the base URL".to_string())?;
+    if joined.scheme() != base.scheme()
+        || joined.host_str() != base.host_str()
+        || joined.port_or_known_default() != base.port_or_known_default()
+        || joined.query().is_some()
+        || joined.fragment().is_some()
+    {
+        return Err(
+            "must not redirect off the base URL host, scheme, or port, or carry a query or fragment"
+                .to_string(),
+        );
+    }
+    Ok(joined)
+}
+
+/// Validates a Chainlink Data Streams `report_endpoint_path` config field via
+/// [`resolve_chainlink_report_endpoint_url`], pushing a field-scoped error on any
+/// value that would redirect the signed request off the configured host. A
+/// malformed base URL is reported by the `rest_base_url` validator, so this skips
+/// that case to avoid double-reporting.
+pub(crate) fn validate_chainlink_report_endpoint_path(
+    field_path: &str,
+    rest_base_url: &str,
+    report_endpoint_path: &str,
+    errors: &mut Vec<String>,
+) {
+    if url::Url::parse(rest_base_url).is_err() {
+        return;
+    }
+    if let Err(reason) = resolve_chainlink_report_endpoint_url(rest_base_url, report_endpoint_path)
+    {
+        errors.push(format!("{field_path} {reason}"));
+    }
+}
+
 fn validate_chainlink_data_streams_gate_provider(
     context: &str,
     table: &toml::map::Map<String, toml::Value>,
@@ -537,12 +595,13 @@ fn validate_chainlink_data_streams_gate_provider(
         CHAINLINK_DATA_STREAMS_ENDPOINT_ID_FIELD,
         &mut errors,
     );
-    if let Some(rest_base_url) = required_string_field(
+    let rest_base_url = required_string_field(
         table,
         &format!("{context}.chainlink_data_streams"),
         CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD,
         &mut errors,
-    ) {
+    );
+    if let Some(rest_base_url) = rest_base_url {
         validate_https_rest_base_url(
             &format!(
                 "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD}"
@@ -556,11 +615,16 @@ fn validate_chainlink_data_streams_gate_provider(
         &format!("{context}.chainlink_data_streams"),
         CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD,
         &mut errors,
-    ) && (!report_endpoint_path.starts_with('/') || report_endpoint_path.contains('?'))
+    ) && let Some(rest_base_url) = rest_base_url
     {
-        errors.push(format!(
-            "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD} must be an absolute path without query parameters"
-        ));
+        validate_chainlink_report_endpoint_path(
+            &format!(
+                "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD}"
+            ),
+            rest_base_url,
+            report_endpoint_path,
+            &mut errors,
+        );
     }
     required_positive_integer_field(
         table,

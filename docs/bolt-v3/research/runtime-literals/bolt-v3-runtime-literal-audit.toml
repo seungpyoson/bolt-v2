@@ -16987,9 +16987,25 @@ reason = '''Fixed 8 MiB in-process ceiling for the source-text accessors (no ope
 path = '''src/bolt_v3_source_integrity.rs'''
 kind = '''string'''
 literal = '''"CARGO_MANIFEST_DIR"'''
-context = '''Path::new(env!("CARGO_MANIFEST_DIR")).join(registry_entry(key).relative_root)'''
+context = '''Path::new(env!("CARGO_MANIFEST_DIR")).join(registry_relative_root(key))'''
 classification = '''source_integrity_manifest_dir_env_name'''
 reason = '''Compile-time Cargo env var naming the crate manifest dir; used to root registry-relative source paths, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_source_integrity.rs'''
+kind = '''string'''
+literal = '''"CARGO_MANIFEST_DIR"'''
+context = '''.map(|relative| Path::new(env!("CARGO_MANIFEST_DIR")).join(relative))'''
+classification = '''source_integrity_manifest_dir_env_name'''
+reason = '''Compile-time Cargo env var naming the crate manifest dir; used to root every registry-relative source-set path, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_source_integrity.rs'''
+kind = '''string'''
+literal = '''"CARGO_MANIFEST_DIR"'''
+context = '''Path::new(env!("CARGO_MANIFEST_DIR")),'''
+classification = '''source_integrity_manifest_dir_env_name'''
+reason = '''Compile-time Cargo env var naming the crate manifest dir; passed to the registry source-set canonicalizer, not an operator runtime value.'''
 
 [[allowed]]
 path = '''src/bolt_v3_tiny_canary_evidence.rs'''
@@ -17034,6 +17050,30 @@ reason = '''Fixed framing/bound arithmetic constant in the canonical source walk
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
 kind = '''number'''
+literal = '''0'''
+context = '''return canonical_source_bytes(&manifest_dir.join(relative_roots[0]), max_bytes);'''
+classification = '''source_canonicalization_single_root_index'''
+reason = '''Fixed first-element index used only when a registry source set has exactly one root, preserving historical single-root bytes; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''return module_source_text(&manifest_dir.join(relative_roots[0]), max_bytes);'''
+classification = '''source_canonicalization_single_root_index'''
+reason = '''Fixed first-element index used only when a registry source set has exactly one root, preserving historical single-root text order; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''return production_module_source_text(&manifest_dir.join(relative_roots[0]), max_bytes);'''
+classification = '''source_canonicalization_single_root_index'''
+reason = '''Fixed first-element index used only when a registry source set has exactly one root, preserving historical single-root production-text order; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''number'''
 literal = '''0x00'''
 context = '''out.push(0x00);'''
 classification = '''source_canonicalization_framing_constant'''
@@ -17067,9 +17107,17 @@ reason = '''Fixed framing/bound arithmetic constant in the canonical source walk
 path = '''src/source_canonicalization.rs'''
 kind = '''string'''
 literal = '''"/"'''
-context = '''Ok(components.join("/").into_bytes())'''
+context = '''Ok(parts.join("/").into_bytes())'''
 classification = '''source_canonicalization_path_separator'''
 reason = '''Canonical forward-slash path separator normalizing relative paths for OS-independent framing/ordering; a fixed structural constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"/"'''
+context = '''Ok(components.join("/").into_bytes())'''
+classification = '''source_canonicalization_path_separator'''
+reason = '''Canonical forward-slash path separator normalizing directory-root relative paths for OS-independent framing/ordering; a fixed structural constant, not an operator runtime value.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
@@ -17123,7 +17171,7 @@ reason = '''Fail-closed diagnostic for a source root that is neither a file nor 
 path = '''src/source_canonicalization.rs'''
 kind = '''string'''
 literal = '''"src/bolt_v3_submit_admission.rs"'''
-context = '''relative_root: "src/bolt_v3_submit_admission.rs",'''
+context = '''relative_roots: &["src/bolt_v3_submit_admission.rs"],'''
 classification = '''gated_source_registry_relative_root'''
 reason = '''Repo-relative root path of the submit-admission gated source file; the single owner of this path for build.rs, the verifier, the producer, and tests.'''
 
@@ -17131,9 +17179,17 @@ reason = '''Repo-relative root path of the submit-admission gated source file; t
 path = '''src/source_canonicalization.rs'''
 kind = '''string'''
 literal = '''"src/strategies/binary_oracle_edge_taker"'''
-context = '''relative_root: "src/strategies/binary_oracle_edge_taker",'''
+context = '''"src/strategies/binary_oracle_edge_taker",'''
 classification = '''gated_source_registry_relative_root'''
 reason = '''Repo-relative root path of the binary-oracle strategy source module (a directory after the A3 split); the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"src/bolt_v3_book_sizing.rs"'''
+context = '''"src/bolt_v3_book_sizing.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the shared book-sizing source included in the binary-oracle strategy source set after A4; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''

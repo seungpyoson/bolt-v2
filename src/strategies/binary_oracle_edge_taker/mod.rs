@@ -20,8 +20,8 @@ use nautilus_model::{
 };
 use nautilus_model::{
     enums::{
-        AggressorSide, BookAction, OmsType as NtOmsType, OrderSide, OrderType, TimeInForce,
-        TrailingOffsetType, TriggerType,
+        AggressorSide, OmsType as NtOmsType, OrderSide, OrderType, TimeInForce, TrailingOffsetType,
+        TriggerType,
     },
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId, Venue},
     instruments::{Instrument, InstrumentAny},
@@ -39,6 +39,10 @@ use serde::{Deserialize, Serialize};
 use toml::Value;
 
 use crate::{
+    bolt_v3_book_sizing::{
+        OutcomeBookState, OutcomeBookSubscriptions, OutcomePreparedBooks,
+        should_replace_book_subscriptions,
+    },
     bolt_v3_decision_evidence::{
         BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3ReadinessGateEvidenceSnapshot,
         BoltV3RuntimeReadinessSeed, BoltV3StrategyInputEvidenceSnapshot,
@@ -49,8 +53,8 @@ use crate::{
         SelectedMarketSourceIdentity,
     },
     bolt_v3_numeric::{
-        BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64,
-        clamp_probability, is_non_negative_finite, is_positive_finite,
+        BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, UNIT_F64, clamp_probability,
+        is_non_negative_finite, is_positive_finite,
     },
     bolt_v3_operator_artifacts::EntryReadinessGateSession,
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
@@ -80,6 +84,9 @@ use crate::{
         BoxedStrategy, FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError,
     },
 };
+
+#[cfg(test)]
+use nautilus_model::enums::BookAction;
 
 #[cfg(test)]
 use crate::{
@@ -244,242 +251,7 @@ struct ReferenceSnapshot {
     venues: Vec<EffectiveVenueState>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct OutcomeBookState {
-    instrument_id: Option<InstrumentId>,
-    last_observed_instrument_id: Option<InstrumentId>,
-    bid_levels: BTreeMap<Price, f64>,
-    ask_levels: BTreeMap<Price, f64>,
-    best_bid: Option<f64>,
-    best_ask: Option<f64>,
-    liquidity_available: Option<f64>,
-}
-
-impl OutcomeBookState {
-    fn empty() -> Self {
-        Self {
-            instrument_id: None,
-            last_observed_instrument_id: None,
-            bid_levels: BTreeMap::new(),
-            ask_levels: BTreeMap::new(),
-            best_bid: None,
-            best_ask: None,
-            liquidity_available: None,
-        }
-    }
-
-    fn from_instrument_id(instrument_id: InstrumentId) -> Self {
-        Self {
-            instrument_id: Some(instrument_id),
-            last_observed_instrument_id: None,
-            bid_levels: BTreeMap::new(),
-            ask_levels: BTreeMap::new(),
-            best_bid: None,
-            best_ask: None,
-            liquidity_available: None,
-        }
-    }
-
-    fn is_priced(&self) -> bool {
-        self.best_bid.is_some() && self.best_ask.is_some()
-    }
-
-    /// Whether this book is priced and strictly crossed (`best_bid > best_ask`).
-    ///
-    /// A locked book (`best_bid == best_ask`) is not crossed and is intentionally
-    /// not flagged. An unpriced book (either side missing) is not crossed either;
-    /// the [`EntryBlockReason::ActiveBookNotPriced`] gate already covers that case.
-    fn is_crossed(&self) -> bool {
-        matches!(
-            (self.best_bid, self.best_ask),
-            (Some(best_bid), Some(best_ask)) if best_bid > best_ask
-        )
-    }
-
-    fn metadata_matches_selection(&self) -> bool {
-        self.last_observed_instrument_id.is_some()
-            && self.last_observed_instrument_id == self.instrument_id
-    }
-
-    fn update_from_deltas(&mut self, deltas: &nautilus_model::data::OrderBookDeltas) {
-        for delta in &deltas.deltas {
-            let price = delta.order.price;
-            let size = delta.order.size.as_f64();
-            let levels = match delta.order.side {
-                OrderSide::Buy => Some(&mut self.bid_levels),
-                OrderSide::Sell => Some(&mut self.ask_levels),
-                _ => None,
-            };
-
-            match delta.action {
-                BookAction::Add | BookAction::Update => {
-                    if let Some(levels) = levels {
-                        if is_positive_finite(size) {
-                            levels.insert(price, size);
-                        } else {
-                            levels.remove(&price);
-                        }
-                    }
-                }
-                BookAction::Delete => {
-                    if let Some(levels) = levels {
-                        levels.remove(&price);
-                    }
-                }
-                BookAction::Clear => {
-                    self.bid_levels.clear();
-                    self.ask_levels.clear();
-                }
-            }
-        }
-
-        self.last_observed_instrument_id = Some(deltas.instrument_id);
-        self.best_bid = self
-            .bid_levels
-            .last_key_value()
-            .map(|(price, _)| price.as_f64());
-        self.best_ask = self
-            .ask_levels
-            .first_key_value()
-            .map(|(price, _)| price.as_f64());
-        self.liquidity_available = Some(
-            self.bid_levels.values().copied().sum::<f64>()
-                + self.ask_levels.values().copied().sum::<f64>(),
-        );
-    }
-
-    fn executable_price_for_order_side(&self, order_side: OrderSide) -> Option<f64> {
-        match order_side {
-            OrderSide::Buy => self.best_ask,
-            OrderSide::Sell => self.best_bid,
-            _ => None,
-        }
-        .filter(|value| is_positive_finite(*value))
-    }
-
-    fn passive_price_for_order_side(&self, order_side: OrderSide) -> Option<f64> {
-        match order_side {
-            OrderSide::Buy => self.best_bid,
-            OrderSide::Sell => self.best_ask,
-            _ => None,
-        }
-        .filter(|value| is_positive_finite(*value))
-    }
-
-    fn max_execution_within_vwap_slippage_bps(
-        &self,
-        order_side: OrderSide,
-        slippage_bps: u64,
-    ) -> Option<ImpactCappedExecution> {
-        let slippage = slippage_bps as f64 / BPS_DENOMINATOR;
-        match order_side {
-            OrderSide::Buy => {
-                let best_ask = self.executable_price_for_order_side(OrderSide::Buy)?;
-                let allowed_vwap = best_ask * (UNIT_F64 + slippage);
-                max_execution_within_vwap_limit(
-                    self.ask_levels
-                        .iter()
-                        .map(|(price, size)| (price.as_f64(), *size))
-                        .collect(),
-                    allowed_vwap,
-                    true,
-                )
-            }
-            OrderSide::Sell => {
-                let best_bid = self.executable_price_for_order_side(OrderSide::Sell)?;
-                let allowed_vwap = best_bid * (UNIT_F64 - slippage);
-                max_execution_within_vwap_limit(
-                    self.bid_levels
-                        .iter()
-                        .rev()
-                        .map(|(price, size)| (price.as_f64(), *size))
-                        .collect(),
-                    allowed_vwap,
-                    false,
-                )
-            }
-            _ => None,
-        }
-    }
-}
-
-fn max_execution_within_vwap_limit(
-    levels: Vec<(f64, f64)>,
-    allowed_vwap: f64,
-    is_buy: bool,
-) -> Option<ImpactCappedExecution> {
-    if !is_positive_finite(allowed_vwap) {
-        return None;
-    }
-
-    let mut cumulative_qty = ZERO_F64;
-    let mut cumulative_notional = ZERO_F64;
-
-    for (price, size) in levels {
-        if !is_positive_finite(price) || !is_positive_finite(size) {
-            continue;
-        }
-
-        let next_qty = cumulative_qty + size;
-        let next_notional = cumulative_notional + price * size;
-        let next_vwap = next_notional / next_qty;
-        let within_limit = if is_buy {
-            next_vwap <= allowed_vwap
-        } else {
-            next_vwap >= allowed_vwap
-        };
-        if within_limit {
-            cumulative_qty = next_qty;
-            cumulative_notional = next_notional;
-            continue;
-        }
-
-        let partial_qty = if is_buy {
-            let denominator = price - allowed_vwap;
-            if denominator <= ZERO_F64 {
-                size
-            } else {
-                ((allowed_vwap * cumulative_qty - cumulative_notional) / denominator)
-                    .clamp(ZERO_F64, size)
-            }
-        } else {
-            let denominator = allowed_vwap - price;
-            if denominator <= ZERO_F64 {
-                size
-            } else {
-                ((cumulative_notional - allowed_vwap * cumulative_qty) / denominator)
-                    .clamp(ZERO_F64, size)
-            }
-        };
-
-        let total_qty = cumulative_qty + partial_qty;
-        let total_notional = cumulative_notional + partial_qty * price;
-        return is_positive_finite(total_qty).then_some(ImpactCappedExecution {
-            quantity: total_qty,
-            vwap_price: total_notional / total_qty,
-        });
-    }
-
-    is_positive_finite(cumulative_qty).then_some(ImpactCappedExecution {
-        quantity: cumulative_qty,
-        vwap_price: cumulative_notional / cumulative_qty,
-    })
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct OutcomePreparedBooks {
-    up: OutcomeBookState,
-    down: OutcomeBookState,
-}
-
 impl OutcomePreparedBooks {
-    fn empty() -> Self {
-        Self {
-            up: OutcomeBookState::empty(),
-            down: OutcomeBookState::empty(),
-        }
-    }
-
     fn from_market(market: &CandidateMarket) -> Self {
         Self {
             up: OutcomeBookState::from_instrument_id(InstrumentId::from(
@@ -488,43 +260,6 @@ impl OutcomePreparedBooks {
             down: OutcomeBookState::from_instrument_id(InstrumentId::from(
                 market.down.instrument_id.as_str(),
             )),
-        }
-    }
-
-    fn is_priced(&self) -> bool {
-        self.up.is_priced() && self.down.is_priced()
-    }
-
-    /// Whether either active outcome book is priced and strictly crossed.
-    ///
-    /// Mirrors how [`OutcomePreparedBooks::is_priced`] treats both outcome books
-    /// as the active book for the entry gate: a cross on either side is an invalid
-    /// market state that must block entry.
-    fn any_crossed(&self) -> bool {
-        self.up.is_crossed() || self.down.is_crossed()
-    }
-
-    fn metadata_matches_selection(&self) -> bool {
-        self.up.metadata_matches_selection() && self.down.metadata_matches_selection()
-    }
-
-    fn minimum_liquidity(&self) -> Option<f64> {
-        Some(
-            self.up
-                .liquidity_available?
-                .min(self.down.liquidity_available?),
-        )
-    }
-
-    fn update_from_deltas(&mut self, deltas: &nautilus_model::data::OrderBookDeltas) -> bool {
-        if self.up.instrument_id == Some(deltas.instrument_id) {
-            self.up.update_from_deltas(deltas);
-            true
-        } else if self.down.instrument_id == Some(deltas.instrument_id) {
-            self.down.update_from_deltas(deltas);
-            true
-        } else {
-            false
         }
     }
 }
@@ -550,12 +285,6 @@ struct ActiveMarketState {
     trade_flow: BTreeMap<InstrumentId, SignedTradeFlow>,
     fast_venue_incoherent: bool,
     forced_flat: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ImpactCappedExecution {
-    quantity: f64,
-    vwap_price: f64,
 }
 
 /// A single signed trade retained for downstream adverse-selection / VPIN analysis.
@@ -1230,34 +959,13 @@ impl PricingState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OutcomeBookSubscriptions {
-    up_instrument_id: Option<InstrumentId>,
-    down_instrument_id: Option<InstrumentId>,
-    tracked_position_instrument_id: Option<InstrumentId>,
-}
-
 impl OutcomeBookSubscriptions {
-    fn empty() -> Self {
-        Self {
-            up_instrument_id: None,
-            down_instrument_id: None,
-            tracked_position_instrument_id: None,
-        }
-    }
-
     fn from_market(market: &CandidateMarket) -> Self {
         Self {
             up_instrument_id: Some(InstrumentId::from(market.up.instrument_id.as_str())),
             down_instrument_id: Some(InstrumentId::from(market.down.instrument_id.as_str())),
             tracked_position_instrument_id: None,
         }
-    }
-
-    fn is_same_market(&self, other: &Self) -> bool {
-        self.up_instrument_id == other.up_instrument_id
-            && self.down_instrument_id == other.down_instrument_id
-            && self.tracked_position_instrument_id == other.tracked_position_instrument_id
     }
 }
 
@@ -5663,13 +5371,6 @@ fn apply_entry_decision_source_book(
     book.best_ask = Some(source.best_ask);
     book.liquidity_available = Some(source.liquidity_available);
     Ok(())
-}
-
-fn should_replace_book_subscriptions(
-    current: &OutcomeBookSubscriptions,
-    next: &OutcomeBookSubscriptions,
-) -> bool {
-    !current.is_same_market(next)
 }
 
 fn unsubscribe_missing_books(

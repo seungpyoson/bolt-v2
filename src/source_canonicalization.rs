@@ -219,6 +219,58 @@ pub fn canonical_source_digest(root: &Path, max_bytes: u64) -> io::Result<String
     Ok(sha256_hex_lower(&canonical_source_bytes(root, max_bytes)?))
 }
 
+/// Canonical byte stream for a registry-owned source set.
+///
+/// A one-root set preserves the historical single-root bytes exactly. A
+/// multi-root set frames every discovered file by its full repo-relative path,
+/// sorted by those path bytes, so shared strategy dependencies can be covered by
+/// the same digest without losing rename/path tamper evidence.
+pub fn canonical_source_set_bytes(
+    manifest_dir: &Path,
+    relative_roots: &[&str],
+    max_bytes: u64,
+) -> io::Result<Vec<u8>> {
+    if relative_roots.len() == 1 {
+        return canonical_source_bytes(&manifest_dir.join(relative_roots[0]), max_bytes);
+    }
+
+    let files = collect_source_set_files_sorted(manifest_dir, relative_roots)?;
+    let mut out: Vec<u8> = Vec::new();
+    let mut total: u64 = 0;
+    for (relative, path) in files {
+        let file_bytes = read_file_bounded(&path, max_bytes)?;
+        let file_len = file_bytes.len() as u64;
+        total = total.saturating_add(relative.len() as u64);
+        total = total.saturating_add(1); // NUL separator
+        total = total.saturating_add(8); // u64-LE length frame
+        total = total.saturating_add(file_len);
+        if total > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("source set canonical stream exceeds max_source_bytes={max_bytes} bytes"),
+            ));
+        }
+        out.extend_from_slice(&relative);
+        out.push(0x00);
+        out.extend_from_slice(&file_len.to_le_bytes());
+        out.extend_from_slice(&file_bytes);
+    }
+    Ok(out)
+}
+
+/// Lowercase-hex SHA-256 of [`canonical_source_set_bytes`].
+pub fn canonical_source_set_digest(
+    manifest_dir: &Path,
+    relative_roots: &[&str],
+    max_bytes: u64,
+) -> io::Result<String> {
+    Ok(sha256_hex_lower(&canonical_source_set_bytes(
+        manifest_dir,
+        relative_roots,
+        max_bytes,
+    )?))
+}
+
 /// Whole-module source text for a `root`, in the SAME canonicalization order as
 /// the digest. IDENTITY case: the file's verbatim text. DIRECTORY case: the
 /// framed-order concatenation of every file's UTF-8 text WITHOUT the binary
@@ -241,6 +293,26 @@ pub fn module_source_text(root: &Path, max_bytes: u64) -> io::Result<String> {
         ));
     }
     let files = collect_rs_files_sorted(root)?;
+    let mut text = String::new();
+    for (_relative, path) in files {
+        let bytes = read_file_bounded(&path, max_bytes)?;
+        text.push_str(&utf8_string(bytes, &path)?);
+    }
+    Ok(text)
+}
+
+/// Whole-module source text for a registry-owned source set, in the same file
+/// order as [`canonical_source_set_bytes`].
+pub fn module_source_set_text(
+    manifest_dir: &Path,
+    relative_roots: &[&str],
+    max_bytes: u64,
+) -> io::Result<String> {
+    if relative_roots.len() == 1 {
+        return module_source_text(&manifest_dir.join(relative_roots[0]), max_bytes);
+    }
+
+    let files = collect_source_set_files_sorted(manifest_dir, relative_roots)?;
     let mut text = String::new();
     for (_relative, path) in files {
         let bytes = read_file_bounded(&path, max_bytes)?;
@@ -301,6 +373,118 @@ pub fn production_module_source_text(root: &Path, max_bytes: u64) -> io::Result<
     Ok(text)
 }
 
+/// Production-only source text for a registry-owned source set, in the same
+/// file order as [`canonical_source_set_bytes`].
+pub fn production_source_set_text(
+    manifest_dir: &Path,
+    relative_roots: &[&str],
+    max_bytes: u64,
+) -> io::Result<String> {
+    if relative_roots.len() == 1 {
+        return production_module_source_text(&manifest_dir.join(relative_roots[0]), max_bytes);
+    }
+
+    let files = collect_source_set_files_sorted(manifest_dir, relative_roots)?;
+    let mut text = String::new();
+    for (_relative, path) in files {
+        let bytes = read_file_bounded(&path, max_bytes)?;
+        let file_text = utf8_string(bytes, &path)?;
+        text.push_str(&production_half(&file_text));
+    }
+    Ok(text)
+}
+
+fn collect_source_set_files_sorted(
+    manifest_dir: &Path,
+    relative_roots: &[&str],
+) -> io::Result<Vec<(Vec<u8>, PathBuf)>> {
+    if relative_roots.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "source set must contain at least one root",
+        ));
+    }
+
+    let mut out = Vec::new();
+    for relative_root in relative_roots {
+        collect_source_set_root(manifest_dir, relative_root, &mut out)?;
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+fn collect_source_set_root(
+    manifest_dir: &Path,
+    relative_root: &str,
+    out: &mut Vec<(Vec<u8>, PathBuf)>,
+) -> io::Result<()> {
+    let root_label = source_set_relative_root_bytes(relative_root)?;
+    let root = manifest_dir.join(relative_root);
+    let file_type = source_root_file_type(&root)?;
+    if file_type.is_file() {
+        out.push((root_label, root));
+        return Ok(());
+    }
+    if !file_type.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "source root is neither a regular file nor a directory: {}",
+                root.display()
+            ),
+        ));
+    }
+
+    for (relative, path) in collect_rs_files_sorted(&root)? {
+        let mut set_relative = root_label.clone();
+        set_relative.push(b'/');
+        set_relative.extend_from_slice(&relative);
+        out.push((set_relative, path));
+    }
+    Ok(())
+}
+
+fn source_set_relative_root_bytes(relative_root: &str) -> io::Result<Vec<u8>> {
+    if relative_root.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "source set root must not be empty",
+        ));
+    }
+
+    let path = Path::new(relative_root);
+    if path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("source set root must be repo-relative: {relative_root}"),
+        ));
+    }
+
+    let mut parts = Vec::new();
+    for component in path.components() {
+        let Component::Normal(name) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("source set root contains an unsupported component: {relative_root}"),
+            ));
+        };
+        let name = name.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("source set root is not valid UTF-8: {relative_root}"),
+            )
+        })?;
+        if name.contains('\\') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("source set root component contains a backslash: {relative_root}"),
+            ));
+        }
+        parts.push(name);
+    }
+    Ok(parts.join("/").into_bytes())
+}
+
 /// The production half of a single file's text: everything before the FIRST
 /// top-level [`TEST_MODULE_SPLIT_MARKER`], or the whole text if the marker is
 /// absent. LF checkout remains byte-for-byte equivalent to
@@ -336,13 +520,13 @@ pub const STRATEGY_KEY: &str = "strategy";
 /// Stable registry key for the submit-admission source root.
 pub const SUBMIT_ADMISSION_KEY: &str = "submit_admission";
 
-/// One registry entry: a stable key + its repo-relative root path. The root may
-/// resolve to a single `.rs` file (today) or a directory (after a split); the
-/// canonicalizer decides at runtime.
+/// One registry entry: a stable key + its repo-relative source roots. A
+/// one-element set preserves the old single-root semantics; a multi-root set is
+/// framed by full repo-relative file path.
 pub struct GatedSourceRoot {
     pub key: &'static str,
-    /// Repo-relative path from the crate manifest dir.
-    pub relative_root: &'static str,
+    /// Repo-relative paths from the crate manifest dir.
+    pub relative_roots: &'static [&'static str],
 }
 
 /// THE registry — the ONLY place the two gated source roots are named. Lives in
@@ -353,11 +537,14 @@ pub struct GatedSourceRoot {
 pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
     GatedSourceRoot {
         key: STRATEGY_KEY,
-        relative_root: "src/strategies/binary_oracle_edge_taker",
+        relative_roots: &[
+            "src/strategies/binary_oracle_edge_taker",
+            "src/bolt_v3_book_sizing.rs",
+        ],
     },
     GatedSourceRoot {
         key: SUBMIT_ADMISSION_KEY,
-        relative_root: "src/bolt_v3_submit_admission.rs",
+        relative_roots: &["src/bolt_v3_submit_admission.rs"],
     },
 ];
 

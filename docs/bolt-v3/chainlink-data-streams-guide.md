@@ -34,13 +34,18 @@ Each price update is a **V3 report** containing: benchmark price (mid), bid, ask
 
 ### Testnet feed-id bindings (single source of truth)
 
-The authoritative per-asset testnet `feed_id → resolution-instrument` bindings live in
-`config/root.toml` — the `chainlink_data_streams` gate provider's `feed_bindings`, mirrored
-by the live strike client's `[clients.<id>.data].feed_bindings`. They are intentionally **not
-duplicated here**: `config/root.toml` is the single source of truth, so this guide cannot
-drift from what the runtime actually loads. Each `feed_id` was discovered empirically and
-verified against the testnet endpoint using the procedure below (crypto feeds update at 1 Hz).
-Mainnet feed IDs differ and are a config swap, not a code change.
+The authoritative per-asset testnet `feed_id → resolution-instrument` bindings for the **live
+strike path** live in `config/root.toml` under the live strike client's
+`[clients.chainlink_strike.data].feed_bindings` — that is the only source the running strategy
+loads. The `chainlink_data_streams` gate provider's `feed_bindings` is a separate **offline**
+proof stub (a single placeholder, retired in #551); it is **not** the live strike source, so
+editing it does not change live behavior. Bindings are intentionally **not duplicated here**:
+`config/root.toml` is the single source of truth, so this guide cannot drift from what the
+runtime actually loads, and the live per-asset bindings are pinned by a drift-guard test
+(`shipped_chainlink_strike_client_pins_each_asset_feed_binding` in `tests/config_parsing.rs`)
+so a cross-asset feed swap fails CI. Each `feed_id` was discovered empirically and verified
+against the testnet endpoint using the procedure below (crypto feeds update at 1 Hz). Mainnet
+feed IDs differ and are a config swap, not a code change.
 
 ### How to Discover Testnet Feed IDs for New Assets
 

@@ -2,6 +2,13 @@
 
 > Verified 2026-02-28 against Chainlink testnet with live WebSocket and REST tests.
 
+> **TESTNET IS PRODUCTION.** For bolt-v2, mainnet/production Chainlink Data Streams
+> credentials cannot be obtained — this testnet feed is the only and final
+> resolution anchor for `price_to_beat`. Treat it as production. Do not gate,
+> hesitate, or argue testnet-vs-mainnet when deploying/running the live strike.
+> The deployed runtime config may read `environment = "mainnet"`, but the strike
+> resolves off testnet because that is all that exists.
+
 ## Architecture Overview
 
 Chainlink Data Streams is a **pull-based, off-chain** price oracle. Unlike on-chain Chainlink Price Feeds (which read from aggregator contracts on Ethereum/Arbitrum), Data Streams delivers signed price reports directly via **WebSocket** or **REST API** — no blockchain interaction needed for reading prices.

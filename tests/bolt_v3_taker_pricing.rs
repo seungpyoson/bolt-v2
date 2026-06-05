@@ -4,7 +4,7 @@ use bolt_v2::bolt_v3_taker_pricing::{
 };
 use bolt_v2::bolt_v3_volatility::RealizedVolConfig;
 
-fn pricing_config() -> TakerPricingConfig {
+fn pricing_config() -> TakerPricingConfig<'static> {
     TakerPricingConfig {
         realized_vol: RealizedVolConfig {
             window_secs: 60,
@@ -20,7 +20,7 @@ fn pricing_config() -> TakerPricingConfig {
         theta_decay_factor: 1.5,
         edge_threshold_basis_points: 10,
         pricing_kurtosis: 0.0,
-        rotating_market_family: "updown".to_string(),
+        rotating_market_family: "updown",
     }
 }
 
@@ -135,5 +135,13 @@ fn taker_pricing_accepts_source_owned_realized_vol_seed_without_strategy_estimat
     assert_eq!(
         pricing.current_realized_vol_source_at(1_000),
         (Some("reference".to_string()), Some(1_000))
+    );
+
+    pricing.seed_ready_realized_vol(None, 3.0, 1_001);
+
+    assert_eq!(pricing.current_realized_vol_at(1_001), Some(3.0));
+    assert_eq!(
+        pricing.current_realized_vol_source_at(1_001),
+        (None, Some(1_001))
     );
 }

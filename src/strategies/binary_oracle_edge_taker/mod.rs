@@ -1055,7 +1055,7 @@ fn realized_vol_config(config: &BinaryOracleEdgeTakerConfig) -> RealizedVolConfi
     }
 }
 
-fn taker_pricing_config(config: &BinaryOracleEdgeTakerConfig) -> TakerPricingConfig {
+fn taker_pricing_config(config: &BinaryOracleEdgeTakerConfig) -> TakerPricingConfig<'_> {
     TakerPricingConfig {
         realized_vol: realized_vol_config(config),
         lead_agreement_min_corr: config.lead_agreement_min_corr,
@@ -1066,7 +1066,7 @@ fn taker_pricing_config(config: &BinaryOracleEdgeTakerConfig) -> TakerPricingCon
         theta_decay_factor: config.theta_decay_factor,
         edge_threshold_basis_points: config.edge_threshold_basis_points,
         pricing_kurtosis: config.pricing_kurtosis,
-        rotating_market_family: config.rotating_market_family.clone(),
+        rotating_market_family: config.rotating_market_family.as_str(),
     }
 }
 

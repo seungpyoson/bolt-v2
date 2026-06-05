@@ -114,7 +114,7 @@ mod tests {
     // the live source files (`shasum -a256 OUT_DIR/strategy.canonical` == this
     // constant).
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "d3d93ea5da343debdc03e6a02b5a447b5ccb487a988a41115a57b5abd14a1579";
+        "a5eeffa9a11ad26a03ccd198581c754b1f5d0c1a6a530e9aaff38030fe4229f5";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 

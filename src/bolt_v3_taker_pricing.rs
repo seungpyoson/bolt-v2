@@ -28,8 +28,8 @@ pub struct FastSpotObservation {
     pub observed_ts_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct TakerPricingConfig {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TakerPricingConfig<'a> {
     pub realized_vol: RealizedVolConfig,
     pub lead_agreement_min_corr: f64,
     pub lead_jitter_max_ms: u64,
@@ -39,7 +39,7 @@ pub struct TakerPricingConfig {
     pub theta_decay_factor: f64,
     pub edge_threshold_basis_points: i64,
     pub pricing_kurtosis: f64,
-    pub rotating_market_family: String,
+    pub rotating_market_family: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -117,7 +117,7 @@ pub struct TakerPricingState {
 }
 
 impl TakerPricingState {
-    pub fn from_config(config: &TakerPricingConfig) -> Self {
+    pub fn from_config(config: &TakerPricingConfig<'_>) -> Self {
         Self {
             last_reference_fair_value: None,
             fast_spot: None,
@@ -147,7 +147,7 @@ impl TakerPricingState {
     pub fn observe_signal_quote(
         &mut self,
         quote: &FastSpotObservation,
-        config: &TakerPricingConfig,
+        config: &TakerPricingConfig<'_>,
     ) {
         if !is_positive_finite(quote.price) {
             return;
@@ -259,15 +259,13 @@ impl TakerPricingState {
         {
             self.realized_vol.last_ready_vol = Some(realized_vol);
             self.realized_vol.last_ready_ts_ms = Some(ready_ts_ms);
-            if let Some(source_venue) = source_venue {
-                self.realized_vol_source_venue = Some(source_venue);
-            }
+            self.realized_vol_source_venue = source_venue;
         }
     }
 
     pub(crate) fn theta_scaled_min_edge_bps_for(
         &self,
-        config: &TakerPricingConfig,
+        config: &TakerPricingConfig<'_>,
         seconds_to_market_end: Option<u64>,
     ) -> Option<f64> {
         seconds_to_market_end.and_then(|seconds_to_market_end| {
@@ -282,7 +280,7 @@ impl TakerPricingState {
 
     pub fn entry_pricing_inputs_at(
         &self,
-        config: &TakerPricingConfig,
+        config: &TakerPricingConfig<'_>,
         request: TakerPricingRequest,
     ) -> Result<TakerPricingInputs, Vec<TakerPricingBlockReason>> {
         let mut blocked_by = Vec::new();
@@ -331,7 +329,7 @@ impl TakerPricingState {
 
     pub fn entry_pricing_at(
         &self,
-        config: &TakerPricingConfig,
+        config: &TakerPricingConfig<'_>,
         request: TakerPricingRequest,
     ) -> Result<TakerPricingResult, Vec<TakerPricingBlockReason>> {
         let inputs = self.entry_pricing_inputs_at(config, request)?;
@@ -340,12 +338,12 @@ impl TakerPricingState {
 
     fn pricing_result_from_inputs(
         &self,
-        config: &TakerPricingConfig,
+        config: &TakerPricingConfig<'_>,
         now_ms: u64,
         inputs: TakerPricingInputs,
     ) -> Result<TakerPricingResult, Vec<TakerPricingBlockReason>> {
         let Some(fair_probability_up) = bolt_v3_market_families::fair_probability_up_for_family(
-            &config.rotating_market_family,
+            config.rotating_market_family,
             &FairProbabilityInputs {
                 spot_price: inputs.spot_price,
                 strike_price: inputs.strike_price,

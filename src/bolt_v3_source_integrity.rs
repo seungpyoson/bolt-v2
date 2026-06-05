@@ -104,17 +104,17 @@ mod tests {
     // identity digest captured live from `origin/main` raw bytes
     // (`git show origin/main:<path> | shasum -a 256`); that root did not move.
     //
-    // GOLDEN_STRATEGY_DIGEST was RE-DERIVED again by slice A8 (first by A3): the
-    // strategy source is a directory whose `*.rs` membership grows as each slice
-    // extracts a concern. A3 first split it into a directory module; A8 adds
-    // `config.rs`, so the framed DIRECTORY concatenation is now over
+    // GOLDEN_STRATEGY_DIGEST was RE-DERIVED again by slice A5 after pricing
+    // state moved out of `mod.rs`: the strategy source remains a directory
+    // whose framed DIRECTORY concatenation is over
     // `{config.rs, mod.rs, selection.rs}` (sorted by relative path). This is a
-    // legitimate behavior-preserving source move, not a fixture regeneration — the
-    // value is re-derived from the live build-emitted `OUT_DIR/strategy.canonical`
-    // and independently confirmed by hand-framing the live source files
-    // (`shasum -a256 OUT_DIR/strategy.canonical` == this constant).
+    // legitimate behavior-preserving source move, not a fixture regeneration:
+    // the value is re-derived from the live build-emitted
+    // `OUT_DIR/strategy.canonical` and independently confirmed by hand-framing
+    // the live source files (`shasum -a256 OUT_DIR/strategy.canonical` == this
+    // constant).
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "0efe937275b3e310602d73b7e8645008d4fb2b7757ef4836bbabc10e402f6f75";
+        "8391ba33183078aa3c9139b786d9104346b7a11a52c413575b39afa7e483c319";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 
@@ -352,8 +352,12 @@ mod tests {
         let canonical_len = registry_source_bytes(STRATEGY_KEY, TEST_MAX_BYTES)
             .unwrap()
             .len() as u64;
+        let raw_len: u64 = strategy_dir_files_in_canonical_order()
+            .iter()
+            .map(|path| std::fs::metadata(path).unwrap().len())
+            .sum();
         assert!(
-            canonical_len > 732_776,
+            canonical_len > raw_len,
             "directory framing adds path/length frames over raw content"
         );
         assert!(registry_source_digest(STRATEGY_KEY, canonical_len).is_ok());

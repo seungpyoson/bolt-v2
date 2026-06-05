@@ -92,11 +92,16 @@ pub const SUPPORTED_ROOT_SCHEMA_VERSION: u32 = 1;
 pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 2;
 const CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD: &str = "feed_bindings";
 const CHAINLINK_DATA_STREAMS_ENDPOINT_ID_FIELD: &str = "endpoint_id";
-const CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD: &str = "rest_base_url";
-const CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD: &str = "report_endpoint_path";
-const CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD: &str = "http_timeout_secs";
-const CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD: &str = "api_key_ssm_parameter";
-const CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD: &str = "api_secret_ssm_parameter";
+// Shared with the provider-owned F3 client/gate-provider consistency check
+// (`crate::bolt_v3_providers::chainlink::validate_client_gate_provider_consistency`),
+// which reaches them through this single core definition rather than re-declaring
+// the gate-provider field names.
+pub(crate) const CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD: &str = "rest_base_url";
+pub(crate) const CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD: &str = "report_endpoint_path";
+pub(crate) const CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD: &str = "http_timeout_secs";
+pub(crate) const CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD: &str = "api_key_ssm_parameter";
+pub(crate) const CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD: &str =
+    "api_secret_ssm_parameter";
 const CHAINLINK_DATA_STREAMS_OLD_SSM_CREDENTIAL_PARAMETER_FIELD: &str = "ssm_credential_parameter";
 const CHAINLINK_DATA_STREAMS_RESOLUTION_IDENTITY_FIELD: &str = "resolution_identity";
 const CHAINLINK_DATA_STREAMS_VALUE_KIND_FIELD: &str = "value_kind";
@@ -130,15 +135,15 @@ const LIVE_CANARY_PROOF_POLICY_NOTIONAL_MODE: &str = "fixed";
 const LIVE_CANARY_PROOF_POLICY_REQUIRED_PROOF_CLAIM: &str = "proof_only";
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
-struct ChainlinkFeedBindingKey {
+struct ResolutionFeedBindingKey {
     provider_id: String,
     resolution_identity: String,
     value_kind: String,
 }
 
 #[derive(Debug, Clone)]
-struct ChainlinkTargetMappingReference {
-    key: ChainlinkFeedBindingKey,
+struct ResolutionFeedMappingReference {
+    key: ResolutionFeedBindingKey,
     context: String,
 }
 
@@ -172,6 +177,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     if let Some(gate_providers) = &root.gate_providers {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));
     }
+    errors.extend(crate::bolt_v3_providers::validate_resolution_oracle_client_consistency(root));
     if let Some(live_canary) = root.live_canary.as_ref() {
         // Validate the live-money-gating base fields unconditionally. The
         // previous code only ran when `proof_policy` was present, so a
@@ -477,6 +483,108 @@ fn validate_gate_providers(
     errors
 }
 
+/// Validates that a Chainlink Data Streams `rest_base_url` parses as a URL and
+/// uses the `https` scheme. The signed Data Streams credentials travel in the
+/// request `Authorization` header, so any non-https (or unparseable) endpoint
+/// fails closed at config load — credentials must never traverse plaintext.
+/// Shared by the live-strike client validator and the resolution-oracle
+/// gate-provider validator so both config blocks that name the same endpoint are
+/// held to one transport standard.
+pub(crate) fn validate_https_rest_base_url(
+    field_path: &str,
+    rest_base_url: &str,
+    errors: &mut Vec<String>,
+) {
+    match url::Url::parse(rest_base_url) {
+        Ok(parsed) if parsed.scheme() != "https" => errors.push(format!(
+            "{field_path} must use the https scheme (got `{scheme}`); \
+             signed credentials must never be sent over an insecure transport",
+            scheme = parsed.scheme()
+        )),
+        Ok(_) => {}
+        Err(_) => errors.push(format!("{field_path} must be a valid absolute URL")),
+    }
+}
+
+/// Resolves a Chainlink Data Streams `report_endpoint_path` against its
+/// `rest_base_url`, failing closed against any value that would redirect the
+/// credential-bearing report request off the configured endpoint. The HMAC-signed
+/// Data Streams credentials travel with this request, so the path must be a rooted
+/// absolute path and the joined URL must keep the base scheme, host, port, and
+/// userinfo (username/password) and introduce no query or fragment of its own.
+/// `url::Url::join` otherwise accepts absolute URLs (`https://other/...`) and
+/// scheme-relative/authority paths (`//other/...`, `//user:pass@host/...`) that
+/// silently swap the host or inject userinfo while still receiving the signed
+/// credentials.
+/// Shared by the live-strike client validator, the resolution-oracle gate-provider
+/// validator, and the request-URL builder so the endpoint can only ever resolve to
+/// the configured host. Returns the safe joined URL so the builder reuses one
+/// resolution rather than re-joining.
+pub(crate) fn resolve_chainlink_report_endpoint_url(
+    rest_base_url: &str,
+    report_endpoint_path: &str,
+) -> Result<url::Url, String> {
+    let base = url::Url::parse(rest_base_url)
+        .map_err(|_| "must resolve against a valid absolute base URL".to_string())?;
+    // Require a single rooted path. `strip_prefix` enforces the leading slash; a
+    // second leading slash or backslash makes the value an authority/scheme-relative
+    // reference (`//host`, `/\host`) that `url::Url::join` resolves into
+    // host/userinfo/port — including same-host `//user:pass@host` forms that would
+    // smuggle credentials into the signed request URL — rather than a path.
+    let after_root = match report_endpoint_path.strip_prefix('/') {
+        Some(after_root) => after_root,
+        None => {
+            return Err("must be a rooted absolute path beginning with a single slash".to_string());
+        }
+    };
+    if after_root.starts_with('/') || after_root.starts_with('\\') {
+        return Err(
+            "must be a single rooted path, not a scheme-relative or authority reference"
+                .to_string(),
+        );
+    }
+    let joined = base
+        .join(report_endpoint_path)
+        .map_err(|_| "must be a path that resolves against the base URL".to_string())?;
+    // Authoritative backstop: resolving the path must change only the path. The
+    // scheme, host, port, and userinfo must match the base, and the path must
+    // introduce no query or fragment of its own.
+    if joined.scheme() != base.scheme()
+        || joined.host_str() != base.host_str()
+        || joined.port_or_known_default() != base.port_or_known_default()
+        || joined.username() != base.username()
+        || joined.password() != base.password()
+        || joined.query().is_some()
+        || joined.fragment().is_some()
+    {
+        return Err(
+            "must not redirect off the base URL host, scheme, port, or credentials, or carry a query or fragment"
+                .to_string(),
+        );
+    }
+    Ok(joined)
+}
+
+/// Validates a Chainlink Data Streams `report_endpoint_path` config field via
+/// [`resolve_chainlink_report_endpoint_url`], pushing a field-scoped error on any
+/// value that would redirect the signed request off the configured host. A
+/// malformed base URL is reported by the `rest_base_url` validator, so this skips
+/// that case to avoid double-reporting.
+pub(crate) fn validate_chainlink_report_endpoint_path(
+    field_path: &str,
+    rest_base_url: &str,
+    report_endpoint_path: &str,
+    errors: &mut Vec<String>,
+) {
+    if url::Url::parse(rest_base_url).is_err() {
+        return;
+    }
+    if let Err(reason) = resolve_chainlink_report_endpoint_url(rest_base_url, report_endpoint_path)
+    {
+        errors.push(format!("{field_path} {reason}"));
+    }
+}
+
 fn validate_chainlink_data_streams_gate_provider(
     context: &str,
     table: &toml::map::Map<String, toml::Value>,
@@ -492,7 +600,7 @@ fn validate_chainlink_data_streams_gate_provider(
             && !is_old_provider_level_feed_field
         {
             errors.push(format!(
-                "{context}.chainlink_data_streams.{field} is not a supported Chainlink Data Streams provider field"
+                "{context}.chainlink_data_streams.{field} is not a supported chainlink_data_streams provider field"
             ));
         }
     }
@@ -508,27 +616,36 @@ fn validate_chainlink_data_streams_gate_provider(
         CHAINLINK_DATA_STREAMS_ENDPOINT_ID_FIELD,
         &mut errors,
     );
-    if let Some(rest_base_url) = required_string_field(
+    let rest_base_url = required_string_field(
         table,
         &format!("{context}.chainlink_data_streams"),
         CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD,
         &mut errors,
-    ) && url::Url::parse(rest_base_url).is_err()
-    {
-        errors.push(format!(
-            "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD} must be an absolute URL"
-        ));
+    );
+    if let Some(rest_base_url) = rest_base_url {
+        validate_https_rest_base_url(
+            &format!(
+                "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD}"
+            ),
+            rest_base_url,
+            &mut errors,
+        );
     }
     if let Some(report_endpoint_path) = required_string_field(
         table,
         &format!("{context}.chainlink_data_streams"),
         CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD,
         &mut errors,
-    ) && (!report_endpoint_path.starts_with('/') || report_endpoint_path.contains('?'))
+    ) && let Some(rest_base_url) = rest_base_url
     {
-        errors.push(format!(
-            "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD} must be an absolute path without query parameters"
-        ));
+        validate_chainlink_report_endpoint_path(
+            &format!(
+                "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD}"
+            ),
+            rest_base_url,
+            report_endpoint_path,
+            &mut errors,
+        );
     }
     required_positive_integer_field(
         table,
@@ -589,7 +706,7 @@ fn validate_chainlink_data_streams_gate_provider(
             && value_kind != PRICE_GATE_VALUE_KIND
         {
             errors.push(format!(
-                "{binding_context}.value_kind `{value_kind}` is not supported for Chainlink Data Streams price reports"
+                "{binding_context}.value_kind `{value_kind}` is not supported for chainlink_data_streams price reports"
             ));
         }
         if let (Some(resolution_identity), Some(value_kind)) = (resolution_identity, value_kind)
@@ -607,7 +724,7 @@ fn validate_chainlink_data_streams_gate_provider(
         ) && !is_lowercase_chainlink_feed_id(feed_id)
         {
             errors.push(format!(
-                "{binding_context}.feed_id must be a lowercase Chainlink feed id"
+                "{binding_context}.feed_id must be a lowercase chainlink_data_streams feed id"
             ));
         }
         required_positive_integer_field(
@@ -1697,7 +1814,7 @@ fn validate_chainlink_feed_binding_coverage(
         match binding_count {
             1 => {}
             0 => errors.push(format!(
-                "{}: Chainlink Data Streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has no matching gate_providers.{}.chainlink_data_streams.feed_bindings entry",
+                "{}: chainlink_data_streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has no matching gate_providers.{}.chainlink_data_streams.feed_bindings entry",
                 reference.context,
                 reference.key.provider_id,
                 reference.key.resolution_identity,
@@ -1705,7 +1822,7 @@ fn validate_chainlink_feed_binding_coverage(
                 reference.key.provider_id
             )),
             count => errors.push(format!(
-                "{}: Chainlink Data Streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has {count} matching gate_providers.{}.chainlink_data_streams.feed_bindings entries; expected exactly one",
+                "{}: chainlink_data_streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has {count} matching gate_providers.{}.chainlink_data_streams.feed_bindings entries; expected exactly one",
                 reference.context,
                 reference.key.provider_id,
                 reference.key.resolution_identity,
@@ -1719,7 +1836,7 @@ fn validate_chainlink_feed_binding_coverage(
         if !target_keys.contains(key) {
             for context in contexts {
                 errors.push(format!(
-                    "{context} resolution_identity `{}` value_kind `{}` is not referenced by any loaded strategy Chainlink mapping",
+                    "{context} resolution_identity `{}` value_kind `{}` is not referenced by any loaded strategy chainlink_data_streams mapping",
                     key.resolution_identity, key.value_kind
                 ));
             }
@@ -1732,7 +1849,7 @@ fn validate_chainlink_feed_binding_coverage(
 fn collect_chainlink_target_mapping_references(
     strategies: &[LoadedStrategy],
     errors: &mut Vec<String>,
-) -> Vec<ChainlinkTargetMappingReference> {
+) -> Vec<ResolutionFeedMappingReference> {
     let mut references = Vec::new();
 
     for loaded in strategies {
@@ -1774,12 +1891,12 @@ fn collect_chainlink_target_mapping_references(
                 let Some(provider_id) = selected_chainlink_provider_id(subscription, mapping)
                 else {
                     errors.push(format!(
-                        "{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]: Chainlink Data Streams mapping resolution_identity `{resolution_identity}` value_kind `{value_kind}` cannot resolve provider_id from mapping provider_id, provider_preference, or a single allowed_provider_ids entry"
+                        "{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]: chainlink_data_streams mapping resolution_identity `{resolution_identity}` value_kind `{value_kind}` cannot resolve provider_id from mapping provider_id, provider_preference, or a single allowed_provider_ids entry"
                     ));
                     continue;
                 };
-                references.push(ChainlinkTargetMappingReference {
-                    key: ChainlinkFeedBindingKey {
+                references.push(ResolutionFeedMappingReference {
+                    key: ResolutionFeedBindingKey {
                         provider_id,
                         resolution_identity,
                         value_kind,
@@ -1806,8 +1923,8 @@ fn selected_chainlink_provider_id(
 
 fn collect_chainlink_feed_bindings(
     root: &BoltV3RootConfig,
-) -> BTreeMap<ChainlinkFeedBindingKey, Vec<String>> {
-    let mut bindings: BTreeMap<ChainlinkFeedBindingKey, Vec<String>> = BTreeMap::new();
+) -> BTreeMap<ResolutionFeedBindingKey, Vec<String>> {
+    let mut bindings: BTreeMap<ResolutionFeedBindingKey, Vec<String>> = BTreeMap::new();
     let Some(gate_providers) = &root.gate_providers else {
         return bindings;
     };
@@ -1841,7 +1958,7 @@ fn collect_chainlink_feed_bindings(
             ) else {
                 continue;
             };
-            let key = ChainlinkFeedBindingKey {
+            let key = ResolutionFeedBindingKey {
                 provider_id: provider_id.clone(),
                 resolution_identity,
                 value_kind,

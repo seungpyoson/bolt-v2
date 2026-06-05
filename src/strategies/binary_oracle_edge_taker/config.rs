@@ -154,6 +154,8 @@ macro_rules! define_config_struct {
             pub(super) reference_instrument_id: Option<String>,
             pub(super) signal_venue: Option<String>,
             pub(super) signal_instrument_id: Option<String>,
+            pub(super) resolution_client_id: Option<String>,
+            pub(super) resolution_instrument_id: Option<String>,
             pub(super) entry_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) exit_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
@@ -334,6 +336,8 @@ impl BinaryOracleEdgeTakerBuilder {
                     | "reference_instrument_id"
                     | "signal_venue"
                     | "signal_instrument_id"
+                    | "resolution_client_id"
+                    | "resolution_instrument_id"
                     | binary_oracle_edge_taker_config_fields!(match_config_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field_prefix}.{key}"), key);
@@ -354,6 +358,13 @@ impl BinaryOracleEdgeTakerBuilder {
         );
         Self::validate_optional_string_field(table, field_prefix, "signal_venue", errors);
         Self::validate_optional_string_field(table, field_prefix, "signal_instrument_id", errors);
+        Self::validate_optional_string_field(table, field_prefix, "resolution_client_id", errors);
+        Self::validate_optional_string_field(
+            table,
+            field_prefix,
+            "resolution_instrument_id",
+            errors,
+        );
         if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {
             let missing = if table.contains_key("reference_venue") {
                 "reference_instrument_id"
@@ -384,6 +395,25 @@ impl BinaryOracleEdgeTakerBuilder {
                 "missing_signal_data_pair",
                 BinaryOracleEdgeTakerFieldType::String,
             ),
+        }
+        // Resolution-strike binding is optional, but both-or-neither: a strategy
+        // either declares the live Chainlink strike (resolution_client_id +
+        // resolution_instrument_id) or neither (entry stays fail-closed). Mirrors
+        // the reference_data pair rule.
+        if table.contains_key("resolution_client_id")
+            != table.contains_key("resolution_instrument_id")
+        {
+            let missing = if table.contains_key("resolution_client_id") {
+                "resolution_instrument_id"
+            } else {
+                "resolution_client_id"
+            };
+            Self::push_missing(
+                errors,
+                format!("{field_prefix}.{missing}"),
+                "missing_resolution_data_pair",
+                BinaryOracleEdgeTakerFieldType::String,
+            );
         }
         Self::validate_order_table(
             table,

@@ -15,7 +15,6 @@ use toml::Value;
 use crate::{
     bolt_v3_decision_evidence::{
         BoltV3DecisionEvidenceWriter, BoltV3ReadinessGateEvidenceSnapshot,
-        BoltV3RuntimeReadinessSeed,
     },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
@@ -61,7 +60,6 @@ pub struct StrategyBuildContext {
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     execution_venue: Venue,
     readiness_evidence: Option<BoltV3ReadinessGateEvidenceSnapshot>,
-    runtime_readiness_seed: Option<BoltV3RuntimeReadinessSeed>,
 }
 
 impl StrategyBuildContext {
@@ -83,7 +81,6 @@ impl StrategyBuildContext {
             submit_admission,
             execution_venue,
             readiness_evidence: None,
-            runtime_readiness_seed: None,
         }
     }
 
@@ -92,14 +89,6 @@ impl StrategyBuildContext {
         readiness_evidence: BoltV3ReadinessGateEvidenceSnapshot,
     ) -> Self {
         self.readiness_evidence = Some(readiness_evidence);
-        self
-    }
-
-    pub fn with_runtime_readiness_seed(
-        mut self,
-        runtime_readiness_seed: BoltV3RuntimeReadinessSeed,
-    ) -> Self {
-        self.runtime_readiness_seed = Some(runtime_readiness_seed);
         self
     }
 
@@ -131,10 +120,6 @@ impl StrategyBuildContext {
 
     pub fn readiness_evidence(&self) -> Option<&BoltV3ReadinessGateEvidenceSnapshot> {
         self.readiness_evidence.as_ref()
-    }
-
-    pub fn runtime_readiness_seed(&self) -> Option<&BoltV3RuntimeReadinessSeed> {
-        self.runtime_readiness_seed.as_ref()
     }
 }
 

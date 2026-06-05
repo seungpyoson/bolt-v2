@@ -1,0 +1,121 @@
+schema_version = 2
+strategy_instance_id = "binary_oracle_xrp"
+strategy_archetype = "binary_oracle_edge_taker"
+order_id_tag = "005"
+oms_type = "netting"
+use_uuid_client_order_ids = true
+use_hyphens_in_client_order_ids = false
+external_order_claims = []
+manage_contingent_orders = false
+manage_gtd_expiry = false
+manage_stop = false
+market_exit_interval_ms = 100
+market_exit_max_attempts = 100
+log_events = true
+log_commands = true
+log_rejected_due_post_only_as_warning = true
+execution_client_id = "polymarket_main"
+
+[target]
+configured_target_id = "binary_oracle_xrp_target"
+kind = "rotating_market"
+rotating_market_family = "updown"
+underlying_asset = "XRP"
+cadence_secs = 300
+cadence_slug_token = "configuredwindow"
+market_selection_rule = "active_or_next"
+retry_interval_secs = 5
+blocked_after_secs = 60
+
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_kinds = ["chainlink_data_streams", "pyth", "exchange_index", "venue_native", "hyperliquid_hip4", "deribit_index", "outcome_oracle"]
+allowed_value_kinds = ["price", "outcome"]
+provider_preference = ["resolution_oracle_primary"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+
+[target.gate_subscriptions.decision_reference]
+required = true
+allowed_provider_kinds = ["chainlink_data_streams", "pyth", "exchange_index", "venue_native", "hyperliquid_hip4", "deribit_index", "outcome_oracle"]
+allowed_value_kinds = ["price", "outcome"]
+provider_preference = ["resolution_oracle_primary"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.decision_reference.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+
+[reference_data]
+
+[signal_data.primary]
+data_client_id = "okx_data"
+instrument_id = "XRP-USDT.OKX"
+
+[resolution_data]
+data_client_id = "chainlink_strike"
+instrument_id = "XRP-USD.CHAINLINK"
+
+[parameters.runtime]
+reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-005"
+warmup_tick_count = 20
+reentry_cooldown_secs = 30
+book_impact_cap_bps = 50
+risk_lambda = 0.5
+exit_hysteresis_bps = 25
+vol_window_secs = 600
+vol_gap_reset_secs = 60
+vol_min_observations = 5
+vol_bridge_valid_secs = 30
+trade_flow_window_secs = 60
+trade_flow_max_samples = 2000
+spike_guard_return_threshold = 0.02
+spike_guard_cooldown_secs = 30
+pricing_kurtosis = 3.0
+theta_decay_factor = 1.0
+forced_flat_thin_book_min_liquidity = 5.0
+lead_agreement_min_corr = 0.8
+lead_jitter_max_ms = 250
+
+[parameters.entry_order]
+side = "buy"
+position_side = "long"
+order_type = "limit"
+time_in_force = "fok"
+is_post_only = false
+is_reduce_only = false
+is_quote_quantity = false
+
+[parameters.exit_order]
+side = "sell"
+position_side = "long"
+order_type = "market"
+time_in_force = "ioc"
+is_post_only = false
+is_reduce_only = false
+is_quote_quantity = false
+
+[parameters.forced_exit_order]
+side = "sell"
+position_side = "long"
+order_type = "market"
+time_in_force = "gtc"
+is_post_only = false
+is_reduce_only = true
+is_quote_quantity = false
+
+[parameters]
+edge_threshold_basis_points = 100
+order_notional_target = "5.00"
+maximum_position_notional = "10.00"

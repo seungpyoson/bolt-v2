@@ -6,10 +6,32 @@ const OLD_CHAINLINK_FIXTURE_FEED_ID: &str =
     "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472";
 const CHAINLINK_BTC_TESTNET_FEED_ID: &str =
     "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
+const CHAINLINK_ETH_TESTNET_FEED_ID: &str =
+    "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782";
+const CHAINLINK_SOL_TESTNET_FEED_ID: &str =
+    "0x0003d338ea2ac3be9e026033b1aa601673c37bab5e13851c59966f9f820754d6";
+const CHAINLINK_BNB_TESTNET_FEED_ID: &str =
+    "0x000387d7c042a9d5c97c15354b531bd01bf6d3a351e190f2394403cf2f79bde9";
+const CHAINLINK_XRP_TESTNET_FEED_ID: &str =
+    "0x00035e3ddda6345c3c8ce45639d4449451f1d5828d7a70845e446f04905937cd";
+const CHAINLINK_DOGE_TESTNET_FEED_ID: &str =
+    "0x00032057c7f224d0266b4311a81cdc3e38145e36442713350d3300fb12e85c99";
 const CHAINLINK_TEST_FEED_ID_PRIMARY: &str =
     "0x1111111111111111111111111111111111111111111111111111111111111111";
 const CHAINLINK_TEST_FEED_ID_SECONDARY: &str =
     "0x2222222222222222222222222222222222222222222222222222222222222222";
+
+/// Shipped per-asset binary-oracle strategy files. One strategy instance per
+/// underlying asset, each subscribing its own Chainlink resolution feed via
+/// `[resolution_data]`.
+const SHIPPED_BINARY_ORACLE_STRATEGY_FILES: &[&str] = &[
+    "config/strategies/binary_oracle_btc.toml",
+    "config/strategies/binary_oracle_eth.toml",
+    "config/strategies/binary_oracle_sol.toml",
+    "config/strategies/binary_oracle_bnb.toml",
+    "config/strategies/binary_oracle_xrp.toml",
+    "config/strategies/binary_oracle_doge.toml",
+];
 
 #[test]
 fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
@@ -417,14 +439,6 @@ fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() 
     for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
         let source = std::fs::read_to_string(support::repo_path(relative_path))
             .expect("root config should be readable");
-        assert!(
-            !source.contains(OLD_CHAINLINK_FIXTURE_FEED_ID),
-            "{relative_path} should not ship the old generic Chainlink fixture feed as a token mapping"
-        );
-        assert!(
-            !source.contains(CHAINLINK_BTC_TESTNET_FEED_ID),
-            "{relative_path} should not ship a BTC-specific Chainlink feed as a token mapping"
-        );
 
         let parsed = toml::from_str::<toml::Value>(&source).expect("root TOML should parse");
         let feed_bindings = parsed
@@ -439,12 +453,112 @@ fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() 
             1,
             "{relative_path} should not ship unused canonical Chainlink feed bindings"
         );
+        // The OFFLINE `resolution_oracle_primary` gate-provider mapping must stay
+        // a single generic placeholder (#551 removes it). The new live
+        // `[clients.chainlink_strike]` source carries the real asset-specific
+        // feeds, so these checks are scoped to the gate-provider binding's
+        // `feed_id`, not a whole-file substring (which now legitimately contains
+        // the BTC feed under the live client block).
+        let gate_feed_id = feed_bindings[0]
+            .get("feed_id")
+            .and_then(toml::Value::as_str)
+            .expect("gate-provider feed binding should declare a feed_id");
+        assert_ne!(
+            gate_feed_id, OLD_CHAINLINK_FIXTURE_FEED_ID,
+            "{relative_path} gate-provider mapping should not ship the old generic Chainlink fixture feed"
+        );
+        assert_ne!(
+            gate_feed_id, CHAINLINK_BTC_TESTNET_FEED_ID,
+            "{relative_path} gate-provider mapping should not ship a BTC-specific Chainlink feed"
+        );
         assert_eq!(
             feed_bindings[0]
                 .get("resolution_identity")
                 .and_then(toml::Value::as_str),
             Some("configured-reference-price"),
             "{relative_path} feed binding should match the shipped strategy mapping"
+        );
+    }
+}
+
+#[test]
+fn shipped_chainlink_strike_client_pins_each_asset_feed_binding() {
+    // Drift guard for the LIVE strike feed bindings. The validFrom/feed_id/schema
+    // decode checks cannot detect a cross-asset substitution (a feed_id is always
+    // internally consistent with its own report), so a copy-paste swap pointing
+    // e.g. SOL at BTC's feed would silently bind the wrong asset's price as the
+    // strike. Pin every asset -> (feed_id, schema, scale, precision) and reject
+    // any duplicate feed_id, so drift fails CI. Asset<->feed_id correctness itself
+    // is confirmed at #553 testnet deploy (a wrong-asset feed yields a visibly
+    // wrong live strike).
+    let expected: [(&str, &str); 6] = [
+        ("BTC-USD.CHAINLINK", CHAINLINK_BTC_TESTNET_FEED_ID),
+        ("ETH-USD.CHAINLINK", CHAINLINK_ETH_TESTNET_FEED_ID),
+        ("SOL-USD.CHAINLINK", CHAINLINK_SOL_TESTNET_FEED_ID),
+        ("BNB-USD.CHAINLINK", CHAINLINK_BNB_TESTNET_FEED_ID),
+        ("XRP-USD.CHAINLINK", CHAINLINK_XRP_TESTNET_FEED_ID),
+        ("DOGE-USD.CHAINLINK", CHAINLINK_DOGE_TESTNET_FEED_ID),
+    ];
+
+    let source = fs::read_to_string(support::repo_path("config/root.toml"))
+        .expect("root config should be readable");
+    let parsed = toml::from_str::<toml::Value>(&source).expect("root TOML should parse");
+    let feed_bindings = parsed
+        .get("clients")
+        .and_then(|value| value.get("chainlink_strike"))
+        .and_then(|value| value.get("data"))
+        .and_then(|value| value.get("feed_bindings"))
+        .and_then(toml::Value::as_array)
+        .expect("root config should declare live chainlink_strike feed bindings");
+
+    assert_eq!(
+        feed_bindings.len(),
+        expected.len(),
+        "the live chainlink_strike client must ship exactly one feed binding per supported asset"
+    );
+
+    let mut seen_feed_ids = std::collections::HashSet::new();
+    for (binding, (instrument_id, feed_id)) in feed_bindings.iter().zip(expected.iter()) {
+        let actual_instrument = binding
+            .get("instrument_id")
+            .and_then(toml::Value::as_str)
+            .expect("feed binding should declare instrument_id");
+        let actual_feed = binding
+            .get("feed_id")
+            .and_then(toml::Value::as_str)
+            .expect("feed binding should declare feed_id");
+        assert_eq!(
+            actual_instrument, *instrument_id,
+            "live chainlink_strike feed bindings must stay in the pinned per-asset order"
+        );
+        assert_eq!(
+            actual_feed, *feed_id,
+            "{instrument_id} strike feed_id drifted from its pinned testnet feed"
+        );
+        assert_eq!(
+            binding
+                .get("report_schema_version")
+                .and_then(toml::Value::as_integer),
+            Some(3),
+            "{instrument_id} must use the Chainlink V3 report schema"
+        );
+        assert_eq!(
+            binding
+                .get("report_decimal_scale")
+                .and_then(toml::Value::as_integer),
+            Some(18),
+            "{instrument_id} must use the 18-decimal Chainlink report scale"
+        );
+        assert_eq!(
+            binding
+                .get("price_precision")
+                .and_then(toml::Value::as_integer),
+            Some(8),
+            "{instrument_id} must use 8dp NT price precision"
+        );
+        assert!(
+            seen_feed_ids.insert(actual_feed),
+            "{instrument_id} reuses another asset's feed_id ({actual_feed}); cross-asset feed collision"
         );
     }
 }
@@ -3491,6 +3605,197 @@ report_decimal_scale = 8
     );
 }
 
+/// A live `CHAINLINK_DATA_STREAMS` client whose connection config matches the
+/// fixture's `resolution_oracle_primary` gate provider exactly. Injected before
+/// `[clients.polymarket_main]` (re-appended at the end so the fixture stays
+/// well-formed).
+#[test]
+fn chainlink_client_matching_gate_provider_connection_passes_single_source_guard() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // The fixture ships a live `chainlink_strike` strike client AND the chainlink
+    // resolution-oracle gate provider. Their shared connection config matches, so
+    // the single-source drift guard must stay quiet.
+    let source = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig =
+        toml::from_str(&source).expect("shipped chainlink client fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("must match gate_providers")),
+        "a chainlink client matching the gate provider must not raise a single-source drift error: {messages:#?}"
+    );
+}
+
+#[test]
+fn chainlink_client_diverging_from_gate_provider_fails_single_source_guard() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // Mutate ONLY the shipped strike client's REST endpoint so it diverges from
+    // the gate provider's. The live strike path and the resolution-oracle
+    // definition must reference one source, so this fails closed at config load.
+    // The section-scoped replace ensures the gate provider's matching URL line is
+    // left untouched.
+    let mutated = replace_in_fixture_section(
+        "[clients.chainlink_strike.data]",
+        &[(
+            "rest_base_url = \"https://api.testnet-dataengine.chain.link\"",
+            "rest_base_url = \"https://api.divergent-dataengine.chain.link\"",
+        )],
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("diverging chainlink client fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.chainlink_strike.data.rest_base_url")
+                && message.contains("must match gate_providers")
+        }),
+        "a chainlink client whose rest_base_url diverges from the gate provider must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn chainlink_client_http_timeout_diverging_from_gate_provider_fails_single_source_guard() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // Mutate ONLY the shipped strike client's http_timeout_secs so it diverges
+    // from the gate provider's. This exercises the integer comparison branch
+    // (a different code path from the string fields), which the rest_base_url
+    // test does not cover. The section-scoped replace leaves the gate
+    // provider's matching value untouched.
+    let mutated = replace_in_fixture_section(
+        "[clients.chainlink_strike.data]",
+        &[("http_timeout_secs = 10", "http_timeout_secs = 11")],
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("diverging chainlink client fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.chainlink_strike.data.http_timeout_secs")
+                && message.contains("must match gate_providers")
+        }),
+        "a chainlink client whose http_timeout_secs diverges from the gate provider must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn chainlink_client_api_key_ssm_diverging_from_gate_provider_fails_single_source_guard() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // Mutate ONLY the shipped strike client's api_key SSM parameter path so the
+    // live strike credentials diverge from the resolution-oracle gate
+    // provider's. A split credential source must fail closed at config load —
+    // the single-source guard's secrets-comparison branch, untested before.
+    let mutated = replace_in_fixture_section(
+        "[clients.chainlink_strike.secrets]",
+        &[(
+            "api_key_ssm_parameter = \"/bolt/testnet/chainlink/api-key\"",
+            "api_key_ssm_parameter = \"/bolt/testnet/chainlink/api-key-divergent\"",
+        )],
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("diverging chainlink client fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.chainlink_strike.secrets.api_key_ssm_parameter")
+                && message.contains("must match gate_providers")
+        }),
+        "a chainlink client whose api_key_ssm_parameter diverges from the gate provider must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn chainlink_gate_provider_non_https_rest_base_url_fails_closed() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // The resolution-oracle gate provider names the SAME Chainlink Data Streams
+    // endpoint as the live strike client and must be held to the same transport
+    // standard. A gate provider declaring an http:// rest_base_url must fail
+    // closed on https grounds at config load — signed credentials must never
+    // traverse plaintext regardless of which config block names the endpoint.
+    // This is the gate-side companion to the client-side https check; before the
+    // shared validator was wired into the gate validator, only a client/gate
+    // mismatch fired and the gate's own transport was unchecked.
+    let mutated = replace_in_fixture_section(
+        "[gate_providers.resolution_oracle_primary.chainlink_data_streams]",
+        &[(
+            "rest_base_url = \"https://api.testnet-dataengine.chain.link\"",
+            "rest_base_url = \"http://api.testnet-dataengine.chain.link\"",
+        )],
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("gate provider http fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains(
+                "gate_providers.resolution_oracle_primary.chainlink_data_streams.rest_base_url",
+            ) && message.contains("https scheme")
+        }),
+        "a gate provider whose rest_base_url is not https must fail closed on https grounds: {messages:#?}"
+    );
+}
+
+#[test]
+fn chainlink_client_scheme_relative_report_endpoint_path_fails_closed() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // A `//host` report_endpoint_path is scheme-relative: joined against the base
+    // it swaps the host while keeping https, redirecting the HMAC-signed strike
+    // request off the configured endpoint. The non-empty check alone never caught
+    // this; config load must fail closed on the endpoint-path resolver.
+    let mutated = replace_in_fixture_section(
+        "[clients.chainlink_strike.data]",
+        &[(
+            "report_endpoint_path = \"/api/v1/reports\"",
+            "report_endpoint_path = \"//attacker.example/api/v1/reports\"",
+        )],
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("scheme-relative endpoint fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.chainlink_strike.data.report_endpoint_path")
+                && message.contains("scheme-relative or authority reference")
+        }),
+        "a chainlink client report_endpoint_path that changes host must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn chainlink_gate_provider_scheme_relative_report_endpoint_path_fails_closed() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // The gate provider names the same endpoint and must be held to the same
+    // resolver. Its prior check accepted `//host` (it starts with `/` and has no
+    // `?`), so a scheme-relative path could redirect the resolution-oracle proof
+    // request off-host. Config load must fail closed.
+    let mutated = replace_in_fixture_section(
+        "[gate_providers.resolution_oracle_primary.chainlink_data_streams]",
+        &[(
+            "report_endpoint_path = \"/api/v1/reports\"",
+            "report_endpoint_path = \"//attacker.example/api/v1/reports\"",
+        )],
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("scheme-relative gate endpoint fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains(
+                "gate_providers.resolution_oracle_primary.chainlink_data_streams.report_endpoint_path",
+            ) && message.contains("scheme-relative or authority reference")
+        }),
+        "a gate provider report_endpoint_path that changes host must fail closed: {messages:#?}"
+    );
+}
+
 #[test]
 fn rejects_gate_provider_client_id_without_configured_client() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
@@ -4128,7 +4433,7 @@ fn rejects_chainlink_target_mapping_without_resolvable_provider_id() {
             message.contains("strategy `strategies/binary_oracle.toml`")
                 && message.contains("configured-primary-resolution")
                 && message.contains("provider_id")
-                && message.contains("Chainlink Data Streams")
+                && message.contains("chainlink_data_streams")
         }),
         "Chainlink target mappings must resolve a concrete provider_id for feed bindings: {messages:#?}"
     );
@@ -4229,19 +4534,20 @@ fn binary_oracle_fixture_uses_gate_subscription_without_provider_specific_runtim
 #[test]
 fn canonical_binary_oracle_config_uses_gate_subscription_without_provider_specific_runtime_fields()
 {
-    let source =
-        std::fs::read_to_string(support::repo_path("config/strategies/binary_oracle.toml"))
+    for relative_path in SHIPPED_BINARY_ORACLE_STRATEGY_FILES {
+        let source = std::fs::read_to_string(support::repo_path(relative_path))
             .expect("canonical strategy config should be readable");
 
-    assert_binary_oracle_strategy_source_uses_gate_schema("canonical config", &source);
+        assert_binary_oracle_strategy_source_uses_gate_schema(relative_path, &source);
+    }
 }
 
 #[test]
 fn shipped_strategy_config_surface_uses_canonical_binary_oracle_path() {
     let canonical_root = support::repo_path("config/root.toml");
     let legacy_root = support::repo_path("config/root.example.toml");
-    let canonical_strategy = support::repo_path("config/strategies/binary_oracle.toml");
     let legacy_strategy = support::repo_path("config/strategies/binary_oracle.example.toml");
+    let placeholder_strategy = support::repo_path("config/strategies/binary_oracle.toml");
     assert!(
         canonical_root.exists(),
         "tracked root config should live at config/root.toml"
@@ -4251,19 +4557,29 @@ fn shipped_strategy_config_surface_uses_canonical_binary_oracle_path() {
         "tracked root config should not keep an .example.toml twin"
     );
     assert!(
-        canonical_strategy.exists(),
-        "tracked strategy config should live at config/strategies/binary_oracle.toml"
-    );
-    assert!(
         !legacy_strategy.exists(),
         "tracked strategy config should not keep an .example.toml twin"
     );
+    assert!(
+        !placeholder_strategy.exists(),
+        "the single-placeholder strategy file should be replaced by per-asset files"
+    );
 
     let root = std::fs::read_to_string(&canonical_root).expect("root config should be readable");
-    assert!(
-        root.contains("\"strategies/binary_oracle.toml\""),
-        "root config should load the canonical strategy path"
-    );
+    for relative_path in SHIPPED_BINARY_ORACLE_STRATEGY_FILES {
+        assert!(
+            support::repo_path(relative_path).exists(),
+            "tracked per-asset strategy config should live at {relative_path}"
+        );
+        // Strip the `config/` prefix to the root-relative `strategy_files` form.
+        let root_relative = relative_path
+            .strip_prefix("config/")
+            .expect("shipped strategy path should be under config/");
+        assert!(
+            root.contains(&format!("\"{root_relative}\"")),
+            "root config should load the per-asset strategy path {root_relative}"
+        );
+    }
     assert!(
         !root.contains("binary_oracle.example.toml"),
         "root config should not reference the legacy .example strategy path"
@@ -4283,10 +4599,14 @@ fn shipped_strategy_config_surface_uses_canonical_binary_oracle_path() {
 
 #[test]
 fn shipped_binary_oracle_configs_do_not_canonicalize_one_reference_market_or_venue() {
-    for relative_path in [
-        "config/strategies/binary_oracle.toml",
-        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-    ] {
+    let strategy_paths =
+        SHIPPED_BINARY_ORACLE_STRATEGY_FILES
+            .iter()
+            .copied()
+            .chain(std::iter::once(
+                "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+            ));
+    for relative_path in strategy_paths {
         let source =
             std::fs::read_to_string(support::repo_path(relative_path)).expect("source should read");
         let forbidden = "binance_reference";
@@ -5064,13 +5384,18 @@ fn shipped_binary_oracle_config_uses_supported_strategy_schema_version() {
         bolt_v3_config::BoltV3StrategyConfig, bolt_v3_validate::SUPPORTED_STRATEGY_SCHEMA_VERSION,
     };
 
-    let strategy: BoltV3StrategyConfig = toml::from_str(
-        &std::fs::read_to_string(support::repo_path("config/strategies/binary_oracle.toml"))
-            .expect("canonical strategy config should be readable"),
-    )
-    .expect("canonical strategy config should parse");
+    for relative_path in SHIPPED_BINARY_ORACLE_STRATEGY_FILES {
+        let strategy: BoltV3StrategyConfig = toml::from_str(
+            &std::fs::read_to_string(support::repo_path(relative_path))
+                .expect("canonical strategy config should be readable"),
+        )
+        .expect("canonical strategy config should parse");
 
-    assert_eq!(strategy.schema_version, SUPPORTED_STRATEGY_SCHEMA_VERSION);
+        assert_eq!(
+            strategy.schema_version, SUPPORTED_STRATEGY_SCHEMA_VERSION,
+            "{relative_path} should declare the supported strategy schema version"
+        );
+    }
 }
 
 #[test]
@@ -5087,7 +5412,7 @@ fn shipped_binary_oracle_config_rejects_legacy_price_to_beat_feed_id_under_runti
     .expect("stable root should parse");
     let strategy_toml =
         binary_oracle_strategy_source_without_legacy_gate_runtime_fields_from_path(
-            "config/strategies/binary_oracle.toml",
+            "config/strategies/binary_oracle_btc.toml",
         )
         .replace(
             "[parameters.runtime]\n",
@@ -5096,8 +5421,8 @@ fn shipped_binary_oracle_config_rejects_legacy_price_to_beat_feed_id_under_runti
     let strategy: BoltV3StrategyConfig =
         toml::from_str(&strategy_toml).expect("canonical strategy config should parse");
     let loaded = vec![LoadedStrategy {
-        config_path: support::repo_path("config/strategies/binary_oracle.toml"),
-        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config_path: support::repo_path("config/strategies/binary_oracle_btc.toml"),
+        relative_path: "strategies/binary_oracle_btc.toml".to_string(),
         config: strategy,
     }];
 

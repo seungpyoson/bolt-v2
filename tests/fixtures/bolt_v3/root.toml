@@ -180,3 +180,24 @@ contract_types = ["linear", "inverse"]
 load_spreads = false
 environment = "live"
 transport_backend = "sockudo"
+
+# Live Chainlink Data Streams resolution-strike source. Routes to
+# chainlink::map_adapters via venue = "CHAINLINK_DATA_STREAMS" (chainlink::KEY).
+[clients.chainlink_strike]
+venue = "CHAINLINK_DATA_STREAMS"
+
+[clients.chainlink_strike.data]
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+
+[[clients.chainlink_strike.data.feed_bindings]]
+feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+instrument_id = "BTC-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
+[clients.chainlink_strike.secrets]
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"

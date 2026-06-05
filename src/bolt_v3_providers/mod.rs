@@ -16,10 +16,23 @@
 //! stay in core and are called from the per-provider modules.
 
 pub mod binance;
+pub mod chainlink;
 pub mod hyperliquid;
 pub mod hyperliquid_artifacts;
 pub mod market_data;
 pub mod polymarket;
+
+// Neutral resolution-oracle seam. Core config resolution
+// (`crate::bolt_v3_config`), core validation (`crate::bolt_v3_validate`), the
+// binary-oracle archetype, and the binary-oracle strategy reach the live
+// Chainlink Data Streams strike provider through these provider-agnostic
+// re-exports and delegators, so no core module names the concrete provider
+// module path, provider type, or provider-key literal.
+pub use chainlink::KEY as RESOLUTION_ORACLE_VENUE_KEY;
+pub use chainlink::PROVIDER_KIND as RESOLUTION_ORACLE_PROVIDER_KIND;
+pub(crate) use chainlink::{
+    PriceToBeatReportBinding, STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM, is_lowercase_chainlink_feed_id,
+};
 
 use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, pin::Pin, sync::Arc};
 
@@ -36,8 +49,7 @@ use crate::{
     bolt_v3_market_families::MarketIdentityPlan,
     bolt_v3_operator_artifacts::{
         BoltV3OperatorArtifactError, CanaryProofArtifactsCollectionRequest,
-        CanaryProofArtifactsWritten, EntryDecisionSourceCollectionRequest,
-        EntryDecisionSourceInputsWritten, WrittenOperatorArtifact,
+        CanaryProofArtifactsWritten, WrittenOperatorArtifact,
     },
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     strategies::registry::FeeProvider,
@@ -309,26 +321,11 @@ type ProductSubmitProofArtifactWriter =
         ProviderProductSubmitProofArtifactRequest<'a>,
     ) -> Result<WrittenOperatorArtifact, anyhow::Error>;
 
-pub struct EntryDecisionSourceProviderContext<'a> {
-    pub loaded: &'a LoadedBoltV3Config,
-    pub strategy_instance_id: &'a str,
-    pub request: EntryDecisionSourceCollectionRequest<'a>,
-}
-
 pub struct CanaryProofArtifactsProviderContext<'a> {
     pub loaded: &'a LoadedBoltV3Config,
     pub strategy_instance_id: &'a str,
     pub request: CanaryProofArtifactsCollectionRequest<'a>,
 }
-
-pub type EntryDecisionSourceInputCollector = for<'a> fn(
-    EntryDecisionSourceProviderContext<'a>,
-) -> Pin<
-    Box<
-        dyn Future<Output = Result<EntryDecisionSourceInputsWritten, BoltV3OperatorArtifactError>>
-            + 'a,
-    >,
->;
 
 pub type CanaryProofArtifactsCollector = for<'a> fn(
     CanaryProofArtifactsProviderContext<'a>,
@@ -607,7 +604,6 @@ pub struct ProviderBinding {
     pub write_live_submit_approval_artifact: Option<LiveSubmitApprovalArtifactWriter>,
     pub write_product_submit_proof_artifact: Option<ProductSubmitProofArtifactWriter>,
     pub build_fee_provider: Option<FeeProviderBuilder>,
-    pub collect_entry_decision_source_inputs: Option<EntryDecisionSourceInputCollector>,
     pub collect_canary_proof_artifacts: Option<CanaryProofArtifactsCollector>,
 }
 
@@ -628,9 +624,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: Some(polymarket::build_fee_provider),
-        collect_entry_decision_source_inputs: Some(
-            polymarket::collect_entry_decision_source_inputs,
-        ),
         collect_canary_proof_artifacts: Some(polymarket::collect_canary_proof_artifacts),
     },
     ProviderBinding {
@@ -649,7 +642,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
@@ -670,7 +662,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         ),
         write_product_submit_proof_artifact: Some(hyperliquid::write_product_submit_proof_artifact),
         build_fee_provider: Some(hyperliquid::build_fee_provider),
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: Some(hyperliquid::collect_canary_proof_artifacts),
     },
     ProviderBinding {
@@ -689,7 +680,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
@@ -708,7 +698,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
@@ -727,7 +716,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
@@ -746,7 +734,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
@@ -765,7 +752,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
@@ -784,7 +770,24 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
+    },
+    ProviderBinding {
+        key: chainlink::KEY,
+        validate_client: chainlink::validate_client,
+        supported_market_families: chainlink::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: chainlink::REQUIRED_SECRET_BLOCKS,
+        secret_field_names: chainlink::SECRET_FIELD_NAMES,
+        credential_log_modules: chainlink::CREDENTIAL_LOG_MODULES,
+        forbidden_env_vars: chainlink::FORBIDDEN_ENV_VARS,
+        resolve_secrets: chainlink::resolve_secrets,
+        configured_secret_paths: chainlink::configured_secret_paths,
+        map_adapters: chainlink::map_adapters,
+        load_live_submit_approval: None,
+        preflight_live_submit_arming: None,
+        write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
+        build_fee_provider: None,
         collect_canary_proof_artifacts: None,
     },
 ];
@@ -894,6 +897,15 @@ pub fn credential_log_modules() -> impl Iterator<Item = &'static str> {
     provider_bindings()
         .iter()
         .flat_map(|binding| binding.credential_log_modules.iter().copied())
+}
+
+/// Provider-neutral seam read by core startup validation: cross-checks any
+/// configured live resolution-oracle strike client against the matching gate
+/// provider so the live strike path and the offline-evidence path cannot drift
+/// onto different endpoints/credentials. Delegates to the owning provider
+/// binding, which deserializes the concrete client config block shape.
+pub fn validate_resolution_oracle_client_consistency(root: &BoltV3RootConfig) -> Vec<String> {
+    chainlink::validate_client_gate_provider_consistency(root)
 }
 
 /// Family-agnostic surface read by core startup validation. Routes

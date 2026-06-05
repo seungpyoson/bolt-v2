@@ -153,11 +153,14 @@ mod tests {
     // changes the canonical strategy source set. A4 moves book state and
     // VWAP/slippage sizing out of the strategy wrapper, so the strategy source
     // set is now the strategy directory plus `src/bolt_v3_book_sizing.rs`.
-    // The value below must match the live build-emitted
-    // `OUT_DIR/strategy.canonical` and the independent hand-framed source-set
-    // stream in these tests.
+    //
+    // Re-derived again after merging `origin/main` at #553: main's strategy
+    // directory dropped the offline readiness seed and added live Chainlink
+    // resolution-strike code, while this PR keeps the A4 source set shape. The
+    // value below must match the live build-emitted `OUT_DIR/strategy.canonical`
+    // and the independent hand-framed source-set stream in these tests.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "7bf9366add08357f16d0fa500fc4341410717a446e599ad80da46b0967ec7a50";
+        "90670863bdff4d086dfce10571b228805c1a87ce4036522352e2895a1793c21e";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 

@@ -3457,12 +3457,11 @@ fn abort_plan_mismatch(field: &'static str) -> anyhow::Error {
 fn expected_abort_plan_strategy_source_sha256() -> String {
     // Hash the canonical bytes EMBEDDED IN THE BINARY at compile time
     // (`build.rs` re-emits them into `$OUT_DIR/strategy.canonical` via the same
-    // walk the runtime digest uses) — layout-independent yet still hashing
-    // compiled-in bytes, so tamper-evidence is preserved. The strategy root is a
-    // directory module, so its canonical stream carries the binary
-    // path+NUL+length framing and is NOT valid UTF-8; embed it with
-    // `include_bytes!` and hash the raw bytes (the digest is byte-identical to
-    // the runtime `canonical_source_digest`).
+    // source-set walk the runtime digest uses) — layout-independent yet still
+    // hashing compiled-in bytes, so tamper-evidence is preserved. The strategy
+    // source set carries repo-relative path+NUL+length framing and is NOT valid
+    // UTF-8; embed it with `include_bytes!` and hash the raw bytes (the digest
+    // is byte-identical to the runtime `canonical_source_set_digest`).
     sha256_bytes(include_bytes!(concat!(
         env!("OUT_DIR"),
         "/strategy.canonical"

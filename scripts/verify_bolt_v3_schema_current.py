@@ -8,7 +8,7 @@ import re
 import sys
 from pathlib import Path
 
-from bolt_v3_source_roots import STRATEGY_SOURCE_ROOT, module_text
+from bolt_v3_source_roots import STRATEGY_SOURCE_ROOTS, module_text
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -573,7 +573,7 @@ def main() -> int:
         financial_envelope_source=TINY_CANARY_EVIDENCE.read_text(encoding="utf-8"),
         validate_source=VALIDATE_SOURCE.read_text(encoding="utf-8"),
         archetype_source=ARCHETYPE_BINARY_ORACLE_SOURCE.read_text(encoding="utf-8"),
-        strategy_source=module_text(STRATEGY_SOURCE_ROOT),
+        strategy_source=module_text(STRATEGY_SOURCE_ROOTS),
         position_contract_source=POSITION_CONTRACT_SOURCE.read_text(encoding="utf-8")
         if POSITION_CONTRACT_SOURCE.exists()
         else "",

@@ -16348,13 +16348,29 @@ reason = "Fixed 8 MiB in-process ceiling for the source-text accessors (no opera
 path = "src/bolt_v3_source_integrity.rs"
 kind = "string"
 literal = '''"CARGO_MANIFEST_DIR"'''
-context = '''Path::new(env!("CARGO_MANIFEST_DIR")).join(registry_entry(key).relative_root)'''
-classification = "source_integrity_manifest_dir_env_name"
-reason = "Compile-time Cargo env var naming the crate manifest dir; used to root registry-relative source paths, not an operator runtime value."
+context = '''Path::new(env!("CARGO_MANIFEST_DIR")).join(registry_relative_root(key))'''
+classification = '''source_integrity_manifest_dir_env_name'''
+reason = '''Compile-time Cargo env var naming the crate manifest dir; used to root registry-relative source paths, not an operator runtime value.'''
 
 [[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "string"
+path = '''src/bolt_v3_source_integrity.rs'''
+kind = '''string'''
+literal = '''"CARGO_MANIFEST_DIR"'''
+context = '''.map(|relative| Path::new(env!("CARGO_MANIFEST_DIR")).join(relative))'''
+classification = '''source_integrity_manifest_dir_env_name'''
+reason = '''Compile-time Cargo env var naming the crate manifest dir; used to root every registry-relative source-set path, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_source_integrity.rs'''
+kind = '''string'''
+literal = '''"CARGO_MANIFEST_DIR"'''
+context = '''Path::new(env!("CARGO_MANIFEST_DIR")),'''
+classification = '''source_integrity_manifest_dir_env_name'''
+reason = '''Compile-time Cargo env var naming the crate manifest dir; passed to the registry source-set canonicalizer, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_tiny_canary_evidence.rs'''
+kind = '''string'''
 literal = '''"/strategy.canonical"'''
 context = '''"/strategy.canonical"'''
 classification = "embedded_canonical_bytes_out_dir_suffix"
@@ -16393,8 +16409,56 @@ classification = "source_canonicalization_framing_constant"
 reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
 
 [[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "number"
+path = '''src/source_canonicalization.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''source_set_relative_root_bytes(relative_roots[0])?;'''
+classification = '''source_canonicalization_single_root_index'''
+reason = '''Fixed first-element index used only after a registry source set is proven to contain exactly one root, validating the historical single-root fast path; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''return Ok(Some(manifest_dir.join(relative_roots[0])));'''
+classification = '''source_canonicalization_single_root_index'''
+reason = '''Fixed first-element index used only after a registry source set is proven to contain exactly one root, preserving historical single-root bytes/text by returning the one validated root; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"strategy source root should resolve to the registered primary root {}: {}"'''
+context = '''"strategy source root should resolve to the registered primary root {}: {}",'''
+classification = '''operator_artifact_source_integrity_error_message'''
+reason = '''Static diagnostic text for fail-closed abort-plan strategy source-set resolution; no operator runtime value is embedded.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"strategy source path {} cannot resolve a crate manifest root"'''
+context = '''"strategy source path {} cannot resolve a crate manifest root",'''
+classification = '''operator_artifact_source_integrity_error_message'''
+reason = '''Static diagnostic text for fail-closed abort-plan manifest root derivation; no operator runtime value is embedded.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"."'''
+context = '''.any(|component| component.is_empty() || *component == "." || *component == "..")'''
+classification = '''operator_artifact_source_integrity_path_sentinel'''
+reason = '''Fixed relative-path validation sentinel rejecting current-directory components in registered source-set roots; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''".."'''
+context = '''.any(|component| component.is_empty() || *component == "." || *component == "..")'''
+classification = '''operator_artifact_source_integrity_path_sentinel'''
+reason = '''Fixed relative-path validation sentinel rejecting parent-directory traversal in registered source-set roots; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''number'''
 literal = '''0x00'''
 context = '''out.push(0x00);'''
 classification = "source_canonicalization_framing_constant"
@@ -16428,13 +16492,21 @@ reason = "Fixed framing/bound arithmetic constant in the canonical source walk (
 path = "src/source_canonicalization.rs"
 kind = "string"
 literal = '''"/"'''
-context = '''Ok(components.join("/").into_bytes())'''
-classification = "source_canonicalization_path_separator"
-reason = "Canonical forward-slash path separator normalizing relative paths for OS-independent framing/ordering; a fixed structural constant, not an operator runtime value."
+context = '''Ok(parts.join("/").into_bytes())'''
+classification = '''source_canonicalization_path_separator'''
+reason = '''Canonical forward-slash path separator normalizing relative paths for OS-independent framing/ordering; a fixed structural constant, not an operator runtime value.'''
 
 [[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"/"'''
+context = '''Ok(components.join("/").into_bytes())'''
+classification = '''source_canonicalization_path_separator'''
+reason = '''Canonical forward-slash path separator normalizing directory-root relative paths for OS-independent framing/ordering; a fixed structural constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
 literal = '''"\n#[cfg(test)]\nmod tests"'''
 context = '''pub const TEST_MODULE_SPLIT_MARKER: &str = "\n#[cfg(test)]\nmod tests";'''
 classification = "source_canonicalization_test_module_marker"
@@ -16484,21 +16556,29 @@ reason = "Fail-closed diagnostic for a source root that is neither a file nor a 
 path = "src/source_canonicalization.rs"
 kind = "string"
 literal = '''"src/bolt_v3_submit_admission.rs"'''
-context = '''relative_root: "src/bolt_v3_submit_admission.rs",'''
-classification = "gated_source_registry_relative_root"
-reason = "Repo-relative root path of the submit-admission gated source file; the single owner of this path for build.rs, the verifier, the producer, and tests."
+context = '''relative_roots: &["src/bolt_v3_submit_admission.rs"],'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the submit-admission gated source file; the single owner of this path for build.rs, the verifier, the producer, and tests.'''
 
 [[allowed]]
 path = "src/source_canonicalization.rs"
 kind = "string"
 literal = '''"src/strategies/binary_oracle_edge_taker"'''
-context = '''relative_root: "src/strategies/binary_oracle_edge_taker",'''
-classification = "gated_source_registry_relative_root"
-reason = "Repo-relative root path of the binary-oracle strategy source module (a directory after the A3 split); the single owner of this path for build.rs, the verifier, the producer, and tests."
+context = '''"src/strategies/binary_oracle_edge_taker",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the binary-oracle strategy source module (a directory after the A3 split); the single owner of this path for build.rs, the verifier, the producer, and tests.'''
 
 [[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"src/bolt_v3_book_sizing.rs"'''
+context = '''"src/bolt_v3_book_sizing.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the shared book-sizing source included in the binary-oracle strategy source set after A4; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
 literal = '''"strategy"'''
 context = '''pub const STRATEGY_KEY: &str = "strategy";'''
 classification = "gated_source_registry_key"

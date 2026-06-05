@@ -2,6 +2,7 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, HashMap, btree_map::Entry},
     error::Error,
+    ffi::OsStr,
     fmt, fs,
     io::{self, Read, Write},
     ops::Range,
@@ -68,7 +69,11 @@ use crate::{
         materialize_venue_account_state_source_from_configured_account_queries,
     },
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
-    bolt_v3_source_integrity::{canonical_module_text, canonical_source_digest},
+    bolt_v3_source_integrity::{
+        STRATEGY_KEY, canonical_module_source_set_text, canonical_module_text,
+        canonical_source_digest, canonical_source_set_digest, registry_relative_root,
+        registry_relative_roots,
+    },
     bolt_v3_tiny_canary_evidence::{
         Phase8AbortPlanEvidenceFile, Phase8AbortPlanSourceProofs, Phase8CanaryEvidence,
         Phase8CanaryEvidenceInput, Phase8EvidenceRef, Phase8FinancialEnvelopeEvidenceFile,
@@ -6586,12 +6591,10 @@ pub fn write_abort_plan_artifact_from_source_collectors(
         submit_admission_source_path,
         max_source_bytes,
     )?;
-    // Canonicalize each gated root through the single owner so the producer's
-    // recorded digests can never diverge from the verifier's compile-time embed
-    // post-split (file-or-directory resolved at runtime). In today's single-file
-    // layout the identity branch yields byte-identical bytes → identical digest.
-    let strategy_source_sha256 = canonical_source_digest(strategy_source_path, max_source_bytes)
-        .map_err(
+    // Resolve the caller-provided strategy root through the source-set registry
+    // so collector-derived artifacts bind to the same bytes as live/final gates.
+    let strategy_source_sha256 =
+        abort_plan_strategy_source_digest(strategy_source_path, max_source_bytes).map_err(
             |source| BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceRead {
                 path: strategy_source_path.to_path_buf(),
                 source,
@@ -6632,12 +6635,13 @@ pub fn collect_abort_plan_cancel_if_open_source_proof(
     max_strategy_source_bytes: u64,
 ) -> Result<Phase8AbortPlanCancelIfOpenSourceProof, BoltV3OperatorArtifactError> {
     let strategy_source_sha256 =
-        canonical_source_digest(strategy_source_path, max_strategy_source_bytes).map_err(
-            |source| BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceRead {
-                path: strategy_source_path.to_path_buf(),
-                source,
-            },
-        )?;
+        abort_plan_strategy_source_digest(strategy_source_path, max_strategy_source_bytes)
+            .map_err(
+                |source| BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceRead {
+                    path: strategy_source_path.to_path_buf(),
+                    source,
+                },
+            )?;
     // Grep the per-file UTF-8 module text (identity OR directory), NOT the framed
     // canonical byte stream. The framed stream interleaves binary frame bytes
     // (relative-path strings, NUL separators, u64-LE length frames) that are valid
@@ -6645,8 +6649,8 @@ pub fn collect_abort_plan_cancel_if_open_source_proof(
     // each file's text in the same canonical order WITHOUT those frame bytes, so
     // the contract grep is layout-independent and cannot break as the strategy
     // directory grows. The recorded digest above stays over the framed stream.
-    let strategy_source = canonical_module_text(strategy_source_path, max_strategy_source_bytes)
-        .map_err(
+    let strategy_source =
+        abort_plan_strategy_source_text(strategy_source_path, max_strategy_source_bytes).map_err(
             |source| BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceRead {
                 path: strategy_source_path.to_path_buf(),
                 source,
@@ -6672,21 +6676,22 @@ pub fn collect_abort_plan_nt_accepted_venue_pending_source_proof(
     max_strategy_source_bytes: u64,
 ) -> Result<Phase8AbortPlanNtAcceptedVenuePendingSourceProof, BoltV3OperatorArtifactError> {
     let strategy_source_sha256 =
-        canonical_source_digest(strategy_source_path, max_strategy_source_bytes).map_err(
+        abort_plan_strategy_source_digest(strategy_source_path, max_strategy_source_bytes)
+            .map_err(|source| {
+                BoltV3OperatorArtifactError::AbortPlanNtAcceptedVenuePendingSourceRead {
+                    path: strategy_source_path.to_path_buf(),
+                    source,
+                }
+            })?;
+    // Per-file UTF-8 module text, not the framed canonical stream (see
+    // collect_abort_plan_cancel_if_open_source_proof). Digest stays over the frame.
+    let strategy_source =
+        abort_plan_strategy_source_text(strategy_source_path, max_strategy_source_bytes).map_err(
             |source| BoltV3OperatorArtifactError::AbortPlanNtAcceptedVenuePendingSourceRead {
                 path: strategy_source_path.to_path_buf(),
                 source,
             },
         )?;
-    // Per-file UTF-8 module text, not the framed canonical stream (see
-    // collect_abort_plan_cancel_if_open_source_proof). Digest stays over the frame.
-    let strategy_source = canonical_module_text(strategy_source_path, max_strategy_source_bytes)
-        .map_err(|source| {
-            BoltV3OperatorArtifactError::AbortPlanNtAcceptedVenuePendingSourceRead {
-                path: strategy_source_path.to_path_buf(),
-                source,
-            }
-        })?;
     let contract = require_abort_plan_nt_accepted_venue_pending_contract(&strategy_source)?;
 
     let proof_input = Phase8AbortPlanNtAcceptedVenuePendingSourceProofHashInput {
@@ -6710,16 +6715,17 @@ pub fn collect_abort_plan_partial_fill_source_proof(
     max_strategy_source_bytes: u64,
 ) -> Result<Phase8AbortPlanPartialFillSourceProof, BoltV3OperatorArtifactError> {
     let strategy_source_sha256 =
-        canonical_source_digest(strategy_source_path, max_strategy_source_bytes).map_err(
-            |source| BoltV3OperatorArtifactError::AbortPlanPartialFillSourceRead {
-                path: strategy_source_path.to_path_buf(),
-                source,
-            },
-        )?;
+        abort_plan_strategy_source_digest(strategy_source_path, max_strategy_source_bytes)
+            .map_err(
+                |source| BoltV3OperatorArtifactError::AbortPlanPartialFillSourceRead {
+                    path: strategy_source_path.to_path_buf(),
+                    source,
+                },
+            )?;
     // Per-file UTF-8 module text, not the framed canonical stream (see
     // collect_abort_plan_cancel_if_open_source_proof). Digest stays over the frame.
-    let strategy_source = canonical_module_text(strategy_source_path, max_strategy_source_bytes)
-        .map_err(
+    let strategy_source =
+        abort_plan_strategy_source_text(strategy_source_path, max_strategy_source_bytes).map_err(
             |source| BoltV3OperatorArtifactError::AbortPlanPartialFillSourceRead {
                 path: strategy_source_path.to_path_buf(),
                 source,
@@ -6748,16 +6754,17 @@ pub fn collect_abort_plan_network_partition_source_proof(
     max_strategy_source_bytes: u64,
 ) -> Result<Phase8AbortPlanNetworkPartitionSourceProof, BoltV3OperatorArtifactError> {
     let strategy_source_sha256 =
-        canonical_source_digest(strategy_source_path, max_strategy_source_bytes).map_err(
-            |source| BoltV3OperatorArtifactError::AbortPlanNetworkPartitionSourceRead {
-                path: strategy_source_path.to_path_buf(),
-                source,
-            },
-        )?;
+        abort_plan_strategy_source_digest(strategy_source_path, max_strategy_source_bytes)
+            .map_err(
+                |source| BoltV3OperatorArtifactError::AbortPlanNetworkPartitionSourceRead {
+                    path: strategy_source_path.to_path_buf(),
+                    source,
+                },
+            )?;
     // Per-file UTF-8 module text, not the framed canonical stream (see
     // collect_abort_plan_cancel_if_open_source_proof). Digest stays over the frame.
-    let strategy_source = canonical_module_text(strategy_source_path, max_strategy_source_bytes)
-        .map_err(
+    let strategy_source =
+        abort_plan_strategy_source_text(strategy_source_path, max_strategy_source_bytes).map_err(
             |source| BoltV3OperatorArtifactError::AbortPlanNetworkPartitionSourceRead {
                 path: strategy_source_path.to_path_buf(),
                 source,
@@ -6783,10 +6790,13 @@ pub fn collect_abort_plan_panic_gate_service_policy_source_proof(
     submit_admission_source_path: &Path,
     max_source_bytes: u64,
 ) -> Result<Phase8AbortPlanPanicGateServicePolicySourceProof, BoltV3OperatorArtifactError> {
-    let strategy_source_sha256 = read_abort_plan_panic_gate_service_policy_source_digest(
-        strategy_source_path,
-        max_source_bytes,
-    )?;
+    let strategy_source_sha256 =
+        abort_plan_strategy_source_digest(strategy_source_path, max_source_bytes).map_err(
+            |source| BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceRead {
+                path: strategy_source_path.to_path_buf(),
+                source,
+            },
+        )?;
     let submit_admission_source_sha256 = read_abort_plan_panic_gate_service_policy_source_digest(
         submit_admission_source_path,
         max_source_bytes,
@@ -6797,10 +6807,18 @@ pub fn collect_abort_plan_panic_gate_service_policy_source_proof(
     // module text is the verbatim file text, so this is byte-identical to the
     // previous from_utf8 path for submit_admission. The digests above stay over
     // the framed canonical stream of each root.
-    let strategy_source = read_abort_plan_panic_gate_service_policy_source_text(
-        strategy_source_path,
-        max_source_bytes,
-    )?;
+    let strategy_source =
+        match abort_plan_strategy_source_text(strategy_source_path, max_source_bytes) {
+            Ok(source) => source,
+            Err(source) => {
+                return Err(
+                    BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceRead {
+                        path: strategy_source_path.to_path_buf(),
+                        source,
+                    },
+                );
+            }
+        };
     let submit_admission_source = read_abort_plan_panic_gate_service_policy_source_text(
         submit_admission_source_path,
         max_source_bytes,
@@ -6828,6 +6846,105 @@ pub fn collect_abort_plan_panic_gate_service_policy_source_proof(
     Ok(Phase8AbortPlanPanicGateServicePolicySourceProof {
         panic_gate_trip_abort_evidence_hash,
     })
+}
+
+fn abort_plan_strategy_source_digest(
+    strategy_source_path: &Path,
+    max_strategy_source_bytes: u64,
+) -> io::Result<String> {
+    let manifest_dir = abort_plan_strategy_manifest_dir(strategy_source_path)?;
+    canonical_source_set_digest(
+        &manifest_dir,
+        registry_relative_roots(STRATEGY_KEY),
+        max_strategy_source_bytes,
+    )
+}
+
+fn abort_plan_strategy_source_text(
+    strategy_source_path: &Path,
+    max_strategy_source_bytes: u64,
+) -> io::Result<String> {
+    let manifest_dir = abort_plan_strategy_manifest_dir(strategy_source_path)?;
+    canonical_module_source_set_text(
+        &manifest_dir,
+        registry_relative_roots(STRATEGY_KEY),
+        max_strategy_source_bytes,
+    )
+}
+
+fn abort_plan_strategy_manifest_dir(strategy_source_path: &Path) -> io::Result<PathBuf> {
+    let primary_root = registry_relative_root(STRATEGY_KEY);
+    let primary_components = registered_relative_root_components(primary_root)?;
+    let canonical_strategy_source_path =
+        fs::canonicalize(strategy_source_path).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "strategy source root should resolve to the registered primary root {}: {}",
+                    primary_root, error
+                ),
+            )
+        })?;
+
+    if !path_has_registered_relative_root_tail(&canonical_strategy_source_path, &primary_components)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "strategy source path {} must end with registered primary root {}",
+                canonical_strategy_source_path.display(),
+                primary_root
+            ),
+        ));
+    }
+
+    let mut manifest_dir = canonical_strategy_source_path.as_path();
+    for _component in &primary_components {
+        manifest_dir = manifest_dir.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "strategy source path {} cannot resolve a crate manifest root",
+                    canonical_strategy_source_path.display()
+                ),
+            )
+        })?;
+    }
+
+    Ok(manifest_dir.to_path_buf())
+}
+
+fn registered_relative_root_components(relative_root: &str) -> io::Result<Vec<&str>> {
+    let components: Vec<&str> = relative_root.split('/').collect();
+    if components.is_empty()
+        || components
+            .iter()
+            .any(|component| component.is_empty() || *component == "." || *component == "..")
+        || components.iter().any(|component| component.contains('\\'))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("registered primary root is not a supported relative path: {relative_root}"),
+        ));
+    }
+    Ok(components)
+}
+
+fn path_has_registered_relative_root_tail(path: &Path, relative_components: &[&str]) -> bool {
+    let path_components: Vec<&OsStr> = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(component) => Some(component),
+            _ => None,
+        })
+        .collect();
+    if path_components.len() < relative_components.len() {
+        return false;
+    }
+    path_components[path_components.len() - relative_components.len()..]
+        .iter()
+        .zip(relative_components)
+        .all(|(actual, expected)| *actual == OsStr::new(expected))
 }
 
 /// Lowercase-hex SHA-256 of a panic-gate source root's framed canonical byte
@@ -16112,6 +16229,58 @@ mod tests {
         fn sync_all(&self) -> io::Result<()> {
             Err(io::Error::other("forced sync failure"))
         }
+    }
+
+    #[test]
+    fn abort_plan_strategy_manifest_dir_resolves_caller_checkout_primary_root() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let manifest_dir = temp.path().join("caller-checkout");
+        let strategy_source_path = manifest_dir.join(registry_relative_root(STRATEGY_KEY));
+        fs::create_dir_all(&strategy_source_path).expect("strategy source dir should create");
+
+        let resolved = abort_plan_strategy_manifest_dir(&strategy_source_path)
+            .expect("registered primary root should resolve manifest dir");
+
+        assert_eq!(
+            resolved,
+            fs::canonicalize(&manifest_dir).expect("manifest dir should canonicalize")
+        );
+    }
+
+    #[test]
+    fn abort_plan_strategy_manifest_dir_rejects_non_primary_tail() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let manifest_dir = temp.path().join("caller-checkout");
+        let wrong_source_path = manifest_dir.join("src/strategies/not_the_registered_strategy");
+        fs::create_dir_all(&wrong_source_path).expect("wrong strategy dir should create");
+
+        let error = abort_plan_strategy_manifest_dir(&wrong_source_path)
+            .expect_err("non-primary root must fail before source-set collection");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            error.to_string().contains("registered primary root"),
+            "error should explain the expected root: {error}"
+        );
+    }
+
+    #[test]
+    fn registered_relative_root_tail_uses_components_not_separator_string() {
+        let components = registered_relative_root_components(registry_relative_root(STRATEGY_KEY))
+            .expect("registered primary root should parse");
+        let strategy_source_path = Path::new("/tmp/reviewed-checkout")
+            .join("src")
+            .join("strategies")
+            .join("binary_oracle_edge_taker");
+
+        assert!(path_has_registered_relative_root_tail(
+            &strategy_source_path,
+            &components
+        ));
+        assert!(!path_has_registered_relative_root_tail(
+            Path::new("/tmp/reviewed-checkout/src/strategies/binary_oracle_edge_taker_extra"),
+            &components
+        ));
     }
 
     #[test]

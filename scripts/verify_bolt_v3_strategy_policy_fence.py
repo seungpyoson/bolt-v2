@@ -16,7 +16,7 @@ import re
 import sys
 from dataclasses import dataclass
 
-from bolt_v3_source_roots import REPO_ROOT, STRATEGY_SOURCE_ROOT, source_files
+from bolt_v3_source_roots import REPO_ROOT, STRATEGY_SOURCE_ROOTS, source_set_files
 from verify_bolt_v3_pure_rust_runtime import production_text
 
 
@@ -115,7 +115,7 @@ def find_violations_in_text(path: str, text: str) -> list[Violation]:
 
 def collect_violations() -> list[Violation]:
     violations: list[Violation] = []
-    for path in source_files(STRATEGY_SOURCE_ROOT):
+    for path in source_set_files(STRATEGY_SOURCE_ROOTS):
         rel = str(path.relative_to(REPO_ROOT))
         violations.extend(find_violations_in_text(rel, production_text(path)))
     return violations

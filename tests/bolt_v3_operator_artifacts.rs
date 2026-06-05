@@ -85,6 +85,80 @@ fn entry_decision_source_schema_version_tracks_signal_quote_split() {
 }
 use support::{registry_root_path, repo_path, valid_entry_readiness_gate_session_json};
 
+fn write_abort_plan_strategy_source_fixture(
+    temp: &tempfile::TempDir,
+    source: &str,
+) -> std::path::PathBuf {
+    let strategy_source_path =
+        temp.path()
+            .join(bolt_v2::bolt_v3_source_integrity::registry_relative_root(
+                bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY,
+            ));
+    std::fs::create_dir_all(&strategy_source_path).expect("strategy fixture dir should create");
+    std::fs::write(strategy_source_path.join("mod.rs"), source)
+        .expect("strategy fixture source should write");
+
+    let book_sizing_path = temp.path().join("src/bolt_v3_book_sizing.rs");
+    let book_sizing_parent = book_sizing_path
+        .parent()
+        .expect("book sizing fixture parent should exist");
+    std::fs::create_dir_all(book_sizing_parent).expect("book sizing fixture parent should create");
+    std::fs::write(&book_sizing_path, b"// source-set fixture support\n")
+        .expect("book sizing fixture source should write");
+
+    strategy_source_path
+}
+
+fn copy_rs_tree(root: &std::path::Path, from: &std::path::Path, to: &std::path::Path) {
+    for entry in std::fs::read_dir(from).expect("source directory should read") {
+        let path = entry.expect("dir entry should read").path();
+        let metadata = std::fs::symlink_metadata(&path).expect("metadata should read");
+        if metadata.file_type().is_dir() {
+            copy_rs_tree(root, &path, to);
+        } else if metadata.file_type().is_file()
+            && path.extension().and_then(|ext| ext.to_str()) == Some("rs")
+        {
+            let relative = path
+                .strip_prefix(root)
+                .expect("source file should live under root");
+            let destination = to.join(relative);
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent).expect("destination parent should create");
+            }
+            let bytes = std::fs::read(&path).expect("source file should read");
+            std::fs::write(&destination, bytes).expect("source file should copy verbatim");
+        }
+    }
+}
+
+fn copy_registered_strategy_source_set_to(manifest_dir: &std::path::Path) -> std::path::PathBuf {
+    for relative_root in bolt_v2::bolt_v3_source_integrity::registry_relative_roots(
+        bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY,
+    ) {
+        let source = repo_path(relative_root);
+        let destination = manifest_dir.join(relative_root);
+        let metadata = std::fs::symlink_metadata(&source).expect("registered source should exist");
+        if metadata.file_type().is_dir() {
+            std::fs::create_dir_all(&destination)
+                .expect("registered source destination should create");
+            copy_rs_tree(&source, &source, &destination);
+        } else if metadata.file_type().is_file() {
+            let parent = destination
+                .parent()
+                .expect("registered source destination parent should exist");
+            std::fs::create_dir_all(parent).expect("registered source parent should create");
+            std::fs::copy(&source, &destination)
+                .expect("registered source file should copy verbatim");
+        } else {
+            panic!("registered source root should be file or dir");
+        }
+    }
+
+    manifest_dir.join(bolt_v2::bolt_v3_source_integrity::registry_relative_root(
+        bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY,
+    ))
+}
+
 // Test-only updown fixture values mirror tests/fixtures/bolt_v3/strategies/binary_oracle.toml.
 const TEST_MARKET_SELECTION_UNDERLYING_ASSET: &str = "CONFIGURED_ASSET";
 const TEST_MARKET_SELECTION_CADENCE_SLUG: &str = "configuredwindow";
@@ -4120,37 +4194,38 @@ fn abort_plan_writer_emits_artifact_from_source_owned_collectors() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let abort_plan_path = temp.path().join("abort-plan.json");
     let strategy_source_path = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
+    let strategy_source_max_bytes = 1_000_000;
     let submit_admission_source_path =
         registry_root_path(bolt_v2::bolt_v3_source_integrity::SUBMIT_ADMISSION_KEY);
 
     let cancel_if_open =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
             &strategy_source_path,
-            1_000_000,
+            strategy_source_max_bytes,
         )
         .expect("cancel-if-open source proof should collect");
     let venue_pending = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
         &strategy_source_path,
-        1_000_000,
+        strategy_source_max_bytes,
     )
     .expect("NT-accepted venue-pending source proof should collect");
     let partial_fill =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
             &strategy_source_path,
-            1_000_000,
+            strategy_source_max_bytes,
         )
         .expect("partial-fill source proof should collect");
     let network_partition =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_network_partition_source_proof(
             &strategy_source_path,
-            1_000_000,
+            strategy_source_max_bytes,
         )
         .expect("network-partition source proof should collect");
     let panic_gate =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_panic_gate_service_policy_source_proof(
             &strategy_source_path,
             &submit_admission_source_path,
-            1_000_000,
+            strategy_source_max_bytes,
         )
         .expect("panic-gate/service-policy source proof should collect");
 
@@ -4160,7 +4235,7 @@ fn abort_plan_writer_emits_artifact_from_source_owned_collectors() {
             strategy_instance_id,
             &strategy_source_path,
             &submit_admission_source_path,
-            1_000_000,
+            strategy_source_max_bytes,
             &abort_plan_path,
         )
         .expect("source-owned collectors should write abort-plan artifact");
@@ -4171,15 +4246,13 @@ fn abort_plan_writer_emits_artifact_from_source_owned_collectors() {
     let json: serde_json::Value =
         serde_json::from_slice(&artifact_bytes).expect("abort plan should be JSON");
     assert_eq!(json["source_collector_derived"], true);
-    // The strategy root is now a directory module; reading it as a single file
-    // (sha256_file) would panic with IsADirectory and would not match the
-    // producer. Compute the expected digest the SAME way the producer does at
-    // src/bolt_v3_operator_artifacts.rs:6644 — canonical_source_digest over the
-    // root with the identical cap passed to the writer above (1_000_000).
     assert_eq!(
         json["strategy_source_sha256"],
-        bolt_v2::source_canonicalization::canonical_source_digest(&strategy_source_path, 1_000_000)
-            .expect("strategy directory canonical digest should compute")
+        bolt_v2::bolt_v3_source_integrity::registry_source_digest(
+            bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY,
+            strategy_source_max_bytes,
+        )
+        .expect("strategy registry source-set digest should compute")
     );
     assert_eq!(
         json["submit_admission_source_sha256"],
@@ -4209,6 +4282,66 @@ fn abort_plan_writer_emits_artifact_from_source_owned_collectors() {
     assert_eq!(
         json["panic_gate_trip_abort_evidence_hash"],
         panic_gate.panic_gate_trip_abort_evidence_hash
+    );
+}
+
+#[test]
+fn abort_plan_writer_hashes_strategy_source_set_from_caller_checkout() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let caller_checkout = temp.path().join("reviewed-checkout");
+    let strategy_source_path = copy_registered_strategy_source_set_to(&caller_checkout);
+    let copied_book_sizing = caller_checkout.join("src/bolt_v3_book_sizing.rs");
+    let mut copied_book_sizing_bytes =
+        std::fs::read(&copied_book_sizing).expect("copied book sizing source should read");
+    copied_book_sizing_bytes.extend_from_slice(b"\n// caller checkout mutation\n");
+    std::fs::write(&copied_book_sizing, copied_book_sizing_bytes)
+        .expect("copied book sizing source should mutate");
+    let submit_admission_source_path =
+        registry_root_path(bolt_v2::bolt_v3_source_integrity::SUBMIT_ADMISSION_KEY);
+    let abort_plan_path = temp.path().join("abort-plan.json");
+    let max_source_bytes = 1_000_000;
+
+    let written =
+        bolt_v2::bolt_v3_operator_artifacts::write_abort_plan_artifact_from_source_collectors(
+            &loaded,
+            strategy_instance_id,
+            &strategy_source_path,
+            &submit_admission_source_path,
+            max_source_bytes,
+            &abort_plan_path,
+        )
+        .expect("copied-checkout source collectors should write abort-plan artifact");
+
+    let artifact_bytes = std::fs::read(&abort_plan_path).expect("abort plan artifact should exist");
+    assert_eq!(written.sha256, hex::encode(Sha256::digest(&artifact_bytes)));
+    let json: serde_json::Value =
+        serde_json::from_slice(&artifact_bytes).expect("abort plan should be JSON");
+    let expected = bolt_v2::bolt_v3_source_integrity::canonical_source_set_digest(
+        &caller_checkout,
+        bolt_v2::bolt_v3_source_integrity::registry_relative_roots(
+            bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY,
+        ),
+        max_source_bytes,
+    )
+    .expect("copied strategy source set should digest");
+
+    assert_eq!(json["strategy_source_sha256"], expected);
+    let registry_digest = bolt_v2::bolt_v3_source_integrity::registry_source_digest(
+        bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY,
+        max_source_bytes,
+    )
+    .expect("registry strategy source set should digest");
+    assert_ne!(
+        expected, registry_digest,
+        "copied-checkout mutation must distinguish caller tree reads from build-checkout reads"
     );
 }
 
@@ -4395,9 +4528,8 @@ fn abort_plan_nt_accepted_venue_pending_source_proof_derives_from_exit_pending_l
 #[test]
 fn abort_plan_nt_accepted_venue_pending_source_proof_rejects_pending_after_submit() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
     let client_order_id = self.core.order_factory().generate_client_order_id();
@@ -4418,8 +4550,7 @@ fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
     Ok(Some(client_order_id))
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
         &strategy_source_path,
@@ -4436,9 +4567,8 @@ fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
 #[test]
 fn abort_plan_nt_accepted_venue_pending_source_proof_rejects_unguarded_terminal_instrument() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
     let client_order_id = self.core.order_factory().generate_client_order_id();
@@ -4489,8 +4619,7 @@ fn on_order_expired(&mut self, event: OrderExpired) {
     self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
         &strategy_source_path,
@@ -4509,9 +4638,8 @@ fn on_order_expired(&mut self, event: OrderExpired) {
 #[test]
 fn abort_plan_nt_accepted_venue_pending_source_proof_requires_scoped_terminal_handlers() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
     let client_order_id = self.core.order_factory().generate_client_order_id();
@@ -4565,8 +4693,7 @@ fn noisy_terminal_call_source(&mut self, event: OrderExpired) {
     self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
         &strategy_source_path,
@@ -4611,9 +4738,8 @@ fn abort_plan_partial_fill_source_proof_derives_from_exit_fill_lifecycle() {
 #[test]
 fn abort_plan_partial_fill_source_proof_rejects_unguarded_exit_fill_instrument() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn into_state_after_exit_update(self) -> ExposureState {
     if self.pending_exit.fill_received && self.pending_exit.close_received {
@@ -4660,8 +4786,7 @@ fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) 
     }
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
         &strategy_source_path,
@@ -4680,9 +4805,8 @@ fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) 
 #[test]
 fn abort_plan_partial_fill_source_proof_rejects_unguarded_position_close_instrument() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn into_state_after_exit_update(self) -> ExposureState {
     if self.pending_exit.fill_received && self.pending_exit.close_received {
@@ -4729,8 +4853,7 @@ fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) 
     }
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
         &strategy_source_path,
@@ -4749,9 +4872,8 @@ fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) 
 #[test]
 fn abort_plan_partial_fill_source_proof_rejects_fill_that_flattens_before_position_close() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn into_state_after_exit_update(self) -> ExposureState {
     if self.pending_exit.fill_received && self.pending_exit.close_received {
@@ -4795,8 +4917,7 @@ fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) 
     }
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
         &strategy_source_path,
@@ -4847,9 +4968,8 @@ fn abort_plan_network_partition_source_proof_derives_from_submit_error_restore()
 #[test]
 fn abort_plan_network_partition_source_proof_rejects_swallowed_submit_error() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
     let client_order_id = self.core.order_factory().generate_client_order_id();
@@ -4860,8 +4980,7 @@ fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
     Ok(Some(client_order_id))
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let error =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_network_partition_source_proof(
@@ -4927,46 +5046,13 @@ fn abort_plan_panic_gate_service_policy_source_proof_derives_from_strategy_and_a
 #[test]
 fn abort_plan_collectors_are_directory_aware_across_frame_byte_boundaries() {
     use std::fs;
-    use std::path::Path;
 
-    // Recursively copy every `.rs` file under `from` into `to`, preserving the
-    // relative layout and verbatim bytes.
-    fn copy_rs_tree(root: &Path, from: &Path, to: &Path) {
-        for entry in fs::read_dir(from).expect("strategy directory should read") {
-            let path = entry.expect("dir entry should read").path();
-            let metadata = fs::symlink_metadata(&path).expect("metadata should read");
-            if metadata.file_type().is_dir() {
-                copy_rs_tree(root, &path, to);
-            } else if metadata.file_type().is_file()
-                && path.extension().and_then(|ext| ext.to_str()) == Some("rs")
-            {
-                let relative = path
-                    .strip_prefix(root)
-                    .expect("strategy file should live under the strategy root");
-                let destination = to.join(relative);
-                if let Some(parent) = destination.parent() {
-                    fs::create_dir_all(parent).expect("destination parent should create");
-                }
-                let bytes = fs::read(&path).expect("strategy file should read");
-                fs::write(&destination, bytes).expect("strategy file should copy verbatim");
-            }
-        }
-    }
-
-    let real_strategy_root = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
     let submit_admission_source_path =
         registry_root_path(bolt_v2::bolt_v3_source_integrity::SUBMIT_ADMISSION_KEY);
 
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let staged_strategy_root = temp.path().join("strategy");
-    fs::create_dir_all(&staged_strategy_root).expect("staged strategy root should create");
-
-    // Copy every real strategy `.rs` file verbatim, preserving relative layout.
-    copy_rs_tree(
-        &real_strategy_root,
-        &real_strategy_root,
-        &staged_strategy_root,
-    );
+    let staged_manifest = temp.path().join("frame-boundary-checkout");
+    let staged_strategy_root = copy_registered_strategy_source_set_to(&staged_manifest);
 
     // Add a production-only file of EXACTLY 128 bytes -> u64-LE length frame
     // 0x80,0x00,... -> framed stream is invalid UTF-8 if grepped raw.
@@ -5045,10 +5131,9 @@ fn abort_plan_collectors_are_directory_aware_across_frame_byte_boundaries() {
 #[test]
 fn abort_plan_panic_gate_service_policy_source_proof_rejects_unguarded_service_submit() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
     let submit_admission_source_path = temp.path().join("submit_admission.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn bootstrap_recovery_from_cache(&mut self) {
     let cached_positions = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -5085,8 +5170,7 @@ fn submit_lifecycle_policy(&self) -> BoltV3SubmitLifecyclePolicy {
     )
 }
 "#,
-    )
-    .expect("test strategy source should write");
+    );
     std::fs::write(
         &submit_admission_source_path,
         r#"
@@ -5142,9 +5226,8 @@ fn allows(&self, intent: BoltV3SubmitIntentKind) -> bool {
 #[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_cancel_after_exit_pending() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn try_submit_exit_order() {
     if !decision.forced_flat_reasons.is_empty()
@@ -5161,8 +5244,7 @@ fn try_submit_exit_order() {
     }
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let error =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -5182,9 +5264,8 @@ fn try_submit_exit_order() {
 #[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_disconnected_marker_sequence() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn unrelated_forced_flat(decision: Decision) {
     let _ = !decision.forced_flat_reasons.is_empty();
@@ -5206,8 +5287,7 @@ fn unrelated_exit_pending() {
     self.exposure = ExposureState::ExitPending(ExitPendingState {});
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let error =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -5225,9 +5305,8 @@ fn unrelated_exit_pending() {
 #[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_decoy_marker_scope() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn helper_with_cancel_markers() {
     if !decision.forced_flat_reasons.is_empty()
@@ -5244,8 +5323,7 @@ fn helper_with_cancel_markers() {
     }
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let error =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -5263,9 +5341,8 @@ fn helper_with_cancel_markers() {
 #[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_duplicate_target_scope_with_decoy_markers() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn try_submit_exit_order() {
     self.exposure = ExposureState::ExitPending(ExitPendingState {});
@@ -5288,8 +5365,7 @@ mod decoy {
     }
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let error =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -5307,9 +5383,8 @@ mod decoy {
 #[test]
 fn abort_plan_cancel_if_open_source_proof_accepts_qualified_function_scope() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 pub async fn try_submit_exit_order() {
     if !decision.forced_flat_reasons.is_empty()
@@ -5326,8 +5401,7 @@ pub async fn try_submit_exit_order() {
     }
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let proof =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -5342,9 +5416,8 @@ pub async fn try_submit_exit_order() {
 #[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_multiple_valid_scopes() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn try_submit_exit_order() {
     if !decision.forced_flat_reasons.is_empty()
@@ -5376,8 +5449,7 @@ fn try_submit_exit_order() {
     }
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let error =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -5395,9 +5467,8 @@ fn try_submit_exit_order() {
 #[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_comment_only_markers() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn try_submit_exit_order() {
     /*
@@ -5409,8 +5480,7 @@ fn try_submit_exit_order() {
     */
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let error =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -5428,9 +5498,8 @@ fn try_submit_exit_order() {
 #[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_string_only_markers() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn try_submit_exit_order() {
     let _ = "
@@ -5442,8 +5511,7 @@ fn try_submit_exit_order() {
     ";
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let error =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -5461,9 +5529,8 @@ fn try_submit_exit_order() {
 #[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_raw_string_only_markers() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r###"
 fn try_submit_exit_order() {
     let _ = r##"
@@ -5475,8 +5542,7 @@ fn try_submit_exit_order() {
     "##;
 }
 "###,
-    )
-    .expect("test source should write");
+    );
 
     let error =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -5494,9 +5560,8 @@ fn try_submit_exit_order() {
 #[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_raw_string_marker_substitution() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r###"
 fn try_submit_exit_order() {
     if !decision.forced_flat_reasons.is_empty()
@@ -5508,8 +5573,7 @@ fn try_submit_exit_order() {
     }
 }
 "###,
-    )
-    .expect("test source should write");
+    );
 
     let error =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -5527,9 +5591,8 @@ fn try_submit_exit_order() {
 #[test]
 fn abort_plan_cancel_if_open_source_proof_rejects_duplicate_context_string() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn try_submit_exit_order() {
     let _ = "forced-flat exit could not cancel pending entry client_order_id={}";
@@ -5547,8 +5610,7 @@ fn try_submit_exit_order() {
     }
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let error =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -5566,9 +5628,8 @@ fn try_submit_exit_order() {
 #[test]
 fn abort_plan_cancel_if_open_source_proof_accepts_lifetimes_and_char_literals() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 fn try_submit_exit_order<'a>(label: &'a str) {
     let quote = '\'';
@@ -5587,8 +5648,7 @@ fn try_submit_exit_order<'a>(label: &'a str) {
     }
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let proof =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -5603,9 +5663,8 @@ fn try_submit_exit_order<'a>(label: &'a str) {
 #[test]
 fn abort_plan_cancel_if_open_source_proof_accepts_same_line_attribute_with_bracketed_string() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let strategy_source_path = temp.path().join("strategy.rs");
-    std::fs::write(
-        &strategy_source_path,
+    let strategy_source_path = write_abort_plan_strategy_source_fixture(
+        &temp,
         r#"
 #[doc = "keeps ] inside attribute text"] pub async fn try_submit_exit_order() {
     if !decision.forced_flat_reasons.is_empty()
@@ -5622,8 +5681,7 @@ fn abort_plan_cancel_if_open_source_proof_accepts_same_line_attribute_with_brack
     }
 }
 "#,
-    )
-    .expect("test source should write");
+    );
 
     let proof =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(

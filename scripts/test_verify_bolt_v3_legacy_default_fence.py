@@ -10,7 +10,7 @@ from pathlib import Path
 
 import bolt_v3_source_roots as source_roots
 import verify_bolt_v3_legacy_default_fence as fence
-from bolt_v3_source_roots import STRATEGY_SOURCE_ROOT, module_text, source_files
+from bolt_v3_source_roots import STRATEGY_SOURCE_ROOT, STRATEGY_SOURCE_ROOTS, module_text, source_files
 from verify_bolt_v3_pure_rust_runtime import production_text
 
 # A current strategy source file, resolved layout-independently (the strategy
@@ -22,7 +22,12 @@ STRATEGY_SOURCE_FILE = source_files(STRATEGY_SOURCE_ROOT)[0].relative_to(
 
 
 def rust_registry_relative_roots(registry_source: str) -> set[str]:
-    return set(re.findall(r'\brelative_root\s*:\s*"([^"]+)"', registry_source))
+    roots: set[str] = set()
+    for block in re.findall(
+        r"\brelative_roots\s*:\s*&\[(.*?)\]", registry_source, flags=re.DOTALL
+    ):
+        roots.update(re.findall(r'"([^"]+)"', block))
+    return roots
 
 
 def rust_text_accessor_max_bytes(source: str) -> int:
@@ -103,7 +108,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
     def test_strategy_does_not_reach_legacy_polymarket_catalog(self) -> None:
         # Resolve the strategy module layout-independently (a directory after the
         # A3 split) and scan every file's production text.
-        strategy = production_text_from_string(module_text(STRATEGY_SOURCE_ROOT))
+        strategy = production_text_from_string(module_text(STRATEGY_SOURCE_ROOTS))
 
         self.assertNotIn("polymarket_catalog", strategy)
 
@@ -242,7 +247,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         self.assertEqual(
             rust_roots,
             {
-                source_roots.STRATEGY_SOURCE_ROOT,
+                *source_roots.STRATEGY_SOURCE_ROOTS,
                 source_roots.SUBMIT_ADMISSION_SOURCE_ROOT,
             },
         )
@@ -251,19 +256,21 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         registry = """
             GatedSourceRoot {
                 key: STRATEGY_KEY,
-                relative_root:
+                relative_roots: &[
                     "src/strategies/binary_oracle_edge_taker",
+                    "src/bolt_v3_book_sizing.rs",
+                ],
             },
             GatedSourceRoot {
                 key: SUBMIT_ADMISSION_KEY,
-                relative_root: "src/bolt_v3_submit_admission.rs",
+                relative_roots: &["src/bolt_v3_submit_admission.rs"],
             },
         """
 
         self.assertEqual(
             rust_registry_relative_roots(registry),
             {
-                source_roots.STRATEGY_SOURCE_ROOT,
+                *source_roots.STRATEGY_SOURCE_ROOTS,
                 source_roots.SUBMIT_ADMISSION_SOURCE_ROOT,
             },
         )

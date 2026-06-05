@@ -5,7 +5,7 @@
 //! roots are named (the registry):
 //!
 //! 1. **The registry** — [`STRATEGY_KEY`] / [`SUBMIT_ADMISSION_KEY`] mapped to
-//!    their repo-relative root paths.
+//!    their repo-relative source root sets.
 //! 2. The canonicalization + hash primitives, re-exported from the
 //!    `#[path]`-shared [`crate::source_canonicalization`] walk module so the
 //!    build-time emission (`build.rs`) and the runtime digest share exactly one
@@ -26,37 +26,76 @@ use std::path::{Path, PathBuf};
 pub use crate::source_canonicalization::{
     GATED_SOURCE_ROOTS, GatedSourceRoot, STRATEGY_KEY, SUBMIT_ADMISSION_KEY,
     TEST_MODULE_SPLIT_MARKER, canonical_source_bytes, canonical_source_digest,
+    canonical_source_set_bytes, canonical_source_set_digest,
+    module_source_set_text as canonical_module_source_set_text,
     module_source_text as canonical_module_text,
-    production_module_source_text as canonical_production_module_text, registry_entry,
+    production_module_source_text as canonical_production_module_text,
+    production_source_set_text as canonical_production_source_set_text, registry_entry,
     sha256_hex_lower,
 };
 
-/// Repo-relative root path for a registry key (e.g. for test feeds / CLI args).
+/// Repo-relative source roots for a registry key.
+pub fn registry_relative_roots(key: &str) -> &'static [&'static str] {
+    registry_entry(key).relative_roots
+}
+
+/// Primary repo-relative root path for a registry key. For source-set entries,
+/// this remains the strategy directory used by older path-based collector tests;
+/// registry-keyed hashing/text helpers use every root in the set.
 pub fn registry_relative_root(key: &str) -> &'static str {
-    registry_entry(key).relative_root
+    registry_relative_roots(key)
+        .first()
+        .copied()
+        .unwrap_or_else(|| panic!("gated source registry key `{key}` has no source roots"))
 }
 
-/// Absolute repo path for a registry key, rooted at the crate manifest dir.
+/// Primary absolute repo path for a registry key, rooted at the crate manifest
+/// dir.
 pub fn registry_root_path(key: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(registry_entry(key).relative_root)
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(registry_relative_root(key))
 }
 
-/// Lowercase-hex SHA-256 of the canonical bytes of a registry root (file or
-/// directory), bounded by `max_bytes`.
+/// Absolute repo paths for every root in a registry-keyed source set.
+pub fn registry_root_paths(key: &str) -> Vec<PathBuf> {
+    registry_relative_roots(key)
+        .iter()
+        .map(|relative| Path::new(env!("CARGO_MANIFEST_DIR")).join(relative))
+        .collect()
+}
+
+/// Lowercase-hex SHA-256 of the canonical bytes of a registry source set,
+/// bounded by `max_bytes`.
 pub fn registry_source_digest(key: &str, max_bytes: u64) -> io::Result<String> {
-    canonical_source_digest(&registry_root_path(key), max_bytes)
+    canonical_source_set_digest(
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        registry_relative_roots(key),
+        max_bytes,
+    )
 }
 
-/// Canonical bytes of a registry root, bounded by `max_bytes`.
+/// Canonical bytes of a registry source set, bounded by `max_bytes`.
 pub fn registry_source_bytes(key: &str, max_bytes: u64) -> io::Result<Vec<u8>> {
-    canonical_source_bytes(&registry_root_path(key), max_bytes)
+    canonical_source_set_bytes(
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        registry_relative_roots(key),
+        max_bytes,
+    )
+}
+
+/// Whole-module source text for a registry source set, bounded by `max_bytes`.
+pub fn registry_module_source_text(key: &str, max_bytes: u64) -> io::Result<String> {
+    canonical_module_source_set_text(
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        registry_relative_roots(key),
+        max_bytes,
+    )
 }
 
 /// A bound large enough to admit either gated root: the submit_admission single
-/// file and the strategy DIRECTORY (`{config.rs, mod.rs, selection.rs}`, whose
-/// framed canonical stream is the raw content plus per-file path/length frames).
-/// Used by the text accessors (whole module / production text), where there is
-/// no operator-supplied cap.
+/// file and the strategy source set (strategy directory plus shared book sizing
+/// source, whose framed canonical stream is the raw content plus per-file
+/// path/length frames). Used by the text accessors (whole module / production
+/// text), where there is no operator-supplied cap.
 ///
 /// Single source for the in-process text-accessor bound; the digest path uses
 /// the operator-configured `max_source_bytes` instead.
@@ -65,33 +104,39 @@ const TEXT_ACCESSOR_MAX_BYTES: u64 = 8 * 1024 * 1024;
 /// Whole-module source text for a registry key, in the same canonical order as
 /// the digest.
 pub fn module_source_text(key: &str) -> String {
-    canonical_module_text(&registry_root_path(key), TEXT_ACCESSOR_MAX_BYTES)
-        .unwrap_or_else(|error| panic!("module source text for `{key}` should read: {error}"))
+    canonical_module_source_set_text(
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        registry_relative_roots(key),
+        TEXT_ACCESSOR_MAX_BYTES,
+    )
+    .unwrap_or_else(|error| panic!("module source text for `{key}` should read: {error}"))
 }
 
 /// Production-only module source text for a registry key: the whole-module text
 /// with each file's bottom `#[cfg(test)] mod tests` submodule excluded.
 ///
 /// Delegates to the SINGLE production/test boundary defined in
-/// [`crate::source_canonicalization::production_module_source_text`].
+/// [`crate::source_canonicalization::production_source_set_text`].
 ///
 /// IDENTITY case (e.g. `submit_admission`, a single file): reproduces the
 /// historical `source.split("\n#[cfg(test)]\nmod tests").next()` output
 /// byte-for-byte — strips ONLY at the FIRST top-level test-module marker, so the
 /// earlier inline `#[cfg(test)]` markers are retained (value-stability).
 ///
-/// DIRECTORY case (e.g. the strategy `{config.rs, mod.rs, selection.rs}` after
-/// slice A8): the production half of EACH file — split independently at its own
-/// first top-level marker — concatenated in canonical order. `mod.rs` contributes
-/// its production half (its test module is excluded); `config.rs` and
-/// `selection.rs` (production-only) contribute their whole text. This keeps every
-/// submodule's production code in scope rather than dropping every file sorted
-/// after the marker-owning file.
+/// SOURCE-SET case (e.g. the strategy directory plus shared book sizing after
+/// A4): the production half of EACH file — split independently at its own first
+/// top-level marker — concatenated in canonical order. This keeps every
+/// production file in scope rather than dropping every file sorted after the
+/// marker-owning file.
 pub fn production_module_source_text(key: &str) -> String {
-    canonical_production_module_text(&registry_root_path(key), TEXT_ACCESSOR_MAX_BYTES)
-        .unwrap_or_else(|error| {
-            panic!("production module source text for `{key}` should read: {error}")
-        })
+    canonical_production_source_set_text(
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        registry_relative_roots(key),
+        TEXT_ACCESSOR_MAX_BYTES,
+    )
+    .unwrap_or_else(|error| {
+        panic!("production module source text for `{key}` should read: {error}")
+    })
 }
 
 #[cfg(test)]
@@ -104,31 +149,22 @@ mod tests {
     // identity digest captured live from `origin/main` raw bytes
     // (`git show origin/main:<path> | shasum -a 256`); that root did not move.
     //
-    // GOLDEN_STRATEGY_DIGEST was RE-DERIVED again by slice A5 after pricing
-    // state moved out of `mod.rs`: the strategy source remains a directory
-    // whose framed DIRECTORY concatenation is over
-    // `{config.rs, mod.rs, selection.rs}` (sorted by relative path). This is a
-    // legitimate behavior-preserving source move, not a fixture regeneration — the
-    // value is re-derived from the live build-emitted `OUT_DIR/strategy.canonical`
-    // and independently confirmed by hand-framing the live source files
-    // (`shasum -a256 OUT_DIR/strategy.canonical` == this constant).
+    // GOLDEN_STRATEGY_DIGEST is re-derived only when an accepted source move
+    // changes the canonical strategy source set. A4 moves book state and
+    // VWAP/slippage sizing out of the strategy wrapper, so the strategy source
+    // set is now the strategy directory plus `src/bolt_v3_book_sizing.rs`.
     //
-    // RE-DERIVED again by the #553 merge of `origin/main` (which includes slice A5's
-    // pricing extraction) into the live Chainlink strike branch. The merged strategy
-    // directory BOTH drops the offline readiness seed (`apply_source_owned_readiness_seed`
-    // — the live Chainlink strike is now the single `price_to_beat` source) AND adds
-    // resolution-strike code (`config.rs` resolution_client_id/resolution_instrument_id
-    // + pair guard; `mod.rs` observe/subscribe/on_index_price + the resolution-pair
-    // fail-closed test). Legitimate source change, not a fixture regeneration, so the
-    // framed DIRECTORY digest over `{config.rs, mod.rs, selection.rs}` (765_776-byte
-    // canonical stream) is re-derived to this value; confirmed equal to the Rust
-    // canonicalizer by the digest tests.
+    // Re-derived again after merging `origin/main` at #553: main's strategy
+    // directory dropped the offline readiness seed and added live Chainlink
+    // resolution-strike code, while this PR keeps the A4 source set shape. The
+    // value below must match the live build-emitted `OUT_DIR/strategy.canonical`
+    // and the independent hand-framed source-set stream in these tests.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "22f07549c0e3ba8a295c187129a3b8ec5b431432c0314bef368a72f12dfb0ca5";
+        "90670863bdff4d086dfce10571b228805c1a87ce4036522352e2895a1793c21e";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 
-    // Bound comfortably above the strategy directory canonical stream and the
+    // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
     const TEST_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -150,15 +186,11 @@ mod tests {
         );
     }
 
-    /// The `*.rs` files the strategy directory root resolves to, in strict
-    /// canonical (relative-path-byte) order. Enumerated DYNAMICALLY with the
-    /// same fail-closed symlink/backslash policy as `canonical_source_bytes`, so
-    /// the invariant tracks the module as each slice adds a file (A3
-    /// `selection.rs`, A8 `config.rs`, …) — no slice should ever edit this list.
-    /// Current order: `config.rs` < `mod.rs` < `selection.rs` (by relative-path
-    /// bytes).
-    fn strategy_dir_files_in_canonical_order() -> Vec<std::path::PathBuf> {
-        let root = registry_root_path(STRATEGY_KEY);
+    /// The strategy source-set files, in strict repo-relative-path-byte order.
+    /// Enumerated dynamically with the same fail-closed symlink/backslash policy
+    /// as the production canonicalizer, so the invariant tracks accepted source
+    /// moves without hardcoding a file list.
+    fn strategy_source_files_in_canonical_order() -> Vec<(String, std::path::PathBuf)> {
         fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             for entry in std::fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
@@ -177,67 +209,83 @@ mod tests {
                 }
             }
         }
-        fn relative_bytes(root: &std::path::Path, path: &std::path::Path) -> Vec<u8> {
-            let relative = path.strip_prefix(root).unwrap();
+        fn normalized_path(path: &std::path::Path) -> String {
             let mut parts = Vec::new();
-            for component in relative.components() {
+            for component in path.components() {
                 let std::path::Component::Normal(name) = component else {
                     panic!(
                         "strategy source helper found unsupported path component: {}",
-                        relative.display()
+                        path.display()
                     );
                 };
                 let name = name.to_str().unwrap_or_else(|| {
                     panic!(
                         "strategy source helper found non-UTF-8 path: {}",
-                        relative.display()
+                        path.display()
                     )
                 });
                 assert!(
                     !name.contains('\\'),
                     "strategy source helper must reject backslash components: {}",
-                    relative.display()
+                    path.display()
                 );
                 parts.push(name.to_owned());
             }
-            parts.join("/").into_bytes()
+            parts.join("/")
         }
+
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut files = Vec::new();
-        collect(&root, &mut files);
-        files.sort_by(|a, b| relative_bytes(&root, a).cmp(&relative_bytes(&root, b)));
+        for relative_root in registry_relative_roots(STRATEGY_KEY) {
+            let root = manifest_dir.join(relative_root);
+            let root_type = std::fs::symlink_metadata(&root).unwrap().file_type();
+            assert!(
+                !root_type.is_symlink(),
+                "strategy source helper must reject symlink roots: {}",
+                root.display()
+            );
+            let root_label = normalized_path(std::path::Path::new(relative_root));
+            if root_type.is_file() {
+                files.push((root_label, root));
+                continue;
+            }
+            assert!(
+                root_type.is_dir(),
+                "strategy source root must be a file or directory: {}",
+                root.display()
+            );
+
+            let mut root_files = Vec::new();
+            collect(&root, &mut root_files);
+            for path in root_files {
+                let relative = normalized_path(path.strip_prefix(&root).unwrap());
+                files.push((format!("{root_label}/{relative}"), path));
+            }
+        }
+        files.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
         files
     }
 
     #[test]
-    fn strategy_root_is_a_directory() {
-        // A3 converted the single strategy file into a directory module. The
-        // registry must now point at a directory so the canonicalizer takes the
-        // framed DIRECTORY branch (binary path+NUL+length frames), not the
-        // verbatim IDENTITY branch.
-        let root = registry_root_path(STRATEGY_KEY);
-        assert!(
-            root.is_dir(),
-            "strategy registry root must be a directory after A3: {}",
-            root.display()
+    fn strategy_source_set_includes_wrapper_directory_and_shared_sizing_module() {
+        assert_eq!(
+            registry_relative_roots(STRATEGY_KEY),
+            &[
+                "src/strategies/binary_oracle_edge_taker",
+                "src/bolt_v3_book_sizing.rs",
+            ]
         );
     }
 
     #[test]
-    fn directory_digest_equals_hand_framed_canonical_over_strategy_files() {
-        // DIRECTORY invariant (replaces the old single-file identity equality):
-        // the strategy digest must equal a SHA-256 over the hand-built framed
-        // stream `rel_path + 0x00 + u64-LE(len) + raw_bytes` for every `*.rs`
-        // file under the directory, in canonical order. This pins the exact
-        // framing the gate hashes — not a tautology against the accessor itself.
-        let root = registry_root_path(STRATEGY_KEY);
+    fn source_set_digest_equals_hand_framed_canonical_over_strategy_files() {
+        // Source-set invariant: the strategy digest must equal a SHA-256 over the
+        // hand-built framed stream `repo_rel_path + 0x00 + u64-LE(len) + raw_bytes`
+        // for every file in the strategy source set, in canonical order. This
+        // pins the exact framing the gate hashes — not a tautology against the
+        // accessor itself.
         let mut expected: Vec<u8> = Vec::new();
-        for path in strategy_dir_files_in_canonical_order() {
-            let relative = path
-                .strip_prefix(&root)
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .replace('\\', "/");
+        for (relative, path) in strategy_source_files_in_canonical_order() {
             let raw = std::fs::read(&path).unwrap();
             expected.extend_from_slice(relative.as_bytes());
             expected.push(0x00);
@@ -247,34 +295,27 @@ mod tests {
         assert_eq!(
             registry_source_digest(STRATEGY_KEY, TEST_MAX_BYTES).unwrap(),
             sha256_hex_lower(&expected),
-            "strategy directory digest must equal the hand-framed canonical stream"
+            "strategy source-set digest must equal the hand-framed canonical stream"
         );
     }
 
     #[test]
-    fn one_byte_change_anywhere_under_directory_changes_strategy_digest() {
+    fn one_byte_change_anywhere_in_source_set_changes_strategy_digest() {
         // Tamper-detection control for the directory case: flipping a single byte
         // in the hand-framed canonical stream of EACH file in turn must change the
-        // digest away from the golden — proving every file under the directory is
+        // digest away from the golden — proving every file in the source set is
         // covered, not just the first. (Operates on a copy of the framed bytes;
         // it never writes to the real source tree.)
-        let root = registry_root_path(STRATEGY_KEY);
-        let files = strategy_dir_files_in_canonical_order();
+        let files = strategy_source_files_in_canonical_order();
         assert!(
-            files.len() >= 3,
-            "expected current strategy directory source files"
+            files.len() >= 4,
+            "expected current strategy directory plus shared sizing source files"
         );
 
         // Build the framed stream and record each file's raw-byte span within it.
         let mut framed: Vec<u8> = Vec::new();
         let mut spans: Vec<(usize, usize)> = Vec::new();
-        for path in &files {
-            let relative = path
-                .strip_prefix(&root)
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .replace('\\', "/");
+        for (relative, path) in &files {
             let raw = std::fs::read(path).unwrap();
             framed.extend_from_slice(relative.as_bytes());
             framed.push(0x00);
@@ -299,15 +340,12 @@ mod tests {
 
     #[test]
     fn production_text_for_strategy_directory_excludes_test_module_and_includes_selection() {
-        // DIRECTORY production-text boundary (replaces the old single-file split
-        // reproduction): the production text must equal the per-file concatenation
-        // of every strategy file's production half (each split at its OWN first
-        // top-level test-module marker), in canonical order. This pins the exact
-        // boundary and proves `selection.rs` (a production-only file with no test
-        // module) is INCLUDED whole, while `mod.rs`'s test module is excluded.
-        let expected: String = strategy_dir_files_in_canonical_order()
+        // Source-set production-text boundary: the production text must equal the
+        // per-file concatenation of every strategy source-set file's production
+        // half, each split at its own first top-level test-module marker.
+        let expected: String = strategy_source_files_in_canonical_order()
             .iter()
-            .map(|path| {
+            .map(|(_relative, path)| {
                 let text = std::fs::read_to_string(path).unwrap().replace("\r\n", "\n");
                 text.split(TEST_MODULE_SPLIT_MARKER)
                     .next()
@@ -335,6 +373,10 @@ mod tests {
             "production text must include the relocated venue-routing predicate"
         );
         assert!(
+            production.contains("struct OutcomeBookState"),
+            "production text must include the shared book-sizing state"
+        );
+        assert!(
             !production.contains("\n#[cfg(test)]\nmod tests"),
             "production text must exclude each file's top-level test module"
         );
@@ -342,33 +384,32 @@ mod tests {
 
     #[test]
     fn whole_module_text_equals_concatenated_strategy_files() {
-        // DIRECTORY whole-text invariant (replaces the old single-file equality):
-        // the whole-module text must equal every strategy file's full UTF-8 text
-        // concatenated in canonical order, with the test modules retained.
-        let expected: String = strategy_dir_files_in_canonical_order()
+        // Source-set whole-text invariant: the whole-module text must equal every
+        // strategy source-set file's full UTF-8 text concatenated in canonical
+        // order, with the test modules retained.
+        let expected: String = strategy_source_files_in_canonical_order()
             .iter()
-            .map(|path| std::fs::read_to_string(path).unwrap())
+            .map(|(_relative, path)| std::fs::read_to_string(path).unwrap())
             .collect();
         assert_eq!(module_source_text(STRATEGY_KEY), expected);
     }
 
     #[test]
     fn registry_admits_current_strategy_directory_canonical_size() {
-        // The producer cap must admit the current strategy DIRECTORY: the framed
-        // canonical stream over {config.rs, mod.rs, selection.rs}. Compute its
-        // exact length and assert the digest succeeds with a cap set to exactly
-        // that size (and fails one byte below), proving the bound is tight and
-        // meaningful.
+        // The producer cap must admit the current strategy source set. Compute
+        // its exact length and assert the digest succeeds with a cap set to
+        // exactly that size (and fails one byte below), proving the bound is
+        // tight and meaningful.
         let canonical_len = registry_source_bytes(STRATEGY_KEY, TEST_MAX_BYTES)
             .unwrap()
             .len() as u64;
-        let raw_len: u64 = strategy_dir_files_in_canonical_order()
+        let raw_len: u64 = strategy_source_files_in_canonical_order()
             .iter()
-            .map(|path| std::fs::metadata(path).unwrap().len())
+            .map(|(_relative, path)| std::fs::metadata(path).unwrap().len())
             .sum();
         assert!(
             canonical_len > raw_len,
-            "directory framing adds path/length frames over raw content"
+            "source-set framing adds path/length frames over raw content"
         );
         assert!(registry_source_digest(STRATEGY_KEY, canonical_len).is_ok());
         assert!(

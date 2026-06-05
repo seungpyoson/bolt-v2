@@ -1676,7 +1676,8 @@ fn bolt_v3_live_node_build_registers_only_generic_canary_proof_executor_when_ena
 
 #[test]
 fn binary_oracle_strategy_source_does_not_own_canary_proof_claim() {
-    let source = include_str!("../src/strategies/binary_oracle_edge_taker.rs");
+    let source = support::module_source_text(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
+    let source = source.as_str();
 
     assert!(
         !source.contains("CANARY_PROOF_CLAIM"),

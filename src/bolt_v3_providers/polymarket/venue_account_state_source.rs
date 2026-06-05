@@ -7,7 +7,6 @@ use nautilus_polymarket::{
     http::{clob::PolymarketClobHttpClient, query::GetOrdersParams},
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::{
     bolt_v3_operator_artifacts::{BoltV3OperatorArtifactError, json_artifact_sha256},
@@ -198,7 +197,7 @@ fn usize_to_u64(field: &'static str, value: usize) -> Result<u64, BoltV3Operator
 }
 
 fn sha256_text(value: &str) -> String {
-    hex::encode(Sha256::digest(value.as_bytes()))
+    crate::bolt_v3_source_integrity::sha256_hex_lower(value.as_bytes())
 }
 
 async fn fetch_non_redeemable_positions(

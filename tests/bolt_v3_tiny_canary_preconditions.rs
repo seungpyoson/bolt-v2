@@ -21,7 +21,6 @@ use bolt_v2::{
 use nautilus_model::enums::OmsType;
 use rust_decimal::Decimal;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::path::Path;
 
 const PHASE8_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.configured-reference-price";
@@ -4411,8 +4410,11 @@ fn current_unix_seconds_for_test() -> u64 {
         .as_secs()
 }
 
+// Thin forwarders onto the ONE consolidated SHA-256 primitive (no dual-path
+// re-implementation). These hash a test executable / short proof strings — NOT
+// the gated monolith roots (those derive via `support::registry_source_digest`).
 fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
+    bolt_v2::bolt_v3_source_integrity::sha256_hex_lower(bytes)
 }
 
 fn sha256_text_for_test(value: &str) -> String {
@@ -4520,8 +4522,8 @@ fn write_phase8_abort_plan(path: &std::path::Path, panic_policy_missing: bool) {
         "execution_client_id": "polymarket_main",
         "configured_target_id": "configured_updown_target",
         "source_collector_derived": true,
-        "strategy_source_sha256": sha256_text_for_test(include_str!("../src/strategies/binary_oracle_edge_taker.rs")),
-        "submit_admission_source_sha256": sha256_text_for_test(include_str!("../src/bolt_v3_submit_admission.rs")),
+        "strategy_source_sha256": support::registry_source_digest(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY),
+        "submit_admission_source_sha256": support::registry_source_digest(bolt_v2::bolt_v3_source_integrity::SUBMIT_ADMISSION_KEY),
         "cancel_if_open_defined": true,
         "cancel_if_open_evidence_hash": sha256_text_for_test("cancel-if-open-proof"),
         "nt_accepted_venue_pending_abort_defined": true,

@@ -83,7 +83,7 @@ fn entry_decision_source_schema_version_tracks_signal_quote_split() {
         "bolt_v3.binary_oracle_entry_decision_source.v3"
     );
 }
-use support::{repo_path, valid_entry_readiness_gate_session_json};
+use support::{registry_root_path, repo_path, valid_entry_readiness_gate_session_json};
 
 // Test-only updown fixture values mirror tests/fixtures/bolt_v3/strategies/binary_oracle.toml.
 const TEST_MARKET_SELECTION_UNDERLYING_ASSET: &str = "CONFIGURED_ASSET";
@@ -4119,8 +4119,9 @@ fn abort_plan_writer_emits_artifact_from_source_owned_collectors() {
         .as_str();
     let temp = tempfile::tempdir().expect("tempdir should create");
     let abort_plan_path = temp.path().join("abort-plan.json");
-    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
-    let submit_admission_source_path = repo_path("src/bolt_v3_submit_admission.rs");
+    let strategy_source_path = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
+    let submit_admission_source_path =
+        registry_root_path(bolt_v2::bolt_v3_source_integrity::SUBMIT_ADMISSION_KEY);
 
     let cancel_if_open =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -4170,9 +4171,15 @@ fn abort_plan_writer_emits_artifact_from_source_owned_collectors() {
     let json: serde_json::Value =
         serde_json::from_slice(&artifact_bytes).expect("abort plan should be JSON");
     assert_eq!(json["source_collector_derived"], true);
+    // The strategy root is now a directory module; reading it as a single file
+    // (sha256_file) would panic with IsADirectory and would not match the
+    // producer. Compute the expected digest the SAME way the producer does at
+    // src/bolt_v3_operator_artifacts.rs:6644 — canonical_source_digest over the
+    // root with the identical cap passed to the writer above (1_000_000).
     assert_eq!(
         json["strategy_source_sha256"],
-        sha256_file(&strategy_source_path)
+        bolt_v2::source_canonicalization::canonical_source_digest(&strategy_source_path, 1_000_000)
+            .expect("strategy directory canonical digest should compute")
     );
     assert_eq!(
         json["submit_admission_source_sha256"],
@@ -4332,7 +4339,7 @@ fn abort_plan_writer_rejects_each_undefined_source_path_without_artifact() {
 fn abort_plan_cancel_if_open_source_proof_derives_from_strategy_cancel_sources() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let abort_plan_path = temp.path().join("abort-plan.json");
-    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+    let strategy_source_path = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
 
     let proof =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -4361,7 +4368,7 @@ fn abort_plan_cancel_if_open_source_proof_derives_from_strategy_cancel_sources()
 fn abort_plan_nt_accepted_venue_pending_source_proof_derives_from_exit_pending_lifecycle() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let abort_plan_path = temp.path().join("abort-plan.json");
-    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+    let strategy_source_path = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
 
     let proof = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
         &strategy_source_path,
@@ -4577,7 +4584,7 @@ fn noisy_terminal_call_source(&mut self, event: OrderExpired) {
 fn abort_plan_partial_fill_source_proof_derives_from_exit_fill_lifecycle() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let abort_plan_path = temp.path().join("abort-plan.json");
-    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+    let strategy_source_path = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
 
     let proof = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
         &strategy_source_path,
@@ -4809,7 +4816,7 @@ fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) 
 fn abort_plan_network_partition_source_proof_derives_from_submit_error_restore() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let abort_plan_path = temp.path().join("abort-plan.json");
-    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+    let strategy_source_path = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
 
     let proof =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_network_partition_source_proof(
@@ -4875,8 +4882,9 @@ fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
 fn abort_plan_panic_gate_service_policy_source_proof_derives_from_strategy_and_admission_sources() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let abort_plan_path = temp.path().join("abort-plan.json");
-    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
-    let submit_admission_source_path = repo_path("src/bolt_v3_submit_admission.rs");
+    let strategy_source_path = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
+    let submit_admission_source_path =
+        registry_root_path(bolt_v2::bolt_v3_source_integrity::SUBMIT_ADMISSION_KEY);
 
     let proof = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_panic_gate_service_policy_source_proof(
         &strategy_source_path,
@@ -4899,6 +4907,139 @@ fn abort_plan_panic_gate_service_policy_source_proof_derives_from_strategy_and_a
         !abort_plan_path.exists(),
         "collector must not write final abort-plan artifact"
     );
+}
+
+/// Regression for the A3 directory-split fragility: the producer collectors must
+/// grep the per-file UTF-8 module text of the strategy DIRECTORY, never the
+/// framed canonical byte stream. The framed stream interleaves binary frame bytes
+/// (relative-path strings, a NUL separator, a u64-LE length frame) per file, and
+/// is valid UTF-8 only by luck of the current file sizes.
+///
+/// This test reconstructs the strategy directory in a temp tree, then ADDS a
+/// production-only `.rs` file whose length is exactly 128 bytes. 128 in u64-LE is
+/// `0x80 0x00 ...`; the `0x80` byte is a UTF-8 continuation byte where a start
+/// byte is expected, so `std::str::from_utf8` over the framed stream would fail
+/// with "invalid start byte" — the exact boundary the finding reproduced. It also
+/// places a file under a non-ASCII subdirectory, so a non-ASCII relative-path
+/// frame is exercised too. All five collectors must still succeed, pinning the
+/// CLASS of bug (frame bytes routed through text grep) rather than today's lucky
+/// file sizes.
+#[test]
+fn abort_plan_collectors_are_directory_aware_across_frame_byte_boundaries() {
+    use std::fs;
+    use std::path::Path;
+
+    // Recursively copy every `.rs` file under `from` into `to`, preserving the
+    // relative layout and verbatim bytes.
+    fn copy_rs_tree(root: &Path, from: &Path, to: &Path) {
+        for entry in fs::read_dir(from).expect("strategy directory should read") {
+            let path = entry.expect("dir entry should read").path();
+            let metadata = fs::symlink_metadata(&path).expect("metadata should read");
+            if metadata.file_type().is_dir() {
+                copy_rs_tree(root, &path, to);
+            } else if metadata.file_type().is_file()
+                && path.extension().and_then(|ext| ext.to_str()) == Some("rs")
+            {
+                let relative = path
+                    .strip_prefix(root)
+                    .expect("strategy file should live under the strategy root");
+                let destination = to.join(relative);
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent).expect("destination parent should create");
+                }
+                let bytes = fs::read(&path).expect("strategy file should read");
+                fs::write(&destination, bytes).expect("strategy file should copy verbatim");
+            }
+        }
+    }
+
+    let real_strategy_root = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
+    let submit_admission_source_path =
+        registry_root_path(bolt_v2::bolt_v3_source_integrity::SUBMIT_ADMISSION_KEY);
+
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let staged_strategy_root = temp.path().join("strategy");
+    fs::create_dir_all(&staged_strategy_root).expect("staged strategy root should create");
+
+    // Copy every real strategy `.rs` file verbatim, preserving relative layout.
+    copy_rs_tree(
+        &real_strategy_root,
+        &real_strategy_root,
+        &staged_strategy_root,
+    );
+
+    // Add a production-only file of EXACTLY 128 bytes -> u64-LE length frame
+    // 0x80,0x00,... -> framed stream is invalid UTF-8 if grepped raw.
+    let mut padding =
+        b"// 128-byte frame-boundary padding file; carries no abort-plan contract marker.\n"
+            .to_vec();
+    assert!(
+        padding.len() < 128,
+        "base padding comment must be under 128 bytes"
+    );
+    while padding.len() < 127 {
+        padding.push(b'x');
+    }
+    padding.push(b'\n');
+    assert_eq!(padding.len(), 128, "padding file must be exactly 128 bytes");
+    fs::write(
+        staged_strategy_root.join("aaa_frame_boundary_pad.rs"),
+        &padding,
+    )
+    .expect("128-byte padding file should write");
+
+    // Add a file under a NON-ASCII subdirectory, exercising a non-ASCII
+    // relative-path frame in the canonical stream.
+    let non_ascii_dir = staged_strategy_root.join("ƒ_subdir");
+    fs::create_dir_all(&non_ascii_dir).expect("non-ascii subdir should create");
+    fs::write(
+        non_ascii_dir.join("note.rs"),
+        b"// non-ascii subpath frame exerciser; no abort-plan contract marker.\n",
+    )
+    .expect("non-ascii subpath file should write");
+
+    // All five collectors must succeed against the staged DIRECTORY despite the
+    // frame-boundary file and the non-ASCII subpath.
+    bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+        &staged_strategy_root,
+        1_000_000,
+    )
+    .expect("cancel-if-open collector must be directory-aware across frame boundaries");
+    bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
+        &staged_strategy_root,
+        1_000_000,
+    )
+    .expect("nt-accepted/venue-pending collector must be directory-aware across frame boundaries");
+    bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
+        &staged_strategy_root,
+        1_000_000,
+    )
+    .expect("partial-fill collector must be directory-aware across frame boundaries");
+    bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_network_partition_source_proof(
+        &staged_strategy_root,
+        1_000_000,
+    )
+    .expect("network-partition collector must be directory-aware across frame boundaries");
+    bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_panic_gate_service_policy_source_proof(
+        &staged_strategy_root,
+        &submit_admission_source_path,
+        1_000_000,
+    )
+    .expect("panic-gate collector must be directory-aware across frame boundaries");
+
+    // Control: prove the staged stream WOULD have broken the old raw-from_utf8
+    // path. The framed canonical stream must NOT be valid UTF-8 (the 128-byte
+    // length frame's 0x80 byte and/or the non-ASCII subpath bytes break it),
+    // while the per-file module text the collectors now grep IS valid UTF-8.
+    let framed =
+        bolt_v2::source_canonicalization::canonical_source_bytes(&staged_strategy_root, 1_000_000)
+            .expect("framed canonical bytes should compute");
+    assert!(
+        std::str::from_utf8(&framed).is_err(),
+        "framed stream must be invalid UTF-8 so this test exercises the real failure boundary"
+    );
+    bolt_v2::source_canonicalization::module_source_text(&staged_strategy_root, 1_000_000)
+        .expect("per-file module text must remain valid UTF-8 (frame bytes excluded)");
 }
 
 #[test]
@@ -13572,8 +13713,8 @@ fn write_collector_derived_abort_plan_static_artifact_for_test(
         bolt_v2::bolt_v3_operator_artifacts::write_abort_plan_artifact_from_source_collectors(
             loaded,
             strategy_instance_id,
-            &repo_path("src/strategies/binary_oracle_edge_taker.rs"),
-            &repo_path("src/bolt_v3_submit_admission.rs"),
+            &registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY),
+            &registry_root_path(bolt_v2::bolt_v3_source_integrity::SUBMIT_ADMISSION_KEY),
             1_000_000,
             &abort_plan_path,
         )

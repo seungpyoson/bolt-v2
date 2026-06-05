@@ -488,6 +488,12 @@ const HYPERLIQUID_HIP3_NAMESPACE_SEP: char = ':';
 /// `@`-prefixed token out of the shared object.
 const HYPERLIQUID_SPOT_INDEX_PREFIX: char = '@';
 
+/// Separator the venue uses for the one spot pair it names by symbol rather than
+/// by `@`-index: `BASE/QUOTE` (for example `PURR/USDC`). Like the `@`-indexed
+/// spot markets, it is not a USDC-settled core perp, so the core converter
+/// fences any token containing this separator out of the shared object.
+const HYPERLIQUID_SPOT_PAIR_SEP: char = '/';
+
 /// One fill record as it appears inside an `events` pair's second element.
 ///
 /// Only the fields this projection needs are deserialized; the rest of the rich
@@ -850,22 +856,27 @@ pub fn decompress_lz4_frame(bytes: &[u8]) -> Result<String> {
 /// A single `node_fills_by_block` object multiplexes fills for every market that
 /// traded that hour — top-level core perps (`BTC`, `ETH`, newly-listed alts like
 /// `PUMP`) AND markets that are NOT core perps: builder-deployed HIP-3 DEX
-/// instruments (`<dex>:<local>`, for example `xyz:SILVER`) and spot pair indices
-/// (`@107`). The latter are owned by their own venue families and would carry
-/// false provenance if written as USDC-settled core perps, so the core converter
-/// fences them out of the shared object (the rule's allowed "genuinely-foreign
-/// instrument fenced out of a multi-instrument object").
+/// instruments (`<dex>:<local>`, for example `xyz:SILVER`) and spot markets —
+/// most named by an `@`-index (`@107`), plus the one pair the venue names by its
+/// `BASE/QUOTE` symbol (`PURR/USDC`). The latter are owned by their own venue
+/// families and would carry false provenance if written as USDC-settled core
+/// perps, so the core converter fences them out of the shared object (the rule's
+/// allowed "genuinely-foreign instrument fenced out of a multi-instrument
+/// object").
 ///
 /// The classification is the venue's OWN naming convention, not an invented
 /// allowlist: a HIP-3 token always contains [`HYPERLIQUID_HIP3_NAMESPACE_SEP`]
-/// (the same split the HIP-3 backfill uses) and a spot index always starts with
-/// [`HYPERLIQUID_SPOT_INDEX_PREFIX`]. Anything else is a top-level core perp.
+/// (the same split the HIP-3 backfill uses), an `@`-indexed spot market starts
+/// with [`HYPERLIQUID_SPOT_INDEX_PREFIX`], and the symbol-named spot pair
+/// contains [`HYPERLIQUID_SPOT_PAIR_SEP`]. Anything else is a top-level core
+/// perp (a bare ticker like `BTC`).
 #[must_use]
 pub fn is_core_perp_coin(coin: &str) -> bool {
     let coin = coin.trim();
     !coin.is_empty()
         && !coin.contains(HYPERLIQUID_HIP3_NAMESPACE_SEP)
         && !coin.starts_with(HYPERLIQUID_SPOT_INDEX_PREFIX)
+        && !coin.contains(HYPERLIQUID_SPOT_PAIR_SEP)
 }
 
 /// Distinct Hyperliquid **core perp** coins that appear as a **taker**
@@ -1192,5 +1203,45 @@ mod tests {
             [\"0x1\",{\"coin\":\"BTC\",\"px\":\"1.0\",\"sz\":\"1.0\",\"side\":\"B\",\"time\":1,\"crossed\":false,\"tid\":9,\"oid\":1}]]}\n";
         let err = reconstruct_trades(maker_only, &btc_spec()).unwrap_err();
         assert!(err.to_string().contains("no taker fills"), "{err}");
+    }
+
+    #[test]
+    fn is_core_perp_coin_fences_slash_named_spot_pair() {
+        // Hyperliquid names exactly one spot pair by its `BASE/QUOTE` symbol
+        // (`PURR/USDC`) rather than an `@`-index; it is spot, not a USDC-settled
+        // core perp, so the fence must exclude it alongside the `@` and `:` forms.
+        assert!(!is_core_perp_coin("PURR/USDC"));
+        // The existing fence arms are unchanged.
+        assert!(is_core_perp_coin("BTC"));
+        assert!(!is_core_perp_coin("@230"));
+        assert!(!is_core_perp_coin("xyz:SILVER"));
+    }
+
+    #[test]
+    fn hyperliquid_core_fill_coins_excludes_purr_usdc() {
+        // One block with a real BTC perp taker (unique tid) and two PURR/USDC
+        // spot takers carrying the venue's `tid=0` spot sentinel with distinct
+        // sizes. Only BTC is a core perp; the spot pair must never reach per-coin
+        // reconstruction, where its many `tid=0` legs trip the perp tid-dedup
+        // invariant (the exact RUN2 abort).
+        let jsonl = "{\"block_number\":1,\"events\":[\
+            [\"0xa\",{\"coin\":\"BTC\",\"px\":\"66428.0\",\"sz\":\"0.001\",\"side\":\"A\",\"time\":2000,\"crossed\":true,\"tid\":111,\"oid\":1}],\
+            [\"0xb\",{\"coin\":\"PURR/USDC\",\"px\":\"0.073241\",\"sz\":\"0.57271\",\"side\":\"A\",\"time\":2000,\"crossed\":true,\"tid\":0,\"oid\":2}],\
+            [\"0xc\",{\"coin\":\"PURR/USDC\",\"px\":\"0.073241\",\"sz\":\"0.77181\",\"side\":\"A\",\"time\":2000,\"crossed\":true,\"tid\":0,\"oid\":3}]]}\n";
+        let coins = hyperliquid_core_fill_coins(jsonl).expect("enumerate coins");
+        assert_eq!(coins, vec!["BTC".to_string()]);
+    }
+
+    #[test]
+    fn perp_tid_collision_still_fails_loud() {
+        // Regression guard: the tid-dedup corruption invariant is correct for
+        // real perps and must stay intact. Two BTC taker legs share a nonzero tid
+        // but disagree on size -> fail loud. The spot fence narrows routing; it
+        // does not weaken this guard.
+        let corrupt = "{\"block_number\":1,\"events\":[\
+            [\"0xa\",{\"coin\":\"BTC\",\"px\":\"66428.0\",\"sz\":\"0.001\",\"side\":\"A\",\"time\":2000,\"crossed\":true,\"tid\":111,\"oid\":1}],\
+            [\"0xb\",{\"coin\":\"BTC\",\"px\":\"66428.0\",\"sz\":\"0.002\",\"side\":\"A\",\"time\":2000,\"crossed\":true,\"tid\":111,\"oid\":2}]]}\n";
+        let err = reconstruct_trades(corrupt, &btc_spec()).unwrap_err();
+        assert!(err.to_string().contains("disagrees on px/sz/time"), "{err}");
     }
 }

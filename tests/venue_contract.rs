@@ -11,8 +11,9 @@ use bolt_v2::{
     lake_batch::convert_live_spool_to_parquet,
     nt_runtime_capture,
     venue_contract::{
-        Capability, CompletenessReport, Policy, Provenance, SettlementKind, StreamContract,
-        VenueContract,
+        BookDepthSource, Capability, CompletenessReport, FeeRateSource, MaintenancePolicy, Policy,
+        Provenance, ScheduledMaintenanceWindow, SettlementKind, StreamContract, VenueContract,
+        Weekday,
     },
 };
 mod support;
@@ -190,11 +191,33 @@ fn loads_polymarket_contract() {
     assert_eq!(contract.streams.len(), 7);
 
     // Execution-capability facts (sourced from the NT Polymarket adapter).
-    assert!(!contract.supports_modify);
-    assert_eq!(contract.settlement_kind, SettlementKind::Binary);
+    assert!(!contract.execution.supports_modify);
     assert_eq!(contract.rate_budget.clob_per_minute, 100);
     assert_eq!(contract.rate_budget.gamma_per_minute, 100);
     assert_eq!(contract.rate_budget.batch_submit_limit, 15);
+    assert_eq!(
+        contract.maintenance_window.policy,
+        MaintenancePolicy::NoneConfigured
+    );
+    assert_eq!(contract.maintenance_window.pull_before_start_seconds, 0);
+    assert_eq!(
+        contract.depth_availability.book_depth_source,
+        BookDepthSource::OrderBookDeltas
+    );
+    assert_eq!(
+        contract.depth_availability.native_queue_position,
+        Capability::Unsupported
+    );
+    assert_eq!(
+        contract.fee_schedule.maker_fee_rate_source,
+        FeeRateSource::Instrument
+    );
+    assert_eq!(
+        contract.fee_schedule.taker_fee_rate_source,
+        FeeRateSource::Instrument
+    );
+    assert_eq!(contract.fee_schedule.settlement_currency, "pUSD");
+    assert_eq!(contract.settlement.kind, SettlementKind::Binary);
 }
 
 #[test]
@@ -305,28 +328,50 @@ fn rejects_zero_rate_budget() {
 }
 
 #[test]
-fn rejects_contract_missing_supports_modify() {
+fn rejects_contract_missing_execution() {
     let dir = tempdir().unwrap();
-    let path = dir.path().join("missing-supports-modify.toml");
-    std::fs::write(&path, contract_text_without_line("supports_modify")).unwrap();
+    let path = dir.path().join("missing-execution.toml");
+    std::fs::write(&path, contract_text_without_line("[execution]")).unwrap();
 
     let err = VenueContract::load_and_validate(&path).unwrap_err();
     assert!(
-        err.to_string().contains("missing field `supports_modify`"),
-        "supports_modify must be explicit, got: {err}"
+        err.to_string().contains("missing field `execution`"),
+        "execution capability section must be explicit, got: {err}"
     );
 }
 
 #[test]
-fn rejects_contract_missing_settlement_kind() {
+fn rejects_contract_missing_settlement() {
     let dir = tempdir().unwrap();
-    let path = dir.path().join("missing-settlement-kind.toml");
-    std::fs::write(&path, contract_text_without_line("settlement_kind")).unwrap();
+    let path = dir.path().join("missing-settlement.toml");
+    std::fs::write(&path, contract_text_without_line("[settlement]")).unwrap();
 
     let err = VenueContract::load_and_validate(&path).unwrap_err();
     assert!(
-        err.to_string().contains("missing field `settlement_kind`"),
-        "settlement_kind must be explicit, got: {err}"
+        err.to_string().contains("missing field `settlement`"),
+        "settlement section must be explicit, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_legacy_flat_capability_fields() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("legacy-flat-capability-fields.toml");
+    let text = std::fs::read_to_string(support::first_contract_path())
+        .unwrap()
+        .replacen(
+            "[execution]",
+            "supports_modify = false\nsettlement_kind = \"binary\"\n\n[execution]",
+            1,
+        );
+    std::fs::write(&path, text).unwrap();
+
+    let err = VenueContract::load_and_validate(&path).unwrap_err();
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("unknown field `supports_modify`")
+            || rendered.contains("unknown field `settlement_kind`"),
+        "legacy flat capability fields must be rejected, got: {err}"
     );
 }
 
@@ -340,6 +385,157 @@ fn rejects_contract_missing_rate_budget() {
     assert!(
         err.to_string().contains("missing field `rate_budget`"),
         "rate_budget must be explicit, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_contract_missing_maintenance_window() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("missing-maintenance-window.toml");
+    std::fs::write(&path, contract_text_without_line("[maintenance_window]")).unwrap();
+
+    let err = VenueContract::load_and_validate(&path).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("missing field `maintenance_window`"),
+        "maintenance_window section must be explicit, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_contract_missing_depth_availability() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("missing-depth-availability.toml");
+    std::fs::write(&path, contract_text_without_line("[depth_availability]")).unwrap();
+
+    let err = VenueContract::load_and_validate(&path).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("missing field `depth_availability`"),
+        "depth_availability section must be explicit, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_contract_missing_fee_schedule() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("missing-fee-schedule.toml");
+    std::fs::write(&path, contract_text_without_line("[fee_schedule]")).unwrap();
+
+    let err = VenueContract::load_and_validate(&path).unwrap_err();
+    assert!(
+        err.to_string().contains("missing field `fee_schedule`"),
+        "fee_schedule section must be explicit, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_scheduled_maintenance_without_pull_lead() {
+    let mut contract = make_contract(base_polymarket_streams());
+    contract.maintenance_window.policy = MaintenancePolicy::Scheduled;
+    contract.maintenance_window.pull_before_start_seconds = 0;
+
+    let err = contract.validate().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("scheduled maintenance requires positive pull_before_start_seconds"),
+        "scheduled maintenance must fail closed without a pull lead, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_scheduled_maintenance_without_windows() {
+    let mut contract = make_contract(base_polymarket_streams());
+    contract.maintenance_window.policy = MaintenancePolicy::Scheduled;
+    contract.maintenance_window.pull_before_start_seconds = 60;
+
+    let err = contract.validate().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("scheduled maintenance requires at least one window"),
+        "scheduled maintenance must declare concrete windows, got: {err}"
+    );
+}
+
+#[test]
+fn scheduled_maintenance_window_with_positive_duration_validates() {
+    let mut contract = make_contract(base_polymarket_streams());
+    contract.maintenance_window.policy = MaintenancePolicy::Scheduled;
+    contract.maintenance_window.pull_before_start_seconds = 60;
+    contract
+        .maintenance_window
+        .windows
+        .push(ScheduledMaintenanceWindow {
+            weekday: Weekday::Sunday,
+            start_time_utc: "04:00".to_string(),
+            duration_seconds: 900,
+        });
+
+    contract
+        .validate()
+        .expect("scheduled window with pull lead and duration should validate");
+}
+
+#[test]
+fn rejects_malformed_maintenance_start_time() {
+    let mut contract = make_contract(base_polymarket_streams());
+    contract.maintenance_window.policy = MaintenancePolicy::Scheduled;
+    contract.maintenance_window.pull_before_start_seconds = 60;
+    contract
+        .maintenance_window
+        .windows
+        .push(ScheduledMaintenanceWindow {
+            weekday: Weekday::Sunday,
+            start_time_utc: "4am".to_string(),
+            duration_seconds: 900,
+        });
+
+    let err = contract.validate().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("maintenance_window.windows[0].start_time_utc must be HH:MM"),
+        "maintenance start time must fail closed, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_depth_source_not_supported_by_stream_contract() {
+    let mut contract = make_contract(base_polymarket_streams());
+    contract.depth_availability.book_depth_source = BookDepthSource::OrderBookDepths;
+
+    let err = contract.validate().unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "depth_availability.book_depth_source references unsupported stream order_book_depths"
+        ),
+        "depth source must agree with stream capabilities, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_contract_fee_source_without_static_bps() {
+    let mut contract = make_contract(base_polymarket_streams());
+    contract.fee_schedule.maker_fee_rate_source = FeeRateSource::Contract;
+    contract.fee_schedule.maker_fee_bps = None;
+
+    let err = contract.validate().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("fee_schedule.maker_fee_bps required when maker_fee_rate_source is contract"),
+        "contract-sourced maker fees must provide static bps, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_empty_fee_schedule_currency() {
+    let mut contract = make_contract(base_polymarket_streams());
+    contract.fee_schedule.settlement_currency.clear();
+
+    let err = contract.validate().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("fee_schedule.settlement_currency must be non-empty"),
+        "fee schedule currency must fail closed, got: {err}"
     );
 }
 

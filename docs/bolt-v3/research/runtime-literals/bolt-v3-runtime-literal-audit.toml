@@ -5034,10 +5034,18 @@ reason = "This is a stable evidence reason code for missing uncertainty-band inp
 [[allowed]]
 path = "src/venue_contract.rs"
 kind = "number"
-literal = '''2'''
-context = '''pub const CURRENT_SCHEMA_VERSION: u32 = 2;'''
+literal = '''3'''
+context = '''pub const CURRENT_SCHEMA_VERSION: u32 = 3;'''
 classification = "venue_contract_schema_version"
 reason = "This is the venue contract schema version accepted by the parser, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "number"
+literal = '''10_000'''
+context = '''pub const STATIC_FEE_BPS_ABSOLUTE_LIMIT: u32 = 10_000;'''
+classification = "venue_contract_static_fee_bps_bound"
+reason = "This is the fixed absolute sanity bound for contract-sourced static fee and rebate rates in basis points, not an operator runtime value."
 
 [[allowed]]
 path = "src/venue_contract.rs"
@@ -5062,6 +5070,86 @@ literal = '''0'''
 context = '''self.rate_budget.batch_submit_limit > 0,'''
 classification = "venue_contract_rate_budget_floor"
 reason = "This is the inclusive zero floor of a fail-closed validation check requiring the batch submit limit to be positive, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "number"
+literal = '''0'''
+context = '''self.maintenance_window.pull_before_start_seconds == 0,'''
+classification = "venue_contract_maintenance_window_floor"
+reason = "This is the zero floor of a fail-closed validation check requiring no pull lead for an absent maintenance schedule, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "number"
+literal = '''0'''
+context = '''self.maintenance_window.pull_before_start_seconds > 0,'''
+classification = "venue_contract_maintenance_window_floor"
+reason = "This is the inclusive zero floor of a fail-closed validation check requiring a scheduled maintenance pull lead to be positive, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "number"
+literal = '''0'''
+context = '''window.duration_seconds > 0,'''
+classification = "venue_contract_maintenance_window_floor"
+reason = "This is the inclusive zero floor of a fail-closed validation check requiring scheduled maintenance windows to have positive duration, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "number"
+literal = '''2'''
+context = '''hour.len() == 2'''
+classification = "venue_contract_maintenance_time_grammar"
+reason = "This is the fixed HH component width for the venue contract UTC maintenance-window time grammar, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "number"
+literal = '''2'''
+context = '''&& minute.len() == 2'''
+classification = "venue_contract_maintenance_time_grammar"
+reason = "This is the fixed MM component width for the venue contract UTC maintenance-window time grammar, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "number"
+literal = '''24'''
+context = '''&& hour.parse::<u8>().is_ok_and(|v| v < 24)'''
+classification = "venue_contract_maintenance_time_grammar"
+reason = "This is the 24-hour clock upper bound for the venue contract UTC maintenance-window time grammar, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "number"
+literal = '''60'''
+context = '''&& minute.parse::<u8>().is_ok_and(|v| v < 60)'''
+classification = "venue_contract_maintenance_time_grammar"
+reason = "This is the minute upper bound for the venue contract UTC maintenance-window time grammar, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"depth_availability.book_depth_source references disabled stream {depth_stream_class}"'''
+context = '''"depth_availability.book_depth_source references disabled stream {depth_stream_class}"'''
+classification = "venue_contract_depth_source_diagnostic"
+reason = "This is a fail-closed validation diagnostic for a disabled configured depth stream, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"maker"'''
+context = '''"maker",'''
+classification = "venue_contract_fee_side_label"
+reason = "This is a stable validation label used to name the maker fee fields in diagnostics, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "string"
+literal = '''"taker"'''
+context = '''"taker",'''
+classification = "venue_contract_fee_side_label"
+reason = "This is a stable validation label used to name the taker fee fields in diagnostics, not an operator runtime value."
 
 [[allowed]]
 path = "src/venue_contract.rs"

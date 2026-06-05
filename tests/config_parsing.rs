@@ -3762,7 +3762,7 @@ fn chainlink_client_scheme_relative_report_endpoint_path_fails_closed() {
     assert!(
         messages.iter().any(|message| {
             message.contains("clients.chainlink_strike.data.report_endpoint_path")
-                && message.contains("must not redirect off the base URL host")
+                && message.contains("scheme-relative or authority reference")
         }),
         "a chainlink client report_endpoint_path that changes host must fail closed: {messages:#?}"
     );
@@ -3790,7 +3790,7 @@ fn chainlink_gate_provider_scheme_relative_report_endpoint_path_fails_closed() {
         messages.iter().any(|message| {
             message.contains(
                 "gate_providers.resolution_oracle_primary.chainlink_data_streams.report_endpoint_path",
-            ) && message.contains("must not redirect off the base URL host")
+            ) && message.contains("scheme-relative or authority reference")
         }),
         "a gate provider report_endpoint_path that changes host must fail closed: {messages:#?}"
     );

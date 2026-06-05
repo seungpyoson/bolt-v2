@@ -524,20 +524,39 @@ pub(crate) fn resolve_chainlink_report_endpoint_url(
 ) -> Result<url::Url, String> {
     let base = url::Url::parse(rest_base_url)
         .map_err(|_| "must resolve against a valid absolute base URL".to_string())?;
-    if !report_endpoint_path.starts_with('/') {
-        return Err("must be a rooted absolute path beginning with a single slash".to_string());
+    // Require a single rooted path. `strip_prefix` enforces the leading slash; a
+    // second leading slash or backslash makes the value an authority/scheme-relative
+    // reference (`//host`, `/\host`) that `url::Url::join` resolves into
+    // host/userinfo/port — including same-host `//user:pass@host` forms that would
+    // smuggle credentials into the signed request URL — rather than a path.
+    let after_root = match report_endpoint_path.strip_prefix('/') {
+        Some(after_root) => after_root,
+        None => {
+            return Err("must be a rooted absolute path beginning with a single slash".to_string());
+        }
+    };
+    if after_root.starts_with('/') || after_root.starts_with('\\') {
+        return Err(
+            "must be a single rooted path, not a scheme-relative or authority reference"
+                .to_string(),
+        );
     }
     let joined = base
         .join(report_endpoint_path)
         .map_err(|_| "must be a path that resolves against the base URL".to_string())?;
+    // Authoritative backstop: resolving the path must change only the path. The
+    // scheme, host, port, and userinfo must match the base, and the path must
+    // introduce no query or fragment of its own.
     if joined.scheme() != base.scheme()
         || joined.host_str() != base.host_str()
         || joined.port_or_known_default() != base.port_or_known_default()
+        || joined.username() != base.username()
+        || joined.password() != base.password()
         || joined.query().is_some()
         || joined.fragment().is_some()
     {
         return Err(
-            "must not redirect off the base URL host, scheme, or port, or carry a query or fragment"
+            "must not redirect off the base URL host, scheme, port, or credentials, or carry a query or fragment"
                 .to_string(),
         );
     }

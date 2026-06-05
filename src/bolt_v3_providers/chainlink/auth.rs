@@ -254,6 +254,28 @@ mod tests {
     }
 
     #[test]
+    fn report_request_url_rejects_same_host_authority_form_endpoint_paths() {
+        // Even when the authority resolves to the SAME host, an authority/scheme-
+        // relative form is not a rooted path and must fail closed: a `//host` form
+        // is contract-loose, and a `//user:pass@host` form would smuggle credentials
+        // into the signed request URL. A same-host explicit `:443` is likewise an
+        // authority reference, not a path.
+        for endpoint in [
+            "//api.example.com/api/v1/reports",
+            "//user:pass@api.example.com/api/v1/reports",
+            "//api.example.com:443/api/v1/reports",
+        ] {
+            chainlink_data_streams_report_request_url(
+                TEST_BASE_URL,
+                endpoint,
+                TEST_FEED_ID,
+                TEST_REPORT_TIMESTAMP_SECONDS,
+            )
+            .expect_err("a same-host authority-form endpoint path must fail closed");
+        }
+    }
+
+    #[test]
     fn auth_headers_match_golden_hmac_signature() {
         let credentials = chainlink_data_streams_credentials(TEST_API_KEY, TEST_API_SECRET)
             .expect("whitespace-free credentials should validate");

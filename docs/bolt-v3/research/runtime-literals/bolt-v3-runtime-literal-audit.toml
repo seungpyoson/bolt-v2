@@ -17080,6 +17080,22 @@ classification = '''operator_artifact_source_integrity_error_message'''
 reason = '''Static diagnostic text for fail-closed abort-plan manifest root derivation; no operator runtime value is embedded.'''
 
 [[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"."'''
+context = '''.any(|component| component.is_empty() || *component == "." || *component == "..")'''
+classification = '''operator_artifact_source_integrity_path_sentinel'''
+reason = '''Fixed relative-path validation sentinel rejecting current-directory components in registered source-set roots; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''".."'''
+context = '''.any(|component| component.is_empty() || *component == "." || *component == "..")'''
+classification = '''operator_artifact_source_integrity_path_sentinel'''
+reason = '''Fixed relative-path validation sentinel rejecting parent-directory traversal in registered source-set roots; not an operator runtime value.'''
+
+[[allowed]]
 path = '''src/source_canonicalization.rs'''
 kind = '''number'''
 literal = '''0x00'''

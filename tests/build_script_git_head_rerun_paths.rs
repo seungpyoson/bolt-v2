@@ -49,12 +49,47 @@ fn linked_worktree_head_ref_watches_common_ref_and_packed_refs() {
 
 #[test]
 fn build_script_watches_shared_source_canonicalization_module() {
-    let build_script =
-        fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("build.rs"))
-            .expect("build script source should read");
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let paths = build_script::canonical_source_rerun_paths(&manifest_dir)
+        .expect("canonical source rerun paths should collect");
 
     assert!(
-        build_script.contains("cargo:rerun-if-changed=src/source_canonicalization.rs"),
+        paths.contains(&manifest_dir.join("src/source_canonicalization.rs")),
         "build.rs must rerun when the shared source registry/canonicalizer changes"
+    );
+}
+
+#[test]
+fn build_script_reruns_when_manifest_dir_env_changes() {
+    assert!(
+        build_script::build_script_rerun_env_vars().contains(&"CARGO_MANIFEST_DIR"),
+        "shared target dirs must not reuse source embeds from another checkout"
+    );
+}
+
+#[test]
+fn build_script_binds_manifest_dir_at_compile_time() {
+    assert_eq!(
+        build_script::build_script_manifest_dir(),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+        "build script source embeds must be keyed by the current checkout path"
+    );
+}
+
+#[test]
+fn build_script_watches_current_source_set_files() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let paths = build_script::canonical_source_rerun_paths(&manifest_dir)
+        .expect("canonical source rerun paths should collect");
+
+    assert!(paths.contains(&manifest_dir.join("src/source_canonicalization.rs")));
+    assert!(paths.contains(&manifest_dir.join("src/bolt_v3_book_sizing.rs")));
+    assert!(
+        paths.contains(
+            &manifest_dir
+                .join("src/strategies/binary_oracle_edge_taker")
+                .join("mod.rs")
+        ),
+        "build.rs must watch nested strategy source files, not only the root directory"
     );
 }

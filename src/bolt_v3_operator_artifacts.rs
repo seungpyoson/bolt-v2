@@ -2,6 +2,7 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, HashMap, btree_map::Entry},
     error::Error,
+    ffi::OsStr,
     fmt, fs,
     io::{self, Read, Write},
     ops::Range,
@@ -6923,32 +6924,33 @@ fn abort_plan_strategy_source_text(
 }
 
 fn abort_plan_strategy_manifest_dir(strategy_source_path: &Path) -> io::Result<PathBuf> {
-    let primary_root = Path::new(registry_relative_root(STRATEGY_KEY));
+    let primary_root = registry_relative_root(STRATEGY_KEY);
+    let primary_components = registered_relative_root_components(primary_root)?;
     let canonical_strategy_source_path =
         fs::canonicalize(strategy_source_path).map_err(|error| {
             io::Error::new(
                 error.kind(),
                 format!(
                     "strategy source root should resolve to the registered primary root {}: {}",
-                    primary_root.display(),
-                    error
+                    primary_root, error
                 ),
             )
         })?;
 
-    if !canonical_strategy_source_path.ends_with(primary_root) {
+    if !path_has_registered_relative_root_tail(&canonical_strategy_source_path, &primary_components)
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
                 "strategy source path {} must end with registered primary root {}",
                 canonical_strategy_source_path.display(),
-                primary_root.display()
+                primary_root
             ),
         ));
     }
 
     let mut manifest_dir = canonical_strategy_source_path.as_path();
-    for _component in primary_root.components() {
+    for _component in &primary_components {
         manifest_dir = manifest_dir.parent().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -6961,6 +6963,39 @@ fn abort_plan_strategy_manifest_dir(strategy_source_path: &Path) -> io::Result<P
     }
 
     Ok(manifest_dir.to_path_buf())
+}
+
+fn registered_relative_root_components(relative_root: &str) -> io::Result<Vec<&str>> {
+    let components: Vec<&str> = relative_root.split('/').collect();
+    if components.is_empty()
+        || components
+            .iter()
+            .any(|component| component.is_empty() || *component == "." || *component == "..")
+        || components.iter().any(|component| component.contains('\\'))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("registered primary root is not a supported relative path: {relative_root}"),
+        ));
+    }
+    Ok(components)
+}
+
+fn path_has_registered_relative_root_tail(path: &Path, relative_components: &[&str]) -> bool {
+    let path_components: Vec<&OsStr> = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(component) => Some(component),
+            _ => None,
+        })
+        .collect();
+    if path_components.len() < relative_components.len() {
+        return false;
+    }
+    path_components[path_components.len() - relative_components.len()..]
+        .iter()
+        .zip(relative_components)
+        .all(|(actual, expected)| *actual == OsStr::new(expected))
 }
 
 /// Lowercase-hex SHA-256 of a panic-gate source root's framed canonical byte
@@ -17551,6 +17586,58 @@ mod tests {
         fn sync_all(&self) -> io::Result<()> {
             Err(io::Error::other("forced sync failure"))
         }
+    }
+
+    #[test]
+    fn abort_plan_strategy_manifest_dir_resolves_caller_checkout_primary_root() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let manifest_dir = temp.path().join("caller-checkout");
+        let strategy_source_path = manifest_dir.join(registry_relative_root(STRATEGY_KEY));
+        fs::create_dir_all(&strategy_source_path).expect("strategy source dir should create");
+
+        let resolved = abort_plan_strategy_manifest_dir(&strategy_source_path)
+            .expect("registered primary root should resolve manifest dir");
+
+        assert_eq!(
+            resolved,
+            fs::canonicalize(&manifest_dir).expect("manifest dir should canonicalize")
+        );
+    }
+
+    #[test]
+    fn abort_plan_strategy_manifest_dir_rejects_non_primary_tail() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let manifest_dir = temp.path().join("caller-checkout");
+        let wrong_source_path = manifest_dir.join("src/strategies/not_the_registered_strategy");
+        fs::create_dir_all(&wrong_source_path).expect("wrong strategy dir should create");
+
+        let error = abort_plan_strategy_manifest_dir(&wrong_source_path)
+            .expect_err("non-primary root must fail before source-set collection");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            error.to_string().contains("registered primary root"),
+            "error should explain the expected root: {error}"
+        );
+    }
+
+    #[test]
+    fn registered_relative_root_tail_uses_components_not_separator_string() {
+        let components = registered_relative_root_components(registry_relative_root(STRATEGY_KEY))
+            .expect("registered primary root should parse");
+        let strategy_source_path = Path::new("/tmp/reviewed-checkout")
+            .join("src")
+            .join("strategies")
+            .join("binary_oracle_edge_taker");
+
+        assert!(path_has_registered_relative_root_tail(
+            &strategy_source_path,
+            &components
+        ));
+        assert!(!path_has_registered_relative_root_tail(
+            Path::new("/tmp/reviewed-checkout/src/strategies/binary_oracle_edge_taker_extra"),
+            &components
+        ));
     }
 
     #[test]

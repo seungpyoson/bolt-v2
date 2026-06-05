@@ -56,7 +56,7 @@ use backtesting_vertical_slice::canonical_hyperliquid_core::append_hyperliquid_c
 use backtesting_vertical_slice::canonical_hyperliquid_hip3::append_hyperliquid_hip3_bars_archive;
 use backtesting_vertical_slice::canonical_hyperliquid_hip4::{
     append_hip4_bars_archive, append_hip4_snapshots_archive, append_hip4_trades_archive,
-    hip4_canonical_naming,
+    append_hip4_trades_archive_batch, hip4_canonical_naming,
 };
 use backtesting_vertical_slice::canonical_okx::{
     append_okx_book_archive, append_okx_candlesticks_archive, append_okx_trades_archive,
@@ -513,13 +513,15 @@ fn convert(
         let mut records = 0usize;
         let mut instruments: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
-        if binding.venue == "bybit" && binding.family == "mark_price_kline_1m" {
-            // Bybit mark-price REST pages overlap in time per instrument, so they
-            // must be deduplicated across objects before writing — one disjoint
-            // catalog write per instrument, not one (conflicting) file per page.
-            // The cross-page dedup makes the batch one indivisible unit, so it is
-            // a single report outcome (isolated from other bindings, not split
-            // per object).
+        if is_batch_family(binding.venue, binding.family) {
+            // Some families' staged objects overlap in time per instrument — REST
+            // pages (bybit mark price) or rolling buffers re-fetched across `run=`
+            // partitions (hyperliquid-hip4 recentTrades) — so they must be
+            // deduplicated across all objects before writing: one disjoint catalog
+            // write per instrument, not one (conflicting) file per object. The
+            // cross-object dedup makes the batch one indivisible unit, so it is a
+            // single report outcome (isolated from other bindings, not split per
+            // object).
             let batch_result = (|| -> Result<ObjectStats> {
                 let mut batch = Vec::with_capacity(keys.len());
                 for key in &keys {
@@ -528,20 +530,7 @@ fn convert(
                         .with_context(|| format!("read {key}"))?;
                     batch.push((key.to_string(), bytes));
                 }
-                let converted = append_bybit_mark_price_kline_1m_batch(&batch, &mut catalog)
-                    .with_context(|| {
-                        format!("convert bybit mark-price batch ({} objects)", batch.len())
-                    })?;
-                let mut records = 0usize;
-                let mut instruments = Vec::new();
-                for instrument in converted {
-                    records += instrument.record_count;
-                    instruments.push(instrument.nt_instrument_id);
-                }
-                Ok(ObjectStats {
-                    records,
-                    instruments,
-                })
+                convert_batch_family(binding, &batch, &mut catalog)
             })();
             let object_key = format!("{binding_label} batch ({} objects)", keys.len());
             match batch_result {
@@ -698,6 +687,67 @@ fn instrument(nt_instrument_id: String, record_count: usize) -> ConvertedInstrum
         nt_instrument_id,
         record_count,
     }
+}
+
+/// Whether a `(venue, family)` must be converted as a single cross-object batch
+/// rather than per object.
+///
+/// Some families' staged objects overlap in time per instrument — REST pages
+/// (bybit mark price) or rolling buffers re-fetched across `run=` partitions
+/// (hyperliquid-hip4 recentTrades) — so writing each object as its own catalog
+/// file produces non-disjoint intervals that NautilusTrader's `write_to_parquet`
+/// rejects. These families are deduplicated across all their objects and written
+/// once per instrument; everything else converts per object. Must stay in sync
+/// with [`convert_batch_family`] (whose `_` arm fails loud on drift).
+fn is_batch_family(venue: &str, family: &str) -> bool {
+    matches!(
+        (venue, family),
+        ("bybit", "mark_price_kline_1m") | ("hyperliquid-hip4", "trades_recent")
+    )
+}
+
+/// Convert all of a batch family's objects in one cross-object pass (dedup + one
+/// disjoint write per instrument), returning the combined record/instrument
+/// stats. The single source of truth for which batch converter owns each family.
+///
+/// # Errors
+///
+/// Returns an error if the family has no batch converter (drift from
+/// [`is_batch_family`]) or a converter fails.
+fn convert_batch_family(
+    binding: &FamilyBinding,
+    batch: &[(String, Vec<u8>)],
+    catalog: &mut ParquetDataCatalog,
+) -> Result<ObjectStats> {
+    let (records, instruments): (usize, Vec<String>) = match (binding.venue, binding.family) {
+        ("bybit", "mark_price_kline_1m") => {
+            let converted =
+                append_bybit_mark_price_kline_1m_batch(batch, catalog).with_context(|| {
+                    format!("convert bybit mark-price batch ({} objects)", batch.len())
+                })?;
+            let records = converted.iter().map(|s| s.record_count).sum();
+            let instruments = converted.into_iter().map(|s| s.nt_instrument_id).collect();
+            (records, instruments)
+        }
+        ("hyperliquid-hip4", "trades_recent") => {
+            let converted =
+                append_hip4_trades_archive_batch(batch, &hip4_canonical_naming(), catalog)
+                    .with_context(|| {
+                        format!(
+                            "convert hyperliquid-hip4 trades batch ({} objects)",
+                            batch.len()
+                        )
+                    })?;
+            let records = converted.iter().map(|s| s.record_count).sum();
+            let instruments = converted.into_iter().map(|s| s.nt_identifier).collect();
+            (records, instruments)
+        }
+        (venue, family) => bail!("no batch converter wired for venue={venue} family={family}"),
+    };
+    Ok(ObjectStats {
+        records,
+        instruments,
+    })
 }
 
 /// Dispatch one staged object to its venue/family converter, appending into the

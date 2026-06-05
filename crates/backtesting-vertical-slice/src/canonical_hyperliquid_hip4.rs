@@ -1643,6 +1643,125 @@ pub fn append_hip4_trades_archive(
     Ok(summaries)
 }
 
+/// Append every coin's prints from SEVERAL staged `table=trades_recent` objects
+/// into an already-open [`ParquetDataCatalog`], deduplicating prints by `tid` per
+/// coin across all objects.
+///
+/// HL `recentTrades` is a rolling buffer: successive `run=` partitions re-fetch
+/// overlapping prints, so writing each object's stream as its own catalog file
+/// produces non-disjoint time intervals for the same instrument and
+/// NautilusTrader's `write_to_parquet` rejects the overlapping write. This
+/// collects every object's prints keyed by `(coin, tid)` (the per-coin unique
+/// trade id) so duplicates collapse, derives one uniform precision per coin
+/// across all objects, sorts the deduped union by event time, then writes one
+/// ascending `TradeTick` stream per coin — the single disjoint write the catalog
+/// contract expects. The trades analogue of
+/// [`append_bybit_mark_price_kline_1m_batch`](crate::canonical_bybit::append_bybit_mark_price_kline_1m_batch).
+///
+/// A `tid` seen twice with disagreeing price/size/time is corrupt (a tid is
+/// unique within a coin) and fails loud rather than silently keeping last-seen.
+///
+/// # Errors
+///
+/// Returns an error if an object is not UTF-8 or valid JSON, the
+/// `(outcome, side)` <-> coin mapping is inconsistent across objects, a duplicate
+/// tid disagrees, a value cannot be represented at the derived precision, table
+/// validation fails, or a catalog write fails.
+pub fn append_hip4_trades_archive_batch(
+    objects: &[(String, Vec<u8>)],
+    naming: &Hip4InstrumentNaming,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<Hip4AppendSummary>> {
+    // coin handle -> (trade_id -> row); the inner BTreeMap key dedups by the
+    // per-coin unique tid. coin handle -> Hip4Coin keeps the (outcome, side)
+    // catalog identity, asserted consistent across objects.
+    let mut rows_by_coin: BTreeMap<String, BTreeMap<String, Hip4TradeRow>> = BTreeMap::new();
+    let mut coin_meta: BTreeMap<String, Hip4Coin> = BTreeMap::new();
+
+    for (object_key, bytes) in objects {
+        let jsonl = std::str::from_utf8(bytes)
+            .with_context(|| format!("HIP-4 trades object {object_key} is not UTF-8"))?;
+        for coin in hip4_distinct_coins(jsonl)? {
+            match coin_meta.get(&coin.trade_coin) {
+                Some(existing) => ensure!(
+                    existing == &coin,
+                    "coin {} maps to different (outcome, side) across objects",
+                    coin.trade_coin,
+                ),
+                None => {
+                    coin_meta.insert(coin.trade_coin.clone(), coin.clone());
+                }
+            }
+            let probe =
+                hip4_spec_from_precision(&coin, naming, 0, 0, 1, Hip4BarAggregation::Minute);
+            let table = normalize_hip4_trades(jsonl, &probe)?;
+            let dedup = rows_by_coin.entry(coin.trade_coin.clone()).or_default();
+            for row in &table.rows {
+                if let Some(existing) = dedup.get(&row.trade_id) {
+                    ensure!(
+                        existing == row,
+                        "coin {} tid {} disagrees on px/sz/time across overlapping objects",
+                        coin.trade_coin,
+                        row.trade_id,
+                    );
+                    continue;
+                }
+                dedup.insert(row.trade_id.clone(), row.clone());
+            }
+        }
+    }
+
+    let mut summaries = Vec::new();
+    for (coin_handle, rows_map) in rows_by_coin {
+        let coin = coin_meta
+            .remove(&coin_handle)
+            .expect("coin has a metadata template");
+        // The dedup map is keyed by tid; the catalog contract needs ascending
+        // event time, so re-sort the deduped union by event time.
+        let mut rows: Vec<Hip4TradeRow> = rows_map.into_values().collect();
+        rows.sort_by_key(|row| row.event_time);
+        let mut price_precision = 0u8;
+        let mut size_precision = 0u8;
+        for row in &rows {
+            price_precision = price_precision.max(decimal_places(&row.price));
+            size_precision = size_precision.max(decimal_places(&row.size));
+        }
+        let spec = hip4_spec_from_precision(
+            &coin,
+            naming,
+            price_precision,
+            size_precision,
+            1,
+            Hip4BarAggregation::Minute,
+        );
+        let table = Hip4TradesTable {
+            nt_instrument_id: spec.nt_instrument_id.clone(),
+            trade_coin: coin.trade_coin.clone(),
+            rows,
+        };
+        table.validate()?;
+        let ticks = table.to_trade_ticks(&spec)?;
+        let record_count = ticks.len();
+        catalog
+            .write_to_parquet(ticks, None, None, None)
+            .with_context(|| {
+                format!(
+                    "append deduplicated HIP-4 trade ticks for {}",
+                    coin.trade_coin
+                )
+            })?;
+        summaries.push(Hip4AppendSummary {
+            nt_identifier: spec.nt_instrument_id.clone(),
+            data_type: NT_DATA_TYPE_TRADE_TICK.to_string(),
+            record_count,
+            price_precision,
+            size_precision,
+        });
+    }
+    ensure!(!summaries.is_empty(), "HIP-4 trades batch yielded no coins");
+    Ok(summaries)
+}
+
 /// Map a HL candle `interval` token (for example `1h`, `15m`, `1d`) to a
 /// `(bar_step, Hip4BarAggregation)` pair.
 ///
@@ -2201,5 +2320,97 @@ mod tests {
             total += loaded.len();
         }
         assert_eq!(total, 5, "all five candles land across the four streams");
+    }
+
+    /// A staged `recentTrades` object for coin `#1010` with the given `(tid,
+    /// time_ms)` prints, shaped like the real records (carrying `outcome`/`side`
+    /// for the catalog id). All prints share px/sz so a shared tid is a true
+    /// duplicate.
+    fn trades_object(prints: &[(i64, i64)]) -> String {
+        prints
+            .iter()
+            .map(|(tid, time_ms)| {
+                format!(
+                    "{{\"source_family\":\"info.recentTrades\",\"venue\":\"hyperliquid\",\
+                     \"trade_coin\":\"#1010\",\"outcome\":101,\"side\":0,\"tid\":{tid},\
+                     \"time\":{time_ms},\"px\":\"0.42\",\"sz\":\"10.0\",\"trade_side\":\"A\"}}"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn hip4_trades_batch_dedups_overlapping_runs_one_disjoint_write_per_coin() {
+        // HL `recentTrades` is a rolling buffer, so successive run= partitions
+        // re-fetch overlapping prints. Object A carries tids 1,2,3; object B
+        // carries 2,3,4 (2,3 shared, identical). Their time windows overlap, so
+        // writing each as its own catalog file produces non-disjoint intervals
+        // and NautilusTrader's write_to_parquet rejects the second (the RUN2
+        // hyperliquid-hip4 trades failure).
+        let object_a = trades_object(&[(1, 1000), (2, 2000), (3, 3000)]);
+        let object_b = trades_object(&[(2, 2000), (3, 3000), (4, 4000)]);
+
+        // Baseline: per-object writes collide on the overlapping second object.
+        {
+            let dir = tempfile::TempDir::new().expect("temp dir");
+            let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+            append_hip4_trades_archive(&object_a, &hip4_canonical_naming(), &mut catalog)
+                .expect("first object writes");
+            let err = append_hip4_trades_archive(&object_b, &hip4_canonical_naming(), &mut catalog)
+                .expect_err("overlapping second object must collide");
+            // The NautilusTrader disjoint rejection is the error's cause; read the
+            // full anyhow chain ({:#}), not just the top context.
+            let chain = format!("{err:#}").to_lowercase();
+            assert!(
+                chain.contains("disjoint") || chain.contains("interval"),
+                "expected a non-disjoint-intervals rejection, got: {err:#}"
+            );
+        }
+
+        // Batch: dedup by tid across both objects, one disjoint write per coin.
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+        let batch = vec![
+            ("a.jsonl".to_string(), object_a.into_bytes()),
+            ("b.jsonl".to_string(), object_b.into_bytes()),
+        ];
+        let summaries =
+            append_hip4_trades_archive_batch(&batch, &hip4_canonical_naming(), &mut catalog)
+                .expect("batch append");
+        assert_eq!(summaries.len(), 1, "one trade stream for the one coin");
+        // Union of tids {1,2,3,4} = 4 prints; the shared 2,3 are deduped, not doubled.
+        assert_eq!(summaries[0].record_count, 4, "deduped union count");
+
+        let loaded =
+            read_back_trade_ticks(dir.path(), &summaries[0].nt_identifier).expect("read back");
+        assert_eq!(loaded.len(), 4);
+        let mut prev = 0u64;
+        for tick in &loaded {
+            let ts = tick.ts_event.as_u64();
+            assert!(ts >= prev, "ascending ts");
+            prev = ts;
+        }
+    }
+
+    #[test]
+    fn hip4_trades_batch_fails_loud_on_disagreeing_duplicate_tid() {
+        // Same tid carrying different px/sz across overlapping objects is corrupt
+        // (a tid is unique within a coin); fail loud rather than silently keeping
+        // last-seen — the same fail-loud invariant the core converter preserves.
+        let object_a = trades_object(&[(1, 1000), (2, 2000)]);
+        let object_b = "{\"source_family\":\"info.recentTrades\",\"venue\":\"hyperliquid\",\
+            \"trade_coin\":\"#1010\",\"outcome\":101,\"side\":0,\"tid\":2,\"time\":2000,\
+            \"px\":\"0.99\",\"sz\":\"10.0\",\"trade_side\":\"A\"}"
+            .to_string();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+        let batch = vec![
+            ("a.jsonl".to_string(), object_a.into_bytes()),
+            ("b.jsonl".to_string(), object_b.into_bytes()),
+        ];
+        let err = append_hip4_trades_archive_batch(&batch, &hip4_canonical_naming(), &mut catalog)
+            .expect_err("disagreeing duplicate tid must fail loud");
+        assert!(err.to_string().contains("disagree"), "{err}");
     }
 }

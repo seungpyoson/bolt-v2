@@ -1081,7 +1081,9 @@ fn entry_replace_and_exit_submit_intents_are_classified_before_admission() {
 
 #[test]
 fn submit_lifecycle_policy_source_removes_dead_risk_reducing_exit_flag() {
-    let source = include_str!("../src/bolt_v3_submit_admission.rs");
+    let source =
+        support::module_source_text(bolt_v2::bolt_v3_source_integrity::SUBMIT_ADMISSION_KEY);
+    let source = source.as_str();
 
     assert!(
         !source.contains("_risk_reducing_exit_after_entry"),

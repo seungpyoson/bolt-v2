@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Verify binary-oracle strategy policy stays config-owned.
 
-This gate covers Phase 9 hardcode-policy regressions in the production
-strategy file. It ignores comments and `#[cfg(test)]` code through the shared
-production-text helper.
+This gate covers Phase 9 hardcode-policy regressions in the production strategy
+source. The strategy root may be a single file or a directory of `.rs` files;
+it is resolved layout-independently through the shared gated-source-root
+registry so the gate follows file moves. Each file's production text — comments
+and `#[cfg(test)]` code excluded via the shared production-text helper — is
+scanned individually so violations are reported against the file that actually
+contains them.
 """
 
 from __future__ import annotations
@@ -11,13 +15,9 @@ from __future__ import annotations
 import re
 import sys
 from dataclasses import dataclass
-from pathlib import Path
 
+from bolt_v3_source_roots import REPO_ROOT, STRATEGY_SOURCE_ROOT, source_files
 from verify_bolt_v3_pure_rust_runtime import production_text
-
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-STRATEGY_PATH = "src/strategies/binary_oracle_edge_taker.rs"
 
 
 @dataclass(frozen=True)
@@ -114,8 +114,11 @@ def find_violations_in_text(path: str, text: str) -> list[Violation]:
 
 
 def collect_violations() -> list[Violation]:
-    path = REPO_ROOT / STRATEGY_PATH
-    return find_violations_in_text(STRATEGY_PATH, production_text(path))
+    violations: list[Violation] = []
+    for path in source_files(STRATEGY_SOURCE_ROOT):
+        rel = str(path.relative_to(REPO_ROOT))
+        violations.extend(find_violations_in_text(rel, production_text(path)))
+    return violations
 
 
 def main() -> int:

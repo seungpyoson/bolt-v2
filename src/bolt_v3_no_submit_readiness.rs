@@ -11,7 +11,6 @@ use std::{
 };
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -654,7 +653,7 @@ async fn executable_identity() -> Result<String, BoltV3NoSubmitReadinessError> {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
+    crate::bolt_v3_source_integrity::sha256_hex_lower(bytes)
 }
 
 fn push_satisfied_stage(stages: &mut Vec<BoltV3NoSubmitReadinessStage>, stage: &'static str) {

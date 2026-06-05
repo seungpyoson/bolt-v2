@@ -101,7 +101,9 @@ def test_real_scan_covers_provider_neutral_source_files() -> None:
         "src/lib.rs",
         "src/main.rs",
         "src/secrets.rs",
-        "src/strategies/binary_oracle_edge_taker.rs",
+        "src/strategies/binary_oracle_edge_taker/config.rs",
+        "src/strategies/binary_oracle_edge_taker/mod.rs",
+        "src/strategies/binary_oracle_edge_taker/selection.rs",
     ):
         assert rel in core_files
     for rel in (
@@ -940,6 +942,7 @@ def test_strict_mode_fails_on_fixture_findings() -> None:
 def main() -> int:
     tests = [
         test_clean_fixture_has_no_findings,
+        test_real_scan_covers_provider_neutral_source_files,
         test_closed_provider_variants_and_factory_imports_are_findings,
         test_family_module_and_type_leaks_are_findings_for_new_families,
         test_concrete_market_family_paths_are_not_allowlisted,

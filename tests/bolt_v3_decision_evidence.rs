@@ -458,7 +458,13 @@ fn decision_evidence_path_rejects_absolute_or_parent_traversal() {
 
 #[test]
 fn binary_oracle_edge_taker_records_evidence_then_admission_before_only_direct_submit_call() {
-    let source = include_str!("../src/strategies/binary_oracle_edge_taker.rs");
+    // Whole-module text via the A0 source-integrity owner (single canonical
+    // order across digest + text). At A0 the single-file identity case
+    // reproduces the prior `include_str!` text byte-for-byte, so the
+    // intra-file `.find()` ordering below stays valid. The migrating split
+    // slice (A3/A6/A7) discharges the forward order-sensitivity constraint.
+    let source = support::module_source_text(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
+    let source = source.as_str();
     let evidence_index = source
         .find(".record_order_intent(&intent)")
         .expect("strategy must record decision evidence");
@@ -496,7 +502,8 @@ fn binary_oracle_edge_taker_records_evidence_then_admission_before_only_direct_s
 
 #[test]
 fn binary_oracle_edge_taker_exit_submit_threads_managed_position_id_to_nt() {
-    let source = include_str!("../src/strategies/binary_oracle_edge_taker.rs");
+    let source = support::module_source_text(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
+    let source = source.as_str();
 
     assert!(
         source.contains(

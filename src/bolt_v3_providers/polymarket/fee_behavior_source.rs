@@ -2,7 +2,6 @@ use nautilus_model::enums::LiquiditySide;
 use nautilus_polymarket::execution::parse::{adjust_market_buy_amount, compute_commission};
 use rust_decimal::Decimal;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use crate::{
     bolt_v3_operator_artifacts::{BoltV3OperatorArtifactError, json_artifact_sha256},
@@ -189,7 +188,7 @@ fn clob_v2_fee_behavior_decimal(
 }
 
 fn sha256_text(value: &str) -> String {
-    hex::encode(Sha256::digest(value.as_bytes()))
+    crate::bolt_v3_source_integrity::sha256_hex_lower(value.as_bytes())
 }
 
 #[derive(Serialize)]

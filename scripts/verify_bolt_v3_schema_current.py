@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from bolt_v3_source_roots import STRATEGY_SOURCE_ROOT, module_text
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-schema.md"
@@ -29,7 +31,6 @@ VALIDATE_SOURCE = REPO_ROOT / "src/bolt_v3_validate.rs"
 ARCHETYPE_BINARY_ORACLE_SOURCE = (
     REPO_ROOT / "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 )
-STRATEGY_BINARY_ORACLE_SOURCE = REPO_ROOT / "src/strategies/binary_oracle_edge_taker.rs"
 POSITION_CONTRACT_SOURCE = REPO_ROOT / "src/bolt_v3_position_contract.rs"
 ORDER_INTENT_FEATURE_DIR = "specs/023-nt-order-intent-layer"
 ORDER_INTENT_PLAN = f"{ORDER_INTENT_FEATURE_DIR}/plan.md"
@@ -572,7 +573,7 @@ def main() -> int:
         financial_envelope_source=TINY_CANARY_EVIDENCE.read_text(encoding="utf-8"),
         validate_source=VALIDATE_SOURCE.read_text(encoding="utf-8"),
         archetype_source=ARCHETYPE_BINARY_ORACLE_SOURCE.read_text(encoding="utf-8"),
-        strategy_source=STRATEGY_BINARY_ORACLE_SOURCE.read_text(encoding="utf-8"),
+        strategy_source=module_text(STRATEGY_SOURCE_ROOT),
         position_contract_source=POSITION_CONTRACT_SOURCE.read_text(encoding="utf-8")
         if POSITION_CONTRACT_SOURCE.exists()
         else "",

@@ -468,7 +468,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the taker StrategyConfig field name populated from the configured signal_data data_client_id role."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_venue"'''
 context = '''"reference_venue"'''
@@ -476,7 +476,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the existing taker StrategyConfig field name for the configured reference data client id."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_venue"'''
 context = '''Self::validate_optional_string_field(table, field_prefix, "reference_venue", errors);'''
@@ -484,7 +484,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This validates the existing taker StrategyConfig field name for the configured reference data client id."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_venue"'''
 context = '''if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {'''
@@ -492,7 +492,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This enforces paired configured reference data fields in the existing taker config schema."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_venue"'''
 context = '''let missing = if table.contains_key("reference_venue") {'''
@@ -500,7 +500,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This builds a diagnostic for the paired configured reference data fields in the existing taker config schema."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_venue"'''
 context = '''| "reference_venue"'''
@@ -508,7 +508,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This whitelists the existing taker StrategyConfig field name while rejecting unknown runtime config fields."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_instrument_id"'''
 context = '''"reference_instrument_id"'''
@@ -516,7 +516,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the existing taker StrategyConfig field name for the configured reference instrument id."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_instrument_id"'''
 context = '''"reference_instrument_id",'''
@@ -524,7 +524,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the existing taker StrategyConfig field name for the configured reference instrument id."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_instrument_id"'''
 context = '''if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {'''
@@ -532,7 +532,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This enforces paired configured reference data fields in the existing taker config schema."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_instrument_id"'''
 context = '''| "reference_instrument_id"'''
@@ -540,7 +540,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This whitelists the existing taker StrategyConfig field name while rejecting unknown runtime config fields."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"missing_reference_data_pair"'''
 context = '''"missing_reference_data_pair",'''
@@ -548,7 +548,7 @@ classification = "strategy_runtime_validation_code"
 reason = "This validation code labels a missing paired reference data field; it is not a runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"signal_venue"'''
 context = '''Self::validate_optional_string_field(table, field_prefix, "signal_venue", errors);'''
@@ -556,7 +556,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This validates the taker StrategyConfig field name for the configured signal data client id."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"signal_venue"'''
 context = '''table.contains_key("signal_venue"),'''
@@ -564,7 +564,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This enforces paired configured signal data fields in the taker config schema."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"signal_venue"'''
 context = '''| "signal_venue"'''
@@ -572,7 +572,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This whitelists the taker StrategyConfig signal data client field name while rejecting unknown runtime config fields."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"signal_instrument_id"'''
 context = '''Self::validate_optional_string_field(table, field_prefix, "signal_instrument_id", errors);'''
@@ -580,7 +580,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This validates the taker StrategyConfig field name for the configured signal instrument id."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"signal_instrument_id"'''
 context = '''table.contains_key("signal_instrument_id"),'''
@@ -588,7 +588,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This enforces paired configured signal data fields in the taker config schema."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"signal_instrument_id"'''
 context = '''| "signal_instrument_id"'''
@@ -596,7 +596,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This whitelists the taker StrategyConfig signal instrument field name while rejecting unknown runtime config fields."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"missing_signal_data_pair"'''
 context = '''"missing_signal_data_pair",'''
@@ -964,7 +964,7 @@ classification = "decision_evidence_jsonl_record_separator"
 reason = "This is the JSONL line separator for one evidence record per line, not a runtime operator value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "number"
 literal = '''3'''
 context = '''pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 3;'''
@@ -972,7 +972,7 @@ classification = "operator_source_schema_version"
 reason = "This pins the local source-owned entry decision evidence source schema consumed by the non-live operator artifact command; trading values remain source/config-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"bolt_v3.binary_oracle_entry_decision_source.v3"'''
 context = '''"bolt_v3.binary_oracle_entry_decision_source.v3";'''
@@ -988,7 +988,7 @@ classification = "operator_source_field_name"
 reason = "This is the structural field name for the readiness-session normalized price payload consumed by source replay, not a hardcoded trading value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"entry decision evidence source decision_timestamp_ms precedes market selection"'''
 context = '''"entry decision evidence source decision_timestamp_ms precedes market selection"'''
@@ -996,7 +996,7 @@ classification = "operator_source_error_template"
 reason = "This fail-closed diagnostic enforces source chronology for local decision-evidence generation; it does not configure runtime behavior."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"entry decision evidence book best_bid exceeds best_ask"'''
 context = '''"entry decision evidence book best_bid exceeds best_ask"'''
@@ -4368,7 +4368,7 @@ classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "number"
 literal = '''0'''
 context = '''const INITIAL_COUNTER_USIZE: usize = 0;'''
@@ -4376,7 +4376,7 @@ classification = "strategy_state_invariant"
 reason = "This is a named initial counter invariant for strategy state, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "number"
 literal = '''0'''
 context = '''const INITIAL_COUNTER_U64: u64 = 0;'''
@@ -4384,7 +4384,7 @@ classification = "strategy_state_invariant"
 reason = "This is a named initial counter invariant for strategy state, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "number"
 literal = '''0'''
 context = '''config.trade_flow_max_samples > 0,'''
@@ -4496,7 +4496,7 @@ classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "number"
 literal = '''1'''
 context = '''const COUNTER_INCREMENT: usize = 1;'''
@@ -4504,7 +4504,7 @@ classification = "strategy_state_invariant"
 reason = "This is a named counter increment invariant for strategy state, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "number"
 literal = '''1'''
 context = '''const COUNTER_INCREMENT_U64: u64 = 1;'''
@@ -4552,7 +4552,7 @@ classification = "time_unit_conversion"
 reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "number"
 literal = '''1_000_000'''
 context = '''const NANOS_PER_MILLI_U64: u64 = 1_000_000;'''
@@ -4560,7 +4560,7 @@ classification = "time_unit_conversion"
 reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "number"
 literal = '''1_000_000_000'''
 context = '''const NANOS_PER_SECOND_U64: u64 = 1_000_000_000;'''
@@ -4600,7 +4600,7 @@ classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the fair-probability formula, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"captured_from_strategy_entry_state"'''
 context = '''"captured_from_strategy_entry_state";'''
@@ -4608,7 +4608,7 @@ classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code for fee provenance captured at entry."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"derived_from_lead_gap_jitter_time_and_fee"'''
 context = '''"derived_from_lead_gap_jitter_time_and_fee";'''
@@ -4632,7 +4632,7 @@ classification = "strategy_evidence_outcome_side_label"
 reason = "This is a stable evidence label for the binary outcome side, emitted by the shared taker-signal decision math (bolt_v3_taker_signal::outcome_side_evidence_label); it records provenance and does not configure trading behavior."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"entry"'''
 context = '''const ORDER_CONFIGURATION_PREFIX_ENTRY: &str = "entry";'''
@@ -4640,7 +4640,7 @@ classification = "strategy_order_configuration_prefix"
 reason = "This labels the TOML-owned entry order section for NT order construction, not a code-owned runtime policy."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"entry_cost_missing"'''
 context = '''const ENTRY_BLOCK_REASON_ENTRY_COST_MISSING: &str = "entry_cost_missing";'''
@@ -4648,7 +4648,7 @@ classification = "strategy_entry_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"entry_gate_blocked"'''
 context = '''const ENTRY_BLOCK_REASON_ENTRY_GATE_BLOCKED: &str = "entry_gate_blocked";'''
@@ -4656,7 +4656,7 @@ classification = "strategy_entry_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"entry_order_position_side"'''
 context = '''const CONFIG_FIELD_ENTRY_ORDER_POSITION_SIDE: &str = "entry_order_position_side";'''
@@ -4664,7 +4664,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"entry_order_side"'''
 context = '''const CONFIG_FIELD_ENTRY_ORDER_SIDE: &str = "entry_order_side";'''
@@ -4672,7 +4672,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"entry_position_contract_unsupported"'''
 context = '''"entry_position_contract_unsupported";'''
@@ -4680,7 +4680,7 @@ classification = "strategy_entry_block_reason_code"
 reason = "This is a stable decision-evidence reason code for unsupported configured position contract."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"entry_price_missing"'''
 context = '''const ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING: &str = "entry_price_missing";'''
@@ -4688,7 +4688,7 @@ classification = "strategy_entry_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"entry_pricing_blocked"'''
 context = '''const ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED: &str = "entry_pricing_blocked";'''
@@ -4696,7 +4696,7 @@ classification = "strategy_entry_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"exit"'''
 context = '''const ORDER_CONFIGURATION_PREFIX_EXIT: &str = "exit";'''
@@ -4704,7 +4704,7 @@ classification = "strategy_order_configuration_prefix"
 reason = "This labels the TOML-owned exit order section for NT order construction, not a code-owned runtime policy."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"exit_already_pending"'''
 context = '''const EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING: &str = "exit_already_pending";'''
@@ -4712,7 +4712,7 @@ classification = "strategy_exit_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"entry_order_still_working"'''
 context = '''const EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING: &str = "entry_order_still_working";'''
@@ -4720,7 +4720,7 @@ classification = "strategy_exit_block_reason_code"
 reason = "This is a stable decision-evidence reason code for suppressing exits while a resting entry can still fill."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"exit_decision_unavailable"'''
 context = '''const EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE: &str = "exit_decision_unavailable";'''
@@ -4728,7 +4728,7 @@ classification = "strategy_exit_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"exit_order_config_invalid"'''
 context = '''const EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID: &str = "exit_order_config_invalid";'''
@@ -4736,7 +4736,7 @@ classification = "strategy_exit_block_reason_code"
 reason = "This is a stable decision-evidence reason code for invalid TOML-owned exit order configuration."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"exit_quote_quantity_unsupported"'''
 context = '''const EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED: &str = "exit_quote_quantity_unsupported";'''
@@ -4744,7 +4744,7 @@ classification = "strategy_exit_block_reason_code"
 reason = "This is a stable decision-evidence reason code for rejecting exit quote quantity until exit sizing owns quote-to-base conversion."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"exit_hold"'''
 context = '''const EXIT_BLOCK_REASON_EXIT_HOLD: &str = "exit_hold";'''
@@ -4752,7 +4752,7 @@ classification = "strategy_exit_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"exit_order_position_side"'''
 context = '''const CONFIG_FIELD_EXIT_ORDER_POSITION_SIDE: &str = "exit_order_position_side";'''
@@ -4760,7 +4760,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"exit_order_side"'''
 context = '''const CONFIG_FIELD_EXIT_ORDER_SIDE: &str = "exit_order_side";'''
@@ -4768,7 +4768,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"exit_price_missing"'''
 context = '''const EXIT_BLOCK_REASON_EXIT_PRICE_MISSING: &str = "exit_price_missing";'''
@@ -4776,7 +4776,7 @@ classification = "strategy_exit_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"exit_quantity_not_positive"'''
 context = '''const EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE: &str = "exit_quantity_not_positive";'''
@@ -4784,7 +4784,7 @@ classification = "strategy_exit_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"final_fee_requires_side_price_and_size_selection"'''
 context = '''"final_fee_requires_side_price_and_size_selection";'''
@@ -4792,7 +4792,7 @@ classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code for final-fee unavailability before entry selection is complete."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"final_fee_requires_side_price_size_and_actual_fill"'''
 context = '''"final_fee_requires_side_price_size_and_actual_fill";'''
@@ -4800,7 +4800,7 @@ classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code for final-fee unavailability before fill evidence exists."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"instrument_id_missing"'''
 context = '''const ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING: &str = "instrument_id_missing";'''
@@ -4808,7 +4808,7 @@ classification = "strategy_entry_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"instrument_missing_from_cache"'''
 context = '''const ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE: &str = "instrument_missing_from_cache";'''
@@ -4816,7 +4816,7 @@ classification = "strategy_entry_block_reason_code"
 reason = "This is a stable decision-evidence reason code for missing NT cache state."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"lead_quality_thresholds_applied_to_live_fast_spot_selection"'''
 context = '''"lead_quality_thresholds_applied_to_live_fast_spot_selection";'''
@@ -4824,7 +4824,7 @@ classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code stating that TOML-owned lead-quality thresholds were applied."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"forced_exit_order_side"'''
 context = '''const CONFIG_FIELD_FORCED_EXIT_ORDER_SIDE: &str = "forced_exit_order_side";'''
@@ -4832,7 +4832,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable forced-exit order side field label used in validation diagnostics; the runtime value remains TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"forced_exit_order_position_side"'''
 context = '''const CONFIG_FIELD_FORCED_EXIT_ORDER_POSITION_SIDE: &str = "forced_exit_order_position_side";'''
@@ -4840,7 +4840,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable forced-exit position side field label used in validation diagnostics; the runtime value remains TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"no_fast_venue_cleared_lead_quality_thresholds"'''
 context = '''"no_fast_venue_cleared_lead_quality_thresholds";'''
@@ -4848,7 +4848,7 @@ classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code; the lead-quality thresholds come from TOML."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"no_managed_position"'''
 context = '''const EVIDENCE_REASON_NO_MANAGED_POSITION: &str = "no_managed_position";'''
@@ -4856,7 +4856,7 @@ classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code for absent managed position state, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"no_open_position"'''
 context = '''const EXIT_BLOCK_REASON_NO_OPEN_POSITION: &str = "no_open_position";'''
@@ -4864,7 +4864,7 @@ classification = "strategy_exit_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"no_side_selected"'''
 context = '''const ENTRY_BLOCK_REASON_NO_SIDE_SELECTED: &str = "no_side_selected";'''
@@ -4872,7 +4872,7 @@ classification = "strategy_entry_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"oms_type"'''
 context = '''const CONFIG_FIELD_OMS_TYPE: &str = "oms_type";'''
@@ -4880,7 +4880,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"expire_time_unix_nanos"'''
 context = '''const ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD: &str = "expire_time_unix_nanos";'''
@@ -4888,7 +4888,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable NT order expiry field label used in validation diagnostics; the timestamp value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"trigger_price"'''
 context = '''const ORDER_TRIGGER_PRICE_FIELD: &str = "trigger_price";'''
@@ -4896,7 +4896,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable NT stop-order trigger price field label used in validation diagnostics; the price value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"activation_price"'''
 context = '''const ORDER_ACTIVATION_PRICE_FIELD: &str = "activation_price";'''
@@ -4904,7 +4904,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable NT trailing-stop activation price field label used in validation diagnostics; the price value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"trigger_type"'''
 context = '''const ORDER_TRIGGER_TYPE_FIELD: &str = "trigger_type";'''
@@ -4912,7 +4912,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable NT triggered-order trigger type field label used in validation diagnostics; the trigger type value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"trigger_instrument_id"'''
 context = '''const ORDER_TRIGGER_INSTRUMENT_ID_FIELD: &str = "trigger_instrument_id";'''
@@ -4920,7 +4920,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable NT triggered-order trigger instrument field label used in validation diagnostics; the instrument id value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"trailing_offset"'''
 context = '''const ORDER_TRAILING_OFFSET_FIELD: &str = "trailing_offset";'''
@@ -4928,7 +4928,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable NT trailing-stop offset field label used in validation diagnostics; the offset value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"trailing_offset_type"'''
 context = '''const ORDER_TRAILING_OFFSET_TYPE_FIELD: &str = "trailing_offset_type";'''
@@ -4936,7 +4936,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable NT trailing-stop offset type field label used in validation diagnostics; the offset type value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"trigger_price"'''
 context = '''price_from_config(prefix, "trigger_price", trigger_price, price_precision)'''
@@ -4944,7 +4944,7 @@ classification = "strategy_config_field_name"
 reason = "This labels the NT trigger-price field in shared price validation; the price value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"activation_price"'''
 context = '''"activation_price",'''
@@ -4952,7 +4952,7 @@ classification = "strategy_config_field_name"
 reason = "This labels the NT trailing-stop activation-price field in shared price validation; the price value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"open_position_missing"'''
 context = '''const EXIT_BLOCK_REASON_OPEN_POSITION_MISSING: &str = "open_position_missing";'''
@@ -4960,7 +4960,7 @@ classification = "strategy_exit_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"position_contract_invalid"'''
 context = '''const ENTRY_BLOCK_REASON_POSITION_CONTRACT_INVALID: &str = "position_contract_invalid";'''
@@ -4968,7 +4968,7 @@ classification = "strategy_entry_block_reason_code"
 reason = "This is a stable decision-evidence reason code for invalid TOML-owned position contract parsing."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"position_state_missing_original_fee_rate"'''
 context = '''"position_state_missing_original_fee_rate";'''
@@ -4976,7 +4976,7 @@ classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code for missing in-memory position fee-rate state."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"quantity_not_positive"'''
 context = '''const ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE: &str = "quantity_not_positive";'''
@@ -4984,7 +4984,7 @@ classification = "strategy_entry_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"quantity_rounding_failed"'''
 context = '''const ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED: &str = "quantity_rounding_failed";'''
@@ -4992,7 +4992,7 @@ classification = "strategy_entry_block_reason_code"
 reason = "This is a stable decision-evidence reason code for NT instrument quantity construction failure."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"recovery_bootstrap_position_missing_original_fee_rate"'''
 context = '''"recovery_bootstrap_position_missing_original_fee_rate";'''
@@ -5000,7 +5000,7 @@ classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code for missing recovered fee-rate state."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"sized_notional_not_positive"'''
 context = '''const ENTRY_BLOCK_REASON_SIZED_NOTIONAL_NOT_POSITIVE: &str = "sized_notional_not_positive";'''
@@ -5008,7 +5008,7 @@ classification = "strategy_entry_block_reason_code"
 reason = "This is a stable decision-evidence reason code; sizing inputs come from TOML and live book data."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"strategy_core_not_registered"'''
 context = '''const ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED: &str = "strategy_core_not_registered";'''
@@ -5016,7 +5016,7 @@ classification = "strategy_entry_block_reason_code"
 reason = "This is a stable decision-evidence reason code, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"target_selection_blocked"'''
 context = '''const SELECTION_BLOCK_REASON_TARGET_SELECTION_BLOCKED: &str = "target_selection_blocked";'''
@@ -5024,7 +5024,7 @@ classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code for blocked target selection; the policy threshold comes from TOML."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
 literal = '''"uncertainty_band_unavailable"'''
 context = '''const EVIDENCE_REASON_UNCERTAINTY_BAND_UNAVAILABLE: &str = "uncertainty_band_unavailable";'''
@@ -9358,22 +9358,6 @@ literal = '''"operator_evidence_json_sha256"'''
 context = '''const OPERATOR_EVIDENCE_JSON_SHA256_OUTPUT_FIELD: &str = "operator_evidence_json_sha256";'''
 classification = "operator_evidence_cli_output_schema"
 reason = "This is the redacted CLI output object field for the generated operator-evidence JSON artifact hash."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "string"
-literal = '''"strategies/binary_oracle_edge_taker.rs"'''
-context = '''sha256_text(include_str!("strategies/binary_oracle_edge_taker.rs"))'''
-classification = "abort_plan_source_provenance_anchor"
-reason = "This compile-time source include anchors final abort-plan provenance to the exact strategy source compiled into the binary; it is not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_tiny_canary_evidence.rs"
-kind = "string"
-literal = '''"bolt_v3_submit_admission.rs"'''
-context = '''sha256_text(include_str!("bolt_v3_submit_admission.rs"))'''
-classification = "abort_plan_source_provenance_anchor"
-reason = "This compile-time source include anchors final abort-plan provenance to the exact submit-admission source compiled into the binary; it is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_config.rs"
@@ -15248,7 +15232,7 @@ classification = '''diagnostic_template'''
 reason = '''Error-display template for the MissingPriceCeiling rejection; it carries no operator runtime value.'''
 
 [[allowed]]
-path = '''src/strategies/binary_oracle_edge_taker.rs'''
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
 kind = '''string'''
 literal = '''"bolt-v3 submit admission cannot value a quote-quantity order on an inverse instrument from the raw quote quantity (client_order_id={})"'''
 context = '''"bolt-v3 submit admission cannot value a quote-quantity order on an inverse instrument from the raw quote quantity (client_order_id={})",'''
@@ -15256,7 +15240,7 @@ classification = '''diagnostic_template'''
 reason = '''Fail-closed diagnostic for an inverse quote-quantity order; the interpolated client_order_id is computed from the typed order, not an operator runtime value.'''
 
 [[allowed]]
-path = '''src/strategies/binary_oracle_edge_taker.rs'''
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
 kind = '''string'''
 literal = '''"bolt-v3 submit admission refuses a market-style order without a structural price ceiling for client_order_id={}"'''
 context = '''"bolt-v3 submit admission refuses a market-style order without a structural price ceiling for client_order_id={}",'''
@@ -16894,3 +16878,187 @@ literal = '''64'''
 context = '''if block.forced_reduction_policy_sha256.len() != 64'''
 classification = '''sha256_hex_digest_length_guard'''
 reason = '''Fixed SHA-256 hex digest length used to validate the TOML-owned forced-reduction policy hash; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_source_integrity.rs'''
+kind = '''number'''
+literal = '''1024'''
+context = '''const TEXT_ACCESSOR_MAX_BYTES: u64 = 8 * 1024 * 1024;'''
+classification = '''source_integrity_text_accessor_bound_constant'''
+reason = '''Fixed 8 MiB in-process ceiling for the source-text accessors (no operator cap on that path); a structural safety bound, not a runtime-tunable value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_source_integrity.rs'''
+kind = '''number'''
+literal = '''8'''
+context = '''const TEXT_ACCESSOR_MAX_BYTES: u64 = 8 * 1024 * 1024;'''
+classification = '''source_integrity_text_accessor_bound_constant'''
+reason = '''Fixed 8 MiB in-process ceiling for the source-text accessors (no operator cap on that path); a structural safety bound, not a runtime-tunable value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_source_integrity.rs'''
+kind = '''string'''
+literal = '''"CARGO_MANIFEST_DIR"'''
+context = '''Path::new(env!("CARGO_MANIFEST_DIR")).join(registry_entry(key).relative_root)'''
+classification = '''source_integrity_manifest_dir_env_name'''
+reason = '''Compile-time Cargo env var naming the crate manifest dir; used to root registry-relative source paths, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_tiny_canary_evidence.rs'''
+kind = '''string'''
+literal = '''"/strategy.canonical"'''
+context = '''"/strategy.canonical"'''
+classification = '''embedded_canonical_bytes_out_dir_suffix'''
+reason = '''Fixed OUT_DIR filename suffix for the strategy root's build-emitted canonical bytes embedded via include_bytes!; a build-artifact path, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_tiny_canary_evidence.rs'''
+kind = '''string'''
+literal = '''"/submit_admission.canonical"'''
+context = '''"/submit_admission.canonical"'''
+classification = '''embedded_canonical_bytes_out_dir_suffix'''
+reason = '''Fixed OUT_DIR filename suffix for the submit_admission root's build-emitted canonical bytes embedded via include_bytes!; a build-artifact path, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_tiny_canary_evidence.rs'''
+kind = '''string'''
+literal = '''"OUT_DIR"'''
+context = '''env!("OUT_DIR"),'''
+classification = '''source_integrity_out_dir_env_name'''
+reason = '''Compile-time Cargo env var naming the build OUT_DIR where build.rs emits the embedded canonical bytes; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''let mut total: u64 = 0;'''
+classification = '''source_canonicalization_framing_constant'''
+reason = '''Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''out.sort_by(|a, b| a.0.cmp(&b.0));'''
+classification = '''source_canonicalization_framing_constant'''
+reason = '''Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''number'''
+literal = '''0x00'''
+context = '''out.push(0x00);'''
+classification = '''source_canonicalization_framing_constant'''
+reason = '''Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''file.take(max_bytes.saturating_add(1))'''
+classification = '''source_canonicalization_framing_constant'''
+reason = '''Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''total = total.saturating_add(1);'''
+classification = '''source_canonicalization_framing_constant'''
+reason = '''Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''number'''
+literal = '''8'''
+context = '''total = total.saturating_add(8);'''
+classification = '''source_canonicalization_framing_constant'''
+reason = '''Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"/"'''
+context = '''Ok(components.join("/").into_bytes())'''
+classification = '''source_canonicalization_path_separator'''
+reason = '''Canonical forward-slash path separator normalizing relative paths for OS-independent framing/ordering; a fixed structural constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"\n#[cfg(test)]\nmod tests"'''
+context = '''pub const TEST_MODULE_SPLIT_MARKER: &str = "\n#[cfg(test)]\nmod tests";'''
+classification = '''source_canonicalization_test_module_marker'''
+reason = '''The single canonical 3-line marker separating production code from the bottom test module; defined once so the production/test boundary matches the historical split byte-for-byte.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"\r\n"'''
+context = '''const CRLF_LINE_ENDING: &str = "\r\n";'''
+classification = '''source_canonicalization_line_ending_marker'''
+reason = '''Structural CRLF line-ending marker used only to normalize source text before splitting production code from the test module; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"\n"'''
+context = '''const LF_LINE_ENDING: &str = "\n";'''
+classification = '''source_canonicalization_line_ending_marker'''
+reason = '''Structural LF line-ending marker used only to normalize source text before splitting production code from the test module; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"rs"'''
+context = '''} else if file_type.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("rs")'''
+classification = '''source_canonicalization_rs_extension'''
+reason = '''Rust source file extension selecting which files the canonical source walk includes; a fixed language constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"source directory canonical stream exceeds max_source_bytes={max_bytes} bytes"'''
+context = '''"source directory canonical stream exceeds max_source_bytes={max_bytes} bytes"'''
+classification = '''source_canonicalization_diagnostic_template'''
+reason = '''Fail-closed diagnostic when the framed directory stream exceeds the caller-supplied byte cap; the interpolated value is that cap, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"source root is neither a regular file nor a directory: {}"'''
+context = '''"source root is neither a regular file nor a directory: {}",'''
+classification = '''source_canonicalization_diagnostic_template'''
+reason = '''Fail-closed diagnostic for a source root that is neither a file nor a directory; the interpolated value is the offending path, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"src/bolt_v3_submit_admission.rs"'''
+context = '''relative_root: "src/bolt_v3_submit_admission.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the submit-admission gated source file; the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"src/strategies/binary_oracle_edge_taker"'''
+context = '''relative_root: "src/strategies/binary_oracle_edge_taker",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the binary-oracle strategy source module (a directory after the A3 split); the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"strategy"'''
+context = '''pub const STRATEGY_KEY: &str = "strategy";'''
+classification = '''gated_source_registry_key'''
+reason = '''Stable registry key for the binary-oracle strategy source root; an internal registry identifier owned here, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"submit_admission"'''
+context = '''pub const SUBMIT_ADMISSION_KEY: &str = "submit_admission";'''
+classification = '''gated_source_registry_key'''
+reason = '''Stable registry key for the submit-admission source root; an internal registry identifier owned here, not an operator runtime value.'''

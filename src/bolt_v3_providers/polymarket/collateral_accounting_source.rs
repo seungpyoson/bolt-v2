@@ -15,7 +15,6 @@ use nautilus_polymarket::{
 };
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::{
     bolt_v3_operator_artifacts::{BoltV3OperatorArtifactError, json_artifact_sha256},
@@ -503,7 +502,7 @@ fn signature_type_label(value: super::PolymarketSignatureType) -> &'static str {
 }
 
 fn sha256_text(value: &str) -> String {
-    hex::encode(Sha256::digest(value.as_bytes()))
+    crate::bolt_v3_source_integrity::sha256_hex_lower(value.as_bytes())
 }
 
 #[derive(Serialize)]

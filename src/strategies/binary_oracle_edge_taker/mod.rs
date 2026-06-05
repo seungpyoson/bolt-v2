@@ -7681,6 +7681,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn validate_config_rejects_resolution_data_with_only_one_field_set() {
+        // The live Chainlink strike binding is optional, but both-or-neither: a
+        // strategy either declares BOTH `resolution_client_id` +
+        // `resolution_instrument_id` (the live strike route) or NEITHER. Setting
+        // exactly one is a fail-closed config error — a half-configured resolution
+        // route must never load, since it would leave `price_to_beat` permanently
+        // unbindable and silently disable the live strike. Mirrors the
+        // reference/signal pair guards. Baseline `valid_raw_config()` sets neither.
+        for (present, absent) in [
+            ("resolution_client_id", "resolution_instrument_id"),
+            ("resolution_instrument_id", "resolution_client_id"),
+        ] {
+            let mut raw = valid_raw_config();
+            let table = raw
+                .as_table_mut()
+                .expect("valid raw config should be a TOML table");
+            table.insert(
+                present.to_string(),
+                Value::String("RESOLUTION.SOURCE".to_string()),
+            );
+
+            let mut errors = Vec::new();
+            BinaryOracleEdgeTakerBuilder::validate_config(
+                &raw,
+                "strategies[0].config",
+                &mut errors,
+            );
+
+            assert!(
+                errors.iter().any(|error| {
+                    error.field == format!("strategies[0].config.{absent}")
+                        && error.code == "missing_resolution_data_pair"
+                }),
+                "setting only `{present}` must fail validation on missing `{absent}`: {errors:#?}"
+            );
+        }
+    }
+
     fn quote_tick(instrument_id: &str, bid: f64, ask: f64, ts_ms: u64) -> QuoteTick {
         QuoteTick::new_checked(
             InstrumentId::from(instrument_id),

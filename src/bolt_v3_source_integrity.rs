@@ -113,8 +113,17 @@ mod tests {
     // value is re-derived from the live build-emitted `OUT_DIR/strategy.canonical`
     // and independently confirmed by hand-framing the live source files
     // (`shasum -a256 OUT_DIR/strategy.canonical` == this constant).
+    //
+    // RE-DERIVED again by the #553 merge of `origin/main` into the live Chainlink
+    // strike branch: that branch adds resolution-strike code to the strategy
+    // directory (`config.rs` resolution_client_id/resolution_instrument_id fields +
+    // pair guard; `mod.rs` observe/subscribe/on_index_price + the resolution-pair
+    // fail-closed test). That is a legitimate source addition, not a fixture
+    // regeneration, so the framed DIRECTORY digest over `{config.rs, mod.rs,
+    // selection.rs}` is re-derived to this value (hand-framed canonical stream =
+    // 774_926 bytes; confirmed equal to the Rust canonicalizer by the digest tests).
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "0efe937275b3e310602d73b7e8645008d4fb2b7757ef4836bbabc10e402f6f75";
+        "df7473857d735de747b72aa2088b59c3da7dff08acc0cb391b0edd3ce8d77503";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 

@@ -10,12 +10,11 @@ use std::collections::BTreeMap;
 use crate::{
     bolt_v3_market_families::{self, FairProbabilityInputs},
     bolt_v3_numeric::{
-        BPS_DENOMINATOR, MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64, clamp_probability,
-        is_positive_finite, sanitize_probability,
+        MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64, clamp_probability, is_positive_finite,
+        sanitize_probability,
     },
     bolt_v3_taker_signal::{
-        ThetaScalerInputs, UncertaintyBandInputs, compute_theta_scaler, price_agreement_corr,
-        price_gap_probability, uncertainty_band_probability,
+        ThetaScalerInputs, compute_theta_scaler, price_agreement_corr, price_gap_probability,
     },
     bolt_v3_volatility::{RealizedVolConfig, RealizedVolEstimator},
 };
@@ -48,21 +47,6 @@ pub struct TakerPricingRequest {
     pub now_ms: u64,
     pub strike_price: Option<f64>,
     pub seconds_to_market_end: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TakerPricingSnapshotRequest {
-    pub now_ms: u64,
-    pub spot_price: Option<f64>,
-    pub strike_price: Option<f64>,
-    pub seconds_to_market_end: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TakerPricingUncertaintyBandRequest {
-    pub seconds_to_market_end: u64,
-    pub up_fee_bps: f64,
-    pub down_fee_bps: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -259,7 +243,29 @@ impl TakerPricingState {
         )
     }
 
-    pub fn theta_scaled_min_edge_bps_for(
+    pub fn seed_ready_realized_vol(
+        &mut self,
+        source_venue: Option<String>,
+        realized_vol: f64,
+        ready_ts_ms: u64,
+    ) {
+        if !is_positive_finite(realized_vol) {
+            return;
+        }
+        if self
+            .realized_vol
+            .last_ready_ts_ms
+            .is_none_or(|current_ts_ms| current_ts_ms <= ready_ts_ms)
+        {
+            self.realized_vol.last_ready_vol = Some(realized_vol);
+            self.realized_vol.last_ready_ts_ms = Some(ready_ts_ms);
+            if let Some(source_venue) = source_venue {
+                self.realized_vol_source_venue = Some(source_venue);
+            }
+        }
+    }
+
+    pub(crate) fn theta_scaled_min_edge_bps_for(
         &self,
         config: &TakerPricingConfig,
         seconds_to_market_end: Option<u64>,
@@ -279,27 +285,9 @@ impl TakerPricingState {
         config: &TakerPricingConfig,
         request: TakerPricingRequest,
     ) -> Result<TakerPricingInputs, Vec<TakerPricingBlockReason>> {
-        self.snapshot_pricing_inputs_at(
-            config,
-            TakerPricingSnapshotRequest {
-                now_ms: request.now_ms,
-                spot_price: self.spot_price(),
-                strike_price: request.strike_price,
-                seconds_to_market_end: request.seconds_to_market_end,
-            },
-        )
-    }
-
-    pub fn snapshot_pricing_inputs_at(
-        &self,
-        config: &TakerPricingConfig,
-        request: TakerPricingSnapshotRequest,
-    ) -> Result<TakerPricingInputs, Vec<TakerPricingBlockReason>> {
         let mut blocked_by = Vec::new();
 
-        let spot_price = request
-            .spot_price
-            .filter(|value| is_positive_finite(*value));
+        let spot_price = self.spot_price().filter(|value| is_positive_finite(*value));
         if spot_price.is_none() {
             blocked_by.push(TakerPricingBlockReason::SpotPriceMissing);
         }
@@ -341,15 +329,6 @@ impl TakerPricingState {
         })
     }
 
-    pub fn snapshot_pricing_at(
-        &self,
-        config: &TakerPricingConfig,
-        request: TakerPricingSnapshotRequest,
-    ) -> Result<TakerPricingResult, Vec<TakerPricingBlockReason>> {
-        let inputs = self.snapshot_pricing_inputs_at(config, request)?;
-        self.pricing_result_from_inputs(config, request.now_ms, inputs)
-    }
-
     pub fn entry_pricing_at(
         &self,
         config: &TakerPricingConfig,
@@ -357,31 +336,6 @@ impl TakerPricingState {
     ) -> Result<TakerPricingResult, Vec<TakerPricingBlockReason>> {
         let inputs = self.entry_pricing_inputs_at(config, request)?;
         self.pricing_result_from_inputs(config, request.now_ms, inputs)
-    }
-
-    pub fn uncertainty_band_probability_for(
-        &self,
-        config: &TakerPricingConfig,
-        request: TakerPricingUncertaintyBandRequest,
-    ) -> Option<f64> {
-        let time_uncertainty_probability = if config.cadence_seconds == 0 {
-            return None;
-        } else {
-            clamp_probability(
-                UNIT_F64 - request.seconds_to_market_end as f64 / config.cadence_seconds as f64,
-            )
-        };
-        let fee_uncertainty_probability =
-            clamp_probability(request.up_fee_bps.max(request.down_fee_bps) / BPS_DENOMINATOR);
-        let lead_gap_probability = self.last_lead_gap_probability?;
-        let jitter_penalty_probability = self.last_jitter_penalty_probability?;
-
-        uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability,
-            jitter_penalty_probability,
-            time_uncertainty_probability,
-            fee_uncertainty_probability,
-        })
     }
 
     fn pricing_result_from_inputs(

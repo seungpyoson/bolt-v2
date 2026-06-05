@@ -1,6 +1,6 @@
 use bolt_v2::bolt_v3_taker_pricing::{
     FastSpotObservation, TakerPricingBlockReason, TakerPricingConfig, TakerPricingRequest,
-    TakerPricingSnapshotRequest, TakerPricingState, TakerPricingUncertaintyBandRequest,
+    TakerPricingState,
 };
 use bolt_v2::bolt_v3_volatility::RealizedVolConfig;
 
@@ -81,12 +81,6 @@ fn taker_pricing_returns_current_rv_source_theta_and_fair_probabilities() {
     assert_eq!(result.realized_vol_source_venue.as_deref(), Some("bybit"));
     assert_eq!(result.realized_vol_source_ts_ms, Some(4_000));
     assert_close(result.theta_scaled_min_edge_bps, 10.0);
-    assert_close(
-        pricing
-            .theta_scaled_min_edge_bps_for(&config, Some(150))
-            .expect("theta scaler should be available for finite config"),
-        13.75,
-    );
     assert!(result.fair_probability_up > 0.5);
     assert_close(
         result.fair_probability_down,
@@ -123,66 +117,23 @@ fn taker_pricing_reports_current_readiness_blockers_without_strategy_order_state
 }
 
 #[test]
-fn taker_pricing_prices_explicit_spot_and_uncertainty_band_for_position_reuse() {
-    let mut config = pricing_config();
-    config.lead_jitter_max_ms = 10_000;
+fn taker_pricing_accepts_source_owned_realized_vol_seed_without_strategy_estimator_access() {
+    let config = pricing_config();
     let mut pricing = TakerPricingState::from_config(&config);
 
-    for (ts_ms, price) in [
-        (1_000, 3_100.0),
-        (2_000, 3_101.0),
-        (3_000, 3_102.0),
-        (4_000, 3_104.0),
-    ] {
-        observe_pair(&mut pricing, &config, ts_ms, price);
-    }
+    pricing.seed_ready_realized_vol(Some("reference".to_string()), 2.5, 1_000);
 
-    let entry_result = pricing
-        .entry_pricing_at(
-            &config,
-            TakerPricingRequest {
-                now_ms: 4_000,
-                strike_price: Some(3_100.0),
-                seconds_to_market_end: Some(300),
-            },
-        )
-        .expect("entry pricing should be ready after the RV window warms");
-
-    let explicit_result = pricing
-        .snapshot_pricing_at(
-            &config,
-            TakerPricingSnapshotRequest {
-                now_ms: 4_000,
-                spot_price: Some(entry_result.spot_price),
-                strike_price: Some(3_100.0),
-                seconds_to_market_end: Some(300),
-            },
-        )
-        .expect("explicit spot pricing should reuse the same RV and fair-value path");
-
-    assert_close(
-        explicit_result.fair_probability_up,
-        entry_result.fair_probability_up,
-    );
+    assert_eq!(pricing.current_realized_vol_at(1_000), Some(2.5));
     assert_eq!(
-        explicit_result.realized_vol_source_venue,
-        entry_result.realized_vol_source_venue,
+        pricing.current_realized_vol_source_at(1_000),
+        (Some("reference".to_string()), Some(1_000))
     );
+
+    pricing.seed_ready_realized_vol(Some("older".to_string()), 3.0, 999);
+
+    assert_eq!(pricing.current_realized_vol_at(1_000), Some(2.5));
     assert_eq!(
-        explicit_result.realized_vol_source_ts_ms,
-        entry_result.realized_vol_source_ts_ms,
+        pricing.current_realized_vol_source_at(1_000),
+        (Some("reference".to_string()), Some(1_000))
     );
-
-    let uncertainty_band = pricing
-        .uncertainty_band_probability_for(
-            &config,
-            TakerPricingUncertaintyBandRequest {
-                seconds_to_market_end: 150,
-                up_fee_bps: 100.0,
-                down_fee_bps: 200.0,
-            },
-        )
-        .expect("lead gap, jitter, time, and fee inputs should produce a band");
-
-    assert_close(uncertainty_band, 0.52);
 }

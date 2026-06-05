@@ -44,10 +44,13 @@ use crate::{
         BoltV3RuntimeReadinessSeed, BoltV3StrategyInputEvidenceSnapshot,
         compiled_order_price_source, validate_readiness_gate_evidence_snapshot,
     },
-    bolt_v3_market_families::{MarketSelectionOutcome, OutcomeSide, SelectedMarketSourceIdentity},
+    bolt_v3_market_families::{
+        self, FairProbabilityInputs, MarketSelectionOutcome, OutcomeSide,
+        SelectedMarketSourceIdentity,
+    },
     bolt_v3_numeric::{
         BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64,
-        is_non_negative_finite, is_positive_finite,
+        clamp_probability, is_non_negative_finite, is_positive_finite,
     },
     bolt_v3_operator_artifacts::EntryReadinessGateSession,
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
@@ -65,12 +68,12 @@ use crate::{
     },
     bolt_v3_taker_pricing::{
         FastSpotObservation, TakerPricingBlockReason, TakerPricingConfig, TakerPricingRequest,
-        TakerPricingSnapshotRequest, TakerPricingState as PricingState,
-        TakerPricingUncertaintyBandRequest,
+        TakerPricingState as PricingState,
     },
     bolt_v3_taker_signal::{
-        RobustSizingInputs, SideSelectionInputs, WorstCaseEvInputs, choose_entry_side,
-        choose_robust_size, compute_worst_case_ev_bps, outcome_side_evidence_label,
+        RobustSizingInputs, SideSelectionInputs, UncertaintyBandInputs, WorstCaseEvInputs,
+        choose_entry_side, choose_robust_size, compute_worst_case_ev_bps,
+        outcome_side_evidence_label, uncertainty_band_probability,
     },
     bolt_v3_volatility::{RealizedVolConfig, RealizedVolEstimator},
     strategies::registry::{
@@ -1617,16 +1620,11 @@ impl BinaryOracleEdgeTaker {
             observed_ts_ms: seed.reference_quote_ts_event,
         });
         self.active.warmup_count = self.active.warmup_count.max(self.active.warmup_target);
-        if self
-            .pricing
-            .realized_vol
-            .last_ready_ts_ms
-            .is_none_or(|ready_ts_ms| ready_ts_ms <= seed.reference_quote_ts_event)
-        {
-            self.pricing.realized_vol.last_ready_vol = Some(seed.realized_volatility);
-            self.pricing.realized_vol.last_ready_ts_ms = Some(seed.reference_quote_ts_event);
-            self.pricing.realized_vol_source_venue = Some(seed.reference_venue);
-        }
+        self.pricing.seed_ready_realized_vol(
+            Some(seed.reference_venue),
+            seed.realized_volatility,
+            seed.reference_quote_ts_event,
+        );
     }
 
     fn source_owned_readiness_seed_matches_active(
@@ -2495,14 +2493,24 @@ impl BinaryOracleEdgeTaker {
         up_fee_bps: f64,
         down_fee_bps: f64,
     ) -> Option<f64> {
-        self.pricing.uncertainty_band_probability_for(
-            &taker_pricing_config(&self.config),
-            TakerPricingUncertaintyBandRequest {
-                seconds_to_market_end: seconds_to_expiry,
-                up_fee_bps,
-                down_fee_bps,
-            },
-        )
+        let time_uncertainty_probability = if self.config.cadence_seconds == 0 {
+            return None;
+        } else {
+            clamp_probability(
+                UNIT_F64 - seconds_to_expiry as f64 / self.config.cadence_seconds as f64,
+            )
+        };
+        let fee_uncertainty_probability =
+            clamp_probability(up_fee_bps.max(down_fee_bps) / BPS_DENOMINATOR);
+        let lead_gap_probability = self.pricing.last_lead_gap_probability?;
+        let jitter_penalty_probability = self.pricing.last_jitter_penalty_probability?;
+
+        uncertainty_band_probability(&UncertaintyBandInputs {
+            lead_gap_probability,
+            jitter_penalty_probability,
+            time_uncertainty_probability,
+            fee_uncertainty_probability,
+        })
     }
 
     fn entry_evaluation_log_fields_at(
@@ -3331,18 +3339,19 @@ impl BinaryOracleEdgeTaker {
             .interval_open
             .filter(|value| is_positive_finite(*value))?;
         let seconds_to_expiry = self.current_position_seconds_to_expiry_at(now_ms)?;
-        self.pricing
-            .snapshot_pricing_at(
-                &taker_pricing_config(&self.config),
-                TakerPricingSnapshotRequest {
-                    now_ms,
-                    spot_price: Some(spot_price),
-                    strike_price: Some(strike_price),
-                    seconds_to_market_end: Some(seconds_to_expiry),
-                },
-            )
-            .ok()
-            .map(|result| result.fair_probability_up)
+        let realized_vol = self
+            .current_realized_vol_at(now_ms)
+            .filter(|value| is_positive_finite(*value))?;
+        bolt_v3_market_families::fair_probability_up_for_family(
+            &self.config.rotating_market_family,
+            &FairProbabilityInputs {
+                spot_price,
+                strike_price,
+                seconds_to_market_end: seconds_to_expiry,
+                realized_vol,
+                pricing_kurtosis: self.config.pricing_kurtosis,
+            },
+        )
     }
 
     fn current_position_uncertainty_band_probability_at(&self, now_ms: u64) -> Option<f64> {
@@ -3363,19 +3372,19 @@ impl BinaryOracleEdgeTaker {
             open_position.seconds_to_expiry_at_selection,
             now_ms,
         )?;
-        let fair_probability_up = self
-            .pricing
-            .snapshot_pricing_at(
-                &taker_pricing_config(&self.config),
-                TakerPricingSnapshotRequest {
-                    now_ms,
-                    spot_price: Some(spot_price),
-                    strike_price: Some(strike_price),
-                    seconds_to_market_end: Some(seconds_to_expiry),
-                },
-            )
-            .ok()?
-            .fair_probability_up;
+        let realized_vol = self
+            .current_realized_vol_at(now_ms)
+            .filter(|value| is_positive_finite(*value))?;
+        let fair_probability_up = bolt_v3_market_families::fair_probability_up_for_family(
+            &self.config.rotating_market_family,
+            &FairProbabilityInputs {
+                spot_price,
+                strike_price,
+                seconds_to_market_end: seconds_to_expiry,
+                realized_vol,
+                pricing_kurtosis: self.config.pricing_kurtosis,
+            },
+        )?;
         let up_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Up)?;
         let down_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Down)?;
         let uncertainty_band_probability = self.uncertainty_band_probability_for_seconds(
@@ -5485,8 +5494,11 @@ pub fn record_entry_decision_evidence_from_source(
         observed_ts_ms: source.signal_quote.observed_ts_ms,
     });
     strategy.active.warmup_count = source.warmup_count;
-    strategy.pricing.realized_vol.last_ready_vol = Some(source.realized_volatility.value);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(source.realized_volatility.ready_ts_ms);
+    strategy.pricing.seed_ready_realized_vol(
+        None,
+        source.realized_volatility.value,
+        source.realized_volatility.ready_ts_ms,
+    );
     strategy.refresh_fee_readiness();
     apply_entry_decision_source_books(&mut strategy, &source.books)?;
 

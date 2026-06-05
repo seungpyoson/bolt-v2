@@ -46,3 +46,15 @@ fn linked_worktree_head_ref_watches_common_ref_and_packed_refs() {
 
     let _ = fs::remove_dir_all(manifest_dir);
 }
+
+#[test]
+fn build_script_watches_shared_source_canonicalization_module() {
+    let build_script =
+        fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("build.rs"))
+            .expect("build script source should read");
+
+    assert!(
+        build_script.contains("cargo:rerun-if-changed=src/source_canonicalization.rs"),
+        "build.rs must rerun when the shared source registry/canonicalizer changes"
+    );
+}

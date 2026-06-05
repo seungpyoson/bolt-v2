@@ -230,8 +230,8 @@ pub fn canonical_source_set_bytes(
     relative_roots: &[&str],
     max_bytes: u64,
 ) -> io::Result<Vec<u8>> {
-    if relative_roots.len() == 1 {
-        return canonical_source_bytes(&manifest_dir.join(relative_roots[0]), max_bytes);
+    if let Some(root) = single_source_set_root(manifest_dir, relative_roots)? {
+        return canonical_source_bytes(&root, max_bytes);
     }
 
     let files = collect_source_set_files_sorted(manifest_dir, relative_roots)?;
@@ -308,8 +308,8 @@ pub fn module_source_set_text(
     relative_roots: &[&str],
     max_bytes: u64,
 ) -> io::Result<String> {
-    if relative_roots.len() == 1 {
-        return module_source_text(&manifest_dir.join(relative_roots[0]), max_bytes);
+    if let Some(root) = single_source_set_root(manifest_dir, relative_roots)? {
+        return module_source_text(&root, max_bytes);
     }
 
     let files = collect_source_set_files_sorted(manifest_dir, relative_roots)?;
@@ -380,8 +380,8 @@ pub fn production_source_set_text(
     relative_roots: &[&str],
     max_bytes: u64,
 ) -> io::Result<String> {
-    if relative_roots.len() == 1 {
-        return production_module_source_text(&manifest_dir.join(relative_roots[0]), max_bytes);
+    if let Some(root) = single_source_set_root(manifest_dir, relative_roots)? {
+        return production_module_source_text(&root, max_bytes);
     }
 
     let files = collect_source_set_files_sorted(manifest_dir, relative_roots)?;
@@ -392,6 +392,23 @@ pub fn production_source_set_text(
         text.push_str(&production_half(&file_text));
     }
     Ok(text)
+}
+
+fn single_source_set_root(
+    manifest_dir: &Path,
+    relative_roots: &[&str],
+) -> io::Result<Option<PathBuf>> {
+    if relative_roots.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "source set must contain at least one root",
+        ));
+    }
+    if relative_roots.len() == 1 {
+        source_set_relative_root_bytes(relative_roots[0])?;
+        return Ok(Some(manifest_dir.join(relative_roots[0])));
+    }
+    Ok(None)
 }
 
 fn collect_source_set_files_sorted(
@@ -660,6 +677,66 @@ mod tests {
             expected.extend_from_slice(content);
         }
         assert_eq!(digest, sha256_hex_lower(&expected));
+    }
+
+    fn append_frame(out: &mut Vec<u8>, relative: &str, content: &[u8]) {
+        out.extend_from_slice(relative.as_bytes());
+        out.push(0x00);
+        out.extend_from_slice(&(content.len() as u64).to_le_bytes());
+        out.extend_from_slice(content);
+    }
+
+    #[test]
+    fn source_set_branch_frames_multi_root_files_by_repo_relative_path() {
+        let manifest = temp_dir("source_set_multi");
+        let strategy = manifest.join("src/strategy");
+        fs::create_dir_all(&strategy).unwrap();
+        fs::write(strategy.join("b.rs"), b"strategy-b").unwrap();
+        fs::write(strategy.join("a.rs"), b"strategy-a").unwrap();
+        fs::write(manifest.join("src/shared.rs"), b"shared").unwrap();
+
+        let canonical =
+            canonical_source_set_bytes(&manifest, &["src/strategy", "src/shared.rs"], 1_000_000)
+                .unwrap();
+
+        let mut expected = Vec::new();
+        append_frame(&mut expected, "src/shared.rs", b"shared");
+        append_frame(&mut expected, "src/strategy/a.rs", b"strategy-a");
+        append_frame(&mut expected, "src/strategy/b.rs", b"strategy-b");
+        assert_eq!(canonical, expected);
+    }
+
+    #[test]
+    fn source_set_single_root_preserves_legacy_root_bytes() {
+        let manifest = temp_dir("source_set_single");
+        let root = manifest.join("src/only");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("b.rs"), b"second").unwrap();
+        fs::write(root.join("a.rs"), b"first").unwrap();
+
+        assert_eq!(
+            canonical_source_set_bytes(&manifest, &["src/only"], 1_000_000).unwrap(),
+            canonical_source_bytes(&root, 1_000_000).unwrap()
+        );
+    }
+
+    #[test]
+    fn source_set_rejects_empty_or_invalid_relative_roots() {
+        let manifest = temp_dir("source_set_invalid");
+        let absolute = manifest.join("absolute").to_string_lossy().to_string();
+
+        for roots in [
+            Vec::<&str>::new(),
+            vec![""],
+            vec![absolute.as_str()],
+            vec!["../outside"],
+            vec!["src\\strategy"],
+        ] {
+            assert!(
+                canonical_source_set_bytes(&manifest, &roots, 1_000_000).is_err(),
+                "invalid source set roots should fail: {roots:?}"
+            );
+        }
     }
 
     #[test]

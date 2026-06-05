@@ -290,7 +290,7 @@ impl OutcomePreparedBooks {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OutcomeBookSubscriptions {
     pub(crate) up_instrument_id: Option<InstrumentId>,
     pub(crate) down_instrument_id: Option<InstrumentId>,
@@ -330,6 +330,8 @@ mod tests {
     };
 
     use super::{OutcomeBookState, max_execution_within_vwap_limit};
+
+    fn assert_eq_trait<T: Eq>() {}
 
     fn book_deltas(
         instrument_id: InstrumentId,
@@ -385,6 +387,31 @@ mod tests {
     }
 
     #[test]
+    fn sell_side_vwap_cap_uses_descending_bids_and_partial_fill_math() {
+        let instrument_id = InstrumentId::from("condition-A-A-UP.POLYMARKET");
+        let mut state = OutcomeBookState::from_instrument_id(instrument_id);
+
+        state.update_from_deltas(&book_deltas(
+            instrument_id,
+            &[
+                (BookAction::Update, OrderSide::Buy, 0.40, 10.0),
+                (BookAction::Update, OrderSide::Buy, 0.50, 10.0),
+            ],
+        ));
+
+        let execution = state
+            .max_execution_within_vwap_slippage_bps(OrderSide::Sell, 600)
+            .expect("sell-side partial execution should fit at the VWAP limit");
+
+        assert!(
+            execution.quantity > 10.0 && execution.quantity < 20.0,
+            "sell cap should take the best bid and part of the next lower bid"
+        );
+        assert!((execution.quantity - (100.0 / 7.0)).abs() < 1e-9);
+        assert!((execution.vwap_price - 0.47).abs() < 1e-12);
+    }
+
+    #[test]
     fn vwap_limit_helper_accepts_single_pass_iterators_without_collecting() {
         let levels = [(0.50, 10.0), (0.60, 10.0)]
             .into_iter()
@@ -395,5 +422,10 @@ mod tests {
 
         assert_eq!(execution.quantity, 20.0);
         assert_eq!(execution.vwap_price, 0.55);
+    }
+
+    #[test]
+    fn outcome_book_subscriptions_preserves_eq_trait() {
+        assert_eq_trait::<super::OutcomeBookSubscriptions>();
     }
 }

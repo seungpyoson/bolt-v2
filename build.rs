@@ -10,7 +10,8 @@ use std::{
 // the build-time canonical bytes and the runtime digest can never drift. It
 // depends only on `std` + `sha2` + `hex` (declared in `[build-dependencies]`
 // pinned to the same versions as `[dependencies]`).
-// The build script only consumes `GATED_SOURCE_ROOTS` + `canonical_source_bytes`
+// The build script only consumes `GATED_SOURCE_ROOTS` + canonical source-set
+// bytes
 // from this shared module; the digest/text accessors are used by the lib, not
 // here, so `dead_code` is expected in the build-script compilation view.
 #[allow(dead_code)]
@@ -26,6 +27,7 @@ const BUILD_CANONICAL_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/source_canonicalization.rs");
 
     let manifest_dir = PathBuf::from(
         env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set by Cargo"),

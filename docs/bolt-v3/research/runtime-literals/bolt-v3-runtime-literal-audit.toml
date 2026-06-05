@@ -17051,25 +17051,33 @@ reason = '''Fixed framing/bound arithmetic constant in the canonical source walk
 path = '''src/source_canonicalization.rs'''
 kind = '''number'''
 literal = '''0'''
-context = '''return canonical_source_bytes(&manifest_dir.join(relative_roots[0]), max_bytes);'''
+context = '''source_set_relative_root_bytes(relative_roots[0])?;'''
 classification = '''source_canonicalization_single_root_index'''
-reason = '''Fixed first-element index used only when a registry source set has exactly one root, preserving historical single-root bytes; not an operator runtime value.'''
+reason = '''Fixed first-element index used only after a registry source set is proven to contain exactly one root, validating the historical single-root fast path; not an operator runtime value.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
 kind = '''number'''
 literal = '''0'''
-context = '''return module_source_text(&manifest_dir.join(relative_roots[0]), max_bytes);'''
+context = '''return Ok(Some(manifest_dir.join(relative_roots[0])));'''
 classification = '''source_canonicalization_single_root_index'''
-reason = '''Fixed first-element index used only when a registry source set has exactly one root, preserving historical single-root text order; not an operator runtime value.'''
+reason = '''Fixed first-element index used only after a registry source set is proven to contain exactly one root, preserving historical single-root bytes/text by returning the one validated root; not an operator runtime value.'''
 
 [[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''number'''
-literal = '''0'''
-context = '''return production_module_source_text(&manifest_dir.join(relative_roots[0]), max_bytes);'''
-classification = '''source_canonicalization_single_root_index'''
-reason = '''Fixed first-element index used only when a registry source set has exactly one root, preserving historical single-root production-text order; not an operator runtime value.'''
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"strategy source root should resolve to the registered primary root {}: {}"'''
+context = '''"strategy source root should resolve to the registered primary root {}: {}",'''
+classification = '''operator_artifact_source_integrity_error_message'''
+reason = '''Static diagnostic text for fail-closed abort-plan strategy source-set resolution; no operator runtime value is embedded.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"strategy source path {} cannot resolve a crate manifest root"'''
+context = '''"strategy source path {} cannot resolve a crate manifest root",'''
+classification = '''operator_artifact_source_integrity_error_message'''
+reason = '''Static diagnostic text for fail-closed abort-plan manifest root derivation; no operator runtime value is embedded.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''

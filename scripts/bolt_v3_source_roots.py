@@ -86,9 +86,10 @@ def source_set_files(relative_roots: tuple[str, ...]) -> list[Path]:
     ordered: list[tuple[bytes, Path]] = []
     for relative_root in relative_roots:
         root_label = _normalized_relative_root(relative_root)
+        root = REPO_ROOT / relative_root
+        root_is_file = root.is_file()
         for path in source_files(relative_root):
-            root = REPO_ROOT / relative_root
-            if root.is_file():
+            if root_is_file:
                 label = root_label
             else:
                 label = f"{root_label}/{path.relative_to(root).as_posix()}"

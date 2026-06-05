@@ -71,8 +71,9 @@ use crate::{
     },
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     bolt_v3_source_integrity::{
-        STRATEGY_KEY, canonical_module_text, canonical_source_digest, registry_module_source_text,
-        registry_root_path, registry_source_digest,
+        STRATEGY_KEY, canonical_module_source_set_text, canonical_module_text,
+        canonical_source_digest, canonical_source_set_digest, registry_relative_root,
+        registry_relative_roots,
     },
     bolt_v3_tiny_canary_evidence::{
         Phase8AbortPlanEvidenceFile, Phase8AbortPlanSourceProofs, Phase8CanaryEvidence,
@@ -6640,8 +6641,8 @@ pub fn write_abort_plan_artifact_from_source_collectors(
         submit_admission_source_path,
         max_source_bytes,
     )?;
-    // Resolve the registered strategy root through the source-set registry so
-    // collector-derived artifacts bind to the same bytes as live/final gates.
+    // Resolve the caller-provided strategy root through the source-set registry
+    // so collector-derived artifacts bind to the same bytes as live/final gates.
     let strategy_source_sha256 =
         abort_plan_strategy_source_digest(strategy_source_path, max_source_bytes).map_err(
             |source| BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceRead {
@@ -6901,32 +6902,65 @@ fn abort_plan_strategy_source_digest(
     strategy_source_path: &Path,
     max_strategy_source_bytes: u64,
 ) -> io::Result<String> {
-    if abort_plan_strategy_source_is_registered_primary_root(strategy_source_path) {
-        registry_source_digest(STRATEGY_KEY, max_strategy_source_bytes)
-    } else {
-        canonical_source_digest(strategy_source_path, max_strategy_source_bytes)
-    }
+    let manifest_dir = abort_plan_strategy_manifest_dir(strategy_source_path)?;
+    canonical_source_set_digest(
+        &manifest_dir,
+        registry_relative_roots(STRATEGY_KEY),
+        max_strategy_source_bytes,
+    )
 }
 
 fn abort_plan_strategy_source_text(
     strategy_source_path: &Path,
     max_strategy_source_bytes: u64,
 ) -> io::Result<String> {
-    if abort_plan_strategy_source_is_registered_primary_root(strategy_source_path) {
-        registry_module_source_text(STRATEGY_KEY, max_strategy_source_bytes)
-    } else {
-        canonical_module_text(strategy_source_path, max_strategy_source_bytes)
-    }
+    let manifest_dir = abort_plan_strategy_manifest_dir(strategy_source_path)?;
+    canonical_module_source_set_text(
+        &manifest_dir,
+        registry_relative_roots(STRATEGY_KEY),
+        max_strategy_source_bytes,
+    )
 }
 
-fn abort_plan_strategy_source_is_registered_primary_root(strategy_source_path: &Path) -> bool {
-    let Ok(strategy_source_path) = fs::canonicalize(strategy_source_path) else {
-        return false;
-    };
-    let Ok(registry_primary_root) = fs::canonicalize(registry_root_path(STRATEGY_KEY)) else {
-        return false;
-    };
-    strategy_source_path == registry_primary_root
+fn abort_plan_strategy_manifest_dir(strategy_source_path: &Path) -> io::Result<PathBuf> {
+    let primary_root = Path::new(registry_relative_root(STRATEGY_KEY));
+    let canonical_strategy_source_path =
+        fs::canonicalize(strategy_source_path).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "strategy source root should resolve to the registered primary root {}: {}",
+                    primary_root.display(),
+                    error
+                ),
+            )
+        })?;
+
+    if !canonical_strategy_source_path.ends_with(primary_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "strategy source path {} must end with registered primary root {}",
+                canonical_strategy_source_path.display(),
+                primary_root.display()
+            ),
+        ));
+    }
+
+    let mut manifest_dir = canonical_strategy_source_path.as_path();
+    for _component in primary_root.components() {
+        manifest_dir = manifest_dir.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "strategy source path {} cannot resolve a crate manifest root",
+                    canonical_strategy_source_path.display()
+                ),
+            )
+        })?;
+    }
+
+    Ok(manifest_dir.to_path_buf())
 }
 
 /// Lowercase-hex SHA-256 of a panic-gate source root's framed canonical byte

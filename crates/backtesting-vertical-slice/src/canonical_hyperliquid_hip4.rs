@@ -641,6 +641,8 @@ pub enum Hip4BarAggregation {
     Minute,
     Hour,
     Day,
+    Week,
+    Month,
 }
 
 impl Hip4BarAggregation {
@@ -651,6 +653,8 @@ impl Hip4BarAggregation {
             Self::Minute => B::Minute,
             Self::Hour => B::Hour,
             Self::Day => B::Day,
+            Self::Week => B::Week,
+            Self::Month => B::Month,
         }
     }
 }
@@ -931,6 +935,11 @@ pub struct Hip4BarRecord {
     pub venue: String,
     /// HL tradeable coin handle for this candle, for example `#1010`.
     pub trade_coin: String,
+    /// Candle interval token, for example `1h` or `1M`. A staged object
+    /// interleaves a coin's candles at many intervals; each `(coin, interval)` is
+    /// its own NautilusTrader bar stream, so normalization keeps only the records
+    /// matching the spec's interval.
+    pub interval: String,
     /// Candle open (start) time in Unix milliseconds.
     pub open_time: i64,
     /// Candle close time in Unix milliseconds.
@@ -966,12 +975,15 @@ pub struct Hip4BarsTable {
 }
 
 /// Normalize a JSONL `info.candleSnapshot` object into the canonical bars table
-/// for one `trade_coin`.
+/// for one `(trade_coin, interval)` bar stream.
 ///
-/// Records whose `trade_coin` differs from `spec.trade_coin` are skipped (a HIP-4
-/// staged object holds every coin's candles interleaved). Records with the wrong
-/// source family or venue, or violating OHLC integrity, are rejected. Candles are
-/// sorted ascending by open time so the NautilusTrader catalog write is monotonic.
+/// A HIP-4 staged object interleaves every coin's candles at every published
+/// interval (1m, 3m, ... 1w, 1M). Records whose `trade_coin` differs from
+/// `spec.trade_coin`, or whose `interval` differs from the spec's bar interval
+/// (its `(bar_step, bar_aggregation)`), are skipped — so one call yields exactly
+/// one NautilusTrader bar stream. Records with the wrong source family or venue,
+/// or violating OHLC integrity, are rejected. Candles are sorted ascending by
+/// open time so the NautilusTrader catalog write is monotonic.
 ///
 /// # Errors
 ///
@@ -1006,6 +1018,16 @@ pub fn normalize_hip4_bars(jsonl: &str, spec: &Hip4MarketDataSpec) -> Result<Hip
         );
 
         if record.trade_coin != spec.trade_coin {
+            continue;
+        }
+
+        // A staged object interleaves a coin's candles at many intervals; keep
+        // only those matching this spec's bar interval. The spec fully identifies
+        // ONE `(coin, interval)` bar stream, and the `(step, aggregation)` pair is
+        // a unique key for the interval token, so this can never lump intervals.
+        let (record_step, record_aggregation) = parse_hip4_bar_interval(&record.interval)
+            .with_context(|| format!("line {}: candle interval", line_no + 1))?;
+        if record_step != spec.bar_step || record_aggregation != spec.bar_aggregation {
             continue;
         }
 
@@ -1624,10 +1646,10 @@ pub fn append_hip4_trades_archive(
 /// Map a HL candle `interval` token (for example `1h`, `15m`, `1d`) to a
 /// `(bar_step, Hip4BarAggregation)` pair.
 ///
-/// The token is `<step><unit>` where unit is `m` (minute), `h` (hour), `d`
-/// (day), or `s` (second). HL also publishes `w` (week) and `M` (month)
-/// intervals, which NautilusTrader's bar vocabulary used here does not model;
-/// those fail loud rather than being silently mapped.
+/// The token is `<step><unit>` where unit is `s` (second), `m` (minute), `h`
+/// (hour), `d` (day), `w` (week), or `M` (month) — the full HL candle vocabulary,
+/// each of which NautilusTrader's [`nautilus_model::enums::BarAggregation`]
+/// models. Note `m` (minute) and `M` (month) are case-distinct, matching HL.
 ///
 /// # Errors
 ///
@@ -1653,6 +1675,8 @@ fn parse_hip4_bar_interval(interval: &str) -> Result<(usize, Hip4BarAggregation)
         "m" => Hip4BarAggregation::Minute,
         "h" => Hip4BarAggregation::Hour,
         "d" => Hip4BarAggregation::Day,
+        "w" => Hip4BarAggregation::Week,
+        "M" => Hip4BarAggregation::Month,
         other => bail!("unsupported candle interval unit {other:?} in {interval:?}"),
     };
     Ok((step, aggregation))
@@ -1662,16 +1686,18 @@ fn parse_hip4_bar_interval(interval: &str) -> Result<(usize, Hip4BarAggregation)
 /// `table=bars` JSONL object into an already-open [`ParquetDataCatalog`] — the
 /// bulk-conversion path for `Bar` data.
 ///
-/// Enumerates the distinct `(trade_coin, outcome, side)` tuples; for each, reads
-/// the candle `interval` from that coin's own records (deriving the bar
-/// step/aggregation via [`parse_hip4_bar_interval`]), derives the catalog
-/// `nt_instrument_id` from its `(outcome, side)` via the per-venue
-/// [`Hip4InstrumentNaming`] (the same URI-safe scheme the L2 snapshot family
-/// uses), and derives price/size precision from that coin's own OHLCV rows
-/// ([`hip4_spec_from_precision`]). Then reuses [`normalize_hip4_bars`] and
-/// [`Hip4BarsTable::to_bars`]. No clean-root guard. A staged object carries a
-/// single interval per the backfill contract; if a coin's records disagree on
-/// interval, that fails loud. Returns one summary per distinct coin written.
+/// Enumerates the distinct `(trade_coin, outcome, side)` tuples; for each, walks
+/// every candle `interval` that coin carries ([`hip4_bar_intervals_for_coin`])
+/// and writes one NautilusTrader bar stream per `(coin, interval)`. A staged
+/// object interleaves every coin's candles at every published interval (1m, 3m,
+/// ... 1w, 1M), so a single coin yields several bar streams — not one. Per
+/// stream: the bar step/aggregation come from the interval token
+/// ([`parse_hip4_bar_interval`]); the catalog `nt_instrument_id` comes from the
+/// coin's `(outcome, side)` via the per-venue [`Hip4InstrumentNaming`] (the same
+/// URI-safe scheme the L2 snapshot family uses); price/size precision is derived
+/// from that stream's own OHLCV rows ([`hip4_spec_from_precision`]); then reuses
+/// [`normalize_hip4_bars`] (interval-filtered) and [`Hip4BarsTable::to_bars`]. No
+/// clean-root guard. Returns one summary per `(coin, interval)` stream written.
 ///
 /// # Errors
 ///
@@ -1685,62 +1711,75 @@ pub fn append_hip4_bars_archive(
     let coins = hip4_distinct_coins(jsonl)?;
     let mut summaries = Vec::new();
     for coin in &coins {
-        let (bar_step, bar_aggregation) = hip4_bar_spec_for_coin(jsonl, &coin.trade_coin)?;
-        // Pre-pass at precision 0 to collect this coin's rows, then derive
-        // precision from the observed OHLCV decimals and rebuild at that scale.
-        let probe = hip4_spec_from_precision(coin, naming, 0, 0, bar_step, bar_aggregation);
-        let table = normalize_hip4_bars(jsonl, &probe)?;
-        let mut price_precision = 0u8;
-        let mut size_precision = 0u8;
-        for row in &table.rows {
-            for field in [&row.open, &row.high, &row.low, &row.close] {
-                price_precision = price_precision.max(decimal_places(field));
+        // Each coin carries candles at several intervals; each is its own NT bar
+        // stream (a distinct bar type), so write one per interval.
+        let intervals = hip4_bar_intervals_for_coin(jsonl, &coin.trade_coin)?;
+        for interval in &intervals {
+            let (bar_step, bar_aggregation) = parse_hip4_bar_interval(interval)?;
+            // Pre-pass at precision 0 to collect this (coin, interval)'s rows,
+            // then derive precision from the observed OHLCV decimals and rebuild.
+            let probe = hip4_spec_from_precision(coin, naming, 0, 0, bar_step, bar_aggregation);
+            let table = normalize_hip4_bars(jsonl, &probe)?;
+            let mut price_precision = 0u8;
+            let mut size_precision = 0u8;
+            for row in &table.rows {
+                for field in [&row.open, &row.high, &row.low, &row.close] {
+                    price_precision = price_precision.max(decimal_places(field));
+                }
+                size_precision = size_precision.max(decimal_places(&row.volume));
             }
-            size_precision = size_precision.max(decimal_places(&row.volume));
+            let spec = hip4_spec_from_precision(
+                coin,
+                naming,
+                price_precision,
+                size_precision,
+                bar_step,
+                bar_aggregation,
+            );
+            let bars = table.to_bars(&spec)?;
+            let record_count = bars.len();
+            catalog
+                .write_to_parquet(bars, None, None, None)
+                .with_context(|| {
+                    format!(
+                        "append HIP-4 bars for {} interval {interval}",
+                        coin.trade_coin
+                    )
+                })?;
+            summaries.push(Hip4AppendSummary {
+                nt_identifier: table.bar_type_string(&spec)?,
+                data_type: NT_DATA_TYPE_BAR.to_string(),
+                record_count,
+                price_precision,
+                size_precision,
+            });
         }
-        let spec = hip4_spec_from_precision(
-            coin,
-            naming,
-            price_precision,
-            size_precision,
-            bar_step,
-            bar_aggregation,
-        );
-        let bars = table.to_bars(&spec)?;
-        let record_count = bars.len();
-        catalog
-            .write_to_parquet(bars, None, None, None)
-            .with_context(|| format!("append HIP-4 bars for {}", coin.trade_coin))?;
-        summaries.push(Hip4AppendSummary {
-            nt_identifier: table.bar_type_string(&spec)?,
-            data_type: NT_DATA_TYPE_BAR.to_string(),
-            record_count,
-            price_precision,
-            size_precision,
-        });
     }
     ensure!(!summaries.is_empty(), "HIP-4 bars object yielded no coins");
     Ok(summaries)
 }
 
-/// Resolve the single candle `(bar_step, aggregation)` for one `trade_coin` from
-/// its records' `interval` field, failing loud if the coin's records carry more
-/// than one interval (a staged object is single-interval per the backfill
-/// contract).
+/// The distinct candle intervals carried for one `trade_coin` in a staged bars
+/// object, in deterministic (sorted) order.
+///
+/// A HIP-4 `info.candleSnapshot` object stages every interval the venue
+/// publishes (1m, 3m, ... 1w, 1M) for each coin; each is its own NautilusTrader
+/// bar stream, so the bulk converter writes one per interval. Every interval is
+/// validated against [`parse_hip4_bar_interval`] (fail loud on an unknown unit)
+/// before it becomes a stream.
 ///
 /// # Errors
 ///
-/// Returns an error if a record is not valid JSON, a record for the coin lacks an
-/// interval, the interval is unsupported, or the coin's records disagree on
-/// interval.
-fn hip4_bar_spec_for_coin(jsonl: &str, trade_coin: &str) -> Result<(usize, Hip4BarAggregation)> {
+/// Returns an error if a record is not valid JSON, an interval is unsupported, or
+/// the coin has no candles.
+fn hip4_bar_intervals_for_coin(jsonl: &str, trade_coin: &str) -> Result<Vec<String>> {
     /// Minimal projection: the coin handle and the candle interval.
     #[derive(Deserialize)]
     struct CoinInterval {
         trade_coin: String,
         interval: String,
     }
-    let mut resolved: Option<(String, (usize, Hip4BarAggregation))> = None;
+    let mut intervals: BTreeSet<String> = BTreeSet::new();
     for (line_no, line) in jsonl.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() {
@@ -1751,22 +1790,15 @@ fn hip4_bar_spec_for_coin(jsonl: &str, trade_coin: &str) -> Result<(usize, Hip4B
         if record.trade_coin != trade_coin {
             continue;
         }
-        let parsed = parse_hip4_bar_interval(&record.interval)
+        parse_hip4_bar_interval(&record.interval)
             .with_context(|| format!("line {}", line_no + 1))?;
-        match &resolved {
-            None => resolved = Some((record.interval.clone(), parsed)),
-            Some((seen_interval, _)) => ensure!(
-                *seen_interval == record.interval,
-                "coin {trade_coin} carries mixed candle intervals {:?} and {:?}; \
-                 a staged bars object must be single-interval",
-                seen_interval,
-                record.interval,
-            ),
-        }
+        intervals.insert(record.interval);
     }
-    resolved
-        .map(|(_, parsed)| parsed)
-        .with_context(|| format!("no candle interval found for coin {trade_coin}"))
+    ensure!(
+        !intervals.is_empty(),
+        "no candle interval found for coin {trade_coin}"
+    );
+    Ok(intervals.into_iter().collect())
 }
 
 #[cfg(test)]
@@ -1947,13 +1979,13 @@ mod tests {
         \"trade_side\":\"B\"}";
 
     const BARS_JSONL: &str = "{\"source_family\":\"info.candleSnapshot\",\"venue\":\"hyperliquid\",\
-        \"trade_coin\":\"#1010\",\"open_time\":1779710400000,\"close_time\":1779713999999,\
+        \"trade_coin\":\"#1010\",\"interval\":\"1h\",\"open_time\":1779710400000,\"close_time\":1779713999999,\
         \"open\":\"0.40\",\"high\":\"0.45\",\"low\":\"0.39\",\"close\":\"0.42\",\"volume\":\"125.0\"}\n\
         {\"source_family\":\"info.candleSnapshot\",\"venue\":\"hyperliquid\",\
-        \"trade_coin\":\"#1011\",\"open_time\":1779710400000,\"close_time\":1779713999999,\
+        \"trade_coin\":\"#1011\",\"interval\":\"1h\",\"open_time\":1779710400000,\"close_time\":1779713999999,\
         \"open\":\"0.60\",\"high\":\"0.61\",\"low\":\"0.55\",\"close\":\"0.58\",\"volume\":\"125.0\"}\n\
         {\"source_family\":\"info.candleSnapshot\",\"venue\":\"hyperliquid\",\
-        \"trade_coin\":\"#1010\",\"open_time\":1779706800000,\"close_time\":1779710399999,\
+        \"trade_coin\":\"#1010\",\"interval\":\"1h\",\"open_time\":1779706800000,\"close_time\":1779710399999,\
         \"open\":\"0.41\",\"high\":\"0.42\",\"low\":\"0.40\",\"close\":\"0.40\",\"volume\":\"0.0\"}";
 
     #[test]
@@ -2072,5 +2104,102 @@ mod tests {
         let err = project_hip4_trades_to_catalog(&table, &spec, dir.path())
             .expect_err("dirty root must be refused");
         assert!(err.to_string().contains("not empty"), "{err}");
+    }
+
+    /// A staged bars object for one coin across several candle intervals (1m, 1h
+    /// twice, 1w, 1M), shaped like the real `info.candleSnapshot` records.
+    fn multi_interval_bars_object() -> String {
+        [
+            ("1m", 1_779_710_400_000i64, 1_779_710_459_999i64, "0.40"),
+            ("1h", 1_779_706_800_000, 1_779_710_399_999, "0.41"),
+            ("1h", 1_779_710_400_000, 1_779_713_999_999, "0.42"),
+            ("1w", 1_779_408_000_000, 1_780_012_799_999, "0.43"),
+            ("1M", 1_777_939_200_000, 1_780_531_199_999, "0.44"),
+        ]
+        .iter()
+        .map(|(interval, open, close, o)| {
+            format!(
+                "{{\"source_family\":\"info.candleSnapshot\",\"venue\":\"hyperliquid\",\
+                 \"trade_coin\":\"#1010\",\"outcome\":101,\"side\":0,\"interval\":\"{interval}\",\
+                 \"open_time\":{open},\"close_time\":{close},\
+                 \"open\":\"{o}\",\"high\":\"0.99\",\"low\":\"0.10\",\"close\":\"0.50\",\"volume\":\"1.0\"}}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+    }
+
+    #[test]
+    fn parse_hip4_bar_interval_handles_week_and_month() {
+        // HL publishes 1w (week) and 1M (month) candles; NautilusTrader's
+        // BarAggregation models Week and Month, so these map rather than failing.
+        assert_eq!(
+            parse_hip4_bar_interval("1w").expect("week"),
+            (1, Hip4BarAggregation::Week)
+        );
+        assert_eq!(
+            parse_hip4_bar_interval("1M").expect("month"),
+            (1, Hip4BarAggregation::Month)
+        );
+        // The existing units are unchanged.
+        assert_eq!(
+            parse_hip4_bar_interval("15m").expect("minute"),
+            (15, Hip4BarAggregation::Minute)
+        );
+    }
+
+    #[test]
+    fn normalize_bars_filters_by_spec_interval() {
+        // A coin's candles at TWO intervals (1h and 5m); the spec selects 1h, so
+        // only the 1h candle belongs to that bar stream. Without an interval
+        // fence the 5m candle would leak into the 1h stream.
+        let jsonl = "{\"source_family\":\"info.candleSnapshot\",\"venue\":\"hyperliquid\",\
+            \"trade_coin\":\"#1010\",\"outcome\":101,\"side\":0,\"interval\":\"1h\",\
+            \"open_time\":1779710400000,\"close_time\":1779713999999,\
+            \"open\":\"0.40\",\"high\":\"0.45\",\"low\":\"0.39\",\"close\":\"0.42\",\"volume\":\"1.0\"}\n\
+            {\"source_family\":\"info.candleSnapshot\",\"venue\":\"hyperliquid\",\
+            \"trade_coin\":\"#1010\",\"outcome\":101,\"side\":0,\"interval\":\"5m\",\
+            \"open_time\":1779710700000,\"close_time\":1779710999999,\
+            \"open\":\"0.41\",\"high\":\"0.42\",\"low\":\"0.40\",\"close\":\"0.41\",\"volume\":\"1.0\"}";
+        // trades_spec() is the 1-HOUR spec.
+        let table = normalize_hip4_bars(jsonl, &trades_spec()).expect("normalize 1h");
+        assert_eq!(
+            table.rows.len(),
+            1,
+            "only the 1h candle is in the 1h stream"
+        );
+        assert_eq!(table.rows[0].open, "0.40");
+    }
+
+    #[test]
+    fn append_hip4_bars_archive_emits_one_stream_per_interval() {
+        // The real staged bars object carries every coin's candles at MANY
+        // intervals. The converter must emit one NT bar stream per (coin,
+        // interval) — not assume a single interval per coin (which lost ~99% of
+        // the data) — and must handle week/month units end-to-end.
+        let object = multi_interval_bars_object();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+        let summaries = append_hip4_bars_archive(&object, &hip4_canonical_naming(), &mut catalog)
+            .expect("append multi-interval bars");
+
+        // Four distinct intervals (1m, 1h, 1w, 1M) -> four bar streams, even
+        // though 1h appears twice (those two candles collapse into one stream).
+        assert_eq!(summaries.len(), 4, "one bar stream per (coin, interval)");
+        let ids: std::collections::BTreeSet<&str> =
+            summaries.iter().map(|s| s.nt_identifier.as_str()).collect();
+        assert_eq!(ids.len(), 4, "four distinct bar-type identifiers");
+
+        // Every stream round-trips through the NautilusTrader catalog (proving the
+        // Week/Month aggregation is accepted by write_to_parquet + read-back). The
+        // 1h stream carries its two candles; the rest carry one each.
+        let mut total = 0usize;
+        for summary in &summaries {
+            let loaded =
+                read_back_bars(dir.path(), &summary.nt_identifier).expect("read back bars");
+            assert_eq!(loaded.len(), summary.record_count, "summary count matches");
+            total += loaded.len();
+        }
+        assert_eq!(total, 5, "all five candles land across the four streams");
     }
 }

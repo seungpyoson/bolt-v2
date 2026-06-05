@@ -2101,12 +2101,6 @@ pub struct BinaryOracleEdgeTaker {
     /// `market_selection_rule = "active_or_next"` the configured target can
     /// select a FUTURE "Next" interval whose Chainlink report does not exist
     /// yet; a subscribe issued before that interval opens strands the strike.
-    /// The at-open subscribe is gated on `now_ms >= interval_start_ms` and keyed
-    /// here so it fires exactly once per interval — deferring before open and
-    /// (re)issuing once at open — without re-subscribing on every selection
-    /// refresh. Naturally resets when a new interval is selected (the key no
-    /// longer matches).
-    resolution_strike_subscribed_for_open_interval_ms: Option<u64>,
     #[cfg(test)]
     book_subscription_events: Vec<BookSubscriptionEvent>,
     /// Test-only observability for live-strike fetch attempts. Incremented once
@@ -2158,7 +2152,6 @@ impl BinaryOracleEdgeTaker {
             last_reported_exposure_occupancy: Cell::new(None),
             pricing,
             selection_missing_since_ms: None,
-            resolution_strike_subscribed_for_open_interval_ms: None,
             #[cfg(test)]
             book_subscription_events: Vec::new(),
             #[cfg(test)]
@@ -2182,17 +2175,19 @@ impl BinaryOracleEdgeTaker {
         self.active.apply_selection_timing(&snapshot);
         // Bind the live strike to the market's interval-open boundary.
         //
-        // Two triggers, mutually exclusive per call, both gated on an unresolved
-        // strike (`price_to_beat` is `None`):
-        //   1. Interval change — issue one subscribe the moment a new interval is
-        //      selected. For a future "Next" selection (`now < interval_open`)
-        //      the Chainlink report does not exist yet, so this attempt cannot
-        //      bind and the at-open trigger below is what ultimately resolves it.
-        //   2. At/after open — once wall-clock reaches the interval-open boundary
-        //      (`now_ms >= interval_start_ms`), (re)issue the subscribe so a
-        //      future-selected interval is not permanently stranded by its
-        //      pre-open one-shot. Keyed by `interval_start_ms` so it fires exactly
-        //      once per interval rather than on every selection refresh.
+        // Re-issue the strike subscribe whenever the strike is unresolved
+        // (`price_to_beat` is `None`) and either a new interval was just selected
+        // (the first attempt — for a future "Next" selection the Chainlink report
+        // does not exist yet, so the pre-open attempt cannot bind) or wall-clock
+        // has reached the interval-open boundary (`now_ms >= interval_start_ms`).
+        //
+        // This block runs only on the bounded selection-retry cadence (`on_start`
+        // once plus the selection-retry timer), never per market-data tick, so
+        // retrying on every open tick makes the fetch self-healing — a transient
+        // REST failure at the open second no longer strands the strike for the
+        // whole interval — without hammering the endpoint. The
+        // `price_to_beat.is_none()` guard stops the retries the moment a strike
+        // binds.
         if self.active.phase != SelectionPhase::Idle
             && let Some(interval_start_ms) = self.active.interval_start_ms
             && self.active.price_to_beat.is_none()
@@ -2200,14 +2195,8 @@ impl BinaryOracleEdgeTaker {
             let interval_changed =
                 self.active.interval_start_ms != previous_active.interval_start_ms;
             let interval_open = now_ms >= interval_start_ms;
-            let already_subscribed_at_open =
-                self.resolution_strike_subscribed_for_open_interval_ms == Some(interval_start_ms);
-            if interval_changed || (interval_open && !already_subscribed_at_open) {
+            if interval_changed || interval_open {
                 self.subscribe_resolution_strike();
-                if interval_open {
-                    self.resolution_strike_subscribed_for_open_interval_ms =
-                        Some(interval_start_ms);
-                }
             }
         }
         let reactivated_into_active =
@@ -16821,6 +16810,98 @@ mod tests {
             fetches_after_open > fetches_before_open,
             "strike fetch must be re-issued once wall-clock reaches interval open for a future-selected interval that has no strike yet \
              (before-open fetches={fetches_before_open}, after-open fetches={fetches_after_open})",
+        );
+    }
+
+    #[test]
+    fn strike_fetch_retries_each_open_tick_until_price_to_beat_binds() {
+        // F4 regression lock. When the at-open strike fetch fails to bind
+        // `price_to_beat` (transient REST error, rate-limit, or the report for the
+        // exact window-open second has not propagated yet), the strategy must keep
+        // re-issuing the fetch on subsequent selection-retry ticks while the
+        // interval stays open and `price_to_beat` is still None. The previous
+        // implementation marked the interval "subscribed at open" the instant it
+        // FIRED the fetch (not when it BOUND), so a single transient failure at the
+        // open boundary stranded `price_to_beat = None` for the whole interval and
+        // blocked every entry. This drives three retry ticks across the open
+        // boundary with no strike ever binding and asserts the fetch is re-issued on
+        // each open tick. It MUST fail until the at-open guard tracks binding
+        // success rather than fetch-issued.
+        let mut strategy = test_strategy();
+        strategy.config.resolution_instrument_id = Some(format!(
+            "{}-USD.CHAINLINK",
+            strategy.config.underlying_asset
+        ));
+        let cache = register_test_strategy(&mut strategy);
+
+        let cadence_seconds = strategy.config.cadence_seconds as i64;
+        let current_period_start = 1_746_000_000_i64;
+        let next_period_start = current_period_start + cadence_seconds;
+        let next_start_ms = next_period_start as u64 * MILLIS_PER_SECOND_U64;
+        let next_end_ms = next_start_ms + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64;
+        let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+            &strategy.config.underlying_asset,
+            &strategy.config.cadence_slug_token,
+            next_period_start,
+        );
+        let instruments = [
+            updown_binary_option(
+                "token-up.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Up",
+                next_start_ms,
+                next_end_ms,
+            ),
+            updown_binary_option(
+                "token-down.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Down",
+                next_start_ms,
+                next_end_ms,
+            ),
+        ];
+        {
+            let mut cache_mut = cache.borrow_mut();
+            for instrument in &instruments {
+                cache_mut
+                    .add_instrument(instrument.clone())
+                    .expect("test cache should accept the seeded instrument");
+            }
+        }
+
+        // Pre-open: the future Next interval is selected; one one-shot fetch fires.
+        let now_before_open_ms = current_period_start as u64 * MILLIS_PER_SECOND_U64 + 1;
+        strategy.refresh_selection_from_cache(now_before_open_ms);
+        assert!(
+            strategy.active.price_to_beat.is_none(),
+            "precondition: no live strike can exist before the interval opens",
+        );
+        let fetches_pre_open = strategy.resolution_strike_subscribe_count;
+
+        // First open tick: the at-open fetch fires but never binds (the test
+        // subscribe is a no-op that does not deliver an IndexPriceUpdate).
+        strategy.refresh_selection_from_cache(next_start_ms + 1);
+        let fetches_after_first_open_tick = strategy.resolution_strike_subscribe_count;
+        assert!(
+            fetches_after_first_open_tick > fetches_pre_open,
+            "the strike fetch must be re-issued when the interval first opens",
+        );
+        assert!(
+            strategy.active.price_to_beat.is_none(),
+            "precondition: the first at-open fetch did not bind price_to_beat",
+        );
+
+        // Second open tick (next retry-timer fire): same interval still open, strike
+        // still unbound -> the fetch MUST be re-issued again rather than stranded.
+        strategy.refresh_selection_from_cache(next_start_ms + 2);
+        let fetches_after_second_open_tick = strategy.resolution_strike_subscribe_count;
+        assert!(
+            fetches_after_second_open_tick > fetches_after_first_open_tick,
+            "strike fetch must keep retrying on each open retry tick while price_to_beat is \
+             unbound (after first open tick={fetches_after_first_open_tick}, after \
+             second={fetches_after_second_open_tick})",
         );
     }
 

@@ -20,7 +20,7 @@ Port the stranded #488 maker onto `main` as shared agnostic `bolt_v3_*` helpers 
 
 ```
 src/
-  bolt_v3_numeric.rs                  # + TWO_F64, HALF_F64, sanitize_open_probability (PR-0)
+  bolt_v3_numeric.rs                  # + TWO_F64 (ships w/ PR-2a), HALF_F64 + sanitize_open_probability (ship w/ PR-3)
   bolt_v3_quote_lifecycle.rs          # quote_lifecycle (+ LegEvent shared with maker_event_fence)
   bolt_v3_requote_budget.rs           # requote_budget (w4 cost-weighted variant)
   bolt_v3_maker_model.rs              # gm_binary_quote / gm_half_spread / inventory_skew
@@ -33,7 +33,7 @@ src/
   bolt_v3_portfolio_allocator.rs      # allocator
   bolt_v3_portfolio_risk.rs           # risk
   bolt_v3_maker_rewards.rs            # rebate accrual + phantom_lp + shaper LEDGER (family-blind)
-  bolt_v3_submit_admission.rs         # notional/fee primitive reused by reservation gate (PR-1)
+  bolt_v3_submit_admission.rs         # existing Decimal notional/fee primitive reused by reservation gate (PR-2d)
   bolt_v3_market_families/
     mod.rs                            # MarketFamilyValidationBinding += quote_targets / settle / fee_curve
     updown.rs                         # impls of the new fn-pointer fields (binary family)
@@ -50,24 +50,22 @@ Notes:
 
 ## Slice Sequencing
 
-Each slice = one PR, independently fence-green and mergeable. Re-sequenced after external review so that **no known dual-path lands on `main` even temporarily**: the admission-primitive reuse (formerly last) now precedes the reservation port, and the coarse "numeric leaves" slice is split per-module.
+Each slice = one PR, independently fence-green and mergeable. Two hard gates shape the order (FR-002 + the dual-path rule): **no slice lands an unused symbol** (the `-D warnings` `dead_code` gate forbids it) and **no slice lands a known dual-path**. Consequence: there is no standalone numeric or admission-reuse PR — each new shared symbol ships in the same slice as its first consumer, and the reservation gate reuses the existing admission primitive within its own slice.
 
-- **PR-0 — numeric prerequisite.** Add `TWO_F64`, `HALF_F64`, `sanitize_open_probability` to `bolt_v3_numeric` (verbatim from `w4-settlement`), `pub(crate)`, with tests. Unblocks every slice that imports them. No maker code.
-- **PR-1 — admission-primitive reuse (moved up; pure `main` refactor, no maker code).** `bolt_v3_submit_admission` already exposes `base_quantity_admission_notional` (`:627`) and `fee_inclusive_admission_notional` (`:747`) as `Decimal`-authoritative pub fns. **Default: documentation-only** — establish these as the single notional/fee primitive and have the reservation gate (PR-3d) call them directly, converting `f64`→`Decimal` at the boundary. **Only if a benchmark shows the boundary conversion is too costly in the requote loop** does this slice add an `f64` adapter, co-located with and documented as derived from the `Decimal` fn (BPS→multiplier = `1 + bps/10000`), with a parity test pinning `f64` ≈ `Decimal`. No speculative dead-code adapter. This slice must merge **before PR-3d** so the reservation gate never re-implements the math.
-- **PR-2 — lifecycle.** `quote_lifecycle → bolt_v3_quote_lifecycle` (lift-verbatim; ~40 tests travel). Repath `maker_event_fence`'s `LegEvent` in the same commit.
-- **PR-3 — numeric leaves, SPLIT per module (each independent, any order, each its own PR):**
-  - **3a** `maker_model → bolt_v3_maker_model` (gm_binary_quote / gm_half_spread / inventory_skew).
-  - **3b** `maker_microprice → bolt_v3_quoting` (seeds the shared quoting module that PR-4 completes). Verified independent of the cycle functions — `maker_microprice.rs` imports only `bolt_v3_numeric`, so it lands cleanly before PR-4.
-  - **3c** `requote_budget → bolt_v3_requote_budget` — port the cost-weighted **w4** variant; explicitly reject and do not port the count-based **w2** variant (state the reason in the PR body).
-  - **3d** `maker_reservation → bolt_v3_maker_reservation` — calls PR-1's primitive; the `f64` `gross_up`/`notional` re-impl is **not** ported. Depends on PR-1.
-  - **3e** `maker_governor → bolt_v3_maker_governor`.
-  - **3f** `portfolio_selection → bolt_v3_portfolio_selection` (carries the `MarketKey` newtype).
-  - **3g** `maker_reward_{shaper,phantom_lp} → bolt_v3_maker_rewards` (family-blind ledger).
-- **PR-4 — cycle-breaker (agnostic relocation, linchpin).** The only true cycle is `maker_offsets:resolve_band ↔ maker_quote:compose_binary_legs`, and **both functions are agnostic scalar math** (verified: `compose_binary_legs` at `maker_offsets.rs:122` is `f64`-only and never calls `quote_targets`/`MakerFamily`). Relocate `resolve_band` + the shared value types (`QuoteSide`, `QuoteTargetLeg`, `QuoteTargets`, `FamilyQuoteInputs`) + `compose_binary_legs` + `time_widening_factor` + `reward_shaping_offset` into the shared `bolt_v3_quoting` module (seeded by 3b). The cycle vanishes because `bolt_v3_quoting` depends on neither origin module and the strategy layer depends on it. **No trait, no fn injection, no dependency on PR-5** — this is purely agnostic. Depends on PR-3b. **Pre-flight gate:** before relocating, re-grep `compose_binary_legs` and `resolve_band` for any `MakerFamily`/`quote_targets` reference (currently zero at `maker_offsets.rs:122` / `maker_quote.rs:138`); if either ever gains a family reference, this slice instead injects the family fn as a parameter — but as verified today, it does not.
-- **PR-5 — family seam (fold).** Add `quote_targets`, settlement payout, and the binary fee-curve `fee_rate·p·(1−p)` (real on `w5-w7` `maker_reward_rebate.rs:86`) as fn-pointer fields on `MarketFamilyValidationBinding`; impl in `updown.rs`; register in `VALIDATION_BINDINGS`; add dispatchers mirroring `fair_probability_up_for_family`. Drop `trait MakerFamily`. The binary impl binds `fair_probability_up_for_family` (never re-derives `N(d2)`). The rebate **accrual** stays family-blind in `bolt_v3_maker_rewards` and calls the family curve. Depends on PR-4.
-- **PR-6 — strategy-resident consumers (repath-only).** Repath importers of the hoisted modules (`maker_inventory`, `maker_resync`, `maker_settlement`'s caller, `maker_config`, `maker_maintenance`, `maker_stale_quote`) in lockstep. Each can later hoist or stay — per-module call.
-- **PR-7 — portfolio.** `portfolio_allocator + portfolio_risk → bolt_v3_portfolio_{allocator,risk}` (repath `portfolio_selection::*` after PR-3f).
-- **Archetype — last.** Write `bolt_v3_archetypes/binary_oracle_maker.rs` once PR-1..PR-5 exist. The maker keeps its own `QuoteSide` while `market_families` owns `OutcomeSide`; the archetype is where the two are mapped, so that mapping is explicit and unit-tested here (not implicit).
+- **PR-1 — lifecycle.** `quote_lifecycle → bolt_v3_quote_lifecycle` (lift-verbatim; ~40 tests travel). Repath `maker_event_fence`'s `LegEvent` in the same commit. Imports only numeric symbols already on `main`.
+- **PR-2 — numeric leaves, SPLIT per module (each independent, any order, each its own PR):**
+  - **2a** `maker_model → bolt_v3_maker_model` (gm_binary_quote / gm_half_spread / inventory_skew). **Adds `TWO_F64` to `bolt_v3_numeric` in this slice** — `maker_model` is its first user (usage scan: maker_model ×2, maker_quote ×3), so the constant ships with a real consumer, never as dead code.
+  - **2b** `maker_microprice → bolt_v3_quoting` (seeds the shared quoting module that PR-3 completes). Verified independent of the cycle functions — `maker_microprice.rs` imports only `bolt_v3_numeric`, so it lands cleanly before PR-3.
+  - **2c** `requote_budget → bolt_v3_requote_budget` — port the cost-weighted **w4** variant; explicitly reject and do not port the count-based **w2** variant (state the reason in the PR body).
+  - **2d** `maker_reservation → bolt_v3_maker_reservation` — calls `main`'s existing `Decimal` `base_quantity_admission_notional`/`fee_inclusive_admission_notional` (converting `f64`→`Decimal` at the boundary); the `f64` `gross_up`/`notional` re-impl is **not** ported, so the dual-path never lands. No new shared symbol.
+  - **2e** `maker_governor → bolt_v3_maker_governor`.
+  - **2f** `portfolio_selection → bolt_v3_portfolio_selection` (carries the `MarketKey` newtype).
+  - **2g** `maker_reward_{shaper,phantom_lp} → bolt_v3_maker_rewards` (family-blind ledger).
+- **PR-3 — cycle-breaker (agnostic relocation, linchpin).** The only true cycle is `maker_offsets:resolve_band ↔ maker_quote:compose_binary_legs`, and **both functions are agnostic scalar math** (verified: `compose_binary_legs` at `maker_offsets.rs:122` is `f64`-only and never calls `quote_targets`/`MakerFamily`). Relocate `resolve_band` + the shared value types (`QuoteSide`, `QuoteTargetLeg`, `QuoteTargets`, `FamilyQuoteInputs`) + `compose_binary_legs` + `time_widening_factor` + `reward_shaping_offset` into the shared `bolt_v3_quoting` module (seeded by 2b). **Adds `HALF_F64` + `sanitize_open_probability` to `bolt_v3_numeric` in this slice** — `compose_binary_legs`/`maker_offsets` is their first user (usage scan: maker_offsets ×3 / ×5), so they ship with a real consumer. The cycle vanishes because `bolt_v3_quoting` depends on neither origin module and the strategy layer depends on it. **No trait, no fn injection, no dependency on PR-4** — this is purely agnostic. Depends on PR-2b. **Pre-flight gate:** before relocating, re-grep `compose_binary_legs` and `resolve_band` for any `MakerFamily`/`quote_targets` reference (currently zero at `maker_offsets.rs:122` / `maker_quote.rs:138`); if either ever gains a family reference, this slice instead injects the family fn as a parameter — but as verified today, it does not.
+- **PR-4 — family seam (fold).** Add `quote_targets`, settlement payout, and the binary fee-curve `fee_rate·p·(1−p)` (real on `w5-w7` `maker_reward_rebate.rs:86`) as fn-pointer fields on `MarketFamilyValidationBinding`; impl in `updown.rs`; register in `VALIDATION_BINDINGS`; add dispatchers mirroring `fair_probability_up_for_family`. Drop `trait MakerFamily`. The binary impl binds `fair_probability_up_for_family` (never re-derives `N(d2)`). The rebate **accrual** stays family-blind in `bolt_v3_maker_rewards` and calls the family curve. Depends on PR-3.
+- **PR-5 — strategy-resident consumers (repath-only).** Repath importers of the hoisted modules (`maker_inventory`, `maker_resync`, `maker_settlement`'s caller, `maker_config`, `maker_maintenance`, `maker_stale_quote`) in lockstep. Each can later hoist or stay — per-module call.
+- **PR-6 — portfolio.** `portfolio_allocator + portfolio_risk → bolt_v3_portfolio_{allocator,risk}` (repath `portfolio_selection::*` after PR-2f).
+- **Archetype — last.** Write `bolt_v3_archetypes/binary_oracle_maker.rs` once PR-1..PR-4 exist. The maker keeps its own `QuoteSide` while `market_families` owns `OutcomeSide`; the archetype is where the two are mapped, so that mapping is explicit and unit-tested here (not implicit).
 
 ## Port-Source Matrix
 
@@ -93,13 +91,13 @@ Each slice = one PR, independently fence-green and mergeable. Re-sequenced after
 
 ## Risks
 
-- **Cycle mis-split (PR-4).** If value types are left behind, the back-edge stays cross-module. Mitigation: relocate the types *with* both (agnostic) functions in one slice; the dependency fence verifies no cross-module back-edge remains.
+- **Cycle mis-split (PR-3).** If value types are left behind, the back-edge stays cross-module. Mitigation: relocate the types *with* both (agnostic) functions in one slice; the dependency fence verifies no cross-module back-edge remains.
 - **Legacy-test drift (all port slices).** A ported test may not be green against `main` because its origin branch is 150–450 commits behind (renamed symbols, changed signatures). Mitigation: the GREEN step reconciles each test against the current baseline; never assume origin-branch greenness.
 - **Test loss in the move.** Mitigation: the per-slice gate forbids a body landing without its test; count tests before/after.
-- **Fold scope creep (PR-5).** Only `quote_targets` + settlement + fee-curve fold; rebate accrual stays family-blind. Mitigation: spec FR-004 names the exact members.
-- **Stateful family later (PR-5, deferred).** The fn-pointer fold is stateless-only. If a future family needs per-instance state, it is added by threading a state-carrying input struct through the binding fn (à la `FairProbabilityInputs`), never a raw pointer or a reverted trait (spec FR-011). No raw `c_void`/pointer field is added speculatively.
-- **`requote_budget` variant collision.** Two variants exist (w2 count-based, w4 cost-weighted). Mitigation: port the w4 cost-weighted one (PR-3c); reject the other explicitly in the PR body.
-- **Admission `f64`/`Decimal` parity (PR-1).** If an `f64` reservation face is added, it could drift from the `Decimal` authority. Mitigation: co-locate it, derive it from the `Decimal` fn, and pin a parity test; prefer calling the `Decimal` fn directly unless a benchmark forces the `f64` face.
+- **Fold scope creep (PR-4).** Only `quote_targets` + settlement + fee-curve fold; rebate accrual stays family-blind. Mitigation: spec FR-004 names the exact members.
+- **Stateful family later (PR-4, deferred).** The fn-pointer fold is stateless-only. If a future family needs per-instance state, it is added by threading a state-carrying input struct through the binding fn (à la `FairProbabilityInputs`), never a raw pointer or a reverted trait (spec FR-011). No raw `c_void`/pointer field is added speculatively.
+- **`requote_budget` variant collision.** Two variants exist (w2 count-based, w4 cost-weighted). Mitigation: port the w4 cost-weighted one (PR-2c); reject the other explicitly in the PR body.
+- **Admission `f64`/`Decimal` parity (PR-2d).** If an `f64` reservation face is ever added, it could drift from the `Decimal` authority. Mitigation: default is to call the `Decimal` fn directly at the boundary; an `f64` face is added only under a benchmark, co-located and derived from the `Decimal` fn with a parity test.
 - **Concurrent worktree churn.** Many active worktrees touch shared files (`bolt_v3_numeric.rs`, `strategies/mod.rs`). Mitigation: small slices, serialize shared-file edits, CI authoritative.
 
 ## Complexity Tracking
@@ -107,6 +105,6 @@ Each slice = one PR, independently fence-green and mergeable. Re-sequenced after
 | Concern | Status |
 |---|---|
 | New shared modules created | ~11 (see layout) |
-| Genuine dual-paths | 1 (`submit_admission` reservation re-impl) — prevented from ever landing: reuse slice PR-1 precedes the reservation port (PR-3d) |
-| Second dispatch mechanism removed | 1 (`trait MakerFamily` → fn-pointer fields, PR-5) |
+| Genuine dual-paths | 1 (`submit_admission` reservation re-impl) — prevented from ever landing: the reservation port (PR-2d) calls main's existing `Decimal` primitive directly; the `f64` re-impl is never ported |
+| Second dispatch mechanism removed | 1 (`trait MakerFamily` → fn-pointer fields, PR-4) |
 | Behavior change | none (port preserves behavior; CI + traveling tests prove it) |

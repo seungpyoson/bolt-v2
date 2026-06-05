@@ -56,7 +56,8 @@ use backtesting_vertical_slice::canonical_hyperliquid_core::append_hyperliquid_c
 use backtesting_vertical_slice::canonical_hyperliquid_hip3::append_hyperliquid_hip3_bars_archive;
 use backtesting_vertical_slice::canonical_hyperliquid_hip4::{
     append_hip4_bars_archive, append_hip4_bars_archive_batch, append_hip4_snapshots_archive,
-    append_hip4_trades_archive, append_hip4_trades_archive_batch, hip4_canonical_naming,
+    append_hip4_snapshots_archive_batch, append_hip4_trades_archive,
+    append_hip4_trades_archive_batch, hip4_canonical_naming,
 };
 use backtesting_vertical_slice::canonical_okx::{
     append_okx_book_archive, append_okx_candlesticks_archive, append_okx_trades_archive,
@@ -705,6 +706,7 @@ fn is_batch_family(venue: &str, family: &str) -> bool {
         ("bybit", "mark_price_kline_1m")
             | ("hyperliquid-hip4", "trades_recent")
             | ("hyperliquid-hip4", "bars")
+            | ("hyperliquid-hip4", "order_book_snapshots_fixed_depth")
     )
 }
 
@@ -750,6 +752,19 @@ fn convert_batch_family(
                     .with_context(|| {
                         format!(
                             "convert hyperliquid-hip4 bars batch ({} objects)",
+                            batch.len()
+                        )
+                    })?;
+            let records = converted.iter().map(|s| s.record_count).sum();
+            let instruments = converted.into_iter().map(|s| s.nt_identifier).collect();
+            (records, instruments)
+        }
+        ("hyperliquid-hip4", "order_book_snapshots_fixed_depth") => {
+            let converted =
+                append_hip4_snapshots_archive_batch(batch, &hip4_canonical_naming(), catalog)
+                    .with_context(|| {
+                        format!(
+                            "convert hyperliquid-hip4 snapshots batch ({} objects)",
                             batch.len()
                         )
                     })?;

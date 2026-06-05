@@ -1455,6 +1455,111 @@ pub fn append_hip4_snapshots_archive(
     Ok(summaries)
 }
 
+/// Append every outcome's book photos from SEVERAL staged
+/// `order_book_snapshots_fixed_depth` objects into an already-open
+/// [`ParquetDataCatalog`], deduplicating photos by `snapshot_time` per outcome
+/// across all objects.
+///
+/// Like trades and bars, a future overlapping capture would re-stage the same
+/// outcome's photo at a shared `snapshot_time` across `run=` partitions; each
+/// photo expands to deltas at that time, so per-object writes overlap and
+/// NautilusTrader's `write_to_parquet` rejects the non-disjoint second write.
+/// This collects every object's photos keyed by `(outcome, snapshot_time)` so
+/// duplicates collapse, takes the max precision per outcome across all objects,
+/// then writes one ascending `OrderBookDelta` stream per outcome. The snapshots
+/// analogue of [`append_hip4_trades_archive_batch`].
+///
+/// A `snapshot_time` seen twice for one outcome with disagreeing levels is
+/// corrupt and fails loud rather than silently keeping last-seen.
+///
+/// # Errors
+///
+/// Returns an error if an object is not UTF-8 or valid JSON, a duplicate photo
+/// disagrees, a photo produces no deltas, table validation fails, or a catalog
+/// write fails.
+pub fn append_hip4_snapshots_archive_batch(
+    objects: &[(String, Vec<u8>)],
+    naming: &Hip4InstrumentNaming,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<Hip4AppendSummary>> {
+    // instrument id -> (ts_event -> photo); the inner BTreeMap dedups by the
+    // per-outcome unique snapshot time and keeps photos ascending. instrument id
+    // -> (price_prec, size_prec) takes the max precision observed across objects.
+    let mut photos_by_instrument: BTreeMap<String, BTreeMap<u64, Hip4InstrumentSnapshot>> =
+        BTreeMap::new();
+    let mut prec_by_instrument: BTreeMap<String, (u8, u8)> = BTreeMap::new();
+
+    for (object_key, bytes) in objects {
+        let jsonl = std::str::from_utf8(bytes)
+            .with_context(|| format!("HIP-4 snapshot object {object_key} is not UTF-8"))?;
+        let table = parse_hip4_snapshots(jsonl, naming)?;
+        for instrument in table.instruments {
+            let prec = prec_by_instrument
+                .entry(instrument.nt_instrument_id.clone())
+                .or_insert((0, 0));
+            prec.0 = prec.0.max(instrument.price_precision);
+            prec.1 = prec.1.max(instrument.size_precision);
+            let dedup = photos_by_instrument
+                .entry(instrument.nt_instrument_id.clone())
+                .or_default();
+            for photo in instrument.snapshots {
+                let key = photo.ts_event.as_u64();
+                if let Some(existing) = dedup.get(&key) {
+                    ensure!(
+                        existing == &photo,
+                        "outcome {} snapshot_time {} disagrees on levels across overlapping objects",
+                        instrument.nt_instrument_id,
+                        key,
+                    );
+                    continue;
+                }
+                dedup.insert(key, photo);
+            }
+        }
+    }
+
+    let mut summaries = Vec::new();
+    for (nt_instrument_id, photos_map) in photos_by_instrument {
+        let (price_precision, size_precision) = prec_by_instrument
+            .remove(&nt_instrument_id)
+            .expect("instrument has a precision template");
+        // The dedup map is keyed by ts_event, so the photos are already ascending.
+        let snapshots: Vec<Hip4InstrumentSnapshot> = photos_map.into_values().collect();
+        let instrument = Hip4InstrumentSnapshots {
+            nt_instrument_id: nt_instrument_id.clone(),
+            price_precision,
+            size_precision,
+            snapshots,
+        };
+        let deltas = snapshots_to_deltas(&instrument)?;
+        ensure!(
+            !deltas.is_empty(),
+            "instrument {nt_instrument_id} produced no deltas",
+        );
+        let record_count = deltas.len();
+        // Keep this instrument's deltas in a single encoder chunk so the per-chunk
+        // precision metadata stays consistent (see append_hip4_snapshots_archive).
+        catalog.batch_size = catalog.batch_size.max(record_count);
+        catalog
+            .write_to_parquet(deltas, None, None, None)
+            .with_context(|| {
+                format!("append deduplicated HIP-4 order book deltas for {nt_instrument_id}")
+            })?;
+        summaries.push(Hip4AppendSummary {
+            nt_identifier: nt_instrument_id,
+            data_type: NT_DATA_TYPE_ORDER_BOOK_DELTA.to_string(),
+            record_count,
+            price_precision,
+            size_precision,
+        });
+    }
+    ensure!(
+        !summaries.is_empty(),
+        "HIP-4 snapshots batch yielded no outcomes"
+    );
+    Ok(summaries)
+}
+
 /// One distinct tradeable HIP-4 coin in a staged trades/bars object: the HL-native
 /// handle (the per-coin fence) plus the `(outcome, side)` integers that resolve
 /// its catalog id.
@@ -2653,6 +2758,103 @@ mod tests {
         ];
         let err = append_hip4_bars_archive_batch(&batch, &hip4_canonical_naming(), &mut catalog)
             .expect_err("disagreeing duplicate open_time must fail loud");
+        assert!(err.to_string().contains("disagree"), "{err}");
+    }
+
+    /// A staged `order_book_snapshots_fixed_depth` object for outcome `7` with the
+    /// given `snapshot_time`s (one bid + one ask level each, fixed). Shared times
+    /// across objects are identical photos (dedup-safe).
+    fn snapshot_object(times: &[i64]) -> String {
+        times
+            .iter()
+            .map(|t| {
+                format!(
+                    "{{\"source_family\":\"info.l2Book\",\"venue\":\"hyperliquid\",\
+                     \"quote_token\":\"USDC\",\"trade_coin\":\"#1\",\"outcome\":7,\
+                     \"snapshot_time\":{t},\"raw_levels\":[[{{\"px\":\"0.43\",\"sz\":\"22.0\",\"n\":1}}],\
+                     [{{\"px\":\"0.50\",\"sz\":\"978.0\",\"n\":2}}]],\
+                     \"bid_level_count\":1,\"ask_level_count\":1}}"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn hip4_snapshots_batch_dedups_shared_snapshot_time_per_outcome() {
+        // Two objects for the same outcome with a shared snapshot_time (t2). Each
+        // photo expands to deltas at its snapshot time, so per-object writes
+        // overlap in time and NautilusTrader rejects the second; the batch dedups
+        // by (outcome, snapshot_time) into one ascending delta stream.
+        let (t1, t2, t3) = (1_780_331_396_000i64, 1_780_331_397_000, 1_780_331_398_000);
+        let object_a = snapshot_object(&[t1, t2]);
+        let object_b = snapshot_object(&[t2, t3]);
+
+        // Baseline: per-object writes collide on the overlapping snapshot range.
+        {
+            let dir = tempfile::TempDir::new().expect("temp dir");
+            let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+            append_hip4_snapshots_archive(&object_a, &hip4_canonical_naming(), &mut catalog)
+                .expect("first object writes");
+            let err =
+                append_hip4_snapshots_archive(&object_b, &hip4_canonical_naming(), &mut catalog)
+                    .expect_err("overlapping second object must collide");
+            let chain = format!("{err:#}").to_lowercase();
+            assert!(
+                chain.contains("disjoint") || chain.contains("interval"),
+                "expected a non-disjoint-intervals rejection, got: {err:#}"
+            );
+        }
+
+        // Batch: dedup by (outcome, snapshot_time), one disjoint write per outcome.
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+        let batch = vec![
+            ("a.jsonl".to_string(), object_a.into_bytes()),
+            ("b.jsonl".to_string(), object_b.into_bytes()),
+        ];
+        let summaries =
+            append_hip4_snapshots_archive_batch(&batch, &hip4_canonical_naming(), &mut catalog)
+                .expect("batch append");
+        assert_eq!(summaries.len(), 1, "one outcome instrument");
+
+        // Three deduped photos {t1,t2,t3}; each non-empty photo -> Clear + 1 bid
+        // Add + 1 ask Add = 3 deltas. Union dedups t2 (3 photos, not 4 -> 9 deltas,
+        // not 12).
+        assert_eq!(summaries[0].record_count, 9, "deduped 3 photos x 3 deltas");
+        let loaded = read_back_order_book_deltas(dir.path(), &summaries[0].nt_identifier)
+            .expect("read back");
+        assert_eq!(loaded.len(), 9);
+        let times: std::collections::BTreeSet<u64> =
+            loaded.iter().map(|d| d.ts_event.as_u64()).collect();
+        assert_eq!(times.len(), 3, "three distinct snapshot times (t2 deduped)");
+        let mut prev = 0u64;
+        for delta in &loaded {
+            let ts = delta.ts_event.as_u64();
+            assert!(ts >= prev, "ascending ts");
+            prev = ts;
+        }
+    }
+
+    #[test]
+    fn hip4_snapshots_batch_fails_loud_on_disagreeing_snapshot_time() {
+        // Same (outcome, snapshot_time) with different levels across objects is
+        // corrupt; fail loud rather than silently keeping last-seen.
+        let object_a = snapshot_object(&[1_780_331_397_000]);
+        let object_b = "{\"source_family\":\"info.l2Book\",\"venue\":\"hyperliquid\",\
+            \"quote_token\":\"USDC\",\"trade_coin\":\"#1\",\"outcome\":7,\
+            \"snapshot_time\":1780331397000,\"raw_levels\":[[{\"px\":\"0.88\",\"sz\":\"5.0\",\"n\":1}],\
+            [{\"px\":\"0.91\",\"sz\":\"7.0\",\"n\":1}]],\"bid_level_count\":1,\"ask_level_count\":1}"
+            .to_string();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+        let batch = vec![
+            ("a.jsonl".to_string(), object_a.into_bytes()),
+            ("b.jsonl".to_string(), object_b.into_bytes()),
+        ];
+        let err =
+            append_hip4_snapshots_archive_batch(&batch, &hip4_canonical_naming(), &mut catalog)
+                .expect_err("disagreeing duplicate snapshot_time must fail loud");
         assert!(err.to_string().contains("disagree"), "{err}");
     }
 }

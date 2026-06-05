@@ -9,6 +9,8 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+/// Absolute sanity bound for static contract-sourced fee or rebate rates.
+/// Positive values are fees; negative values are rebates.
 pub const STATIC_FEE_BPS_ABSOLUTE_LIMIT: u32 = 10_000;
 
 pub const STREAM_CLASS_QUOTES: &str = "quotes";
@@ -106,6 +108,8 @@ pub enum MaintenancePolicy {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Weekday {
+    // Keep this schema-owned enum stable instead of inheriting chrono's wire
+    // representation for contract TOML.
     Monday,
     Tuesday,
     Wednesday,
@@ -177,9 +181,13 @@ pub struct FeeSchedule {
     pub taker_fee_rate_source: FeeRateSource,
     /// Settlement/fee currency used by this venue adapter.
     pub settlement_currency: String,
-    /// Static maker fee rate in basis points when sourced from the contract.
+    /// Static maker fee or rebate rate in basis points when sourced from the
+    /// contract. Positive values are fees, negative values are rebates, and
+    /// magnitude is capped by `STATIC_FEE_BPS_ABSOLUTE_LIMIT`.
     pub maker_fee_bps: Option<i32>,
-    /// Static taker fee rate in basis points when sourced from the contract.
+    /// Static taker fee or rebate rate in basis points when sourced from the
+    /// contract. Positive values are fees, negative values are rebates, and
+    /// magnitude is capped by `STATIC_FEE_BPS_ABSOLUTE_LIMIT`.
     pub taker_fee_bps: Option<i32>,
 }
 
@@ -451,13 +459,17 @@ impl VenueContract {
         }
 
         let depth_stream_class = self.depth_availability.book_depth_source.stream_class();
-        let depth_stream = self.streams.get(depth_stream_class);
+        let Some(depth_stream) = self.streams.get(depth_stream_class) else {
+            anyhow::bail!(
+                "depth_availability.book_depth_source references missing stream {depth_stream_class}"
+            );
+        };
         ensure!(
-            depth_stream.is_some_and(|stream| stream.capability != Capability::Unsupported),
+            depth_stream.capability != Capability::Unsupported,
             "depth_availability.book_depth_source references unsupported stream {depth_stream_class}"
         );
         ensure!(
-            depth_stream.is_some_and(|stream| stream.policy != Policy::Disabled),
+            depth_stream.policy != Policy::Disabled,
             "depth_availability.book_depth_source references disabled stream {depth_stream_class}"
         );
 

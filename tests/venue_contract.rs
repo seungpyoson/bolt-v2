@@ -333,7 +333,7 @@ fn rejects_previous_schema_before_full_contract_parse() {
 }
 
 #[test]
-fn rejects_missing_schema_version_before_full_contract_parse() {
+fn rejects_missing_schema_version() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("missing-schema-version.toml");
     std::fs::write(&path, contract_text_without_line("schema_version")).unwrap();
@@ -341,7 +341,7 @@ fn rejects_missing_schema_version_before_full_contract_parse() {
     let err = VenueContract::load_and_validate(&path).unwrap_err();
     assert!(
         err.to_string().contains("missing field `schema_version`"),
-        "schema envelope must fail closed before full contract parsing, got: {err}"
+        "contract must fail closed without an explicit schema version, got: {err}"
     );
 }
 
@@ -624,7 +624,7 @@ fn rejects_malformed_maintenance_start_time() {
 
 #[test]
 fn rejects_maintenance_start_time_boundaries() {
-    for bad_time in ["24:00", "23:60", "1:02"] {
+    for bad_time in ["24:00", "23:60", "1:02", "12:5", "2a:00", "12:a0"] {
         let mut contract = make_contract(base_polymarket_streams());
         contract.maintenance_window.policy = MaintenancePolicy::Scheduled;
         contract.maintenance_window.pull_before_start_seconds = 60;
@@ -644,6 +644,21 @@ fn rejects_maintenance_start_time_boundaries() {
             "maintenance start time {bad_time} must fail closed, got: {err}"
         );
     }
+}
+
+#[test]
+fn rejects_depth_source_missing_stream_contract() {
+    let mut streams = base_polymarket_streams();
+    streams.remove("order_book_deltas");
+    let contract = make_contract(streams);
+
+    let err = contract.validate().unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "depth_availability.book_depth_source references missing stream order_book_deltas"
+        ),
+        "depth source must require an explicit stream contract, got: {err}"
+    );
 }
 
 #[test]

@@ -290,12 +290,16 @@ pub enum AcceptanceError {
     ForbiddenClaimMissing,
     /// The proof referenced by the dataset is not accepted.
     ProofNotAccepted(SourceProofStatus),
+    /// A rejected proof cannot satisfy acceptance invariants.
+    ProofRejected,
     /// The manifest payload record lacks a required field.
     ManifestRecordIncomplete(&'static str),
     /// The verified object hash does not match the manifest record hash.
     ContentHashMismatch { expected: String, actual: String },
     /// The selected object lies outside the proof's proven coverage window.
     OutsideCoverage { object_date: String },
+    /// The proof coverage window is not contained by the requested window.
+    CoverageOutsideRequested,
     /// Acceptance was attempted on a proof whose status is not `Pending`, so an
     /// already-rejected (or already-accepted) record cannot be silently promoted.
     NotPending(SourceProofStatus),
@@ -330,6 +334,7 @@ impl std::fmt::Display for AcceptanceError {
             Self::ProofNotAccepted(status) => {
                 write!(f, "source proof is not accepted (status: {status:?})")
             }
+            Self::ProofRejected => write!(f, "rejected source proof cannot be accepted"),
             Self::ManifestRecordIncomplete(field) => {
                 write!(f, "ingest manifest record incomplete: {field}")
             }
@@ -344,6 +349,9 @@ impl std::fmt::Display for AcceptanceError {
                     f,
                     "object date {object_date} outside proven coverage window"
                 )
+            }
+            Self::CoverageOutsideRequested => {
+                write!(f, "coverage window extends outside requested proof window")
             }
             Self::NotPending(status) => {
                 write!(
@@ -429,7 +437,11 @@ impl SourceProofReport {
     ///
     /// Returns the first blocking [`AcceptanceError`].
     pub fn evaluate_acceptance(&self) -> Result<(), AcceptanceError> {
+        if self.status == SourceProofStatus::Rejected {
+            return Err(AcceptanceError::ProofRejected);
+        }
         self.check_required_identity()?;
+        ensure_coverage_within_requested(&self.requested_time_range, &self.coverage_time_range)?;
         if self.nt_mapping_status != NtMappingStatus::Accepted {
             return Err(AcceptanceError::NtMappingNotAccepted(
                 self.nt_mapping_status,
@@ -538,17 +550,21 @@ impl IngestManifestObjectRecord {
 /// hash-verified, in-coverage manifest object record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedDataset {
-    pub source_proof_id: String,
-    pub source_proof_version: u32,
-    pub source_binding: String,
-    pub venue: String,
-    pub product_family: String,
-    pub product_category: String,
-    pub instrument_universe_id: String,
-    pub fidelity_class: SourceProofFidelityClass,
-    pub forbidden_claims: Vec<String>,
-    pub object: IngestManifestObjectRecord,
+    pub(crate) source_proof_id: String,
+    pub(crate) source_proof_version: u32,
+    pub(crate) source_binding: String,
+    pub(crate) venue: String,
+    pub(crate) product_family: String,
+    pub(crate) product_category: String,
+    pub(crate) instrument_universe_id: String,
+    pub(crate) fidelity_class: SourceProofFidelityClass,
+    pub(crate) forbidden_claims: Vec<String>,
+    pub(crate) object: IngestManifestObjectRecord,
+    _accepted_gate: AcceptedGate,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AcceptedGate;
 
 /// Select an accepted dataset for backtest input.
 ///
@@ -583,15 +599,17 @@ pub fn select_accepted_dataset(
             actual: verified_object_sha256.to_string(),
         });
     }
+    if object.sha256 != proof.raw_sample_hash {
+        return Err(AcceptanceError::ContentHashMismatch {
+            expected: proof.raw_sample_hash.clone(),
+            actual: object.sha256.clone(),
+        });
+    }
 
-    // Bind the object to the proof's source: the object's own provenance URL must
-    // name the proof's venue, so an object from another venue cannot be admitted
-    // under this proof.
-    if !object
-        .source_url
-        .to_ascii_lowercase()
-        .contains(&proof.venue.to_ascii_lowercase())
-    {
+    // Bind the object to the proof's source: the object's own provenance URL
+    // host must carry the venue as an exact hostname label, so substring matches
+    // like `evil-bybit-mirror.example` cannot satisfy a Bybit proof.
+    if !source_url_host_has_venue_label(&object.source_url, &proof.venue) {
         return Err(AcceptanceError::SourceVenueMismatch {
             venue: proof.venue.clone(),
             source_url: object.source_url.clone(),
@@ -619,7 +637,68 @@ pub fn select_accepted_dataset(
         fidelity_class: proof.fidelity_class,
         forbidden_claims: proof.forbidden_claims.clone(),
         object: object.clone(),
+        _accepted_gate: AcceptedGate,
     })
+}
+
+fn source_url_host_has_venue_label(source_url: &str, venue: &str) -> bool {
+    let venue = venue.trim().to_ascii_lowercase();
+    if venue.is_empty() {
+        return false;
+    }
+    let Some((_, after_scheme)) = source_url.split_once("://") else {
+        return false;
+    };
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .trim_matches(['[', ']'])
+        .to_ascii_lowercase();
+    host.split('.').any(|label| label == venue)
+}
+
+fn ensure_coverage_within_requested(
+    requested: &TimeRange,
+    coverage: &TimeRange,
+) -> Result<(), AcceptanceError> {
+    let requested_start = coverage_bound_nanos(&requested.start_utc, "requested start_utc")?;
+    let requested_end = coverage_bound_nanos(&requested.end_utc, "requested end_utc")?;
+    let coverage_start = coverage_bound_nanos(&coverage.start_utc, "coverage start_utc")?;
+    let coverage_end = coverage_bound_nanos(&coverage.end_utc, "coverage end_utc")?;
+    if requested_start > requested_end {
+        return Err(AcceptanceError::MalformedCoverageBound {
+            field: "requested window",
+            value: format!("{}..{}", requested.start_utc, requested.end_utc),
+        });
+    }
+    if coverage_start > coverage_end {
+        return Err(AcceptanceError::MalformedCoverageBound {
+            field: "coverage window",
+            value: format!("{}..{}", coverage.start_utc, coverage.end_utc),
+        });
+    }
+    if coverage_start < requested_start || coverage_end > requested_end {
+        return Err(AcceptanceError::CoverageOutsideRequested);
+    }
+    Ok(())
+}
+
+fn coverage_bound_nanos(value: &str, field: &'static str) -> Result<i64, AcceptanceError> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .and_then(|dt| dt.timestamp_nanos_opt())
+        .ok_or_else(|| AcceptanceError::MalformedCoverageBound {
+            field,
+            value: value.to_string(),
+        })
 }
 
 /// True when `object_date` (`YYYY-MM-DD`) falls in `[start_utc, end_utc)`.
@@ -860,14 +939,27 @@ mod tests {
     }
 
     #[test]
+    fn select_rejects_substring_venue_host_match() {
+        let accepted = candidate_proof()
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.source_url =
+            "https://evil-bybit-mirror.example/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
     fn select_rejects_malformed_coverage_bound() {
         let mut proof = candidate_proof();
         proof.coverage_time_range.end_utc = "not-a-timestamp".to_string();
-        let accepted = proof
+        let err = proof
             .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
-            .unwrap();
-        let object = manifest_object();
-        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+            .unwrap_err();
         assert!(
             matches!(err, AcceptanceError::MalformedCoverageBound { .. }),
             "{err:?}"
@@ -879,11 +971,9 @@ mod tests {
         let mut proof = candidate_proof();
         proof.coverage_time_range.start_utc = "2026-03-05T00:00:00Z".to_string();
         proof.coverage_time_range.end_utc = "2026-03-01T00:00:00Z".to_string();
-        let accepted = proof
+        let err = proof
             .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
-            .unwrap();
-        let object = manifest_object();
-        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+            .unwrap_err();
         assert!(
             matches!(err, AcceptanceError::MalformedCoverageBound { .. }),
             "{err:?}"
@@ -914,6 +1004,24 @@ mod tests {
         proof.required_checks.coverage = RequiredCheck::pending("coverage not proven");
         let err = proof.evaluate_acceptance().unwrap_err();
         assert_eq!(err, AcceptanceError::UnmetChecks(vec!["coverage"]));
+    }
+
+    #[test]
+    fn acceptance_rejects_coverage_outside_requested_window() {
+        let mut proof = candidate_proof();
+        proof.coverage_time_range.start_utc = "2025-05-31T00:00:00Z".to_string();
+        let err = proof
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap_err();
+        assert!(err.to_string().contains("requested"), "{err}");
+    }
+
+    #[test]
+    fn evaluate_acceptance_rejects_rejected_status() {
+        let mut proof = candidate_proof();
+        proof.status = SourceProofStatus::Rejected;
+        let err = proof.evaluate_acceptance().unwrap_err();
+        assert!(err.to_string().contains("rejected"), "{err}");
     }
 
     #[test]
@@ -1027,6 +1135,19 @@ mod tests {
             .unwrap();
         let object = manifest_object();
         let err = select_accepted_dataset(&proof, &object, "deadbeef").unwrap_err();
+        assert!(matches!(err, AcceptanceError::ContentHashMismatch { .. }));
+    }
+
+    #[test]
+    fn ledger_rejects_object_hash_that_differs_from_proof_sample_hash() {
+        let mut proof = candidate_proof();
+        proof.raw_sample_hash =
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+        let proof = proof
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let object = manifest_object();
+        let err = select_accepted_dataset(&proof, &object, &object.sha256).unwrap_err();
         assert!(matches!(err, AcceptanceError::ContentHashMismatch { .. }));
     }
 

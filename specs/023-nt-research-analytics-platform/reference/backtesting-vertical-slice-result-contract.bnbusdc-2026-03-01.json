@@ -12,7 +12,8 @@
   "claim_limits": [
     "No execution-quality, queue-position, or order-book-liquidity claims.",
     "No L2/L3 order-book replay claims from trade prints.",
-    "Coverage is limited to BNBUSDC spot 2026-03-01; no multi-day or multi-instrument claims."
+    "Coverage is limited to BNBUSDC spot 2026-03-01; no multi-day or multi-instrument claims.",
+    "operator-attested reference result; not reproduced in CI."
   ],
   "warnings": [
     "No orders were placed: the accepted data is trade-only and carries no quote ticks, and the configured strategy's order entry is quote-driven. NautilusTrader still aggregated the accepted trades into bars and ran the strategy's signal logic. This reflects the TRADE_REPLAY fidelity of the source, not a defect."
@@ -20,7 +21,7 @@
   "mechanical_blockers": [],
   "nt_result": {
     "trader_id": "TRADER-001",
-    "machine_id": "SP-MB-Pro.local",
+    "machine_id": "operator-attested-redacted",
     "instance_id": "c8b43fd9-334d-4a7a-b786-cd0afdf88a11",
     "run_config_id": "backtesting-vertical-slice-bnbusdc-2026-03-01",
     "backtest_start": 1772323201665000000,
@@ -32,10 +33,10 @@
     "total_positions": 0
   },
   "artifact_uris": {
-    "source_proof_uri": "/private/tmp/backtesting-vertical-slice-scratch/run-output/accepted-source-proof.json",
-    "canonical_table_uri": "/private/tmp/backtesting-vertical-slice-scratch/run-output/canonical-trades.parquet",
-    "nt_catalog_uri": "/private/tmp/backtesting-vertical-slice-scratch/run-output/nt-catalog",
-    "result_contract_uri": "/private/tmp/backtesting-vertical-slice-scratch/run-output/backtest-result-contract.json"
+    "source_proof_uri": "reference://backtesting-vertical-slice/bnbusdc-2026-03-01/accepted-source-proof.json",
+    "canonical_table_uri": "reference://backtesting-vertical-slice/bnbusdc-2026-03-01/canonical-trades.parquet",
+    "nt_catalog_uri": "reference://backtesting-vertical-slice/bnbusdc-2026-03-01/nt-catalog",
+    "result_contract_uri": "reference://backtesting-vertical-slice/bnbusdc-2026-03-01/backtest-result-contract.json"
   },
   "created_at": "2026-06-02T00:00:00Z"
 }

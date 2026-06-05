@@ -207,6 +207,9 @@ mod tests {
     const COMMITTED_ACCEPTED_PROOF: &str = include_str!(
         "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.bnbusdc-2026-03-01.json"
     );
+    const COMMITTED_SOURCE_BINDINGS: &str = include_str!(
+        "../../../specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
+    );
 
     const SAMPLE_CSV: &str = "id,timestamp,price,volume,side,rpi\n\
         1,1772323201665,617.2,0.3,buy,0\n\
@@ -230,8 +233,10 @@ mod tests {
     fn run_spec_for(gz_bytes: &[u8]) -> RunSpec {
         let mut spec: RunSpec =
             toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses");
-        spec.accepted_object.sha256 = sha256_hex(gz_bytes);
+        let object_hash = sha256_hex(gz_bytes);
+        spec.accepted_object.sha256 = object_hash.clone();
         spec.accepted_object.bytes = gz_bytes.len() as u64;
+        spec.source_proof.raw_sample_hash = object_hash;
         spec
     }
 
@@ -293,12 +298,49 @@ mod tests {
     }
 
     #[test]
+    fn committed_run_spec_source_binding_exists_in_registry() {
+        let spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
+        let registry = toml::from_str::<toml::Table>(COMMITTED_SOURCE_BINDINGS)
+            .expect("source binding registry parses");
+        let source_bindings = registry
+            .get("source_binding")
+            .and_then(toml::Value::as_array)
+            .expect("source_binding array");
+        assert!(
+            source_bindings.iter().any(|binding| {
+                binding.get("key").and_then(toml::Value::as_str)
+                    == Some(spec.source_proof.source_binding.as_str())
+            }),
+            "missing source binding key {}",
+            spec.source_proof.source_binding
+        );
+    }
+
+    #[test]
     fn committed_result_contract_deserializes() {
         let contract: BacktestResultContract =
             serde_json::from_str(COMMITTED_RESULT_CONTRACT).expect("result contract parses");
         contract
             .validate()
             .expect("committed contract is objective");
+    }
+
+    #[test]
+    fn committed_result_contract_uses_portable_reference_uris() {
+        let contract: BacktestResultContract =
+            serde_json::from_str(COMMITTED_RESULT_CONTRACT).expect("result contract parses");
+        assert_ne!(contract.nt_result.machine_id, "SP-MB-Pro.local");
+        for uri in [
+            &contract.artifact_uris.source_proof_uri,
+            &contract.artifact_uris.canonical_table_uri,
+            &contract.artifact_uris.nt_catalog_uri,
+            &contract.artifact_uris.result_contract_uri,
+        ] {
+            assert!(!uri.starts_with("/private/tmp/"), "{uri}");
+        }
+        assert!(contract.claim_limits.iter().any(|limit| {
+            limit.contains("operator-attested") && limit.contains("not reproduced in CI")
+        }));
     }
 
     #[test]

@@ -106,13 +106,15 @@ pub struct CanonicalTradeRow {
     pub instrument_id: String,
     pub canonical_instrument_key: String,
     pub venue_symbol: String,
-    pub nt_instrument_id: String,
+    pub nt_instrument_id: Option<String>,
     /// Exchange/source event timestamp in Unix nanoseconds.
     pub event_time: i64,
     /// Worker receipt/capture timestamp in Unix nanoseconds.
     pub capture_time: i64,
+    /// Source availability timestamp in Unix nanoseconds, when distinct from event time.
+    pub availability_time: Option<i64>,
     /// Native trade id / sequence.
-    pub source_sequence: String,
+    pub source_sequence: Option<String>,
     pub raw_payload_id: String,
     pub source_proof_id: String,
     /// Lowercase SHA-256 hex over the canonical raw object bytes.
@@ -190,20 +192,26 @@ pub fn normalize_bybit_spot_tick_trades(
     );
     let transform_hash = transform_hash();
 
-    let mut lines = csv_text.lines();
-    let header = lines.next().context("empty csv: missing header")?;
-    let header_columns: Vec<&str> = header.split(',').map(str::trim).collect();
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .trim(csv::Trim::All)
+        .from_reader(csv_text.as_bytes());
+    let header_columns: Vec<&str> = reader
+        .headers()
+        .context("empty csv: missing header")?
+        .iter()
+        .collect();
     ensure!(
         header_columns == BYBIT_SPOT_TICK_TRADES_HEADER,
         "csv header {header_columns:?} does not match expected header {BYBIT_SPOT_TICK_TRADES_HEADER:?}"
     );
 
     let mut rows = Vec::new();
-    for (index, line) in lines.enumerate() {
-        if line.trim().is_empty() {
+    for (index, record) in reader.records().enumerate() {
+        let fields = record.with_context(|| format!("row {index}: malformed csv record"))?;
+        if fields.iter().all(str::is_empty) {
             continue;
         }
-        let fields: Vec<&str> = line.split(',').collect();
         ensure!(
             fields.len() == BYBIT_SPOT_TICK_TRADES_HEADER.len(),
             "row {index} has {} fields, expected {}",
@@ -211,14 +219,15 @@ pub fn normalize_bybit_spot_tick_trades(
             BYBIT_SPOT_TICK_TRADES_HEADER.len()
         );
 
-        let trade_id = fields[0].trim();
-        let timestamp_ms: i64 = fields[1]
-            .trim()
+        let trade_id = fields.get(0).context("missing trade id")?;
+        let timestamp_ms: i64 = fields
+            .get(1)
+            .context("missing timestamp")?
             .parse()
-            .with_context(|| format!("row {index}: invalid timestamp {:?}", fields[1]))?;
-        let price_raw = fields[2].trim();
-        let size_raw = fields[3].trim();
-        let side = TradeAggressorSide::parse_bybit(fields[4])?;
+            .with_context(|| format!("row {index}: invalid timestamp {:?}", fields.get(1)))?;
+        let price_raw = fields.get(2).context("missing price")?;
+        let size_raw = fields.get(3).context("missing size")?;
+        let side = TradeAggressorSide::parse_bybit(fields.get(4).context("missing side")?)?;
 
         ensure!(!trade_id.is_empty(), "row {index}: empty trade id");
         let price: Decimal = price_raw
@@ -247,10 +256,11 @@ pub fn normalize_bybit_spot_tick_trades(
             instrument_id: identity.instrument_id.clone(),
             canonical_instrument_key: canonical_instrument_key.clone(),
             venue_symbol: identity.venue_symbol.clone(),
-            nt_instrument_id: identity.nt_instrument_id.clone(),
+            nt_instrument_id: Some(identity.nt_instrument_id.clone()),
             event_time,
             capture_time: capture_time_nanos,
-            source_sequence: trade_id.to_string(),
+            availability_time: None,
+            source_sequence: Some(trade_id.to_string()),
             raw_payload_id: accepted.object.sha256.clone(),
             source_proof_id: accepted.source_proof_id.clone(),
             payload_hash: accepted.object.sha256.clone(),
@@ -346,8 +356,6 @@ impl CanonicalTradesTable {
                 &row.instrument_id,
                 &row.canonical_instrument_key,
                 &row.venue_symbol,
-                &row.nt_instrument_id,
-                &row.source_sequence,
                 &row.raw_payload_id,
                 &row.source_proof_id,
                 &row.payload_hash,
@@ -361,6 +369,17 @@ impl CanonicalTradesTable {
                     "row {index}: empty required field"
                 );
             }
+            for (name, field) in [
+                ("nt_instrument_id", &row.nt_instrument_id),
+                ("source_sequence", &row.source_sequence),
+            ] {
+                if let Some(field) = field {
+                    ensure!(
+                        !field.trim().is_empty(),
+                        "row {index}: empty nullable field {name}"
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -369,7 +388,9 @@ impl CanonicalTradesTable {
     #[must_use]
     pub fn arrow_schema() -> Arc<Schema> {
         let utf8 = |name: &str| Field::new(name, DataType::Utf8, false);
+        let utf8_nullable = |name: &str| Field::new(name, DataType::Utf8, true);
         let int64 = |name: &str| Field::new(name, DataType::Int64, false);
+        let int64_nullable = |name: &str| Field::new(name, DataType::Int64, true);
         Arc::new(Schema::new(vec![
             utf8("schema_version"),
             utf8("ingest_run_id"),
@@ -380,10 +401,11 @@ impl CanonicalTradesTable {
             utf8("instrument_id"),
             utf8("canonical_instrument_key"),
             utf8("venue_symbol"),
-            utf8("nt_instrument_id"),
+            utf8_nullable("nt_instrument_id"),
             int64("event_time"),
             int64("capture_time"),
-            utf8("source_sequence"),
+            int64_nullable("availability_time"),
+            utf8_nullable("source_sequence"),
             utf8("raw_payload_id"),
             utf8("source_proof_id"),
             utf8("payload_hash"),
@@ -408,6 +430,16 @@ impl CanonicalTradesTable {
                 self.rows.iter().map(f).collect::<Vec<_>>(),
             )) as arrow::array::ArrayRef
         };
+        let opt_utf8_col = |f: fn(&CanonicalTradeRow) -> Option<&str>| {
+            Arc::new(StringArray::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as arrow::array::ArrayRef
+        };
+        let opt_int64_col = |f: fn(&CanonicalTradeRow) -> Option<i64>| {
+            Arc::new(Int64Array::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as arrow::array::ArrayRef
+        };
         RecordBatch::try_new(
             Self::arrow_schema(),
             vec![
@@ -420,10 +452,11 @@ impl CanonicalTradesTable {
                 utf8_col(|r| r.instrument_id.as_str()),
                 utf8_col(|r| r.canonical_instrument_key.as_str()),
                 utf8_col(|r| r.venue_symbol.as_str()),
-                utf8_col(|r| r.nt_instrument_id.as_str()),
+                opt_utf8_col(|r| r.nt_instrument_id.as_deref()),
                 int64_col(|r| r.event_time),
                 int64_col(|r| r.capture_time),
-                utf8_col(|r| r.source_sequence.as_str()),
+                opt_int64_col(|r| r.availability_time),
+                opt_utf8_col(|r| r.source_sequence.as_deref()),
                 utf8_col(|r| r.raw_payload_id.as_str()),
                 utf8_col(|r| r.source_proof_id.as_str()),
                 utf8_col(|r| r.payload_hash.as_str()),
@@ -542,6 +575,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn arrow_schema_matches_nullable_common_contract_columns() {
+        let schema = CanonicalTradesTable::arrow_schema();
+        assert!(
+            schema
+                .field_with_name("availability_time")
+                .expect("availability_time field")
+                .is_nullable()
+        );
+        assert!(
+            schema
+                .field_with_name("nt_instrument_id")
+                .expect("nt_instrument_id field")
+                .is_nullable()
+        );
+        assert!(
+            schema
+                .field_with_name("source_sequence")
+                .expect("source_sequence field")
+                .is_nullable()
+        );
+    }
+
     const SAMPLE_CSV: &str = "id,timestamp,price,volume,side,rpi\n\
         1,1772323201665,617.2,0.3,buy,0\n\
         2,1772323312219,617.9,0.1456,sell,0\n\
@@ -576,6 +632,24 @@ mod tests {
             "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598"
         );
         assert_eq!(first.transform_hash, transform_hash());
+    }
+
+    #[test]
+    fn parses_quoted_csv_fields_without_shifting_columns() {
+        let csv = "id,timestamp,price,volume,side,rpi\n\
+            1,1772323201665,617.2,0.3,buy,\"ignored,quoted\"\n";
+        let table = normalize_bybit_spot_tick_trades(
+            &accepted_dataset(),
+            &identity(),
+            csv,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize quoted csv");
+        assert_eq!(table.rows.len(), 1);
+        assert_eq!(table.rows[0].price, "617.2");
+        assert_eq!(table.rows[0].size, "0.3");
+        assert_eq!(table.rows[0].aggressor_side, "BUYER");
     }
 
     #[test]

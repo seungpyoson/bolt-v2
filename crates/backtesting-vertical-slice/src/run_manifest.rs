@@ -10,7 +10,7 @@
 //! by a registry key (see [`registered_strategies`]); the manifest never carries
 //! executable strategy code or a runtime path.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, str::FromStr};
 
 use anyhow::{Result, bail};
 use nautilus_backtest::config::{
@@ -18,16 +18,22 @@ use nautilus_backtest::config::{
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::{
+    data::BarType,
     enums::{AccountType, BookType, OmsType},
     identifiers::InstrumentId,
+    types::Quantity,
 };
 use serde::{Deserialize, Serialize};
 use ustr::Ustr;
 
-use super::source_proof::AcceptedDataset;
+use super::source_proof::{AcceptedDataset, SourceProofFidelityClass};
 
 /// Registry key for the compiled Rust trade-driven example strategy.
 pub const STRATEGY_HURST_VPIN_DIRECTIONAL: &str = "hurst_vpin_directional";
+/// Strategy parameter key for the bar type.
+pub const STRATEGY_PARAM_BAR_TYPE: &str = "bar_type";
+/// Strategy parameter key for the trade size.
+pub const STRATEGY_PARAM_TRADE_SIZE: &str = "trade_size";
 
 /// Existing compiled Rust strategies selectable from a run manifest.
 ///
@@ -36,6 +42,16 @@ pub const STRATEGY_HURST_VPIN_DIRECTIONAL: &str = "hurst_vpin_directional";
 #[must_use]
 pub fn registered_strategies() -> &'static [&'static str] {
     &[STRATEGY_HURST_VPIN_DIRECTIONAL]
+}
+
+#[must_use]
+pub fn registered_strategy_parameters(registry_key: &str) -> Option<&'static [&'static str]> {
+    match registry_key {
+        STRATEGY_HURST_VPIN_DIRECTIONAL => {
+            Some(&[STRATEGY_PARAM_BAR_TYPE, STRATEGY_PARAM_TRADE_SIZE])
+        }
+        _ => None,
+    }
 }
 
 /// Market-structure fixture family.
@@ -61,6 +77,7 @@ pub enum RunPurpose {
 /// selected by key, with typed string parameters. There is deliberately no
 /// variant for inline code, notebook code, a Python path, or an untracked blob.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StrategySource {
     /// Key into [`registered_strategies`].
     pub registry_key: String,
@@ -70,6 +87,7 @@ pub struct StrategySource {
 
 /// Simulated venue settings mapped into [`BacktestVenueConfig`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ManifestVenueConfig {
     /// NautilusTrader venue name, for example `BYBIT`.
     pub nt_venue: String,
@@ -85,6 +103,7 @@ pub struct ManifestVenueConfig {
 
 /// Catalog input mapped into [`BacktestDataConfig`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ManifestCatalogInput {
     pub catalog_path: String,
     /// NautilusTrader data type, currently `TradeTick`.
@@ -95,6 +114,7 @@ pub struct ManifestCatalogInput {
 
 /// The typed backtest run manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BacktestingRunManifest {
     pub run_id: String,
     pub market_structure_fixture: MarketStructureFixture,
@@ -116,7 +136,7 @@ pub struct BacktestingRunManifest {
     /// Optional inclusive start time (Unix nanos).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub start_time: Option<i64>,
-    /// Optional exclusive end time (Unix nanos).
+    /// Optional inclusive end time (Unix nanos).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub end_time: Option<i64>,
 }
@@ -137,9 +157,24 @@ pub enum ManifestError {
     UnknownStrategy {
         registry_key: String,
     },
+    InvalidStrategyRegistryKey {
+        registry_key: String,
+    },
+    UnknownStrategyParameter {
+        registry_key: String,
+        parameter: String,
+    },
     UnacceptedData {
         manifest_proof: String,
         accepted_proof: String,
+    },
+    BindingMismatch {
+        manifest_binding: String,
+        accepted_binding: String,
+    },
+    DataTypeFidelityMismatch {
+        data_type: String,
+        fidelity_class: SourceProofFidelityClass,
     },
     NonLatestProofPinForNormalRun,
     UnsupportedDataType {
@@ -188,12 +223,39 @@ impl std::fmt::Display for ManifestError {
                     "strategy {registry_key:?} is not a registered compiled Rust strategy"
                 )
             }
+            Self::InvalidStrategyRegistryKey { registry_key } => {
+                write!(
+                    f,
+                    "strategy registry key must contain only ASCII letters, digits, '_' or '-': {registry_key:?}"
+                )
+            }
+            Self::UnknownStrategyParameter {
+                registry_key,
+                parameter,
+            } => write!(
+                f,
+                "parameter {parameter:?} is not accepted for strategy {registry_key:?}"
+            ),
             Self::UnacceptedData {
                 manifest_proof,
                 accepted_proof,
             } => write!(
                 f,
                 "manifest source proof {manifest_proof:?} does not match accepted dataset proof {accepted_proof:?}"
+            ),
+            Self::BindingMismatch {
+                manifest_binding,
+                accepted_binding,
+            } => write!(
+                f,
+                "manifest venue_binding_key {manifest_binding:?} does not match accepted source binding {accepted_binding:?}"
+            ),
+            Self::DataTypeFidelityMismatch {
+                data_type,
+                fidelity_class,
+            } => write!(
+                f,
+                "catalog data type {data_type:?} is incompatible with accepted fidelity {fidelity_class:?}"
             ),
             Self::NonLatestProofPinForNormalRun => {
                 write!(f, "normal runs cannot pin a non-latest source proof")
@@ -242,10 +304,57 @@ fn validate_strategy_source(strategy: &StrategySource) -> Result<(), ManifestErr
             registry_key: key.to_string(),
         });
     }
+    if !key
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(ManifestError::InvalidStrategyRegistryKey {
+            registry_key: key.to_string(),
+        });
+    }
     if !registered_strategies().contains(&key) {
         return Err(ManifestError::UnknownStrategy {
             registry_key: key.to_string(),
         });
+    }
+    let allowed_parameters =
+        registered_strategy_parameters(key).ok_or_else(|| ManifestError::UnknownStrategy {
+            registry_key: key.to_string(),
+        })?;
+    for parameter in strategy.parameters.keys() {
+        if !allowed_parameters.contains(&parameter.as_str()) {
+            return Err(ManifestError::UnknownStrategyParameter {
+                registry_key: key.to_string(),
+                parameter: parameter.clone(),
+            });
+        }
+    }
+    match key {
+        STRATEGY_HURST_VPIN_DIRECTIONAL => {
+            for parameter in [STRATEGY_PARAM_BAR_TYPE, STRATEGY_PARAM_TRADE_SIZE] {
+                if !strategy.parameters.contains_key(parameter) {
+                    return Err(ManifestError::MissingField(match parameter {
+                        STRATEGY_PARAM_BAR_TYPE => "strategy.parameters.bar_type",
+                        STRATEGY_PARAM_TRADE_SIZE => "strategy.parameters.trade_size",
+                        _ => unreachable!(),
+                    }));
+                }
+            }
+            let trade_size = strategy
+                .parameters
+                .get(STRATEGY_PARAM_TRADE_SIZE)
+                .expect("presence checked above");
+            Quantity::from_str(trade_size)
+                .map_err(|_| ManifestError::MissingField("strategy.parameters.trade_size"))?;
+            let bar_type = strategy
+                .parameters
+                .get(STRATEGY_PARAM_BAR_TYPE)
+                .expect("presence checked above");
+            bar_type
+                .parse::<BarType>()
+                .map_err(|_| ManifestError::MissingField("strategy.parameters.bar_type"))?;
+        }
+        _ => unreachable!("registered strategy was already matched"),
     }
     Ok(())
 }
@@ -279,6 +388,8 @@ impl BacktestingRunManifest {
             }
         }
         ensure_supported_enums(self)?;
+        ensure_supported_data_type(&self.catalog_input.data_type)?;
+        ensure_data_type_matches_fidelity(&self.catalog_input.data_type, accepted.fidelity_class)?;
         validate_strategy_source(&self.strategy)?;
 
         // Data must be accepted: the only admissible input is the accepted
@@ -294,8 +405,21 @@ impl BacktestingRunManifest {
                 ),
             });
         }
+        if self.venue_binding_key != accepted.source_binding {
+            return Err(ManifestError::BindingMismatch {
+                manifest_binding: self.venue_binding_key.clone(),
+                accepted_binding: accepted.source_binding.clone(),
+            });
+        }
         if self.run_purpose == RunPurpose::Normal && self.pins_non_latest_proof {
             return Err(ManifestError::NonLatestProofPinForNormalRun);
+        }
+        for (field, value) in [("start_time", self.start_time), ("end_time", self.end_time)] {
+            if let Some(value) = value
+                && value < 0
+            {
+                return Err(ManifestError::NegativeTime { field, value });
+            }
         }
         if let (Some(start), Some(end)) = (self.start_time, self.end_time)
             && start > end
@@ -388,6 +512,28 @@ fn ensure_supported_enums(manifest: &BacktestingRunManifest) -> Result<(), Manif
     parse_account_type(&manifest.venue.account_type)?;
     parse_book_type(&manifest.venue.book_type)?;
     Ok(())
+}
+
+fn ensure_supported_data_type(value: &str) -> Result<(), ManifestError> {
+    match value {
+        "TradeTick" => Ok(()),
+        other => Err(ManifestError::UnsupportedDataType {
+            data_type: other.to_string(),
+        }),
+    }
+}
+
+fn ensure_data_type_matches_fidelity(
+    data_type: &str,
+    fidelity_class: SourceProofFidelityClass,
+) -> Result<(), ManifestError> {
+    match (data_type, fidelity_class) {
+        ("TradeTick", SourceProofFidelityClass::TradeReplay) => Ok(()),
+        (data_type, fidelity_class) => Err(ManifestError::DataTypeFidelityMismatch {
+            data_type: data_type.to_string(),
+            fidelity_class,
+        }),
+    }
 }
 
 fn parse_oms_type(value: &str) -> Result<OmsType, ManifestError> {
@@ -602,6 +748,64 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_strategy_registry_key_syntax() {
+        let mut manifest = valid_manifest();
+        manifest.strategy.registry_key = "use process Command".to_string();
+        let err = manifest.validate(&accepted_dataset()).unwrap_err();
+        assert!(err.to_string().contains("registry key"), "{err}");
+    }
+
+    #[test]
+    fn rejects_unknown_strategy_parameter() {
+        let mut manifest = valid_manifest();
+        manifest
+            .strategy
+            .parameters
+            .insert("unknown_blob".to_string(), "x".to_string());
+        let err = manifest.validate(&accepted_dataset()).unwrap_err();
+        assert!(err.to_string().contains("parameter"), "{err}");
+    }
+
+    #[test]
+    fn rejects_missing_required_strategy_parameter() {
+        let mut manifest = valid_manifest();
+        manifest
+            .strategy
+            .parameters
+            .remove(STRATEGY_PARAM_TRADE_SIZE);
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::MissingField("strategy.parameters.trade_size")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_trade_size_strategy_parameter() {
+        let mut manifest = valid_manifest();
+        manifest.strategy.parameters.insert(
+            STRATEGY_PARAM_TRADE_SIZE.to_string(),
+            "not-a-size".to_string(),
+        );
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::MissingField("strategy.parameters.trade_size")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_bar_type_strategy_parameter() {
+        let mut manifest = valid_manifest();
+        manifest.strategy.parameters.insert(
+            STRATEGY_PARAM_BAR_TYPE.to_string(),
+            "not-a-bar-type".to_string(),
+        );
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::MissingField("strategy.parameters.bar_type")
+        );
+    }
+
+    #[test]
     fn rejects_unaccepted_data() {
         let mut manifest = valid_manifest();
         manifest.source_proof_id = "some-other-proof".to_string();
@@ -609,6 +813,14 @@ mod tests {
             manifest.validate(&accepted_dataset()).unwrap_err(),
             ManifestError::UnacceptedData { .. }
         ));
+    }
+
+    #[test]
+    fn rejects_source_binding_mismatch() {
+        let mut manifest = valid_manifest();
+        manifest.venue_binding_key = "some-other-binding".to_string();
+        let err = manifest.validate(&accepted_dataset()).unwrap_err();
+        assert!(err.to_string().contains("binding"), "{err}");
     }
 
     #[test]
@@ -644,7 +856,7 @@ mod tests {
         let mut manifest = valid_manifest();
         manifest.start_time = Some(-1);
         assert_eq!(
-            manifest.to_nt_run_config().unwrap_err(),
+            manifest.validate(&accepted_dataset()).unwrap_err(),
             ManifestError::NegativeTime {
                 field: "start_time",
                 value: -1,
@@ -657,7 +869,7 @@ mod tests {
         let mut manifest = valid_manifest();
         manifest.end_time = Some(-42);
         assert_eq!(
-            manifest.to_nt_run_config().unwrap_err(),
+            manifest.validate(&accepted_dataset()).unwrap_err(),
             ManifestError::NegativeTime {
                 field: "end_time",
                 value: -42,
@@ -684,11 +896,20 @@ mod tests {
         let mut manifest = valid_manifest();
         manifest.catalog_input.data_type = "QuoteTick".to_string();
         assert_eq!(
-            manifest.to_nt_data_config().unwrap_err(),
+            manifest.validate(&accepted_dataset()).unwrap_err(),
             ManifestError::UnsupportedDataType {
                 data_type: "QuoteTick".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn rejects_fidelity_data_type_mismatch() {
+        let manifest = valid_manifest();
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
+        let err = manifest.validate(&accepted).unwrap_err();
+        assert!(err.to_string().contains("incompatible"), "{err}");
     }
 
     #[test]
@@ -707,5 +928,22 @@ mod tests {
     #[test]
     fn rejects_malformed_manifest_toml() {
         assert!(parse_manifest_toml("this is not = valid = toml").is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_top_level_manifest_toml_fields() {
+        let text = format!(
+            "unknown_blob = \"x\"\n{}",
+            toml::to_string(&valid_manifest()).expect("serialize")
+        );
+        assert!(parse_manifest_toml(&text).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_nested_manifest_toml_fields() {
+        let text = toml::to_string(&valid_manifest())
+            .expect("serialize")
+            .replace("[strategy]\n", "[strategy]\nunknown_blob = \"x\"\n");
+        assert!(parse_manifest_toml(&text).is_err());
     }
 }

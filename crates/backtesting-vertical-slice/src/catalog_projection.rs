@@ -235,10 +235,14 @@ pub fn project_canonical_trades_to_catalog(
     table.validate()?;
     let instrument = build_currency_pair(spec)?;
     let instrument_id = instrument.id();
+    let row_instrument_id = table.rows[0]
+        .nt_instrument_id
+        .as_deref()
+        .context("canonical row missing nt_instrument_id")?;
     ensure!(
-        instrument_id.to_string() == table.rows[0].nt_instrument_id,
+        instrument_id.to_string() == row_instrument_id,
         "instrument id {instrument_id} does not match canonical rows {}",
-        table.rows[0].nt_instrument_id
+        row_instrument_id
     );
     let ticks = canonical_rows_to_trade_ticks(table, &instrument)?;
     let trade_count = ticks.len();
@@ -300,34 +304,54 @@ pub fn read_back_trade_ticks(
         .context("query trade ticks from catalog")
 }
 
-/// Deterministic SHA-256 hex over every file under `root`, ordered by relative
-/// path, mixing in each relative path so renames change the hash.
+/// Deterministic SHA-256 hex over the logical NT catalog contents.
+///
+/// This intentionally hashes NT-read instruments and `TradeTick` values, not
+/// raw Parquet bytes or paths. Parquet writer metadata can legitimately drift
+/// across NT/Arrow builds while representing identical logical catalog input.
 fn catalog_hash(root: &Path) -> Result<String> {
-    let mut files = Vec::new();
-    collect_files(root, root, &mut files)?;
-    files.sort();
+    let mut catalog = ParquetDataCatalog::new(root, None, None, None, None);
+    let mut instruments = catalog
+        .query_instruments(None)
+        .context("query instruments from catalog for logical hash")?;
+    instruments.sort_by_key(|instrument| instrument.id().to_string());
+    let mut ticks = catalog
+        .query_typed_data::<TradeTick>(None, None, None, None, None, true)
+        .context("query trade ticks from catalog for logical hash")?;
+    ticks.sort_by_key(|tick| {
+        (
+            tick.ts_event.as_u64(),
+            tick.trade_id.to_string(),
+            tick.instrument_id.to_string(),
+        )
+    });
+
     let mut hasher = Sha256::new();
-    for relative in files {
-        hasher.update(relative.to_string_lossy().as_bytes());
+    hasher.update(b"nautilus-logical-catalog.v1");
+    for instrument in instruments {
         hasher.update([0u8]);
-        let bytes = fs::read(root.join(&relative))
-            .with_context(|| format!("read catalog file {}", relative.display()))?;
-        hasher.update((bytes.len() as u64).to_le_bytes());
-        hasher.update(&bytes);
+        hasher.update(instrument.id().to_string().as_bytes());
+        hasher.update([1u8]);
+        hasher.update(format!("{instrument:?}").as_bytes());
+    }
+    for tick in ticks {
+        hasher.update([2u8]);
+        hasher.update(tick.instrument_id.to_string().as_bytes());
+        hasher.update([3u8]);
+        hasher.update(tick.trade_id.to_string().as_bytes());
+        hasher.update([4u8]);
+        hasher.update(tick.price.as_decimal().to_string().as_bytes());
+        hasher.update([5u8]);
+        hasher.update(tick.size.as_decimal().to_string().as_bytes());
+        hasher.update([6u8]);
+        hasher.update(format!("{:?}", tick.aggressor_side).as_bytes());
+        hasher.update([7u8]);
+        hasher.update(tick.ts_event.as_u64().to_le_bytes());
+        hasher.update([8u8]);
+        hasher.update(tick.ts_init.as_u64().to_le_bytes());
+        hasher.update([0u8]);
     }
     Ok(hex::encode(hasher.finalize()))
-}
-
-fn collect_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in fs::read_dir(dir).with_context(|| format!("read dir {}", dir.display()))? {
-        let path = entry?.path();
-        if path.is_dir() {
-            collect_files(root, &path, out)?;
-        } else if let Ok(relative) = path.strip_prefix(root) {
-            out.push(relative.to_path_buf());
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -605,19 +629,33 @@ mod tests {
     }
 
     #[test]
-    fn catalog_hash_is_relative_path_sensitive() {
-        // Identical file bytes under different relative paths must hash
-        // differently, proving the path is mixed into the digest.
+    fn catalog_hash_ignores_writer_sidecar_files() {
+        let table = canonical_table();
+        let dir = tempfile::TempDir::new().unwrap();
+        let projection = project_canonical_trades_to_catalog(&table, &spec(), dir.path()).unwrap();
+        fs::write(dir.path().join("writer-version.txt"), b"nt writer metadata").unwrap();
+        assert_eq!(
+            projection.catalog_hash,
+            catalog_hash(dir.path()).unwrap(),
+            "catalog hash must describe logical catalog contents, not unrelated writer files"
+        );
+    }
+
+    #[test]
+    fn catalog_hash_ignores_unrelated_relative_paths() {
+        // Non-catalog sidecar bytes under different relative paths must not
+        // affect the logical digest. The digest is over NT-read catalog records,
+        // not filesystem layout.
         let root_a = tempfile::TempDir::new().unwrap();
         let root_b = tempfile::TempDir::new().unwrap();
         fs::create_dir_all(root_a.path().join("data/alpha")).unwrap();
         fs::write(root_a.path().join("data/alpha/file.parquet"), b"identical").unwrap();
         fs::create_dir_all(root_b.path().join("data/beta")).unwrap();
         fs::write(root_b.path().join("data/beta/file.parquet"), b"identical").unwrap();
-        assert_ne!(
+        assert_eq!(
             catalog_hash(root_a.path()).unwrap(),
             catalog_hash(root_b.path()).unwrap(),
-            "identical bytes under different relative paths must hash differently"
+            "unrelated bytes under different relative paths must not change the logical hash"
         );
     }
 }

@@ -436,6 +436,7 @@ dependencies = [
  "arrow",
  "chrono",
  "clap",
+ "csv",
  "flate2",
  "hex",
  "nautilus-backtest",

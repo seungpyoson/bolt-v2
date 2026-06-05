@@ -2995,6 +2995,7 @@ def assert_v6_red_workflow_policy_gaps() -> None:
         assert_v6_red_renamed_path_cargo_source_builds_are_reported,
         assert_v6_red_no_mistakes_raw_cargo_is_reported,
         assert_v6_red_exact_head_governance_inputs_are_cache_keyed,
+        assert_v6_red_backtester_cache_keys_include_crate_sources,
     ]
     failures: list[str] = []
     for check in checks:
@@ -3004,6 +3005,28 @@ def assert_v6_red_workflow_policy_gaps() -> None:
             failures.append(f"{check.__name__}: {exc}")
     if failures:
         raise AssertionError("v6 RED workflow policy coverage failures: " + " | ".join(failures))
+
+
+def assert_v6_red_backtester_cache_keys_include_crate_sources() -> None:
+    verifier = load_verifier()
+    bad = """jobs:
+  clippy:
+    steps:
+      - uses: actions/cache@example
+        with:
+          key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-clippy-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml') }}
+"""
+    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
+    assert any("backtester managed-target cache key must include crates/backtesting-vertical-slice/src/**" in error for error in errors), errors
+    assert any("backtester managed-target cache key must include crates/backtesting-vertical-slice/tests/**" in error for error in errors), errors
+    good = bad.replace(
+        "'crates/backtesting-vertical-slice/Cargo.toml'",
+        "'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**'",
+    )
+    good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
+    assert not [
+        error for error in good_errors if "backtester managed-target cache key must include" in error
+    ], good_errors
 
 
 def assert_v6_red_raw_storage_checks_all_ci_automation() -> None:

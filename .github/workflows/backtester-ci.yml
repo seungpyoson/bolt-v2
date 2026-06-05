@@ -147,7 +147,7 @@ jobs:
         with:
           path: ${{ steps.crate_target.outputs.dir }}
           # hashFiles points at the CRATE's own inputs (+ shared wrapper/toolchain/just recipes), NOT root files.
-          key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-clippy-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+          key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-clippy-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
           restore-keys: |
             managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-clippy-
 
@@ -186,7 +186,7 @@ jobs:
       - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ steps.crate_target.outputs.dir }}
-          key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+          key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
           restore-keys: |
             managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-test-
 

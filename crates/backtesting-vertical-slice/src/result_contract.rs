@@ -42,23 +42,23 @@ const BANNED_PROMOTION_PHRASES: [&str; 8] = [
 /// from the embedded workspace `Cargo.toml` (single source of truth).
 #[must_use]
 pub fn resolved_nautilus_revision() -> Option<String> {
-    for line in WORKSPACE_CARGO_TOML.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("nautilus-backtest")
-            && let Some(rev) = extract_rev(line)
-        {
-            return Some(rev);
-        }
-    }
-    None
+    nautilus_revision_from_manifest(WORKSPACE_CARGO_TOML)
 }
 
-fn extract_rev(line: &str) -> Option<String> {
-    let marker = "rev = \"";
-    let start = line.find(marker)? + marker.len();
-    let rest = &line[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+fn nautilus_revision_from_manifest(manifest: &str) -> Option<String> {
+    let parsed = toml::from_str::<toml::Table>(manifest).ok()?;
+    let rev = parsed
+        .get("dependencies")?
+        .as_table()?
+        .get("nautilus-backtest")?
+        .as_table()?
+        .get("rev")?
+        .as_str()?;
+    if rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(rev.to_string())
+    } else {
+        None
+    }
 }
 
 /// Lowercase SHA-256 hex over the canonical strategy config (registry key plus
@@ -336,6 +336,19 @@ mod tests {
         let rev = resolved_nautilus_revision().expect("revision");
         assert_eq!(rev.len(), 40);
         assert!(rev.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn parses_revision_from_multiline_dependency_table() {
+        let manifest = r#"[dependencies.nautilus-backtest]
+git = "https://github.com/nautechsystems/nautilus_trader.git"
+rev = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+features = ["streaming", "examples"]
+"#;
+        assert_eq!(
+            nautilus_revision_from_manifest(manifest).as_deref(),
+            Some("6e059dcbb59ac1e582132fc431a581936c216c3c")
+        );
     }
 
     #[test]

@@ -76,6 +76,8 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::io_safety::{STAGED_DECODED_BYTES, ensure_within_limit, read_to_vec_with_limit};
+
 /// NautilusTrader data type written for this projection.
 pub const NT_DATA_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
 
@@ -169,11 +171,11 @@ pub struct OkxBookProjection {
 /// Returns an error if the gzip cannot be decoded, no regular-file `.data`
 /// member is found, or a header is malformed.
 pub fn extract_jsonl_from_archive(gz_bytes: &[u8]) -> Result<String> {
-    let mut decoder = GzDecoder::new(gz_bytes);
-    let mut tar = Vec::new();
-    decoder
-        .read_to_end(&mut tar)
-        .context("gunzip OKX order-book archive")?;
+    let tar = read_to_vec_with_limit(
+        GzDecoder::new(gz_bytes),
+        STAGED_DECODED_BYTES,
+        "gunzip OKX order-book archive",
+    )?;
 
     let mut offset = 0usize;
     while offset + TAR_BLOCK <= tar.len() {
@@ -835,10 +837,12 @@ pub fn zip_member_reader(zip_bytes: &[u8]) -> Result<ZipMemberReader<'_>> {
 /// valid UTF-8.
 pub fn extract_csv_from_zip(zip_bytes: &[u8]) -> Result<String> {
     let mut reader = zip_member_reader(zip_bytes)?;
-    let mut inflated = Vec::with_capacity(reader.declared_len());
-    reader
-        .read_to_end(&mut inflated)
-        .context("inflate ZIP member")?;
+    ensure_within_limit(
+        "ZIP member declared size",
+        u64::try_from(reader.declared_len()).context("ZIP member declared size exceeds u64")?,
+        STAGED_DECODED_BYTES,
+    )?;
+    let inflated = read_to_vec_with_limit(&mut reader, STAGED_DECODED_BYTES, "inflate ZIP member")?;
     reader.verify()?;
     String::from_utf8(inflated).context("ZIP CSV member is not valid UTF-8")
 }

@@ -68,6 +68,7 @@ use backtesting_vertical_slice::canonical_okx::{
 use backtesting_vertical_slice::convert_driver::{
     ConvertReport, ObjectOutcome, ObjectStats, run_objects,
 };
+use backtesting_vertical_slice::io_safety::{ByteLimit, STAGED_OBJECT_BYTES, ensure_within_limit};
 
 /// Default region for the `bolt-parquet` data lake (a bucket with no location
 /// constraint resolves to `us-east-1`).
@@ -581,7 +582,7 @@ fn convert(
                 let mut batch = Vec::with_capacity(keys.len());
                 for key in &keys {
                     let bytes = runtime
-                        .block_on(get_bytes(store.clone(), key.clone()))
+                        .block_on(get_bytes(store.clone(), key.clone(), STAGED_OBJECT_BYTES))
                         .with_context(|| format!("read {key}"))?;
                     batch.push((key.to_string(), bytes));
                 }
@@ -619,7 +620,11 @@ fn convert(
                 &key_strings,
                 |key| {
                     let bytes = runtime
-                        .block_on(get_bytes(store.clone(), ObjectPath::from(key.to_string())))
+                        .block_on(get_bytes(
+                            store.clone(),
+                            ObjectPath::from(key.to_string()),
+                            STAGED_OBJECT_BYTES,
+                        ))
                         .with_context(|| format!("read {key}"))?;
                     let converted = convert_object(
                         binding,
@@ -744,8 +749,11 @@ fn as_text(bytes: &[u8], object_key: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{object_key_matches_filters, parse_polymarket_asset_allowlist};
+    use super::{get_bytes, object_key_matches_filters, parse_polymarket_asset_allowlist};
+    use backtesting_vertical_slice::io_safety::ByteLimit;
+    use object_store::{ObjectStore, ObjectStoreExt, memory::InMemory};
     use std::collections::HashSet;
+    use std::sync::Arc;
 
     #[test]
     fn parse_polymarket_asset_allowlist_accepts_newline_ids() {
@@ -801,6 +809,26 @@ mod tests {
             &["family=order_book_snapshots_fixed_depth"],
             &matching_runtime_filter,
         ));
+    }
+
+    #[test]
+    fn get_bytes_rejects_object_larger_than_configured_limit() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let store = Arc::new(InMemory::new());
+        let key = object_store::path::Path::from("oversize.bin");
+        runtime
+            .block_on(store.put(&key, b"abcdef".to_vec().into()))
+            .expect("put object");
+        let store: Arc<dyn ObjectStore> = store;
+
+        let err = runtime
+            .block_on(get_bytes(store, key, ByteLimit::new(5).expect("limit")))
+            .expect_err("oversize object must be rejected from metadata");
+
+        assert!(
+            format!("{err:#}").contains("exceeds configured byte limit"),
+            "{err:#}"
+        );
     }
 }
 
@@ -1081,8 +1109,13 @@ fn object_key_matches_filters(
 }
 
 /// Read one object's bytes.
-async fn get_bytes(store: Arc<dyn ObjectStore>, key: ObjectPath) -> Result<Vec<u8>> {
+async fn get_bytes(
+    store: Arc<dyn ObjectStore>,
+    key: ObjectPath,
+    object_limit: ByteLimit,
+) -> Result<Vec<u8>> {
     let result = store.get(&key).await.context("get object")?;
+    ensure_within_limit(format!("object {key}"), result.meta.size, object_limit)?;
     let bytes = result.bytes().await.context("read object bytes")?;
     Ok(bytes.to_vec())
 }

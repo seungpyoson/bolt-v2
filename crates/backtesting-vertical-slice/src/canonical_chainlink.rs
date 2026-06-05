@@ -44,6 +44,8 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::io_safety::{STAGED_OBJECT_BYTES, read_file_with_limit};
+
 /// NautilusTrader data type written for this projection.
 pub const NT_DATA_TYPE_INDEX_PRICE_UPDATE: &str = "IndexPriceUpdate";
 
@@ -212,7 +214,8 @@ pub struct ChainlinkCatalogProjection {
 /// Returns an error when the file cannot be read, a required column is missing
 /// or of the wrong Arrow type, a value is null, or the table fails validation.
 pub fn read_chainlink_per_second_object(path: &Path) -> Result<CanonicalIndexPriceTable> {
-    let bytes = fs::read(path).with_context(|| format!("read parquet {}", path.display()))?;
+    let bytes = read_file_with_limit(path, STAGED_OBJECT_BYTES)
+        .with_context(|| format!("read parquet {}", path.display()))?;
     let source_object_hash = hex::encode(Sha256::digest(&bytes));
 
     let file = File::open(path).with_context(|| format!("open parquet {}", path.display()))?;

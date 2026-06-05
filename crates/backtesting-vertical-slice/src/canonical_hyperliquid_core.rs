@@ -22,7 +22,7 @@
 //! encodes is Hyperliquid's wire shape (`raw.data.levels[0]` = bids,
 //! `levels[1]` = asks, `data.time` in milliseconds).
 
-use std::{collections::HashMap, io::Read, path::Path, str::FromStr};
+use std::{collections::HashMap, path::Path, str::FromStr};
 
 use anyhow::{Context, Result, bail, ensure};
 use nautilus_core::UnixNanos;
@@ -36,6 +36,10 @@ use nautilus_model::{
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+
+use crate::io_safety::{
+    STAGED_DECODED_BYTES, STAGED_OBJECT_BYTES, read_file_with_limit, read_to_string_with_limit,
+};
 
 /// NautilusTrader data type written for this projection.
 pub const NT_DATA_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
@@ -570,19 +574,18 @@ pub struct TradesCatalogProjection {
 /// Returns an error if the file cannot be read, lacks the LZ4 frame magic, or is
 /// not valid LZ4 / UTF-8.
 pub fn read_lz4_jsonl(path: &Path) -> Result<String> {
-    let bytes =
-        std::fs::read(path).with_context(|| format!("read lz4 object {}", path.display()))?;
+    let bytes = read_file_with_limit(path, STAGED_OBJECT_BYTES)
+        .with_context(|| format!("read lz4 object {}", path.display()))?;
     ensure!(
         bytes.len() >= 4 && bytes[..4] == LZ4_FRAME_MAGIC,
         "object {} is not an LZ4 frame (bad magic)",
         path.display()
     );
-    let mut decoder = lz4_flex::frame::FrameDecoder::new(bytes.as_slice());
-    let mut text = String::new();
-    decoder
-        .read_to_string(&mut text)
-        .with_context(|| format!("decompress lz4 object {}", path.display()))?;
-    Ok(text)
+    read_to_string_with_limit(
+        lz4_flex::frame::FrameDecoder::new(bytes.as_slice()),
+        STAGED_DECODED_BYTES,
+        format!("decompress lz4 object {}", path.display()),
+    )
 }
 
 /// Map a Hyperliquid taker `side` token to the NautilusTrader aggressor side.
@@ -843,12 +846,11 @@ pub fn decompress_lz4_frame(bytes: &[u8]) -> Result<String> {
         bytes.len() >= 4 && bytes[..4] == LZ4_FRAME_MAGIC,
         "object is not an LZ4 frame (bad magic)"
     );
-    let mut decoder = lz4_flex::frame::FrameDecoder::new(bytes);
-    let mut text = String::new();
-    decoder
-        .read_to_string(&mut text)
-        .context("decompress lz4 object")?;
-    Ok(text)
+    read_to_string_with_limit(
+        lz4_flex::frame::FrameDecoder::new(bytes),
+        STAGED_DECODED_BYTES,
+        "decompress lz4 object",
+    )
 }
 
 /// Whether a venue coin token belongs to the Hyperliquid **core perp** family.

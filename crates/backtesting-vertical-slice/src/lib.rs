@@ -31,6 +31,7 @@ pub mod canonical_okx;
 pub mod canonical_trades;
 pub mod catalog_projection;
 pub mod convert_driver;
+pub mod io_safety;
 pub mod result_contract;
 pub mod run_manifest;
 pub mod runner;

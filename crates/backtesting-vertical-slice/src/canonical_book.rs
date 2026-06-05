@@ -65,6 +65,7 @@ use super::{
     },
     source_proof::{AcceptedDataset, IngestManifestObjectRecord, SourceProofFidelityClass},
 };
+use crate::io_safety::{STAGED_OBJECT_BYTES, read_file_with_limit};
 
 /// Contracted semantic schema version for canonical L2 order-book event rows.
 pub const NORMALIZED_BOOK_SCHEMA_VERSION: &str = "order_book.v1";
@@ -793,7 +794,7 @@ fn archive_date_from_key(object_key: &str) -> Result<String> {
 /// Returns an error if the object cannot be read or the key carries no `dt=`
 /// segment.
 fn polymarket_accepted_dataset(object_path: &Path, object_key: &str) -> Result<AcceptedDataset> {
-    let bytes = std::fs::read(object_path)
+    let bytes = read_file_with_limit(object_path, STAGED_OBJECT_BYTES)
         .with_context(|| format!("read Polymarket object {}", object_path.display()))?;
     let payload_hash = hex::encode(Sha256::digest(&bytes));
     let archive_date = archive_date_from_key(object_key)?;

@@ -7,7 +7,7 @@
 //! re-verified against the run-spec before any normalization, so raw staged data
 //! can never reach the backtest without passing source-proof acceptance.
 
-use std::{fs, io::Read, path::PathBuf};
+use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
@@ -18,6 +18,9 @@ use sha2::{Digest, Sha256};
 use backtesting_vertical_slice::{
     canonical_trades::CanonicalInstrumentIdentity,
     catalog_projection::SpotInstrumentSpec,
+    io_safety::{
+        STAGED_DECODED_BYTES, STAGED_OBJECT_BYTES, read_file_with_limit, read_to_string_with_limit,
+    },
     result_contract::ResultArtifactUris,
     run_manifest::BacktestingRunManifest,
     runner::{BacktestRunInputs, run_backtest},
@@ -72,7 +75,7 @@ fn main() -> Result<()> {
     let spec: RunSpec = toml::from_str(&spec_text).context("parse run-spec TOML")?;
 
     // Re-verify the accepted object content hash against the run-spec.
-    let gz_bytes = fs::read(&cli.object_gz)
+    let gz_bytes = read_file_with_limit(&cli.object_gz, STAGED_OBJECT_BYTES)
         .with_context(|| format!("read object {}", cli.object_gz.display()))?;
     let mut hasher = Sha256::new();
     hasher.update(&gz_bytes);
@@ -84,10 +87,11 @@ fn main() -> Result<()> {
     );
 
     // Decompress to CSV text.
-    let mut csv_text = String::new();
-    GzDecoder::new(&gz_bytes[..])
-        .read_to_string(&mut csv_text)
-        .context("decompress gzip object")?;
+    let csv_text = read_to_string_with_limit(
+        GzDecoder::new(&gz_bytes[..]),
+        STAGED_DECODED_BYTES,
+        "decompress gzip object",
+    )?;
 
     // Gate 1: accept the source proof and bind the object via the ledger.
     let accepted_proof = spec

@@ -32,7 +32,6 @@
 use std::{
     fs,
     fs::File,
-    io::Read,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -52,6 +51,10 @@ use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+
+use crate::io_safety::{
+    STAGED_DECODED_BYTES, STAGED_OBJECT_BYTES, read_file_with_limit, read_to_string_with_limit,
+};
 
 /// NautilusTrader data type written for this projection.
 pub const NT_DATA_TYPE_QUOTE_TICK: &str = "QuoteTick";
@@ -229,13 +232,13 @@ fn rescaled(value: &str, precision: u8) -> Result<String> {
 ///
 /// Returns an error if the file cannot be read or is not valid gzip / UTF-8.
 pub fn read_gzip_csv(path: &Path) -> Result<String> {
-    let bytes = fs::read(path).with_context(|| format!("read gzip object {}", path.display()))?;
-    let mut decoder = GzDecoder::new(bytes.as_slice());
-    let mut text = String::new();
-    decoder
-        .read_to_string(&mut text)
-        .with_context(|| format!("gunzip {}", path.display()))?;
-    Ok(text)
+    let bytes = read_file_with_limit(path, STAGED_OBJECT_BYTES)
+        .with_context(|| format!("read gzip object {}", path.display()))?;
+    read_to_string_with_limit(
+        GzDecoder::new(bytes.as_slice()),
+        STAGED_DECODED_BYTES,
+        format!("gunzip {}", path.display()),
+    )
 }
 
 /// Normalize an accepted Deribit options-chain CSV into the canonical top-of-book

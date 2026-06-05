@@ -496,6 +496,13 @@ mod tests {
 
         observe_reference_and_signal(&mut pricing, &config, "bybit", 90.0, 2_200);
         assert_eq!(pricing.spike_until_ms, Some(4_200));
+
+        let shorter_cooldown = TakerPricingConfig {
+            spike_guard_cooldown_secs: 1,
+            ..config
+        };
+        observe_reference_and_signal(&mut pricing, &shorter_cooldown, "bybit", 120.0, 2_500);
+        assert_eq!(pricing.spike_until_ms, Some(4_200));
     }
 
     #[test]

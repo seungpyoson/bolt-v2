@@ -216,6 +216,13 @@ fn source_owned_seed_without_venue_falls_back_to_current_fast_spot_source() {
         (Some("bybit".to_string()), Some(4_000))
     );
 
+    pricing.seed_ready_realized_vol(Some("reference".to_string()), 8.0, 4_000);
+
+    assert_eq!(
+        pricing.current_realized_vol_source_at(4_000),
+        (Some("reference".to_string()), Some(4_000))
+    );
+
     pricing.seed_ready_realized_vol(None, 9.0, 4_001);
 
     assert_eq!(pricing.current_realized_vol_at(4_001), Some(9.0));

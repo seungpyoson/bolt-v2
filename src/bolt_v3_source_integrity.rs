@@ -163,7 +163,7 @@ mod tests {
     // Re-derived again by A7 after moving source-proof / replay / evidence
     // derivation into `src/strategies/binary_oracle_edge_taker/source_proof.rs`.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "ed0187d6c1223c6c2ebd094bcb6004a34837ef8fac5bdf905d8551b32fe25442";
+        "56f554dded69c892235a67ed7404b66ba7fe74078fc56bc6c6cbd85702fac4c4";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 

@@ -461,9 +461,13 @@ fn apply_entry_decision_source_book(
 mod tests {
     use toml::Value;
 
-    use super::super::{
-        BinaryOracleReferenceQuoteObservationSource,
-        derive_entry_reference_proofs_from_quote_observations,
+    use nautilus_model::identifiers::InstrumentId;
+
+    use crate::bolt_v3_book_sizing::OutcomeBookState;
+
+    use super::{
+        BinaryOracleEntryBookSideSource, BinaryOracleReferenceQuoteObservationSource,
+        apply_entry_decision_source_book, derive_entry_reference_proofs_from_quote_observations,
     };
 
     fn source_proof_raw_config() -> Value {
@@ -576,6 +580,13 @@ mod tests {
             },
             BinaryOracleReferenceQuoteObservationSource {
                 data_client_id: "reference_data_client",
+                instrument_id: "OTHER.SOURCE",
+                bid_price: 8_000.0,
+                ask_price: 8_002.0,
+                ts_event_unix_nanos: 3_500_000_000,
+            },
+            BinaryOracleReferenceQuoteObservationSource {
+                data_client_id: "reference_data_client",
                 instrument_id: "REFERENCE.SOURCE",
                 bid_price: 9_998.0,
                 ask_price: 10_000.0,
@@ -596,5 +607,29 @@ mod tests {
         assert_eq!(proofs.reference_quote.observed_ts_ms, 3_000);
         assert_eq!(proofs.realized_volatility.ready_ts_ms, 3_000);
         assert!(proofs.realized_volatility.value > 0.0);
+    }
+
+    #[test]
+    fn entry_decision_source_book_rejects_crossed_best_prices() {
+        let mut book = OutcomeBookState::from_instrument_id(InstrumentId::from("UP.POLYMARKET"));
+        let source = BinaryOracleEntryBookSideSource {
+            best_bid: 0.55,
+            bid_quantity: 100.0,
+            best_ask: 0.54,
+            ask_quantity: 100.0,
+            liquidity_available: 200.0,
+        };
+
+        let error = apply_entry_decision_source_book(&mut book, &source, 2)
+            .expect_err("crossed source book should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("entry decision evidence book best_bid exceeds best_ask"),
+            "unexpected error: {error}"
+        );
+        assert!(book.best_bid.is_none());
+        assert!(book.best_ask.is_none());
     }
 }

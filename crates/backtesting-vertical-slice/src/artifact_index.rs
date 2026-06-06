@@ -426,6 +426,25 @@ pub fn resolve_committed_snapshot<'a>(
     Ok(snapshot)
 }
 
+pub fn resolve_lineage_parent<'a>(
+    child: &ArtifactIndexRecord,
+    parent: &'a ArtifactIndexRecord,
+) -> Result<&'a ArtifactIndexRecord, ArtifactIndexError> {
+    validate_lineage(&child.lineage_ids)?;
+    validate_sha256(&parent.content_hash)?;
+
+    if child.lineage_ids.iter().any(|lineage| {
+        lineage.artifact_id == parent.artifact_id && lineage.content_hash == parent.content_hash
+    }) {
+        Ok(parent)
+    } else {
+        Err(ArtifactIndexError::LineageParentMismatch {
+            child_artifact_id: child.artifact_id.clone(),
+            parent_artifact_id: parent.artifact_id.clone(),
+        })
+    }
+}
+
 pub fn plan_latest_pointer_update(
     artifact_root: &str,
     writer_id: impl Into<String>,
@@ -529,6 +548,10 @@ pub enum ArtifactIndexError {
         snapshot_hash: String,
     },
     HotIndexMetadataNotActive,
+    LineageParentMismatch {
+        child_artifact_id: String,
+        parent_artifact_id: String,
+    },
 }
 
 impl fmt::Display for ArtifactIndexError {
@@ -605,6 +628,13 @@ impl fmt::Display for ArtifactIndexError {
             Self::HotIndexMetadataNotActive => write!(
                 f,
                 "artifact index latest pointer and current snapshot metadata must remain in active storage"
+            ),
+            Self::LineageParentMismatch {
+                child_artifact_id,
+                parent_artifact_id,
+            } => write!(
+                f,
+                "artifact index parent {parent_artifact_id:?} does not match manifest lineage ids and sha256 hashes for child {child_artifact_id:?}"
             ),
         }
     }

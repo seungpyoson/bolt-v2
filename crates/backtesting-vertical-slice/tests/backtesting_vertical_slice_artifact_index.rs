@@ -2,7 +2,7 @@ use backtesting_vertical_slice::artifact_index::{
     ArtifactIndexLatestPointer, ArtifactIndexLineageRef, ArtifactIndexObservedPointer,
     ArtifactIndexPointerPrecondition, ArtifactIndexRecord, ArtifactIndexSnapshotManifest,
     ArtifactKind, ArtifactLifecycleConfig, CommitState, LifecycleState, StorageProfile,
-    WriteAuthority, plan_latest_pointer_update, resolve_committed_snapshot,
+    WriteAuthority, plan_latest_pointer_update, resolve_committed_snapshot, resolve_lineage_parent,
 };
 
 fn sha256_a() -> String {
@@ -42,6 +42,23 @@ fn committed_backtest_record(
     backtest_record(root)
         .committed_for_snapshot(snapshot_id, snapshot_uri)
         .expect("committed record")
+}
+
+fn source_proof_record(root: &str) -> ArtifactIndexRecord {
+    ArtifactIndexRecord::new_staged(
+        root,
+        ArtifactKind::SourceProofs,
+        "source-proof-123",
+        "source-proof",
+        "s3://example-bucket/nt-research-analytics/source-proofs/source-proof-123/report.json",
+        &sha256_b(),
+        vec![ArtifactIndexLineageRef::new(
+            "raw-object-123",
+            None,
+            sha256_c(),
+        )],
+    )
+    .expect("source-proof record")
 }
 
 #[test]
@@ -333,4 +350,28 @@ fn latest_pointer_update_plan_uses_create_or_etag_preconditions() {
         update_plan.audit_epoch_uri,
         format!("{root}/artifact-index/v1/audit/epochs/epoch-002.json")
     );
+}
+
+#[test]
+fn cross_kind_parent_resolution_uses_manifest_lineage_hashes() {
+    let root = "s3://example-bucket/nt-research-analytics";
+    let parent = source_proof_record(root);
+    let child = backtest_record(root);
+
+    let resolved = resolve_lineage_parent(&child, &parent).expect("lineage parent");
+
+    assert_eq!(resolved.artifact_id, parent.artifact_id);
+    assert_eq!(resolved.content_hash, parent.content_hash);
+}
+
+#[test]
+fn cross_kind_parent_resolution_rejects_independent_latest_parent_hash() {
+    let root = "s3://example-bucket/nt-research-analytics";
+    let mut stale_parent = source_proof_record(root);
+    stale_parent.content_hash = sha256_c();
+    let child = backtest_record(root);
+
+    let err = resolve_lineage_parent(&child, &stale_parent).unwrap_err();
+
+    assert!(err.to_string().contains("manifest lineage"), "{err}");
 }

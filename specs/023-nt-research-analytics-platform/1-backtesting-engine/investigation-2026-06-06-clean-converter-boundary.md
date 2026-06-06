@@ -52,11 +52,13 @@ No-go for broader production claims:
 
 - Accepted raw object exists: `s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BNBUSDC/object=d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598.csv.gz`
 - S3 listing result for that object: one object, `8505` bytes
+- Fresh read-only S3 `head-object` after the CLI preflight fix confirmed the accepted raw object still exists with `ContentLength = 8505` and ETag `"3959bd2c4ff9ac093c7692b812cea2f8"`; the object was not downloaded
 - Accepted source proof is committed at `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.bnbusdc-2026-03-01.json`
 - Run spec binds the same object, hash, output prefix, and trade-replay claim limits in `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml`
 - Run spec now configures `[manifest.artifact_store].rust_storage_options = { region = "us-east-1", conditional_put = "etag" }` so the S3 artifact-store path is explicit about object_store conditional-write semantics instead of relying on a hidden default
 - Run spec binds `[converter] identity = "csv-native-trades-to-canonical-trades.v1"`, `version = "1"`, and `[converter.csv]` column/timestamp/side-token mapping. The Bybit-specific values live in the sample source proof and run-spec data, not in operator/runner control flow.
 - Clean NT output prefix is empty as of this investigation: `aws s3 ls s3://bolt-parquet/nt-research-analytics/ --summarize --recursive` returned `Total Objects: 0`, `Total Size: 0`
+- Fresh read-only S3 object-count query after the CLI preflight fix returned `0` objects under `s3://bolt-parquet/nt-research-analytics/`
 - Converted artifacts were intentionally deleted by the user to avoid confusing stale partial outputs with accepted clean outputs
 - Local rebuilt-binary run against the accepted raw object wrote `/tmp/bte-real-e2e.RcFHhT/out` and produced `937` canonical rows, `937` NT catalog read-back trade ticks, NT `BacktestNode` iterations `937`, and catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`
 - Local generic-converter CLI proof into `/private/tmp/bte-s3-proof/out-local-generic-converter` produced converter config hash `4e54ce1edbdab877a776cb5d38ede603a747da49c0355f80b2f3665905333080`, conversion manifest hash `7d6d48376c026174bb84830dc6058e4eddecf9e3632344431413a4b2b3ca8352`, conversion checkpoint hash `60429ebd758ec1b0383dbedd0d0e38997a0bc90f33f2dc2ba2bf5bf6b1bd5842`, catalog metadata hash `3b9ee2bd6980de74aa30b677a408f073d5f68ff6aaf81a338425a2924709e587`, catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`, row count `937`, and NT iterations `937`
@@ -64,7 +66,7 @@ No-go for broader production claims:
 - Fresh release-binary `--publish-output` run against the accepted raw object and a local `file://` output prefix published 8 artifacts; `diff -qr /tmp/bte-real-cli.sDvExP/out-publish /tmp/bte-real-cli.sDvExP/publish-root/backtests/backtesting-vertical-slice-bnbusdc-2026-03-01` returned no differences
 - Fresh current-branch local CLI run after SSM artifact-store changes wrote `/private/tmp/bte-s3-proof/out-local-after-ssm-artifact-store-3` and produced `937` canonical rows, `937` NT catalog read-back trade ticks, NT `BacktestNode` iterations `937`, and catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`
 - Fresh current-branch S3 publish/proof command with only `region` configured failed before the backtest with `artifact_store.ssm_parameters must resolve access_key_id and secret_access_key before publishing to an s3 output_prefix`; `/private/tmp/bte-s3-proof/out-s3-missing-ssm-fail-fast` was not created
-- Non-secret SSM parameter-name searches for `artifact`, `s3`, and `backtest` returned no names, so direct real S3 proof cannot be completed until valid SSM parameter paths are provided or created outside this branch's code path
+- Non-secret SSM parameter-name searches for `artifact`, `backtest`, `s3`, `parquet`, `research`, `nt`, and `credential` returned no names; a broad `bolt` name search returned only unrelated Chainlink/testnet and one-off backfill entries, so direct real S3 proof cannot be completed until valid SSM parameter paths are provided or created outside this branch's code path
 
 ## NT Use Matrix
 

@@ -569,7 +569,7 @@ mod tests {
                 instrument_id: "REFERENCE.SOURCE",
                 bid_price: 9_000.0,
                 ask_price: 9_002.0,
-                ts_event_unix_nanos: 2_500_000_000,
+                ts_event_unix_nanos: 3_600_000_000,
             },
             BinaryOracleReferenceQuoteObservationSource {
                 data_client_id: "reference_data_client",

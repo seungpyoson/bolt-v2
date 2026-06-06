@@ -99,6 +99,7 @@ impl VenueTimingState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TakerPricingState {
     pub(crate) last_reference_fair_value: Option<f64>,
+    pub(crate) last_reference_observed_ts_ms: Option<u64>,
     pub(crate) fast_spot: Option<FastSpotObservation>,
     pub(crate) realized_vol: RealizedVolEstimator,
     pub(crate) realized_vol_source_venue: Option<String>,
@@ -120,6 +121,7 @@ impl TakerPricingState {
     pub fn from_config(config: &TakerPricingConfig<'_>) -> Self {
         Self {
             last_reference_fair_value: None,
+            last_reference_observed_ts_ms: None,
             fast_spot: None,
             realized_vol: RealizedVolEstimator::from_config(&config.realized_vol),
             realized_vol_source_venue: None,
@@ -140,7 +142,14 @@ impl TakerPricingState {
         if !is_positive_finite(quote.price) {
             return;
         }
+        if self
+            .last_reference_observed_ts_ms
+            .is_some_and(|last_ts_ms| quote.observed_ts_ms <= last_ts_ms)
+        {
+            return;
+        }
 
+        self.last_reference_observed_ts_ms = Some(quote.observed_ts_ms);
         self.last_reference_fair_value = Some(quote.price);
     }
 
@@ -420,6 +429,24 @@ impl TakerPricingState {
 mod tests {
     use super::*;
 
+    const TEST_VOL_WINDOW_SECS: u64 = 60;
+    const TEST_LEAD_AGREEMENT_MIN_CORR: f64 = 0.80;
+    const TEST_LEAD_JITTER_MAX_MS: u64 = 1_000;
+    const TEST_SPIKE_GUARD_RETURN_THRESHOLD: f64 = 0.10;
+    const TEST_SPIKE_GUARD_COOLDOWN_SECS: u64 = 2;
+    const TEST_CADENCE_SECONDS: u64 = 300;
+    const TEST_THETA_DECAY_FACTOR: f64 = 1.5;
+    const TEST_EDGE_THRESHOLD_BASIS_POINTS: i64 = 10;
+    const TEST_PRICING_KURTOSIS: f64 = 0.0;
+    const TEST_MIN_OBSERVATIONS_READY_AFTER_TWO_SAMPLES: u64 = 1;
+    const TEST_GAP_RESET_SECS: u64 = 30;
+    const TEST_BRIDGE_VALID_SECS: u64 = 10;
+    const TEST_NEWER_REFERENCE_PRICE: f64 = 100.0;
+    const TEST_STALE_REFERENCE_PRICE: f64 = 200.0;
+    const TEST_NEWER_REFERENCE_TS_MS: u64 = 1_000;
+    const TEST_STALE_REFERENCE_TS_MS: u64 = 900;
+    const TEST_SIGNAL_AFTER_REFERENCE_TS_MS: u64 = 1_100;
+
     fn config(
         min_observations: u64,
         gap_reset_secs: u64,
@@ -427,21 +454,29 @@ mod tests {
     ) -> TakerPricingConfig<'static> {
         TakerPricingConfig {
             realized_vol: RealizedVolConfig {
-                window_secs: 60,
+                window_secs: TEST_VOL_WINDOW_SECS,
                 gap_reset_secs,
                 min_observations,
                 bridge_valid_secs,
             },
-            lead_agreement_min_corr: 0.80,
-            lead_jitter_max_ms: 1_000,
-            spike_guard_return_threshold: 0.10,
-            spike_guard_cooldown_secs: 2,
-            cadence_seconds: 300,
-            theta_decay_factor: 1.5,
-            edge_threshold_basis_points: 10,
-            pricing_kurtosis: 0.0,
-            rotating_market_family: "updown",
+            lead_agreement_min_corr: TEST_LEAD_AGREEMENT_MIN_CORR,
+            lead_jitter_max_ms: TEST_LEAD_JITTER_MAX_MS,
+            spike_guard_return_threshold: TEST_SPIKE_GUARD_RETURN_THRESHOLD,
+            spike_guard_cooldown_secs: TEST_SPIKE_GUARD_COOLDOWN_SECS,
+            cadence_seconds: TEST_CADENCE_SECONDS,
+            theta_decay_factor: TEST_THETA_DECAY_FACTOR,
+            edge_threshold_basis_points: TEST_EDGE_THRESHOLD_BASIS_POINTS,
+            pricing_kurtosis: TEST_PRICING_KURTOSIS,
+            rotating_market_family: bolt_v3_market_families::updown::KEY,
         }
+    }
+
+    fn reference_venue() -> &'static str {
+        std::any::type_name::<FastSpotObservation>()
+    }
+
+    fn signal_venue() -> &'static str {
+        std::any::type_name::<TakerPricingState>()
     }
 
     fn quote(venue: &str, price: f64, observed_ts_ms: u64) -> FastSpotObservation {
@@ -459,7 +494,7 @@ mod tests {
         price: f64,
         observed_ts_ms: u64,
     ) {
-        pricing.observe_reference_quote(&quote("reference", price, observed_ts_ms));
+        pricing.observe_reference_quote(&quote(reference_venue(), price, observed_ts_ms));
         pricing.observe_signal_quote(&quote(venue, price, observed_ts_ms), config);
     }
 
@@ -478,6 +513,49 @@ mod tests {
         assert_eq!(pricing.last_lead_agreement_corr, None);
         assert_eq!(pricing.last_fast_venue_age_ms, Some(INITIAL_COUNTER_U64));
         assert_eq!(pricing.last_fast_venue_jitter_ms, Some(INITIAL_COUNTER_U64));
+    }
+
+    #[test]
+    fn out_of_order_reference_quote_does_not_overwrite_newer_fair_value() {
+        let config = config(
+            TEST_MIN_OBSERVATIONS_READY_AFTER_TWO_SAMPLES,
+            TEST_GAP_RESET_SECS,
+            TEST_BRIDGE_VALID_SECS,
+        );
+        let mut pricing = TakerPricingState::from_config(&config);
+
+        pricing.observe_reference_quote(&quote(
+            reference_venue(),
+            TEST_NEWER_REFERENCE_PRICE,
+            TEST_NEWER_REFERENCE_TS_MS,
+        ));
+        pricing.observe_reference_quote(&quote(
+            reference_venue(),
+            TEST_STALE_REFERENCE_PRICE,
+            TEST_STALE_REFERENCE_TS_MS,
+        ));
+        pricing.observe_signal_quote(
+            &quote(
+                signal_venue(),
+                TEST_NEWER_REFERENCE_PRICE,
+                TEST_SIGNAL_AFTER_REFERENCE_TS_MS,
+            ),
+            &config,
+        );
+
+        assert_eq!(
+            pricing.last_reference_fair_value,
+            Some(TEST_NEWER_REFERENCE_PRICE)
+        );
+        assert_eq!(
+            pricing.last_reference_observed_ts_ms,
+            Some(TEST_NEWER_REFERENCE_TS_MS)
+        );
+        assert_eq!(
+            pricing.fast_spot.as_ref().map(|spot| spot.price),
+            Some(TEST_NEWER_REFERENCE_PRICE)
+        );
+        assert!(!pricing.fast_venue_incoherent);
     }
 
     #[test]

@@ -24,7 +24,21 @@
     "No execution-quality, queue-position, or order-book-liquidity claims.",
     "No L2/L3 order-book replay claims from trade prints.",
     "Coverage is limited to BNBUSDC spot 2026-03-01; no multi-day or multi-instrument claims.",
-    "operator-attested reference result; not reproduced in CI."
+    "operator-attested reference result; not reproduced in CI.",
+    "NT defaulted surface engine.config nt_field=BacktestRunConfig.engine resolved_value=BacktestEngineConfig::default(run_analysis=true,bypass_logging=false)",
+    "NT defaulted surface run.chunk_size nt_field=BacktestRunConfig.chunk_size resolved_value=None",
+    "NT defaulted surface run.raise_exception nt_field=BacktestRunConfig.raise_exception resolved_value=false",
+    "NT defaulted surface run.dispose_on_completion nt_field=BacktestRunConfig.dispose_on_completion resolved_value=true",
+    "NT pass_through surface run.id nt_field=BacktestRunConfig.id resolved_value=backtesting-vertical-slice-bnbusdc-2026-03-01",
+    "NT pass_through surface run.start nt_field=BacktestRunConfig.start resolved_value=None",
+    "NT pass_through surface run.end nt_field=BacktestRunConfig.end resolved_value=None",
+    "NT unsupported_for_now surface venue.leverages resolved_value=requests_rejected_before_nt_config",
+    "NT unsupported_for_now surface venue.margin_model resolved_value=requests_rejected_before_nt_config",
+    "NT unsupported_for_now surface venue.modules resolved_value=requests_rejected_before_nt_config",
+    "NT unsupported_for_now surface venue.fill_model resolved_value=requests_rejected_before_nt_config",
+    "NT unsupported_for_now surface venue.latency_model resolved_value=requests_rejected_before_nt_config",
+    "NT unsupported_for_now surface venue.fee_model resolved_value=requests_rejected_before_nt_config",
+    "NT unsupported_for_now surface venue.settlement_prices resolved_value=requests_rejected_before_nt_config"
   ],
   "warnings": [
     "No orders were placed: the accepted data is trade-only and carries no quote ticks, and the configured strategy's order entry is quote-driven. NautilusTrader still aggregated the accepted trades into bars and ran the strategy's signal logic. This reflects the TRADE_REPLAY fidelity of the source, not a defect."

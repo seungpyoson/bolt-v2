@@ -340,7 +340,34 @@ fn accepted_data_flows_through_to_objective_result_contract() {
         "warning must explain the trade-only fidelity: {:?}",
         contract.warnings[0]
     );
-    assert_eq!(contract.claim_limits.len(), 3);
+    assert!(
+        contract.claim_limits.iter().any(|limit| {
+            limit.contains("NT defaulted surface run.chunk_size")
+                && limit.contains("resolved_value=None")
+        }),
+        "contract must record resolved NT defaults in claim limits: {:?}",
+        contract.claim_limits
+    );
+    assert!(
+        contract.claim_limits.iter().any(|limit| {
+            limit.contains("NT pass_through surface run.id")
+                && limit.contains("backtesting-vertical-slice-end-to-end")
+        }),
+        "contract must record TOML-to-NT pass-through surfaces: {:?}",
+        contract.claim_limits
+    );
+    assert!(
+        contract
+            .claim_limits
+            .iter()
+            .any(|limit| { limit.contains("NT unsupported_for_now surface venue.fill_model") }),
+        "contract must record unsupported NT surfaces: {:?}",
+        contract.claim_limits
+    );
+    assert!(
+        contract.claim_limits.len() > 3,
+        "contract must retain source limits and add NT surface limits"
+    );
     assert_eq!(contract.catalog_hash, output.projection.catalog_hash);
 }
 

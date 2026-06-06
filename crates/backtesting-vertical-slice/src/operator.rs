@@ -1344,6 +1344,26 @@ mod tests {
     }
 
     #[test]
+    fn committed_result_contract_records_nt_extension_surface_claim_limits() {
+        let contract: BacktestResultContract =
+            serde_json::from_str(COMMITTED_RESULT_CONTRACT).expect("result contract parses");
+        assert!(contract.claim_limits.iter().any(|limit| {
+            limit.contains("NT defaulted surface run.chunk_size")
+                && limit.contains("resolved_value=None")
+        }));
+        assert!(contract.claim_limits.iter().any(|limit| {
+            limit.contains("NT pass_through surface run.id")
+                && limit.contains("backtesting-vertical-slice-bnbusdc-2026-03-01")
+        }));
+        assert!(
+            contract
+                .claim_limits
+                .iter()
+                .any(|limit| { limit.contains("NT unsupported_for_now surface venue.fill_model") })
+        );
+    }
+
+    #[test]
     fn committed_accepted_proof_deserializes() {
         let proof: SourceProofReport =
             serde_json::from_str(COMMITTED_ACCEPTED_PROOF).expect("accepted proof parses");

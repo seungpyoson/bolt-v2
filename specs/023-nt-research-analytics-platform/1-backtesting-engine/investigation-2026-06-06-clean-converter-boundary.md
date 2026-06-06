@@ -34,7 +34,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - published artifacts are create-only: the operator preflights the bounded target artifact set and writes through object-store `PutMode::Create`, so an existing published artifact rejects the run instead of being overwritten
 - publish flows resolve and validate artifact-store options before reading the accepted object, so missing S3/SSM setup cannot waste local object I/O on large accepted objects
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
-- the current `BacktestExtensionSurface` classification is recorded in `backtest-extension-surface-matrix.md`; supported primitive NT controls are TOML pass-throughs, Bolt-owned pieces are provenance/governance boundaries, and unmodeled NT model/system surfaces fail before NT config construction
+- the current `BacktestExtensionSurface` classification is recorded in `backtest-extension-surface-matrix.md`; supported primitive NT controls are TOML pass-throughs, Bolt-owned pieces are provenance/governance boundaries, unmodeled NT model/system surfaces fail before NT config construction, and result contracts now carry claim-limit entries for resolved NT defaults, pass-through run fields, and unsupported NT surfaces
 
 No-go for broader production claims:
 
@@ -252,7 +252,9 @@ GREEN checks after implementation:
 - `just bte-test acceptance_blocked_when_structured_scope_summary_missing`: RED failed with `E0609` because `SourceProofReport` had no `acceptance_scope` field; GREEN passed after adding structured scope facts and requiring them before proof acceptance
 - `just bte-test acceptance_blocked_when_structured_scope_summary_has_failures_or_scope_violations`: RED failed because `evaluate_acceptance()` returned `Ok(())` with `failed_objects = 1`; GREEN passed after rejecting failed objects and selector-scope violations in the structured scope summary
 - `just bte-test ledger_rejects_object_bytes_exceeding_structured_acceptance_scope`: RED failed because `select_accepted_dataset()` admitted an object whose bytes exceeded `acceptance_scope.accepted_bytes`; GREEN passed after object selection compares selected object bytes against the structured accepted byte count
-- `just bte-test`: 216 passed, including 2 slow public API tests
+- `just bte-test --test backtesting_vertical_slice_end_to_end accepted_data_flows_through_to_objective_result_contract`: RED failed because the result contract claim limits carried only source-fidelity limits and no NT surface/default records; GREEN passed after generated result contracts appended resolved NT default, pass-through, and unsupported-surface claim-limit entries derived from `BacktestRunConfig`
+- `just bte-test committed_result_contract_records_nt_extension_surface_claim_limits`: RED failed because the checked-in reference result contract lacked NT extension-surface claim limits; GREEN passed after updating the reference fixture
+- `just bte-test`: 217 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed

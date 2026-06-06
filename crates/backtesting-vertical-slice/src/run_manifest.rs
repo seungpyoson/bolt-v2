@@ -38,6 +38,16 @@ pub const STRATEGY_PARAM_BAR_TYPE: &str = "bar_type";
 pub const STRATEGY_PARAM_TRADE_SIZE: &str = "trade_size";
 /// Explicit manifest value for no catalog filesystem protocol.
 pub const CATALOG_FS_PROTOCOL_NONE: &str = "NONE";
+/// NT venue-model surfaces declared in TOML but rejected until typed mappings exist.
+pub const UNSUPPORTED_NT_VENUE_SURFACES: &[&str] = &[
+    "leverages",
+    "margin_model",
+    "modules",
+    "fill_model",
+    "latency_model",
+    "fee_model",
+    "settlement_prices",
+];
 
 const CATALOG_STORAGE_OPTIONS_SHADOWED: &str =
     "cannot be combined with catalog_fs_rust_storage_options";
@@ -974,13 +984,22 @@ fn ensure_unsupported_nt_venue_surfaces_absent(
     venue: &ManifestVenueConfig,
 ) -> Result<(), ManifestError> {
     for (field, present) in [
-        ("leverages", venue.leverages.is_some()),
-        ("margin_model", venue.margin_model.is_some()),
-        ("modules", venue.modules.is_some()),
-        ("fill_model", venue.fill_model.is_some()),
-        ("latency_model", venue.latency_model.is_some()),
-        ("fee_model", venue.fee_model.is_some()),
-        ("settlement_prices", venue.settlement_prices.is_some()),
+        (UNSUPPORTED_NT_VENUE_SURFACES[0], venue.leverages.is_some()),
+        (
+            UNSUPPORTED_NT_VENUE_SURFACES[1],
+            venue.margin_model.is_some(),
+        ),
+        (UNSUPPORTED_NT_VENUE_SURFACES[2], venue.modules.is_some()),
+        (UNSUPPORTED_NT_VENUE_SURFACES[3], venue.fill_model.is_some()),
+        (
+            UNSUPPORTED_NT_VENUE_SURFACES[4],
+            venue.latency_model.is_some(),
+        ),
+        (UNSUPPORTED_NT_VENUE_SURFACES[5], venue.fee_model.is_some()),
+        (
+            UNSUPPORTED_NT_VENUE_SURFACES[6],
+            venue.settlement_prices.is_some(),
+        ),
     ] {
         if present {
             return Err(ManifestError::UnsupportedNtSurface { field });

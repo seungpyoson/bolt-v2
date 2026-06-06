@@ -1326,6 +1326,39 @@ mod tests {
     }
 
     #[test]
+    fn alternate_venue_provider_swap_is_toml_only() {
+        let mut accepted = accepted_dataset();
+        accepted.source_binding = "alt-native-trades".to_string();
+        accepted.source_proof_id = "source-proof-alt-native-trades".to_string();
+        accepted.venue = "altvenue".to_string();
+
+        let mut manifest = valid_manifest();
+        manifest.run_id = "backtesting-vertical-slice-altvenue-2026-03-01".to_string();
+        manifest.venue_binding_key = accepted.source_binding.clone();
+        manifest.source_proof_id = accepted.source_proof_id.clone();
+        manifest.venue.nt_venue = "ALTVENUE".to_string();
+        manifest.strategy.parameters.insert(
+            "bar_type".to_string(),
+            "ALTUSD.ALTVENUE-1-MINUTE-LAST-INTERNAL".to_string(),
+        );
+        manifest.catalog_input.nt_instrument_id = "ALTUSD.ALTVENUE".to_string();
+        manifest.output_prefix =
+            "s3://bolt-parquet/nt-research-analytics/backtests/altvenue".to_string();
+
+        manifest
+            .validate(&accepted)
+            .expect("alternate TOML-only venue/provider binding");
+        let venue = manifest.to_nt_venue_config().expect("venue config");
+        let data = manifest.to_nt_data_config().expect("data config");
+
+        assert_eq!(venue.name().as_str(), "ALTVENUE");
+        assert_eq!(
+            data.instrument_id().expect("instrument id").to_string(),
+            "ALTUSD.ALTVENUE"
+        );
+    }
+
+    #[test]
     fn data_config_maps_catalog_cloud_options() {
         let mut manifest = valid_manifest();
         manifest.catalog_input.catalog_path =

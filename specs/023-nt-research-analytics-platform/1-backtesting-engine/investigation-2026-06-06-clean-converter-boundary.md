@@ -182,6 +182,7 @@ GREEN checks after implementation:
 - `just bte-test artifact_store_resolves_s3_credentials_from_ssm_parameters artifact_store_rejects_raw_s3_credentials_in_toml published_catalog_manifest_uses_resolved_artifact_store_options production_rust_does_not_hardcode_sample_venue_or_instrument cli_published_catalog_proof_requires_publish_output`: 5 passed
 - `just bte-test run_from_run_spec_and_publish_rejects_s3_without_ssm_before_running_backtest artifact_store_rejects_s3_publish_without_resolved_ssm_credentials`: 2 passed
 - `just bte-test rejects_unsupported_nt_venue_model_surface_requests_before_nt_config rejects_unsupported_nt_engine_surface_requests_before_nt_config`: 2 passed
+- `just bte-test alternate_venue_provider_swap_is_toml_only`: 1 passed
 - `just bte-test`: 177 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed

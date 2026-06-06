@@ -12,7 +12,7 @@ prove scope or behavior.
 
 ## Baselines (current-main, to be re-confirmed at each slice HEAD)
 
-| File | Lines @ 2938bc6f | Tests |
+| File | Size telemetry @ 2938bc6f | Tests |
 |---|---:|---:|
 | `src/strategies/binary_oracle_edge_taker.rs` | 18,205 | 229 |
 | `src/bolt_v3_operator_artifacts.rs` | 17,466 | 5 |

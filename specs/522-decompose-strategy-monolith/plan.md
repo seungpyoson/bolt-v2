@@ -4,9 +4,9 @@
 
 ## Summary
 
-Behavior-preserving decomposition of `binary_oracle_edge_taker.rs` (18,205 lines) and
-`bolt_v3_operator_artifacts.rs` (17,466 lines) into focused modules and intended
-shared helpers, slice by slice, each behind the per-slice gate in `spec.md`. The
+Behavior-preserving decomposition of `binary_oracle_edge_taker.rs` and
+`bolt_v3_operator_artifacts.rs` into focused modules and intended shared helpers,
+slice by slice, each behind the per-slice gate in `spec.md`. The
 strategy file converges to a directory module: `strategies/binary_oracle_edge_taker/`
 with `mod.rs` (struct + `DataActor` orchestration + intent/signal glue) plus
 submodules; genuinely shared, agnostic math/state moves to `src/` shared modules the

@@ -704,6 +704,7 @@ fn source_binding_source_uri(source_binding: &str, venue: &str) -> Option<String
         .ok()?
         .source_bindings
         .into_iter()
+        // Binding keys are canonical config IDs; venue labels are operator-facing names.
         .find(|binding| binding.key == source_binding && binding.venue.eq_ignore_ascii_case(venue))
         .map(|binding| binding.source_uri)
 }
@@ -1104,6 +1105,21 @@ mod tests {
         let mut object = manifest_object();
         object.source_url =
             "https://data.bybit.co.uk/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn select_rejects_unknown_source_binding() {
+        let mut candidate = candidate_proof();
+        candidate.source_binding = "bybit-does-not-exist".to_string();
+        let accepted = candidate
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let object = manifest_object();
         let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
         assert!(
             matches!(err, AcceptanceError::SourceVenueMismatch { .. }),

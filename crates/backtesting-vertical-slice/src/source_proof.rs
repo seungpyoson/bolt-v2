@@ -327,6 +327,8 @@ pub enum AcceptanceError {
     MalformedCoverageBound { field: &'static str, value: String },
     /// The object's source provenance does not reference the proof's venue.
     SourceVenueMismatch { venue: String, source_url: String },
+    /// The evidence state is not allowed for accepted canonical backfill input.
+    EvidenceStateNotBackfillable(EvidenceState),
 }
 
 impl std::fmt::Display for AcceptanceError {
@@ -389,6 +391,12 @@ impl std::fmt::Display for AcceptanceError {
                 write!(
                     f,
                     "object source_url {source_url:?} does not reference proof venue {venue:?}"
+                )
+            }
+            Self::EvidenceStateNotBackfillable(evidence_state) => {
+                write!(
+                    f,
+                    "evidence_state {evidence_state:?} is not backfillable for accepted source proof"
                 )
             }
         }
@@ -458,6 +466,7 @@ impl SourceProofReport {
             return Err(AcceptanceError::ProofRejected);
         }
         self.check_required_identity()?;
+        ensure_backfillable_evidence_state(self.evidence_state)?;
         ensure_coverage_within_requested(&self.requested_time_range, &self.coverage_time_range)?;
         if self.nt_mapping_status != NtMappingStatus::Accepted {
             return Err(AcceptanceError::NtMappingNotAccepted(
@@ -728,6 +737,15 @@ fn https_host(source_url: &str) -> Option<&str> {
         .trim_matches(['[', ']'])
         .trim_matches('.');
     if host.is_empty() { None } else { Some(host) }
+}
+
+fn ensure_backfillable_evidence_state(
+    evidence_state: EvidenceState,
+) -> Result<(), AcceptanceError> {
+    match evidence_state {
+        EvidenceState::DirectlyBackfillable | EvidenceState::OwnerArchiveBackfillable => Ok(()),
+        other => Err(AcceptanceError::EvidenceStateNotBackfillable(other)),
+    }
 }
 
 fn ensure_coverage_within_requested(
@@ -1310,6 +1328,28 @@ mod tests {
             proof.evaluate_acceptance().unwrap_err(),
             AcceptanceError::NtMappingNotAccepted(NtMappingStatus::Pending)
         );
+    }
+
+    #[test]
+    fn acceptance_blocked_when_evidence_state_is_not_backfillable() {
+        for evidence_state in [
+            EvidenceState::BoundedOrCurrentOnly,
+            EvidenceState::PendingSourceProof,
+            EvidenceState::VendorOrForwardCaptureOnly,
+            EvidenceState::NotApplicable,
+            EvidenceState::ExcludedFromCurrentScope,
+        ] {
+            let mut proof = candidate_proof();
+            proof.evidence_state = evidence_state;
+
+            let err = proof.evaluate_acceptance().unwrap_err();
+
+            assert!(
+                err.to_string().contains("evidence_state")
+                    && err.to_string().contains("backfillable"),
+                "{evidence_state:?}: {err}"
+            );
+        }
     }
 
     #[test]

@@ -24,6 +24,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - the pinned `object_store = 0.13.2` API exposes `PutMode::Create` and `PutMode::Update(UpdateVersion)` for optimistic-concurrency metadata commits; its AWS backend maps the canonical `conditional_put = "etag"` option to `If-None-Match: *` create-only writes and `If-Match: <etag>` updates, and the manifest now preserves that option while rejecting `conditional_put = "disabled"` for S3 artifact-store commits
 - Artifact lifecycle config now rejects default delete/expiration rules, requires `active`/`archive`/`deep_archive` storage profiles, and derives active-to-inactive state from a configured quiet window
 - S3 catalog storage options now fail before NT config construction if generic and Rust-specific maps are both set, or if an S3 option key is not supported by this pinned NT revision
+- source-proof acceptance now enforces the schema rule that accepted canonical backfill input must use `directly_backfillable` or `owner_archive_backfillable`; bounded/current-only, pending, vendor/forward-capture-only, not-applicable, or excluded evidence states cannot become accepted BTE input
 - the CLI has an explicit `--publish-output` opt-in that copies the verified local artifact tree to `manifest.output_prefix` through NT/object-store plumbing after the local run succeeds
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
 - the current `BacktestExtensionSurface` classification is recorded in `backtest-extension-surface-matrix.md`; supported primitive NT controls are TOML pass-throughs, Bolt-owned pieces are provenance/governance boundaries, and unmodeled NT model/system surfaces fail before NT config construction
@@ -170,6 +171,7 @@ RED checks observed before implementation:
 - `just bte-test run_from_run_spec_rejects_unregistered_converter_version` failed because converter version `2` still executed the v1 adapter
 - `just bte-test run_from_run_spec_uses_configured_csv_trade_mapping` failed with missing `ConverterConfig.csv`, proving raw CSV column mapping was not yet config-owned
 - `just bte-test run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them` failed with missing `converter_config_hash` on converter config, conversion fingerprint, and result contract
+- `just bte-test acceptance_blocked_when_evidence_state_is_not_backfillable` failed because `evaluate_acceptance()` still admitted accepted source proofs whose `evidence_state` was bounded/current-only, pending, vendor/forward-capture-only, not-applicable, or excluded
 
 GREEN checks after implementation:
 
@@ -201,7 +203,8 @@ GREEN checks after implementation:
 - `just bte-test cross_kind_parent_resolution_uses_manifest_lineage_hashes cross_kind_parent_resolution_rejects_independent_latest_parent_hash`: RED failed with missing lineage-parent resolver, then GREEN passed after adding manifest-lineage parent resolution by artifact id and `sha256` hash
 - `just bte-test immutable_event_create_is_idempotent_for_same_payload immutable_event_create_rejects_different_payload_at_same_uri`: RED failed with missing event object/create-plan contract types, then GREEN passed after adding the pure immutable event-create helper
 - `just bte-test data_config_preserves_configured_object_store_conditional_put artifact_store_preserves_conditional_put_after_ssm_resolution artifact_store_rejects_disabled_conditional_put_for_s3_commit_path`: RED failed because the manifest rejected `conditional_put`; GREEN passed after preserving canonical `conditional_put = "etag"` through NT/object-store options and rejecting `disabled` for S3 Artifact Index commit readiness
-- `just bte-test`: 202 passed, including 2 slow public API tests
+- `just bte-test acceptance_blocked_when_evidence_state_is_not_backfillable`: GREEN passed after source-proof acceptance began rejecting non-backfillable evidence states
+- `just bte-test`: 203 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed
@@ -272,6 +275,12 @@ Confirmed root causes:
   aggTrades conversion, and bounded staged object reads. Those fixes are
   necessary evidence, not permission to rerun broad conversion without scope
   gates.
+- Source-proof schema mismatch: `backfill-source-proof.v1` says accepted
+  canonical backfill claims require `directly_backfillable` or
+  `owner_archive_backfillable`, but the Rust acceptance gate previously did not
+  enforce that field. That meant a bounded/current-only, pending-source-proof,
+  vendor/forward-capture-only, not-applicable, or excluded record could pass
+  `evaluate_acceptance()` if its required checks were otherwise marked passed.
 
 No-repeat controls before any future broad backfill or BTE conversion:
 
@@ -296,13 +305,16 @@ No-repeat controls before any future broad backfill or BTE conversion:
 9. Treat raw S3 objects without completed accepted manifests as physical
    evidence only, not backtest input.
 10. Convert to NT catalog only after source proof, normalized row contract,
-   instrument metadata, and gap policy are accepted.
+    instrument metadata, and gap policy are accepted.
 11. For this BTE branch, do not run a broad historical backfill. The only
     admissible next runtime proof is the single accepted BNBUSDC object unless
     a separate source proof and bounded plan are accepted first.
 12. Adding a compatible native-trade CSV source must mean adding source proof
     plus `[converter.csv]` mapping, not adding venue branches to operator,
     runner, result contract, catalog projection, or NT execution code.
+13. Accepted source proofs must carry a backfillable evidence state; bounded or
+    pending evidence may be recorded for research, but not promoted into
+    canonical BTE input.
 
 
 ## Recommendation

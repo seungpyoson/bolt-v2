@@ -1,0 +1,1600 @@
+#![cfg(test)]
+
+use super::*;
+
+pub(super) fn find_error<'a>(
+    errors: &'a [ValidationError],
+    field: &str,
+    code: &'static str,
+) -> &'a ValidationError {
+    errors
+        .iter()
+        .find(|e| e.field == field && e.code == code)
+        .unwrap_or_else(|| panic!("missing error {field} / {code}: {errors:?}"))
+}
+
+pub(super) fn valid_raw_config() -> Value {
+    toml::toml! {
+        strategy_id = "BINARYORACLEEDGETAKER-001"
+        order_id_tag = "001"
+        oms_type = "netting"
+        client_id = "POLYMARKET"
+        configured_target_id = "configured_updown_target"
+        target_kind = "rotating_market"
+        rotating_market_family = "updown"
+        underlying_asset = "CONFIGURED_ASSET"
+        cadence_seconds = 300
+        cadence_slug_token = "configuredwindow"
+        market_selection_rule = "active_or_next"
+        retry_interval_seconds = 5
+        blocked_after_seconds = 60
+        reference_venue = "reference_data_client"
+        reference_instrument_id = "REFERENCE.SOURCE"
+        signal_venue = "signal_data_client"
+        signal_instrument_id = "SIGNAL.SOURCE"
+        use_uuid_client_order_ids = true
+        use_hyphens_in_client_order_ids = false
+        external_order_claims = ["AUXILIARY.SOURCE"]
+        manage_contingent_orders = true
+        manage_gtd_expiry = true
+        manage_stop = true
+        market_exit_interval_ms = 250
+        market_exit_max_attempts = 7
+        log_events = false
+        log_commands = false
+        log_rejected_due_post_only_as_warning = false
+        warmup_tick_count = 20
+        reentry_cooldown_secs = 30
+        order_notional_target = 1000.0
+        maximum_position_notional = 1000.0
+        book_impact_cap_bps = 15
+        risk_lambda = 0.5
+        edge_threshold_basis_points = -20
+        exit_hysteresis_bps = 5
+        vol_window_secs = 60
+        vol_gap_reset_secs = 10
+        vol_min_observations = 20
+        vol_bridge_valid_secs = 10
+        trade_flow_window_secs = 30
+        trade_flow_max_samples = 100
+        spike_guard_return_threshold = 0.05
+        spike_guard_cooldown_secs = 5
+        price_to_beat_source = "chainlink_data_streams.report_at_boundary"
+        pricing_kurtosis = 0.0
+        theta_decay_factor = 0.0
+        forced_flat_stale_reference_ms = 1500
+        forced_flat_thin_book_min_liquidity = 100.0
+        lead_agreement_min_corr = 0.8
+        lead_jitter_max_ms = 250
+
+        [entry_order]
+        side = "buy"
+        position_side = "long"
+        order_type = "limit"
+        time_in_force = "fok"
+        is_post_only = false
+        is_reduce_only = false
+        is_quote_quantity = false
+
+        [forced_exit_order]
+        side = "sell"
+        position_side = "long"
+        order_type = "market"
+        time_in_force = "ioc"
+        is_post_only = false
+        is_reduce_only = false
+        is_quote_quantity = false
+
+        [exit_order]
+        side = "sell"
+        position_side = "long"
+        order_type = "market"
+        time_in_force = "ioc"
+        is_post_only = false
+        is_reduce_only = false
+        is_quote_quantity = false
+    }
+    .into()
+}
+
+#[derive(Debug, Default)]
+pub(super) struct RecordingFeeProvider {
+    fees: Mutex<HashMap<String, Decimal>>,
+    entry_fees: Mutex<HashMap<String, Decimal>>,
+    warm_calls: Mutex<Vec<String>>,
+}
+
+impl RecordingFeeProvider {
+    pub(super) fn cold() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Build a provider that yields `fee_bps` for `instrument_id`. The
+    /// submit-admission path resolves the fee-inclusive notional through
+    /// `FeeProvider::max_entry_fee_bps`, which falls back to `fee_bps` in
+    /// `#[cfg(test)]` when the NT cache holds no instrument, so seeding the
+    /// fee here is sufficient to exercise the fee-inclusive cap check
+    /// without registering a full cache.
+    pub(super) fn with_fee(instrument_id: &str, fee_bps: Decimal) -> Arc<Self> {
+        let provider = Arc::new(Self::default());
+        provider.set_fee(instrument_id, fee_bps);
+        provider
+    }
+
+    pub(super) fn set_fee(&self, instrument_id: &str, fee_bps: Decimal) {
+        self.fees
+            .lock()
+            .expect("recording fee provider mutex poisoned")
+            .insert(instrument_id.to_string(), fee_bps);
+    }
+
+    pub(super) fn set_entry_fee_bps(&self, instrument_id: &str, fee_bps: Decimal) {
+        self.entry_fees
+            .lock()
+            .expect("recording fee provider mutex poisoned")
+            .insert(instrument_id.to_string(), fee_bps);
+    }
+
+    pub(super) fn warm_calls(&self) -> Vec<String> {
+        self.warm_calls
+            .lock()
+            .expect("recording fee provider mutex poisoned")
+            .clone()
+    }
+}
+
+impl FeeProvider for RecordingFeeProvider {
+    fn fee_bps(&self, instrument_id: InstrumentId) -> Option<Decimal> {
+        self.fees
+            .lock()
+            .expect("recording fee provider mutex poisoned")
+            .get(instrument_id.to_string().as_str())
+            .copied()
+    }
+
+    fn entry_fee_bps(&self, instrument: &InstrumentAny, _entry_price: Decimal) -> Option<Decimal> {
+        self.entry_fees
+            .lock()
+            .expect("recording fee provider mutex poisoned")
+            .get(instrument.id().to_string().as_str())
+            .copied()
+            .or_else(|| self.fee_bps(instrument.id()))
+    }
+
+    fn warm(&self, instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
+        self.warm_calls
+            .lock()
+            .expect("recording fee provider mutex poisoned")
+            .push(instrument_id.to_string());
+        async { Ok(()) }.boxed()
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct RecordingDecisionEvidenceWriter;
+
+impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
+    for RecordingDecisionEvidenceWriter
+{
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_order_intent(
+        &self,
+        _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(
+        &self,
+        _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct FailingDecisionEvidenceWriter;
+
+impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
+    for FailingDecisionEvidenceWriter
+{
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+    ) -> Result<()> {
+        anyhow::bail!("strategy input snapshot write failed")
+    }
+
+    fn record_order_intent(
+        &self,
+        _intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("intent write failed")
+    }
+
+    fn record_admission_decision(
+        &self,
+        _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("admission decision write failed")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum RecordedDecisionEvidenceEvent {
+    StrategyInput(Box<crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot>),
+    OrderIntent(Box<crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence>),
+    AdmissionDecision(crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence),
+}
+
+#[derive(Debug, Default)]
+pub(super) struct RecordingSequencedDecisionEvidenceWriter {
+    events: Mutex<Vec<RecordedDecisionEvidenceEvent>>,
+}
+
+impl RecordingSequencedDecisionEvidenceWriter {
+    pub(super) fn events(&self) -> Vec<RecordedDecisionEvidenceEvent> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .clone()
+    }
+}
+
+impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
+    for RecordingSequencedDecisionEvidenceWriter
+{
+    fn record_strategy_input_snapshot(
+        &self,
+        snapshot: &crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+    ) -> Result<()> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::StrategyInput(Box::new(
+                snapshot.clone(),
+            )));
+        Ok(())
+    }
+
+    fn record_order_intent(
+        &self,
+        intent: &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
+    ) -> Result<()> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::OrderIntent(Box::new(
+                intent.clone(),
+            )));
+        Ok(())
+    }
+
+    fn record_admission_decision(
+        &self,
+        decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
+    ) -> Result<()> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::AdmissionDecision(
+                decision.clone(),
+            ));
+        Ok(())
+    }
+}
+
+/// Execution venue of the binary-option market fixtures these tests trade against (their
+/// outcome instruments are `...POLYMARKET`). Production resolves the execution venue from
+/// config — `root.clients[execution_client_id].venue` — and is venue-agnostic (a HIP-4 or any
+/// other execution client works with no code change); these unit tests build the
+/// `StrategyBuildContext` directly without a root TOML, so they pin the venue to their fixtures
+/// in ONE place here rather than scattering the literal. A different-venue test would supply
+/// that venue plus matching instrument fixtures.
+pub(super) fn fixture_execution_venue() -> Venue {
+    Venue::from("POLYMARKET")
+}
+
+pub(super) fn test_readiness_gate_evidence()
+-> crate::bolt_v3_decision_evidence::BoltV3ReadinessGateEvidenceSnapshot {
+    crate::bolt_v3_decision_evidence::BoltV3ReadinessGateEvidenceSnapshot {
+        gate_session_hash: "gate-session-hash-one".to_string(),
+        selected_market_key: "selected-market-key-one".to_string(),
+        gate_evidence: BTreeMap::from([(
+            "resolution_price".to_string(),
+            crate::bolt_v3_decision_evidence::BoltV3GateEvidenceIdentity {
+                satisfaction_kind: "evidence".to_string(),
+                selected_market_key: "selected-market-key-one".to_string(),
+                provider_id: Some("provider-one".to_string()),
+                provider_kind: Some("chainlink_data_streams".to_string()),
+                value_kind: Some("price".to_string()),
+                normalized_value_sha256: Some("normalized-value-sha-one".to_string()),
+                provider_provenance_sha256: Some("provider-provenance-sha-one".to_string()),
+                artifact_sha256s: vec!["artifact-sha-one".to_string()],
+                resolution_identity: None,
+            },
+        )]),
+    }
+}
+
+pub(super) fn test_strategy() -> BinaryOracleEdgeTaker {
+    test_strategy_with_fee_provider(RecordingFeeProvider::cold())
+}
+
+pub(super) fn register_test_strategy(strategy: &mut BinaryOracleEdgeTaker) -> Rc<RefCell<Cache>> {
+    let clock = Rc::new(RefCell::new(TestClock::new()));
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_200_u64 * NANOS_PER_MILLI_U64));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let cache_handle = cache.clone();
+    let portfolio = Rc::new(RefCell::new(Portfolio::new(
+        cache.clone(),
+        clock.clone(),
+        None,
+    )));
+    strategy
+        .core
+        .register(TraderId::from("TRADER-001"), clock, cache, portfolio)
+        .expect("test strategy should register with NT core");
+    cache_handle
+}
+
+pub(super) fn register_test_strategy_with_active_instruments(strategy: &mut BinaryOracleEdgeTaker) {
+    let cache = register_test_strategy(strategy);
+    add_active_instruments_to_cache(strategy, &cache);
+}
+
+pub(super) fn add_active_instruments_to_cache(
+    strategy: &BinaryOracleEdgeTaker,
+    cache: &Rc<RefCell<Cache>>,
+) {
+    let up_instrument_id = strategy
+        .active
+        .books
+        .up
+        .instrument_id
+        .expect("test strategy must have active up instrument");
+    let down_instrument_id = strategy
+        .active
+        .books
+        .down
+        .instrument_id
+        .expect("test strategy must have active down instrument");
+    let up_instrument_id = up_instrument_id.to_string();
+    let down_instrument_id = down_instrument_id.to_string();
+    let mut cache = cache.borrow_mut();
+    cache
+        .add_instrument(updown_binary_option(
+            &up_instrument_id,
+            "test-market-up",
+            "test-market",
+            "Up",
+            1_000,
+            1_300,
+        ))
+        .expect("test cache should accept active up instrument");
+    cache
+        .add_instrument(updown_binary_option(
+            &down_instrument_id,
+            "test-market-down",
+            "test-market",
+            "Down",
+            1_000,
+            1_300,
+        ))
+        .expect("test cache should accept active down instrument");
+}
+
+pub(super) fn test_strategy_with_fee_provider(
+    fee_provider: Arc<dyn FeeProvider>,
+) -> BinaryOracleEdgeTaker {
+    test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+        fee_provider,
+        Arc::new(RecordingDecisionEvidenceWriter),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        ),
+    )
+}
+
+pub(super) fn test_strategy_with_fee_provider_and_decision_evidence(
+    fee_provider: Arc<dyn FeeProvider>,
+    decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+) -> BinaryOracleEdgeTaker {
+    test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+        fee_provider,
+        decision_evidence,
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        ),
+    )
+}
+
+pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+    fee_provider: Arc<dyn FeeProvider>,
+    decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
+) -> BinaryOracleEdgeTaker {
+    BinaryOracleEdgeTaker::new(
+        BinaryOracleEdgeTakerConfig {
+            strategy_id: "BINARYORACLEEDGETAKER-001".to_string(),
+            order_id_tag: "001".to_string(),
+            oms_type: "netting".to_string(),
+            client_id: "POLYMARKET".to_string(),
+            configured_target_id: "configured_updown_target".to_string(),
+            target_kind: "rotating_market".to_string(),
+            rotating_market_family: "updown".to_string(),
+            underlying_asset: "CONFIGURED_ASSET".to_string(),
+            cadence_seconds: 300,
+            cadence_slug_token: "configuredwindow".to_string(),
+            market_selection_rule: "active_or_next".to_string(),
+            retry_interval_seconds: 5,
+            blocked_after_seconds: 60,
+            reference_venue: Some("reference_data_client".to_string()),
+            reference_instrument_id: Some("REFERENCE.SOURCE".to_string()),
+            signal_venue: Some("signal_data_client".to_string()),
+            signal_instrument_id: Some("SIGNAL.SOURCE".to_string()),
+            resolution_client_id: Some("CHAINLINK_DATA_STREAMS".to_string()),
+            resolution_instrument_id: Some("RESOLUTION.SOURCE".to_string()),
+            use_uuid_client_order_ids: true,
+            use_hyphens_in_client_order_ids: false,
+            external_order_claims: vec!["AUXILIARY.SOURCE".to_string()],
+            manage_contingent_orders: true,
+            manage_gtd_expiry: true,
+            manage_stop: true,
+            market_exit_interval_ms: 250,
+            market_exit_max_attempts: 7,
+            log_events: false,
+            log_commands: false,
+            log_rejected_due_post_only_as_warning: false,
+            entry_order: BinaryOracleEdgeTakerOrderConfig {
+                side: "buy".to_string(),
+                position_side: "long".to_string(),
+                order_type: OrderType::Limit,
+                time_in_force: TimeInForce::Fok,
+                expire_time_unix_nanos: None,
+                trigger_price: None,
+                activation_price: None,
+                trigger_type: None,
+                trigger_instrument_id: None,
+                trailing_offset: None,
+                trailing_offset_type: None,
+                is_post_only: false,
+                is_reduce_only: false,
+                is_quote_quantity: false,
+            },
+            exit_order: BinaryOracleEdgeTakerOrderConfig {
+                side: "sell".to_string(),
+                position_side: "long".to_string(),
+                order_type: OrderType::Market,
+                time_in_force: TimeInForce::Ioc,
+                expire_time_unix_nanos: None,
+                trigger_price: None,
+                activation_price: None,
+                trigger_type: None,
+                trigger_instrument_id: None,
+                trailing_offset: None,
+                trailing_offset_type: None,
+                is_post_only: false,
+                is_reduce_only: false,
+                is_quote_quantity: false,
+            },
+            forced_exit_order: BinaryOracleEdgeTakerOrderConfig {
+                side: "sell".to_string(),
+                position_side: "long".to_string(),
+                order_type: OrderType::Market,
+                time_in_force: TimeInForce::Ioc,
+                expire_time_unix_nanos: None,
+                trigger_price: None,
+                activation_price: None,
+                trigger_type: None,
+                trigger_instrument_id: None,
+                trailing_offset: None,
+                trailing_offset_type: None,
+                is_post_only: false,
+                is_reduce_only: false,
+                is_quote_quantity: false,
+            },
+            warmup_tick_count: 20,
+            reentry_cooldown_secs: 30,
+            order_notional_target: 1000.0,
+            maximum_position_notional: 1000.0,
+            book_impact_cap_bps: 15,
+            risk_lambda: 0.5,
+            edge_threshold_basis_points: -20,
+            exit_hysteresis_bps: 5,
+            vol_window_secs: 60,
+            vol_gap_reset_secs: 10,
+            vol_min_observations: 20,
+            vol_bridge_valid_secs: 10,
+            trade_flow_window_secs: 30,
+            trade_flow_max_samples: 100,
+            spike_guard_return_threshold: 0.05,
+            spike_guard_cooldown_secs: 5,
+            price_to_beat_source: "chainlink_data_streams.report_at_boundary".to_string(),
+            pricing_kurtosis: 0.0,
+            theta_decay_factor: 0.0,
+            forced_flat_stale_reference_ms: 1500,
+            forced_flat_thin_book_min_liquidity: 100.0,
+            lead_agreement_min_corr: 0.8,
+            lead_jitter_max_ms: 250,
+        },
+        StrategyBuildContext::new(
+            fee_provider,
+            decision_evidence,
+            submit_admission,
+            fixture_execution_venue(),
+        )
+        .with_readiness_evidence(test_readiness_gate_evidence()),
+    )
+}
+
+pub(super) fn quote_tick(instrument_id: &str, bid: f64, ask: f64, ts_ms: u64) -> QuoteTick {
+    QuoteTick::new_checked(
+        InstrumentId::from(instrument_id),
+        Price::new(bid, 2),
+        Price::new(ask, 2),
+        Quantity::new(1.0, 0),
+        Quantity::new(1.0, 0),
+        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+    )
+    .expect("test quote tick should be valid")
+}
+
+pub(super) fn trade_tick(
+    instrument_id: &str,
+    price: f64,
+    ts_ms: u64,
+) -> nautilus_model::data::TradeTick {
+    trade_tick_with_aggressor(
+        instrument_id,
+        price,
+        1.0,
+        nautilus_model::enums::AggressorSide::Buyer,
+        ts_ms,
+    )
+}
+
+pub(super) fn trade_tick_with_aggressor(
+    instrument_id: &str,
+    price: f64,
+    size: f64,
+    aggressor: nautilus_model::enums::AggressorSide,
+    ts_ms: u64,
+) -> nautilus_model::data::TradeTick {
+    nautilus_model::data::TradeTick::new_checked(
+        InstrumentId::from(instrument_id),
+        Price::new(price, 2),
+        Quantity::new(size, 0),
+        aggressor,
+        nautilus_model::identifiers::TradeId::from("TRADE-TICK-001"),
+        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+    )
+    .expect("test trade tick should be valid")
+}
+
+pub(super) fn live_canary_gate_report(
+    max_live_order_count: u32,
+    max_notional_per_order: Decimal,
+) -> crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport {
+    crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport::for_test(
+        max_live_order_count,
+        max_notional_per_order,
+    )
+}
+
+pub(super) fn submit_admission_armed_with_cap(
+    max_notional_per_order: Decimal,
+    decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+) -> Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState> {
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(decision_evidence),
+    );
+    submit_admission
+        .arm(live_canary_gate_report(1, max_notional_per_order))
+        .expect("valid gate report should arm submit admission");
+    submit_admission
+}
+
+pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
+    let mut strategy = test_strategy();
+    strategy.config.warmup_tick_count = 2;
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    strategy.active.price_to_beat = Some(3_100.0);
+    strategy.active.interval_open = Some(3_100.0);
+    strategy.active.warmup_count = 2;
+    strategy.active.last_reference_ts_ms = Some(1_200);
+    strategy.active.outcome_fees.up_ready = true;
+    strategy.active.outcome_fees.down_ready = true;
+    strategy.active.books.up.last_observed_instrument_id = strategy.active.books.up.instrument_id;
+    strategy
+        .active
+        .books
+        .up
+        .bid_levels
+        .insert(Price::new(0.43, 2), 500.0);
+    strategy
+        .active
+        .books
+        .up
+        .ask_levels
+        .insert(Price::new(0.45, 2), 500.0);
+    strategy.active.books.up.best_bid = Some(0.43);
+    strategy.active.books.up.best_ask = Some(0.45);
+    strategy.active.books.up.liquidity_available = Some(500.0);
+    strategy.active.books.down.last_observed_instrument_id =
+        strategy.active.books.down.instrument_id;
+    strategy
+        .active
+        .books
+        .down
+        .bid_levels
+        .insert(Price::new(0.43, 2), 500.0);
+    strategy
+        .active
+        .books
+        .down
+        .ask_levels
+        .insert(Price::new(0.45, 2), 500.0);
+    strategy.active.books.down.best_bid = Some(0.43);
+    strategy.active.books.down.best_ask = Some(0.45);
+    strategy.active.books.down.liquidity_available = Some(500.0);
+    strategy.active.fast_venue_incoherent = false;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
+    strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
+    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy.pricing.last_lead_gap_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    strategy
+}
+
+pub(super) fn ready_to_trade_strategy_with_live_fees(
+    up_fee_bps: Decimal,
+    down_fee_bps: Decimal,
+) -> BinaryOracleEdgeTaker {
+    ready_to_trade_strategy_with_recording_fees(up_fee_bps, down_fee_bps).0
+}
+
+pub(super) fn ready_to_trade_strategy_with_recording_fees(
+    up_fee_bps: Decimal,
+    down_fee_bps: Decimal,
+) -> (BinaryOracleEdgeTaker, Arc<RecordingFeeProvider>) {
+    let fee_provider = RecordingFeeProvider::cold();
+    fee_provider.set_fee("condition-MKT-1-MKT-1-UP.POLYMARKET", up_fee_bps);
+    fee_provider.set_fee("condition-MKT-1-MKT-1-DOWN.POLYMARKET", down_fee_bps);
+
+    let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
+    strategy.config.warmup_tick_count = 2;
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    strategy.active.price_to_beat = Some(3_100.0);
+    strategy.active.interval_open = Some(3_100.0);
+    strategy.active.warmup_count = 2;
+    strategy.active.last_reference_ts_ms = Some(1_200);
+    strategy.refresh_fee_readiness();
+    strategy.active.books.up.last_observed_instrument_id = strategy.active.books.up.instrument_id;
+    strategy
+        .active
+        .books
+        .up
+        .bid_levels
+        .insert(Price::new(0.50, 2), 500.0);
+    strategy
+        .active
+        .books
+        .up
+        .ask_levels
+        .insert(Price::new(0.50, 2), 500.0);
+    strategy.active.books.up.best_bid = Some(0.50);
+    strategy.active.books.up.best_ask = Some(0.50);
+    strategy.active.books.up.liquidity_available = Some(500.0);
+    strategy.active.books.down.last_observed_instrument_id =
+        strategy.active.books.down.instrument_id;
+    strategy
+        .active
+        .books
+        .down
+        .bid_levels
+        .insert(Price::new(0.48, 2), 500.0);
+    strategy
+        .active
+        .books
+        .down
+        .ask_levels
+        .insert(Price::new(0.49, 2), 500.0);
+    strategy.active.books.down.best_bid = Some(0.48);
+    strategy.active.books.down.best_ask = Some(0.49);
+    strategy.active.books.down.liquidity_available = Some(500.0);
+    strategy.active.fast_venue_incoherent = false;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
+    strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
+    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy.pricing.last_lead_gap_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    (strategy, fee_provider)
+}
+
+pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+    decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
+) -> BinaryOracleEdgeTaker {
+    let (mut strategy, fee_provider) =
+        ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
+    strategy.context = StrategyBuildContext::new(
+        fee_provider,
+        decision_evidence,
+        submit_admission,
+        fixture_execution_venue(),
+    )
+    .with_readiness_evidence(test_readiness_gate_evidence());
+    strategy.config.edge_threshold_basis_points = 1;
+    strategy.active.price_to_beat = Some(3_100.0);
+    strategy
+}
+
+pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admission_without_readiness_evidence(
+    decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
+) -> BinaryOracleEdgeTaker {
+    let (mut strategy, fee_provider) =
+        ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
+    strategy.context = StrategyBuildContext::new(
+        fee_provider,
+        decision_evidence,
+        submit_admission,
+        fixture_execution_venue(),
+    );
+    strategy.config.edge_threshold_basis_points = 1;
+    strategy.active.price_to_beat = Some(3_100.0);
+    strategy
+}
+
+pub(super) fn selected_entry_side(strategy: &BinaryOracleEdgeTaker) -> OutcomeSide {
+    let evaluation = strategy.entry_evaluation_at(1_200);
+    evaluation
+        .selected_side
+        .expect("ready-to-trade fixture should select a configured outcome side")
+}
+
+pub(super) fn selected_entry_instrument(strategy: &BinaryOracleEdgeTaker) -> InstrumentId {
+    strategy
+        .entry_evaluation_at(1_200)
+        .selected_side
+        .and_then(|side| strategy.instrument_id_for_side(side))
+        .or_else(|| configured_outcome_instruments(strategy).into_iter().next())
+        .expect("ready-to-trade fixture should expose a configured instrument")
+}
+
+pub(super) fn configured_position_probe(
+    strategy: &mut BinaryOracleEdgeTaker,
+    instrument_id: InstrumentId,
+) -> OpenPositionState {
+    let original_exposure = strategy.exposure.clone();
+    strategy.materialize_position_from_event(
+        instrument_id,
+        PositionId::from("P-SIDE-PROBE"),
+        OrderSide::Buy,
+        PositionSide::Long,
+        Quantity::new(1.0, 2),
+        0.450,
+    );
+    let position = managed_position_ref(strategy)
+        .cloned()
+        .expect("configured instrument should materialize through production position path");
+    strategy.exposure = original_exposure;
+    strategy.refresh_book_subscriptions_for_current_state();
+    position
+}
+
+pub(super) fn configured_side_for_instrument(
+    strategy: &mut BinaryOracleEdgeTaker,
+    instrument_id: InstrumentId,
+) -> OutcomeSide {
+    configured_position_probe(strategy, instrument_id)
+        .outcome_side
+        .expect("configured instrument should materialize with an outcome side")
+}
+
+pub(super) fn configured_book_for_instrument(
+    strategy: &mut BinaryOracleEdgeTaker,
+    instrument_id: InstrumentId,
+) -> OutcomeBookState {
+    configured_position_probe(strategy, instrument_id).book
+}
+
+pub(super) fn set_active_books_best_prices(
+    strategy: &mut BinaryOracleEdgeTaker,
+    bid: f64,
+    ask: f64,
+) {
+    let mut updates = Vec::new();
+    for instrument_id in configured_outcome_instruments(strategy) {
+        let book = configured_book_for_instrument(strategy, instrument_id);
+        let bid_size = book
+            .bid_levels
+            .last_key_value()
+            .map(|(_, size)| *size)
+            .expect("configured fixture book should expose bid liquidity");
+        let ask_size = book
+            .ask_levels
+            .first_key_value()
+            .map(|(_, size)| *size)
+            .expect("configured fixture book should expose ask liquidity");
+        updates.push((instrument_id, bid_size, ask_size));
+    }
+
+    for (instrument_id, bid_size, ask_size) in updates {
+        assert!(
+            strategy.active.books.update_from_deltas(&book_deltas(
+                instrument_id,
+                &[
+                    (BookAction::Clear, OrderSide::Buy, bid, bid_size),
+                    (BookAction::Add, OrderSide::Buy, bid, bid_size),
+                    (BookAction::Add, OrderSide::Sell, ask, ask_size),
+                ],
+            )),
+            "configured fixture book should accept price update"
+        );
+    }
+}
+
+pub(super) fn set_configured_books_depth(
+    strategy: &mut BinaryOracleEdgeTaker,
+    deltas: &[(BookAction, OrderSide, f64, f64)],
+) {
+    for instrument_id in configured_outcome_instruments(strategy) {
+        assert!(
+            strategy
+                .active
+                .books
+                .update_from_deltas(&book_deltas(instrument_id, deltas)),
+            "configured fixture book should accept depth update"
+        );
+    }
+}
+
+pub(super) fn pending_entry_state(
+    strategy: &mut BinaryOracleEdgeTaker,
+    client_order_id: ClientOrderId,
+) -> PendingEntryState {
+    let instrument_id = selected_entry_instrument(strategy);
+    let probe = configured_position_probe(strategy, instrument_id);
+    let outcome_side = probe
+        .outcome_side
+        .expect("configured instrument should materialize with an outcome side");
+    let book = probe.book;
+    PendingEntryState {
+        client_order_id,
+        market_id: Some("MKT-1".to_string()),
+        instrument_id,
+        outcome_side: Some(outcome_side),
+        outcome_fees: strategy.active.outcome_fees.clone(),
+        historical_entry_fee_bps: strategy.entry_fee_bps(outcome_side).or(Some(0.0)),
+        interval_open: Some(3_100.0),
+        selection_published_at_ms: Some(1_000),
+        seconds_to_expiry_at_selection: Some(300),
+        book,
+    }
+}
+
+pub(super) fn configured_instrument_except(
+    strategy: &BinaryOracleEdgeTaker,
+    instrument_id: InstrumentId,
+) -> InstrumentId {
+    configured_outcome_instruments(strategy)
+        .into_iter()
+        .find(|configured_instrument_id| *configured_instrument_id != instrument_id)
+        .expect("fixture should expose a second configured outcome instrument")
+}
+
+pub(super) fn foreign_venue_instrument_id(
+    strategy: &BinaryOracleEdgeTaker,
+    instrument_id: InstrumentId,
+) -> InstrumentId {
+    let foreign_instrument_id = InstrumentId::new(instrument_id.symbol, Venue::from("HYPERLIQUID"));
+    assert_ne!(
+        foreign_instrument_id.venue,
+        strategy.context.execution_venue(),
+        "foreign fixture instrument must not be on the execution venue",
+    );
+    foreign_instrument_id
+}
+
+pub(super) fn materialize_configured_position(
+    strategy: &mut BinaryOracleEdgeTaker,
+    instrument_id: InstrumentId,
+    position_id: PositionId,
+    quantity: Quantity,
+    avg_px_open: f64,
+) -> OpenPositionState {
+    strategy.materialize_position_from_event(
+        instrument_id,
+        position_id,
+        OrderSide::Buy,
+        PositionSide::Long,
+        quantity,
+        avg_px_open,
+    );
+    let mut position = managed_position_ref(strategy)
+        .cloned()
+        .expect("configured position should materialize as managed exposure");
+    position.historical_entry_fee_bps.get_or_insert(0.0);
+    position
+}
+
+pub(super) fn configured_outcome_instruments(
+    strategy: &BinaryOracleEdgeTaker,
+) -> Vec<InstrumentId> {
+    let instrument_ids = strategy.active.outcome_fees.instrument_ids();
+    assert!(
+        !instrument_ids.is_empty(),
+        "ready-to-trade fixture should expose configured outcome instruments"
+    );
+    instrument_ids
+}
+
+pub(super) fn set_pending_entry(strategy: &mut BinaryOracleEdgeTaker, pending: PendingEntryState) {
+    strategy.exposure = ExposureState::PendingEntry(pending);
+}
+
+pub(super) fn set_entry_reconcile_pending(
+    strategy: &mut BinaryOracleEdgeTaker,
+    pending: PendingEntryState,
+    reason: EntryReconcileReason,
+) {
+    strategy.exposure = ExposureState::EntryReconcilePending { pending, reason };
+}
+
+pub(super) fn set_managed_position(
+    strategy: &mut BinaryOracleEdgeTaker,
+    position: OpenPositionState,
+    origin: ManagedPositionOrigin,
+) {
+    strategy.exposure = ExposureState::Managed(ManagedPositionState {
+        position,
+        origin,
+        pending_entry: None,
+    });
+}
+
+pub(super) fn set_managed_position_with_pending_entry(
+    strategy: &mut BinaryOracleEdgeTaker,
+    position: OpenPositionState,
+    origin: ManagedPositionOrigin,
+    pending_entry: PendingEntryState,
+) {
+    strategy.exposure = ExposureState::Managed(ManagedPositionState {
+        position,
+        origin,
+        pending_entry: Some(pending_entry),
+    });
+}
+
+pub(super) fn materialize_managed_position_with_resting_pending_entry(
+    strategy: &mut BinaryOracleEdgeTaker,
+    instrument_id: InstrumentId,
+    position_id: PositionId,
+    quantity: Quantity,
+) -> (InstrumentId, ClientOrderId) {
+    let client_order_id = ClientOrderId::from(format!("ENTRY-WORKING-{instrument_id}").as_str());
+    let book = configured_book_for_instrument(strategy, instrument_id);
+    let pending = PendingEntryState {
+        client_order_id,
+        market_id: Some("MKT-1".to_string()),
+        instrument_id,
+        outcome_side: None,
+        outcome_fees: strategy.active.outcome_fees.clone(),
+        historical_entry_fee_bps: strategy
+            .context
+            .fee_provider()
+            .fee_bps(instrument_id)
+            .and_then(|value| value.to_f64()),
+        interval_open: Some(3_100.0),
+        selection_published_at_ms: Some(1_000),
+        seconds_to_expiry_at_selection: Some(300),
+        book: book.clone(),
+    };
+    let avg_px_open = book
+        .best_ask
+        .expect("ready-to-trade fixture should expose an ask");
+    set_pending_entry(strategy, pending);
+    strategy.on_position_opened(position_opened_event(
+        instrument_id,
+        position_id,
+        quantity,
+        avg_px_open,
+    ));
+    (instrument_id, client_order_id)
+}
+
+pub(super) fn set_exit_pending(
+    strategy: &mut BinaryOracleEdgeTaker,
+    position: OpenPositionState,
+    client_order_id: ClientOrderId,
+    fill_received: bool,
+    close_received: bool,
+    origin: ManagedPositionOrigin,
+) {
+    strategy.exposure = ExposureState::ExitPending(ExitPendingState {
+        pending_exit: PendingExitState {
+            client_order_id,
+            market_id: position.market_id.clone(),
+            position_id: Some(position.position_id),
+            fill_received,
+            close_received,
+            terminal_received: false,
+            residual_position_observed_after_fill: false,
+        },
+        position: Some(ManagedPositionState {
+            position,
+            origin,
+            pending_entry: None,
+        }),
+    });
+}
+
+pub(super) fn set_blind_recovery(
+    strategy: &mut BinaryOracleEdgeTaker,
+    reason: BlindRecoveryReason,
+) {
+    strategy.exposure = ExposureState::BlindRecovery(BlindRecoveryState { reason });
+}
+
+pub(super) fn set_unsupported_observed(
+    strategy: &mut BinaryOracleEdgeTaker,
+    observed: OpenPositionState,
+    reason: UnsupportedObservedReason,
+) {
+    strategy.exposure =
+        ExposureState::UnsupportedObserved(UnsupportedObservedState { observed, reason });
+}
+
+pub(super) fn managed_position_ref(strategy: &BinaryOracleEdgeTaker) -> Option<&OpenPositionState> {
+    strategy.managed_position().map(|managed| &managed.position)
+}
+
+pub(super) fn pending_exit_ref(strategy: &BinaryOracleEdgeTaker) -> Option<&PendingExitState> {
+    strategy
+        .exposure
+        .exit_pending()
+        .map(|exit_pending| &exit_pending.pending_exit)
+}
+
+pub(super) fn assert_foreign_venue_blind_recovery(strategy: &BinaryOracleEdgeTaker) {
+    assert!(
+        matches!(
+            strategy.exposure,
+            ExposureState::BlindRecovery(BlindRecoveryState {
+                reason: BlindRecoveryReason::ForeignVenuePosition { .. }
+            })
+        ),
+        "foreign-venue terminal event must be quarantined to blind recovery, got {:?}",
+        strategy.exposure,
+    );
+}
+
+pub(super) fn active_snapshot(market_id: &str) -> RuntimeSelectionSnapshot {
+    active_snapshot_with_start(market_id, 0)
+}
+
+pub(super) fn active_snapshot_with_start(
+    market_id: &str,
+    interval_start_ms: u64,
+) -> RuntimeSelectionSnapshot {
+    selection_snapshot(
+        interval_start_ms,
+        SelectionState::Active {
+            market: candidate_market(market_id, interval_start_ms),
+        },
+    )
+}
+
+pub(super) fn freeze_snapshot_with_start(
+    market_id: &str,
+    interval_start_ms: u64,
+) -> RuntimeSelectionSnapshot {
+    selection_snapshot(
+        interval_start_ms,
+        SelectionState::Freeze {
+            market: candidate_market(market_id, interval_start_ms),
+            reason: "freeze window".to_string(),
+        },
+    )
+}
+
+pub(super) fn selection_snapshot(
+    interval_start_ms: u64,
+    state: SelectionState,
+) -> RuntimeSelectionSnapshot {
+    RuntimeSelectionSnapshot {
+        ruleset_id: "BINARYORACLEEDGETAKER".to_string(),
+        decision: SelectionDecision {
+            ruleset_id: "BINARYORACLEEDGETAKER".to_string(),
+            state,
+        },
+        eligible_candidates: Vec::new(),
+        published_at_ms: interval_start_ms,
+    }
+}
+
+pub(super) fn candidate_market(market_id: &str, interval_start_ms: u64) -> CandidateMarket {
+    let condition_id = format!("condition-{market_id}");
+    let up_token_id = format!("{market_id}-UP");
+    let down_token_id = format!("{market_id}-DOWN");
+    let up_instrument_id = format!("{condition_id}-{up_token_id}.POLYMARKET");
+    let down_instrument_id = format!("{condition_id}-{down_token_id}.POLYMARKET");
+    CandidateMarket {
+        market_id: market_id.to_string(),
+        instrument_id: up_instrument_id.clone(),
+        up: CandidateOutcome {
+            instrument_id: up_instrument_id,
+        },
+        down: CandidateOutcome {
+            instrument_id: down_instrument_id,
+        },
+        source_identity: SelectedMarketSourceIdentity {
+            condition_id,
+            market_slug: format!("slug-{market_id}"),
+            question_id: format!("question-{market_id}"),
+        },
+        selection_outcome: MarketSelectionOutcome::Current,
+        price_to_beat: None,
+        start_ts_ms: interval_start_ms,
+        expiration_ts_ms: interval_start_ms.saturating_add(300 * MILLIS_PER_SECOND_U64),
+        seconds_to_end: 300,
+    }
+}
+
+pub(super) fn updown_binary_option(
+    instrument_id: &str,
+    market_slug: &str,
+    market_id: &str,
+    outcome: &str,
+    activation_ms: u64,
+    expiration_ms: u64,
+) -> InstrumentAny {
+    let mut info = Params::new();
+    info.insert(
+        "market_slug".to_string(),
+        serde_json::Value::String(market_slug.to_string()),
+    );
+    info.insert(
+        "market_id".to_string(),
+        serde_json::Value::String(market_id.to_string()),
+    );
+    info.insert(
+        "condition_id".to_string(),
+        serde_json::Value::String(format!("condition-{market_id}")),
+    );
+    info.insert(
+        "question_id".to_string(),
+        serde_json::Value::String(format!("question-{market_id}")),
+    );
+    InstrumentAny::BinaryOption(BinaryOption::new(
+        InstrumentId::from(instrument_id),
+        Symbol::from(instrument_id.split('.').next().unwrap_or(instrument_id)),
+        AssetClass::Alternative,
+        Currency::USDC(),
+        (activation_ms.saturating_mul(NANOS_PER_MILLI_U64)).into(),
+        (expiration_ms.saturating_mul(NANOS_PER_MILLI_U64)).into(),
+        3,
+        2,
+        Price::from("0.001"),
+        Quantity::from("0.01"),
+        Some(ustr::Ustr::from(outcome)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        // max_price: a binary option's structural payout ceiling. Mirrors the
+        // upstream NT Polymarket adapter (MAX_PRICE = "0.999") so the fixture
+        // declares the same hard price bound production instruments carry —
+        // the only price a market-style order (BUY or SELL, entry or exit) can
+        // ever fill or settle at, which the market-style admission valuation
+        // uses as the universal worst case.
+        Some(Price::from("0.999")),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(info),
+        1.into(),
+        1.into(),
+    ))
+}
+
+pub(super) fn reference_tick(timestamp_ms: u64, price: f64) -> ReferenceSnapshot {
+    ReferenceSnapshot {
+        ts_ms: timestamp_ms,
+        topic: "platform.reference.test.spot".to_string(),
+        fair_value: Some(price),
+        confidence: 1.0,
+        venues: Vec::new(),
+    }
+}
+
+pub(super) fn orderbook_venue(
+    venue_name: &str,
+    effective_weight: f64,
+    price: f64,
+    observed_ts_ms: u64,
+) -> EffectiveVenueState {
+    EffectiveVenueState {
+        venue_name: venue_name.to_string(),
+        base_weight: effective_weight,
+        effective_weight,
+        stale: false,
+        health: VenueHealth::Healthy,
+        observed_ts_ms: Some(observed_ts_ms),
+        venue_kind: VenueKind::Orderbook,
+        observed_price: Some(price),
+        observed_bid: Some(price - 0.01),
+        observed_ask: Some(price + 0.01),
+    }
+}
+
+pub(super) fn oracle_venue(
+    venue_name: &str,
+    effective_weight: f64,
+    price: f64,
+    observed_ts_ms: u64,
+) -> EffectiveVenueState {
+    EffectiveVenueState {
+        venue_name: venue_name.to_string(),
+        base_weight: effective_weight,
+        effective_weight,
+        stale: false,
+        health: VenueHealth::Healthy,
+        observed_ts_ms: Some(observed_ts_ms),
+        venue_kind: VenueKind::Oracle,
+        observed_price: Some(price),
+        observed_bid: None,
+        observed_ask: None,
+    }
+}
+
+pub(super) fn fast_spot(venue_name: &str, price: f64, observed_ts_ms: u64) -> FastSpotObservation {
+    FastSpotObservation {
+        venue: venue_name.to_string(),
+        price,
+        observed_ts_ms,
+    }
+}
+
+pub(super) fn book_deltas(
+    instrument_id: InstrumentId,
+    deltas: &[(BookAction, OrderSide, f64, f64)],
+) -> nautilus_model::data::OrderBookDeltas {
+    let deltas = deltas
+        .iter()
+        .map(|(action, side, price, size)| {
+            nautilus_model::data::OrderBookDelta::new_checked(
+                instrument_id,
+                *action,
+                nautilus_model::data::BookOrder::new(
+                    *side,
+                    Price::new(*price, 2),
+                    Quantity::new(*size, 2),
+                    0,
+                ),
+                0,
+                0,
+                0.into(),
+                0.into(),
+            )
+            .expect("test order book delta should build")
+        })
+        .collect();
+
+    nautilus_model::data::OrderBookDeltas::new(instrument_id, deltas)
+}
+
+pub(super) fn lead_signal(
+    venue_name: &str,
+    age_ms: u64,
+    jitter_ms: u64,
+    agreement_corr: f64,
+    effective_weight: f64,
+    lead_gap_probability: f64,
+) -> LeadVenueSignal {
+    LeadVenueSignal {
+        venue_name: venue_name.to_string(),
+        price: Some(3_100.0),
+        observed_ts_ms: Some(1_000),
+        age_ms,
+        jitter_ms,
+        agreement_corr,
+        effective_weight,
+        lead_gap_probability,
+    }
+}
+
+pub(super) fn position_opened_event(
+    instrument_id: InstrumentId,
+    position_id: PositionId,
+    quantity: Quantity,
+    avg_px_open: f64,
+) -> nautilus_model::events::PositionOpened {
+    position_opened_event_with_details(
+        instrument_id,
+        position_id,
+        quantity,
+        avg_px_open,
+        OrderSide::Buy,
+        PositionSide::Long,
+    )
+}
+
+pub(super) fn position_opened_event_with_details(
+    instrument_id: InstrumentId,
+    position_id: PositionId,
+    quantity: Quantity,
+    avg_px_open: f64,
+    entry: OrderSide,
+    side: PositionSide,
+) -> nautilus_model::events::PositionOpened {
+    nautilus_model::events::PositionOpened {
+        trader_id: nautilus_model::identifiers::TraderId::from("TRADER-001"),
+        strategy_id: StrategyId::from("BINARYORACLEEDGETAKER-001"),
+        instrument_id,
+        position_id,
+        account_id: nautilus_model::identifiers::AccountId::from("TEST-ACCOUNT"),
+        opening_order_id: ClientOrderId::from("ENTRY-001"),
+        entry,
+        side,
+        signed_qty: quantity.as_f64(),
+        quantity,
+        last_qty: quantity,
+        last_px: Price::new(avg_px_open, 3),
+        currency: nautilus_model::types::Currency::USDC(),
+        avg_px_open,
+        event_id: nautilus_core::UUID4::new(),
+        ts_event: nautilus_core::UnixNanos::from(1_u64),
+        ts_init: nautilus_core::UnixNanos::from(1_u64),
+    }
+}
+
+pub(super) fn order_filled_event(
+    client_order_id: ClientOrderId,
+    instrument_id: InstrumentId,
+    position_id: PositionId,
+) -> nautilus_model::events::OrderFilled {
+    order_filled_event_with_details(
+        client_order_id,
+        instrument_id,
+        Some(position_id),
+        OrderSide::Buy,
+    )
+}
+
+pub(super) fn order_filled_event_with_details(
+    client_order_id: ClientOrderId,
+    instrument_id: InstrumentId,
+    position_id: Option<PositionId>,
+    order_side: OrderSide,
+) -> nautilus_model::events::OrderFilled {
+    let mut fill = nautilus_model::events::OrderFilled::new(
+        nautilus_model::identifiers::TraderId::from("TRADER-001"),
+        StrategyId::from("BINARYORACLEEDGETAKER-001"),
+        instrument_id,
+        client_order_id,
+        nautilus_model::identifiers::VenueOrderId::from("V-ORDER-001"),
+        nautilus_model::identifiers::AccountId::from("TEST-ACCOUNT"),
+        nautilus_model::identifiers::TradeId::from("TRADE-001"),
+        order_side,
+        nautilus_model::enums::OrderType::Limit,
+        Quantity::new(10.0, 2),
+        Price::new(0.450, 3),
+        nautilus_model::types::Currency::USDC(),
+        nautilus_model::enums::LiquiditySide::Taker,
+        nautilus_core::UUID4::new(),
+        nautilus_core::UnixNanos::from(1_000_u64),
+        nautilus_core::UnixNanos::from(1_000_u64),
+        false,
+        None,
+        Some(nautilus_model::types::Money::new(
+            0.0,
+            nautilus_model::types::Currency::USDC(),
+        )),
+    );
+    fill.position_id = position_id;
+    fill
+}
+
+pub(super) fn order_canceled_event(
+    client_order_id: ClientOrderId,
+    instrument_id: InstrumentId,
+) -> nautilus_model::events::OrderCanceled {
+    nautilus_model::events::OrderCanceled::new(
+        nautilus_model::identifiers::TraderId::from("TRADER-001"),
+        StrategyId::from("BINARYORACLEEDGETAKER-001"),
+        instrument_id,
+        client_order_id,
+        nautilus_core::UUID4::new(),
+        nautilus_core::UnixNanos::from(1_000_u64),
+        nautilus_core::UnixNanos::from(1_000_u64),
+        false,
+        Some(nautilus_model::identifiers::VenueOrderId::from(
+            "V-ORDER-001",
+        )),
+        Some(nautilus_model::identifiers::AccountId::from("TEST-ACCOUNT")),
+    )
+}
+
+pub(super) fn order_rejected_event(
+    client_order_id: ClientOrderId,
+    instrument_id: InstrumentId,
+) -> nautilus_model::events::OrderRejected {
+    nautilus_model::events::OrderRejected::new(
+        nautilus_model::identifiers::TraderId::from("TRADER-001"),
+        StrategyId::from("BINARYORACLEEDGETAKER-001"),
+        instrument_id,
+        client_order_id,
+        nautilus_model::identifiers::AccountId::from("TEST-ACCOUNT"),
+        "rejected".into(),
+        nautilus_core::UUID4::new(),
+        nautilus_core::UnixNanos::from(1_000_u64),
+        nautilus_core::UnixNanos::from(1_000_u64),
+        false,
+        false,
+    )
+}
+
+pub(super) fn order_expired_event(
+    client_order_id: ClientOrderId,
+    instrument_id: InstrumentId,
+) -> nautilus_model::events::OrderExpired {
+    nautilus_model::events::OrderExpired::new(
+        nautilus_model::identifiers::TraderId::from("TRADER-001"),
+        StrategyId::from("BINARYORACLEEDGETAKER-001"),
+        instrument_id,
+        client_order_id,
+        nautilus_core::UUID4::new(),
+        nautilus_core::UnixNanos::from(1_000_u64),
+        nautilus_core::UnixNanos::from(1_000_u64),
+        false,
+        Some(nautilus_model::identifiers::VenueOrderId::from(
+            "V-ORDER-001",
+        )),
+        Some(nautilus_model::identifiers::AccountId::from("TEST-ACCOUNT")),
+    )
+}
+
+pub(super) fn position_closed_event(
+    instrument_id: InstrumentId,
+    position_id: PositionId,
+) -> nautilus_model::events::PositionClosed {
+    nautilus_model::events::PositionClosed {
+        trader_id: nautilus_model::identifiers::TraderId::from("TRADER-001"),
+        strategy_id: StrategyId::from("BINARYORACLEEDGETAKER-001"),
+        instrument_id,
+        position_id,
+        account_id: nautilus_model::identifiers::AccountId::from("TEST-ACCOUNT"),
+        opening_order_id: ClientOrderId::from("ENTRY-001"),
+        closing_order_id: Some(ClientOrderId::from("EXIT-001")),
+        entry: OrderSide::Buy,
+        side: PositionSide::Long,
+        signed_qty: 0.0,
+        quantity: Quantity::zero(2),
+        peak_quantity: Quantity::new(10.0, 2),
+        last_qty: Quantity::new(10.0, 2),
+        last_px: Price::new(0.550, 3),
+        currency: nautilus_model::types::Currency::USDC(),
+        avg_px_open: 0.450,
+        avg_px_close: Some(0.550),
+        realized_return: 0.0,
+        realized_pnl: None,
+        unrealized_pnl: nautilus_model::types::Money::new(
+            0.0,
+            nautilus_model::types::Currency::USDC(),
+        ),
+        duration: nautilus_core::nanos::DurationNanos::from(1_u64),
+        event_id: nautilus_core::UUID4::new(),
+        ts_opened: nautilus_core::UnixNanos::from(1_u64),
+        ts_closed: Some(nautilus_core::UnixNanos::from(2_u64)),
+        ts_event: nautilus_core::UnixNanos::from(2_u64),
+        ts_init: nautilus_core::UnixNanos::from(2_u64),
+    }
+}
+
+/// Single source of truth for the binary-oracle-taker top-level config field
+/// set: the serde-derived `deny_unknown_fields` deserializer for
+/// `BinaryOracleEdgeTakerConfig`. When an unknown key is fed, serde's error
+/// enumerates every field the struct accepts (`expected one of `a`, `b`,
+/// ...`). This is the ONLY authoritative list of valid field names, generated
+/// directly from the struct definition.
+pub(super) fn serde_known_top_level_config_fields() -> std::collections::BTreeSet<String> {
+    let mut raw = valid_raw_config();
+    let sentinel = "definitely_not_a_real_field_sentinel";
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .insert(sentinel.to_string(), Value::Boolean(true));
+
+    let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+        .expect_err("config with an unknown key must fail serde deny_unknown_fields");
+    let message = format!("{err:#}");
+
+    let marker = "expected one of ";
+    let list_start = message.find(marker).unwrap_or_else(|| {
+        panic!("serde error must enumerate the expected field list, got: {message}")
+    }) + marker.len();
+    let list = &message[list_start..];
+
+    let fields: std::collections::BTreeSet<String> = list
+        .split('`')
+        .filter(|segment| {
+            // The backtick-delimited segments alternate between field names and
+            // separators (", "); keep only the identifier-shaped segments.
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+        .map(|segment| segment.to_string())
+        .collect();
+
+    assert!(
+        !fields.is_empty(),
+        "serde SSOT field extraction produced no fields from: {message}"
+    );
+    fields
+}
+
+/// Returns the set of top-level field names the runtime `validate_table`
+/// allowlist accepts, probed behaviorally: a name is accepted iff inserting it
+/// into an otherwise-valid config does not produce an `unknown_field` error.
+pub(super) fn validate_table_accepted_top_level_fields(
+    candidates: &std::collections::BTreeSet<String>,
+) -> std::collections::BTreeSet<String> {
+    let mut accepted = std::collections::BTreeSet::new();
+    for name in candidates {
+        let mut raw = valid_raw_config();
+        let table = raw.as_table_mut().expect("valid config must be a table");
+        if !table.contains_key(name.as_str()) {
+            // Use a string value: order-table fields are validated separately,
+            // but for the allowlist gate only the key presence matters.
+            table.insert(name.clone(), Value::String("probe".to_string()));
+        }
+        let mut errors = Vec::new();
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+        let flagged_unknown = errors.iter().any(|e| {
+            e.field == format!("strategies[0].config.{name}") && e.code == "unknown_field"
+        });
+        if !flagged_unknown {
+            accepted.insert(name.clone());
+        }
+    }
+    accepted
+}
+
+pub(super) fn assert_limit_gtc_post_only_order(
+    order: OrderAny,
+    expected_side: OrderSide,
+    expected_price: Price,
+) {
+    let OrderAny::Limit(order) = order else {
+        panic!("maker order should be built as an NT limit order");
+    };
+    assert_eq!(order.order_side(), expected_side);
+    assert_eq!(order.order_type(), OrderType::Limit);
+    assert_eq!(order.time_in_force(), TimeInForce::Gtc);
+    assert_eq!(order.price(), Some(expected_price));
+    assert!(order.is_post_only());
+    assert!(!order.is_reduce_only());
+    assert!(!order.is_quote_quantity());
+    assert_eq!(order.expire_time(), None);
+}

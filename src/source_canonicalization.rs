@@ -344,9 +344,9 @@ pub fn module_source_set_text(
 ///   file sorted after the marker-owning file (`selection.rs` after `mod.rs`)
 ///   and silently shrink the production surface. Splitting per file keeps every
 ///   submodule's production code in scope while still excluding each file's own
-///   test module. A future test-ONLY submodule file (whose entire content is a
-///   test module) would be a separate concern; today no gated directory contains
-///   one, and any such file would be split at its own marker like the rest.
+///   test module. A test-only split file that starts with `#![cfg(test)]`
+///   contributes empty production text, which keeps ownership-bucket test files
+///   out of source-integrity and runtime-literal production scans.
 pub fn production_module_source_text(root: &Path, max_bytes: u64) -> io::Result<String> {
     let file_type = source_root_file_type(root)?;
     if file_type.is_file() {
@@ -502,13 +502,17 @@ fn source_set_relative_root_bytes(relative_root: &str) -> io::Result<Vec<u8>> {
     Ok(parts.join("/").into_bytes())
 }
 
-/// The production half of a single file's text: everything before the FIRST
-/// top-level [`TEST_MODULE_SPLIT_MARKER`], or the whole text if the marker is
-/// absent. LF checkout remains byte-for-byte equivalent to
+/// The production half of a single file's text: empty for an inner-cfg test-only
+/// file, otherwise everything before the FIRST top-level
+/// [`TEST_MODULE_SPLIT_MARKER`] or the whole text if the marker is absent. LF
+/// checkout remains byte-for-byte equivalent to
 /// `text.split(MARKER).next().unwrap()`. CRLF checkout normalizes to LF first so
 /// the marker is OS-independent.
 fn production_half(text: &str) -> String {
     let normalized = text.replace(CRLF_LINE_ENDING, LF_LINE_ENDING);
+    if normalized.starts_with(TEST_ONLY_INNER_CFG_MARKER) {
+        return String::new();
+    }
     match normalized.split_once(TEST_MODULE_SPLIT_MARKER) {
         Some((production, _rest)) => production.to_string(),
         None => normalized,
@@ -529,6 +533,7 @@ fn utf8_string(bytes: Vec<u8>, path: &Path) -> io::Result<String> {
 /// in exactly one place so the identity-case production boundary matches the
 /// historical `.split(...).next()` convention byte-for-byte.
 pub const TEST_MODULE_SPLIT_MARKER: &str = "\n#[cfg(test)]\nmod tests";
+pub const TEST_ONLY_INNER_CFG_MARKER: &str = "#![cfg(test)]\n";
 const CRLF_LINE_ENDING: &str = "\r\n";
 const LF_LINE_ENDING: &str = "\n";
 
@@ -717,6 +722,31 @@ mod tests {
         assert_eq!(
             canonical_source_set_bytes(&manifest, &["src/only"], 1_000_000).unwrap(),
             canonical_source_bytes(&root, 1_000_000).unwrap()
+        );
+    }
+
+    #[test]
+    fn production_text_excludes_inner_cfg_test_only_split_files() {
+        let root = temp_dir("test_only_split_file");
+        fs::write(root.join("mod.rs"), "pub fn production() {}\n").unwrap();
+        let tests = root.join("tests");
+        fs::create_dir_all(&tests).unwrap();
+        fs::write(
+            tests.join("config.rs"),
+            "#![cfg(test)]\nconst TEST_ONLY_SENTINEL: &str = \"must_not_enter_production\";\n",
+        )
+        .unwrap();
+
+        let production = production_module_source_text(&root, 1_000_000).unwrap();
+
+        assert!(
+            production.contains("pub fn production() {}"),
+            "production source text must keep production modules"
+        );
+        assert!(
+            !production.contains("TEST_ONLY_SENTINEL")
+                && !production.contains("must_not_enter_production"),
+            "production source text must exclude inner-cfg test-only split files"
         );
     }
 

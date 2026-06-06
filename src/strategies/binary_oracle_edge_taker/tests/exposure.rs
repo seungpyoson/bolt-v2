@@ -1,0 +1,2380 @@
+#![cfg(test)]
+
+use super::*;
+
+#[test]
+fn position_events_update_live_position_state() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-001");
+
+    strategy.on_position_opened(position_opened_event(
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.450,
+    ));
+
+    assert!(strategy.managed_position().is_some());
+    assert_eq!(
+        strategy.managed_position().map(|managed| managed.origin),
+        Some(ManagedPositionOrigin::RecoveryBootstrap)
+    );
+    let managed_position =
+        managed_position_ref(&strategy).expect("position should be managed after open event");
+    assert_eq!(managed_position.market_id.as_deref(), Some("MKT-1"));
+    assert_eq!(managed_position.instrument_id, instrument_id);
+    assert_eq!(managed_position.position_id, position_id);
+    assert!(managed_position.outcome_side.is_some());
+    assert_eq!(managed_position.outcome_fees, strategy.active.outcome_fees);
+    assert_eq!(managed_position.historical_entry_fee_bps, None);
+    assert_eq!(managed_position.entry_order_side, OrderSide::Buy);
+    assert_eq!(managed_position.side, PositionSide::Long);
+    assert_eq!(managed_position.quantity, Quantity::new(10.0, 2));
+    assert_eq!(managed_position.avg_px_open, 0.450);
+    assert_eq!(managed_position.interval_open, Some(3_100.0));
+    assert_eq!(managed_position.selection_published_at_ms, Some(1_000));
+    assert_eq!(managed_position.seconds_to_expiry_at_selection, Some(300));
+    let managed_book = managed_position.book.clone();
+    let expected_book = configured_book_for_instrument(&mut strategy, instrument_id);
+    assert_eq!(managed_book, expected_book);
+
+    let recovered_position = managed_position_ref(&strategy)
+        .cloned()
+        .expect("position should be managed before exit pending");
+    set_exit_pending(
+        &mut strategy,
+        recovered_position,
+        ClientOrderId::from("EXIT-001"),
+        false,
+        false,
+        ManagedPositionOrigin::RecoveryBootstrap,
+    );
+    strategy.on_position_closed(position_closed_event(instrument_id, position_id));
+
+    assert!(strategy.managed_position().is_none());
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+        Some(ClientOrderId::from("EXIT-001"))
+    );
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.fill_received),
+        Some(false)
+    );
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.close_received),
+        Some(true)
+    );
+    assert!(!strategy.exposure.is_recovering());
+}
+
+#[test]
+fn exit_fill_keeps_pending_exit_until_position_closed() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-EXIT-001");
+    let exit_client_order_id = ClientOrderId::from("EXIT-001");
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.450,
+    );
+    set_exit_pending(
+        &mut strategy,
+        open_position,
+        exit_client_order_id,
+        false,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    strategy
+        .on_order_filled(&order_filled_event(
+            exit_client_order_id,
+            instrument_id,
+            position_id,
+        ))
+        .expect("exit fill bookkeeping should succeed");
+
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+        Some(exit_client_order_id)
+    );
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.fill_received),
+        Some(true)
+    );
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.close_received),
+        Some(false)
+    );
+    assert!(strategy.managed_position().is_some());
+
+    strategy.on_position_closed(position_closed_event(instrument_id, position_id));
+
+    assert!(strategy.managed_position().is_none());
+    assert!(pending_exit_ref(&strategy).is_none());
+}
+
+#[test]
+fn position_change_preserves_pending_exit_correlation() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-EXIT-CHANGE");
+    let exit_client_order_id = ClientOrderId::from("EXIT-CHANGE");
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.450,
+    );
+    set_exit_pending(
+        &mut strategy,
+        open_position,
+        exit_client_order_id,
+        false,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    strategy.materialize_position_from_event(
+        instrument_id,
+        position_id,
+        OrderSide::Buy,
+        PositionSide::Long,
+        Quantity::new(7.0, 2),
+        0.470,
+    );
+
+    let exit_pending = strategy
+        .exposure
+        .exit_pending()
+        .expect("position change should keep exit pending");
+    assert_eq!(
+        exit_pending.pending_exit.client_order_id,
+        exit_client_order_id
+    );
+    assert_eq!(exit_pending.pending_exit.position_id, Some(position_id));
+    assert!(!exit_pending.pending_exit.fill_received);
+    assert!(!exit_pending.pending_exit.close_received);
+
+    let position = exit_pending
+        .position
+        .as_ref()
+        .expect("exit pending should keep managed position");
+    assert_eq!(position.origin, ManagedPositionOrigin::StrategyEntry);
+    assert_eq!(position.position.quantity, Quantity::new(7.0, 2));
+    assert_eq!(position.position.avg_px_open, 0.470);
+}
+
+#[test]
+fn unrelated_position_close_does_not_clear_pending_exit_before_fill() {
+    let mut strategy = ready_to_trade_strategy();
+    let tracked_instrument = selected_entry_instrument(&strategy);
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        tracked_instrument,
+        PositionId::from("P-TRACKED"),
+        Quantity::new(10.0, 2),
+        0.450,
+    );
+    set_exit_pending(
+        &mut strategy,
+        open_position,
+        ClientOrderId::from("EXIT-001"),
+        false,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    strategy.on_position_closed(position_closed_event(
+        tracked_instrument,
+        PositionId::from("P-OTHER"),
+    ));
+
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+        Some(ClientOrderId::from("EXIT-001"))
+    );
+    assert!(strategy.managed_position().is_some());
+}
+
+#[test]
+fn unrelated_position_close_does_not_clear_filled_pending_exit() {
+    let mut strategy = ready_to_trade_strategy();
+    let tracked_instrument = selected_entry_instrument(&strategy);
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        tracked_instrument,
+        PositionId::from("P-TRACKED"),
+        Quantity::new(10.0, 2),
+        0.450,
+    );
+    set_exit_pending(
+        &mut strategy,
+        open_position,
+        ClientOrderId::from("EXIT-001"),
+        true,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    strategy.on_position_closed(position_closed_event(
+        tracked_instrument,
+        PositionId::from("P-OTHER"),
+    ));
+
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+        Some(ClientOrderId::from("EXIT-001"))
+    );
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.fill_received),
+        Some(true)
+    );
+    assert!(strategy.managed_position().is_some());
+}
+
+#[test]
+fn exit_pending_state_clears_on_cancel_reject_and_expire() {
+    let exit_client_order_id = ClientOrderId::from("EXIT-001");
+
+    let mut canceled = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&canceled);
+    let canceled_position = materialize_configured_position(
+        &mut canceled,
+        instrument_id,
+        PositionId::from("P-CANCEL"),
+        Quantity::new(1.0, 2),
+        0.45,
+    );
+    set_exit_pending(
+        &mut canceled,
+        canceled_position,
+        exit_client_order_id,
+        false,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    canceled
+        .on_order_canceled(&order_canceled_event(exit_client_order_id, instrument_id))
+        .expect("exit cancel bookkeeping should succeed");
+    assert!(pending_exit_ref(&canceled).is_none());
+    assert!(canceled.managed_position().is_some());
+
+    let mut rejected = ready_to_trade_strategy();
+    let rejected_position = materialize_configured_position(
+        &mut rejected,
+        instrument_id,
+        PositionId::from("P-REJECT"),
+        Quantity::new(1.0, 2),
+        0.45,
+    );
+    set_exit_pending(
+        &mut rejected,
+        rejected_position,
+        exit_client_order_id,
+        false,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    rejected.on_order_rejected(order_rejected_event(exit_client_order_id, instrument_id));
+    assert!(pending_exit_ref(&rejected).is_none());
+    assert!(rejected.managed_position().is_some());
+
+    let mut expired = ready_to_trade_strategy();
+    let expired_position = materialize_configured_position(
+        &mut expired,
+        instrument_id,
+        PositionId::from("P-EXPIRE"),
+        Quantity::new(1.0, 2),
+        0.45,
+    );
+    set_exit_pending(
+        &mut expired,
+        expired_position,
+        exit_client_order_id,
+        false,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    expired.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
+    assert!(pending_exit_ref(&expired).is_none());
+    assert!(expired.managed_position().is_some());
+}
+
+#[test]
+fn filled_exit_pending_ignores_stale_cancel_until_position_close() {
+    let exit_client_order_id = ClientOrderId::from("EXIT-FILLED-CANCEL");
+
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-FILLED-CANCEL"),
+        Quantity::new(1.0, 2),
+        0.45,
+    );
+    set_exit_pending(
+        &mut strategy,
+        position,
+        exit_client_order_id,
+        true,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    strategy
+        .on_order_canceled(&order_canceled_event(exit_client_order_id, instrument_id))
+        .expect("stale cancel should not clear filled exit pending");
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+        Some(exit_client_order_id)
+    );
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.fill_received),
+        Some(true)
+    );
+
+    strategy.on_position_closed(position_closed_event(
+        instrument_id,
+        PositionId::from("P-FILLED-CANCEL"),
+    ));
+    assert!(pending_exit_ref(&strategy).is_none());
+    assert!(strategy.managed_position().is_none());
+}
+
+#[test]
+fn filled_exit_pending_ignores_stale_reject() {
+    let exit_client_order_id = ClientOrderId::from("EXIT-FILLED-REJECT");
+
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-FILLED-REJECT"),
+        Quantity::new(1.0, 2),
+        0.45,
+    );
+    set_exit_pending(
+        &mut strategy,
+        position,
+        exit_client_order_id,
+        true,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    strategy.on_order_rejected(order_rejected_event(exit_client_order_id, instrument_id));
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+        Some(exit_client_order_id)
+    );
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.fill_received),
+        Some(true)
+    );
+}
+
+#[test]
+fn filled_exit_pending_ignores_stale_expire() {
+    let exit_client_order_id = ClientOrderId::from("EXIT-FILLED-EXPIRE");
+
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-FILLED-EXPIRE"),
+        Quantity::new(1.0, 2),
+        0.45,
+    );
+    set_exit_pending(
+        &mut strategy,
+        position,
+        exit_client_order_id,
+        true,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+        Some(exit_client_order_id)
+    );
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.fill_received),
+        Some(true)
+    );
+}
+
+#[test]
+fn partial_exit_fill_then_expire_restores_managed_residual_position() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-PARTIAL-EXIT-EXPIRE");
+    let exit_client_order_id = ClientOrderId::from("EXIT-PARTIAL-EXPIRE");
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.45,
+    );
+    set_exit_pending(
+        &mut strategy,
+        open_position,
+        exit_client_order_id,
+        false,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    let mut fill = order_filled_event_with_details(
+        exit_client_order_id,
+        instrument_id,
+        Some(position_id),
+        OrderSide::Sell,
+    );
+    fill.last_qty = Quantity::new(4.0, 2);
+    strategy
+        .on_order_filled(&fill)
+        .expect("partial exit fill bookkeeping should succeed");
+    strategy.materialize_position_from_event(
+        instrument_id,
+        position_id,
+        OrderSide::Buy,
+        PositionSide::Long,
+        Quantity::new(6.0, 2),
+        0.45,
+    );
+
+    strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
+
+    assert!(pending_exit_ref(&strategy).is_none());
+    assert_eq!(
+        strategy.exposure_occupancy(),
+        Some(ExposureOccupancy::ManagedPosition)
+    );
+    assert_eq!(
+        managed_position_ref(&strategy).map(|position| position.quantity),
+        Some(Quantity::new(6.0, 2))
+    );
+}
+
+#[test]
+fn exit_fill_quarantines_foreign_venue_client_order_id_collision() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-FOREIGN-EXIT-FILL");
+    let exit_client_order_id = ClientOrderId::from("EXIT-FOREIGN-FILL");
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.450,
+    );
+    set_exit_pending(
+        &mut strategy,
+        open_position,
+        exit_client_order_id,
+        false,
+        true,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+    strategy
+        .on_order_filled(&order_filled_event(
+            exit_client_order_id,
+            foreign_instrument_id,
+            position_id,
+        ))
+        .expect("foreign-venue exit fill should fail closed");
+
+    assert_foreign_venue_blind_recovery(&strategy);
+}
+
+#[test]
+fn managed_entry_fill_quarantines_foreign_venue_client_order_id_collision() {
+    let mut strategy = ready_to_trade_strategy();
+    strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-FOREIGN-MANAGED-ENTRY-FILL");
+    let entry_client_order_id = ClientOrderId::from("ENTRY-FOREIGN-MANAGED-FILL");
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.450,
+    );
+    let mut pending_entry = pending_entry_state(&mut strategy, entry_client_order_id);
+    pending_entry.instrument_id = instrument_id;
+    set_managed_position_with_pending_entry(
+        &mut strategy,
+        open_position,
+        ManagedPositionOrigin::StrategyEntry,
+        pending_entry,
+    );
+    let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+    strategy
+        .on_order_filled(&order_filled_event_with_details(
+            entry_client_order_id,
+            foreign_instrument_id,
+            Some(PositionId::from("P-FOREIGN-MANAGED-ENTRY-FILL")),
+            OrderSide::Buy,
+        ))
+        .expect("foreign-venue managed entry fill should fail closed");
+
+    assert_foreign_venue_blind_recovery(&strategy);
+}
+
+#[test]
+fn pending_entry_terminal_quarantines_foreign_venue_client_order_id_collision() {
+    let mut strategy = ready_to_trade_strategy();
+    let entry_client_order_id = ClientOrderId::from("ENTRY-FOREIGN-CANCEL");
+    let pending_entry = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending_entry.instrument_id;
+    set_pending_entry(&mut strategy, pending_entry);
+    let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+    strategy
+        .on_order_canceled(&order_canceled_event(
+            entry_client_order_id,
+            foreign_instrument_id,
+        ))
+        .expect("foreign-venue entry cancel should fail closed");
+
+    assert_foreign_venue_blind_recovery(&strategy);
+}
+
+#[test]
+fn managed_pending_entry_terminal_quarantines_foreign_venue_client_order_id_collision() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-FOREIGN-MANAGED-ENTRY-CANCEL");
+    let entry_client_order_id = ClientOrderId::from("ENTRY-FOREIGN-MANAGED-CANCEL");
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.450,
+    );
+    let mut pending_entry = pending_entry_state(&mut strategy, entry_client_order_id);
+    pending_entry.instrument_id = instrument_id;
+    set_managed_position_with_pending_entry(
+        &mut strategy,
+        open_position,
+        ManagedPositionOrigin::StrategyEntry,
+        pending_entry,
+    );
+    let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+    strategy
+        .on_order_canceled(&order_canceled_event(
+            entry_client_order_id,
+            foreign_instrument_id,
+        ))
+        .expect("foreign-venue managed entry cancel should fail closed");
+
+    assert_foreign_venue_blind_recovery(&strategy);
+}
+
+#[test]
+fn exit_terminal_quarantines_foreign_venue_client_order_id_collision() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-FOREIGN-EXIT-CANCEL");
+    let exit_client_order_id = ClientOrderId::from("EXIT-FOREIGN-CANCEL");
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.450,
+    );
+    set_exit_pending(
+        &mut strategy,
+        open_position,
+        exit_client_order_id,
+        false,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+    strategy
+        .on_order_canceled(&order_canceled_event(
+            exit_client_order_id,
+            foreign_instrument_id,
+        ))
+        .expect("foreign-venue exit cancel should fail closed");
+
+    assert_foreign_venue_blind_recovery(&strategy);
+}
+
+#[test]
+fn position_event_without_context_does_not_guess_side_from_suffix() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = InstrumentId::from("external-MKT-1-UP.POLYMARKET");
+
+    strategy.on_position_opened(position_opened_event(
+        instrument_id,
+        PositionId::from("P-SUFFIX-001"),
+        Quantity::new(10.0, 2),
+        0.450,
+    ));
+
+    assert_eq!(
+        managed_position_ref(&strategy).and_then(|position| position.outcome_side),
+        None
+    );
+    let position = managed_position_ref(&strategy).expect("position should be tracked");
+    assert_eq!(position.market_id, None);
+    assert_eq!(position.outcome_fees, OutcomeFeeState::empty());
+    assert_eq!(position.interval_open, None);
+    assert_eq!(position.selection_published_at_ms, None);
+    assert_eq!(position.seconds_to_expiry_at_selection, None);
+    assert_eq!(
+        strategy.managed_position().map(|managed| managed.origin),
+        Some(ManagedPositionOrigin::RecoveryBootstrap)
+    );
+}
+
+#[test]
+fn production_outcome_side_inference_does_not_parse_instrument_suffixes() {
+    let production = crate::bolt_v3_source_integrity::production_module_source_text(
+        crate::bolt_v3_source_integrity::STRATEGY_KEY,
+    );
+    let up_suffix = format!("{}{}{}", "-", "UP", ".");
+    let down_suffix = format!("{}{}{}", "-", "DOWN", ".");
+
+    assert!(
+        !production.contains(&up_suffix),
+        "production strategy code must not infer outcome side from instrument-id text suffix"
+    );
+    assert!(
+        !production.contains(&down_suffix),
+        "production strategy code must not infer outcome side from instrument-id text suffix"
+    );
+}
+
+#[test]
+fn untracked_position_close_keeps_recovery_fail_closed() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+    set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
+
+    strategy.on_position_closed(position_closed_event(
+        instrument_id,
+        PositionId::from("P-X"),
+    ));
+
+    assert!(strategy.exposure.is_recovering());
+}
+
+#[test]
+fn fill_after_rotation_preserves_exitable_position_book_and_subscription() {
+    let mut strategy = ready_to_trade_strategy();
+    let entry_client_order_id = ClientOrderId::from("ENTRY-A");
+    let position_id = PositionId::from("P-A");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_a = pending.instrument_id;
+    let original_book = pending.book.clone();
+    set_pending_entry(&mut strategy, pending);
+
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+    strategy
+        .on_order_filled(&order_filled_event(
+            entry_client_order_id,
+            instrument_a,
+            position_id,
+        ))
+        .expect("fill bookkeeping should succeed");
+
+    assert_eq!(
+        managed_position_ref(&strategy).and_then(|p| p.book.best_bid),
+        original_book.best_bid
+    );
+    assert_eq!(
+        managed_position_ref(&strategy).and_then(|p| p.interval_open),
+        Some(3_100.0)
+    );
+    assert_eq!(
+        managed_position_ref(&strategy).and_then(|p| p.selection_published_at_ms),
+        Some(1_000)
+    );
+    assert_eq!(
+        managed_position_ref(&strategy).and_then(|p| p.seconds_to_expiry_at_selection),
+        Some(300)
+    );
+    assert_eq!(
+        managed_position_ref(&strategy)
+            .and_then(|p| p.outcome_fees.up_instrument_id)
+            .map(|instrument_id| instrument_id.to_string())
+            .as_deref(),
+        Some("condition-MKT-1-MKT-1-UP.POLYMARKET")
+    );
+    assert_eq!(
+        strategy.book_subscriptions.tracked_position_instrument_id,
+        Some(instrument_a)
+    );
+    let decision = strategy.exit_submission_decision_at(2_000);
+    assert_eq!(decision.instrument_id, Some(instrument_a));
+    assert_eq!(decision.order_side, Some(OrderSide::Sell));
+}
+
+#[test]
+fn maker_entry_partial_fills_keep_entry_fill_accounting_without_overwriting_position_event_quantity()
+ {
+    let mut strategy = ready_to_trade_strategy();
+    strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+    strategy.config.entry_order.is_post_only = true;
+    let entry_client_order_id = ClientOrderId::from("ENTRY-PARTIAL");
+    let position_id = PositionId::from("P-PARTIAL");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    set_pending_entry(&mut strategy, pending);
+
+    let mut first_fill = order_filled_event(entry_client_order_id, instrument_id, position_id);
+    first_fill.last_qty = Quantity::new(4.0, 2);
+    strategy
+        .on_order_filled(&first_fill)
+        .expect("first maker partial fill should be recorded");
+    strategy.on_position_opened(position_opened_event(
+        instrument_id,
+        position_id,
+        Quantity::new(4.0, 2),
+        0.450,
+    ));
+
+    let mut second_fill = order_filled_event(entry_client_order_id, instrument_id, position_id);
+    second_fill.last_qty = Quantity::new(6.0, 2);
+    strategy
+        .on_order_filled(&second_fill)
+        .expect("later maker partial fill for same order should be recorded");
+
+    assert_eq!(strategy.market_churn_count("MKT-1"), 2);
+    assert_eq!(
+        managed_position_ref(&strategy).map(|position| position.quantity),
+        Some(Quantity::new(4.0, 2)),
+        "OrderFilled carries last fill quantity; NT position events remain authoritative for aggregate position quantity"
+    );
+}
+
+#[test]
+fn managed_partial_entry_blocks_normal_exit_until_entry_order_resolves() {
+    let configured_instruments = configured_outcome_instruments(&ready_to_trade_strategy());
+    for instrument_id in configured_instruments {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.is_post_only = true;
+        strategy.active.phase = SelectionPhase::Active;
+        let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+        materialize_managed_position_with_resting_pending_entry(
+            &mut strategy,
+            instrument_id,
+            PositionId::from(format!("POSITION-NORMAL-WORKING-{instrument_id}").as_str()),
+            position_quantity,
+        );
+
+        let decision = strategy.exit_submission_decision_at(1_200);
+
+        assert_eq!(
+            decision.blocked_reason,
+            Some(EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING),
+            "{instrument_id}"
+        );
+        assert_eq!(
+            decision.evaluation.blocked_reason,
+            Some(EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING),
+            "{instrument_id}"
+        );
+        assert_eq!(decision.instrument_id, None, "{instrument_id}");
+        assert_eq!(decision.order_side, None, "{instrument_id}");
+        assert_eq!(decision.quantity, None, "{instrument_id}");
+        assert!(decision.forced_flat_reasons.is_empty(), "{instrument_id}");
+    }
+}
+
+#[test]
+fn forced_flat_exit_submits_despite_resting_pending_entry() {
+    let configured_instruments = configured_outcome_instruments(
+        &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
+    );
+    for instrument_id in configured_instruments {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.is_post_only = true;
+        strategy.config.exit_order.order_type = OrderType::Limit;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.exit_order.is_post_only = true;
+        strategy.active.phase = SelectionPhase::Freeze;
+        let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+        let expected_exit_time_in_force = strategy.config.forced_exit_order.time_in_force;
+        let expected_exit_reduce_only = strategy.config.forced_exit_order.is_reduce_only;
+        materialize_managed_position_with_resting_pending_entry(
+            &mut strategy,
+            instrument_id,
+            PositionId::from(format!("POSITION-FORCED-WORKING-{instrument_id}").as_str()),
+            position_quantity,
+        );
+        let expected_exit_price = strategy
+            .managed_position()
+            .and_then(|managed| managed.position.book.best_bid);
+        let expected_quantity = strategy
+            .managed_position()
+            .expect("fixture should materialize managed position")
+            .position
+            .quantity;
+
+        let decision = strategy.exit_submission_decision_at(1_200);
+
+        assert_eq!(decision.blocked_reason, None, "{instrument_id}");
+        assert_eq!(decision.evaluation.blocked_reason, None, "{instrument_id}");
+        assert_eq!(
+            decision.forced_flat_reasons,
+            vec![ForcedFlatReason::Freeze],
+            "{instrument_id}"
+        );
+        assert_eq!(
+            decision.order_type,
+            Some(OrderType::Market),
+            "{instrument_id}"
+        );
+        assert_eq!(
+            decision.time_in_force,
+            Some(expected_exit_time_in_force),
+            "{instrument_id}"
+        );
+        assert_eq!(
+            decision.order_side,
+            Some(OrderSide::Sell),
+            "{instrument_id}"
+        );
+        assert_eq!(
+            decision.quantity,
+            Some(expected_quantity),
+            "{instrument_id}"
+        );
+        assert_eq!(decision.price, expected_exit_price, "{instrument_id}");
+        assert_eq!(decision.is_post_only, Some(false), "{instrument_id}");
+        assert_eq!(
+            decision.is_reduce_only,
+            Some(expected_exit_reduce_only),
+            "{instrument_id}"
+        );
+    }
+}
+
+#[test]
+fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
+    let configured_instruments = configured_outcome_instruments(
+        &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
+    );
+    for instrument_id in configured_instruments {
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
+        submit_admission
+            .arm(live_canary_gate_report(1, Decimal::new(10_000, 0)))
+            .expect("valid gate report should arm submit admission");
+        let (mut strategy, fee_provider) =
+            ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.context = StrategyBuildContext::new(
+            fee_provider,
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission,
+            fixture_execution_venue(),
+        )
+        .with_readiness_evidence(test_readiness_gate_evidence());
+        strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.entry_order.is_post_only = true;
+        strategy.active.phase = SelectionPhase::Freeze;
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
+        let (risk_handler, risk_messages) =
+            get_typed_into_message_saving_handler::<TradingCommand>(None);
+        msgbus::register_trading_command_endpoint(
+            MessagingSwitchboard::risk_engine_queue_execute(),
+            risk_handler,
+        );
+        let (exec_handler, exec_messages) =
+            get_typed_into_message_saving_handler::<TradingCommand>(None);
+        msgbus::register_trading_command_endpoint(
+            MessagingSwitchboard::exec_engine_queue_execute(),
+            exec_handler,
+        );
+        let position_id =
+            PositionId::from(format!("POSITION-FORCED-RACE-{instrument_id}").as_str());
+        let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+        let (instrument_id, entry_client_order_id) =
+            materialize_managed_position_with_resting_pending_entry(
+                &mut strategy,
+                instrument_id,
+                position_id,
+                position_quantity,
+            );
+        let entry_price = configured_book_for_instrument(&mut strategy, instrument_id)
+            .best_ask
+            .expect("ready-to-trade fixture should expose an ask");
+        let entry_order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                strategy
+                    .configured_entry_order_side()
+                    .expect("test config should carry entry order side"),
+                position_quantity,
+                Price::new(entry_price, 2),
+                entry_client_order_id,
+            )
+            .expect("resting entry order should build through NT factory");
+        cache
+            .borrow_mut()
+            .add_order(
+                entry_order,
+                None,
+                Some(ClientId::from(strategy.config.client_id.as_str())),
+                true,
+            )
+            .expect("test cache should accept resting entry order");
+
+        let exit_client_order_id = strategy
+            .try_submit_exit_order(1_200)
+            .expect("forced-flat exit submit should not fail")
+            .expect("forced-flat exit should submit");
+
+        let exec_messages = exec_messages.get_messages();
+        assert!(
+            exec_messages.iter().any(|message| matches!(
+                message,
+                TradingCommand::CancelOrder(command)
+                    if command.client_order_id == entry_client_order_id
+            )),
+            "forced-flat submit should cancel the resting entry before relying on exit: {instrument_id}"
+        );
+        let risk_messages = risk_messages.get_messages();
+        assert!(
+            risk_messages.iter().any(|message| matches!(
+                message,
+                TradingCommand::SubmitOrder(command)
+                    if command.client_order_id == exit_client_order_id
+            )),
+            "forced-flat exit should still submit after the entry cancel request: {instrument_id}"
+        );
+
+        strategy
+            .on_order_filled(&order_filled_event(
+                entry_client_order_id,
+                instrument_id,
+                position_id,
+            ))
+            .expect("racing entry fill should be handled while exit is pending");
+        strategy
+            .on_order_filled(&order_filled_event_with_details(
+                exit_client_order_id,
+                instrument_id,
+                Some(position_id),
+                OrderSide::Sell,
+            ))
+            .expect("exit fill should be handled");
+        strategy.on_order_expired(order_expired_event(exit_client_order_id, instrument_id));
+
+        assert!(
+            strategy.managed_position().is_some(),
+            "entry remainder fill racing the first forced-flat exit should recover to managed residual exposure: {instrument_id}"
+        );
+        assert!(
+            strategy.exposure.exit_pending().is_none(),
+            "terminal forced-flat exit with residual exposure must not stay exit-pending forever: {instrument_id}"
+        );
+    }
+}
+
+#[test]
+fn non_resting_entry_fill_does_not_keep_pending_entry_from_cache_state() {
+    let mut strategy = ready_to_trade_strategy();
+    let cache = register_test_strategy(&mut strategy);
+    strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
+    let entry_client_order_id = ClientOrderId::from("ENTRY-IOC");
+    let position_id = PositionId::from("P-IOC");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    set_pending_entry(&mut strategy, pending);
+    let order = strategy
+        .build_configured_entry_order(
+            instrument_id,
+            OrderSide::Buy,
+            Quantity::new(10.0, 2),
+            Price::new(0.45, 2),
+            entry_client_order_id,
+        )
+        .expect("IOC entry order should build");
+    cache
+        .borrow_mut()
+        .add_order(order, None, Some(ClientId::from("POLYMARKET")), true)
+        .expect("test cache should accept entry order");
+
+    strategy
+        .on_order_filled(&order_filled_event(
+            entry_client_order_id,
+            instrument_id,
+            position_id,
+        ))
+        .expect("IOC entry fill should materialize a managed position");
+
+    assert_eq!(
+        strategy
+            .managed_position()
+            .and_then(|managed| managed.pending_entry.as_ref()),
+        None
+    );
+    assert_eq!(
+        strategy.exit_submission_decision_at(1_200).blocked_reason,
+        None
+    );
+}
+
+#[test]
+fn entry_fill_without_position_id_stays_fail_closed_until_position_event_arrives() {
+    let mut strategy = ready_to_trade_strategy();
+    let entry_client_order_id = ClientOrderId::from("ENTRY-NO-POS");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    let original_book = pending.book.clone();
+    set_pending_entry(&mut strategy, pending);
+
+    strategy
+        .on_order_filled(&order_filled_event_with_details(
+            entry_client_order_id,
+            instrument_id,
+            None,
+            OrderSide::Buy,
+        ))
+        .expect("fill without position id should not wedge");
+
+    assert!(strategy.exposure.is_recovering());
+    assert!(strategy.managed_position().is_none());
+    assert_eq!(
+        strategy
+            .pending_entry()
+            .map(|pending| pending.client_order_id),
+        Some(entry_client_order_id)
+    );
+    assert!(strategy.market_in_cooldown("MKT-1", 1_000));
+
+    strategy.on_position_opened(position_opened_event(
+        instrument_id,
+        PositionId::from("P-LATE"),
+        Quantity::new(10.0, 2),
+        0.450,
+    ));
+
+    assert!(strategy.managed_position().is_some());
+    assert_eq!(
+        managed_position_ref(&strategy).map(|position| position.position_id),
+        Some(PositionId::from("P-LATE"))
+    );
+    assert_eq!(
+        managed_position_ref(&strategy).and_then(|position| position.market_id.as_deref()),
+        Some("MKT-1")
+    );
+    assert_eq!(
+        managed_position_ref(&strategy).map(|position| position.book.clone()),
+        Some(original_book)
+    );
+    assert_eq!(
+        strategy.managed_position().map(|managed| managed.origin),
+        Some(ManagedPositionOrigin::StrategyEntry)
+    );
+    assert!(strategy.pending_entry().is_none());
+}
+
+#[test]
+fn late_entry_terminal_events_preserve_entry_reconcile_fail_closed_state() {
+    let entry_client_order_id = ClientOrderId::from("ENTRY-LATE-TERM");
+
+    let mut canceled = ready_to_trade_strategy();
+    let canceled_pending = pending_entry_state(&mut canceled, entry_client_order_id);
+    let instrument_id = canceled_pending.instrument_id;
+    set_entry_reconcile_pending(
+        &mut canceled,
+        canceled_pending,
+        EntryReconcileReason::AwaitingPositionMaterialization,
+    );
+    canceled
+        .on_order_canceled(&order_canceled_event(entry_client_order_id, instrument_id))
+        .expect("late cancel should preserve fail-closed reconcile state");
+    assert!(matches!(
+        canceled.exposure,
+        ExposureState::EntryReconcilePending { .. }
+    ));
+
+    let mut rejected = ready_to_trade_strategy();
+    let rejected_pending = pending_entry_state(&mut rejected, entry_client_order_id);
+    set_entry_reconcile_pending(
+        &mut rejected,
+        rejected_pending,
+        EntryReconcileReason::AwaitingPositionMaterialization,
+    );
+    rejected.on_order_rejected(order_rejected_event(entry_client_order_id, instrument_id));
+    assert!(matches!(
+        rejected.exposure,
+        ExposureState::EntryReconcilePending { .. }
+    ));
+
+    let mut expired = ready_to_trade_strategy();
+    let expired_pending = pending_entry_state(&mut expired, entry_client_order_id);
+    set_entry_reconcile_pending(
+        &mut expired,
+        expired_pending,
+        EntryReconcileReason::AwaitingPositionMaterialization,
+    );
+    expired.on_order_expired(order_expired_event(entry_client_order_id, instrument_id));
+    assert!(matches!(
+        expired.exposure,
+        ExposureState::EntryReconcilePending { .. }
+    ));
+}
+
+#[test]
+fn book_delta_entry_reconcile_pending_does_not_try_new_entry() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    let pending = pending_entry_state(
+        &mut strategy,
+        ClientOrderId::from("ENTRY-RECONCILE-BOOK-DELTA"),
+    );
+    let instrument_id = pending.instrument_id;
+    set_entry_reconcile_pending(
+        &mut strategy,
+        pending,
+        EntryReconcileReason::AwaitingPositionMaterialization,
+    );
+
+    let result = strategy.on_book_deltas(&book_deltas(
+        instrument_id,
+        &[(BookAction::Update, OrderSide::Sell, 0.43, 500.0)],
+    ));
+
+    assert!(
+        result.is_ok(),
+        "book-delta handling must not escape while entry reconciliation is pending: {result:#?}"
+    );
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::EntryReconcilePending { .. }
+    ));
+    assert_eq!(strategy.last_reported_exposure_occupancy.get(), None);
+}
+
+#[test]
+fn position_closed_releases_entry_reconcile_pending_for_same_instrument() {
+    let mut strategy = ready_to_trade_strategy();
+    let entry_client_order_id = ClientOrderId::from("ENTRY-CLOSED-BEFORE-OPEN");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    set_entry_reconcile_pending(
+        &mut strategy,
+        pending,
+        EntryReconcileReason::AwaitingPositionMaterialization,
+    );
+
+    strategy.on_position_closed(position_closed_event(
+        instrument_id,
+        PositionId::from("P-CLOSED-BEFORE-OPEN"),
+    ));
+
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(strategy.pending_entry().is_none());
+}
+
+#[test]
+fn position_closed_cancels_managed_resting_pending_entry_and_keeps_context() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+    strategy.config.entry_order.is_post_only = true;
+    let cache = register_test_strategy(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
+    let (exec_handler, exec_messages) =
+        get_typed_into_message_saving_handler::<TradingCommand>(None);
+    msgbus::register_trading_command_endpoint(
+        MessagingSwitchboard::exec_engine_queue_execute(),
+        exec_handler,
+    );
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("POSITION-CLOSED-CANCELS-ENTRY");
+    let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+    let (instrument_id, entry_client_order_id) =
+        materialize_managed_position_with_resting_pending_entry(
+            &mut strategy,
+            instrument_id,
+            position_id,
+            position_quantity,
+        );
+    let entry_price = configured_book_for_instrument(&mut strategy, instrument_id)
+        .best_ask
+        .expect("ready-to-trade fixture should expose an ask");
+    let entry_order = strategy
+        .build_configured_entry_order(
+            instrument_id,
+            strategy
+                .configured_entry_order_side()
+                .expect("test config should carry entry order side"),
+            position_quantity,
+            Price::new(entry_price, 2),
+            entry_client_order_id,
+        )
+        .expect("resting entry order should build through NT factory");
+    cache
+        .borrow_mut()
+        .add_order(
+            entry_order,
+            None,
+            Some(ClientId::from(strategy.config.client_id.as_str())),
+            true,
+        )
+        .expect("test cache should accept resting entry order");
+
+    strategy.on_position_closed(position_closed_event(instrument_id, position_id));
+
+    let exec_messages = exec_messages.get_messages();
+    assert!(
+        exec_messages.iter().any(|message| matches!(
+            message,
+            TradingCommand::CancelOrder(command)
+                if command.client_order_id == entry_client_order_id
+        )),
+        "external position close should cancel the resting entry"
+    );
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::PendingEntry(PendingEntryState {
+            client_order_id,
+            ..
+        }) if client_order_id == entry_client_order_id
+    ));
+    assert!(strategy.pending_entry().is_some());
+
+    strategy
+        .on_order_canceled(&order_canceled_event(entry_client_order_id, instrument_id))
+        .expect("entry cancel should clear retained pending-entry context");
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(strategy.pending_entry().is_none());
+}
+
+#[test]
+fn position_closed_keeps_entry_reconcile_pending_for_different_instrument() {
+    let mut strategy = ready_to_trade_strategy();
+    let entry_client_order_id = ClientOrderId::from("ENTRY-CLOSE-OTHER-INSTRUMENT");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let pending_instrument_id = pending.instrument_id;
+    let other_instrument_id = configured_instrument_except(&strategy, pending_instrument_id);
+    set_entry_reconcile_pending(
+        &mut strategy,
+        pending,
+        EntryReconcileReason::AwaitingPositionMaterialization,
+    );
+
+    strategy.on_position_closed(position_closed_event(
+        other_instrument_id,
+        PositionId::from("P-CLOSED-OTHER-INSTRUMENT"),
+    ));
+
+    assert!(matches!(
+        strategy.exposure,
+        ExposureState::EntryReconcilePending { .. }
+    ));
+    assert!(strategy.pending_entry().is_some());
+}
+
+#[test]
+fn position_closed_quarantines_foreign_venue_managed_position_id_collision() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-FOREIGN-CLOSE-MANAGED");
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.450,
+    );
+    let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+    strategy.on_position_closed(position_closed_event(foreign_instrument_id, position_id));
+
+    assert_foreign_venue_blind_recovery(&strategy);
+}
+
+#[test]
+fn position_closed_quarantines_foreign_venue_exit_pending_position_id_collision() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-FOREIGN-CLOSE-EXIT");
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.450,
+    );
+    set_exit_pending(
+        &mut strategy,
+        open_position,
+        ClientOrderId::from("EXIT-FOREIGN-CLOSE"),
+        false,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+    strategy.on_position_closed(position_closed_event(foreign_instrument_id, position_id));
+
+    assert_foreign_venue_blind_recovery(&strategy);
+}
+
+#[test]
+fn position_closed_quarantines_foreign_venue_unsupported_position_id_collision() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+    let position_id = PositionId::from("P-FOREIGN-CLOSE-UNSUPPORTED");
+    let book = strategy.active.books.up.clone();
+    set_unsupported_observed(
+        &mut strategy,
+        OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id,
+            position_id,
+            outcome_side: None,
+            outcome_fees: OutcomeFeeState::empty(),
+            historical_entry_fee_bps: None,
+            entry_order_side: OrderSide::Sell,
+            side: PositionSide::Short,
+            quantity: Quantity::new(5.0, 2),
+            avg_px_open: 0.480,
+            interval_open: None,
+            selection_published_at_ms: None,
+            seconds_to_expiry_at_selection: None,
+            book,
+        },
+        UnsupportedObservedReason::BootstrappedUnsupportedContract,
+    );
+    let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+    strategy.on_position_closed(position_closed_event(foreign_instrument_id, position_id));
+
+    assert_foreign_venue_blind_recovery(&strategy);
+}
+
+#[test]
+fn position_closed_releases_unsupported_observed_for_same_position() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+    let position_id = PositionId::from("P-UNSUPPORTED-CLOSED");
+    let book = strategy.active.books.up.clone();
+    set_unsupported_observed(
+        &mut strategy,
+        OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id,
+            position_id,
+            outcome_side: None,
+            outcome_fees: OutcomeFeeState::empty(),
+            historical_entry_fee_bps: None,
+            entry_order_side: OrderSide::Sell,
+            side: PositionSide::Short,
+            quantity: Quantity::new(5.0, 2),
+            avg_px_open: 0.480,
+            interval_open: None,
+            selection_published_at_ms: None,
+            seconds_to_expiry_at_selection: None,
+            book,
+        },
+        UnsupportedObservedReason::BootstrappedUnsupportedContract,
+    );
+
+    strategy.on_position_closed(position_closed_event(instrument_id, position_id));
+
+    assert!(matches!(strategy.exposure, ExposureState::Flat));
+}
+
+#[test]
+fn sell_fill_enters_recovery_without_materializing_position() {
+    let mut strategy = ready_to_trade_strategy();
+    let entry_client_order_id = ClientOrderId::from("ENTRY-SELL");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    set_pending_entry(&mut strategy, pending);
+
+    strategy
+        .on_order_filled(&order_filled_event_with_details(
+            entry_client_order_id,
+            instrument_id,
+            Some(PositionId::from("P-SHORT")),
+            OrderSide::Sell,
+        ))
+        .expect("sell fill should fail closed into recovery");
+
+    assert!(strategy.exposure.is_recovering());
+    assert!(strategy.managed_position().is_none());
+    assert_eq!(
+        strategy
+            .pending_entry()
+            .map(|pending| pending.client_order_id),
+        Some(entry_client_order_id)
+    );
+    assert_eq!(
+        strategy
+            .pending_entry()
+            .map(|pending| pending.instrument_id),
+        Some(instrument_id)
+    );
+}
+
+#[test]
+fn unsupported_entry_fill_without_matching_context_keeps_unknown_side_absent() {
+    let mut strategy = ready_to_trade_strategy();
+    let entry_client_order_id = ClientOrderId::from("ENTRY-MISMATCHED-FILL");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let pending_instrument_id = pending.instrument_id;
+    let fill_instrument_id = configured_instrument_except(&strategy, pending_instrument_id);
+    set_pending_entry(&mut strategy, pending);
+
+    strategy
+        .on_order_filled(&order_filled_event_with_details(
+            entry_client_order_id,
+            fill_instrument_id,
+            Some(PositionId::from("P-MISMATCHED-FILL")),
+            OrderSide::Sell,
+        ))
+        .expect("unsupported mismatched fill should fail closed");
+
+    let ExposureState::BlindRecovery(recovery) = &strategy.exposure else {
+        panic!("expected blind recovery, got {:?}", strategy.exposure);
+    };
+    assert_eq!(
+        recovery.reason,
+        BlindRecoveryReason::InvalidLivePosition {
+            entry_order_side: OrderSide::Sell,
+            side: None,
+        }
+    );
+    assert!(strategy.managed_position().is_none());
+}
+
+#[test]
+fn pending_entry_short_position_event_stays_fail_closed_without_materializing_position() {
+    let mut strategy = ready_to_trade_strategy();
+    let entry_client_order_id = ClientOrderId::from("ENTRY-SELL");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    set_pending_entry(&mut strategy, pending);
+
+    strategy.on_position_opened(position_opened_event_with_details(
+        instrument_id,
+        PositionId::from("P-SHORT"),
+        Quantity::new(10.0, 2),
+        0.450,
+        OrderSide::Sell,
+        PositionSide::Short,
+    ));
+
+    assert!(strategy.exposure.is_recovering());
+    assert!(strategy.managed_position().is_none());
+    let quarantined = match &strategy.exposure {
+        ExposureState::UnsupportedObserved(state) => state,
+        other => panic!("expected unsupported observed exposure, got {other:?}"),
+    };
+    assert_eq!(quarantined.observed.instrument_id, instrument_id);
+    assert_eq!(
+        quarantined.observed.position_id,
+        PositionId::from("P-SHORT")
+    );
+    assert_eq!(quarantined.observed.entry_order_side, OrderSide::Sell);
+    assert_eq!(quarantined.observed.side, PositionSide::Short);
+    assert!(strategy.pending_entry().is_none());
+}
+
+#[test]
+fn live_position_event_quarantines_foreign_venue_position() {
+    // P5-5 / Codex P5 — LIVE-PATH regression lock (mirror of
+    // `recovery_bootstrap_quarantines_foreign_venue_position`). The recovery path already
+    // quarantines a foreign-venue cached position before its contract check; the LIVE
+    // position-event path (`materialize_position_from_event`, driven by `on_position_opened`)
+    // must do the same. This event carries a SUPPORTED side/contract shape (Buy / Long, the
+    // exact shape the same-venue baseline `position_events_update_live_position_state` adopts
+    // into Managed), so the ONLY thing making it foreign is the venue. Under the pre-guard
+    // code this foreign event would pass the side + contract checks and become Managed (the
+    // exit path then submits a real order against that foreign instrument_id); the new venue
+    // guard is what diverts it to blind recovery instead.
+    let mut strategy = ready_to_trade_strategy();
+    let execution_venue = strategy.context.execution_venue();
+    let execution_instrument = configured_outcome_instruments(&strategy)
+        .into_iter()
+        .next()
+        .expect("ready-to-trade fixture should expose a configured instrument");
+    assert_eq!(
+        execution_instrument.venue, execution_venue,
+        "fixture instrument must be on the execution venue so only the venue is changed",
+    );
+    // Same symbol, foreign venue: the venue is the ONLY difference from a managed position.
+    let foreign_instrument =
+        InstrumentId::new(execution_instrument.symbol, Venue::from("HYPERLIQUID"));
+    assert_ne!(
+        foreign_instrument.venue, execution_venue,
+        "foreign instrument must be on a non-execution venue",
+    );
+
+    strategy.on_position_opened(position_opened_event_with_details(
+        foreign_instrument,
+        PositionId::from("P-FOREIGN-LIVE"),
+        Quantity::new(10.0, 2),
+        0.450,
+        OrderSide::Buy,
+        PositionSide::Long,
+    ));
+
+    // Observable exposure: quarantined to blind recovery, never adopted into Managed.
+    assert!(
+        matches!(
+            strategy.exposure,
+            ExposureState::BlindRecovery(BlindRecoveryState {
+                reason: BlindRecoveryReason::ForeignVenuePosition { .. }
+            })
+        ),
+        "foreign-venue live position event must be quarantined to blind recovery, got {:?}",
+        strategy.exposure,
+    );
+    assert!(strategy.managed_position().is_none());
+}
+
+#[test]
+fn order_fill_entry_quarantines_foreign_venue_position() {
+    // P5-5 / Codex P5 — LIVE ORDER-FILL regression lock (sibling of
+    // `live_position_event_quarantines_foreign_venue_position`). The entry-fill branch of
+    // `on_order_filled` matches a fill to our pending entry by client_order_id ALONE, then
+    // adopts the fill's instrument_id into Managed (origin StrategyEntry). A foreign-venue fill
+    // that happens to carry our pending entry's client_order_id must NOT be adopted — the exit
+    // path would otherwise submit a real order against the foreign instrument_id. The shared
+    // venue-adoption guard must divert it to blind recovery, exactly as the position-event path
+    // does. Pre-guard this fill (Some position_id + supported Buy/Long side) would become Managed.
+    let mut strategy = ready_to_trade_strategy();
+    let execution_venue = strategy.context.execution_venue();
+    let entry_client_order_id = ClientOrderId::from("ENTRY-FOREIGN-FILL");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let execution_instrument_id = pending.instrument_id;
+    assert_eq!(
+        execution_instrument_id.venue, execution_venue,
+        "pending entry must be on the execution venue so only the fill venue differs",
+    );
+    set_pending_entry(&mut strategy, pending);
+
+    // Same symbol, foreign venue: the venue is the ONLY difference from our pending entry.
+    let foreign_instrument_id =
+        InstrumentId::new(execution_instrument_id.symbol, Venue::from("HYPERLIQUID"));
+    assert_ne!(
+        foreign_instrument_id.venue, execution_venue,
+        "foreign fill must be on a non-execution venue",
+    );
+
+    strategy
+        .on_order_filled(&order_filled_event_with_details(
+            entry_client_order_id,
+            foreign_instrument_id,
+            Some(PositionId::from("P-FOREIGN-FILL")),
+            OrderSide::Buy,
+        ))
+        .expect("foreign-venue entry fill must not wedge the strategy");
+
+    // Observable exposure: quarantined to blind recovery, never adopted into Managed.
+    assert!(
+        matches!(
+            strategy.exposure,
+            ExposureState::BlindRecovery(BlindRecoveryState {
+                reason: BlindRecoveryReason::ForeignVenuePosition { .. }
+            })
+        ),
+        "foreign-venue entry fill must be quarantined to blind recovery, got {:?}",
+        strategy.exposure,
+    );
+    assert!(strategy.managed_position().is_none());
+}
+
+#[test]
+fn pending_entry_unknown_position_side_stays_fail_closed_without_materializing_position() {
+    let mut strategy = ready_to_trade_strategy();
+    let entry_client_order_id = ClientOrderId::from("ENTRY-BAD-SIDE");
+    let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+    let instrument_id = pending.instrument_id;
+    set_pending_entry(&mut strategy, pending);
+
+    strategy.on_position_opened(position_opened_event_with_details(
+        instrument_id,
+        PositionId::from("P-BAD-SIDE"),
+        Quantity::new(10.0, 2),
+        0.450,
+        OrderSide::Buy,
+        PositionSide::Flat,
+    ));
+
+    assert!(strategy.exposure.is_recovering());
+    assert!(strategy.managed_position().is_none());
+    assert_eq!(
+        strategy
+            .pending_entry()
+            .map(|pending| pending.client_order_id),
+        Some(entry_client_order_id)
+    );
+}
+
+#[test]
+fn position_opened_after_rotation_preserves_existing_position_context() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_a = selected_entry_instrument(&strategy);
+    let preserved_book = configured_book_for_instrument(&mut strategy, instrument_a);
+    let preserved_position = materialize_configured_position(
+        &mut strategy,
+        instrument_a,
+        PositionId::from("P-A"),
+        Quantity::new(10.0, 2),
+        0.450,
+    );
+    set_managed_position(
+        &mut strategy,
+        preserved_position,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+    strategy.active.interval_open = Some(3_200.0);
+    strategy.on_position_opened(position_opened_event(
+        instrument_a,
+        PositionId::from("P-A"),
+        Quantity::new(10.0, 2),
+        0.450,
+    ));
+
+    let open_position = managed_position_ref(&strategy)
+        .cloned()
+        .expect("position should remain tracked");
+    assert_eq!(open_position.market_id.as_deref(), Some("MKT-1"));
+    assert_eq!(open_position.interval_open, Some(3_100.0));
+    assert_eq!(open_position.selection_published_at_ms, Some(1_000));
+    assert_eq!(open_position.seconds_to_expiry_at_selection, Some(300));
+    assert_eq!(
+        open_position
+            .outcome_fees
+            .up_instrument_id
+            .map(|instrument_id| instrument_id.to_string())
+            .as_deref(),
+        Some("condition-MKT-1-MKT-1-UP.POLYMARKET")
+    );
+    assert_eq!(open_position.book.best_bid, preserved_book.best_bid);
+}
+
+#[test]
+fn recovery_bootstrap_quarantines_foreign_venue_position() {
+    // P5-5 / Codex P5 — RECOVERY-PATH regression lock. The entry path is venue-scoped, but
+    // recovery bootstrap previously adopted any-venue cached positions, and the exit path would
+    // then build/submit a real order on the foreign-venue instrument. `bootstrapped_exposure_for`
+    // is the single fail-closed adoption decision and must quarantine a foreign-venue position
+    // BEFORE the contract check. This test holds the venue as the ONLY difference between a managed
+    // and a quarantined position, proving the venue guard is what diverts it.
+    let mut strategy = ready_to_trade_strategy();
+    let execution_venue = fixture_execution_venue();
+    let instrument_id = configured_outcome_instruments(&strategy)
+        .into_iter()
+        .next()
+        .expect("ready-to-trade fixture should expose a configured instrument");
+    let supported = configured_position_probe(&mut strategy, instrument_id);
+    assert_eq!(
+        supported.instrument_id.venue, execution_venue,
+        "probe should produce an execution-venue position",
+    );
+
+    // Control: an execution-venue, supported-side position is adopted into Managed.
+    let managed = strategy.bootstrapped_exposure_for(supported.clone(), execution_venue);
+    assert!(
+        matches!(managed, ExposureState::Managed(_)),
+        "execution-venue supported position must be managed, got {managed:?}",
+    );
+
+    // Same position on a foreign venue (only the venue differs) must be quarantined, never managed.
+    let foreign_instrument =
+        InstrumentId::new(supported.instrument_id.symbol, Venue::from("HYPERLIQUID"));
+    let foreign = OpenPositionState {
+        instrument_id: foreign_instrument,
+        book: OutcomeBookState::from_instrument_id(foreign_instrument),
+        ..supported.clone()
+    };
+    let quarantined = strategy.bootstrapped_exposure_for(foreign, execution_venue);
+    assert!(
+        matches!(
+            quarantined,
+            ExposureState::BlindRecovery(BlindRecoveryState {
+                reason: BlindRecoveryReason::ForeignVenuePosition { .. }
+            })
+        ),
+        "foreign-venue position must be quarantined to blind recovery, got {quarantined:?}",
+    );
+}
+
+#[test]
+fn bootstrap_recovery_from_cache_ignores_foreign_venue_position() {
+    // P5-5 / Codex P5 — RECOVERY-PATH regression lock. The entry path scopes selection to the
+    // execution venue; the recovery path must do the same. A foreign-venue cached position with
+    // a supported contract shape must NOT be accepted into Managed state, because the exit
+    // submission path uses the position's instrument_id directly with no additional venue gate.
+    let mut strategy = test_strategy();
+    assert_eq!(
+        strategy.context.execution_venue(),
+        fixture_execution_venue(),
+        "harness precondition: production execution venue must be the POLYMARKET fixture",
+    );
+    let cache = register_test_strategy(&mut strategy);
+
+    // Foreign-venue (HYPERLIQUID) instrument and position
+    let foreign_instrument = updown_binary_option(
+        "token-up.HYPERLIQUID",
+        "foreign-market",
+        "market-foreign",
+        "Up",
+        1_000,
+        2_000,
+    );
+    let foreign_fill = order_filled_event_with_details(
+        ClientOrderId::from("FOREIGN-ORDER-001"),
+        foreign_instrument.id(),
+        Some(PositionId::from("POS-FOREIGN-001")),
+        OrderSide::Buy,
+    );
+    let foreign_position = Position::new(&foreign_instrument, foreign_fill);
+
+    // Seed the cache with the foreign-venue instrument and position
+    {
+        let mut cache_mut = cache.borrow_mut();
+        cache_mut
+            .add_instrument(foreign_instrument.clone())
+            .expect("test cache should accept the seeded instrument");
+        cache_mut
+            .add_position(&foreign_position, NtOmsType::Netting)
+            .expect("test cache should accept the seeded position");
+    }
+
+    // Verify the position is present when querying WITHOUT venue scoping
+    assert_eq!(
+        cache
+            .borrow()
+            .positions_open(
+                None,
+                None,
+                Some(&StrategyId::from("BINARYORACLEEDGETAKER-001")),
+                None,
+                None,
+            )
+            .len(),
+        1,
+        "foreign position must exist in the unscoped cache",
+    );
+
+    strategy.bootstrap_recovery_from_cache();
+
+    // The foreign-venue position must be ignored; strategy stays Flat.
+    assert!(
+        matches!(strategy.exposure, ExposureState::Flat),
+        "a foreign-venue cached position must NOT be recovered into Managed state: got {:?}",
+        strategy.exposure,
+    );
+}
+
+#[test]
+fn bootstrap_recovery_from_cache_loads_execution_venue_position() {
+    // Baseline: an execution-venue position matching the strategy contract IS recovered into
+    // Managed state. This ensures the venue filter does not over-reject.
+    let mut strategy = test_strategy();
+    assert_eq!(
+        strategy.context.execution_venue(),
+        fixture_execution_venue(),
+        "harness precondition: production execution venue must be the POLYMARKET fixture",
+    );
+    let cache = register_test_strategy(&mut strategy);
+
+    let execution_instrument = updown_binary_option(
+        "token-up.POLYMARKET",
+        "execution-market",
+        "market-execution",
+        "Up",
+        1_000,
+        2_000,
+    );
+    let execution_fill = order_filled_event_with_details(
+        ClientOrderId::from("EXEC-ORDER-001"),
+        execution_instrument.id(),
+        Some(PositionId::from("POS-EXEC-001")),
+        OrderSide::Buy,
+    );
+    let execution_position = Position::new(&execution_instrument, execution_fill);
+
+    {
+        let mut cache_mut = cache.borrow_mut();
+        cache_mut
+            .add_instrument(execution_instrument.clone())
+            .expect("test cache should accept the seeded instrument");
+        cache_mut
+            .add_position(&execution_position, NtOmsType::Netting)
+            .expect("test cache should accept the seeded position");
+    }
+
+    strategy.bootstrap_recovery_from_cache();
+
+    let managed = strategy
+        .managed_position()
+        .expect("execution-venue position must be recovered into Managed state");
+    assert_eq!(
+        managed.position.instrument_id.to_string(),
+        "token-up.POLYMARKET",
+        "recovered position must be the execution-venue instrument",
+    );
+    assert_eq!(
+        managed.position.position_id.to_string(),
+        "POS-EXEC-001",
+        "recovered position must carry the correct position id",
+    );
+    assert!(
+        matches!(managed.origin, ManagedPositionOrigin::RecoveryBootstrap),
+        "recovered position must carry RecoveryBootstrap origin",
+    );
+}
+
+#[test]
+fn task5_entry_gate_reports_all_frozen_block_reasons_explicitly() {
+    let mut strategy = test_strategy();
+    strategy.apply_selection_snapshot(freeze_snapshot_with_start("MKT-1", 1_000));
+    strategy.market_lifecycle.insert(
+        "MKT-1".to_string(),
+        MarketLifecycleLedger {
+            cooldown_expires_at_ms: Some(5_000),
+            churn_count: 0,
+        },
+    );
+    let pending = PendingEntryState {
+        client_order_id: ClientOrderId::from("ENTRY-001"),
+        market_id: Some("MKT-1".to_string()),
+        instrument_id: strategy.active.books.up.instrument_id.unwrap(),
+        outcome_side: Some(OutcomeSide::Up),
+        outcome_fees: strategy.active.outcome_fees.clone(),
+        historical_entry_fee_bps: Some(0.0),
+        interval_open: None,
+        selection_published_at_ms: None,
+        seconds_to_expiry_at_selection: None,
+        book: strategy.active.books.up.clone(),
+    };
+    set_entry_reconcile_pending(
+        &mut strategy,
+        pending,
+        EntryReconcileReason::AwaitingPositionMaterialization,
+    );
+
+    let decision = strategy.entry_gate_decision_at(2_000);
+
+    assert_eq!(
+        decision.blocked_by,
+        vec![
+            EntryBlockReason::PhaseNotActive,
+            EntryBlockReason::MetadataMismatch,
+            EntryBlockReason::ActiveBookNotPriced,
+            EntryBlockReason::IntervalOpenMissing,
+            EntryBlockReason::WarmupIncomplete,
+            EntryBlockReason::FeesNotReady,
+            EntryBlockReason::RecoveryMode,
+            EntryBlockReason::MarketCoolingDown,
+            EntryBlockReason::ForcedFlat(ForcedFlatReason::Freeze),
+            EntryBlockReason::ForcedFlat(ForcedFlatReason::StaleReference),
+            EntryBlockReason::ForcedFlat(ForcedFlatReason::ThinBook),
+            EntryBlockReason::OnePositionInvariant(ExposureOccupancy::EntryReconcilePending),
+        ]
+    );
+}
+
+#[test]
+fn task5_one_position_invariant_panics_in_debug_or_rejects_in_release() {
+    let mut strategy = ready_to_trade_strategy();
+    let invariant_position = OpenPositionState {
+        market_id: Some("MKT-1".to_string()),
+        instrument_id: strategy.active.books.up.instrument_id.unwrap(),
+        position_id: PositionId::from("P-INVARIANT-1"),
+        outcome_side: Some(OutcomeSide::Up),
+        outcome_fees: strategy.active.outcome_fees.clone(),
+        historical_entry_fee_bps: Some(0.0),
+        entry_order_side: OrderSide::Buy,
+        side: PositionSide::Long,
+        quantity: Quantity::new(5.0, 2),
+        avg_px_open: 0.45,
+        interval_open: Some(3_100.0),
+        selection_published_at_ms: Some(1_000),
+        seconds_to_expiry_at_selection: Some(300),
+        book: strategy.active.books.up.clone(),
+    };
+    set_exit_pending(
+        &mut strategy,
+        invariant_position,
+        ClientOrderId::from("EXIT-001"),
+        false,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        strategy.enforce_one_position_invariant()
+    }));
+
+    if cfg!(debug_assertions) {
+        assert!(result.is_err());
+    } else {
+        assert!(result.expect("release builds should not panic").is_err());
+    }
+}
+
+#[test]
+fn entry_gate_reports_one_position_invariant_only_on_occupancy_change() {
+    let mut strategy = ready_to_trade_strategy();
+    let invariant_position = OpenPositionState {
+        market_id: Some("MKT-1".to_string()),
+        instrument_id: strategy.active.books.up.instrument_id.unwrap(),
+        position_id: PositionId::from("P-INVARIANT-2"),
+        outcome_side: Some(OutcomeSide::Up),
+        outcome_fees: strategy.active.outcome_fees.clone(),
+        historical_entry_fee_bps: Some(0.0),
+        entry_order_side: OrderSide::Buy,
+        side: PositionSide::Long,
+        quantity: Quantity::new(5.0, 2),
+        avg_px_open: 0.45,
+        interval_open: Some(3_100.0),
+        selection_published_at_ms: Some(1_000),
+        seconds_to_expiry_at_selection: Some(300),
+        book: strategy.active.books.up.clone(),
+    };
+    set_exit_pending(
+        &mut strategy,
+        invariant_position,
+        ClientOrderId::from("EXIT-001"),
+        false,
+        false,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    let first = strategy.entry_gate_decision_at(2_000);
+    let second = strategy.entry_gate_decision_at(2_001);
+
+    assert!(
+        first
+            .blocked_by
+            .contains(&EntryBlockReason::OnePositionInvariant(
+                ExposureOccupancy::ExitPending
+            ))
+    );
+    assert_eq!(strategy.last_reported_exposure_occupancy.get(), None);
+    assert_eq!(first.blocked_by, second.blocked_by);
+
+    strategy.exposure = ExposureState::Flat;
+    let cleared = strategy.entry_gate_decision_at(2_002);
+    assert!(
+        !cleared
+            .blocked_by
+            .contains(&EntryBlockReason::OnePositionInvariant(
+                ExposureOccupancy::ExitPending
+            ))
+    );
+    assert_eq!(strategy.last_reported_exposure_occupancy.get(), None);
+}
+
+#[test]
+fn entry_gate_reports_only_unexpected_occupancies_as_invariant_violations() {
+    let mut strategy = ready_to_trade_strategy();
+    set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
+
+    let decision = strategy.entry_gate_decision_at(2_000);
+
+    assert!(
+        decision
+            .blocked_by
+            .contains(&EntryBlockReason::OnePositionInvariant(
+                ExposureOccupancy::BlindRecovery
+            ))
+    );
+    assert_eq!(
+        strategy.last_reported_exposure_occupancy.get(),
+        Some(ExposureOccupancy::BlindRecovery)
+    );
+}
+
+#[test]
+fn taker_hardening_guards_are_entry_only_and_do_not_block_exits() {
+    // Exits must always be able to fire (risk-off), even with a crossed book
+    // and an armed spike cooldown. The exit path is structurally independent
+    // of `entry_gate_decision_at`, so neither new gate reason can reach it.
+    let configured_instruments = configured_outcome_instruments(
+        &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
+    );
+    for instrument_id in configured_instruments {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.config.exit_order.order_type = OrderType::Limit;
+        strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+        strategy.config.exit_order.is_post_only = true;
+        strategy.active.phase = SelectionPhase::Freeze;
+        let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+        materialize_managed_position_with_resting_pending_entry(
+            &mut strategy,
+            instrument_id,
+            PositionId::from(format!("POSITION-ENTRY-ONLY-{instrument_id}").as_str()),
+            position_quantity,
+        );
+
+        // Cross both active books and arm the spike cooldown well into the future.
+        strategy.active.books.up.best_bid = Some(0.46);
+        strategy.active.books.up.best_ask = Some(0.45);
+        strategy.active.books.down.best_bid = Some(0.46);
+        strategy.active.books.down.best_ask = Some(0.45);
+        strategy.pricing.spike_until_ms = Some(1_000_000);
+
+        // The entry gate is blocked by both new guards...
+        let gate = strategy.entry_gate_decision_at(1_200);
+        assert!(
+            gate.blocked_by.contains(&EntryBlockReason::BookCrossed),
+            "{instrument_id}: crossed book must block entry"
+        );
+        assert!(
+            gate.blocked_by
+                .contains(&EntryBlockReason::SpotSpikeCooldown),
+            "{instrument_id}: armed spike cooldown must block entry"
+        );
+
+        // ...but the exit still submits.
+        let decision = strategy.exit_submission_decision_at(1_200);
+        assert_eq!(decision.blocked_reason, None, "{instrument_id}");
+        assert_eq!(
+            decision.forced_flat_reasons,
+            vec![ForcedFlatReason::Freeze],
+            "{instrument_id}"
+        );
+        assert_eq!(
+            decision.order_side,
+            Some(OrderSide::Sell),
+            "{instrument_id}"
+        );
+        assert!(decision.instrument_id.is_some(), "{instrument_id}");
+        assert!(decision.quantity.is_some(), "{instrument_id}");
+    }
+}
+
+#[test]
+fn task5_entry_gate_blocks_on_active_phase_forced_flat_reasons() {
+    let mut strategy = ready_to_trade_strategy();
+    strategy.active.last_reference_ts_ms = Some(1_000);
+    strategy.active.books.up.liquidity_available = Some(50.0);
+    strategy.active.books.down.liquidity_available = Some(50.0);
+    strategy.active.fast_venue_incoherent = true;
+
+    let decision = strategy.entry_gate_decision_at(3_000);
+
+    assert_eq!(
+        decision.blocked_by,
+        vec![
+            EntryBlockReason::ForcedFlat(ForcedFlatReason::StaleReference),
+            EntryBlockReason::ForcedFlat(ForcedFlatReason::ThinBook),
+            EntryBlockReason::ForcedFlat(ForcedFlatReason::FastVenueIncoherent),
+        ]
+    );
+}
+
+#[test]
+fn task5_cooldown_is_per_market_and_recovery_blocks_new_entries() {
+    let mut strategy = ready_to_trade_strategy();
+    strategy.arm_market_cooldown("MKT-1", 1_000);
+
+    assert!(strategy.market_in_cooldown("MKT-1", 30_999));
+    assert!(!strategy.market_in_cooldown("MKT-2", 30_999));
+
+    set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
+    let decision = strategy.entry_gate_decision_at(2_000);
+
+    assert!(
+        decision
+            .blocked_by
+            .contains(&EntryBlockReason::RecoveryMode)
+    );
+}
+
+#[test]
+fn exit_evaluation_log_fields_use_position_context_after_rotation() {
+    let fee_provider = RecordingFeeProvider::cold();
+    fee_provider.set_fee("condition-MKT-1-MKT-1-UP.POLYMARKET", Decimal::new(100, 2));
+    fee_provider.set_fee(
+        "condition-MKT-1-MKT-1-DOWN.POLYMARKET",
+        Decimal::new(200, 2),
+    );
+    fee_provider.set_fee("condition-MKT-2-MKT-2-UP.POLYMARKET", Decimal::new(300, 2));
+    fee_provider.set_fee(
+        "condition-MKT-2-MKT-2-DOWN.POLYMARKET",
+        Decimal::new(400, 2),
+    );
+
+    let mut strategy = test_strategy_with_fee_provider(fee_provider);
+    strategy.config.warmup_tick_count = 2;
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    strategy.active.interval_open = Some(3_100.0);
+    strategy.active.warmup_count = 2;
+    strategy.active.last_reference_ts_ms = Some(2_000);
+    strategy.refresh_fee_readiness();
+    let open_position = OpenPositionState {
+        market_id: Some("MKT-1".to_string()),
+        instrument_id: strategy.active.books.up.instrument_id.unwrap(),
+        position_id: PositionId::from("P-UP-LOG-001"),
+        outcome_side: Some(OutcomeSide::Up),
+        outcome_fees: strategy.active.outcome_fees.clone(),
+        historical_entry_fee_bps: Some(1.0),
+        entry_order_side: OrderSide::Buy,
+        side: PositionSide::Long,
+        quantity: Quantity::new(10.0, 2),
+        avg_px_open: 0.450,
+        interval_open: Some(3_100.0),
+        selection_published_at_ms: Some(1_000),
+        seconds_to_expiry_at_selection: Some(300),
+        book: strategy.active.books.up.clone(),
+    };
+    set_managed_position(
+        &mut strategy,
+        open_position,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+    strategy.active.interval_open = Some(3_200.0);
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_101.0, 2_000));
+    strategy.pricing.realized_vol_source_venue = Some("bybit".to_string());
+    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
+    strategy.pricing.realized_vol.last_ready_ts_ms = Some(2_000);
+
+    let decision = strategy.exit_submission_decision_at(2_000);
+    let fields = strategy.exit_evaluation_log_fields_at(2_000, &decision);
+
+    assert_eq!(fields.market_id.as_deref(), Some("MKT-1"));
+    assert_eq!(fields.spot_price, None);
+    assert_eq!(fields.spot_venue_name, None);
+    assert_eq!(fields.interval_open, Some(3_100.0));
+    assert_eq!(fields.seconds_to_expiry, Some(299));
+    assert_eq!(fields.fair_probability_up, None);
+    assert_eq!(fields.hold_ev_bps, None);
+    assert_eq!(fields.realized_vol_source_venue.as_deref(), Some("bybit"));
+    assert_eq!(fields.realized_vol_source_ts_ms, Some(2_000));
+    assert_eq!(fields.up_fee_bps, Some(1.0));
+    assert_eq!(fields.down_fee_bps, Some(2.0));
+}
+
+#[test]
+fn unknown_recovered_position_side_exits_fail_closed_using_tracked_book() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let instrument_id = InstrumentId::from("0xcondition-222.POLYMARKET");
+    let mut tracked_book = OutcomeBookState::from_instrument_id(instrument_id);
+    tracked_book.last_observed_instrument_id = Some(instrument_id);
+    tracked_book.best_bid = Some(0.520);
+    tracked_book.best_ask = Some(0.530);
+    tracked_book.liquidity_available = Some(100.0);
+    set_managed_position(
+        &mut strategy,
+        OpenPositionState {
+            market_id: None,
+            instrument_id,
+            position_id: PositionId::from("P-UNKNOWN-001"),
+            outcome_side: None,
+            outcome_fees: OutcomeFeeState::empty(),
+            historical_entry_fee_bps: None,
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(5.0, 2),
+            avg_px_open: 0.480,
+            interval_open: None,
+            selection_published_at_ms: None,
+            seconds_to_expiry_at_selection: None,
+            book: tracked_book,
+        },
+        ManagedPositionOrigin::RecoveryBootstrap,
+    );
+
+    let decision = strategy.exit_submission_decision_at(2_000);
+
+    assert_eq!(
+        decision.evaluation.exit_decision,
+        Some(ExitDecision::ExitFailClosed)
+    );
+    assert_eq!(decision.instrument_id, Some(instrument_id));
+    assert_eq!(decision.order_side, Some(OrderSide::Sell));
+    assert_eq!(decision.price, Some(0.520));
+    assert_eq!(decision.quantity, Some(Quantity::new(5.0, 2)));
+    assert_eq!(decision.blocked_reason, None);
+}
+
+#[test]
+fn exposure_entry_reconcile_pending_preserves_context_and_blocks_new_entries() {
+    let strategy = ready_to_trade_strategy();
+    let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+    let pending = PendingEntryState {
+        client_order_id: ClientOrderId::from("ENTRY-RECONCILE-001"),
+        market_id: Some("MKT-1".to_string()),
+        instrument_id,
+        outcome_side: Some(OutcomeSide::Up),
+        outcome_fees: strategy.active.outcome_fees.clone(),
+        historical_entry_fee_bps: Some(0.0),
+        interval_open: Some(3_100.0),
+        selection_published_at_ms: Some(1_000),
+        seconds_to_expiry_at_selection: Some(300),
+        book: strategy.active.books.up.clone(),
+    };
+    let exposure = ExposureState::EntryReconcilePending {
+        pending: pending.clone(),
+        reason: EntryReconcileReason::AwaitingPositionMaterialization,
+    };
+
+    assert_eq!(exposure.pending_entry(), Some(&pending));
+    assert_eq!(
+        exposure.occupancy(),
+        Some(ExposureOccupancy::EntryReconcilePending)
+    );
+    assert!(exposure.blocks_new_entries());
+}
+
+#[test]
+fn exposure_exit_pending_requires_both_fill_and_close_to_become_flat() {
+    let strategy = ready_to_trade_strategy();
+    let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+    let managed = ManagedPositionState {
+        position: OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id,
+            position_id: PositionId::from("P-EXIT-STATE-001"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: Some(0.0),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(10.0, 2),
+            avg_px_open: 0.450,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        },
+        origin: ManagedPositionOrigin::StrategyEntry,
+        pending_entry: None,
+    };
+    let mut exit_pending = ExitPendingState {
+        position: Some(managed.clone()),
+        pending_exit: PendingExitState {
+            client_order_id: ClientOrderId::from("EXIT-STATE-001"),
+            market_id: Some("MKT-1".to_string()),
+            position_id: Some(PositionId::from("P-EXIT-STATE-001")),
+            fill_received: false,
+            close_received: false,
+            terminal_received: false,
+            residual_position_observed_after_fill: false,
+        },
+    };
+
+    assert!(!exit_pending.is_terminal());
+    exit_pending.pending_exit.fill_received = true;
+    assert!(!exit_pending.is_terminal());
+    exit_pending.pending_exit.close_received = true;
+    assert!(exit_pending.is_terminal());
+    assert_eq!(
+        exit_pending
+            .position
+            .as_ref()
+            .map(|state| state.position.position_id),
+        Some(PositionId::from("P-EXIT-STATE-001"))
+    );
+}
+
+#[test]
+fn exposure_exit_pending_terminal_with_residual_position_restores_managed_state() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+    let open_position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-EXIT-RESIDUAL-001"),
+        Quantity::new(10.0, 2),
+        0.450,
+    );
+    let exit_pending = ExitPendingState {
+        position: Some(ManagedPositionState {
+            position: open_position.clone(),
+            origin: ManagedPositionOrigin::StrategyEntry,
+            pending_entry: None,
+        }),
+        pending_exit: PendingExitState {
+            client_order_id: ClientOrderId::from("EXIT-RESIDUAL-001"),
+            market_id: open_position.market_id.clone(),
+            position_id: Some(open_position.position_id),
+            fill_received: true,
+            close_received: false,
+            terminal_received: true,
+            residual_position_observed_after_fill: true,
+        },
+    };
+
+    let state = exit_pending.into_state_after_exit_update();
+
+    let ExposureState::Managed(restored) = state else {
+        panic!("terminal residual position must restore managed exposure");
+    };
+    assert_eq!(restored.position.position_id, open_position.position_id);
+    assert_eq!(restored.origin, ManagedPositionOrigin::StrategyEntry);
+}
+
+#[test]
+fn exposure_managed_recovery_origin_is_explicit_without_recovery_boolean() {
+    let strategy = ready_to_trade_strategy();
+    let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+    let managed = ExposureState::Managed(ManagedPositionState {
+        position: OpenPositionState {
+            market_id: Some("MKT-1".to_string()),
+            instrument_id,
+            position_id: PositionId::from("P-RECOVERY-001"),
+            outcome_side: Some(OutcomeSide::Up),
+            outcome_fees: strategy.active.outcome_fees.clone(),
+            historical_entry_fee_bps: None,
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(5.0, 2),
+            avg_px_open: 0.440,
+            interval_open: Some(3_100.0),
+            selection_published_at_ms: Some(1_000),
+            seconds_to_expiry_at_selection: Some(300),
+            book: strategy.active.books.up.clone(),
+        },
+        origin: ManagedPositionOrigin::RecoveryBootstrap,
+        pending_entry: None,
+    });
+
+    let managed = managed
+        .managed_position()
+        .expect("managed exposure should return managed position");
+    assert_eq!(managed.origin, ManagedPositionOrigin::RecoveryBootstrap);
+    assert_eq!(
+        managed.position.position_id,
+        PositionId::from("P-RECOVERY-001")
+    );
+}

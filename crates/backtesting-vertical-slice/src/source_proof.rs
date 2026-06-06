@@ -29,6 +29,23 @@ pub const CONTRACT_VERSION: &str = "backfill-table-contract.v1";
 /// Source-proof schema version implemented by this module.
 pub const SOURCE_PROOF_SCHEMA_VERSION: &str = "backfill-source-proof.v1";
 
+const SOURCE_BINDINGS_REGISTRY: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
+);
+
+#[derive(Debug, Deserialize)]
+struct SourceBindingRegistry {
+    #[serde(rename = "source_binding", default)]
+    source_bindings: Vec<SourceBindingConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceBindingConfig {
+    key: String,
+    venue: String,
+    source_uri: String,
+}
+
 /// Lifecycle status of a source-proof record.
 ///
 /// Accepted records are immutable; a changed fact creates a new
@@ -611,9 +628,10 @@ pub fn select_accepted_dataset(
     }
 
     // Bind the object to the proof's source: the object's own provenance URL
-    // host must carry the venue as an exact hostname label, so substring matches
-    // like `evil-bybit-mirror.example` cannot satisfy a Bybit proof.
-    if !source_url_host_has_venue_label(&object.source_url, &proof.venue) {
+    // must use the HTTPS host declared by the source-binding registry. This is
+    // stricter than venue-label inference and avoids accepting arbitrary TLDs.
+    if !source_url_matches_declared_source(&object.source_url, &proof.source_binding, &proof.venue)
+    {
         return Err(AcceptanceError::SourceVenueMismatch {
             venue: proof.venue.clone(),
             source_url: object.source_url.clone(),
@@ -663,14 +681,39 @@ pub fn select_accepted_dataset(
     })
 }
 
-fn source_url_host_has_venue_label(source_url: &str, venue: &str) -> bool {
-    let venue = venue.trim().to_ascii_lowercase();
-    if venue.is_empty() {
-        return false;
-    }
-    let Some((_, after_scheme)) = source_url.split_once("://") else {
+fn source_url_matches_declared_source(source_url: &str, source_binding: &str, venue: &str) -> bool {
+    let Some(declared_source_uri) = source_binding_source_uri(source_binding, venue) else {
         return false;
     };
+    let Some(declared_host) = https_host(&declared_source_uri) else {
+        return false;
+    };
+    let Some(object_host) = https_host(source_url) else {
+        return false;
+    };
+    object_host.eq_ignore_ascii_case(declared_host)
+}
+
+fn source_binding_source_uri(source_binding: &str, venue: &str) -> Option<String> {
+    let source_binding = source_binding.trim();
+    let venue = venue.trim();
+    if source_binding.is_empty() || venue.is_empty() {
+        return None;
+    }
+    toml::from_str::<SourceBindingRegistry>(SOURCE_BINDINGS_REGISTRY)
+        .ok()?
+        .source_bindings
+        .into_iter()
+        // Binding keys are canonical config IDs; venue labels are operator-facing names.
+        .find(|binding| binding.key == source_binding && binding.venue.eq_ignore_ascii_case(venue))
+        .map(|binding| binding.source_uri)
+}
+
+fn https_host(source_url: &str) -> Option<&str> {
+    let (scheme, after_scheme) = source_url.split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("https") {
+        return None;
+    }
     let authority = after_scheme
         .split(['/', '?', '#'])
         .next()
@@ -683,8 +726,8 @@ fn source_url_host_has_venue_label(source_url: &str, venue: &str) -> bool {
         .next()
         .unwrap_or_default()
         .trim_matches(['[', ']'])
-        .to_ascii_lowercase();
-    host == format!("{venue}.com") || host.ends_with(&format!(".{venue}.com"))
+        .trim_matches('.');
+    if host.is_empty() { None } else { Some(host) }
 }
 
 fn ensure_coverage_within_requested(
@@ -1008,6 +1051,136 @@ mod tests {
             matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn select_rejects_unconfigured_single_label_tld_host() {
+        let accepted = candidate_proof()
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.source_url = "https://bybit.evil/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn select_rejects_unconfigured_fake_tld_subdomain() {
+        let accepted = candidate_proof()
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.source_url =
+            "https://evil.bybit.fake/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn select_rejects_unconfigured_non_com_source_host() {
+        let accepted = candidate_proof()
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.source_url =
+            "https://data.bybit.net/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn select_rejects_unconfigured_multilabel_public_suffix_host() {
+        let accepted = candidate_proof()
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.source_url =
+            "https://data.bybit.co.uk/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn select_rejects_unknown_source_binding() {
+        let mut candidate = candidate_proof();
+        candidate.source_binding = "bybit-does-not-exist".to_string();
+        let accepted = candidate
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let object = manifest_object();
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn select_rejects_non_https_source_url() {
+        let accepted = candidate_proof()
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.source_url =
+            "ftp://public.bybit.com/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn select_rejects_schemeless_source_url() {
+        let accepted = candidate_proof()
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.source_url = "public.bybit.com/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn select_rejects_extra_label_before_configured_host() {
+        let accepted = candidate_proof()
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.source_url =
+            "https://evil.public.bybit.com/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn select_accepts_configured_source_host_with_url_variations() {
+        let accepted = candidate_proof()
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.source_url =
+            "https://operator@PUBLIC.BYBIT.COM.:443/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz"
+                .to_string();
+        select_accepted_dataset(&accepted, &object, &object.sha256).unwrap();
     }
 
     #[test]

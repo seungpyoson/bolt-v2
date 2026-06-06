@@ -45,7 +45,7 @@ use arrow::{
 };
 use nautilus_model::{
     data::{OrderBookDelta, TradeTick},
-    instruments::InstrumentAny,
+    instruments::{BinaryOption, InstrumentAny},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use parquet::arrow::{
@@ -1234,8 +1234,14 @@ fn append_polymarket_asset_run(
                 price_precision: instrument.price_precision,
                 size_precision: instrument.size_precision,
             };
+            let instrument = InstrumentAny::BinaryOption(instrument);
+            ensure_polymarket_instrument_matches_catalog(
+                catalog,
+                &spec.nt_instrument_id,
+                &instrument,
+            )?;
             catalog
-                .write_instruments(vec![InstrumentAny::BinaryOption(instrument)])
+                .write_instruments(vec![instrument])
                 .with_context(|| {
                     format!("append Polymarket instrument for {}", spec.nt_instrument_id)
                 })?;
@@ -1270,8 +1276,14 @@ fn append_polymarket_asset_run(
                 price_precision: instrument.price_precision,
                 size_precision: instrument.size_precision,
             };
+            let instrument = InstrumentAny::BinaryOption(instrument);
+            ensure_polymarket_instrument_matches_catalog(
+                catalog,
+                &spec.nt_instrument_id,
+                &instrument,
+            )?;
             catalog
-                .write_instruments(vec![InstrumentAny::BinaryOption(instrument)])
+                .write_instruments(vec![instrument])
                 .with_context(|| {
                     format!("append Polymarket instrument for {}", spec.nt_instrument_id)
                 })?;
@@ -1286,6 +1298,61 @@ fn append_polymarket_asset_run(
             Ok(Some(summary))
         }
     }
+}
+
+fn ensure_polymarket_instrument_matches_catalog(
+    catalog: &ParquetDataCatalog,
+    nt_instrument_id: &str,
+    candidate: &InstrumentAny,
+) -> Result<()> {
+    let ids = [nt_instrument_id.to_string()];
+    let existing = catalog
+        .query_instruments(Some(&ids))
+        .with_context(|| format!("query existing Polymarket instrument {nt_instrument_id}"))?;
+    for instrument in existing {
+        ensure_polymarket_binary_option_matches(nt_instrument_id, &instrument, candidate)?;
+    }
+    Ok(())
+}
+
+fn ensure_polymarket_binary_option_matches(
+    nt_instrument_id: &str,
+    existing: &InstrumentAny,
+    candidate: &InstrumentAny,
+) -> Result<()> {
+    let InstrumentAny::BinaryOption(existing) = existing else {
+        bail!("existing Polymarket instrument {nt_instrument_id} is not a BinaryOption");
+    };
+    let InstrumentAny::BinaryOption(candidate) = candidate else {
+        bail!("candidate Polymarket instrument {nt_instrument_id} is not a BinaryOption");
+    };
+    ensure!(
+        binary_option_definition_matches(existing, candidate),
+        "conflicting Polymarket instrument definition for {nt_instrument_id}: \
+         existing_price_precision={} candidate_price_precision={} \
+         existing_size_precision={} candidate_size_precision={} \
+         existing_price_increment={} candidate_price_increment={} \
+         existing_size_increment={} candidate_size_increment={}",
+        existing.price_precision,
+        candidate.price_precision,
+        existing.size_precision,
+        candidate.size_precision,
+        existing.price_increment,
+        candidate.price_increment,
+        existing.size_increment,
+        candidate.size_increment
+    );
+    Ok(())
+}
+
+fn binary_option_definition_matches(existing: &BinaryOption, candidate: &BinaryOption) -> bool {
+    existing.price_precision == candidate.price_precision
+        && existing.size_precision == candidate.size_precision
+        && existing.price_increment == candidate.price_increment
+        && existing.size_increment == candidate.size_increment
+        && existing.activation_ns == candidate.activation_ns
+        && existing.expiration_ns == candidate.expiration_ns
+        && existing.outcome == candidate.outcome
 }
 
 fn append_polymarket_contiguous_asset_runs_archive(

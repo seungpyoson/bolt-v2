@@ -268,9 +268,10 @@ mod tests {
             time_window_excludes_all_data(Some(150), Some(180), 100, 200),
             None
         );
-        // A bound exactly at the edge still admits the boundary trade.
+        // The start bound is inclusive, so a start exactly at the last event
+        // still admits that boundary trade.
         assert_eq!(
-            time_window_excludes_all_data(Some(200), Some(100), 100, 200),
+            time_window_excludes_all_data(Some(200), None, 100, 200),
             None
         );
     }
@@ -287,6 +288,14 @@ mod tests {
     fn time_window_end_before_first_excludes_all() {
         assert_eq!(
             time_window_excludes_all_data(None, Some(99), 100, 200),
+            Some("end_time")
+        );
+    }
+
+    #[test]
+    fn time_window_end_equal_to_first_excludes_all() {
+        assert_eq!(
+            time_window_excludes_all_data(None, Some(100), 100, 200),
             Some("end_time")
         );
     }
@@ -366,7 +375,7 @@ fn time_window_excludes_all_data(
         return Some("start_time");
     }
     if let Some(end) = end
-        && end < first
+        && end <= first
     {
         return Some("end_time");
     }

@@ -209,7 +209,7 @@ fn decimal_places(value: &str) -> u8 {
 fn rescaled(value: &str, precision: u8) -> Result<String> {
     let mut decimal = Decimal::from_str(value).with_context(|| format!("decimal {value:?}"))?;
     ensure!(
-        decimal.scale() <= u32::from(precision),
+        decimal.normalize().scale() <= u32::from(precision),
         "value {value:?} has more precision than instrument allows ({precision})"
     );
     decimal.rescale(u32::from(precision));
@@ -2172,6 +2172,15 @@ mod tests {
         assert_eq!(decimal_places("100"), 0);
         // Trailing zeros are significant.
         assert_eq!(decimal_places("0.50"), 2);
+    }
+
+    #[test]
+    fn rescale_tolerates_trailing_zero_but_rejects_subprecision() {
+        assert_eq!(rescaled("1.0", 0).unwrap(), "1");
+        assert_eq!(rescaled("22.0", 0).unwrap(), "22");
+        assert_eq!(rescaled("0.50", 1).unwrap(), "0.5");
+        let err = rescaled("1.05", 0).expect_err("sub-precision must be refused");
+        assert!(err.to_string().contains("more precision"), "{err}");
     }
 
     #[test]

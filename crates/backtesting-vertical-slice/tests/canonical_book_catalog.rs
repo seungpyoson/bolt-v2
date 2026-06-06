@@ -99,6 +99,15 @@ fn tiny_price_change<'a>(
 }
 
 fn write_tiny_clob_parquet(dir: &TempDir, rows: &[TinyClobRow<'_>]) -> PathBuf {
+    write_tiny_clob_parquet_with_scales(dir, rows, 4, 6)
+}
+
+fn write_tiny_clob_parquet_with_scales(
+    dir: &TempDir,
+    rows: &[TinyClobRow<'_>],
+    price_scale: i8,
+    size_scale: i8,
+) -> PathBuf {
     let path = dir.path().join("tiny-polymarket.parquet");
     let schema = Arc::new(Schema::new(vec![
         Field::new(
@@ -115,8 +124,8 @@ fn write_tiny_clob_parquet(dir: &TempDir, rows: &[TinyClobRow<'_>]) -> PathBuf {
         Field::new("asset_id", DataType::Utf8, true),
         Field::new("bids", DataType::Utf8, true),
         Field::new("asks", DataType::Utf8, true),
-        Field::new("price", DataType::Decimal128(18, 4), true),
-        Field::new("size", DataType::Decimal128(18, 6), true),
+        Field::new("price", DataType::Decimal128(18, price_scale), true),
+        Field::new("size", DataType::Decimal128(18, size_scale), true),
         Field::new("side", DataType::Utf8, true),
         Field::new("transaction_hash", DataType::Utf8, true),
     ]));
@@ -137,7 +146,7 @@ fn write_tiny_clob_parquet(dir: &TempDir, rows: &[TinyClobRow<'_>]) -> PathBuf {
                         .map(|row| row.price_scaled_4)
                         .collect::<Vec<Option<i128>>>(),
                 )
-                .with_precision_and_scale(18, 4)
+                .with_precision_and_scale(18, price_scale)
                 .expect("price precision"),
             ) as ArrayRef,
             Arc::new(
@@ -146,7 +155,7 @@ fn write_tiny_clob_parquet(dir: &TempDir, rows: &[TinyClobRow<'_>]) -> PathBuf {
                         .map(|row| row.size_scaled_6)
                         .collect::<Vec<Option<i128>>>(),
                 )
-                .with_precision_and_scale(18, 6)
+                .with_precision_and_scale(18, size_scale)
                 .expect("size precision"),
             ) as ArrayRef,
             strings(rows.iter().map(|row| row.side).collect()),
@@ -595,6 +604,46 @@ fn book_append_rejects_non_contiguous_asset_runs() {
     assert!(
         format!("{error:#}").contains("not grouped by asset_id"),
         "{error:#}"
+    );
+}
+
+#[test]
+fn book_append_rejects_conflicting_duplicate_instrument_definition() {
+    let asset = "1111111111111111111111111111111111111111";
+    let first_dir = TempDir::new().expect("first parquet root");
+    let second_dir = TempDir::new().expect("second parquet root");
+    let first_path = write_tiny_clob_parquet_with_scales(
+        &first_dir,
+        &[tiny_price_change(asset, 1_716_400_000_000, 51, 1, "BUY")],
+        2,
+        0,
+    );
+    let second_path = write_tiny_clob_parquet_with_scales(
+        &second_dir,
+        &[tiny_price_change(asset, 1_716_400_001_000, 5100, 1, "BUY")],
+        4,
+        0,
+    );
+    let catalog_dir = TempDir::new().expect("temp catalog root");
+    let mut catalog = ParquetDataCatalog::new(catalog_dir.path(), None, None, None, None);
+
+    append_polymarket_book_archive(&first_path, TINY_OBJECT_KEY, &mut catalog)
+        .expect("first append writes asset");
+    let id = format!("{asset}.POLYMARKET");
+    assert_eq!(
+        catalog
+            .query_instruments(Some(&[id]))
+            .expect("query first instrument")
+            .len(),
+        1,
+        "first append must write a queryable instrument definition"
+    );
+    let err = append_polymarket_book_archive(&second_path, TINY_OBJECT_KEY, &mut catalog)
+        .expect_err("conflicting duplicate instrument definition must fail loud");
+
+    assert!(
+        format!("{err:#}").contains("conflicting Polymarket instrument definition"),
+        "{err:#}"
     );
 }
 

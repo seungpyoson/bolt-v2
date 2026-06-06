@@ -67,6 +67,103 @@ pub enum LifecycleState {
     Inactive,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageProfile {
+    Active,
+    Archive,
+    DeepArchive,
+}
+
+impl StorageProfile {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Archive => "archive",
+            Self::DeepArchive => "deep_archive",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactLifecycleConfig {
+    pub retain_forever: bool,
+    pub default_delete_after_seconds: Option<u64>,
+    pub default_expire_after_seconds: Option<u64>,
+    pub quiet_window_seconds: u64,
+    pub storage_profiles: Vec<StorageProfile>,
+}
+
+impl ArtifactLifecycleConfig {
+    pub fn retain_forever(quiet_window_seconds: u64) -> Self {
+        Self {
+            retain_forever: true,
+            default_delete_after_seconds: None,
+            default_expire_after_seconds: None,
+            quiet_window_seconds,
+            storage_profiles: vec![
+                StorageProfile::Active,
+                StorageProfile::Archive,
+                StorageProfile::DeepArchive,
+            ],
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), ArtifactIndexError> {
+        if !self.retain_forever {
+            return Err(ArtifactIndexError::LifecyclePolicy(
+                "canonical artifacts must retain forever by default".to_string(),
+            ));
+        }
+        if self.default_delete_after_seconds.is_some() {
+            return Err(ArtifactIndexError::LifecyclePolicy(
+                "default delete lifecycle rules are disabled".to_string(),
+            ));
+        }
+        if self.default_expire_after_seconds.is_some() {
+            return Err(ArtifactIndexError::LifecyclePolicy(
+                "default expiration lifecycle rules are disabled".to_string(),
+            ));
+        }
+        if self.quiet_window_seconds == 0 {
+            return Err(ArtifactIndexError::LifecyclePolicy(
+                "quiet_window_seconds must be configured as a positive value".to_string(),
+            ));
+        }
+        for required in [
+            StorageProfile::Active,
+            StorageProfile::Archive,
+            StorageProfile::DeepArchive,
+        ] {
+            if !self.storage_profiles.contains(&required) {
+                return Err(ArtifactIndexError::LifecyclePolicy(format!(
+                    "storage profile {} is required",
+                    required.as_str()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn lifecycle_state_at(
+        &self,
+        created_at_seconds: u64,
+        observed_at_seconds: u64,
+    ) -> Result<LifecycleState, ArtifactIndexError> {
+        self.validate()?;
+        if observed_at_seconds < created_at_seconds {
+            return Err(ArtifactIndexError::LifecyclePolicy(
+                "observed_at_seconds must not be before created_at_seconds".to_string(),
+            ));
+        }
+        if observed_at_seconds - created_at_seconds >= self.quiet_window_seconds {
+            Ok(LifecycleState::Inactive)
+        } else {
+            Ok(LifecycleState::Active)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactIndexLineageRef {
     pub artifact_id: String,
@@ -192,6 +289,7 @@ pub enum ArtifactIndexError {
         requester_project: String,
         producer_project: String,
     },
+    LifecyclePolicy(String),
 }
 
 impl fmt::Display for ArtifactIndexError {
@@ -226,6 +324,9 @@ impl fmt::Display for ArtifactIndexError {
                 f,
                 "artifact index record {artifact_id:?} is producer-owned by {producer_project:?}; {requester_project:?} is a read-only consumer"
             ),
+            Self::LifecyclePolicy(message) => {
+                write!(f, "artifact lifecycle policy rejected: {message}")
+            }
         }
     }
 }

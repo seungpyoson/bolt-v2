@@ -18,6 +18,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - NT `BacktestDataConfig` catalog filesystem protocol and storage options are declared in TOML and mapped into NT, so S3/cloud catalog consumption can use NT's own catalog path
 - artifact-root typed subpaths now resolve from the single configured root for `raw`, `nt-catalog`, `source-proofs`, `backtests`, `artifact-index`, and `research-analytics`; unsupported artifact-root schemes fail validation before a run
 - Artifact Index record construction now has a pure contract helper for BTE-produced staged records: generated per-kind event/latest-pointer URIs under the single S3 `artifact_root`, `sha256` content-hash validation, required parent lineage refs, active lifecycle default, and producer-owned write-authority checks
+- Artifact lifecycle config now rejects default delete/expiration rules, requires `active`/`archive`/`deep_archive` storage profiles, and derives active-to-inactive state from a configured quiet window
 - S3 catalog storage options now fail before NT config construction if generic and Rust-specific maps are both set, or if an S3 option key is not supported by this pinned NT revision
 - the CLI has an explicit `--publish-output` opt-in that copies the verified local artifact tree to `manifest.output_prefix` through NT/object-store plumbing after the local run succeeds
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
@@ -190,7 +191,8 @@ GREEN checks after implementation:
 - `just bte-test run_from_run_spec_rejects_object_byte_count_mismatch_before_artifacts`: RED failed because the operator ran NT instead of rejecting the byte mismatch, then GREEN passed after adding the pre-hash/pre-decompression byte-count check
 - `just bte-test read_object_gz_rejects_size_mismatch_before_loading_object`: RED failed with missing checked-read helper, then GREEN passed after adding CLI object-size preflight before `fs::read`
 - `just bte-test backtest_index_record_generates_paths_under_single_artifact_root artifact_index_rejects_missing_lineage_and_non_sha256_hashes artifact_index_rejects_consumer_mutation_of_producer_records`: RED failed with missing `artifact_index` module, then GREEN passed after adding the pure Artifact Index contract helper
-- `just bte-test`: 187 passed, including 2 slow public API tests
+- `just bte-test lifecycle_config_rejects_default_delete_or_expiration_rules lifecycle_state_follows_configured_quiet_window lifecycle_config_requires_all_storage_profiles`: RED failed with missing lifecycle config types, then GREEN passed after adding the pure lifecycle policy helper
+- `just bte-test`: 190 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed
@@ -212,6 +214,7 @@ GREEN checks after implementation:
 | Complex NT venue model policy | Primitive controls are now explicit, and complex surfaces are classified in `backtest-extension-surface-matrix.md`, but leverage maps, margin model, simulation modules, fill model, latency model, fee model, and settlement prices are not yet manifest-configurable | keep them `unsupported_for_now` until typed manifest sections exist; if a typed placeholder schema is introduced, emit explicit unsupported-surface errors rather than silently relying on hidden defaults |
 | Direct S3 catalog execution proof | The proof path is implemented to pass resolved object-store options into NT, but it has not run against real S3 because SSM credential parameter paths are missing | after SSM paths are configured, run `--publish-output --prove-published-catalog`, verify S3 artifact hashes, and require the published-catalog proof to stamp `direct_s3_catalog_access_proven = true` |
 | Artifact Index commit proof | The pure record contract is now validated locally, but create-only event writes, conditional latest-pointer updates, snapshot commits, retry/rebase, audit epochs, and producer IAM scopes are not proven | keep events/snapshots proof-gated; prove object-store conditional semantics or select an approved coordinator before relying on Artifact Index for committed discovery |
+| Artifact lifecycle operations | Lifecycle policy is validated in-process, but S3 bucket/object lifecycle rules, transition execution, restore behavior, and active storage for hot pointers/current snapshots are not proven | keep runtime deletes/expirations disabled by contract; model lifecycle costs and prove storage-class transition/restore behavior before enabling any artifact-store policy |
 | Old partial output disposition | Old outputs must not be promoted as clean | keep old outputs marked partial/dirty; after clean replacement exists, retain or archive them as forensic evidence, but do not use them as accepted result artifacts |
 
 ## Prior Backfill Slow-Run Root Cause

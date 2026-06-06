@@ -1,6 +1,6 @@
 use backtesting_vertical_slice::artifact_index::{
-    ArtifactIndexLineageRef, ArtifactIndexRecord, ArtifactKind, CommitState, LifecycleState,
-    WriteAuthority,
+    ArtifactIndexLineageRef, ArtifactIndexRecord, ArtifactKind, ArtifactLifecycleConfig,
+    CommitState, LifecycleState, StorageProfile, WriteAuthority,
 };
 
 fn sha256_a() -> String {
@@ -113,4 +113,41 @@ fn artifact_index_rejects_consumer_mutation_of_producer_records() {
         .validate_write_authority("research-analytics")
         .unwrap_err();
     assert!(err.to_string().contains("read-only consumer"), "{err}");
+}
+
+#[test]
+fn lifecycle_config_rejects_default_delete_or_expiration_rules() {
+    let mut delete_config = ArtifactLifecycleConfig::retain_forever(86_400);
+    delete_config.default_delete_after_seconds = Some(86_400);
+    let err = delete_config.validate().unwrap_err();
+    assert!(err.to_string().contains("delete"), "{err}");
+
+    let mut expiration_config = ArtifactLifecycleConfig::retain_forever(86_400);
+    expiration_config.default_expire_after_seconds = Some(86_400);
+    let err = expiration_config.validate().unwrap_err();
+    assert!(err.to_string().contains("expiration"), "{err}");
+}
+
+#[test]
+fn lifecycle_state_follows_configured_quiet_window() {
+    let config = ArtifactLifecycleConfig::retain_forever(86_400);
+
+    assert_eq!(
+        config.lifecycle_state_at(1_000, 1_000 + 86_399).unwrap(),
+        LifecycleState::Active
+    );
+    assert_eq!(
+        config.lifecycle_state_at(1_000, 1_000 + 86_400).unwrap(),
+        LifecycleState::Inactive
+    );
+}
+
+#[test]
+fn lifecycle_config_requires_all_storage_profiles() {
+    let mut config = ArtifactLifecycleConfig::retain_forever(86_400);
+    config.storage_profiles = vec![StorageProfile::Active, StorageProfile::Archive];
+
+    let err = config.validate().unwrap_err();
+
+    assert!(err.to_string().contains("deep_archive"), "{err}");
 }

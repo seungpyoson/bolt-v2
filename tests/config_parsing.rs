@@ -34,6 +34,46 @@ const SHIPPED_BINARY_ORACLE_STRATEGY_FILES: &[&str] = &[
 ];
 
 #[test]
+fn shipped_polymarket_secrets_use_eu_west_2_registry_paths() {
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+
+    for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
+        let loaded = load_bolt_v3_config(&support::repo_path(relative_path))
+            .unwrap_or_else(|error| panic!("{relative_path} should load: {error}"));
+
+        assert_eq!(
+            loaded.root.aws.region, "eu-west-2",
+            "{relative_path} must resolve shipped SSM paths in eu-west-2"
+        );
+
+        let polymarket = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .unwrap_or_else(|| panic!("{relative_path} must declare clients.polymarket_main"));
+        let secrets = polymarket
+            .secrets
+            .as_ref()
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| {
+                panic!("{relative_path} clients.polymarket_main.secrets must be a table")
+            });
+        for (field, expected_path) in [
+            ("private_key_ssm_path", "/bolt/polymarket/private-key"),
+            ("api_key_ssm_path", "/bolt/polymarket/api-key"),
+            ("api_secret_ssm_path", "/bolt/polymarket/api-secret"),
+            ("passphrase_ssm_path", "/bolt/polymarket/api-passphrase"),
+        ] {
+            assert_eq!(
+                secrets.get(field).and_then(toml::Value::as_str),
+                Some(expected_path),
+                "{relative_path} clients.polymarket_main.secrets.{field} must use the eu-west-2 registry path"
+            );
+        }
+    }
+}
+
+#[test]
 fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
     use bolt_v2::bolt_v3_config::load_bolt_v3_config;
     use nautilus_model::identifiers::ClientId;

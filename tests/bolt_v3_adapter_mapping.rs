@@ -1128,7 +1128,7 @@ replace_existing = false
 rotation_kind = "none"
 
 [aws]
-region = "eu-west-1"
+region = "eu-west-2"
 
 [clients.polymarket_main]
 venue = "POLYMARKET"

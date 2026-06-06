@@ -643,6 +643,7 @@ where
     } else {
         base_quantity_admission_notional(price, quantity)
     };
+    let max_fee_bps = max_fee_bps_for_price(price)?;
     let notional = if input.order.price().is_none() && !input.order.is_quote_quantity() {
         let price_ceiling = input
             .instrument
@@ -657,7 +658,6 @@ where
     } else {
         notional
     };
-    let max_fee_bps = max_fee_bps_for_price(price)?;
     let notional = fee_inclusive_admission_notional(notional, max_fee_bps);
     let intent_kind = match input.intent.intent_kind {
         BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,

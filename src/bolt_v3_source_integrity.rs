@@ -168,7 +168,7 @@ mod tests {
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "059a61cdbd4fa96ff61a44f405e11ac8780ee9baba8f926127b918bb30d5ab23";
+        "cff6105bb2a8f88727647fe9ca2f4df0dccc50b354537a4bfedbf015f070f5d1";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

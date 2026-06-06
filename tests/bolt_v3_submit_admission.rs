@@ -21,7 +21,7 @@ use bolt_v2::strategies::registry::StrategyBuildContext;
 use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_model::enums::{OrderSide, PositionSide, TimeInForce};
 use nautilus_model::identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId};
-use nautilus_model::orders::{LimitOrder, OrderAny};
+use nautilus_model::orders::{LimitOrder, MarketOrder, OrderAny};
 use nautilus_model::types::{Price, Quantity};
 use rust_decimal::Decimal;
 use std::{
@@ -135,6 +135,67 @@ fn build_submit_admission_request_from_order_maps_base_limit_order() {
     );
     assert_eq!(request.intent_kind, BoltV3SubmitIntentKind::Entry);
     assert_eq!(request.canary_proof_claim, None);
+}
+
+#[test]
+fn build_submit_admission_request_from_order_checks_fee_before_market_ceiling() {
+    let fallback_price = Price::new(0.50, 2);
+    let quantity = Quantity::new(2.0, 2);
+    let order = OrderAny::Market(
+        MarketOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            InstrumentId::from("INSTRUMENT.SOURCE"),
+            ClientOrderId::from("O-19700101-000000-001-A9-2"),
+            OrderSide::Buy,
+            quantity,
+            TimeInForce::Gtc,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("market order should be valid"),
+    );
+    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        "strategy-a".to_string(),
+        BoltV3OrderIntentKind::Entry,
+        fallback_price.to_string(),
+        &order,
+    );
+
+    let error = build_submit_admission_request_from_order(
+        BoltV3SubmitAdmissionRequestInput {
+            execution_client_id: "hyperliquid_perps",
+            intent: &intent,
+            order: &order,
+            instrument: None,
+            quote_quantity_last_price: None,
+            quote_quantity_reference_price: None,
+            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            risk_reducing_exit_position: None,
+        },
+        |_| anyhow::bail!("fee lookup failed before ceiling valuation"),
+    )
+    .expect_err("fee lookup should preserve the old strategy error order");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("fee lookup failed before ceiling valuation"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("structural price ceiling"),
+        "market ceiling validation must not run before fee lookup: {message}"
+    );
 }
 
 #[test]

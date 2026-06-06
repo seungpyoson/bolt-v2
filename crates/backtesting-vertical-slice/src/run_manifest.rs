@@ -21,7 +21,7 @@ use nautilus_model::{
     data::BarType,
     enums::{AccountType, BookType, OmsType},
     identifiers::InstrumentId,
-    types::Quantity,
+    types::{Money, Quantity},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -165,6 +165,12 @@ pub enum ManifestError {
         registry_key: String,
         parameter: String,
     },
+    InvalidStartingBalance {
+        balance: String,
+    },
+    InvalidInstrumentId {
+        instrument_id: String,
+    },
     UnacceptedData {
         manifest_proof: String,
         accepted_proof: String,
@@ -237,6 +243,12 @@ impl std::fmt::Display for ManifestError {
                 f,
                 "parameter {parameter:?} is not accepted for strategy {registry_key:?}"
             ),
+            Self::InvalidStartingBalance { balance } => {
+                write!(f, "invalid starting balance: {balance:?}")
+            }
+            Self::InvalidInstrumentId { instrument_id } => {
+                write!(f, "invalid instrument id: {instrument_id:?}")
+            }
             Self::UnacceptedData {
                 manifest_proof,
                 accepted_proof,
@@ -360,6 +372,18 @@ fn validate_strategy_source(strategy: &StrategySource) -> Result<(), ManifestErr
     Ok(())
 }
 
+fn validate_starting_balances(balances: &[String]) -> Result<(), ManifestError> {
+    if balances.is_empty() {
+        return Err(ManifestError::MissingField("venue.starting_balances"));
+    }
+    for balance in balances {
+        Money::from_str(balance).map_err(|_| ManifestError::InvalidStartingBalance {
+            balance: balance.clone(),
+        })?;
+    }
+    Ok(())
+}
+
 impl BacktestingRunManifest {
     /// Deterministic SHA-256 over every typed manifest field that affects a run.
     #[must_use]
@@ -458,6 +482,7 @@ impl BacktestingRunManifest {
         ensure_supported_data_type(&self.catalog_input.data_type)?;
         ensure_data_type_matches_fidelity(&self.catalog_input.data_type, accepted.fidelity_class)?;
         validate_strategy_source(&self.strategy)?;
+        validate_starting_balances(&self.venue.starting_balances)?;
 
         // Data must be accepted: the only admissible input is the accepted
         // dataset, matched by source proof id and version.
@@ -535,7 +560,9 @@ impl BacktestingRunManifest {
             .catalog_input
             .nt_instrument_id
             .parse::<InstrumentId>()
-            .map_err(|_| ManifestError::MissingField("catalog_input.nt_instrument_id"))?;
+            .map_err(|_| ManifestError::InvalidInstrumentId {
+                instrument_id: self.catalog_input.nt_instrument_id.clone(),
+            })?;
         Ok(BacktestDataConfig::builder()
             .data_type(data_type)
             .catalog_path(self.catalog_input.catalog_path.clone())
@@ -822,6 +849,26 @@ mod tests {
     }
 
     #[test]
+    fn rejects_empty_starting_balances() {
+        let mut manifest = valid_manifest();
+        manifest.venue.starting_balances.clear();
+        assert!(matches!(
+            manifest.validate(&accepted_dataset()),
+            Err(ManifestError::MissingField("venue.starting_balances"))
+        ));
+    }
+
+    #[test]
+    fn rejects_malformed_starting_balance() {
+        let mut manifest = valid_manifest();
+        manifest.venue.starting_balances = vec!["not money".to_string()];
+        assert!(matches!(
+            manifest.validate(&accepted_dataset()),
+            Err(ManifestError::InvalidStartingBalance { balance }) if balance == "not money"
+        ));
+    }
+
+    #[test]
     fn manifest_hash_is_stable_and_content_sensitive() {
         let manifest = valid_manifest();
         let round_tripped: BacktestingRunManifest =
@@ -1037,6 +1084,17 @@ mod tests {
         accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
         let err = manifest.validate(&accepted).unwrap_err();
         assert!(err.to_string().contains("incompatible"), "{err}");
+    }
+
+    #[test]
+    fn rejects_invalid_instrument_id_with_specific_error() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.nt_instrument_id = "not-an-instrument-id".to_string();
+        assert!(matches!(
+            manifest.to_nt_data_config(),
+            Err(ManifestError::InvalidInstrumentId { instrument_id })
+                if instrument_id == "not-an-instrument-id"
+        ));
     }
 
     #[test]

@@ -338,7 +338,7 @@ not become a warehouse, query engine, or replacement for NT `ParquetDataCatalog`
 - Backtesting Engine readers must not independently join two per-kind latest snapshots. To find
   the source proof, catalog projection, or raw inputs used by a backtest, follow
   the backtest manifest lineage ids/version/hash and verify `sha256`.
-- Every BACKTESTING_ENGINE-produced event and snapshot row must carry parent cross-kind
+- Every Backtesting Engine-produced event and snapshot row must carry parent cross-kind
   lineage ids, versions where applicable, and `sha256` content hashes.
 - Events or artifacts not reachable from the snapshot referenced by
   the latest pointer are staged/orphan audit input, not committed discovery

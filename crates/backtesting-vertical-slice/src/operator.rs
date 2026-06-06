@@ -82,6 +82,29 @@ pub fn rfc3339_to_nanos(value: &str) -> Result<i64> {
         .context("timestamp out of representable nanosecond range")
 }
 
+fn portable_artifact_uri(prefix: &str, artifact: &str) -> String {
+    format!("{}/{}", prefix.trim_end_matches('/'), artifact)
+}
+
+fn portable_artifact_uris(manifest: &BacktestingRunManifest) -> ResultArtifactUris {
+    ResultArtifactUris {
+        source_proof_uri: portable_artifact_uri(
+            &manifest.output_prefix,
+            ACCEPTED_SOURCE_PROOF_FILE,
+        ),
+        canonical_table_uri: portable_artifact_uri(
+            &manifest.output_prefix,
+            CANONICAL_ARTIFACT_FILE,
+        ),
+        nt_catalog_uri: portable_artifact_uri(&manifest.output_prefix, CATALOG_DIR),
+        result_contract_uri: portable_artifact_uri(&manifest.output_prefix, RESULT_CONTRACT_FILE),
+    }
+}
+
+fn redact_operator_contract(output: &mut BacktestRunOutput) {
+    output.contract.nt_result.machine_id = "operator-attested-redacted".to_string();
+}
+
 /// Run the vertical slice from a parsed [`RunSpec`] and the raw `.csv.gz` bytes
 /// of the accepted object, writing artifacts under `output_dir`.
 ///
@@ -148,8 +171,9 @@ pub fn run_from_run_spec(
     // Bind the manifest catalog input to the local projection root.
     let mut manifest = spec.manifest.clone();
     manifest.catalog_input.catalog_path = catalog_path.clone();
+    let artifact_uris = portable_artifact_uris(&manifest);
 
-    let output = run_backtest(BacktestRunInputs {
+    let mut output = run_backtest(BacktestRunInputs {
         accepted: &accepted,
         identity: &spec.identity,
         instrument_spec: &spec.instrument_spec,
@@ -159,13 +183,9 @@ pub fn run_from_run_spec(
         canonical_artifact_path: &canonical_path,
         catalog_root: &catalog_root,
         created_at: &spec.created_at_utc,
-        artifact_uris: ResultArtifactUris {
-            source_proof_uri: proof_path.to_string_lossy().into_owned(),
-            canonical_table_uri: canonical_path.to_string_lossy().into_owned(),
-            nt_catalog_uri: catalog_path,
-            result_contract_uri: contract_path.to_string_lossy().into_owned(),
-        },
+        artifact_uris,
     })?;
+    redact_operator_contract(&mut output);
 
     fs::write(
         &proof_path,
@@ -258,6 +278,33 @@ mod tests {
         let contract_json = fs::read_to_string(&artifacts.contract_path).unwrap();
         let parsed: BacktestResultContract = serde_json::from_str(&contract_json).unwrap();
         assert_eq!(parsed, artifacts.output.contract);
+    }
+
+    #[test]
+    fn run_from_run_spec_writes_portable_redacted_contract() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().unwrap();
+        let artifacts = run_from_run_spec(&spec, &gz, dir.path()).expect("operator run");
+
+        let contract_json = fs::read_to_string(&artifacts.contract_path).unwrap();
+        let parsed: BacktestResultContract = serde_json::from_str(&contract_json).unwrap();
+        assert_eq!(parsed.nt_result.machine_id, "operator-attested-redacted");
+        for uri in [
+            &parsed.artifact_uris.source_proof_uri,
+            &parsed.artifact_uris.canonical_table_uri,
+            &parsed.artifact_uris.nt_catalog_uri,
+            &parsed.artifact_uris.result_contract_uri,
+        ] {
+            assert!(
+                uri.starts_with("s3://bolt-parquet/nt-research-analytics/backtests/"),
+                "{uri}"
+            );
+            assert!(
+                !uri.contains(dir.path().to_string_lossy().as_ref()),
+                "{uri}"
+            );
+        }
     }
 
     #[test]

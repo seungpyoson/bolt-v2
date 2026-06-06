@@ -684,7 +684,7 @@ fn source_url_host_has_venue_label(source_url: &str, venue: &str) -> bool {
         .unwrap_or_default()
         .trim_matches(['[', ']'])
         .to_ascii_lowercase();
-    host.split('.').any(|label| label == venue)
+    host == format!("{venue}.com") || host.ends_with(&format!(".{venue}.com"))
 }
 
 fn ensure_coverage_within_requested(
@@ -988,6 +988,21 @@ mod tests {
         let mut object = manifest_object();
         object.source_url =
             "https://evil-bybit-mirror.example/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn select_rejects_venue_label_on_untrusted_domain() {
+        let accepted = candidate_proof()
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.source_url =
+            "https://bybit.evil.example/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
         let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
         assert!(
             matches!(err, AcceptanceError::SourceVenueMismatch { .. }),

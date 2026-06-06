@@ -181,6 +181,7 @@ impl BacktestResultContract {
     /// contains promotion/escalation language.
     pub fn validate(&self) -> Result<(), ResultContractError> {
         for (name, value) in [
+            ("contract_version", self.contract_version.as_str()),
             ("run_id", self.run_id.as_str()),
             ("nt_version", self.nt_version.as_str()),
             ("source_proof_id", self.source_proof_id.as_str()),
@@ -193,6 +194,11 @@ impl BacktestResultContract {
             ),
             ("catalog_hash", self.catalog_hash.as_str()),
             ("strategy_config_hash", self.strategy_config_hash.as_str()),
+            ("run_purpose", self.run_purpose.as_str()),
+            (
+                "market_structure_fixture",
+                self.market_structure_fixture.as_str(),
+            ),
             ("created_at", self.created_at.as_str()),
         ] {
             if value.trim().is_empty() {
@@ -500,6 +506,36 @@ features = ["streaming", "examples"]
         assert_eq!(
             c.validate().unwrap_err(),
             ResultContractError::MissingField("claim_limits")
+        );
+    }
+
+    #[test]
+    fn rejects_missing_contract_version() {
+        let mut c = contract();
+        c.contract_version.clear();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("contract_version")
+        );
+    }
+
+    #[test]
+    fn rejects_missing_run_purpose() {
+        let mut c = contract();
+        c.run_purpose.clear();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("run_purpose")
+        );
+    }
+
+    #[test]
+    fn rejects_missing_market_structure_fixture() {
+        let mut c = contract();
+        c.market_structure_fixture.clear();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("market_structure_fixture")
         );
     }
 

@@ -78,7 +78,12 @@ pub fn book_imbalance(bid_size: f64, ask_size: f64) -> Option<f64> {
 /// - the book is crossed (`best_bid > best_ask`) — a crossed touch is stale or
 ///   corrupt, never a price to lean on;
 /// - the total touched size is zero — no weights, so the weighted price is
-///   undefined.
+///   undefined;
+/// - the size arithmetic overflows to a non-finite total or weighted result
+///   (absurd-but-finite sizes) — a degenerate book, not a price to quote.
+///
+/// When it returns `Some`, the result is guaranteed to lie in `[best_bid,
+/// best_ask]` (benign float rounding is snapped back into the band).
 pub fn micro_price(best_bid: f64, best_ask: f64, bid_size: f64, ask_size: f64) -> Option<f64> {
     if !best_bid.is_finite()
         || !best_ask.is_finite()
@@ -101,16 +106,19 @@ pub fn micro_price(best_bid: f64, best_ask: f64, bid_size: f64, ask_size: f64) -
         return None;
     }
     let micro = (best_ask * bid_size + best_bid * ask_size) / total;
-    // The micro-price is a convex combination of the two touch prices, so it MUST
-    // lie in `[best_bid, best_ask]`. The only way it escapes is overflow in the
-    // size arithmetic for absurd-but-finite inputs: the sum saturating to a
-    // non-finite `total` (guarded above) or the weighted numerator overflowing to
-    // non-finite. Both fail closed here so a degenerate value never escapes the
-    // band into a quote.
+    // Overflow in the size arithmetic — a non-finite `total` (guarded above) or a
+    // weighted numerator overflowing to non-finite for absurd-but-finite sizes —
+    // is a degenerate book: fail closed rather than quote off it.
     if !micro.is_finite() {
         return None;
     }
-    Some(micro)
+    // The micro-price is a convex combination of the two touch prices, so its
+    // exact value lies in `[best_bid, best_ask]`. Float rounding in the weighted
+    // sum can still land the computed value up to ~1 ULP outside that band (e.g. a
+    // locked book, or an extreme size ratio on an inexact price). Snap it back so
+    // the documented postcondition holds exactly; this only ever corrects benign
+    // rounding (a real escape would be non-finite and is rejected above).
+    Some(micro.clamp(best_bid, best_ask))
 }
 
 /// Convex blend of the oracle fair (the prior) and the book micro-price (the
@@ -126,10 +134,13 @@ pub fn micro_price(best_bid: f64, best_ask: f64, bid_size: f64, ask_size: f64) -
 /// (no nudge applied) rather than dropping the quote — a missing book signal must
 /// not stop the maker quoting off its prior.
 ///
-/// Fail-closed (returns `None`) only when the prior itself is unusable:
+/// Fail-closed (returns `None`) when:
 /// - `oracle_fair` is non-finite;
 /// - `w` is non-finite or lies outside `[0, 1]` (a misconfigured weight, not a
-///   tick to silently re-normalise).
+///   tick to silently re-normalise);
+/// - the blended result is non-finite (extreme finite magnitudes overflowing the
+///   blend) — defensive; unreachable for the probability-domain inputs this maker
+///   actually feeds it.
 ///
 /// When `micro` is `Some`, it is assumed already validated by [`micro_price`]
 /// (finite); the blend re-checks finiteness defensively and falls back to the
@@ -313,6 +324,29 @@ mod tests {
         assert!(micro_price(f64::MAX, f64::MAX, f64::MAX, 1.0).is_none());
     }
 
+    #[test]
+    fn micro_price_clamps_benign_float_rounding_into_the_band() {
+        // The weighted-sum quotient can round ~1 ULP outside [best_bid, best_ask]
+        // for a locked book or an extreme size ratio on an inexact price; the
+        // result must still be Some and honor the documented band postcondition.
+        // Locked book (0.03/0.03): the raw quotient lands 1 ULP below 0.03.
+        assert_eq!(micro_price(0.03, 0.03, 1.0, 10.0), Some(0.03));
+        // Extreme size ratio on an inexact price: raw quotient lands 1 ULP above.
+        let m = micro_price(0.0, 0.1, 1e200, 0.0).expect("finite, valid book");
+        assert!((0.0..=0.1).contains(&m), "micro {m} must lie in [0.0, 0.1]");
+    }
+
+    #[test]
+    fn micro_price_succeeds_for_large_but_finite_sizes() {
+        // Large-but-finite sizes that do NOT overflow must still quote — the
+        // overflow guard is not overzealous. Result is Some and in-band.
+        let m = micro_price(0.40, 0.60, 1e200, 1e200).expect("large finite sizes are valid");
+        assert!(
+            (0.40..=0.60).contains(&m),
+            "micro {m} must lie in [0.40, 0.60]"
+        );
+    }
+
     // ---- micro_price_anchor ----
 
     #[test]
@@ -352,7 +386,18 @@ mod tests {
         // w sweeps 0 -> 1, staying within [oracle, micro] throughout.
         let oracle = 0.30;
         let micro = 0.70;
-        let weights = [0.0, 0.1, 0.2, 0.4, 0.5, 0.6, 0.8, 0.9, 1.0];
+        let weights = [
+            0.0,
+            0.1,
+            0.2,
+            0.4,
+            0.5,
+            0.6,
+            0.8,
+            0.9,
+            0.999_999_999_999_999_9,
+            1.0,
+        ];
         let mut prev = micro_price_anchor(oracle, Some(micro), weights[0]).unwrap();
         assert!((prev - oracle).abs() < EPSILON);
         for &w in &weights[1..] {
@@ -373,7 +418,18 @@ mod tests {
         // [micro, oracle] throughout.
         let oracle = 0.70;
         let micro = 0.30;
-        let weights = [0.0, 0.1, 0.2, 0.4, 0.5, 0.6, 0.8, 0.9, 1.0];
+        let weights = [
+            0.0,
+            0.1,
+            0.2,
+            0.4,
+            0.5,
+            0.6,
+            0.8,
+            0.9,
+            0.999_999_999_999_999_9,
+            1.0,
+        ];
         let mut prev = micro_price_anchor(oracle, Some(micro), weights[0]).unwrap();
         assert!((prev - oracle).abs() < EPSILON);
         for &w in &weights[1..] {

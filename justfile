@@ -140,6 +140,23 @@ test-archive-run archive extract_root *args: check-workspace require-rust-verifi
 build: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" build
 
+# backtesting-vertical-slice crate (separate workspace at crates/backtesting-vertical-slice/).
+# Routed through the SAME managed wrapper as bolt-v2; --repo selects the crate's policy +
+# justfile + its own `backtesting-vertical-slice` cache namespace. Used by .github/workflows/
+# backtester-ci.yml and for local dev. bte-build is native (aarch64-apple-darwin), local-only.
+# bte-fmt-check is the fast fail-early gate (no compile) that CI runs before clippy/test.
+bte-fmt-check: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- fmt --check
+
+bte-clippy: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}/crates/backtesting-vertical-slice" clippy
+
+bte-test *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}/crates/backtesting-vertical-slice" test {{args}}
+
+bte-build: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}/crates/backtesting-vertical-slice" build
+
 check-aarch64: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- check --target {{target}} --locked
 

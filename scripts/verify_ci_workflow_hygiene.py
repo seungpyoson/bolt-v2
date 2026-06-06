@@ -5899,10 +5899,59 @@ def repo_automation_source_build_errors(text: str) -> list[str]:
     ]
 
 
+def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[str]:
+    if not file_name.endswith("backtester-ci.yml"):
+        return []
+    errors: list[str] = []
+    for line in text.splitlines():
+        if "managed-target-bvs-v1-" not in line or "hashFiles(" not in line:
+            continue
+        for required in [
+            "crates/backtesting-vertical-slice/src/**",
+            "crates/backtesting-vertical-slice/tests/**",
+        ]:
+            if required not in line:
+                errors.append(f"backtester managed-target cache key must include {required}")
+    return errors
+
+
+def backtester_gate_detect_result_errors(file_name: str, text: str) -> list[str]:
+    if not file_name.endswith("backtester-ci.yml"):
+        return []
+    jobs = parse_jobs(text)
+    gate = jobs.get("gate")
+    if gate is None:
+        return []
+    gate_text = uncommented_text(gate)
+    if "backtester-gate" not in gate_text:
+        return []
+    if "detect" not in extract_needs(gate):
+        return ["backtester-gate must need detect"]
+    lines = gate_text.splitlines()
+    for index, line in enumerate(lines):
+        if "needs.detect.result" not in line or "!=" not in line or "success" not in line:
+            continue
+        for nested in lines[index + 1 : index + 8]:
+            stripped = nested.strip()
+            if stripped == "fi":
+                break
+            if stripped == "exit 1":
+                return []
+    return ["backtester-gate must check needs.detect.result and exit 1 when detect fails"]
+
+
 def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
     errors: list[str] = []
     for file_name, text in texts.items():
         errors.extend(f"{file_name}: {error}" for error in raw_rust_storage_errors(text))
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in backtester_managed_target_cache_errors(file_name, text)),
+        )
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in backtester_gate_detect_result_errors(file_name, text)),
+        )
         automation_texts = [text, *yaml_run_shell_texts(uncommented_text(text.splitlines()))]
         for automation_text in automation_texts:
             add_unique_errors(

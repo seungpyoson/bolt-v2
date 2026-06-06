@@ -318,3 +318,17 @@ max_pages = 20
 evidence_state = "pending_source_proof"
 warning = "Archive index listing is source proof input; Parquet schema/license/coverage still require acceptance before canonical use."
 table_families = ["order_book_snapshots_fixed_depth", "order_book_snapshot_deltas", "bars"]
+
+[[source_binding]]
+key = "bybit-spot-tick-trades"
+venue = "bybit"
+product_family = "spot"
+fixture = "native-trades"
+family = "market_data"
+method = "GET"
+source_uri = "https://public.bybit.com/spot/{symbol}/{symbol}_{dt}.csv.gz"
+payload_extension = "csv.gz"
+extractor = "bybit_public_archive_spot_tick_trades"
+evidence_state = "owner_archive_backfillable"
+warning = "BNBUSDC 2026-03-01 is operator-attested for the minimal backtesting vertical slice; CI uses a synthetic fixture and this binding is not a global Bybit archive acceptance."
+table_families = ["trades"]

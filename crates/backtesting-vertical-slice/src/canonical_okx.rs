@@ -318,6 +318,7 @@ fn level_to_delta(
     side: OrderSide,
     level: &OkxBookLevel,
     is_snapshot: bool,
+    is_last: bool,
     price_precision: u8,
     size_precision: u8,
     sequence: u64,
@@ -335,11 +336,13 @@ fn level_to_delta(
     } else {
         BookAction::Update
     };
-    let flags = if is_snapshot {
-        RecordFlag::F_SNAPSHOT as u8
-    } else {
-        0
-    };
+    let mut flags = RecordFlag::F_MBP as u8;
+    if is_snapshot {
+        flags |= RecordFlag::F_SNAPSHOT as u8;
+    }
+    if is_last {
+        flags |= RecordFlag::F_LAST as u8;
+    }
     let order = BookOrder::new(side, price, size, L2_ORDER_ID);
     Ok(OrderBookDelta::new(
         instrument_id,
@@ -398,28 +401,37 @@ pub fn okx_book_messages_to_deltas(
         last_ts = ts_nanos;
         let ts = UnixNanos::from(ts_nanos);
         let is_snapshot = matches!(message.action, OkxBookAction::Snapshot);
+        let total_levels = message.bids.len() + message.asks.len();
 
         if is_snapshot {
-            deltas.push(OrderBookDelta::clear(instrument_id, sequence, ts, ts));
-            sequence += 1;
+            let mut clear = OrderBookDelta::clear(instrument_id, sequence, ts, ts);
+            clear.flags |= RecordFlag::F_MBP as u8;
+            if total_levels == 0 {
+                clear.flags |= RecordFlag::F_LAST as u8;
+            }
+            deltas.push(clear);
+            sequence = sequence.checked_add(1).context("delta sequence overflow")?;
         }
 
+        let mut emitted = 0usize;
         for (side, levels) in [
             (OrderSide::Buy, &message.bids),
             (OrderSide::Sell, &message.asks),
         ] {
             for level in levels {
+                emitted += 1;
                 deltas.push(level_to_delta(
                     instrument_id,
                     side,
                     level,
                     is_snapshot,
+                    emitted == total_levels,
                     price_precision,
                     size_precision,
                     sequence,
                     ts,
                 )?);
-                sequence += 1;
+                sequence = sequence.checked_add(1).context("delta sequence overflow")?;
             }
         }
     }
@@ -2083,9 +2095,29 @@ mod tests {
         // L2 sentinel order id everywhere (NULL_ORDER also uses id 0).
         assert!(deltas.iter().all(|d| d.order.order_id == L2_ORDER_ID));
 
-        // Snapshot deltas carry the snapshot flag; updates do not.
-        assert_eq!(deltas[1].flags, RecordFlag::F_SNAPSHOT as u8);
-        assert_eq!(deltas[0].flags, 0);
+        // OKX book rows are L2 MBP data. Each message is closed by F_LAST so
+        // buffered consumers can apply the full event atomically.
+        assert!(RecordFlag::F_MBP.matches(deltas[0].flags));
+        assert!(RecordFlag::F_LAST.matches(deltas[0].flags));
+        assert!(!RecordFlag::F_SNAPSHOT.matches(deltas[0].flags));
+
+        assert!(RecordFlag::F_SNAPSHOT.matches(deltas[1].flags));
+        assert!(RecordFlag::F_MBP.matches(deltas[1].flags));
+        assert!(!RecordFlag::F_LAST.matches(deltas[1].flags));
+
+        for delta in &deltas[2..=5] {
+            assert!(RecordFlag::F_SNAPSHOT.matches(delta.flags));
+            assert!(RecordFlag::F_MBP.matches(delta.flags));
+        }
+        assert!(!RecordFlag::F_LAST.matches(deltas[2].flags));
+        assert!(!RecordFlag::F_LAST.matches(deltas[3].flags));
+        assert!(!RecordFlag::F_LAST.matches(deltas[4].flags));
+        assert!(RecordFlag::F_LAST.matches(deltas[5].flags));
+
+        assert!(RecordFlag::F_MBP.matches(deltas[6].flags));
+        assert!(!RecordFlag::F_LAST.matches(deltas[6].flags));
+        assert!(RecordFlag::F_MBP.matches(deltas[7].flags));
+        assert!(RecordFlag::F_LAST.matches(deltas[7].flags));
     }
 
     #[test]

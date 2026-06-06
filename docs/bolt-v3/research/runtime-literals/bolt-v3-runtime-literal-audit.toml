@@ -15817,7 +15817,7 @@ classification = "strategy_runtime_validation_code"
 reason = "This validation code labels a missing paired signal data field; it is not a runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/source_proof.rs"
 kind = "number"
 literal = '''3'''
 context = '''pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 3;'''
@@ -15825,7 +15825,7 @@ classification = "operator_source_schema_version"
 reason = "This pins the local source-owned entry decision evidence source schema consumed by the non-live operator artifact command; trading values remain source/config-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/source_proof.rs"
 kind = "string"
 literal = '''"bolt_v3.binary_oracle_entry_decision_source.v3"'''
 context = '''"bolt_v3.binary_oracle_entry_decision_source.v3";'''
@@ -15833,7 +15833,7 @@ classification = "operator_source_record_kind"
 reason = "This is the structural record_kind for source-owned entry decision evidence inputs, not a venue, market, quantity, timeout, or trading value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/source_proof.rs"
 kind = "string"
 literal = '''"entry decision evidence source decision_timestamp_ms precedes market selection"'''
 context = '''"entry decision evidence source decision_timestamp_ms precedes market selection"'''
@@ -15841,7 +15841,7 @@ classification = "operator_source_error_template"
 reason = "This fail-closed diagnostic enforces source chronology for local decision-evidence generation; it does not configure runtime behavior."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/source_proof.rs"
 kind = "string"
 literal = '''"entry decision evidence book best_bid exceeds best_ask"'''
 context = '''"entry decision evidence book best_bid exceeds best_ask"'''

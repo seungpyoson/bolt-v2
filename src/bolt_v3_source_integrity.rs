@@ -154,7 +154,7 @@ mod tests {
     // VWAP/slippage sizing out of the strategy wrapper, so the strategy source
     // set is now the strategy directory plus `src/bolt_v3_book_sizing.rs`.
     //
-    // Re-derived again by A6 after moving the exposure state machine into
+    // Re-derived by A6 after moving the exposure state machine into
     // `src/strategies/binary_oracle_edge_taker/exposure.rs`; the dynamic source
     // root walk includes the new file in canonical order.
     //
@@ -162,8 +162,16 @@ mod tests {
     // rejecting malformed configured instrument ids fail-loud. The value below
     // must match the live build-emitted `OUT_DIR/strategy.canonical` and the
     // independent hand-framed source-set stream in these tests.
+    //
+    // Re-derived again by A7 after moving source-proof / replay / evidence
+    // derivation into `src/strategies/binary_oracle_edge_taker/source_proof.rs`,
+    // refreshing the venue-filter wrong-control fixture in that file, and
+    // addressing an exact-head review comment in the same source set.
+    //
+    // Re-derived again after merging A7 with #581's configured-instrument
+    // parser rejection in the same canonical strategy source set.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "4e34b6e522e0931214dc84b5f025c0c409f8f734819a51a10a05a3c7dabdda14";
+        "46e473840d8698fb171a0b929510abd8472988b10838e5b72c9d914070eb62c3";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 

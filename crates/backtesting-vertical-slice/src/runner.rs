@@ -54,6 +54,7 @@ pub struct BacktestRunInputs<'a> {
     pub csv_text: &'a str,
     pub capture_time_nanos: i64,
     pub manifest: &'a BacktestingRunManifest,
+    pub contract_manifest_hash: &'a str,
     pub converter_identity: &'a str,
     pub converter_version: &'a str,
     /// Local path for the canonical normalized Parquet artifact.
@@ -138,6 +139,10 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     ensure!(
         !inputs.converter_version.trim().is_empty(),
         "converter_version must not be empty"
+    );
+    ensure!(
+        !inputs.contract_manifest_hash.trim().is_empty(),
+        "contract_manifest_hash must not be empty"
     );
 
     // Gate 2: canonical normalization + canonical artifact.
@@ -290,12 +295,11 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
                 .to_string(),
         );
     }
-    let manifest_hash = inputs.manifest.manifest_hash();
     let contract = build_result_contract(ResultContractInputs {
         run_id: &inputs.manifest.run_id,
         source_proof_id: &inputs.accepted.source_proof_id,
         source_proof_version: inputs.accepted.source_proof_version,
-        manifest_hash: &manifest_hash,
+        manifest_hash: inputs.contract_manifest_hash,
         acceptance_mode: inputs.accepted.acceptance_mode,
         accepted_by: &inputs.accepted.accepted_by,
         accepted_at: &inputs.accepted.accepted_at,

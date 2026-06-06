@@ -208,6 +208,8 @@ fn accepted_data_flows_through_to_objective_result_contract() {
     let canonical_path = temp.path().join("canonical-trades.parquet");
     let catalog_root = temp.path().join("nt-catalog");
     let catalog_path = catalog_root.to_str().unwrap().to_string();
+    let manifest = manifest(&catalog_path);
+    let contract_manifest_hash = manifest.manifest_hash();
 
     let output = run_backtest(BacktestRunInputs {
         accepted: &accepted,
@@ -215,7 +217,8 @@ fn accepted_data_flows_through_to_objective_result_contract() {
         instrument_spec: &instrument_spec(),
         csv_text: SAMPLE_CSV,
         capture_time_nanos: 1_772_512_022_000_000_000,
-        manifest: &manifest(&catalog_path),
+        manifest: &manifest,
+        contract_manifest_hash: &contract_manifest_hash,
         converter_identity: TRANSFORM_IDENTITY,
         converter_version: "1",
         canonical_artifact_path: &canonical_path,
@@ -314,13 +317,16 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
     let full_canonical = full_temp.path().join("canonical-trades.parquet");
     let full_catalog = full_temp.path().join("nt-catalog");
     let full_catalog_path = full_catalog.to_str().unwrap().to_string();
+    let full_manifest = manifest(&full_catalog_path);
+    let full_contract_manifest_hash = full_manifest.manifest_hash();
     let full = run_backtest(BacktestRunInputs {
         accepted: &accepted,
         identity: &identity,
         instrument_spec: &instrument_spec(),
         csv_text: SAMPLE_CSV,
         capture_time_nanos: 1_772_512_022_000_000_000,
-        manifest: &manifest(&full_catalog_path),
+        manifest: &full_manifest,
+        contract_manifest_hash: &full_contract_manifest_hash,
         converter_identity: TRANSFORM_IDENTITY,
         converter_version: "1",
         canonical_artifact_path: &full_canonical,
@@ -353,6 +359,7 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
     let catalog_path = catalog_root.to_str().unwrap().to_string();
     let mut windowed_manifest = manifest(&catalog_path);
     windowed_manifest.end_time = Some(first_event);
+    let windowed_contract_manifest_hash = windowed_manifest.manifest_hash();
 
     let windowed = run_backtest(BacktestRunInputs {
         accepted: &accepted,
@@ -361,6 +368,7 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
         csv_text: SAMPLE_CSV,
         capture_time_nanos: 1_772_512_022_000_000_000,
         manifest: &windowed_manifest,
+        contract_manifest_hash: &windowed_contract_manifest_hash,
         converter_identity: TRANSFORM_IDENTITY,
         converter_version: "1",
         canonical_artifact_path: &canonical_path,

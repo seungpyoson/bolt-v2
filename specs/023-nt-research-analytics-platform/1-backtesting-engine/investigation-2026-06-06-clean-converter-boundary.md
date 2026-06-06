@@ -10,6 +10,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - dirty or mismatched converted outputs are rejected before catalog cleanup
 - completed conversion writes durable `conversion-checkpoint.json`, `conversion-manifest.json`, and `catalog-metadata.json`
 - result contracts bind the source object, converter identity, conversion manifest hash, conversion checkpoint hash, and catalog hash
+- result contract `manifest_hash` binds the submitted portable run-spec manifest, not the operator's temporary local catalog path
 - converter identity/version are declared in the run-spec TOML and validated against the compiled converter before any converted output is reused
 - primitive NT `BacktestVenueConfig` controls are declared in TOML and mapped into NT rather than hidden behind NT defaults
 - NT `BacktestDataConfig` catalog filesystem protocol and storage options are declared in TOML and mapped into NT, so S3/cloud catalog consumption can use NT's own catalog path
@@ -69,6 +70,7 @@ Updated `operator.rs`:
 
 - reads converter identity/version from the run spec and validates them before touching output
 - computes the expected conversion fingerprint before output cleanup
+- computes the contract-bound run manifest hash before overriding the execution catalog path to the local projection root
 - inspects the output directory before deleting any local NT catalog
 - writes a started checkpoint before conversion
 - writes completed conversion artifacts after the backtest result contract is written
@@ -79,6 +81,7 @@ Updated `runner.rs` and `result_contract.rs`:
 
 - builds conversion checkpoint, manifest, and catalog metadata from the accepted dataset and projected NT catalog
 - adds `converter_identity`, `converter_version`, `conversion_manifest_hash`, and `conversion_checkpoint_hash` to the result contract
+- accepts an explicit `contract_manifest_hash` so operator runs can bind the portable submitted manifest while still letting NT consume the resolved local catalog path
 - validates those fields as required
 
 Updated `run_manifest.rs`:
@@ -110,6 +113,7 @@ RED checks observed before implementation:
 - `just bte-test operator::tests::run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them` failed because `BacktestResultContract` lacked the conversion provenance fields
 - `just bte-test venue_config_maps_explicit_nt_venue_controls` failed with `E0609` missing `ManifestVenueConfig` fields such as `routing`, `frozen_account`, and `reject_stop_orders`
 - `just bte-test data_config_maps_catalog_cloud_options` failed with `E0609` missing `ManifestCatalogInput` fields for catalog filesystem protocol and storage options
+- `just bte-test run_from_run_spec_contract_manifest_hash_is_portable_run_spec_hash` failed because the contract bound the mutated local execution manifest hash `6004a1fc1860ea65a0fdb887efe85a9efef428fe04d157fc5865b06072c8efa7` instead of the portable submitted run-spec manifest hash `921685dd70be98e8a5744b0eda33f9d91303999ab9098d89963a1e3747cd0dd5`
 
 GREEN checks after implementation:
 
@@ -122,8 +126,9 @@ GREEN checks after implementation:
 - `just bte-test data_config_maps_catalog_cloud_options rejects_unsupported_catalog_fs_protocol operator::tests::committed_run_spec_deserializes`: 3 passed
 - `just bte-test run_from_run_spec_and_publish_copies_artifacts_to_configured_prefix`: 1 passed
 - `just bte-test cli_publish_output_flag_is_explicit_opt_in run_from_run_spec_and_publish_copies_artifacts_to_configured_prefix`: 2 passed
+- `just bte-test run_from_run_spec_contract_manifest_hash_is_portable_run_spec_hash`: 1 passed
 - `just bte-fmt-check`: passed
-- `just bte-test`: 157 passed, including 2 slow public API tests
+- `just bte-test`: 159 passed, including 2 slow public API tests
 - `just bte-clippy`: passed
 - `just bte-build`: passed
 - rebuilt binary local accepted-object run: exit 0, `937` canonical rows, `937` NT read-back ticks, `937` NT iterations, stable catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`

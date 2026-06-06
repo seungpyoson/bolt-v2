@@ -246,6 +246,7 @@ pub fn run_from_run_spec(
     let proof_path = output_dir.join(ACCEPTED_SOURCE_PROOF_FILE);
 
     // Bind the manifest catalog input to the local projection root.
+    let contract_manifest_hash = spec.manifest.manifest_hash();
     let mut manifest = spec.manifest.clone();
     manifest.catalog_input.catalog_path = catalog_path.clone();
     manifest.catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
@@ -263,6 +264,7 @@ pub fn run_from_run_spec(
         csv_text: &csv_text,
         capture_time_nanos: rfc3339_to_nanos(&spec.capture_time_utc)?,
         manifest: &manifest,
+        contract_manifest_hash: &contract_manifest_hash,
         converter_identity: &spec.converter.identity,
         converter_version: &spec.converter.version,
         canonical_artifact_path: &canonical_path,
@@ -543,6 +545,27 @@ mod tests {
                 "{uri}"
             );
         }
+    }
+
+    #[test]
+    fn run_from_run_spec_contract_manifest_hash_is_portable_run_spec_hash() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let expected_manifest_hash = spec.manifest.manifest_hash();
+        let first_dir = tempfile::TempDir::new().unwrap();
+        let second_dir = tempfile::TempDir::new().unwrap();
+
+        let first = run_from_run_spec(&spec, &gz, first_dir.path()).expect("first operator run");
+        let second = run_from_run_spec(&spec, &gz, second_dir.path()).expect("second operator run");
+
+        assert_eq!(
+            first.output.contract.manifest_hash, expected_manifest_hash,
+            "contract must bind the portable submitted run-spec manifest"
+        );
+        assert_eq!(
+            second.output.contract.manifest_hash, expected_manifest_hash,
+            "equivalent runs in different local output dirs must have the same manifest hash"
+        );
     }
 
     #[test]

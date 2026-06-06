@@ -1298,12 +1298,12 @@ fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_from_ssm_backed_bal
         spawn_one_shot_clob_balance_allowance_server("1000000000", "999999999000000");
     let (ssm_url, ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([
         (
-            "/bolt/polymarket_main/private_key",
+            "/bolt/polymarket/private-key",
             "0x1111111111111111111111111111111111111111111111111111111111111111",
         ),
-        ("/bolt/polymarket_main/api_key", "poly-api-key"),
-        ("/bolt/polymarket_main/api_secret", "YWJj"),
-        ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/polymarket/api-key", "poly-api-key"),
+        ("/bolt/polymarket/api-secret", "YWJj"),
+        ("/bolt/polymarket/api-passphrase", "poly-passphrase"),
         ("/bolt/testnet/chainlink/api-key", "chainlink-api-key"),
         ("/bolt/testnet/chainlink/api-secret", "chainlink-api-secret"),
     ]));
@@ -1356,7 +1356,7 @@ fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_from_ssm_backed_bal
         .env("AWS_ENDPOINT_URL_SSM", &ssm_url)
         .env("AWS_ACCESS_KEY_ID", "fake-access-key")
         .env("AWS_SECRET_ACCESS_KEY", "fake-secret-key")
-        .env("AWS_REGION", "eu-west-1")
+        .env("AWS_REGION", "eu-west-2")
         .env("AWS_MAX_ATTEMPTS", "1")
         .output()
         .expect("bolt-v3 CLOB V2 collateral source collection should run");
@@ -1369,7 +1369,7 @@ fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_from_ssm_backed_bal
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     for forbidden in [
-        "/bolt/polymarket_main/private_key",
+        "/bolt/polymarket/private-key",
         "poly-api-key",
         "poly-passphrase",
         "1000000000",
@@ -1402,10 +1402,10 @@ fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_from_ssm_backed_bal
     let paths = ssm_paths_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("fake SSM server should report requested paths");
-    assert!(paths.contains(&"/bolt/polymarket_main/private_key".to_string()));
-    assert!(paths.contains(&"/bolt/polymarket_main/api_key".to_string()));
-    assert!(paths.contains(&"/bolt/polymarket_main/api_secret".to_string()));
-    assert!(paths.contains(&"/bolt/polymarket_main/passphrase".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/private-key".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/api-key".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/api-secret".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/api-passphrase".to_string()));
 
     let json: serde_json::Value = serde_json::from_slice(
         &fs::read(&output_path).expect("CLOB V2 collateral source should write"),
@@ -1703,12 +1703,12 @@ fn bolt_v3_cli_collects_venue_account_state_source_from_configured_account_queri
     let (data_api_url, data_api_request_rx) = spawn_one_shot_data_api_positions_server();
     let (ssm_url, ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([
         (
-            "/bolt/polymarket_main/private_key",
+            "/bolt/polymarket/private-key",
             "0x1111111111111111111111111111111111111111111111111111111111111111",
         ),
-        ("/bolt/polymarket_main/api_key", "poly-api-key"),
-        ("/bolt/polymarket_main/api_secret", "YWJj"),
-        ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/polymarket/api-key", "poly-api-key"),
+        ("/bolt/polymarket/api-secret", "YWJj"),
+        ("/bolt/polymarket/api-passphrase", "poly-passphrase"),
         ("/bolt/testnet/chainlink/api-key", "chainlink-api-key"),
         ("/bolt/testnet/chainlink/api-secret", "chainlink-api-secret"),
     ]));
@@ -1742,7 +1742,7 @@ fn bolt_v3_cli_collects_venue_account_state_source_from_configured_account_queri
         .env("AWS_ENDPOINT_URL_SSM", &ssm_url)
         .env("AWS_ACCESS_KEY_ID", "fake-access-key")
         .env("AWS_SECRET_ACCESS_KEY", "fake-secret-key")
-        .env("AWS_REGION", "eu-west-1")
+        .env("AWS_REGION", "eu-west-2")
         .env("AWS_MAX_ATTEMPTS", "1")
         .output()
         .expect("bolt-v3 venue account source collection should run");
@@ -1755,7 +1755,7 @@ fn bolt_v3_cli_collects_venue_account_state_source_from_configured_account_queri
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     for forbidden in [
-        "/bolt/polymarket_main/private_key",
+        "/bolt/polymarket/private-key",
         "poly-api-key",
         "poly-passphrase",
         "0x1111111111111111111111111111111111111111",
@@ -1799,10 +1799,10 @@ fn bolt_v3_cli_collects_venue_account_state_source_from_configured_account_queri
     let paths = ssm_paths_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("fake SSM server should report requested paths");
-    assert!(paths.contains(&"/bolt/polymarket_main/private_key".to_string()));
-    assert!(paths.contains(&"/bolt/polymarket_main/api_key".to_string()));
-    assert!(paths.contains(&"/bolt/polymarket_main/api_secret".to_string()));
-    assert!(paths.contains(&"/bolt/polymarket_main/passphrase".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/private-key".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/api-key".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/api-secret".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/api-passphrase".to_string()));
 
     let json: serde_json::Value = serde_json::from_slice(
         &fs::read(&output_path).expect("venue account state source should write"),
@@ -2029,12 +2029,12 @@ fn run_venue_account_state_source_fixture_with_responses(
         spawn_data_api_positions_server_with_bodies(data_api_positions_bodies);
     let (ssm_url, _ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([
         (
-            "/bolt/polymarket_main/private_key",
+            "/bolt/polymarket/private-key",
             "0x1111111111111111111111111111111111111111111111111111111111111111",
         ),
-        ("/bolt/polymarket_main/api_key", "poly-api-key"),
-        ("/bolt/polymarket_main/api_secret", "YWJj"),
-        ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/polymarket/api-key", "poly-api-key"),
+        ("/bolt/polymarket/api-secret", "YWJj"),
+        ("/bolt/polymarket/api-passphrase", "poly-passphrase"),
         ("/bolt/testnet/chainlink/api-key", "chainlink-api-key"),
         ("/bolt/testnet/chainlink/api-secret", "chainlink-api-secret"),
     ]));
@@ -2067,7 +2067,7 @@ fn run_venue_account_state_source_fixture_with_responses(
         .env("AWS_ENDPOINT_URL_SSM", &ssm_url)
         .env("AWS_ACCESS_KEY_ID", "fake-access-key")
         .env("AWS_SECRET_ACCESS_KEY", "fake-secret-key")
-        .env("AWS_REGION", "eu-west-1")
+        .env("AWS_REGION", "eu-west-2")
         .env("AWS_MAX_ATTEMPTS", "1")
         .output()
         .expect("bolt-v3 venue account source collection should run")
@@ -2113,12 +2113,12 @@ fn bolt_v3_cli_collects_funding_margin_source_from_ssm_backed_balance_allowance(
         spawn_one_shot_clob_balance_allowance_server("1000000000", "999999999000000");
     let (ssm_url, ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([
         (
-            "/bolt/polymarket_main/private_key",
+            "/bolt/polymarket/private-key",
             "0x1111111111111111111111111111111111111111111111111111111111111111",
         ),
-        ("/bolt/polymarket_main/api_key", "poly-api-key"),
-        ("/bolt/polymarket_main/api_secret", "YWJj"),
-        ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/polymarket/api-key", "poly-api-key"),
+        ("/bolt/polymarket/api-secret", "YWJj"),
+        ("/bolt/polymarket/api-passphrase", "poly-passphrase"),
         ("/bolt/testnet/chainlink/api-key", "chainlink-api-key"),
         ("/bolt/testnet/chainlink/api-secret", "chainlink-api-secret"),
     ]));
@@ -2169,7 +2169,7 @@ fn bolt_v3_cli_collects_funding_margin_source_from_ssm_backed_balance_allowance(
         .env("AWS_ENDPOINT_URL_SSM", &ssm_url)
         .env("AWS_ACCESS_KEY_ID", "fake-access-key")
         .env("AWS_SECRET_ACCESS_KEY", "fake-secret-key")
-        .env("AWS_REGION", "eu-west-1")
+        .env("AWS_REGION", "eu-west-2")
         .env("AWS_MAX_ATTEMPTS", "1")
         .output()
         .expect("bolt-v3 funding margin source collection should run");
@@ -2182,7 +2182,7 @@ fn bolt_v3_cli_collects_funding_margin_source_from_ssm_backed_balance_allowance(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     for forbidden in [
-        "/bolt/polymarket_main/private_key",
+        "/bolt/polymarket/private-key",
         "poly-api-key",
         "poly-passphrase",
         "1000000000",
@@ -2201,10 +2201,10 @@ fn bolt_v3_cli_collects_funding_margin_source_from_ssm_backed_balance_allowance(
     let paths = ssm_paths_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("fake SSM server should report requested paths");
-    assert!(paths.contains(&"/bolt/polymarket_main/private_key".to_string()));
-    assert!(paths.contains(&"/bolt/polymarket_main/api_key".to_string()));
-    assert!(paths.contains(&"/bolt/polymarket_main/api_secret".to_string()));
-    assert!(paths.contains(&"/bolt/polymarket_main/passphrase".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/private-key".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/api-key".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/api-secret".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/api-passphrase".to_string()));
 
     let json: serde_json::Value =
         serde_json::from_slice(&fs::read(&output_path).expect("funding source should write"))
@@ -2267,12 +2267,12 @@ fn bolt_v3_cli_syncs_clob_v2_balance_allowance_cache_from_configured_account() {
     let (clob_url, clob_request_rx) = spawn_one_shot_clob_balance_allowance_update_server();
     let (ssm_url, ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([
         (
-            "/bolt/polymarket_main/private_key",
+            "/bolt/polymarket/private-key",
             "0x1111111111111111111111111111111111111111111111111111111111111111",
         ),
-        ("/bolt/polymarket_main/api_key", "poly-api-key"),
-        ("/bolt/polymarket_main/api_secret", "YWJj"),
-        ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/polymarket/api-key", "poly-api-key"),
+        ("/bolt/polymarket/api-secret", "YWJj"),
+        ("/bolt/polymarket/api-passphrase", "poly-passphrase"),
         ("/bolt/testnet/chainlink/api-key", "chainlink-api-key"),
         ("/bolt/testnet/chainlink/api-secret", "chainlink-api-secret"),
     ]));
@@ -2300,7 +2300,7 @@ fn bolt_v3_cli_syncs_clob_v2_balance_allowance_cache_from_configured_account() {
         .env("AWS_ENDPOINT_URL_SSM", &ssm_url)
         .env("AWS_ACCESS_KEY_ID", "fake-access-key")
         .env("AWS_SECRET_ACCESS_KEY", "fake-secret-key")
-        .env("AWS_REGION", "eu-west-1")
+        .env("AWS_REGION", "eu-west-2")
         .env("AWS_MAX_ATTEMPTS", "1")
         .output()
         .expect("bolt-v3 CLOB V2 cache sync should run");
@@ -2313,7 +2313,7 @@ fn bolt_v3_cli_syncs_clob_v2_balance_allowance_cache_from_configured_account() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     for forbidden in [
-        "/bolt/polymarket_main/private_key",
+        "/bolt/polymarket/private-key",
         "poly-api-key",
         "poly-passphrase",
         "0x1111111111111111111111111111111111111111",
@@ -2353,10 +2353,10 @@ fn bolt_v3_cli_syncs_clob_v2_balance_allowance_cache_from_configured_account() {
     let paths = ssm_paths_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("fake SSM server should report requested paths");
-    assert!(paths.contains(&"/bolt/polymarket_main/private_key".to_string()));
-    assert!(paths.contains(&"/bolt/polymarket_main/api_key".to_string()));
-    assert!(paths.contains(&"/bolt/polymarket_main/api_secret".to_string()));
-    assert!(paths.contains(&"/bolt/polymarket_main/passphrase".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/private-key".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/api-key".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/api-secret".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket/api-passphrase".to_string()));
 }
 
 #[test]
@@ -2520,12 +2520,12 @@ fn run_clob_v2_collateral_accounting_source_fixture(
 ) -> Output {
     let (ssm_url, _ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([
         (
-            "/bolt/polymarket_main/private_key",
+            "/bolt/polymarket/private-key",
             "0x1111111111111111111111111111111111111111111111111111111111111111",
         ),
-        ("/bolt/polymarket_main/api_key", "poly-api-key"),
-        ("/bolt/polymarket_main/api_secret", "YWJj"),
-        ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/polymarket/api-key", "poly-api-key"),
+        ("/bolt/polymarket/api-secret", "YWJj"),
+        ("/bolt/polymarket/api-passphrase", "poly-passphrase"),
         ("/bolt/testnet/chainlink/api-key", "chainlink-api-key"),
         ("/bolt/testnet/chainlink/api-secret", "chainlink-api-secret"),
     ]));
@@ -2575,7 +2575,7 @@ fn run_clob_v2_collateral_accounting_source_fixture(
         .env("AWS_ENDPOINT_URL_SSM", &ssm_url)
         .env("AWS_ACCESS_KEY_ID", "fake-access-key")
         .env("AWS_SECRET_ACCESS_KEY", "fake-secret-key")
-        .env("AWS_REGION", "eu-west-1")
+        .env("AWS_REGION", "eu-west-2")
         .env("AWS_MAX_ATTEMPTS", "1")
         .output()
         .expect("bolt-v3 CLOB V2 collateral source collection should run")
@@ -2588,12 +2588,12 @@ fn run_funding_margin_source_fixture(
 ) -> Output {
     let (ssm_url, _ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([
         (
-            "/bolt/polymarket_main/private_key",
+            "/bolt/polymarket/private-key",
             "0x1111111111111111111111111111111111111111111111111111111111111111",
         ),
-        ("/bolt/polymarket_main/api_key", "poly-api-key"),
-        ("/bolt/polymarket_main/api_secret", "YWJj"),
-        ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/polymarket/api-key", "poly-api-key"),
+        ("/bolt/polymarket/api-secret", "YWJj"),
+        ("/bolt/polymarket/api-passphrase", "poly-passphrase"),
         ("/bolt/testnet/chainlink/api-key", "chainlink-api-key"),
         ("/bolt/testnet/chainlink/api-secret", "chainlink-api-secret"),
     ]));
@@ -2643,7 +2643,7 @@ fn run_funding_margin_source_fixture(
         .env("AWS_ENDPOINT_URL_SSM", &ssm_url)
         .env("AWS_ACCESS_KEY_ID", "fake-access-key")
         .env("AWS_SECRET_ACCESS_KEY", "fake-secret-key")
-        .env("AWS_REGION", "eu-west-1")
+        .env("AWS_REGION", "eu-west-2")
         .env("AWS_MAX_ATTEMPTS", "1")
         .output()
         .expect("bolt-v3 funding margin source collection should run")
@@ -3123,10 +3123,10 @@ max_notional_per_order = "10.00"
         );
     }
     for forbidden in [
-        "/bolt/polymarket_main/private_key",
-        "/bolt/polymarket_main/api_key",
-        "/bolt/polymarket_main/api_secret",
-        "/bolt/polymarket_main/passphrase",
+        "/bolt/polymarket/private-key",
+        "/bolt/polymarket/api-key",
+        "/bolt/polymarket/api-secret",
+        "/bolt/polymarket/api-passphrase",
         "nonce_bytes",
         "nonce_material",
     ] {
@@ -3316,10 +3316,10 @@ max_notional_per_order = "10.00"
         );
     }
     for forbidden in [
-        "/bolt/polymarket_main/private_key",
-        "/bolt/polymarket_main/api_key",
-        "/bolt/polymarket_main/api_secret",
-        "/bolt/polymarket_main/passphrase",
+        "/bolt/polymarket/private-key",
+        "/bolt/polymarket/api-key",
+        "/bolt/polymarket/api-secret",
+        "/bolt/polymarket/api-passphrase",
         "nonce_bytes",
         "nonce_material",
     ] {
@@ -3333,10 +3333,7 @@ max_notional_per_order = "10.00"
 #[test]
 fn bolt_v3_secrets_check_rejects_missing_provider_secret_field() {
     let config_path = write_bolt_v3_fixture_root(|root| {
-        root.replace(
-            "api_secret_ssm_path = \"/bolt/polymarket_main/api_secret\"\n",
-            "",
-        )
+        root.replace("api_secret_ssm_path = \"/bolt/polymarket/api-secret\"", "")
     });
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([
@@ -3377,7 +3374,7 @@ fn bolt_v3_secrets_resolve_surfaces_ssm_failure() {
         .env("AWS_ENDPOINT_URL_SSM", &unreachable_endpoint)
         .env("AWS_ACCESS_KEY_ID", "fake-access-key")
         .env("AWS_SECRET_ACCESS_KEY", "fake-secret-key")
-        .env("AWS_REGION", "eu-west-1")
+        .env("AWS_REGION", "eu-west-2")
         .env("AWS_MAX_ATTEMPTS", "1")
         .output()
         .expect("bolt-v3 secrets resolve should run");
@@ -3386,7 +3383,7 @@ fn bolt_v3_secrets_resolve_surfaces_ssm_failure() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !stderr.contains("/bolt/polymarket_main/api_secret"),
+        !stderr.contains("/bolt/polymarket/api-secret"),
         "stderr must not expose failing SSM path, got: {stderr}"
     );
     assert!(

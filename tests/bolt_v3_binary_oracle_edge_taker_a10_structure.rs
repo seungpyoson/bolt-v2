@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-const EXPECTED_SPLIT_TEST_COUNT: usize = 236;
+const EXPECTED_SPLIT_TEST_COUNT: usize = 238;
 const EXPECTED_TEST_MODULES: &[&str] = &[
     "book_sizing",
     "config",

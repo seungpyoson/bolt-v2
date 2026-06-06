@@ -152,8 +152,11 @@ mod tests {
     //
     // Re-derived by A6 after moving the exposure state machine into
     // `src/strategies/binary_oracle_edge_taker/exposure.rs`; the dynamic source
-    // root walk includes the new file in canonical order. The value below must
-    // match the live build-emitted `OUT_DIR/strategy.canonical` and the
+    // root walk includes the new file in canonical order.
+    //
+    // Re-derived again by #581 after the binary-oracle runtime parser started
+    // rejecting malformed configured instrument ids fail-loud. The value below
+    // must match the live build-emitted `OUT_DIR/strategy.canonical` and the
     // independent hand-framed source-set stream in these tests.
     //
     // Re-derived again by A7 after moving source-proof / replay / evidence
@@ -161,17 +164,23 @@ mod tests {
     // refreshing the venue-filter wrong-control fixture in that file, and
     // addressing an exact-head review comment in the same source set.
     //
+    // Re-derived again after merging A7 with #581's configured-instrument
+    // parser rejection in the same canonical strategy source set.
+    //
     // Re-derived again by A9 after the strategy wrapper delegates submit
     // admission request construction to `src/bolt_v3_submit_admission.rs`.
     // Re-derived once more after the exit-position input borrows identifiers
     // through the shared builder in response to exact-head PR review comments
     // and the follow-up clippy cleanup of that borrow bridge.
     //
+    // Re-derived again after merging A9 with #581's configured-instrument
+    // parser rejection in the same canonical strategy source set.
+    //
     // Re-derived again by A10 after moving the binary-oracle-edge-taker embedded
     // test inventory into inner-cfg test-only split files under
     // `src/strategies/binary_oracle_edge_taker/tests/`.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "67312ac236cb99bb050811fffacc9fb1180f4cad524a524aa40e644027858a1e";
+        "381b105a8326a50017ba48358a07fc1780ebadbc4a84e23dc217b60218deb4af";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

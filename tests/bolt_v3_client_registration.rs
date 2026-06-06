@@ -195,10 +195,11 @@ fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
     // and the proof-policy `execution_client_id`. The fixture strategy
     // (tests/fixtures/bolt_v3/strategies/binary_oracle.toml) sets
     // `execution_client_id = "polymarket_main"`, an EMPTY `[reference_data]`
-    // block, and a strategy-bound signal feed at `okx_data`. Its reference comes
-    // from a source-owned `decision_reference` (provider id
-    // "resolution_oracle_primary"), NOT an NT data client. So `binance_reference`
-    // is a broad-readiness PROBE client that is configured but unbound, and the
+    // block, and a strategy-bound signal feed at `okx_data`. Because
+    // `[reference_data]` is empty, this fixture registers no live reference
+    // quote client. `decision_reference` is a logical readiness/proof id and is
+    // deliberately not treated as NT reference data. So `binance_reference` is a
+    // broad-readiness PROBE client that is configured but unbound, and the
     // scoped trade runner correctly EXCLUDES it from both the registration
     // summary and the NT engines.
     //
@@ -349,7 +350,7 @@ fn missing_polymarket_private_key_secret_fails_before_registration() {
     // path. This must surface as `SecretResolution`, never reaching
     // registration.
     let bad_resolver = |region: &str, path: &str| -> Result<String, &'static str> {
-        if path == "/bolt/polymarket_main/private_key" {
+        if path == "/bolt/polymarket/private-key" {
             Err("simulated SSM permissions denied for polymarket private key")
         } else {
             support::fake_bolt_v3_resolver(region, path)

@@ -36,7 +36,7 @@ src/strategies/binary_oracle_edge_taker/
   orders.rs         # order construction + price/qty conversion (intent → NtOrderTemplate)
   source_proof.rs   # entry-decision source/replay/evidence derivation (pure)
   config.rs         # TOML config structs + parse/validate (pure)   [or fold into archetype]
-  tests/            # the 236 tests, split to mirror submodules
+  tests/            # the 238 tests, split to mirror submodules
 
 src/bolt_v3_taker_signal.rs   # SHARED: pure decision/sizing/EV/side-selection/uncertainty math (maker-reusable)
 src/bolt_v3_taker_pricing.rs  # SHARED: reference-quote/RV/lead-venue pricing state (maker-reusable)
@@ -73,7 +73,7 @@ movement evidence; line ranges are not.
 | **A7** | Source-proof / replay / evidence derivation → `source_proof.rs` | symbol cluster in `slices/A7.md`; merged by PR #586; no line anchors | pure-logic | — |
 | **A8** | Config structs + parse/validate → `config.rs` (or archetype) | symbol cluster in merged `config.rs`; merged to main | pure-logic | #508 (config guards) |
 | **A9** | Admission-request construction + valuation → `bolt_v3_submit_admission.rs` (rule #9; kill test-only dup). **Owns the base — #507/#510 rebase their admission edits onto it.** | symbol cluster in `slices/A9.md`; no stale line anchors | pure-logic | #507, #510 |
-| **A10** | Split the 236 tests to mirror submodules; `mod.rs` = struct + `DataActor` + glue | `tests/{book_sizing,config,core_glue,exposure,orders_admission,pricing,selection,source_evidence,trade_flow}.rs` plus `shared_fixture.rs`; no line anchors | tests | — |
+| **A10** | Split the 238 tests to mirror submodules; `mod.rs` = struct + `DataActor` + glue | `tests/{book_sizing,config,core_glue,exposure,orders_admission,pricing,selection,source_evidence,trade_flow}.rs` plus `shared_fixture.rs`; no line anchors | tests | — |
 
 ### Track B — operator_artifacts (parallel, conflict-free with Track A)
 

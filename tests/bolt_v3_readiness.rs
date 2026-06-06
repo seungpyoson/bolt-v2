@@ -201,7 +201,7 @@ fn startup_check_reports_forbidden_env_failure_and_skips_downstream() {
 fn startup_check_reports_secret_resolution_failure_and_skips_downstream() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let raw_private_key_path = "/bolt/polymarket_main/private_key";
+    let raw_private_key_path = "/bolt/polymarket/private-key";
     let bad_resolver = |region: &str, path: &str| -> Result<String, &'static str> {
         if path == raw_private_key_path {
             Err("simulated SSM permissions denied for private key")

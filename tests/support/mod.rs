@@ -1271,10 +1271,10 @@ const FAKE_BOLT_V3_POLYMARKET_PRIVATE_KEY: &str =
 /// `Credential::new` decodes it into HMAC key material.
 pub fn fake_bolt_v3_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
     match path {
-        "/bolt/polymarket_main/private_key" => Ok(FAKE_BOLT_V3_POLYMARKET_PRIVATE_KEY.to_string()),
-        "/bolt/polymarket_main/api_key" => Ok("polymarket-api-key".to_string()),
-        "/bolt/polymarket_main/api_secret" => Ok("YWJj".to_string()),
-        "/bolt/polymarket_main/passphrase" => Ok("polymarket-passphrase".to_string()),
+        "/bolt/polymarket/private-key" => Ok(FAKE_BOLT_V3_POLYMARKET_PRIVATE_KEY.to_string()),
+        "/bolt/polymarket/api-key" => Ok("polymarket-api-key".to_string()),
+        "/bolt/polymarket/api-secret" => Ok("YWJj".to_string()),
+        "/bolt/polymarket/api-passphrase" => Ok("polymarket-passphrase".to_string()),
         "/bolt/binance_reference/api_key" => Ok("binance-api-key".to_string()),
         "/bolt/binance_reference/api_secret" => Ok(FAKE_BOLT_V3_BINANCE_API_SECRET.to_string()),
         "/bolt/testnet/chainlink/api-key" => Ok("chainlink-api-key".to_string()),

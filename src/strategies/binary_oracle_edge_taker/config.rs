@@ -254,6 +254,7 @@ const EXIT_ORDER_FIELD: &str = stringify!(exit_order);
 const FORCED_EXIT_ORDER_FIELD: &str = stringify!(forced_exit_order);
 const WRONG_TYPE_CODE: &str = stringify!(wrong_type);
 const UNKNOWN_FIELD_CODE: &str = stringify!(unknown_field);
+const INVALID_INSTRUMENT_ID_CODE: &str = stringify!(invalid_instrument_id);
 
 impl BinaryOracleEdgeTakerBuilder {
     pub(super) fn parse_config(raw: &Value) -> Result<BinaryOracleEdgeTakerConfig> {
@@ -279,7 +280,36 @@ impl BinaryOracleEdgeTakerBuilder {
             config.trade_flow_max_samples > 0,
             "trade_flow_max_samples must be positive"
         );
+        Self::ensure_configured_instrument_id_fields_parse(&config)?;
         Ok(config)
+    }
+
+    fn ensure_configured_instrument_id_fields_parse(
+        config: &BinaryOracleEdgeTakerConfig,
+    ) -> Result<()> {
+        for (field_name, instrument_id) in [
+            (
+                "reference_instrument_id",
+                config.reference_instrument_id.as_deref(),
+            ),
+            (
+                "signal_instrument_id",
+                config.signal_instrument_id.as_deref(),
+            ),
+            (
+                "resolution_instrument_id",
+                config.resolution_instrument_id.as_deref(),
+            ),
+        ] {
+            let Some(instrument_id) = instrument_id else {
+                continue;
+            };
+            anyhow::ensure!(
+                instrument_id.parse::<InstrumentId>().is_ok(),
+                "{field_name} must be a valid NT instrument id, got `{instrument_id}`"
+            );
+        }
+        Ok(())
     }
 
     fn push_missing(
@@ -360,6 +390,24 @@ impl BinaryOracleEdgeTakerBuilder {
         Self::validate_optional_string_field(table, field_prefix, "signal_instrument_id", errors);
         Self::validate_optional_string_field(table, field_prefix, "resolution_client_id", errors);
         Self::validate_optional_string_field(
+            table,
+            field_prefix,
+            "resolution_instrument_id",
+            errors,
+        );
+        Self::validate_optional_instrument_id_field(
+            table,
+            field_prefix,
+            "reference_instrument_id",
+            errors,
+        );
+        Self::validate_optional_instrument_id_field(
+            table,
+            field_prefix,
+            "signal_instrument_id",
+            errors,
+        );
+        Self::validate_optional_instrument_id_field(
             table,
             field_prefix,
             "resolution_instrument_id",
@@ -487,6 +535,24 @@ impl BinaryOracleEdgeTakerBuilder {
                 BinaryOracleEdgeTakerFieldType::String,
                 value,
             );
+        }
+    }
+
+    fn validate_optional_instrument_id_field(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        field_name: &'static str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let Some(value) = table.get(field_name).and_then(Value::as_str) else {
+            return;
+        };
+        if value.parse::<InstrumentId>().is_err() {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{field_name}"),
+                code: INVALID_INSTRUMENT_ID_CODE,
+                message: format!("must be a valid NT instrument id, got `{value}`"),
+            });
         }
     }
 

@@ -68,11 +68,11 @@ fn build_script_reruns_when_manifest_dir_env_changes() {
 }
 
 #[test]
-fn build_script_binds_manifest_dir_at_compile_time() {
+fn build_script_reads_manifest_dir_at_run_time() {
     assert_eq!(
         build_script::build_script_manifest_dir(),
         PathBuf::from(env!("CARGO_MANIFEST_DIR")),
-        "build script source embeds must be keyed by the current checkout path"
+        "build script source embeds must use the checkout path Cargo gives the running build script"
     );
 }
 

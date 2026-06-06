@@ -16703,3 +16703,43 @@ literal = '''0'''
 context = '''window_open_unix_seconds: 0,'''
 classification = "strategy_state_invariant"
 reason = "Sentinel placeholder: a resolution-strike unsubscribe event carries no window-open boundary, so the test-only recorder field is zero; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"apiKey"'''
+context = '''const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "apiKey";'''
+classification = "provider_protocol_field"
+reason = "PolyResearch WebSocket authentication query-key name proven by secret-safe live handshake evidence; this is a provider protocol field, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"api_key"'''
+context = '''validate_secret_field("api_key", &config.api_key)?;'''
+classification = "provider_secret_schema_field"
+reason = "Internal PolyResearch auth config field name used for secret validation errors; the value is resolved from SSM and never hardcoded."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"wss"'''
+context = '''if url.scheme() != "wss" || !url.has_host() || !value[url.scheme().len()..].starts_with("://") {'''
+classification = "provider_transport_scheme"
+reason = "Required secure WebSocket URL scheme for credential-bearing PolyResearch reference-price connections; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"://"'''
+context = '''if url.scheme() != "wss" || !url.has_host() || !value[url.scheme().len()..].starts_with("://") {'''
+classification = "url_syntax_guard"
+reason = "URL syntax guard ensuring the PolyResearch endpoint is an absolute WebSocket URL, not a configured runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"signal_instrument_id"'''
+context = '''"signal_instrument_id",'''
+classification = "strategy_runtime_schema_field"
+reason = "Signal-data binding schema field name parsed from configured bolt-v3 TOML target data, not an operator runtime value."

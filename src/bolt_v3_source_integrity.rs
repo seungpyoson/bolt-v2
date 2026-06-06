@@ -182,8 +182,11 @@ mod tests {
     //
     // Re-derived again by #574 after scoped taker config and trade-flow
     // hardening changed the canonical strategy source set.
+    //
+    // Re-derived again by #574 review cleanup after replacing the remaining raw
+    // positive integer guard in taker config parsing.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "5279dfd8eb633945631e2f081a79ba59c2f1227c895ab88719d02bf606ccca4e";
+        "a1ed1246e7feba5dabfee2cb6327a0a52517365ecf28ca9e41cd7118fc3830bc";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

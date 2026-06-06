@@ -277,7 +277,7 @@ impl BinaryOracleEdgeTakerBuilder {
         // the W3 read seam. The TOML type check accepts 0, so the bound is checked
         // here.
         anyhow::ensure!(
-            config.trade_flow_max_samples > 0,
+            config.trade_flow_max_samples > u64::MIN,
             "trade_flow_max_samples must be positive"
         );
         for (field, value) in [

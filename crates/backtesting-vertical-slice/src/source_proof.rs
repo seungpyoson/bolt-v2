@@ -664,7 +664,7 @@ pub fn select_accepted_dataset(
 }
 
 fn source_url_host_has_venue_label(source_url: &str, venue: &str) -> bool {
-    let venue = venue.trim().to_ascii_lowercase();
+    let venue = venue.trim();
     if venue.is_empty() {
         return false;
     }
@@ -683,8 +683,12 @@ fn source_url_host_has_venue_label(source_url: &str, venue: &str) -> bool {
         .next()
         .unwrap_or_default()
         .trim_matches(['[', ']'])
-        .to_ascii_lowercase();
-    host == format!("{venue}.com") || host.ends_with(&format!(".{venue}.com"))
+        .trim_matches('.');
+    let mut labels = host.rsplit('.');
+    labels.next().is_some()
+        && labels
+            .next()
+            .is_some_and(|registrable| registrable.eq_ignore_ascii_case(venue))
 }
 
 fn ensure_coverage_within_requested(
@@ -1008,6 +1012,17 @@ mod tests {
             matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn select_accepts_venue_owned_non_com_domain() {
+        let accepted = candidate_proof()
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.source_url =
+            "https://data.bybit.net/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+        select_accepted_dataset(&accepted, &object, &object.sha256).unwrap();
     }
 
     #[test]

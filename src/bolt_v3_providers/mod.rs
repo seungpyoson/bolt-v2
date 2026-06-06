@@ -21,6 +21,7 @@ pub mod hyperliquid;
 pub mod hyperliquid_artifacts;
 pub mod market_data;
 pub mod polymarket;
+pub mod polyresearch;
 
 // Neutral resolution-oracle seam. Core config resolution
 // (`crate::bolt_v3_config`), core validation (`crate::bolt_v3_validate`), the
@@ -1118,12 +1119,12 @@ mod tests {
 
     fn fake_secret_value(path: &str) -> String {
         match path {
-            "/bolt/polymarket_main/private_key" => {
+            "/bolt/polymarket/private-key" => {
                 "0x1111111111111111111111111111111111111111111111111111111111111111".to_string()
             }
-            "/bolt/polymarket_main/api_key" => "poly-api-key".to_string(),
-            "/bolt/polymarket_main/api_secret" => "YWJj".to_string(),
-            "/bolt/polymarket_main/passphrase" => "poly-passphrase".to_string(),
+            "/bolt/polymarket/api-key" => "poly-api-key".to_string(),
+            "/bolt/polymarket/api-secret" => "YWJj".to_string(),
+            "/bolt/polymarket/api-passphrase" => "poly-passphrase".to_string(),
             _ => panic!("unexpected test SSM path {path}"),
         }
     }

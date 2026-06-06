@@ -1254,10 +1254,10 @@ fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
     let manifest_json =
         serde_json::to_string(&manifest).expect("manifest should serialize for redaction check");
     for raw_path in [
-        "/bolt/polymarket_main/private_key",
-        "/bolt/polymarket_main/api_key",
-        "/bolt/polymarket_main/api_secret",
-        "/bolt/polymarket_main/passphrase",
+        "/bolt/polymarket/private-key",
+        "/bolt/polymarket/api-key",
+        "/bolt/polymarket/api-secret",
+        "/bolt/polymarket/api-passphrase",
         "/bolt/testnet/chainlink/api-key",
         "/bolt/testnet/chainlink/api-secret",
     ] {

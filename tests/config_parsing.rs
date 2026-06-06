@@ -5305,10 +5305,10 @@ fee_cache_ttl_secs = 0
 transport_backend = "sockudo"
 
 [clients.polymarket_main.secrets]
-private_key_ssm_path = "/bolt/polymarket_main/private_key"
-api_key_ssm_path = "/bolt/polymarket_main/api_key"
-api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
-passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
+private_key_ssm_path = "/bolt/polymarket/private-key"
+api_key_ssm_path = "/bolt/polymarket/api-key"
+api_secret_ssm_path = "/bolt/polymarket/api-secret"
+passphrase_ssm_path = "/bolt/polymarket/api-passphrase"
 "#;
 
     let root: BoltV3RootConfig =

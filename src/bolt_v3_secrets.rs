@@ -431,10 +431,10 @@ transport_backend = "sockudo"
 
     fn fake_secret_value(path: &str) -> String {
         match path {
-            "/bolt/polymarket_main/private_key" => SYNTHETIC_POLYMARKET_PRIVATE_KEY.to_string(),
-            "/bolt/polymarket_main/api_key" => "poly-api-key".to_string(),
-            "/bolt/polymarket_main/api_secret" => "YWJj".to_string(),
-            "/bolt/polymarket_main/passphrase" => "poly-passphrase".to_string(),
+            "/bolt/polymarket/private-key" => SYNTHETIC_POLYMARKET_PRIVATE_KEY.to_string(),
+            "/bolt/polymarket/api-key" => "poly-api-key".to_string(),
+            "/bolt/polymarket/api-secret" => "YWJj".to_string(),
+            "/bolt/polymarket/api-passphrase" => "poly-passphrase".to_string(),
             "/bolt/binance_reference/api_key" => "binance-api-key".to_string(),
             "/bolt/binance_reference/api_secret" => synthetic_binance_secret(),
             "/bolt/testnet/chainlink/api-key" => "chainlink-api-key".to_string(),
@@ -544,14 +544,14 @@ transport_backend = "sockudo"
         // resolution-strike client).
         assert_eq!(resolved.clients.len(), 3);
         assert!(
-            calls.iter().all(|(region, _)| region == "eu-west-1"),
+            calls.iter().all(|(region, _)| region == "eu-west-2"),
             "all SSM calls must use [aws].region from the fixture root.toml: {calls:#?}"
         );
         for path in [
-            "/bolt/polymarket_main/private_key",
-            "/bolt/polymarket_main/api_key",
-            "/bolt/polymarket_main/api_secret",
-            "/bolt/polymarket_main/passphrase",
+            "/bolt/polymarket/private-key",
+            "/bolt/polymarket/api-key",
+            "/bolt/polymarket/api-secret",
+            "/bolt/polymarket/api-passphrase",
             "/bolt/binance_reference/api_key",
             "/bolt/binance_reference/api_secret",
             "/bolt/testnet/chainlink/api-key",
@@ -597,14 +597,14 @@ transport_backend = "sockudo"
         assert!(resolved.clients.contains_key("polymarket_main"));
         assert!(!resolved.clients.contains_key("binance_reference"));
         assert!(
-            calls.iter().all(|(region, _)| region == "eu-west-1"),
+            calls.iter().all(|(region, _)| region == "eu-west-2"),
             "selected-client SSM calls must use [aws].region: {calls:#?}"
         );
         for path in [
-            "/bolt/polymarket_main/private_key",
-            "/bolt/polymarket_main/api_key",
-            "/bolt/polymarket_main/api_secret",
-            "/bolt/polymarket_main/passphrase",
+            "/bolt/polymarket/private-key",
+            "/bolt/polymarket/api-key",
+            "/bolt/polymarket/api-secret",
+            "/bolt/polymarket/api-passphrase",
         ] {
             assert!(
                 calls.iter().any(|(_, called_path)| called_path == path),
@@ -627,7 +627,7 @@ transport_backend = "sockudo"
         let loaded = fixture_loaded_config();
 
         let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
-            if path == "/bolt/polymarket_main/api_key" {
+            if path == "/bolt/polymarket/api-key" {
                 Ok::<_, &'static str>("   ".to_string())
             } else {
                 Ok(fake_secret_value(path))
@@ -648,7 +648,7 @@ transport_backend = "sockudo"
         let loaded = fixture_loaded_config();
 
         let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
-            if path == "/bolt/polymarket_main/private_key" {
+            if path == "/bolt/polymarket/private-key" {
                 Ok::<_, &'static str>("not-a-valid-evm-private-key".to_string())
             } else {
                 Ok(fake_secret_value(path))
@@ -684,7 +684,7 @@ transport_backend = "sockudo"
         let sentinel = "BOLTV3_PRIVATE_KEY_SENTINEL_DO_NOT_LEAK_2BC58A4DE0F1";
 
         let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
-            if path == "/bolt/polymarket_main/private_key" {
+            if path == "/bolt/polymarket/private-key" {
                 Ok::<_, &'static str>(sentinel.to_string())
             } else {
                 Ok(fake_secret_value(path))
@@ -746,7 +746,7 @@ transport_backend = "sockudo"
         let loaded = fixture_loaded_config();
 
         let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
-            if path == "/bolt/polymarket_main/api_secret" {
+            if path == "/bolt/polymarket/api-secret" {
                 Ok::<_, &'static str>(" YWJj ".to_string())
             } else {
                 Ok(fake_secret_value(path))
@@ -767,7 +767,7 @@ transport_backend = "sockudo"
         let loaded = fixture_loaded_config();
 
         let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
-            if path == "/bolt/polymarket_main/api_key" {
+            if path == "/bolt/polymarket/api-key" {
                 Ok::<_, &'static str>("abc def".to_string())
             } else {
                 Ok(fake_secret_value(path))

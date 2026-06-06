@@ -17,6 +17,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - primitive NT `BacktestVenueConfig` controls are declared in TOML and mapped into NT rather than hidden behind NT defaults
 - NT `BacktestDataConfig` catalog filesystem protocol and storage options are declared in TOML and mapped into NT, so S3/cloud catalog consumption can use NT's own catalog path
 - artifact-root typed subpaths now resolve from the single configured root for `raw`, `nt-catalog`, `source-proofs`, `backtests`, `artifact-index`, and `research-analytics`; unsupported artifact-root schemes fail validation before a run
+- Artifact Index record construction now has a pure contract helper for BTE-produced staged records: generated per-kind event/latest-pointer URIs under the single S3 `artifact_root`, `sha256` content-hash validation, required parent lineage refs, active lifecycle default, and producer-owned write-authority checks
 - S3 catalog storage options now fail before NT config construction if generic and Rust-specific maps are both set, or if an S3 option key is not supported by this pinned NT revision
 - the CLI has an explicit `--publish-output` opt-in that copies the verified local artifact tree to `manifest.output_prefix` through NT/object-store plumbing after the local run succeeds
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
@@ -27,7 +28,7 @@ No-go for broader production claims:
 - `s3://bolt-parquet/nt-research-analytics/` currently has no clean output artifacts: `Total Objects: 0`, `Total Size: 0`
 - the user confirmed converted artifacts were intentionally deleted during this investigation, so the empty prefix is expected current state, not accepted output evidence
 - no real S3 write has been performed through `--publish-output` in this branch without explicit operator approval and configured SSM artifact-store credential parameter paths
-- non-secret SSM parameter-name searches for `artifact` and `s3` returned no candidate parameter names, so the required `[manifest.artifact_store.ssm_parameters]` paths are not known in the current AWS account
+- non-secret SSM parameter-name searches for `artifact`, `s3`, and `backtest` returned no candidate parameter names, so the required `[manifest.artifact_store.ssm_parameters]` paths are not known in the current AWS account
 - current operator runs still stamp `direct_s3_catalog_access_proven = false` because `BacktestNode` consumes the verified local projection root before optional publish
 - the direct S3 publish/proof command with only `region` configured now fails fast with `artifact_store.ssm_parameters must resolve access_key_id and secret_access_key before publishing to an s3 output_prefix`, and leaves no output directory
 - only the BNBUSDC 2026-03-01 trade-replay object is proven in this slice; Bybit is a sample source/proof, not a production converter special case
@@ -49,7 +50,7 @@ No-go for broader production claims:
 - Fresh release-binary `--publish-output` run against the accepted raw object and a local `file://` output prefix published 8 artifacts; `diff -qr /tmp/bte-real-cli.sDvExP/out-publish /tmp/bte-real-cli.sDvExP/publish-root/backtests/backtesting-vertical-slice-bnbusdc-2026-03-01` returned no differences
 - Fresh current-branch local CLI run after SSM artifact-store changes wrote `/private/tmp/bte-s3-proof/out-local-after-ssm-artifact-store-3` and produced `937` canonical rows, `937` NT catalog read-back trade ticks, NT `BacktestNode` iterations `937`, and catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`
 - Fresh current-branch S3 publish/proof command with only `region` configured failed before the backtest with `artifact_store.ssm_parameters must resolve access_key_id and secret_access_key before publishing to an s3 output_prefix`; `/private/tmp/bte-s3-proof/out-s3-missing-ssm-fail-fast` was not created
-- Non-secret SSM parameter-name searches for `artifact` and `s3` returned no names, so direct real S3 proof cannot be completed until valid SSM parameter paths are provided or created outside this branch's code path
+- Non-secret SSM parameter-name searches for `artifact`, `s3`, and `backtest` returned no names, so direct real S3 proof cannot be completed until valid SSM parameter paths are provided or created outside this branch's code path
 
 ## NT Use Matrix
 
@@ -188,7 +189,8 @@ GREEN checks after implementation:
 - `just bte-test artifact_root_resolves_typed_subpaths_without_extra_root_knobs rejects_unsupported_artifact_root_scheme`: 2 passed after RED compile failure on missing typed artifact-subpath API
 - `just bte-test run_from_run_spec_rejects_object_byte_count_mismatch_before_artifacts`: RED failed because the operator ran NT instead of rejecting the byte mismatch, then GREEN passed after adding the pre-hash/pre-decompression byte-count check
 - `just bte-test read_object_gz_rejects_size_mismatch_before_loading_object`: RED failed with missing checked-read helper, then GREEN passed after adding CLI object-size preflight before `fs::read`
-- `just bte-test`: 184 passed, including 2 slow public API tests
+- `just bte-test backtest_index_record_generates_paths_under_single_artifact_root artifact_index_rejects_missing_lineage_and_non_sha256_hashes artifact_index_rejects_consumer_mutation_of_producer_records`: RED failed with missing `artifact_index` module, then GREEN passed after adding the pure Artifact Index contract helper
+- `just bte-test`: 187 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed
@@ -209,6 +211,7 @@ GREEN checks after implementation:
 | Broader source proof coverage | This slice proves one Bybit spot trade-replay object only, as a sample source | accept additional source proofs; for compatible CSV native-trade sources, add proof/run-spec `[converter.csv]` mapping without changing operator/runner/NT code; for non-CSV or non-trade data, add a new registered adapter and bind its converter config hash |
 | Complex NT venue model policy | Primitive controls are now explicit, and complex surfaces are classified in `backtest-extension-surface-matrix.md`, but leverage maps, margin model, simulation modules, fill model, latency model, fee model, and settlement prices are not yet manifest-configurable | keep them `unsupported_for_now` until typed manifest sections exist; if a typed placeholder schema is introduced, emit explicit unsupported-surface errors rather than silently relying on hidden defaults |
 | Direct S3 catalog execution proof | The proof path is implemented to pass resolved object-store options into NT, but it has not run against real S3 because SSM credential parameter paths are missing | after SSM paths are configured, run `--publish-output --prove-published-catalog`, verify S3 artifact hashes, and require the published-catalog proof to stamp `direct_s3_catalog_access_proven = true` |
+| Artifact Index commit proof | The pure record contract is now validated locally, but create-only event writes, conditional latest-pointer updates, snapshot commits, retry/rebase, audit epochs, and producer IAM scopes are not proven | keep events/snapshots proof-gated; prove object-store conditional semantics or select an approved coordinator before relying on Artifact Index for committed discovery |
 | Old partial output disposition | Old outputs must not be promoted as clean | keep old outputs marked partial/dirty; after clean replacement exists, retain or archive them as forensic evidence, but do not use them as accepted result artifacts |
 
 ## Prior Backfill Slow-Run Root Cause

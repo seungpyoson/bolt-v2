@@ -12,6 +12,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - result contracts bind the source object, converter identity, converter config hash, conversion manifest hash, conversion checkpoint hash, catalog metadata hash, and catalog hash
 - result contract `manifest_hash` binds the submitted portable run-spec manifest, not the operator's temporary local catalog path
 - converter identity/version and CSV native-trade column mapping are declared in the run-spec TOML; the operator validates identity/version against the registered converter and binds the converter config hash before any converted output is reused
+- the CLI and operator both fail fast when the local object byte count differs from `accepted_object.bytes`; the CLI stats the object path before reading the payload into memory, and the operator rejects mismatches before hashing, decompression, checkpoint writes, or NT work
 - catalog metadata records both the portable output catalog URI and the actual execution catalog URI, plus whether direct S3 catalog access was proven
 - primitive NT `BacktestVenueConfig` controls are declared in TOML and mapped into NT rather than hidden behind NT defaults
 - NT `BacktestDataConfig` catalog filesystem protocol and storage options are declared in TOML and mapped into NT, so S3/cloud catalog consumption can use NT's own catalog path
@@ -185,7 +186,9 @@ GREEN checks after implementation:
 - `just bte-test rejects_unsupported_nt_venue_model_surface_requests_before_nt_config rejects_unsupported_nt_engine_surface_requests_before_nt_config`: 2 passed
 - `just bte-test alternate_venue_provider_swap_is_toml_only`: 1 passed
 - `just bte-test artifact_root_resolves_typed_subpaths_without_extra_root_knobs rejects_unsupported_artifact_root_scheme`: 2 passed after RED compile failure on missing typed artifact-subpath API
-- `just bte-test`: 182 passed, including 2 slow public API tests
+- `just bte-test run_from_run_spec_rejects_object_byte_count_mismatch_before_artifacts`: RED failed because the operator ran NT instead of rejecting the byte mismatch, then GREEN passed after adding the pre-hash/pre-decompression byte-count check
+- `just bte-test read_object_gz_rejects_size_mismatch_before_loading_object`: RED failed with missing checked-read helper, then GREEN passed after adding CLI object-size preflight before `fs::read`
+- `just bte-test`: 184 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed
@@ -261,25 +264,28 @@ No-repeat controls before any future broad backfill or BTE conversion:
    sweep.
 2. Estimate planned object count and byte count from manifests/source indexes
    before downloading payloads.
-3. Require a manifest schema with planned, completed, failed, skipped, bytes,
+3. Enforce the accepted-object byte count before hashing, decompression,
+   checkpoint writes, or NT work; CLI callers must stat the local object before
+   reading it into memory.
+4. Require a manifest schema with planned, completed, failed, skipped, bytes,
    hashes, gap reasons, and source-proof ids before a run can be accepted.
-4. Fail preflight on unbounded selectors such as `ALL_SWAP`, `baseCoin=all`, or
+5. Fail preflight on unbounded selectors such as `ALL_SWAP`, `baseCoin=all`, or
    "full all-symbol" unless the operator explicitly approves that scope.
-5. Use streaming or bounded readers for compressed/archive payloads; never
+6. Use streaming or bounded readers for compressed/archive payloads; never
    decode whole large archives into memory.
-6. Isolate failures per object or per declared binding so one bad source object
+7. Isolate failures per object or per declared binding so one bad source object
    cannot abandon later good objects, while still exiting non-zero when any
    object failed.
-7. Delete transient local payload mirrors after S3 upload and hash verification;
+8. Delete transient local payload mirrors after S3 upload and hash verification;
    retain only manifests, source proofs, checkpoints, and small metadata.
-8. Treat raw S3 objects without completed accepted manifests as physical
+9. Treat raw S3 objects without completed accepted manifests as physical
    evidence only, not backtest input.
-9. Convert to NT catalog only after source proof, normalized row contract,
+10. Convert to NT catalog only after source proof, normalized row contract,
    instrument metadata, and gap policy are accepted.
-10. For this BTE branch, do not run a broad historical backfill. The only
+11. For this BTE branch, do not run a broad historical backfill. The only
     admissible next runtime proof is the single accepted BNBUSDC object unless
     a separate source proof and bounded plan are accepted first.
-11. Adding a compatible native-trade CSV source must mean adding source proof
+12. Adding a compatible native-trade CSV source must mean adding source proof
     plus `[converter.csv]` mapping, not adding venue branches to operator,
     runner, result contract, catalog projection, or NT execution code.
 

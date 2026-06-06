@@ -183,6 +183,13 @@ pub fn run_from_run_spec(
 ) -> Result<RunArtifacts> {
     validate_converter_config(&spec.converter)?;
 
+    let object_byte_len = gz_bytes.len() as u64;
+    ensure!(
+        object_byte_len == spec.accepted_object.bytes,
+        "object byte length {object_byte_len} does not match run-spec {}",
+        spec.accepted_object.bytes
+    );
+
     // Re-verify the accepted object content hash against the run-spec, so raw
     // staged data can never reach the backtest without matching the pinned hash.
     let mut hasher = Sha256::new();
@@ -732,6 +739,25 @@ mod tests {
     }
 
     #[test]
+    fn run_from_run_spec_rejects_object_byte_count_mismatch_before_artifacts() {
+        let gz = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&gz);
+        spec.accepted_object.bytes += 1;
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let err = match run_from_run_spec(&spec, &gz, dir.path()) {
+            Ok(_) => panic!("object bytes must match the run-spec before conversion"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("object byte length"), "{err}");
+        assert!(
+            !dir.path().join(CONVERSION_CHECKPOINT_FILE).exists(),
+            "byte-count rejection must happen before conversion checkpoint writes"
+        );
+    }
+
+    #[test]
     fn run_from_run_spec_writes_portable_redacted_contract() {
         let gz = gzip(SAMPLE_CSV);
         let spec = run_spec_for(&gz);
@@ -870,7 +896,8 @@ mod tests {
         // The committed run-spec pins the real (uncommitted) object hash; feeding
         // it the synthetic bytes must trip the SHA-256 re-verification.
         let gz = gzip(SAMPLE_CSV);
-        let spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("parse");
+        let mut spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("parse");
+        spec.accepted_object.bytes = gz.len() as u64;
         let dir = tempfile::TempDir::new().unwrap();
         let err = run_from_run_spec(&spec, &gz, dir.path())
             .err()

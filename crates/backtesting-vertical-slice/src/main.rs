@@ -8,9 +8,12 @@
 //! is a thin CLI shim that reads the inputs, runs the operator path, and prints
 //! the produced artifacts.
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use clap::Parser;
 
 use backtesting_vertical_slice::{
@@ -46,8 +49,7 @@ fn main() -> Result<()> {
     let spec_text = fs::read_to_string(&cli.run_spec)
         .with_context(|| format!("read run-spec {}", cli.run_spec.display()))?;
     let spec: RunSpec = toml::from_str(&spec_text).context("parse run-spec TOML")?;
-    let gz_bytes = fs::read(&cli.object_gz)
-        .with_context(|| format!("read object {}", cli.object_gz.display()))?;
+    let gz_bytes = read_object_gz_checked(&cli.object_gz, spec.accepted_object.bytes)?;
 
     let (artifacts, published_artifacts, published_catalog_proof): (
         _,
@@ -153,6 +155,16 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn read_object_gz_checked(path: &Path, expected_bytes: u64) -> Result<Vec<u8>> {
+    let metadata = fs::metadata(path).with_context(|| format!("stat object {}", path.display()))?;
+    let actual_bytes = metadata.len();
+    ensure!(
+        actual_bytes == expected_bytes,
+        "object byte length {actual_bytes} does not match run-spec {expected_bytes}"
+    );
+    fs::read(path).with_context(|| format!("read object {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,5 +228,17 @@ mod tests {
         .expect("publish plus catalog proof parses");
         assert!(cli.publish_output);
         assert!(cli.prove_published_catalog);
+    }
+
+    #[test]
+    fn read_object_gz_rejects_size_mismatch_before_loading_object() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let object_path = dir.path().join("object.csv.gz");
+        fs::write(&object_path, b"not-the-accepted-object").unwrap();
+
+        let err = read_object_gz_checked(&object_path, 99).unwrap_err();
+
+        assert!(err.to_string().contains("object byte length 23"), "{err}");
+        assert!(err.to_string().contains("run-spec 99"), "{err}");
     }
 }

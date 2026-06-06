@@ -32,6 +32,7 @@ pub struct ConversionFingerprint {
     pub accepted_object_sha256: String,
     pub converter_identity: String,
     pub converter_version: String,
+    pub converter_config_hash: String,
 }
 
 impl ConversionFingerprint {
@@ -62,6 +63,11 @@ impl ConversionFingerprint {
             "converter_version",
             &self.converter_version,
             &expected.converter_version,
+        )?;
+        ensure_identity_field(
+            "converter_config_hash",
+            &self.converter_config_hash,
+            &expected.converter_config_hash,
         )?;
         Ok(())
     }
@@ -351,6 +357,10 @@ impl ConversionCatalogMetadata {
             self.execution_catalog_uri
         );
         Ok(())
+    }
+
+    pub fn content_hash(&self) -> Result<String> {
+        content_hash(self)
     }
 }
 

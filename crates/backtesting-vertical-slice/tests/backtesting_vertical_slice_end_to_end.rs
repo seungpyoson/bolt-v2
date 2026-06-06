@@ -13,7 +13,10 @@
 use std::collections::BTreeMap;
 
 use backtesting_vertical_slice::{
-    canonical_trades::{CanonicalInstrumentIdentity, TRANSFORM_IDENTITY},
+    canonical_trades::{
+        CanonicalInstrumentIdentity, ConverterConfig, CsvTimestampUnit, CsvTradeMappingConfig,
+        TRANSFORM_IDENTITY,
+    },
     catalog_projection::SpotInstrumentSpec,
     result_contract::ResultArtifactUris,
     run_manifest::{
@@ -32,6 +35,27 @@ const SAMPLE_CSV: &str = "id,timestamp,price,volume,side,rpi\n\
     1,1772323201665,617.2,0.3,buy,0\n\
     2,1772323312219,617.9,0.1456,sell,0\n\
     3,1772323312236,617,0.1544,sell,0\n";
+
+fn csv_mapping() -> CsvTradeMappingConfig {
+    CsvTradeMappingConfig {
+        trade_id_column: "id".to_string(),
+        timestamp_column: "timestamp".to_string(),
+        timestamp_unit: CsvTimestampUnit::Milliseconds,
+        price_column: "price".to_string(),
+        size_column: "volume".to_string(),
+        side_column: "side".to_string(),
+        buyer_side_values: vec!["buy".to_string()],
+        seller_side_values: vec!["sell".to_string()],
+    }
+}
+
+fn converter_config() -> ConverterConfig {
+    ConverterConfig {
+        identity: TRANSFORM_IDENTITY.to_string(),
+        version: "1".to_string(),
+        csv: csv_mapping(),
+    }
+}
 
 const OBJECT_SHA256: &str = "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598";
 const SOURCE_PROOF_ID: &str = "source-proof-bybit-spot-tick-trades";
@@ -219,8 +243,7 @@ fn accepted_data_flows_through_to_objective_result_contract() {
         capture_time_nanos: 1_772_512_022_000_000_000,
         manifest: &manifest,
         contract_manifest_hash: &contract_manifest_hash,
-        converter_identity: TRANSFORM_IDENTITY,
-        converter_version: "1",
+        converter: &converter_config(),
         canonical_artifact_path: &canonical_path,
         catalog_root: &catalog_root,
         created_at: "2026-06-02T00:00:00Z",
@@ -229,6 +252,9 @@ fn accepted_data_flows_through_to_objective_result_contract() {
                 .to_string(),
             canonical_table_uri: canonical_path.to_string_lossy().to_string(),
             nt_catalog_uri: catalog_path.clone(),
+            catalog_metadata_uri:
+                "s3://bolt-parquet/nt-research-analytics/backtests/end-to-end/catalog-metadata.json"
+                    .to_string(),
             result_contract_uri:
                 "s3://bolt-parquet/nt-research-analytics/backtests/end-to-end/result.json"
                     .to_string(),
@@ -327,8 +353,7 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
         capture_time_nanos: 1_772_512_022_000_000_000,
         manifest: &full_manifest,
         contract_manifest_hash: &full_contract_manifest_hash,
-        converter_identity: TRANSFORM_IDENTITY,
-        converter_version: "1",
+        converter: &converter_config(),
         canonical_artifact_path: &full_canonical,
         catalog_root: &full_catalog,
         created_at: "2026-06-02T00:00:00Z",
@@ -337,6 +362,9 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
                 .to_string(),
             canonical_table_uri: full_canonical.to_string_lossy().to_string(),
             nt_catalog_uri: full_catalog_path.clone(),
+            catalog_metadata_uri:
+                "s3://bolt-parquet/nt-research-analytics/backtests/win/catalog-metadata.json"
+                    .to_string(),
             result_contract_uri: "s3://bolt-parquet/nt-research-analytics/backtests/win/r.json"
                 .to_string(),
         },
@@ -369,8 +397,7 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
         capture_time_nanos: 1_772_512_022_000_000_000,
         manifest: &windowed_manifest,
         contract_manifest_hash: &windowed_contract_manifest_hash,
-        converter_identity: TRANSFORM_IDENTITY,
-        converter_version: "1",
+        converter: &converter_config(),
         canonical_artifact_path: &canonical_path,
         catalog_root: &catalog_root,
         created_at: "2026-06-02T00:00:00Z",
@@ -379,6 +406,9 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
                 .to_string(),
             canonical_table_uri: canonical_path.to_string_lossy().to_string(),
             nt_catalog_uri: catalog_path.clone(),
+            catalog_metadata_uri:
+                "s3://bolt-parquet/nt-research-analytics/backtests/win/catalog-metadata-2.json"
+                    .to_string(),
             result_contract_uri: "s3://bolt-parquet/nt-research-analytics/backtests/win/r2.json"
                 .to_string(),
         },

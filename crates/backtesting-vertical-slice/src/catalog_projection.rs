@@ -37,13 +37,13 @@ use super::{
 /// NautilusTrader data type written for this projection.
 pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
 
-/// Accepted Bybit spot instrument metadata needed to build the NautilusTrader
+/// Accepted spot instrument metadata needed to build the NautilusTrader
 /// `CurrencyPair`. Built from the accepted instrument-universe payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpotInstrumentSpec {
-    /// NautilusTrader instrument id, for example `BNBUSDC.BYBIT`.
+    /// NautilusTrader instrument id, such as `SYMBOL.VENUE`.
     pub nt_instrument_id: String,
-    /// Venue-native raw symbol, for example `BNBUSDC`.
+    /// Venue-native raw symbol.
     pub raw_symbol: String,
     /// Base currency code, for example `BNB`.
     pub base_currency: String,
@@ -497,7 +497,7 @@ fn update_currency_pair_hash(hasher: &mut Sha256, instrument: &CurrencyPair) -> 
 mod tests {
     use super::*;
     use crate::{
-        canonical_trades::{CanonicalInstrumentIdentity, normalize_bybit_spot_tick_trades},
+        canonical_trades::{CanonicalInstrumentIdentity, normalize_sample_spot_tick_trades},
         source_proof::{
             AcceptanceMode, AcceptedDataset, EvidenceState, FixtureType,
             IngestManifestObjectRecord, NtMappingStatus, RequiredCheck, RequiredChecks,
@@ -603,7 +603,7 @@ mod tests {
             venue_symbol: "BNBUSDC".to_string(),
             nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
         };
-        normalize_bybit_spot_tick_trades(
+        normalize_sample_spot_tick_trades(
             &accepted_dataset(),
             &identity,
             SAMPLE_CSV,
@@ -672,7 +672,7 @@ mod tests {
             venue_symbol: "BNBUSDC".to_string(),
             nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
         };
-        let table = normalize_bybit_spot_tick_trades(
+        let table = normalize_sample_spot_tick_trades(
             &accepted_dataset(),
             &identity,
             &csv,
@@ -693,7 +693,7 @@ mod tests {
             venue_symbol: "BNBUSDC".to_string(),
             nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
         };
-        let table = normalize_bybit_spot_tick_trades(
+        let table = normalize_sample_spot_tick_trades(
             &accepted_dataset(),
             &identity,
             csv,
@@ -773,7 +773,7 @@ mod tests {
             1,1772323201665,999.9,0.3,buy,0\n\
             2,1772323312219,617.9,0.1456,sell,0\n\
             3,1772323312236,617,0.1544,sell,0\n";
-        let table_b = normalize_bybit_spot_tick_trades(
+        let table_b = normalize_sample_spot_tick_trades(
             &accepted_dataset(),
             &identity,
             csv_b,

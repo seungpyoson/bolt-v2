@@ -118,8 +118,18 @@ venue_symbol = "BNBUSDC"
 nt_instrument_id = "BNBUSDC.BYBIT"
 
 [converter]
-identity = "bybit-public-archive-spot-tick-trades-to-canonical-trades.v1"
+identity = "csv-native-trades-to-canonical-trades.v1"
 version = "1"
+
+[converter.csv]
+trade_id_column = "id"
+timestamp_column = "timestamp"
+timestamp_unit = "milliseconds"
+price_column = "price"
+size_column = "volume"
+side_column = "side"
+buyer_side_values = ["buy"]
+seller_side_values = ["sell"]
 
 [manifest]
 run_id = "backtesting-vertical-slice-bnbusdc-2026-03-01"

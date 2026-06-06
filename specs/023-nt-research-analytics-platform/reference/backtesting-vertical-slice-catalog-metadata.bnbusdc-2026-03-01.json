@@ -1,0 +1,12 @@
+{
+  "metadata_version": "catalog-metadata.v1",
+  "manifest_hash": "7d6d48376c026174bb84830dc6058e4eddecf9e3632344431413a4b2b3ca8352",
+  "checkpoint_hash": "60429ebd758ec1b0383dbedd0d0e38997a0bc90f33f2dc2ba2bf5bf6b1bd5842",
+  "catalog_hash": "530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f",
+  "nt_data_type": "TradeTick",
+  "nt_instrument_id": "BNBUSDC.BYBIT",
+  "canonical_rows": 937,
+  "output_catalog_uri": "reference://backtesting-vertical-slice/bnbusdc-2026-03-01/nt-catalog",
+  "execution_catalog_uri": "reference://backtesting-vertical-slice/bnbusdc-2026-03-01/nt-catalog",
+  "direct_s3_catalog_access_proven": false
+}

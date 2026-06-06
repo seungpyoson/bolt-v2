@@ -96,7 +96,7 @@ pub struct StrategySource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestVenueConfig {
-    /// NautilusTrader venue name, for example `BYBIT`.
+    /// NautilusTrader venue name.
     pub nt_venue: String,
     /// One of `NETTING` or `HEDGING`.
     pub oms_type: String,
@@ -159,7 +159,7 @@ pub struct ManifestCatalogInput {
     pub catalog_fs_rust_storage_options: BTreeMap<String, String>,
     /// NautilusTrader data type, currently `TradeTick`.
     pub data_type: String,
-    /// NautilusTrader instrument id, for example `BNBUSDC.BYBIT`.
+    /// NautilusTrader instrument id, such as `SYMBOL.VENUE`.
     pub nt_instrument_id: String,
 }
 

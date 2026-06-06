@@ -122,6 +122,7 @@ pub struct ResultArtifactUris {
     pub source_proof_uri: String,
     pub canonical_table_uri: String,
     pub nt_catalog_uri: String,
+    pub catalog_metadata_uri: String,
     pub result_contract_uri: String,
 }
 
@@ -140,9 +141,11 @@ pub struct BacktestResultContract {
     pub accepted_object_sha256: String,
     pub converter_identity: String,
     pub converter_version: String,
+    pub converter_config_hash: String,
     pub conversion_manifest_hash: String,
     pub conversion_checkpoint_hash: String,
     pub catalog_hash: String,
+    pub catalog_metadata_hash: String,
     pub strategy_config_hash: String,
     pub run_purpose: String,
     pub market_structure_fixture: String,
@@ -198,6 +201,7 @@ impl BacktestResultContract {
             ),
             ("converter_identity", self.converter_identity.as_str()),
             ("converter_version", self.converter_version.as_str()),
+            ("converter_config_hash", self.converter_config_hash.as_str()),
             (
                 "conversion_manifest_hash",
                 self.conversion_manifest_hash.as_str(),
@@ -207,6 +211,7 @@ impl BacktestResultContract {
                 self.conversion_checkpoint_hash.as_str(),
             ),
             ("catalog_hash", self.catalog_hash.as_str()),
+            ("catalog_metadata_hash", self.catalog_metadata_hash.as_str()),
             ("strategy_config_hash", self.strategy_config_hash.as_str()),
             ("run_purpose", self.run_purpose.as_str()),
             (
@@ -275,9 +280,11 @@ pub struct ResultContractInputs<'a> {
     pub accepted_object_sha256: &'a str,
     pub converter_identity: &'a str,
     pub converter_version: &'a str,
+    pub converter_config_hash: &'a str,
     pub conversion_manifest_hash: &'a str,
     pub conversion_checkpoint_hash: &'a str,
     pub catalog_hash: &'a str,
+    pub catalog_metadata_hash: &'a str,
     pub strategy: &'a StrategySource,
     pub run_purpose: &'a str,
     pub market_structure_fixture: &'a str,
@@ -314,9 +321,11 @@ pub fn build_result_contract(
         accepted_object_sha256: inputs.accepted_object_sha256.to_string(),
         converter_identity: inputs.converter_identity.to_string(),
         converter_version: inputs.converter_version.to_string(),
+        converter_config_hash: inputs.converter_config_hash.to_string(),
         conversion_manifest_hash: inputs.conversion_manifest_hash.to_string(),
         conversion_checkpoint_hash: inputs.conversion_checkpoint_hash.to_string(),
         catalog_hash: inputs.catalog_hash.to_string(),
+        catalog_metadata_hash: inputs.catalog_metadata_hash.to_string(),
         strategy_config_hash: strategy_config_hash(inputs.strategy),
         run_purpose: inputs.run_purpose.to_string(),
         market_structure_fixture: inputs.market_structure_fixture.to_string(),
@@ -365,12 +374,13 @@ mod tests {
             accepted_at: "2026-06-02T00:00:00Z".to_string(),
             accepted_object_sha256:
                 "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598".to_string(),
-            converter_identity: "bybit-public-archive-spot-tick-trades-to-canonical-trades.v1"
-                .to_string(),
+            converter_identity: "csv-native-trades-to-canonical-trades.v1".to_string(),
             converter_version: "1".to_string(),
+            converter_config_hash: "converterconfigabc".to_string(),
             conversion_manifest_hash: "conversionmanifestabc".to_string(),
             conversion_checkpoint_hash: "conversioncheckpointabc".to_string(),
             catalog_hash: "abc123".to_string(),
+            catalog_metadata_hash: "metahashabc".to_string(),
             strategy_config_hash: "def456".to_string(),
             run_purpose: "normal".to_string(),
             market_structure_fixture: "perps-spot".to_string(),
@@ -389,6 +399,7 @@ mod tests {
                 source_proof_uri: "s3://.../source-proofs/p.json".to_string(),
                 canonical_table_uri: "s3://.../trades.parquet".to_string(),
                 nt_catalog_uri: "s3://.../nt-catalog/".to_string(),
+                catalog_metadata_uri: "s3://.../catalog-metadata.json".to_string(),
                 result_contract_uri: "s3://.../backtests/run/result.json".to_string(),
             },
             created_at: "2026-06-02T00:00:00Z".to_string(),
@@ -434,11 +445,17 @@ features = ["streaming", "examples"]
         );
         assert_eq!(
             c.converter_identity,
-            "bybit-public-archive-spot-tick-trades-to-canonical-trades.v1"
+            "csv-native-trades-to-canonical-trades.v1"
         );
         assert_eq!(c.converter_version, "1");
+        assert_eq!(c.converter_config_hash, "converterconfigabc");
         assert_eq!(c.conversion_manifest_hash, "conversionmanifestabc");
         assert_eq!(c.conversion_checkpoint_hash, "conversioncheckpointabc");
+        assert_eq!(c.catalog_metadata_hash, "metahashabc");
+        assert_eq!(
+            c.artifact_uris.catalog_metadata_uri,
+            "s3://.../catalog-metadata.json"
+        );
 
         let json = serde_json::to_value(&c).expect("serialize");
         for field in [
@@ -449,8 +466,10 @@ features = ["streaming", "examples"]
             "accepted_object_sha256",
             "converter_identity",
             "converter_version",
+            "converter_config_hash",
             "conversion_manifest_hash",
             "conversion_checkpoint_hash",
+            "catalog_metadata_hash",
         ] {
             assert!(
                 json.get(field).is_some(),

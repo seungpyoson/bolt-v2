@@ -23,10 +23,12 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    canonical_trades::{CanonicalInstrumentIdentity, TRANSFORM_IDENTITY},
+    canonical_trades::{
+        CanonicalInstrumentIdentity, ConverterConfig, require_registered_trade_converter,
+    },
     catalog_projection::SpotInstrumentSpec,
     conversion_boundary::{
-        ConversionCheckpoint, ConversionFingerprint, ConversionOutputState,
+        CATALOG_METADATA_FILE, ConversionCheckpoint, ConversionFingerprint, ConversionOutputState,
         inspect_conversion_output, write_completed_conversion_artifacts,
         write_conversion_checkpoint,
     },
@@ -64,14 +66,6 @@ pub struct RunSpec {
     pub identity: CanonicalInstrumentIdentity,
     pub converter: ConverterConfig,
     pub manifest: BacktestingRunManifest,
-}
-
-/// Converter identity configured with the run, then checked against the
-/// compiled converter before any converted output can be reused.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ConverterConfig {
-    pub identity: String,
-    pub version: String,
 }
 
 /// Artifacts produced by an operator run.
@@ -132,6 +126,7 @@ fn portable_artifact_uris(manifest: &BacktestingRunManifest) -> ResultArtifactUr
             CANONICAL_ARTIFACT_FILE,
         ),
         nt_catalog_uri: portable_artifact_uri(&manifest.output_prefix, CATALOG_DIR),
+        catalog_metadata_uri: portable_artifact_uri(&manifest.output_prefix, CATALOG_METADATA_FILE),
         result_contract_uri: portable_artifact_uri(&manifest.output_prefix, RESULT_CONTRACT_FILE),
     }
 }
@@ -142,14 +137,10 @@ fn redact_operator_contract(output: &mut BacktestRunOutput) {
 
 fn validate_converter_config(converter: &ConverterConfig) -> Result<()> {
     ensure!(
-        converter.identity == TRANSFORM_IDENTITY,
-        "run-spec converter.identity {:?} does not match compiled converter {TRANSFORM_IDENTITY:?}",
-        converter.identity
-    );
-    ensure!(
         !converter.version.trim().is_empty(),
         "run-spec converter.version must not be empty"
     );
+    require_registered_trade_converter(&converter.identity, &converter.version)?;
     Ok(())
 }
 
@@ -205,6 +196,10 @@ pub fn run_from_run_spec(
         accepted_object_sha256: accepted.accepted_object_sha256.clone(),
         converter_identity: spec.converter.identity.clone(),
         converter_version: spec.converter.version.clone(),
+        converter_config_hash: spec
+            .converter
+            .content_hash()
+            .context("hash converter config")?,
     };
     match inspect_conversion_output(output_dir, &conversion_fingerprint)? {
         ConversionOutputState::CleanNew
@@ -265,8 +260,7 @@ pub fn run_from_run_spec(
         capture_time_nanos: rfc3339_to_nanos(&spec.capture_time_utc)?,
         manifest: &manifest,
         contract_manifest_hash: &contract_manifest_hash,
-        converter_identity: &spec.converter.identity,
-        converter_version: &spec.converter.version,
+        converter: &spec.converter,
         canonical_artifact_path: &canonical_path,
         catalog_root: &catalog_root,
         created_at: &spec.created_at_utc,
@@ -464,6 +458,9 @@ mod tests {
     const COMMITTED_RESULT_CONTRACT: &str = include_str!(
         "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-result-contract.bnbusdc-2026-03-01.json"
     );
+    const COMMITTED_CATALOG_METADATA: &str = include_str!(
+        "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-catalog-metadata.bnbusdc-2026-03-01.json"
+    );
     const COMMITTED_ACCEPTED_PROOF: &str = include_str!(
         "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.bnbusdc-2026-03-01.json"
     );
@@ -475,6 +472,9 @@ mod tests {
         1,1772323201665,617.2,0.3,buy,0\n\
         2,1772323312219,617.9,0.1456,sell,0\n\
         3,1772323312236,617,0.1544,sell,0\n";
+    const ALT_SCHEMA_CSV: &str = "trade_id,ts_ms,px,qty,taker_side,ignored\n\
+        a1,1772323201665,617.2,0.3,B,0\n\
+        a2,1772323312219,617.9,0.1456,S,0\n";
 
     fn gzip(text: &str) -> Vec<u8> {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
@@ -534,6 +534,7 @@ mod tests {
             &parsed.artifact_uris.source_proof_uri,
             &parsed.artifact_uris.canonical_table_uri,
             &parsed.artifact_uris.nt_catalog_uri,
+            &parsed.artifact_uris.catalog_metadata_uri,
             &parsed.artifact_uris.result_contract_uri,
         ] {
             assert!(
@@ -588,9 +589,19 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&checkpoint_path).unwrap()).unwrap();
         let metadata: ConversionCatalogMetadata =
             serde_json::from_str(&fs::read_to_string(&metadata_path).unwrap()).unwrap();
+        let converter_config_hash = spec.converter.content_hash().unwrap();
         let manifest_hash = manifest.content_hash().unwrap();
         let checkpoint_hash = checkpoint.content_hash().unwrap();
+        let metadata_hash = metadata.content_hash().unwrap();
 
+        assert_eq!(
+            manifest.fingerprint.converter_config_hash,
+            converter_config_hash
+        );
+        assert_eq!(
+            checkpoint.fingerprint.converter_config_hash,
+            converter_config_hash
+        );
         assert_eq!(metadata.manifest_hash, manifest_hash);
         assert_eq!(metadata.checkpoint_hash, checkpoint_hash);
         assert_eq!(
@@ -624,6 +635,22 @@ mod tests {
         assert_eq!(
             artifacts.output.contract.conversion_checkpoint_hash,
             checkpoint_hash
+        );
+        assert_eq!(
+            artifacts.output.contract.converter_config_hash,
+            converter_config_hash
+        );
+        assert_eq!(
+            artifacts.output.contract.catalog_metadata_hash,
+            metadata_hash
+        );
+        assert_eq!(
+            artifacts.output.contract.artifact_uris.catalog_metadata_uri,
+            format!(
+                "{}/{}",
+                spec.manifest.output_prefix.trim_end_matches('/'),
+                CATALOG_METADATA_FILE
+            )
         );
     }
 
@@ -739,6 +766,51 @@ mod tests {
     }
 
     #[test]
+    fn run_from_run_spec_rejects_unregistered_converter_version() {
+        let gz = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&gz);
+        spec.converter.version = "2".to_string();
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let err = run_from_run_spec(&spec, &gz, dir.path())
+            .err()
+            .expect("unregistered converter version must be rejected");
+
+        assert!(err.to_string().contains("registered converter"), "{err}");
+    }
+
+    #[test]
+    fn run_from_run_spec_uses_configured_csv_trade_mapping() {
+        let gz = gzip(ALT_SCHEMA_CSV);
+        let mut spec = run_spec_for(&gz);
+        spec.accepted_object.schema_columns =
+            ["trade_id", "ts_ms", "px", "qty", "taker_side", "ignored"]
+                .map(str::to_string)
+                .to_vec();
+        spec.converter.csv.trade_id_column = "trade_id".to_string();
+        spec.converter.csv.timestamp_column = "ts_ms".to_string();
+        spec.converter.csv.price_column = "px".to_string();
+        spec.converter.csv.size_column = "qty".to_string();
+        spec.converter.csv.side_column = "taker_side".to_string();
+        spec.converter.csv.buyer_side_values = vec!["B".to_string()];
+        spec.converter.csv.seller_side_values = vec!["S".to_string()];
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let artifacts = run_from_run_spec(&spec, &gz, dir.path()).expect("operator run");
+
+        assert_eq!(artifacts.output.canonical_table.rows.len(), 2);
+        assert_eq!(artifacts.output.canonical_table.rows[0].trade_id, "a1");
+        assert_eq!(
+            artifacts.output.canonical_table.rows[0].aggressor_side,
+            "BUYER"
+        );
+        assert_eq!(
+            artifacts.output.canonical_table.rows[1].aggressor_side,
+            "SELLER"
+        );
+    }
+
+    #[test]
     fn committed_run_spec_source_binding_exists_in_registry() {
         let spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
         let registry = toml::from_str::<toml::Table>(COMMITTED_SOURCE_BINDINGS)
@@ -775,6 +847,7 @@ mod tests {
             &contract.artifact_uris.source_proof_uri,
             &contract.artifact_uris.canonical_table_uri,
             &contract.artifact_uris.nt_catalog_uri,
+            &contract.artifact_uris.catalog_metadata_uri,
             &contract.artifact_uris.result_contract_uri,
         ] {
             assert!(!uri.starts_with("/private/tmp/"), "{uri}");
@@ -782,6 +855,26 @@ mod tests {
         assert!(contract.claim_limits.iter().any(|limit| {
             limit.contains("operator-attested") && limit.contains("not reproduced in CI")
         }));
+    }
+
+    #[test]
+    fn committed_result_contract_binds_catalog_metadata() {
+        let contract: BacktestResultContract =
+            serde_json::from_str(COMMITTED_RESULT_CONTRACT).expect("result contract parses");
+        let metadata: ConversionCatalogMetadata =
+            serde_json::from_str(COMMITTED_CATALOG_METADATA).expect("catalog metadata parses");
+        assert_eq!(
+            contract.catalog_metadata_hash,
+            metadata.content_hash().unwrap()
+        );
+        assert_eq!(
+            contract.artifact_uris.catalog_metadata_uri,
+            "reference://backtesting-vertical-slice/bnbusdc-2026-03-01/catalog-metadata.json"
+        );
+        assert!(
+            !metadata.direct_s3_catalog_access_proven,
+            "reference artifact must not claim direct S3 execution"
+        );
     }
 
     #[test]

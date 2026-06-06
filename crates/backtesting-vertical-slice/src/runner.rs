@@ -22,9 +22,8 @@ use rust_decimal::Decimal;
 
 use super::{
     canonical_trades::{
-        CanonicalInstrumentIdentity, CanonicalTradeRow, CanonicalTradesTable,
-        NORMALIZED_SCHEMA_VERSION, TRANSFORM_IDENTITY, TradeAggressorSide,
-        normalize_bybit_spot_tick_trades,
+        CanonicalInstrumentIdentity, CanonicalTradeRow, CanonicalTradesTable, ConverterConfig,
+        TradeAggressorSide, normalize_registered_trade_converter,
     },
     catalog_projection::{
         CatalogProjection, SpotInstrumentSpec, project_canonical_trades_to_catalog,
@@ -55,8 +54,7 @@ pub struct BacktestRunInputs<'a> {
     pub capture_time_nanos: i64,
     pub manifest: &'a BacktestingRunManifest,
     pub contract_manifest_hash: &'a str,
-    pub converter_identity: &'a str,
-    pub converter_version: &'a str,
+    pub converter: &'a ConverterConfig,
     /// Local path for the canonical normalized Parquet artifact.
     pub canonical_artifact_path: &'a Path,
     /// Local catalog projection root.
@@ -132,12 +130,7 @@ fn add_manifest_strategy(
 /// result-contract construction.
 pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> {
     ensure!(
-        inputs.converter_identity == TRANSFORM_IDENTITY,
-        "converter_identity {:?} does not match compiled converter {TRANSFORM_IDENTITY:?}",
-        inputs.converter_identity
-    );
-    ensure!(
-        !inputs.converter_version.trim().is_empty(),
+        !inputs.converter.version.trim().is_empty(),
         "converter_version must not be empty"
     );
     ensure!(
@@ -146,7 +139,8 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     );
 
     // Gate 2: canonical normalization + canonical artifact.
-    let canonical_table = normalize_bybit_spot_tick_trades(
+    let canonical_table = normalize_registered_trade_converter(
+        inputs.converter,
         inputs.accepted,
         inputs.identity,
         inputs.csv_text,
@@ -252,8 +246,12 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         source_proof_id: inputs.accepted.source_proof_id.clone(),
         source_proof_version: inputs.accepted.source_proof_version,
         accepted_object_sha256: inputs.accepted.accepted_object_sha256.clone(),
-        converter_identity: inputs.converter_identity.to_string(),
-        converter_version: inputs.converter_version.to_string(),
+        converter_identity: inputs.converter.identity.clone(),
+        converter_version: inputs.converter.version.clone(),
+        converter_config_hash: inputs
+            .converter
+            .content_hash()
+            .context("hash converter config")?,
     };
     let conversion_checkpoint = ConversionCheckpoint::completed(
         conversion_fingerprint.clone(),
@@ -266,7 +264,7 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         .context("hash conversion checkpoint")?;
     let conversion_manifest = ConversionManifest::completed(
         conversion_fingerprint,
-        NORMALIZED_SCHEMA_VERSION,
+        canonical_table.schema_version.clone(),
         projection.data_type.clone(),
         projection.nt_instrument_id.clone(),
         canonical_table.rows.len(),
@@ -287,6 +285,9 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         execution_catalog_uri(inputs.manifest),
         direct_s3_catalog_access_proven(inputs.manifest),
     );
+    let conversion_catalog_metadata_hash = conversion_catalog_metadata
+        .content_hash()
+        .context("hash catalog metadata")?;
 
     // Gate 6: objective result contract.
     let mut warnings = Vec::new();
@@ -310,9 +311,11 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         accepted_object_sha256: &inputs.accepted.accepted_object_sha256,
         converter_identity: &conversion_manifest.fingerprint.converter_identity,
         converter_version: &conversion_manifest.fingerprint.converter_version,
+        converter_config_hash: &conversion_manifest.fingerprint.converter_config_hash,
         conversion_manifest_hash: &conversion_manifest_hash,
         conversion_checkpoint_hash: &conversion_checkpoint_hash,
         catalog_hash: &projection.catalog_hash,
+        catalog_metadata_hash: &conversion_catalog_metadata_hash,
         strategy: &inputs.manifest.strategy,
         run_purpose: run_purpose_label(inputs.manifest),
         market_structure_fixture: market_structure_label(inputs.manifest),

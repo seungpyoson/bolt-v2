@@ -9,9 +9,9 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - accepted source proof -> canonical trade table -> NT `ParquetDataCatalog` projection -> NT `BacktestNode` run -> objective result contract
 - dirty or mismatched converted outputs are rejected before catalog cleanup
 - completed conversion writes durable `conversion-checkpoint.json`, `conversion-manifest.json`, and `catalog-metadata.json`
-- result contracts bind the source object, converter identity, conversion manifest hash, conversion checkpoint hash, and catalog hash
+- result contracts bind the source object, converter identity, converter config hash, conversion manifest hash, conversion checkpoint hash, catalog metadata hash, and catalog hash
 - result contract `manifest_hash` binds the submitted portable run-spec manifest, not the operator's temporary local catalog path
-- converter identity/version are declared in the run-spec TOML and validated against the compiled converter before any converted output is reused
+- converter identity/version and CSV native-trade column mapping are declared in the run-spec TOML; the operator validates identity/version against the registered converter and binds the converter config hash before any converted output is reused
 - catalog metadata records both the portable output catalog URI and the actual execution catalog URI, plus whether direct S3 catalog access was proven
 - primitive NT `BacktestVenueConfig` controls are declared in TOML and mapped into NT rather than hidden behind NT defaults
 - NT `BacktestDataConfig` catalog filesystem protocol and storage options are declared in TOML and mapped into NT, so S3/cloud catalog consumption can use NT's own catalog path
@@ -24,7 +24,7 @@ No-go for broader production claims:
 - the user confirmed converted artifacts were intentionally deleted during this investigation, so the empty prefix is expected current state, not accepted output evidence
 - no real S3 write has been performed through `--publish-output` in this branch without explicit operator approval
 - current operator runs still stamp `direct_s3_catalog_access_proven = false` because `BacktestNode` consumes the verified local projection root before optional publish
-- only the BNBUSDC 2026-03-01 trade-replay object is proven in this slice
+- only the BNBUSDC 2026-03-01 trade-replay object is proven in this slice; Bybit is a sample source/proof, not a production converter special case
 - complex NT model surfaces are not yet manifest-configurable: leverage maps, margin model, simulation modules, fill model, latency model, fee model, and settlement prices
 - artifact-root publish storage options are not yet TOML-modeled; `publish_output_artifacts` currently opens the output prefix with NT/object-store defaults
 - no execution-quality, queue-position, order-book-liquidity, multi-day, or multi-instrument claim is supported by this slice
@@ -35,11 +35,11 @@ No-go for broader production claims:
 - S3 listing result for that object: one object, `8505` bytes
 - Accepted source proof is committed at `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.bnbusdc-2026-03-01.json`
 - Run spec binds the same object, hash, output prefix, and trade-replay claim limits in `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml`
-- Run spec also binds `[converter] identity = "bybit-public-archive-spot-tick-trades-to-canonical-trades.v1"` and `version = "1"`
+- Run spec binds `[converter] identity = "csv-native-trades-to-canonical-trades.v1"`, `version = "1"`, and `[converter.csv]` column/timestamp/side-token mapping. The Bybit-specific values live in the sample source proof and run-spec data, not in operator/runner control flow.
 - Clean NT output prefix is empty as of this investigation: `aws s3 ls s3://bolt-parquet/nt-research-analytics/ --summarize --recursive` returned `Total Objects: 0`, `Total Size: 0`
 - Converted artifacts were intentionally deleted by the user to avoid confusing stale partial outputs with accepted clean outputs
 - Local rebuilt-binary run against the accepted raw object wrote `/tmp/bte-real-e2e.RcFHhT/out` and produced `937` canonical rows, `937` NT catalog read-back trade ticks, NT `BacktestNode` iterations `937`, and catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`
-- Local rerun into the same output directory kept the conversion manifest hash `b515ed12658f816e280b6f98d6a2fec52d1b28a6ff567ca4400196ac3c760272`, conversion checkpoint hash `0931a7a524219ddff66b6bde5dfaacc4eb884d7ae4555a557f48df037b7c0804`, catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`, and row count `937`
+- Local generic-converter CLI proof into `/private/tmp/bte-s3-proof/out-local-generic-converter` produced converter config hash `4e54ce1edbdab877a776cb5d38ede603a747da49c0355f80b2f3665905333080`, conversion manifest hash `7d6d48376c026174bb84830dc6058e4eddecf9e3632344431413a4b2b3ca8352`, conversion checkpoint hash `60429ebd758ec1b0383dbedd0d0e38997a0bc90f33f2dc2ba2bf5bf6b1bd5842`, catalog metadata hash `3b9ee2bd6980de74aa30b677a408f073d5f68ff6aaf81a338425a2924709e587`, catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`, row count `937`, and NT iterations `937`
 - Fresh release-binary local CLI run against the accepted raw object wrote `/tmp/bte-real-cli.sDvExP/out-local` and produced `937` canonical rows, `937` NT catalog read-back trade ticks, NT `BacktestNode` iterations `937`, and catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`
 - Fresh release-binary `--publish-output` run against the accepted raw object and a local `file://` output prefix published 8 artifacts; `diff -qr /tmp/bte-real-cli.sDvExP/out-publish /tmp/bte-real-cli.sDvExP/publish-root/backtests/backtesting-vertical-slice-bnbusdc-2026-03-01` returned no differences
 
@@ -49,6 +49,7 @@ No-go for broader production claims:
 | --- | --- | --- | --- |
 | Instrument model | `CurrencyPair::new_checked`, `Price`, `Quantity`, `Money`, `InstrumentId`, `Symbol` | `catalog_projection.rs` builds the NT instrument from accepted instrument metadata, using checked constructors and NT precision | Uses NT |
 | Market data model | `TradeTick` | canonical trade rows are converted into NT `TradeTick` values | Uses NT |
+| Raw source -> canonical trades | NT does not parse this project's accepted raw archive/proof contract into project canonical rows | Bolt owns a generic `csv-native-trades-to-canonical-trades.v1` adapter driven by `[converter.csv]` TOML column, timestamp-unit, and side-token mapping; source/venue values remain in source proof and run-spec data | Correct Bolt-owned adapter; no operator/runner venue hardcode |
 | Catalog writer | `ParquetDataCatalog::write_instruments`, `write_to_parquet` | catalog projection writes instrument and trade ticks through NT | Uses NT |
 | Catalog reader | `ParquetDataCatalog::query_typed_data` / typed query path | read-back proof loads NT `TradeTick`s and compares against accepted rows | Uses NT |
 | Backtest execution | `BacktestNode` + `BacktestRunConfig` | runner builds an NT run config, builds the node, injects the manifest strategy, and runs NT | Uses NT |
@@ -65,15 +66,24 @@ Conclusion: we are not building a custom backtest engine, fill simulator, catalo
 Added `crates/backtesting-vertical-slice/src/conversion_boundary.rs`:
 
 - `inspect_conversion_output` rejects non-empty output with no validated checkpoint
-- mismatched source proof, object hash, converter identity, or converter version is rejected
+- mismatched source proof, object hash, converter identity, converter version, or converter config hash is rejected
 - partial output with a valid non-completed checkpoint is resumable
 - completed output requires manifest, checkpoint, and catalog metadata
 - completed output returns stable conversion manifest, checkpoint, and catalog hashes
 
+Updated `canonical_trades.rs`:
+
+- replaces the venue-specific production converter identity with `csv-native-trades-to-canonical-trades.v1`
+- moves raw CSV column names, timestamp unit, and side token mapping into `[converter.csv]` TOML
+- validates converter identity/version through a registered converter list before conversion
+- normalizes accepted native-trade CSV rows by resolving configured column names from the accepted schema, so adding another compatible venue/source family does not touch operator, runner, result contract, catalog projection, or NT execution code
+- content-hashes the full converter config so mapping changes are provenance-bound
+
 Updated `operator.rs`:
 
-- reads converter identity/version from the run spec and validates them before touching output
+- reads converter identity/version and CSV mapping from the run spec and validates the registered converter before touching output
 - computes the expected conversion fingerprint before output cleanup
+- includes converter config hash in the expected conversion fingerprint
 - computes the contract-bound run manifest hash before overriding the execution catalog path to the local projection root
 - inspects the output directory before deleting any local NT catalog
 - writes a started checkpoint before conversion
@@ -84,7 +94,7 @@ Updated `operator.rs`:
 Updated `runner.rs` and `result_contract.rs`:
 
 - builds conversion checkpoint, manifest, and catalog metadata from the accepted dataset and projected NT catalog
-- adds `converter_identity`, `converter_version`, `conversion_manifest_hash`, and `conversion_checkpoint_hash` to the result contract
+- adds `converter_identity`, `converter_version`, `converter_config_hash`, `conversion_manifest_hash`, `conversion_checkpoint_hash`, `catalog_metadata_hash`, and `catalog_metadata_uri` to the result contract
 - accepts an explicit `contract_manifest_hash` so operator runs can bind the portable submitted manifest while still letting NT consume the resolved local catalog path
 - writes catalog metadata with `output_catalog_uri`, `execution_catalog_uri`, and `direct_s3_catalog_access_proven`; the current operator-localized path records the local execution URI and `false`
 - validates those fields as required
@@ -103,8 +113,9 @@ Updated `run_manifest.rs`:
 
 Updated committed reference artifact:
 
-- `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-result-contract.bnbusdc-2026-03-01.json` now includes converter identity/version and conversion artifact hashes
-- `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml` now declares primitive NT venue controls and catalog filesystem fields explicitly
+- `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-result-contract.bnbusdc-2026-03-01.json` now includes generic converter identity/version, converter config hash, conversion artifact hashes, and catalog metadata binding
+- `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-catalog-metadata.bnbusdc-2026-03-01.json` records the portable reference metadata and explicitly does not claim direct S3 catalog execution
+- `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml` now declares primitive NT venue controls, catalog filesystem fields, and `[converter.csv]` mapping explicitly
 
 Updated CLI:
 
@@ -123,6 +134,10 @@ RED checks observed before implementation:
 - `just bte-test run_from_run_spec_contract_manifest_hash_is_portable_run_spec_hash` failed because the contract bound the mutated local execution manifest hash `6004a1fc1860ea65a0fdb887efe85a9efef428fe04d157fc5865b06072c8efa7` instead of the portable submitted run-spec manifest hash `921685dd70be98e8a5744b0eda33f9d91303999ab9098d89963a1e3747cd0dd5`
 - `just bte-test rejects_shadowed_catalog_storage_options_before_nt_config rejects_unknown_s3_catalog_rust_storage_option_before_nt_config` failed because `to_nt_data_config()` accepted mixed storage option maps and an S3 option key that NT ignores
 - `just bte-test clean_new_output_writes_manifest_checkpoint_and_catalog_metadata run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them` failed with missing `ConversionCatalogMetadata.execution_catalog_uri` and `direct_s3_catalog_access_proven` fields
+- `just bte-test run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them` failed with missing `catalog_metadata_hash`, `catalog_metadata_uri`, and `ConversionCatalogMetadata::content_hash`
+- `just bte-test run_from_run_spec_rejects_unregistered_converter_version` failed because converter version `2` still executed the v1 adapter
+- `just bte-test run_from_run_spec_uses_configured_csv_trade_mapping` failed with missing `ConverterConfig.csv`, proving raw CSV column mapping was not yet config-owned
+- `just bte-test run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them` failed with missing `converter_config_hash` on converter config, conversion fingerprint, and result contract
 
 GREEN checks after implementation:
 
@@ -138,10 +153,16 @@ GREEN checks after implementation:
 - `just bte-test run_from_run_spec_contract_manifest_hash_is_portable_run_spec_hash`: 1 passed
 - `just bte-test data_config_maps_catalog_cloud_options rejects_shadowed_catalog_storage_options_before_nt_config rejects_unknown_s3_catalog_rust_storage_option_before_nt_config`: 3 passed
 - `just bte-test clean_new_output_writes_manifest_checkpoint_and_catalog_metadata run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them`: 2 passed
+- `just bte-test run_from_run_spec_uses_configured_csv_trade_mapping run_from_run_spec_rejects_unregistered_converter_version`: 2 passed
+- `just bte-test run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them`: 1 passed after binding converter config hash and catalog metadata hash
+- `just bte-test run_from_run_spec_uses_configured_csv_trade_mapping run_from_run_spec_rejects_unregistered_converter_version run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them committed_result_contract_deserializes committed_result_contract_binds_catalog_metadata accepted_data_flows_through_to_objective_result_contract`: 6 passed
 - `just bte-fmt-check`: passed
-- `just bte-test`: 161 passed, including 2 slow public API tests
+- `just bte-test`: 164 passed, including 2 slow public API tests
 - `just bte-clippy`: passed
 - `just bte-build`: passed
+- `just source-fence`: passed
+- `git diff --check`: passed
+- static `bybit|BYBIT|BNBUSDC|bybit-public` scan: remaining `src/` hits are below `#[cfg(test)]`; live operator/runner/converter code has no Bybit branch
 - rebuilt binary local accepted-object run: exit 0, `937` canonical rows, `937` NT read-back ticks, `937` NT iterations, stable catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`
 - rebuilt binary local `--publish-output` run to a `file://` prefix: exit 0, 8 published artifacts, published tree matched local output tree byte-for-byte
 
@@ -150,7 +171,7 @@ GREEN checks after implementation:
 | Unknown | Why it matters | Solution path |
 | --- | --- | --- |
 | Clean production output proof under `nt-research-analytics/` | The prefix is empty, so there is no S3 proof of a clean catalog/result path | run the accepted BNBUSDC object through the operator into the configured prefix, upload checkpoint/manifest/metadata/catalog/contract, then verify S3 listing and hashes |
-| Broader source proof coverage | This slice proves one Bybit spot trade-replay object only | accept additional source proofs and bind each to converter identity, object hash, output prefix, and result contract |
+| Broader source proof coverage | This slice proves one Bybit spot trade-replay object only, as a sample source | accept additional source proofs; for compatible CSV native-trade sources, add proof/run-spec `[converter.csv]` mapping without changing operator/runner/NT code; for non-CSV or non-trade data, add a new registered adapter and bind its converter config hash |
 | Complex NT venue model policy | Primitive controls are now explicit, but leverage maps, margin model, simulation modules, fill model, latency model, fee model, and settlement prices are not yet manifest-configurable | add typed manifest sections for each NT model surface we intend to support; for each unsupported model, fail validation with an explicit unsupported-surface error rather than silently relying on hidden defaults |
 | Direct S3 catalog execution proof | Local operator path overrides catalog path to a local output root before running NT; metadata now exposes this by recording the local execution URI and `direct_s3_catalog_access_proven = false` | run `--publish-output` with operator approval, verify the S3 artifact hashes, then run an explicit S3-backed catalog-consumption proof using NT `BacktestDataConfig` cloud fields and a single effective Rust storage option map; only that path can stamp `direct_s3_catalog_access_proven = true` |
 | Artifact-root publish storage options | `publish_output_artifacts` opens `manifest.output_prefix` with NT/object-store defaults, not a TOML-modeled artifact-store option set | add a TOML-owned artifact store option section or prove defaults are sufficient for `s3://bolt-parquet/nt-research-analytics/`; do not rely on hidden fallback silently |
@@ -227,6 +248,9 @@ No-repeat controls before any future broad backfill or BTE conversion:
 10. For this BTE branch, do not run a broad historical backfill. The only
     admissible next runtime proof is the single accepted BNBUSDC object unless
     a separate source proof and bounded plan are accepted first.
+11. Adding a compatible native-trade CSV source must mean adding source proof
+    plus `[converter.csv]` mapping, not adding venue branches to operator,
+    runner, result contract, catalog projection, or NT execution code.
 
 
 ## Recommendation

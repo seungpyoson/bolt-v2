@@ -13,9 +13,9 @@ fn fingerprint() -> ConversionFingerprint {
         source_proof_version: 1,
         accepted_object_sha256: "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598"
             .to_string(),
-        converter_identity: "bybit-public-archive-spot-tick-trades-to-canonical-trades.v1"
-            .to_string(),
+        converter_identity: "csv-native-trades-to-canonical-trades.v1".to_string(),
         converter_version: "1".to_string(),
+        converter_config_hash: "converterconfigabc".to_string(),
     }
 }
 

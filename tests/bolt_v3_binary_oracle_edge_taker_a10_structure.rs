@@ -1,7 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 const EXPECTED_SPLIT_TEST_COUNT: usize = 238;
-const EXPECTED_TEST_MODULES: &[&str] = &[
+const EXPECTED_DECLARED_MODULES: &[&str] = &[
+    "shared_fixture",
     "book_sizing",
     "config",
     "core_glue",
@@ -26,6 +30,10 @@ const EXPECTED_TEST_FILES: &[&str] = &[
     "trade_flow.rs",
 ];
 
+fn expected_set(values: &[&str]) -> BTreeSet<String> {
+    values.iter().map(|value| (*value).to_owned()).collect()
+}
+
 fn repo_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
@@ -38,6 +46,30 @@ fn count_test_functions(source: &str) -> usize {
             trimmed == "#[test]" || trimmed.starts_with("#[tokio::test")
         })
         .count()
+}
+
+fn declared_modules(source: &str) -> BTreeSet<String> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let module = line.trim().strip_prefix("mod ")?;
+            Some(module.strip_suffix(';')?.to_owned())
+        })
+        .collect()
+}
+
+fn rust_files(root: &Path) -> BTreeSet<String> {
+    std::fs::read_dir(root)
+        .unwrap_or_else(|error| panic!("split test root {} should read: {error}", root.display()))
+        .map(|entry| entry.expect("split test root entries should read"))
+        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("rs"))
+        .map(|entry| {
+            entry
+                .file_name()
+                .into_string()
+                .expect("split test file names should be UTF-8")
+        })
+        .collect()
 }
 
 #[test]
@@ -63,12 +95,16 @@ fn binary_oracle_edge_taker_tests_are_split_by_a10_ownership() {
     let tests_root = strategy_root.join("tests");
     let tests_mod = std::fs::read_to_string(tests_root.join("mod.rs"))
         .expect("split test harness module should be readable");
-    for module in EXPECTED_TEST_MODULES {
-        assert!(
-            tests_mod.contains(&format!("mod {module};")),
-            "tests/mod.rs must declare ownership module `{module}`"
-        );
-    }
+    assert_eq!(
+        declared_modules(&tests_mod),
+        expected_set(EXPECTED_DECLARED_MODULES),
+        "tests/mod.rs must declare exactly the A10 split modules"
+    );
+    assert_eq!(
+        rust_files(&tests_root),
+        expected_set(EXPECTED_TEST_FILES),
+        "A10 split test root must contain exactly the expected .rs files"
+    );
 
     let mut split_test_count = 0;
     for file in EXPECTED_TEST_FILES {

@@ -344,9 +344,9 @@ pub fn module_source_set_text(
 ///   file sorted after the marker-owning file (`selection.rs` after `mod.rs`)
 ///   and silently shrink the production surface. Splitting per file keeps every
 ///   submodule's production code in scope while still excluding each file's own
-///   test module. A future test-ONLY submodule file (whose entire content is a
-///   test module) would be a separate concern; today no gated directory contains
-///   one, and any such file would be split at its own marker like the rest.
+///   test module. A test-only split file that starts with `#![cfg(test)]`
+///   contributes empty production text, which keeps ownership-bucket test files
+///   out of source-integrity and runtime-literal production scans.
 pub fn production_module_source_text(root: &Path, max_bytes: u64) -> io::Result<String> {
     let file_type = source_root_file_type(root)?;
     if file_type.is_file() {

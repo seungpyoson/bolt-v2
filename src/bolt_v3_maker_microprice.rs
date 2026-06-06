@@ -79,11 +79,14 @@ pub fn book_imbalance(bid_size: f64, ask_size: f64) -> Option<f64> {
 ///   corrupt, never a price to lean on;
 /// - the total touched size is zero — no weights, so the weighted price is
 ///   undefined;
-/// - the size arithmetic overflows to a non-finite total or weighted result
-///   (absurd-but-finite sizes) — a degenerate book, not a price to quote.
+/// - the total touched size overflows to a non-finite value (absurd-but-finite
+///   sizes summing past the float range) — a degenerate book, not a price to
+///   quote.
 ///
 /// When it returns `Some`, the result is guaranteed to lie in `[best_bid,
-/// best_ask]` (benign float rounding is snapped back into the band).
+/// best_ask]`: the value is computed as an interpolation with a weight in
+/// `[0, 1]`, so it is in-band by construction and benign float rounding is
+/// snapped back into the band.
 pub fn micro_price(best_bid: f64, best_ask: f64, bid_size: f64, ask_size: f64) -> Option<f64> {
     if !best_bid.is_finite()
         || !best_ask.is_finite()
@@ -99,25 +102,27 @@ pub fn micro_price(best_bid: f64, best_ask: f64, bid_size: f64, ask_size: f64) -
     if best_bid > best_ask {
         return None;
     }
-    // Sizes are now non-negative finite, so `total` is non-negative; a zero
-    // total leaves the weighted price undefined (0/0).
+    // Sizes are now non-negative finite, so `total` is non-negative. A zero total
+    // leaves the weighted price undefined (0/0); an absurd-but-finite pair whose
+    // sum overflows past the float range is a degenerate book — fail closed.
     let total = bid_size + ask_size;
     if total <= ZERO_F64 || !total.is_finite() {
         return None;
     }
-    let micro = (best_ask * bid_size + best_bid * ask_size) / total;
-    // Overflow in the size arithmetic — a non-finite `total` (guarded above) or a
-    // weighted numerator overflowing to non-finite for absurd-but-finite sizes —
-    // is a degenerate book: fail closed rather than quote off it.
-    if !micro.is_finite() {
-        return None;
-    }
-    // The micro-price is a convex combination of the two touch prices, so its
-    // exact value lies in `[best_bid, best_ask]`. Float rounding in the weighted
-    // sum can still land the computed value up to ~1 ULP outside that band (e.g. a
-    // locked book, or an extreme size ratio on an inexact price). Snap it back so
-    // the documented postcondition holds exactly; this only ever corrects benign
-    // rounding (a real escape would be non-finite and is rejected above).
+    // Interpolate weight-first. The fraction of the way from the bid touch toward
+    // the ask touch is `bid_size / total` — more resting bid size leans the price
+    // toward the ask. The weight is in `[0, 1]` and well-conditioned because both
+    // operands share scale. Computing it BEFORE touching prices avoids the
+    // `price · size` products of the direct
+    // `(best_ask·bid_size + best_bid·ask_size) / total` form, whose terms can
+    // underflow (or overflow) asymmetrically and silently collapse the touch to a
+    // band edge for extreme size magnitudes.
+    let ask_weight = bid_size / total;
+    let micro = best_bid + (best_ask - best_bid) * ask_weight;
+    // `micro` lies in `[best_bid, best_ask]` by construction (weight in `[0, 1]`,
+    // bounded by `best_ask`), so it is always finite. Float rounding in the
+    // multiply/add can still land it up to ~1 ULP outside the band, so snap it back
+    // to honor the documented postcondition exactly.
     Some(micro.clamp(best_bid, best_ask))
 }
 
@@ -317,11 +322,24 @@ mod tests {
 
     #[test]
     fn micro_price_fails_closed_on_size_overflow() {
-        // Absurd-but-finite sizes whose sum overflows to a non-finite total must
-        // not let a degenerate value escape the [best_bid, best_ask] band.
+        // Absurd-but-finite sizes whose SUM overflows to a non-finite total leave
+        // the weights undefined — fail closed. This is the only overflow path: the
+        // weight-first interpolation forms no `price · size` product, so the touch
+        // math itself never overflows.
         assert!(micro_price(0.40, 0.60, f64::MAX, f64::MAX).is_none());
-        // Numerator overflow with a finite total likewise fails closed.
-        assert!(micro_price(f64::MAX, f64::MAX, f64::MAX, 1.0).is_none());
+    }
+
+    #[test]
+    fn micro_price_quotes_a_locked_book_at_the_largest_finite_price() {
+        // A locked book at the largest finite price is valid, and the weight-first
+        // form returns that price exactly. The direct
+        // `(best_ask·bid_size + best_bid·ask_size)/total` form overflows its
+        // numerator here (best_ask · bid_size = MAX · MAX = inf) and would
+        // spuriously fail closed; the robust form does not.
+        assert_eq!(
+            micro_price(f64::MAX, f64::MAX, f64::MAX, 1.0),
+            Some(f64::MAX)
+        );
     }
 
     #[test]
@@ -344,6 +362,25 @@ mod tests {
         assert!(
             (0.40..=0.60).contains(&m),
             "micro {m} must lie in [0.40, 0.60]"
+        );
+    }
+
+    #[test]
+    fn micro_price_stays_accurate_at_extreme_size_magnitudes() {
+        // Equal sizes => the micro-price is the exact midpoint of the touch,
+        // independent of the size magnitude. The naive
+        // `(best_ask·bid_size + best_bid·ask_size)/total` form loses this at
+        // subnormal sizes: each `price·size` product underflows to zero, so the
+        // quotient collapses to a band edge and the clamp would silently mask the
+        // gross error (in-band but wrong). The weight-first interpolation computes
+        // `bid_size/total` (well-conditioned in [0, 1]) before touching prices, so
+        // equal sizes still give the midpoint. Smallest positive subnormal sizes:
+        let tiny = f64::from_bits(1);
+        let m = micro_price(1e-300, 0.5, tiny, tiny).expect("finite, valid book");
+        let midpoint = (1e-300 + 0.5) / 2.0; // == 0.25 to full f64 precision
+        assert!(
+            (m - midpoint).abs() < 1e-9,
+            "equal sizes must give the midpoint {midpoint}, got {m}"
         );
     }
 

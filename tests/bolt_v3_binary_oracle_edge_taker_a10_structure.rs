@@ -77,7 +77,7 @@ fn binary_oracle_edge_taker_tests_are_split_by_a10_ownership() {
             panic!("split test file {} should read: {error}", path.display())
         });
         assert!(
-            source.starts_with("#![cfg(test)]\n"),
+            source.lines().next() == Some("#![cfg(test)]"),
             "split test file {} must be test-only for source/literal scanners",
             path.display()
         );

@@ -378,31 +378,46 @@ where
         .manifest
         .artifact_store_storage_options_resolved(resolver)
         .map_err(|error| anyhow::anyhow!("artifact-store options rejected: {error}"))?;
+    run_from_run_spec_and_publish_with_resolved_storage_options(
+        spec,
+        gz_bytes,
+        output_dir,
+        options,
+        storage_options.as_ref(),
+    )
+}
+
+pub fn run_from_run_spec_and_publish_with_resolved_storage_options(
+    spec: &RunSpec,
+    gz_bytes: &[u8],
+    output_dir: &Path,
+    options: PublishOptions,
+    storage_options: Option<&BTreeMap<String, String>>,
+) -> Result<PublishedRunArtifacts> {
     let mut run = run_from_run_spec(spec, gz_bytes, output_dir)?;
     let mut published_artifacts = if options.prove_published_catalog {
         publish_output_artifacts_with_storage_options_excluding(
             output_dir,
             &spec.manifest.output_prefix,
-            storage_options.as_ref(),
+            storage_options,
             &[CATALOG_METADATA_FILE, RESULT_CONTRACT_FILE],
         )?
     } else {
         publish_output_artifacts_with_storage_options(
             output_dir,
             &spec.manifest.output_prefix,
-            storage_options.as_ref(),
+            storage_options,
         )?
     };
     let published_catalog_proof = if options.prove_published_catalog {
-        let proof =
-            prove_published_catalog_consumption(spec, &run.output, storage_options.as_ref())
-                .context("published catalog proof failed")?;
+        let proof = prove_published_catalog_consumption(spec, &run.output, storage_options)
+            .context("published catalog proof failed")?;
         let updated_paths = write_published_catalog_proof(output_dir, &mut run, &proof)?;
         published_artifacts.extend(publish_selected_artifacts_with_storage_options(
             output_dir,
             &updated_paths,
             &spec.manifest.output_prefix,
-            storage_options.as_ref(),
+            storage_options,
         )?);
         Some(proof)
     } else {

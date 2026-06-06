@@ -31,6 +31,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - the accepted `proof_pin_reason_code` vocabulary now matches the plan/reference contract, including published-result reproduction and regression-comparison pins
 - the CLI has an explicit `--publish-output` opt-in that copies the verified local artifact tree to `manifest.output_prefix` through NT/object-store plumbing after the local run succeeds
 - published artifacts are create-only: the operator preflights the bounded target artifact set and writes through object-store `PutMode::Create`, so an existing published artifact rejects the run instead of being overwritten
+- publish flows resolve and validate artifact-store options before reading the accepted object, so missing S3/SSM setup cannot waste local object I/O on large accepted objects
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
 - the current `BacktestExtensionSurface` classification is recorded in `backtest-extension-surface-matrix.md`; supported primitive NT controls are TOML pass-throughs, Bolt-owned pieces are provenance/governance boundaries, and unmodeled NT model/system surfaces fail before NT config construction
 
@@ -239,7 +240,8 @@ GREEN checks after implementation:
 - `just bte-test accepts_all_configured_non_latest_proof_pin_reason_codes_from_toml`: 1 passed after adding the missing `published_result_reproduction` and `regression_comparison` enum variants
 - `just bte-test publish_output_artifacts_rejects_existing_published_artifact_without_overwrite`: RED failed because publish used default object-store overwrite semantics, then GREEN passed after bounded target preflight plus `PutMode::Create`
 - `just bte-test publish_output_artifacts_rejects_existing_published_artifact_without_overwrite run_from_run_spec_and_publish_can_prove_published_catalog_consumption`: 2 passed after proof-mode publish stopped publishing the metadata/contract artifacts before the proof updates them
-- `just bte-test`: 210 passed, including 2 slow public API tests
+- `just bte-test cli_publish_preflight_rejects_missing_s3_ssm_before_reading_object`: RED failed because the CLI had no injectable pre-object-read publish preflight seam, then GREEN passed after publish storage options were resolved before local object read
+- `just bte-test`: 211 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed
@@ -343,6 +345,12 @@ Confirmed root causes:
   target preflight and writes with object-store `PutMode::Create`; proof-mode
   publish withholds the metadata and result-contract files until the
   published-catalog proof updates them, avoiding intentional double-writes.
+- CLI publish preflight ordering mismatch: the operator rejected missing S3
+  artifact-store credentials before conversion/backtest, but the CLI read the
+  accepted object before reaching that operator preflight. For large accepted
+  objects, a missing SSM setup could still waste local object I/O. The CLI now
+  resolves publish storage options before reading the object and reuses the
+  resolved map for the publish/proof run.
 
 No-repeat controls before any future broad backfill or BTE conversion:
 
@@ -393,6 +401,8 @@ No-repeat controls before any future broad backfill or BTE conversion:
 18. Published artifacts must be create-only under the configured output prefix;
     an existing target object is dirty-prefix evidence and must reject the run
     instead of being overwritten.
+19. Publish-path artifact-store validation must happen before reading the local
+    accepted object, not merely before conversion/backtest.
 
 
 ## Recommendation

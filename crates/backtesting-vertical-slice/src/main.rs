@@ -20,7 +20,7 @@ use backtesting_vertical_slice::{
     artifact_store_secrets::{ArtifactStoreSecretResolver, ArtifactStoreSsmResolver},
     operator::{
         PublishOptions, PublishedArtifact, PublishedCatalogProof, RunSpec, run_from_run_spec,
-        run_from_run_spec_and_publish_with_options, run_from_run_spec_and_publish_with_resolver,
+        run_from_run_spec_and_publish_with_resolved_storage_options,
     },
 };
 
@@ -46,36 +46,73 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let mut object_reader =
+        |path: &Path, expected_bytes: u64| read_object_gz_checked(path, expected_bytes);
     let spec_text = fs::read_to_string(&cli.run_spec)
         .with_context(|| format!("read run-spec {}", cli.run_spec.display()))?;
     let spec: RunSpec = toml::from_str(&spec_text).context("parse run-spec TOML")?;
-    let gz_bytes = read_object_gz_checked(&cli.object_gz, spec.accepted_object.bytes)?;
+    if cli.publish_output && spec.manifest.artifact_store.ssm_parameters.is_some() {
+        let mut resolver = ArtifactStoreSsmResolver::new()?;
+        run_cli_with_spec_object_reader_and_resolver(&cli, spec, &mut object_reader, &mut resolver)
+    } else {
+        let mut resolver = |_region: &str, _path: &str| {
+            Err::<String, String>("artifact-store SSM resolver was not configured".to_string())
+        };
+        run_cli_with_spec_object_reader_and_resolver(&cli, spec, &mut object_reader, &mut resolver)
+    }
+}
+
+#[cfg(test)]
+fn run_cli_with_object_reader_and_resolver<F, R>(
+    cli: &Cli,
+    object_reader: &mut F,
+    resolver: &mut R,
+) -> Result<()>
+where
+    F: FnMut(&Path, u64) -> Result<Vec<u8>>,
+    R: ArtifactStoreSecretResolver,
+{
+    let spec_text = fs::read_to_string(&cli.run_spec)
+        .with_context(|| format!("read run-spec {}", cli.run_spec.display()))?;
+    let spec: RunSpec = toml::from_str(&spec_text).context("parse run-spec TOML")?;
+    run_cli_with_spec_object_reader_and_resolver(cli, spec, object_reader, resolver)
+}
+
+fn run_cli_with_spec_object_reader_and_resolver<F, R>(
+    cli: &Cli,
+    spec: RunSpec,
+    object_reader: &mut F,
+    resolver: &mut R,
+) -> Result<()>
+where
+    F: FnMut(&Path, u64) -> Result<Vec<u8>>,
+    R: ArtifactStoreSecretResolver,
+{
+    let publish_options = PublishOptions {
+        prove_published_catalog: cli.prove_published_catalog,
+    };
+    let resolved_publish_storage_options = if cli.publish_output {
+        let mut resolve_secret = |region: &str, path: &str| resolver.resolve_secret(region, path);
+        spec.manifest
+            .artifact_store_storage_options_resolved(&mut resolve_secret)
+            .map_err(|error| anyhow::anyhow!("artifact-store options rejected: {error}"))?
+    } else {
+        None
+    };
+    let gz_bytes = object_reader(&cli.object_gz, spec.accepted_object.bytes)?;
 
     let (artifacts, published_artifacts, published_catalog_proof): (
         _,
         Option<Vec<PublishedArtifact>>,
         Option<PublishedCatalogProof>,
     ) = if cli.publish_output {
-        let publish_options = PublishOptions {
-            prove_published_catalog: cli.prove_published_catalog,
-        };
-        let published = if spec.manifest.artifact_store.ssm_parameters.is_some() {
-            let mut resolver = ArtifactStoreSsmResolver::new()?;
-            run_from_run_spec_and_publish_with_resolver(
-                &spec,
-                &gz_bytes,
-                &cli.output_dir,
-                publish_options,
-                &mut |region, path| resolver.resolve_secret(region, path),
-            )?
-        } else {
-            run_from_run_spec_and_publish_with_options(
-                &spec,
-                &gz_bytes,
-                &cli.output_dir,
-                publish_options,
-            )?
-        };
+        let published = run_from_run_spec_and_publish_with_resolved_storage_options(
+            &spec,
+            &gz_bytes,
+            &cli.output_dir,
+            publish_options,
+            resolved_publish_storage_options.as_ref(),
+        )?;
         (
             published.run,
             Some(published.published_artifacts),
@@ -170,6 +207,10 @@ mod tests {
     use super::*;
     use clap::error::ErrorKind;
 
+    const COMMITTED_RUN_SPEC: &str = include_str!(
+        "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
+    );
+
     #[test]
     fn cli_publish_output_flag_is_explicit_opt_in() {
         let base_args = [
@@ -240,5 +281,37 @@ mod tests {
 
         assert!(err.to_string().contains("object byte length 23"), "{err}");
         assert!(err.to_string().contains("run-spec 99"), "{err}");
+    }
+
+    #[test]
+    fn cli_publish_preflight_rejects_missing_s3_ssm_before_reading_object() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let run_spec_path = dir.path().join("run.toml");
+        fs::write(&run_spec_path, COMMITTED_RUN_SPEC).unwrap();
+        let cli = Cli {
+            run_spec: run_spec_path,
+            object_gz: dir.path().join("missing-object.csv.gz"),
+            output_dir: dir.path().join("out"),
+            publish_output: true,
+            prove_published_catalog: true,
+        };
+        let mut object_reader_called = false;
+        let mut object_reader = |_path: &Path, _expected_bytes: u64| {
+            object_reader_called = true;
+            anyhow::bail!("object reader should not run before publish preflight")
+        };
+        let mut resolver = |_region: &str, _path: &str| Ok::<String, String>("unused".to_string());
+
+        let err = run_cli_with_object_reader_and_resolver(&cli, &mut object_reader, &mut resolver)
+            .expect_err("publish preflight must reject before object read");
+
+        assert!(
+            err.to_string().contains("artifact_store.ssm_parameters"),
+            "{err}"
+        );
+        assert!(
+            !object_reader_called,
+            "publish preflight must run before local object read"
+        );
     }
 }

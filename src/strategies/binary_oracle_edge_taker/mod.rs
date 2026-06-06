@@ -6709,6 +6709,35 @@ mod tests {
     }
 
     #[test]
+    fn parse_config_rejects_malformed_configured_instrument_ids() {
+        for (field, bad_value) in [
+            ("reference_instrument_id", "configured-reference-price"),
+            ("signal_instrument_id", "configured-signal-price"),
+            ("resolution_instrument_id", "configured-resolution-price"),
+        ] {
+            let mut raw = valid_raw_config();
+            let table = raw
+                .as_table_mut()
+                .expect("valid raw config should be a TOML table");
+            table.insert(field.to_string(), Value::String(bad_value.to_string()));
+            if field == "resolution_instrument_id" {
+                table.insert(
+                    "resolution_client_id".to_string(),
+                    Value::String("resolution_data_client".to_string()),
+                );
+            }
+
+            let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+                .expect_err("malformed configured instrument id must fail at parse-time");
+            let rendered = err.to_string();
+            assert!(
+                rendered.contains(field) && rendered.contains(bad_value),
+                "expected parse error to name `{field}` and `{bad_value}`, got: {rendered}"
+            );
+        }
+    }
+
+    #[test]
     fn runtime_config_parse_normalizes_order_fields_to_nt_enums() {
         let config = BinaryOracleEdgeTakerBuilder::parse_config(&valid_raw_config())
             .expect("valid raw config should parse into runtime config");
@@ -6782,6 +6811,43 @@ mod tests {
             }),
             "missing signal role should fail raw strategy validation: {errors:#?}"
         );
+    }
+
+    #[test]
+    fn validate_config_rejects_malformed_configured_instrument_ids() {
+        for (field, bad_value) in [
+            ("reference_instrument_id", "configured-reference-price"),
+            ("signal_instrument_id", "configured-signal-price"),
+            ("resolution_instrument_id", "configured-resolution-price"),
+        ] {
+            let mut raw = valid_raw_config();
+            let table = raw
+                .as_table_mut()
+                .expect("valid raw config should be a TOML table");
+            table.insert(field.to_string(), Value::String(bad_value.to_string()));
+            if field == "resolution_instrument_id" {
+                table.insert(
+                    "resolution_client_id".to_string(),
+                    Value::String("resolution_data_client".to_string()),
+                );
+            }
+
+            let mut errors = Vec::new();
+            BinaryOracleEdgeTakerBuilder::validate_config(
+                &raw,
+                "strategies[0].config",
+                &mut errors,
+            );
+
+            assert!(
+                errors.iter().any(|error| {
+                    error.field == format!("strategies[0].config.{field}")
+                        && error.code == "invalid_instrument_id"
+                        && error.message.contains(bad_value)
+                }),
+                "`{field}` must reject malformed configured instrument id `{bad_value}`: {errors:#?}"
+            );
+        }
     }
 
     #[test]

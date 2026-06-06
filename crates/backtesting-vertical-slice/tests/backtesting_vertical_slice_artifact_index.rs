@@ -1,6 +1,8 @@
 use backtesting_vertical_slice::artifact_index::{
-    ArtifactIndexLineageRef, ArtifactIndexRecord, ArtifactKind, ArtifactLifecycleConfig,
-    CommitState, LifecycleState, StorageProfile, WriteAuthority,
+    ArtifactIndexLatestPointer, ArtifactIndexLineageRef, ArtifactIndexObservedPointer,
+    ArtifactIndexPointerPrecondition, ArtifactIndexRecord, ArtifactIndexSnapshotManifest,
+    ArtifactKind, ArtifactLifecycleConfig, CommitState, LifecycleState, StorageProfile,
+    WriteAuthority, plan_latest_pointer_update, resolve_committed_snapshot,
 };
 
 fn sha256_a() -> String {
@@ -11,10 +13,12 @@ fn sha256_b() -> String {
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()
 }
 
-#[test]
-fn backtest_index_record_generates_paths_under_single_artifact_root() {
-    let root = "s3://example-bucket/nt-research-analytics";
-    let record = ArtifactIndexRecord::new_staged(
+fn sha256_c() -> String {
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string()
+}
+
+fn backtest_record(root: &str) -> ArtifactIndexRecord {
+    ArtifactIndexRecord::new_staged(
         root,
         ArtifactKind::Backtests,
         "backtest-run-123",
@@ -27,7 +31,23 @@ fn backtest_index_record_generates_paths_under_single_artifact_root() {
             sha256_b(),
         )],
     )
-    .expect("index record");
+    .expect("index record")
+}
+
+fn committed_backtest_record(
+    root: &str,
+    snapshot_id: &str,
+    snapshot_uri: &str,
+) -> ArtifactIndexRecord {
+    backtest_record(root)
+        .committed_for_snapshot(snapshot_id, snapshot_uri)
+        .expect("committed record")
+}
+
+#[test]
+fn backtest_index_record_generates_paths_under_single_artifact_root() {
+    let root = "s3://example-bucket/nt-research-analytics";
+    let record = backtest_record(root);
 
     assert_eq!(record.artifact_kind, ArtifactKind::Backtests);
     assert_eq!(record.commit_state, CommitState::Staged);
@@ -91,20 +111,7 @@ fn artifact_index_rejects_missing_lineage_and_non_sha256_hashes() {
 #[test]
 fn artifact_index_rejects_consumer_mutation_of_producer_records() {
     let root = "s3://example-bucket/nt-research-analytics";
-    let record = ArtifactIndexRecord::new_staged(
-        root,
-        ArtifactKind::Backtests,
-        "backtest-run-123",
-        "backtesting-engine",
-        "s3://example-bucket/nt-research-analytics/backtests/backtest-run-123/result-contract.json",
-        &sha256_a(),
-        vec![ArtifactIndexLineageRef::new(
-            "source-proof-123",
-            Some(1),
-            sha256_b(),
-        )],
-    )
-    .expect("index record");
+    let record = backtest_record(root);
 
     record
         .validate_write_authority("backtesting-engine")
@@ -150,4 +157,180 @@ fn lifecycle_config_requires_all_storage_profiles() {
     let err = config.validate().unwrap_err();
 
     assert!(err.to_string().contains("deep_archive"), "{err}");
+}
+
+#[test]
+fn committed_snapshot_resolution_rejects_hash_invalid_latest_pointer() {
+    let root = "s3://example-bucket/nt-research-analytics";
+    let snapshot_id = "snapshot-2026-06-06";
+    let snapshot_uri = format!(
+        "{root}/artifact-index/v1/snapshots/kind=backtests/snapshot_id={snapshot_id}/manifest.json"
+    );
+    let snapshot = ArtifactIndexSnapshotManifest::new(
+        root,
+        ArtifactKind::Backtests,
+        snapshot_id,
+        &sha256_c(),
+        vec![committed_backtest_record(root, snapshot_id, &snapshot_uri)],
+    )
+    .expect("snapshot");
+    let mut pointer = ArtifactIndexLatestPointer::from_snapshot(root, &snapshot).expect("pointer");
+    pointer.snapshot_content_hash = sha256_b();
+
+    let err = resolve_committed_snapshot(&pointer, &snapshot).unwrap_err();
+
+    assert!(err.to_string().contains("snapshot hash"), "{err}");
+}
+
+#[test]
+fn committed_snapshot_resolution_rejects_stale_latest_pointer() {
+    let root = "s3://example-bucket/nt-research-analytics";
+    let snapshot_id = "snapshot-2026-06-06";
+    let snapshot_uri = format!(
+        "{root}/artifact-index/v1/snapshots/kind=backtests/snapshot_id={snapshot_id}/manifest.json"
+    );
+    let snapshot = ArtifactIndexSnapshotManifest::new(
+        root,
+        ArtifactKind::Backtests,
+        snapshot_id,
+        &sha256_c(),
+        vec![committed_backtest_record(root, snapshot_id, &snapshot_uri)],
+    )
+    .expect("snapshot");
+    let mut pointer = ArtifactIndexLatestPointer::from_snapshot(root, &snapshot).expect("pointer");
+    pointer.snapshot_id = "older-snapshot".to_string();
+
+    let err = resolve_committed_snapshot(&pointer, &snapshot).unwrap_err();
+
+    assert!(err.to_string().contains("stale"), "{err}");
+}
+
+#[test]
+fn committed_snapshot_resolution_requires_hot_index_metadata_active() {
+    let root = "s3://example-bucket/nt-research-analytics";
+    let snapshot_id = "snapshot-2026-06-06";
+    let snapshot_uri = format!(
+        "{root}/artifact-index/v1/snapshots/kind=backtests/snapshot_id={snapshot_id}/manifest.json"
+    );
+    let mut snapshot = ArtifactIndexSnapshotManifest::new(
+        root,
+        ArtifactKind::Backtests,
+        snapshot_id,
+        &sha256_c(),
+        vec![committed_backtest_record(root, snapshot_id, &snapshot_uri)],
+    )
+    .expect("snapshot");
+    let pointer = ArtifactIndexLatestPointer::from_snapshot(root, &snapshot).expect("pointer");
+    snapshot.lifecycle_state = LifecycleState::Inactive;
+
+    let err = resolve_committed_snapshot(&pointer, &snapshot).unwrap_err();
+
+    assert!(err.to_string().contains("active storage"), "{err}");
+}
+
+#[test]
+fn committed_snapshot_rejects_staged_or_orphan_records_as_discovery_truth() {
+    let root = "s3://example-bucket/nt-research-analytics";
+    let snapshot_id = "snapshot-2026-06-06";
+
+    let staged_err = ArtifactIndexSnapshotManifest::new(
+        root,
+        ArtifactKind::Backtests,
+        snapshot_id,
+        &sha256_c(),
+        vec![backtest_record(root)],
+    )
+    .unwrap_err();
+    assert!(staged_err.to_string().contains("committed"), "{staged_err}");
+
+    let snapshot_uri = format!(
+        "{root}/artifact-index/v1/snapshots/kind=backtests/snapshot_id={snapshot_id}/manifest.json"
+    );
+    let mut orphan = committed_backtest_record(root, snapshot_id, &snapshot_uri);
+    orphan.commit_state = CommitState::Orphan;
+    let orphan_err = ArtifactIndexSnapshotManifest::new(
+        root,
+        ArtifactKind::Backtests,
+        snapshot_id,
+        &sha256_c(),
+        vec![orphan],
+    )
+    .unwrap_err();
+    assert!(orphan_err.to_string().contains("committed"), "{orphan_err}");
+}
+
+#[test]
+fn latest_pointer_update_plan_uses_create_or_etag_preconditions() {
+    let root = "s3://example-bucket/nt-research-analytics";
+    let first_snapshot_id = "snapshot-2026-06-06-a";
+    let first_snapshot_uri = format!(
+        "{root}/artifact-index/v1/snapshots/kind=backtests/snapshot_id={first_snapshot_id}/manifest.json"
+    );
+    let first_snapshot = ArtifactIndexSnapshotManifest::new(
+        root,
+        ArtifactKind::Backtests,
+        first_snapshot_id,
+        &sha256_c(),
+        vec![committed_backtest_record(
+            root,
+            first_snapshot_id,
+            &first_snapshot_uri,
+        )],
+    )
+    .expect("first snapshot");
+    let first_pointer =
+        ArtifactIndexLatestPointer::from_snapshot(root, &first_snapshot).expect("first pointer");
+    let create_plan = plan_latest_pointer_update(
+        root,
+        "backtesting-engine",
+        None,
+        &first_pointer,
+        "epoch-001",
+    )
+    .expect("create plan");
+    assert_eq!(
+        create_plan.precondition,
+        ArtifactIndexPointerPrecondition::IfNoneMatchAny
+    );
+
+    let observed_first =
+        ArtifactIndexObservedPointer::new(first_pointer, "etag-before").expect("observed pointer");
+    let second_snapshot_id = "snapshot-2026-06-06-b";
+    let second_snapshot_uri = format!(
+        "{root}/artifact-index/v1/snapshots/kind=backtests/snapshot_id={second_snapshot_id}/manifest.json"
+    );
+    let second_snapshot = ArtifactIndexSnapshotManifest::new(
+        root,
+        ArtifactKind::Backtests,
+        second_snapshot_id,
+        &sha256_b(),
+        vec![committed_backtest_record(
+            root,
+            second_snapshot_id,
+            &second_snapshot_uri,
+        )],
+    )
+    .expect("second snapshot");
+    let second_pointer =
+        ArtifactIndexLatestPointer::from_snapshot(root, &second_snapshot).expect("second pointer");
+    let update_plan = plan_latest_pointer_update(
+        root,
+        "backtesting-engine",
+        Some(&observed_first),
+        &second_pointer,
+        "epoch-002",
+    )
+    .expect("update plan");
+
+    assert_eq!(
+        update_plan.precondition,
+        ArtifactIndexPointerPrecondition::IfMatch {
+            etag: "etag-before".to_string()
+        }
+    );
+    assert!(update_plan.requires_retry_rebase_after_conditional_failure());
+    assert_eq!(
+        update_plan.audit_epoch_uri,
+        format!("{root}/artifact-index/v1/audit/epochs/epoch-002.json")
+    );
 }

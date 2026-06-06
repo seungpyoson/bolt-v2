@@ -265,6 +265,223 @@ impl ArtifactIndexRecord {
             producer_project: self.producer_project.clone(),
         })
     }
+
+    pub fn committed_for_snapshot(
+        &self,
+        snapshot_id: &str,
+        snapshot_uri: &str,
+    ) -> Result<Self, ArtifactIndexError> {
+        validate_non_empty("snapshot_id", snapshot_id)?;
+        validate_non_empty("snapshot_uri", snapshot_uri)?;
+
+        let mut record = self.clone();
+        record.snapshot_id = Some(snapshot_id.to_string());
+        record.snapshot_uri = Some(snapshot_uri.to_string());
+        record.commit_state = CommitState::Committed;
+        Ok(record)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactIndexSnapshotManifest {
+    pub artifact_kind: ArtifactKind,
+    pub snapshot_id: String,
+    pub snapshot_uri: String,
+    pub snapshot_content_hash: String,
+    pub records: Vec<ArtifactIndexRecord>,
+    pub lifecycle_state: LifecycleState,
+}
+
+impl ArtifactIndexSnapshotManifest {
+    pub fn new(
+        artifact_root: &str,
+        artifact_kind: ArtifactKind,
+        snapshot_id: impl Into<String>,
+        snapshot_content_hash: &str,
+        records: Vec<ArtifactIndexRecord>,
+    ) -> Result<Self, ArtifactIndexError> {
+        validate_artifact_root(artifact_root)?;
+        validate_sha256_field("snapshot_content_hash", snapshot_content_hash)?;
+
+        let snapshot_id = snapshot_id.into();
+        validate_non_empty("snapshot_id", &snapshot_id)?;
+        if records.is_empty() {
+            return Err(ArtifactIndexError::SnapshotWithoutRecords);
+        }
+
+        let snapshot_uri = expected_snapshot_uri(artifact_root, artifact_kind, &snapshot_id);
+        for record in &records {
+            validate_snapshot_record(record, artifact_kind, &snapshot_id, &snapshot_uri)?;
+        }
+
+        Ok(Self {
+            artifact_kind,
+            snapshot_id,
+            snapshot_uri,
+            snapshot_content_hash: snapshot_content_hash.to_string(),
+            records,
+            lifecycle_state: LifecycleState::Active,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactIndexLatestPointer {
+    pub artifact_kind: ArtifactKind,
+    pub latest_pointer_uri: String,
+    pub snapshot_id: String,
+    pub snapshot_uri: String,
+    pub snapshot_content_hash: String,
+    pub lifecycle_state: LifecycleState,
+}
+
+impl ArtifactIndexLatestPointer {
+    pub fn from_snapshot(
+        artifact_root: &str,
+        snapshot: &ArtifactIndexSnapshotManifest,
+    ) -> Result<Self, ArtifactIndexError> {
+        validate_artifact_root(artifact_root)?;
+        if snapshot.lifecycle_state != LifecycleState::Active {
+            return Err(ArtifactIndexError::HotIndexMetadataNotActive);
+        }
+
+        Ok(Self {
+            artifact_kind: snapshot.artifact_kind,
+            latest_pointer_uri: expected_latest_pointer_uri(artifact_root, snapshot.artifact_kind),
+            snapshot_id: snapshot.snapshot_id.clone(),
+            snapshot_uri: snapshot.snapshot_uri.clone(),
+            snapshot_content_hash: snapshot.snapshot_content_hash.clone(),
+            lifecycle_state: LifecycleState::Active,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactIndexObservedPointer {
+    pub pointer: ArtifactIndexLatestPointer,
+    pub etag: String,
+}
+
+impl ArtifactIndexObservedPointer {
+    pub fn new(
+        pointer: ArtifactIndexLatestPointer,
+        etag: impl Into<String>,
+    ) -> Result<Self, ArtifactIndexError> {
+        let etag = etag.into();
+        validate_non_empty("etag", &etag)?;
+        Ok(Self { pointer, etag })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactIndexPointerPrecondition {
+    IfNoneMatchAny,
+    IfMatch { etag: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactIndexLatestPointerUpdatePlan {
+    pub artifact_kind: ArtifactKind,
+    pub latest_pointer_uri: String,
+    pub new_snapshot_id: String,
+    pub new_snapshot_uri: String,
+    pub new_snapshot_content_hash: String,
+    pub prior_snapshot_id: Option<String>,
+    pub precondition: ArtifactIndexPointerPrecondition,
+    pub writer_id: String,
+    pub audit_epoch_uri: String,
+}
+
+impl ArtifactIndexLatestPointerUpdatePlan {
+    pub const fn requires_retry_rebase_after_conditional_failure(&self) -> bool {
+        true
+    }
+}
+
+pub fn resolve_committed_snapshot<'a>(
+    pointer: &ArtifactIndexLatestPointer,
+    snapshot: &'a ArtifactIndexSnapshotManifest,
+) -> Result<&'a ArtifactIndexSnapshotManifest, ArtifactIndexError> {
+    if pointer.lifecycle_state != LifecycleState::Active
+        || snapshot.lifecycle_state != LifecycleState::Active
+    {
+        return Err(ArtifactIndexError::HotIndexMetadataNotActive);
+    }
+    if pointer.artifact_kind != snapshot.artifact_kind
+        || pointer.snapshot_id != snapshot.snapshot_id
+        || pointer.snapshot_uri != snapshot.snapshot_uri
+    {
+        return Err(ArtifactIndexError::StaleLatestPointer {
+            pointer_snapshot_id: pointer.snapshot_id.clone(),
+            snapshot_id: snapshot.snapshot_id.clone(),
+        });
+    }
+    if pointer.snapshot_content_hash != snapshot.snapshot_content_hash {
+        return Err(ArtifactIndexError::SnapshotHashMismatch {
+            pointer_hash: pointer.snapshot_content_hash.clone(),
+            snapshot_hash: snapshot.snapshot_content_hash.clone(),
+        });
+    }
+    Ok(snapshot)
+}
+
+pub fn plan_latest_pointer_update(
+    artifact_root: &str,
+    writer_id: impl Into<String>,
+    observed_prior: Option<&ArtifactIndexObservedPointer>,
+    new_pointer: &ArtifactIndexLatestPointer,
+    audit_epoch_id: impl Into<String>,
+) -> Result<ArtifactIndexLatestPointerUpdatePlan, ArtifactIndexError> {
+    validate_artifact_root(artifact_root)?;
+    let writer_id = writer_id.into();
+    validate_non_empty("writer_id", &writer_id)?;
+    let audit_epoch_id = audit_epoch_id.into();
+    validate_non_empty("audit_epoch_id", &audit_epoch_id)?;
+
+    let expected_pointer_uri =
+        expected_latest_pointer_uri(artifact_root, new_pointer.artifact_kind);
+    if new_pointer.latest_pointer_uri != expected_pointer_uri {
+        return Err(ArtifactIndexError::StaleLatestPointer {
+            pointer_snapshot_id: new_pointer.snapshot_id.clone(),
+            snapshot_id: expected_pointer_uri,
+        });
+    }
+
+    let (prior_snapshot_id, precondition) = match observed_prior {
+        Some(prior) => {
+            if prior.pointer.artifact_kind != new_pointer.artifact_kind
+                || prior.pointer.latest_pointer_uri != new_pointer.latest_pointer_uri
+            {
+                return Err(ArtifactIndexError::StaleLatestPointer {
+                    pointer_snapshot_id: prior.pointer.snapshot_id.clone(),
+                    snapshot_id: new_pointer.snapshot_id.clone(),
+                });
+            }
+            (
+                Some(prior.pointer.snapshot_id.clone()),
+                ArtifactIndexPointerPrecondition::IfMatch {
+                    etag: prior.etag.clone(),
+                },
+            )
+        }
+        None => (None, ArtifactIndexPointerPrecondition::IfNoneMatchAny),
+    };
+
+    Ok(ArtifactIndexLatestPointerUpdatePlan {
+        artifact_kind: new_pointer.artifact_kind,
+        latest_pointer_uri: new_pointer.latest_pointer_uri.clone(),
+        new_snapshot_id: new_pointer.snapshot_id.clone(),
+        new_snapshot_uri: new_pointer.snapshot_uri.clone(),
+        new_snapshot_content_hash: new_pointer.snapshot_content_hash.clone(),
+        prior_snapshot_id,
+        precondition,
+        writer_id,
+        audit_epoch_uri: format!(
+            "{}/artifact-index/v1/audit/epochs/{audit_epoch_id}.json",
+            artifact_root.trim_end_matches('/')
+        ),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,6 +507,28 @@ pub enum ArtifactIndexError {
         producer_project: String,
     },
     LifecyclePolicy(String),
+    SnapshotWithoutRecords,
+    SnapshotRecordKindMismatch {
+        artifact_id: String,
+        expected_kind: ArtifactKind,
+        actual_kind: ArtifactKind,
+    },
+    SnapshotRecordNotCommitted {
+        artifact_id: String,
+        commit_state: CommitState,
+    },
+    SnapshotRecordOutsideSnapshot {
+        artifact_id: String,
+    },
+    StaleLatestPointer {
+        pointer_snapshot_id: String,
+        snapshot_id: String,
+    },
+    SnapshotHashMismatch {
+        pointer_hash: String,
+        snapshot_hash: String,
+    },
+    HotIndexMetadataNotActive,
 }
 
 impl fmt::Display for ArtifactIndexError {
@@ -327,6 +566,46 @@ impl fmt::Display for ArtifactIndexError {
             Self::LifecyclePolicy(message) => {
                 write!(f, "artifact lifecycle policy rejected: {message}")
             }
+            Self::SnapshotWithoutRecords => {
+                write!(f, "artifact index snapshot requires at least one record")
+            }
+            Self::SnapshotRecordKindMismatch {
+                artifact_id,
+                expected_kind,
+                actual_kind,
+            } => write!(
+                f,
+                "artifact index snapshot record {artifact_id:?} has kind {actual_kind:?}, expected {expected_kind:?}"
+            ),
+            Self::SnapshotRecordNotCommitted {
+                artifact_id,
+                commit_state,
+            } => write!(
+                f,
+                "artifact index snapshot record {artifact_id:?} must be committed, not {commit_state:?}"
+            ),
+            Self::SnapshotRecordOutsideSnapshot { artifact_id } => write!(
+                f,
+                "artifact index snapshot record {artifact_id:?} must reference the snapshot id and URI"
+            ),
+            Self::StaleLatestPointer {
+                pointer_snapshot_id,
+                snapshot_id,
+            } => write!(
+                f,
+                "artifact index latest pointer is stale: pointer references {pointer_snapshot_id:?}, expected {snapshot_id:?}"
+            ),
+            Self::SnapshotHashMismatch {
+                pointer_hash,
+                snapshot_hash,
+            } => write!(
+                f,
+                "artifact index latest pointer snapshot hash {pointer_hash:?} does not match snapshot hash {snapshot_hash:?}"
+            ),
+            Self::HotIndexMetadataNotActive => write!(
+                f,
+                "artifact index latest pointer and current snapshot metadata must remain in active storage"
+            ),
         }
     }
 }
@@ -395,4 +674,55 @@ fn validate_non_empty(field: &'static str, value: &str) -> Result<(), ArtifactIn
     } else {
         Ok(())
     }
+}
+
+fn validate_snapshot_record(
+    record: &ArtifactIndexRecord,
+    artifact_kind: ArtifactKind,
+    snapshot_id: &str,
+    snapshot_uri: &str,
+) -> Result<(), ArtifactIndexError> {
+    if record.artifact_kind != artifact_kind {
+        return Err(ArtifactIndexError::SnapshotRecordKindMismatch {
+            artifact_id: record.artifact_id.clone(),
+            expected_kind: artifact_kind,
+            actual_kind: record.artifact_kind,
+        });
+    }
+    if record.commit_state != CommitState::Committed {
+        return Err(ArtifactIndexError::SnapshotRecordNotCommitted {
+            artifact_id: record.artifact_id.clone(),
+            commit_state: record.commit_state,
+        });
+    }
+    if record.snapshot_id.as_deref() != Some(snapshot_id)
+        || record.snapshot_uri.as_deref() != Some(snapshot_uri)
+    {
+        return Err(ArtifactIndexError::SnapshotRecordOutsideSnapshot {
+            artifact_id: record.artifact_id.clone(),
+        });
+    }
+    validate_sha256(&record.content_hash)?;
+    validate_lineage(&record.lineage_ids)?;
+    Ok(())
+}
+
+fn expected_latest_pointer_uri(artifact_root: &str, artifact_kind: ArtifactKind) -> String {
+    format!(
+        "{}/artifact-index/v1/pointers/kind={}/latest.json",
+        artifact_root.trim_end_matches('/'),
+        artifact_kind.as_str()
+    )
+}
+
+fn expected_snapshot_uri(
+    artifact_root: &str,
+    artifact_kind: ArtifactKind,
+    snapshot_id: &str,
+) -> String {
+    format!(
+        "{}/artifact-index/v1/snapshots/kind={}/snapshot_id={snapshot_id}/manifest.json",
+        artifact_root.trim_end_matches('/'),
+        artifact_kind.as_str()
+    )
 }

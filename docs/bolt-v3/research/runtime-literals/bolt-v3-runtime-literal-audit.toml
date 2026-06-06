@@ -16321,7 +16321,7 @@ classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code for missing uncertainty-band inputs, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"bolt-v3 submit admission cannot value a quote-quantity order on an inverse instrument from the raw quote quantity (client_order_id={})"'''
 context = '''"bolt-v3 submit admission cannot value a quote-quantity order on an inverse instrument from the raw quote quantity (client_order_id={})",'''
@@ -16329,7 +16329,7 @@ classification = "diagnostic_template"
 reason = "Fail-closed diagnostic for an inverse quote-quantity order; the interpolated client_order_id is computed from the typed order, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"bolt-v3 submit admission refuses a market-style order without a structural price ceiling for client_order_id={}"'''
 context = '''"bolt-v3 submit admission refuses a market-style order without a structural price ceiling for client_order_id={}",'''

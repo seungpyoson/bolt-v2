@@ -39,6 +39,9 @@ pub const STRATEGY_PARAM_TRADE_SIZE: &str = "trade_size";
 /// Explicit manifest value for no catalog filesystem protocol.
 pub const CATALOG_FS_PROTOCOL_NONE: &str = "NONE";
 
+const CATALOG_STORAGE_OPTIONS_SHADOWED: &str =
+    "cannot be combined with catalog_fs_rust_storage_options";
+
 /// Existing compiled Rust strategies selectable from a run manifest.
 ///
 /// This is the single source of truth shared by manifest validation (gate 4)
@@ -501,7 +504,13 @@ impl BacktestingRunManifest {
         }
         ensure_supported_enums(self)?;
         ensure_supported_data_type(&self.catalog_input.data_type)?;
-        parse_catalog_fs_protocol(&self.catalog_input.catalog_fs_protocol)?;
+        let catalog_fs_protocol =
+            parse_catalog_fs_protocol(&self.catalog_input.catalog_fs_protocol)?;
+        validate_catalog_storage_options(
+            catalog_fs_protocol.as_deref(),
+            &self.catalog_input.catalog_fs_storage_options,
+            &self.catalog_input.catalog_fs_rust_storage_options,
+        )?;
         ensure_data_type_matches_fidelity(&self.catalog_input.data_type, accepted.fidelity_class)?;
         validate_strategy_source(&self.strategy)?;
         validate_starting_balances(&self.venue.starting_balances)?;
@@ -604,12 +613,17 @@ impl BacktestingRunManifest {
             .map_err(|_| ManifestError::InvalidInstrumentId {
                 instrument_id: self.catalog_input.nt_instrument_id.clone(),
             })?;
+        let catalog_fs_protocol =
+            parse_catalog_fs_protocol(&self.catalog_input.catalog_fs_protocol)?;
+        validate_catalog_storage_options(
+            catalog_fs_protocol.as_deref(),
+            &self.catalog_input.catalog_fs_storage_options,
+            &self.catalog_input.catalog_fs_rust_storage_options,
+        )?;
         Ok(BacktestDataConfig::builder()
             .data_type(data_type)
             .catalog_path(self.catalog_input.catalog_path.clone())
-            .maybe_catalog_fs_protocol(parse_catalog_fs_protocol(
-                &self.catalog_input.catalog_fs_protocol,
-            )?)
+            .maybe_catalog_fs_protocol(catalog_fs_protocol)
             .maybe_catalog_fs_storage_options(
                 if self.catalog_input.catalog_fs_storage_options.is_empty() {
                     None
@@ -700,6 +714,48 @@ fn parse_catalog_fs_protocol(value: &str) -> Result<Option<String>, ManifestErro
         "s3" | "gs" | "gcs" | "az" | "abfs" | "http" | "https" => Ok(Some(value.to_string())),
         other => Err(ManifestError::UnsupportedEnum {
             field: "catalog_input.catalog_fs_protocol",
+            value: other.to_string(),
+        }),
+    }
+}
+
+fn validate_catalog_storage_options(
+    protocol: Option<&str>,
+    storage_options: &BTreeMap<String, String>,
+    rust_storage_options: &BTreeMap<String, String>,
+) -> Result<(), ManifestError> {
+    if !storage_options.is_empty() && !rust_storage_options.is_empty() {
+        return Err(ManifestError::UnsupportedEnum {
+            field: "catalog_input.catalog_fs_storage_options",
+            value: CATALOG_STORAGE_OPTIONS_SHADOWED.to_string(),
+        });
+    }
+    if protocol.is_none() && (!storage_options.is_empty() || !rust_storage_options.is_empty()) {
+        return Err(ManifestError::UnsupportedEnum {
+            field: "catalog_input.catalog_fs_protocol",
+            value: format!("{CATALOG_FS_PROTOCOL_NONE} cannot carry storage options"),
+        });
+    }
+    if protocol == Some("s3") {
+        for key in storage_options.keys() {
+            ensure_supported_s3_storage_option("catalog_input.catalog_fs_storage_options", key)?;
+        }
+        for key in rust_storage_options.keys() {
+            ensure_supported_s3_storage_option(
+                "catalog_input.catalog_fs_rust_storage_options",
+                key,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_supported_s3_storage_option(field: &'static str, key: &str) -> Result<(), ManifestError> {
+    match key {
+        "endpoint_url" | "region" | "access_key_id" | "key" | "secret_access_key" | "secret"
+        | "session_token" | "token" | "allow_http" => Ok(()),
+        other => Err(ManifestError::UnsupportedEnum {
+            field,
             value: other.to_string(),
         }),
     }
@@ -1001,18 +1057,17 @@ mod tests {
         manifest.catalog_input.catalog_path =
             "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
         manifest.catalog_input.catalog_fs_protocol = "s3".to_string();
-        manifest.catalog_input.catalog_fs_storage_options =
-            BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
-        manifest.catalog_input.catalog_fs_rust_storage_options = BTreeMap::from([(
-            "aws_virtual_hosted_style_request".to_string(),
-            "false".to_string(),
-        )]);
+        manifest.catalog_input.catalog_fs_rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("allow_http".to_string(), "false".to_string()),
+        ]);
 
         let data = manifest.to_nt_data_config().expect("data config");
         assert_eq!(data.catalog_path(), manifest.catalog_input.catalog_path);
         assert_eq!(data.catalog_fs_protocol(), Some("s3"));
+        assert!(data.catalog_fs_storage_options().is_none());
         assert_eq!(
-            data.catalog_fs_storage_options()
+            data.catalog_fs_rust_storage_options()
                 .expect("storage options")
                 .get("region"),
             Some(&"us-east-1".to_string())
@@ -1020,7 +1075,7 @@ mod tests {
         assert_eq!(
             data.catalog_fs_rust_storage_options()
                 .expect("rust storage options")
-                .get("aws_virtual_hosted_style_request"),
+                .get("allow_http"),
             Some(&"false".to_string())
         );
     }
@@ -1304,6 +1359,50 @@ mod tests {
                 value: "ftp".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn rejects_shadowed_catalog_storage_options_before_nt_config() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.catalog_path =
+            "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
+        manifest.catalog_input.catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_input.catalog_fs_storage_options =
+            BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
+        manifest.catalog_input.catalog_fs_rust_storage_options =
+            BTreeMap::from([("allow_http".to_string(), "false".to_string())]);
+
+        let expected = ManifestError::UnsupportedEnum {
+            field: "catalog_input.catalog_fs_storage_options",
+            value: "cannot be combined with catalog_fs_rust_storage_options".to_string(),
+        };
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            expected
+        );
+        assert_eq!(manifest.to_nt_data_config().unwrap_err(), expected);
+    }
+
+    #[test]
+    fn rejects_unknown_s3_catalog_rust_storage_option_before_nt_config() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.catalog_path =
+            "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
+        manifest.catalog_input.catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_input.catalog_fs_rust_storage_options = BTreeMap::from([(
+            "aws_virtual_hosted_style_request".to_string(),
+            "false".to_string(),
+        )]);
+
+        let expected = ManifestError::UnsupportedEnum {
+            field: "catalog_input.catalog_fs_rust_storage_options",
+            value: "aws_virtual_hosted_style_request".to_string(),
+        };
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            expected
+        );
+        assert_eq!(manifest.to_nt_data_config().unwrap_err(), expected);
     }
 
     #[test]

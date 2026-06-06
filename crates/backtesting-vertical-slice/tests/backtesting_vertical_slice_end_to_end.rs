@@ -167,6 +167,8 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
         source_proof_id: SOURCE_PROOF_ID.to_string(),
         source_proof_version: 1,
         pins_non_latest_proof: false,
+        proof_pin_reason_code: None,
+        proof_pin_reason_detail: None,
         strategy: StrategySource {
             registry_key: STRATEGY_HURST_VPIN_DIRECTIONAL.to_string(),
             parameters: BTreeMap::from([

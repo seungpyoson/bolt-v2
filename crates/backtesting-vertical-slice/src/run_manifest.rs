@@ -83,6 +83,15 @@ pub enum RunPurpose {
     Migration,
 }
 
+/// Structured reason for pinning a non-latest accepted source proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProofPinReasonCode {
+    BaselineReproduction,
+    AuditOrInvestigation,
+    MigrationValidation,
+}
+
 /// The only admissible strategy source: a registered compiled Rust strategy
 /// selected by key, with typed string parameters. There is deliberately no
 /// variant for inline code, notebook code, a Python path, or an untracked blob.
@@ -231,6 +240,10 @@ pub struct BacktestingRunManifest {
     pub source_proof_version: u32,
     /// True when this manifest pins a non-latest accepted proof.
     pub pins_non_latest_proof: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub proof_pin_reason_code: Option<ProofPinReasonCode>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub proof_pin_reason_detail: Option<String>,
     pub strategy: StrategySource,
     pub venue: ManifestVenueConfig,
     pub catalog_input: ManifestCatalogInput,
@@ -632,6 +645,17 @@ impl BacktestingRunManifest {
         }
         if self.run_purpose == RunPurpose::Normal && self.pins_non_latest_proof {
             return Err(ManifestError::NonLatestProofPinForNormalRun);
+        }
+        if self.pins_non_latest_proof && self.proof_pin_reason_code.is_none() {
+            return Err(ManifestError::MissingField("proof_pin_reason_code"));
+        }
+        if self.proof_pin_reason_code == Some(ProofPinReasonCode::AuditOrInvestigation)
+            && self
+                .proof_pin_reason_detail
+                .as_deref()
+                .is_none_or(|detail| detail.trim().is_empty())
+        {
+            return Err(ManifestError::MissingField("proof_pin_reason_detail"));
         }
         for (field, value) in [("start_time", self.start_time), ("end_time", self.end_time)] {
             if let Some(value) = value
@@ -1317,6 +1341,8 @@ mod tests {
             source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
             source_proof_version: 1,
             pins_non_latest_proof: false,
+            proof_pin_reason_code: None,
+            proof_pin_reason_detail: None,
             strategy: StrategySource {
                 registry_key: STRATEGY_HURST_VPIN_DIRECTIONAL.to_string(),
                 parameters: BTreeMap::from([
@@ -1873,6 +1899,43 @@ mod tests {
             manifest.validate(&accepted_dataset()).unwrap_err(),
             ManifestError::NonLatestProofPinForNormalRun
         );
+    }
+
+    #[test]
+    fn rejects_non_latest_proof_pin_without_reason_code() {
+        let mut manifest = valid_manifest();
+        manifest.run_purpose = RunPurpose::Audit;
+        manifest.pins_non_latest_proof = true;
+
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::MissingField("proof_pin_reason_code")
+        );
+    }
+
+    #[test]
+    fn rejects_audit_non_latest_proof_pin_without_reason_detail() {
+        let mut manifest = valid_manifest();
+        manifest.run_purpose = RunPurpose::Audit;
+        manifest.pins_non_latest_proof = true;
+        manifest.proof_pin_reason_code = Some(ProofPinReasonCode::AuditOrInvestigation);
+
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::MissingField("proof_pin_reason_detail")
+        );
+    }
+
+    #[test]
+    fn accepts_non_latest_reproduction_pin_with_reason_code() {
+        let mut manifest = valid_manifest();
+        manifest.run_purpose = RunPurpose::Reproduction;
+        manifest.pins_non_latest_proof = true;
+        manifest.proof_pin_reason_code = Some(ProofPinReasonCode::BaselineReproduction);
+
+        manifest
+            .validate(&accepted_dataset())
+            .expect("reproduction pin with structured reason should validate");
     }
 
     #[test]

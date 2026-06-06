@@ -26,6 +26,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - S3 catalog storage options now fail before NT config construction if generic and Rust-specific maps are both set, or if an S3 option key is not supported by this pinned NT revision
 - source-proof acceptance now enforces the schema rule that accepted canonical backfill input must use `directly_backfillable` or `owner_archive_backfillable`; bounded/current-only, pending, vendor/forward-capture-only, not-applicable, or excluded evidence states cannot become accepted BTE input
 - source-proof acceptance now cross-checks registered TOML source-binding metadata for `product_family`, `table_family`, and `evidence_state`; a proof cannot reuse a registered host/key while silently changing the data family or acceptance state
+- non-latest source-proof pins now require structured manifest justification: `normal` runs still cannot pin them, non-normal pins require `proof_pin_reason_code`, and `audit_or_investigation` pins require `proof_pin_reason_detail`
 - the CLI has an explicit `--publish-output` opt-in that copies the verified local artifact tree to `manifest.output_prefix` through NT/object-store plumbing after the local run succeeds
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
 - the current `BacktestExtensionSurface` classification is recorded in `backtest-extension-surface-matrix.md`; supported primitive NT controls are TOML pass-throughs, Bolt-owned pieces are provenance/governance boundaries, and unmodeled NT model/system surfaces fail before NT config construction
@@ -175,6 +176,8 @@ RED checks observed before implementation:
 - `just bte-test run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them` failed with missing `converter_config_hash` on converter config, conversion fingerprint, and result contract
 - `just bte-test acceptance_blocked_when_evidence_state_is_not_backfillable` failed because `evaluate_acceptance()` still admitted accepted source proofs whose `evidence_state` was bounded/current-only, pending, vendor/forward-capture-only, not-applicable, or excluded
 - `just bte-test acceptance_blocked_when_source_binding_family_disagrees_with_registry` failed because `evaluate_acceptance()` still admitted a proof whose `product_family` disagreed with the registered TOML source binding
+- `just bte-test rejects_non_latest_proof_pin_without_reason_code` failed because `BacktestingRunManifest::validate()` accepted an audit run that set `pins_non_latest_proof = true` without a structured reason code
+- `just bte-test rejects_audit_non_latest_proof_pin_without_reason_detail` failed because `BacktestingRunManifest::validate()` accepted an `audit_or_investigation` proof pin without detail
 
 GREEN checks after implementation:
 
@@ -208,7 +211,8 @@ GREEN checks after implementation:
 - `just bte-test data_config_preserves_configured_object_store_conditional_put artifact_store_preserves_conditional_put_after_ssm_resolution artifact_store_rejects_disabled_conditional_put_for_s3_commit_path`: RED failed because the manifest rejected `conditional_put`; GREEN passed after preserving canonical `conditional_put = "etag"` through NT/object-store options and rejecting `disabled` for S3 Artifact Index commit readiness
 - `just bte-test acceptance_blocked_when_evidence_state_is_not_backfillable`: GREEN passed after source-proof acceptance began rejecting non-backfillable evidence states
 - `just bte-test acceptance_blocked_when_source_binding_family_disagrees_with_registry`: GREEN passed after source-proof acceptance began binding proof `product_family`, `table_family`, and `evidence_state` to the TOML source-binding registry
-- `just bte-test`: 204 passed, including 2 slow public API tests
+- `just bte-test rejects_non_latest_proof_pin_for_normal_run rejects_non_latest_proof_pin_without_reason_code rejects_audit_non_latest_proof_pin_without_reason_detail accepts_non_latest_reproduction_pin_with_reason_code`: 4 passed after adding typed non-latest proof-pin reason fields
+- `just bte-test`: 207 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed
@@ -291,6 +295,11 @@ Confirmed root causes:
   validation. A proof could reuse a registered source binding while changing
   the data family or acceptance state, making venue/data-type additions less
   systematic than the registry implied.
+- Non-latest proof-pin policy mismatch: the spec requires normal runs to use
+  latest accepted proofs and non-normal proof pins to carry a structured
+  `proof_pin_reason_code`, with detail for `audit_or_investigation`, but the
+  manifest previously had only a boolean `pins_non_latest_proof`. Non-normal
+  runs could therefore pin old proof versions without recording why.
 
 No-repeat controls before any future broad backfill or BTE conversion:
 
@@ -329,6 +338,9 @@ No-repeat controls before any future broad backfill or BTE conversion:
     product family, table family, and evidence state; adding a compatible source
     means updating registry/source-proof/run-spec TOML, not changing operator or
     runner branches.
+15. Non-latest source-proof pins must be explicit and auditable: `normal` runs
+    cannot pin them, and every allowed non-normal pin must carry the structured
+    reason fields required by the manifest.
 
 
 ## Recommendation

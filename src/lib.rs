@@ -11,6 +11,7 @@ pub mod bolt_v3_kill_switch;
 pub mod bolt_v3_kill_switch_store;
 pub mod bolt_v3_live_canary_gate;
 pub mod bolt_v3_live_node;
+pub mod bolt_v3_maker_microprice;
 pub mod bolt_v3_maker_model;
 pub mod bolt_v3_market_families;
 pub mod bolt_v3_no_submit_readiness;

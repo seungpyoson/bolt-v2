@@ -92,9 +92,10 @@ Track B targets land in `bolt_v3_operator_artifacts/` (see §6).
 - **Visibility minimality:** widen visibility only as far as the new boundary requires —
   prefer `pub(crate)`; add `pub`/re-export only where an external caller or test needs it.
   Gratuitous `pub`-widening is a finding.
-- **Real shrink, not gamed:** the original monolith's logic and public interface are
-  preserved AND its line count strictly drops — line count alone is insufficient (no
-  moving comments/whitespace to fake a drop).
+- **Boundary actually moves:** the declared symbol cluster leaves the original
+  monolith, exists exactly once in its declared owner module, and preserves the
+  original callable surface. Size deltas may be reported as telemetry, but are not
+  acceptance proof.
 - **Dependency check passes:** the §2 dependency-direction fence is green. It lands before
   A3/A8 merge (with its frozen pre-existing allowlist); no later slice merges without it.
 - **Tests:** carried to the new home (RED→GREEN); CI green at exact head; all fences +

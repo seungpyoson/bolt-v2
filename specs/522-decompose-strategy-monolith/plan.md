@@ -13,8 +13,8 @@ submodules; genuinely shared, agnostic math/state moves to `src/` shared modules
 #488 maker reuses.
 
 **A6 branch refresh (2026-06-06):** source identifiers below are symbol clusters, not
-line numbers. Line counts are secondary size telemetry only and are not source
-anchors. Current `origin/main` already has A3, A4, A5, and A8 merged. GitHub reports
+line numbers. Line counts are optional size telemetry only and are not source anchors.
+Current `origin/main` already has A3, A4, A5, and A8 merged. GitHub reports
 #507, #508, #510, and #520 are still open/unmerged, so no dependent-PR matrix entries
 are removed as merged on this branch.
 
@@ -57,7 +57,8 @@ A1→A10; A2 is foundational because A4/A6/A9 consume the side type it homes). P
 operator direction **#522 LEADS**: the open dependent PRs (#507/#510/#520/#508) are NOT
 prerequisites here — they rebase onto each merged slice (see the Rebase Matrix). The
 last column names which dependent PR must rebase after a slice lands. Symbol ownership,
-not line ranges, is the source of truth for each movement.
+module boundaries, focused re-exports, digest updates, and tests are the canonical
+movement evidence; line ranges are not.
 
 ### Track A — strategy monolith
 
@@ -128,8 +129,8 @@ that slice instead rebases onto the PR — but the default, per operator directi
 5. **Verify**: moved symbol ownership, module boundary, and focused re-exports match
    the slice; the diff is a pure relocation — move + imports, with a `pub use` only
    where an external caller requires it (`git diff` shows no logic delta); for
-   private-internal slices confirm **no origin `pub use` was added**. Monolith line
-   count can be recorded as secondary size telemetry only.
+   private-internal slices confirm **no origin `pub use` was added**. Size telemetry is
+   optional context only, never an acceptance anchor.
 
 ## Risks
 

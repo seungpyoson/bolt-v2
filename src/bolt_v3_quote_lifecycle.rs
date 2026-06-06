@@ -253,6 +253,13 @@ impl QuoteLeg {
                 LegState::Idle,
                 LegEvent::Accepted | LegEvent::Modified | LegEvent::ModifyRejected,
             ) => Some(LifecycleAction::Cancel),
+            (
+                LegState::SubmitPending | LegState::Resting | LegState::ModifyPending,
+                LegEvent::Canceled,
+            ) => {
+                self.state = LegState::Idle;
+                None
+            }
             // Everything else is a no-op: a no-move trigger while Resting, any
             // trigger while a command is in flight, or an event that does not
             // match the current state.
@@ -267,6 +274,10 @@ impl QuoteLeg {
     pub fn request_cancel(&mut self) -> Option<LifecycleAction> {
         match self.state {
             LegState::Idle | LegState::CancelPending => None,
+            LegState::RequotePending => {
+                self.state = LegState::CancelPending;
+                None
+            }
             // A resting or otherwise in-flight leg is cancelled and will not
             // resubmit; the wind-down supersedes any in-flight submit/requote.
             _ => {
@@ -508,6 +519,29 @@ mod tests {
     }
 
     #[test]
+    fn external_cancel_of_active_leg_clears_to_idle() {
+        let mut submitting = QuoteLeg::new(false);
+        submitting.on_event(LegEvent::QuoteTrigger {
+            requote_needed: false,
+        });
+        assert_eq!(submitting.state(), LegState::SubmitPending);
+        assert_eq!(submitting.on_event(LegEvent::Canceled), None);
+        assert_eq!(submitting.state(), LegState::Idle);
+
+        let mut resting = resting_leg(false);
+        assert_eq!(resting.on_event(LegEvent::Canceled), None);
+        assert_eq!(resting.state(), LegState::Idle);
+
+        let mut modifying = resting_leg(true);
+        modifying.on_event(LegEvent::QuoteTrigger {
+            requote_needed: true,
+        });
+        assert_eq!(modifying.state(), LegState::ModifyPending);
+        assert_eq!(modifying.on_event(LegEvent::Canceled), None);
+        assert_eq!(modifying.state(), LegState::Idle);
+    }
+
+    #[test]
     fn idle_orphan_guard_cancels_an_unexpected_live_order() {
         // An Idle leg that learns the venue holds a live order (late Accepted /
         // Modified / ModifyRejected) hunts it down instead of abandoning it.
@@ -688,6 +722,21 @@ mod tests {
         assert_eq!(leg.state(), LegState::CancelPending);
         assert_eq!(leg.on_event(LegEvent::Rejected), None);
         assert_eq!(leg.state(), LegState::Idle);
+    }
+
+    #[test]
+    fn wind_down_requested_during_requote_does_not_emit_duplicate_cancel() {
+        let mut leg = resting_leg(false);
+        assert_eq!(
+            leg.on_event(LegEvent::QuoteTrigger {
+                requote_needed: true
+            }),
+            Some(LifecycleAction::Cancel)
+        );
+        assert_eq!(leg.state(), LegState::RequotePending);
+
+        assert_eq!(leg.request_cancel(), None);
+        assert_eq!(leg.state(), LegState::CancelPending);
     }
 
     // --- W2 slice 3: two-leg market controller + cancel scope ---

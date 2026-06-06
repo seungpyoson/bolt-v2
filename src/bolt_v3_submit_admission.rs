@@ -507,9 +507,9 @@ pub struct BoltV3RiskReducingExitProof {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoltV3RiskReducingExitPositionInput {
-    pub position_id: String,
-    pub instrument_id: String,
+pub struct BoltV3RiskReducingExitPositionInput<'a> {
+    pub position_id: &'a str,
+    pub instrument_id: &'a str,
     pub position_side: PositionSide,
     pub position_quantity: Decimal,
 }
@@ -590,7 +590,7 @@ pub struct BoltV3SubmitAdmissionRequestInput<'a> {
     pub quote_quantity_last_price: Option<Price>,
     pub quote_quantity_reference_price: Option<Price>,
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
-    pub risk_reducing_exit_position: Option<BoltV3RiskReducingExitPositionInput>,
+    pub risk_reducing_exit_position: Option<BoltV3RiskReducingExitPositionInput<'a>>,
 }
 
 pub fn build_submit_admission_request_from_order<F>(
@@ -668,8 +668,8 @@ where
             input
                 .risk_reducing_exit_position
                 .map(|position| BoltV3RiskReducingExitProof {
-                    position_id: position.position_id,
-                    instrument_id: position.instrument_id,
+                    position_id: position.position_id.to_string(),
+                    instrument_id: position.instrument_id.to_string(),
                     position_side: position.position_side,
                     exit_order_side: input.order.order_side(),
                     position_quantity: position.position_quantity,

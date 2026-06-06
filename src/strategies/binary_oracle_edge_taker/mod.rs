@@ -3353,7 +3353,7 @@ impl BinaryOracleEdgeTaker {
         } else {
             None
         };
-        let risk_reducing_exit_position = if matches!(
+        let risk_reducing_exit_position_context = if matches!(
             intent.intent_kind,
             BoltV3OrderIntentKind::Exit
         ) {
@@ -3370,15 +3370,25 @@ impl BinaryOracleEdgeTaker {
                         )
                     },
                 )?;
-            Some(BoltV3RiskReducingExitPositionInput {
-                position_id: managed_position.position.position_id.to_string(),
-                instrument_id: managed_position.position.instrument_id.to_string(),
-                position_side: managed_position.position.side,
+            Some((
+                managed_position.position.position_id.as_str(),
+                managed_position.position.instrument_id.to_string(),
+                managed_position.position.side,
                 position_quantity,
-            })
+            ))
         } else {
             None
         };
+        let risk_reducing_exit_position = risk_reducing_exit_position_context.as_ref().map(
+            |(position_id, instrument_id, position_side, position_quantity)| {
+                BoltV3RiskReducingExitPositionInput {
+                    position_id,
+                    instrument_id: instrument_id.as_str(),
+                    position_side: *position_side,
+                    position_quantity: *position_quantity,
+                }
+            },
+        );
 
         build_submit_admission_request_from_order(
             BoltV3SubmitAdmissionRequestInput {

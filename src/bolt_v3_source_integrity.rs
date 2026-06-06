@@ -163,12 +163,16 @@ mod tests {
     //
     // Re-derived again by A9 after the strategy wrapper delegates submit
     // admission request construction to `src/bolt_v3_submit_admission.rs`.
+    // Re-derived once more after the exit-position input borrows identifiers
+    // through the shared builder in response to exact-head PR review comments
+    // and the follow-up clippy cleanup of that borrow bridge.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "dcd85a6e070f100518eac56b928c2ebac41de3e54097630f74c1574fd0926d18";
+        "99c335b850a345f0a491fef53a04e5adf1491dad76437e2f36ef761debb8a6a8";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
-    // admission request construction and valuation out of the strategy wrapper.
+    // admission request construction and valuation out of the strategy wrapper,
+    // then again after borrowing exit-position identifiers through the builder.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "cff6105bb2a8f88727647fe9ca2f4df0dccc50b354537a4bfedbf015f070f5d1";
+        "1623a62796641c874695bc3479dc4f370f73c12fbe609fb176ec58efdcccdf5e";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

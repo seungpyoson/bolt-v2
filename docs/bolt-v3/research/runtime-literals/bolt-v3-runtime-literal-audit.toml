@@ -16523,6 +16523,14 @@ reason = "The single canonical 3-line marker separating production code from the
 [[allowed]]
 path = "src/source_canonicalization.rs"
 kind = "string"
+literal = '''"#![cfg(test)]\n"'''
+context = '''pub const TEST_ONLY_INNER_CFG_MARKER: &str = "#![cfg(test)]\n";'''
+classification = "source_canonicalization_test_module_marker"
+reason = "The single canonical inner-cfg marker for A10 test-only split files; used only to exclude those files from production source text and runtime-literal scanning."
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
 literal = '''"\r\n"'''
 context = '''const CRLF_LINE_ENDING: &str = "\r\n";'''
 classification = "source_canonicalization_line_ending_marker"

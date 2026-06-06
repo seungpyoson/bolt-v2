@@ -145,10 +145,6 @@ mod tests {
 
     // Golden digests the compile-time abort-plan gate enforces.
     //
-    // GOLDEN_SUBMIT_ADMISSION_DIGEST is unchanged from A0: it is the single-file
-    // identity digest captured live from `origin/main` raw bytes
-    // (`git show origin/main:<path> | shasum -a 256`); that root did not move.
-    //
     // GOLDEN_STRATEGY_DIGEST is re-derived only when an accepted source move
     // changes the canonical strategy source set. A4 moves book state and
     // VWAP/slippage sizing out of the strategy wrapper, so the strategy source
@@ -164,10 +160,19 @@ mod tests {
     // derivation into `src/strategies/binary_oracle_edge_taker/source_proof.rs`,
     // refreshing the venue-filter wrong-control fixture in that file, and
     // addressing an exact-head review comment in the same source set.
+    //
+    // Re-derived again by A9 after the strategy wrapper delegates submit
+    // admission request construction to `src/bolt_v3_submit_admission.rs`.
+    // Re-derived once more after the exit-position input borrows identifiers
+    // through the shared builder in response to exact-head PR review comments
+    // and the follow-up clippy cleanup of that borrow bridge.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "efa065b6d5241b390d4036f57f79f543c3ed8e073ff1e9fd0d7389efb0fa881e";
+        "99c335b850a345f0a491fef53a04e5adf1491dad76437e2f36ef761debb8a6a8";
+    // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
+    // admission request construction and valuation out of the strategy wrapper,
+    // then again after borrowing exit-position identifiers through the builder.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
+        "1623a62796641c874695bc3479dc4f370f73c12fbe609fb176ec58efdcccdf5e";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

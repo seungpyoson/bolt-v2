@@ -70,9 +70,9 @@ movement evidence; line ranges are not.
 | **A4** | Order-book state + VWAP/slippage sizing → `bolt_v3_book_sizing.rs` (rule #9) | symbol cluster in merged `src/bolt_v3_book_sizing.rs`; merged to main | state-struct + pure | — |
 | **A5** | Pricing state (reference/RV/lead-venue) → `bolt_v3_taker_pricing.rs` | symbol cluster in merged `src/bolt_v3_taker_pricing.rs`; merged to main | NT-actor-coupled state | #520 (SignedTradeFlow), #508 (pricing guards) |
 | **A6** | Exposure/recovery state machine → `exposure.rs` | symbol cluster in `slices/A6.md`: exposure state structs/enums, support predicates, forced-flat predicates | state-struct | #507 (sizer evidence on position state) |
-| **A7** | Source-proof / replay / evidence derivation → `source_proof.rs` | symbol cluster in `slices/A7.md`; no line anchors | pure-logic | — |
+| **A7** | Source-proof / replay / evidence derivation → `source_proof.rs` | symbol cluster in `slices/A7.md`; merged by PR #586; no line anchors | pure-logic | — |
 | **A8** | Config structs + parse/validate → `config.rs` (or archetype) | symbol cluster in merged `config.rs`; merged to main | pure-logic | #508 (config guards) |
-| **A9** | Admission-request construction + valuation → `bolt_v3_submit_admission.rs` (rule #9; kill test-only dup). **Owns the base — #507/#510 rebase their admission edits onto it.** | symbol cluster to refresh after A7; no stale line anchors | pure-logic | #507, #510 |
+| **A9** | Admission-request construction + valuation → `bolt_v3_submit_admission.rs` (rule #9; kill test-only dup). **Owns the base — #507/#510 rebase their admission edits onto it.** | symbol cluster in `slices/A9.md`; no stale line anchors | pure-logic | #507, #510 |
 | **A10** | Split the 229 tests to mirror submodules; `mod.rs` = struct + `DataActor` + glue | test symbol/module cluster to refresh at slice start; no line anchors | tests | — |
 
 ### Track B — operator_artifacts (parallel, conflict-free with Track A)

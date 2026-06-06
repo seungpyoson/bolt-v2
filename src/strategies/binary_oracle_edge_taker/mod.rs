@@ -39,7 +39,6 @@ use crate::{
     },
     bolt_v3_decision_evidence::{
         BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot,
-        compiled_order_price_source,
     },
     bolt_v3_market_families::{
         self, FairProbabilityInputs, MarketSelectionOutcome, OutcomeSide,
@@ -56,10 +55,9 @@ use crate::{
         normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
     },
     bolt_v3_submit_admission::{
-        BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind,
-        BoltV3SubmitLifecyclePolicy, admission_base_notional_from_order,
-        base_quantity_admission_notional, fee_inclusive_admission_notional,
-        market_style_admission_ceiling_notional,
+        BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionRequest,
+        BoltV3SubmitAdmissionRequestInput, BoltV3SubmitLifecyclePolicy,
+        build_submit_admission_request_from_order,
     },
     bolt_v3_taker_pricing::{
         FastSpotObservation, TakerPricingBlockReason, TakerPricingConfig, TakerPricingRequest,
@@ -82,6 +80,7 @@ use nautilus_model::enums::BookAction;
 #[cfg(test)]
 use crate::{
     bolt_v3_numeric::sanitize_probability,
+    bolt_v3_submit_admission::{BoltV3RiskReducingExitProof, BoltV3SubmitIntentKind},
     bolt_v3_taker_pricing::VenueTimingState,
     bolt_v3_taker_signal::{price_agreement_corr, price_gap_probability},
     bolt_v3_volatility::RealizedVolEstimator,
@@ -3331,121 +3330,32 @@ impl BinaryOracleEdgeTaker {
         order: &nautilus_model::orders::OrderAny,
     ) -> Result<BoltV3SubmitAdmissionRequest> {
         let client_order_id = order.client_order_id().to_string();
-        let quantity_source = order.quantity().to_string();
-        let quantity = Decimal::from_str(quantity_source.trim()).with_context(|| {
-            format!(
-                "bolt-v3 submit admission quantity is not a decimal for client_order_id={}",
-                client_order_id
-            )
-        })?;
-        let price_source = compiled_order_price_source(intent.price.clone(), order);
-        let price = Decimal::from_str(price_source.trim()).with_context(|| {
-            format!(
-                "bolt-v3 submit admission price is not a decimal for client_order_id={}",
-                client_order_id
-            )
-        })?;
-        let notional = if order.is_quote_quantity() {
-            let instrument = self.current_instrument(order.instrument_id()).with_context(|| {
+        let is_quote_quantity = order.is_quote_quantity();
+        let instrument = if is_quote_quantity {
+            Some(self.current_instrument(order.instrument_id()).with_context(|| {
                 format!(
                     "bolt-v3 submit admission missing instrument context for quote-quantity client_order_id={}",
                     client_order_id
                 )
-            })?;
-            let last_price = self.quote_quantity_last_price_for_order(order);
-            let quote_reference_price = self.quote_quantity_reference_price_for_order(order);
-            // Single source of truth: BOTH submit paths derive the admission base
-            // notional from the built order through this shared helper. `None`
-            // means the helper could not produce a settlement-currency notional —
-            // either no reference price could be resolved, OR the instrument is
-            // inverse (A6: the helper fail-closes inverse quote-quantity orders).
-            // The fallback below fails CLOSED on the inverse case and otherwise
-            // falls back to the raw submitted quote quantity, exactly as before.
-            match admission_base_notional_from_order(
-                order,
-                &instrument,
-                price,
-                quantity,
-                last_price,
-                quote_reference_price,
-            ) {
-                Some(base_notional) => base_notional,
-                None => {
-                    // Degraded fallback: no reference price could be resolved.
-                    // The raw submitted quote quantity equals the committed
-                    // settlement-currency amount ONLY for a non-inverse
-                    // instrument; for an inverse instrument the quote quantity is
-                    // denominated in the quote currency, not settlement, so
-                    // falling back to it would understate the cap. This system
-                    // trades only non-inverse binary options — assert the
-                    // invariant and FAIL CLOSED rather than admit a
-                    // mis-denominated notional if that ever changes.
-                    anyhow::ensure!(
-                        !instrument.is_inverse(),
-                        "bolt-v3 submit admission cannot value a quote-quantity order on an inverse instrument from the raw quote quantity (client_order_id={})",
-                        client_order_id
-                    );
-                    quantity
-                }
-            }
+            })?)
+        } else if order.price().is_none() {
+            self.current_instrument(order.instrument_id())
         } else {
-            base_quantity_admission_notional(price, quantity)
+            None
         };
-        // Scale the raw notional to a fee-inclusive notional before the
-        // admission cap check, using the SAME computation the proof executor
-        // applies (`bolt_v3_canary_proof_executor` line 117-118). Without this
-        // the strategy path would check a raw notional against a cap the proof
-        // path checks fee-inclusive — admitting an order whose fee-inclusive
-        // cost exceeds the intended per-order cap.
-        let max_fee_bps = self.max_entry_fee_bps_for_admission(order.instrument_id(), price)?;
-        // A base-quantity order with NO firm limit price (Market / StopMarket /
-        // MarketIfTouched / TrailingStopMarket) carries no venue-enforced price
-        // bound: it can fill, or settle, anywhere up to the instrument's
-        // structural price CEILING. Value its admission notional at that ceiling —
-        // the only price the venue physically cannot exceed — so the per-order cap
-        // is a HARD bound on the cash such an order can commit, not an estimate. A
-        // configured slippage budget is an estimate, not a bound, and must never
-        // stand in for the cap.
-        //
-        // The ceiling is used for EVERY market-style order regardless of side or
-        // intent (A4), because it is the only universally fail-closed bound:
-        //   - A BUY (entry opening a long, or exit buying back a short) can debit
-        //     up to qty * ceiling.
-        //   - A SELL ENTRY (opening a SHORT) carries a settlement liability up to
-        //     qty * ceiling — so a SELL is NOT automatically cheaper; valuing it
-        //     at a price floor would UNDERSTATE a short entry's worst case and
-        //     loosen the cap. The ceiling never understates any side or intent.
-        // This extends the bound to market-style EXITs, which previously skipped
-        // this branch and were valued at their reference/trigger price (the bug
-        // A4 closed). Because an admitted entry was itself capped at the ceiling
-        // and an exit never exceeds the entry quantity, a ceiling-valued exit can
-        // never be spuriously blocked by the cap the entry already cleared.
-        // Quote-quantity orders commit a fixed quote amount (already floored) and
-        // a firm-limit order can never fill past its own price, so those keep
-        // their own notional. Fail CLOSED if the instrument declares no ceiling.
-        let notional = if order.price().is_none() && !order.is_quote_quantity() {
-            let price_ceiling = self
-                .current_instrument(order.instrument_id())
-                .and_then(|instrument| instrument.max_price())
-                .map(|ceiling| ceiling.as_decimal());
-            market_style_admission_ceiling_notional(price_ceiling, quantity).with_context(|| {
-                format!(
-                    "bolt-v3 submit admission refuses a market-style order without a structural price ceiling for client_order_id={}",
-                    client_order_id
-                )
-            })?
+        let quote_quantity_last_price = if is_quote_quantity {
+            self.quote_quantity_last_price_for_order(order)
         } else {
-            notional
+            None
         };
-        let notional = fee_inclusive_admission_notional(notional, max_fee_bps);
-
-        let intent_kind = match intent.intent_kind {
-            BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
-            BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
+        let quote_quantity_reference_price = if is_quote_quantity {
+            self.quote_quantity_reference_price_for_order(order)
+        } else {
+            None
         };
-        let risk_reducing_exit_proof = if matches!(
-            intent_kind,
-            BoltV3SubmitIntentKind::RiskReducingExit
+        let risk_reducing_exit_position_context = if matches!(
+            intent.intent_kind,
+            BoltV3OrderIntentKind::Exit
         ) {
             let managed_position = self.managed_position().ok_or_else(|| {
                 anyhow::anyhow!(
@@ -3460,32 +3370,39 @@ impl BinaryOracleEdgeTaker {
                         )
                     },
                 )?;
-            Some(BoltV3RiskReducingExitProof {
-                position_id: managed_position.position.position_id.to_string(),
-                instrument_id: managed_position.position.instrument_id.to_string(),
-                position_side: managed_position.position.side,
-                exit_order_side: order.order_side(),
+            Some((
+                managed_position.position.position_id.as_str(),
+                managed_position.position.instrument_id.to_string(),
+                managed_position.position.side,
                 position_quantity,
-                exit_quantity: quantity,
-            })
+            ))
         } else {
             None
         };
+        let risk_reducing_exit_position = risk_reducing_exit_position_context.as_ref().map(
+            |(position_id, instrument_id, position_side, position_quantity)| {
+                BoltV3RiskReducingExitPositionInput {
+                    position_id,
+                    instrument_id: instrument_id.as_str(),
+                    position_side: *position_side,
+                    position_quantity: *position_quantity,
+                }
+            },
+        );
 
-        Ok(BoltV3SubmitAdmissionRequest {
-            strategy_id: intent.strategy_id.clone(),
-            execution_client_id: self.config.client_id.clone(),
-            client_order_id,
-            instrument_id: order.instrument_id().to_string(),
-            notional,
-            order_side: order.order_side(),
-            order_quantity: quantity,
-            intent_kind,
-            lifecycle_policy: self.submit_lifecycle_policy(),
-            canary_proof_claim: None,
-            risk_reducing_exit_proof,
-            kill_switch_forced_reduction: None,
-        })
+        build_submit_admission_request_from_order(
+            BoltV3SubmitAdmissionRequestInput {
+                execution_client_id: &self.config.client_id,
+                intent,
+                order,
+                instrument: instrument.as_ref(),
+                quote_quantity_last_price,
+                quote_quantity_reference_price,
+                lifecycle_policy: self.submit_lifecycle_policy(),
+                risk_reducing_exit_position,
+            },
+            |price| self.max_entry_fee_bps_for_admission(order.instrument_id(), price),
+        )
     }
 
     fn quote_quantity_last_price_for_order(
@@ -5549,14 +5466,6 @@ fn submit_admission_request_from_order_for_client(
     intent: &BoltV3OrderIntentEvidence,
     order: &nautilus_model::orders::OrderAny,
 ) -> Result<BoltV3SubmitAdmissionRequest> {
-    let client_order_id = order.client_order_id().to_string();
-    let quantity_source = order.quantity().to_string();
-    let quantity = Decimal::from_str(quantity_source.trim()).with_context(|| {
-        format!(
-            "bolt-v3 submit admission quantity is not a decimal for client_order_id={}",
-            client_order_id
-        )
-    })?;
     // Base-only test helper: it has no strategy cache/instrument context, so it
     // cannot size quote-quantity orders (that requires the full
     // `admission_base_notional_from_order` path with an instrument) and it cannot
@@ -5575,32 +5484,19 @@ fn submit_admission_request_from_order_for_client(
         order.price().is_some(),
         "test submit admission helper cannot value a market-style order (no firm limit price): production values it at the instrument price ceiling — use `strategy.submit_admission_request_from_order` with a cache-seeded instrument"
     );
-    let price_source = compiled_order_price_source(intent.price.clone(), order);
-    let price = Decimal::from_str(price_source.trim()).with_context(|| {
-        format!(
-            "bolt-v3 submit admission price is not a decimal for client_order_id={}",
-            client_order_id
-        )
-    })?;
-    let notional = base_quantity_admission_notional(price, quantity);
-
-    Ok(BoltV3SubmitAdmissionRequest {
-        strategy_id: intent.strategy_id.clone(),
-        execution_client_id: execution_client_id.to_string(),
-        client_order_id,
-        instrument_id: order.instrument_id().to_string(),
-        notional,
-        order_side: order.order_side(),
-        order_quantity: quantity,
-        intent_kind: match intent.intent_kind {
-            BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
-            BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
+    build_submit_admission_request_from_order(
+        BoltV3SubmitAdmissionRequestInput {
+            execution_client_id,
+            intent,
+            order,
+            instrument: None,
+            quote_quantity_last_price: None,
+            quote_quantity_reference_price: None,
+            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            risk_reducing_exit_position: None,
         },
-        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
-        canary_proof_claim: None,
-        risk_reducing_exit_proof: None,
-        kill_switch_forced_reduction: None,
-    })
+        |_| Ok(Decimal::ZERO),
+    )
 }
 
 #[cfg(test)]

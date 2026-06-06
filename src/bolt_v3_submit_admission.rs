@@ -1,8 +1,10 @@
 use crate::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
+    BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, compiled_order_price_source,
 };
 use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport;
+use anyhow::Context;
 use nautilus_model::{
     enums::{OrderSide, PositionSide},
     instruments::{Instrument, InstrumentAny},
@@ -504,6 +506,14 @@ pub struct BoltV3RiskReducingExitProof {
     pub exit_quantity: Decimal,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3RiskReducingExitPositionInput<'a> {
+    pub position_id: &'a str,
+    pub instrument_id: &'a str,
+    pub position_side: PositionSide,
+    pub position_quantity: Decimal,
+}
+
 impl BoltV3RiskReducingExitProof {
     fn is_valid_for(&self, request: &BoltV3SubmitAdmissionRequest) -> bool {
         self.instrument_id == request.instrument_id
@@ -569,6 +579,120 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub canary_proof_claim: Option<String>,
     pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
     pub kill_switch_forced_reduction: Option<BoltV3KillSwitchForcedReductionClaim>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BoltV3SubmitAdmissionRequestInput<'a> {
+    pub execution_client_id: &'a str,
+    pub intent: &'a BoltV3OrderIntentEvidence,
+    pub order: &'a OrderAny,
+    pub instrument: Option<&'a InstrumentAny>,
+    pub quote_quantity_last_price: Option<Price>,
+    pub quote_quantity_reference_price: Option<Price>,
+    pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+    pub risk_reducing_exit_position: Option<BoltV3RiskReducingExitPositionInput<'a>>,
+}
+
+pub fn build_submit_admission_request_from_order<F>(
+    input: BoltV3SubmitAdmissionRequestInput<'_>,
+    max_fee_bps_for_price: F,
+) -> anyhow::Result<BoltV3SubmitAdmissionRequest>
+where
+    F: FnOnce(Decimal) -> anyhow::Result<Decimal>,
+{
+    let client_order_id = input.order.client_order_id().to_string();
+    let quantity_source = input.order.quantity().to_string();
+    let quantity = Decimal::from_str(quantity_source.trim()).with_context(|| {
+        format!(
+            "bolt-v3 submit admission quantity is not a decimal for client_order_id={}",
+            client_order_id
+        )
+    })?;
+    let price_source = compiled_order_price_source(input.intent.price.clone(), input.order);
+    let price = Decimal::from_str(price_source.trim()).with_context(|| {
+        format!(
+            "bolt-v3 submit admission price is not a decimal for client_order_id={}",
+            client_order_id
+        )
+    })?;
+    let notional = if input.order.is_quote_quantity() {
+        let instrument = input.instrument.with_context(|| {
+            format!(
+                "bolt-v3 submit admission missing instrument context for quote-quantity client_order_id={}",
+                client_order_id
+            )
+        })?;
+        match admission_base_notional_from_order(
+            input.order,
+            instrument,
+            price,
+            quantity,
+            input.quote_quantity_last_price,
+            input.quote_quantity_reference_price,
+        ) {
+            Some(base_notional) => base_notional,
+            None => {
+                anyhow::ensure!(
+                    !instrument.is_inverse(),
+                    "bolt-v3 submit admission cannot value a quote-quantity order on an inverse instrument from the raw quote quantity (client_order_id={})",
+                    client_order_id
+                );
+                quantity
+            }
+        }
+    } else {
+        base_quantity_admission_notional(price, quantity)
+    };
+    let max_fee_bps = max_fee_bps_for_price(price)?;
+    let notional = if input.order.price().is_none() && !input.order.is_quote_quantity() {
+        let price_ceiling = input
+            .instrument
+            .and_then(|instrument| instrument.max_price())
+            .map(|ceiling| ceiling.as_decimal());
+        market_style_admission_ceiling_notional(price_ceiling, quantity).with_context(|| {
+            format!(
+                "bolt-v3 submit admission refuses a market-style order without a structural price ceiling for client_order_id={}",
+                client_order_id
+            )
+        })?
+    } else {
+        notional
+    };
+    let notional = fee_inclusive_admission_notional(notional, max_fee_bps);
+    let intent_kind = match input.intent.intent_kind {
+        BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
+        BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
+    };
+    let risk_reducing_exit_proof =
+        if matches!(intent_kind, BoltV3SubmitIntentKind::RiskReducingExit) {
+            input
+                .risk_reducing_exit_position
+                .map(|position| BoltV3RiskReducingExitProof {
+                    position_id: position.position_id.to_string(),
+                    instrument_id: position.instrument_id.to_string(),
+                    position_side: position.position_side,
+                    exit_order_side: input.order.order_side(),
+                    position_quantity: position.position_quantity,
+                    exit_quantity: quantity,
+                })
+        } else {
+            None
+        };
+
+    Ok(BoltV3SubmitAdmissionRequest {
+        strategy_id: input.intent.strategy_id.clone(),
+        execution_client_id: input.execution_client_id.to_string(),
+        client_order_id,
+        instrument_id: input.order.instrument_id().to_string(),
+        notional,
+        order_side: input.order.order_side(),
+        order_quantity: quantity,
+        intent_kind,
+        lifecycle_policy: input.lifecycle_policy,
+        canary_proof_claim: None,
+        risk_reducing_exit_proof,
+        kill_switch_forced_reduction: None,
+    })
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

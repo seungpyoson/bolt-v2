@@ -3,7 +3,7 @@ mod support;
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
-    BoltV3OrderIntentEvidence, BoltV3StrategyInputEvidenceSnapshot,
+    BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot,
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
@@ -11,16 +11,18 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
     BoltV3LiveSubmitApprovalLimits, BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput,
     BoltV3QuoteQuantityOrderSide, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
-    BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
-    BoltV3SubmitLifecyclePolicy, conservative_quote_quantity_admission_notional,
-    fee_inclusive_admission_notional, market_style_admission_ceiling_notional,
-    rounded_order_admission_notional,
+    BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput, BoltV3SubmitAdmissionState,
+    BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, build_submit_admission_request_from_order,
+    conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
+    market_style_admission_ceiling_notional, rounded_order_admission_notional,
 };
 use bolt_v2::strategies::registry::FeeProvider;
 use bolt_v2::strategies::registry::StrategyBuildContext;
 use futures_util::future::{BoxFuture, FutureExt};
-use nautilus_model::enums::{OrderSide, PositionSide};
-use nautilus_model::identifiers::InstrumentId;
+use nautilus_model::enums::{OrderSide, PositionSide, TimeInForce};
+use nautilus_model::identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId};
+use nautilus_model::orders::{LimitOrder, MarketOrder, OrderAny};
+use nautilus_model::types::{Price, Quantity};
 use rust_decimal::Decimal;
 use std::{
     collections::BTreeMap,
@@ -58,6 +60,141 @@ fn market_style_admission_ceiling_notional_fails_closed_without_a_ceiling() {
         result,
         Err(BoltV3SubmitAdmissionError::MissingPriceCeiling),
         "an unbounded market-style order with no declared ceiling must fail closed"
+    );
+}
+
+#[test]
+fn build_submit_admission_request_from_order_maps_base_limit_order() {
+    let price = Price::new(0.50, 2);
+    let quantity = Quantity::new(2.0, 2);
+    let order = OrderAny::Limit(
+        LimitOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            InstrumentId::from("INSTRUMENT.SOURCE"),
+            ClientOrderId::from("O-19700101-000000-001-A9-1"),
+            OrderSide::Buy,
+            quantity,
+            price,
+            TimeInForce::Gtc,
+            None,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+        )
+        .expect("limit order should be valid"),
+    );
+    let mut intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        "strategy-a".to_string(),
+        BoltV3OrderIntentKind::Entry,
+        price.to_string(),
+        &order,
+    );
+    intent.canary_proof_claim = Some("proof_only".to_string());
+
+    let request = build_submit_admission_request_from_order(
+        BoltV3SubmitAdmissionRequestInput {
+            execution_client_id: "hyperliquid_perps",
+            intent: &intent,
+            order: &order,
+            instrument: None,
+            quote_quantity_last_price: None,
+            quote_quantity_reference_price: None,
+            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            risk_reducing_exit_position: None,
+        },
+        |_| Ok(Decimal::ZERO),
+    )
+    .expect("base limit admission request should build in shared admission module");
+
+    assert_eq!(request.strategy_id, "strategy-a");
+    assert_eq!(request.execution_client_id, "hyperliquid_perps");
+    assert_eq!(request.client_order_id, "O-19700101-000000-001-A9-1");
+    assert_eq!(request.instrument_id, "INSTRUMENT.SOURCE");
+    assert_eq!(
+        request.notional,
+        Decimal::from_str_exact("1.0000").expect("expected decimal should parse")
+    );
+    assert_eq!(request.order_side, OrderSide::Buy);
+    assert_eq!(
+        request.order_quantity,
+        Decimal::from_str_exact("2.00").expect("expected decimal should parse")
+    );
+    assert_eq!(request.intent_kind, BoltV3SubmitIntentKind::Entry);
+    assert_eq!(request.canary_proof_claim, None);
+}
+
+#[test]
+fn build_submit_admission_request_from_order_checks_fee_before_market_ceiling() {
+    let fallback_price = Price::new(0.50, 2);
+    let quantity = Quantity::new(2.0, 2);
+    let order = OrderAny::Market(
+        MarketOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            InstrumentId::from("INSTRUMENT.SOURCE"),
+            ClientOrderId::from("O-19700101-000000-001-A9-2"),
+            OrderSide::Buy,
+            quantity,
+            TimeInForce::Gtc,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("market order should be valid"),
+    );
+    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        "strategy-a".to_string(),
+        BoltV3OrderIntentKind::Entry,
+        fallback_price.to_string(),
+        &order,
+    );
+
+    let error = build_submit_admission_request_from_order(
+        BoltV3SubmitAdmissionRequestInput {
+            execution_client_id: "hyperliquid_perps",
+            intent: &intent,
+            order: &order,
+            instrument: None,
+            quote_quantity_last_price: None,
+            quote_quantity_reference_price: None,
+            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            risk_reducing_exit_position: None,
+        },
+        |_| anyhow::bail!("fee lookup failed before ceiling valuation"),
+    )
+    .expect_err("fee lookup should preserve the old strategy error order");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("fee lookup failed before ceiling valuation"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("structural price ceiling"),
+        "market ceiling validation must not run before fee lookup: {message}"
     );
 }
 

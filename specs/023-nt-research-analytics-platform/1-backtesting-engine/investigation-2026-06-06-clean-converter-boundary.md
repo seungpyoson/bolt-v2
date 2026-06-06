@@ -139,6 +139,79 @@ GREEN checks after implementation:
 | Direct S3 catalog execution proof | Local operator path overrides catalog path to a local output root before running NT; the manifest can express S3 catalog config and the CLI can publish artifacts, but `BacktestNode` has not yet been proven to consume the published S3 catalog | run `--publish-output` with operator approval, verify the S3 artifact hashes, then run an explicit S3-backed catalog-consumption proof using NT `BacktestDataConfig` cloud fields |
 | Old partial output disposition | Old outputs must not be promoted as clean | keep old outputs marked partial/dirty; after clean replacement exists, retain or archive them as forensic evidence, but do not use them as accepted result artifacts |
 
+## Prior Backfill Slow-Run Root Cause
+
+This section is evidence for what must not be repeated. It is based on committed
+handoff documents, current S3 manifest reads, and historical converter commits;
+no broad backfill or NT-catalog conversion was rerun during this investigation.
+
+Confirmed root causes:
+
+- Scope explosion: the one-off backfill staged hundreds of GB before a
+  machine-readable acceptance ledger existed. The 2026-06-02 handoff records
+  418,562,436,536 accepted manifest-backed staged bytes including Polymarket
+  PMXT source, while also saying this is not canonical normalized data and not
+  NT backtesting input.
+- Local-retention pressure: the status report records old raw/progress caches
+  under `/private/tmp` and a later retention patch that deletes transient Bybit
+  payload files after S3 upload. BTE must not retain raw payload mirrors after
+  upload/hash verification.
+- Duplicate Bybit REST work: the status report records that previous Bybit
+  archive chunks also ran the full three-month REST tranche independently. The
+  Bybit REST-like manifest `run=bybit-backfill-run-d7698a37f210ee6b` still
+  records only 85 payload objects, 334,206,468 payload bytes, and remaining work
+  including full one-year all-symbol archive tick trade staging and full
+  one-year all-symbol REST pagination.
+- Provider-rate/source errors: the Deribit accepted-partial manifest
+  `run=deribit-3m-35afe0a04aa50c41` records 7,544 raw objects, 15,346,229 raw
+  bytes, and 1,118 errors, mostly HTTP 429. The first errors include invalid
+  DOGE/HYPE instrument-universe combinations returning HTTP 400. Retrying this
+  shape blindly would repeat slow failed work.
+- Acceptance mismatch after upload: the OKX target manifest
+  `run=okx-3m-8e300a494d2bd6e1` records zero script errors but is rejected from
+  accepted totals because payload selectors include `ALL_SWAP`, which violates
+  the base-ticker filter. A run can be technically complete and still unusable.
+- Partial manifest coverage: the handoff records PMXT physical S3 objects that
+  exceed accepted manifest-backed objects. A fresh S3 check on 2026-06-06
+  returned 915 objects and 344,758,798,407 bytes under
+  `s3://bolt-parquet/backfill-staging/2026-06-01/polymarket-pmxt-v2-streaming/`,
+  while the old handoff counted 914 objects and 344,758,628,885 bytes. Current
+  object presence is not acceptance.
+- Converter fail-fast/OOM blockers: historical NT-catalog conversion commits
+  record that the old conversion loop aborted whole runs on one bad object, and
+  that the Binance aggTrades path decompressed a large ZIP member into a huge
+  string plus cloned per-row provenance, causing an EXIT=137 OOM on a 32 GB
+  host. Later commits added per-object failure isolation, streaming Binance
+  aggTrades conversion, and bounded staged object reads. Those fixes are
+  necessary evidence, not permission to rerun broad conversion without scope
+  gates.
+
+No-repeat controls before any future broad backfill or BTE conversion:
+
+1. Start from an accepted source proof and a bounded object list, not a venue
+   sweep.
+2. Estimate planned object count and byte count from manifests/source indexes
+   before downloading payloads.
+3. Require a manifest schema with planned, completed, failed, skipped, bytes,
+   hashes, gap reasons, and source-proof ids before a run can be accepted.
+4. Fail preflight on unbounded selectors such as `ALL_SWAP`, `baseCoin=all`, or
+   "full all-symbol" unless the operator explicitly approves that scope.
+5. Use streaming or bounded readers for compressed/archive payloads; never
+   decode whole large archives into memory.
+6. Isolate failures per object or per declared binding so one bad source object
+   cannot abandon later good objects, while still exiting non-zero when any
+   object failed.
+7. Delete transient local payload mirrors after S3 upload and hash verification;
+   retain only manifests, source proofs, checkpoints, and small metadata.
+8. Treat raw S3 objects without completed accepted manifests as physical
+   evidence only, not backtest input.
+9. Convert to NT catalog only after source proof, normalized row contract,
+   instrument metadata, and gap policy are accepted.
+10. For this BTE branch, do not run a broad historical backfill. The only
+    admissible next runtime proof is the single accepted BNBUSDC object unless
+    a separate source proof and bounded plan are accepted first.
+
+
 ## Recommendation
 
 Proceed with the next implementation slice as production proof plus remaining NT-surface hardening, not custom simulator work:

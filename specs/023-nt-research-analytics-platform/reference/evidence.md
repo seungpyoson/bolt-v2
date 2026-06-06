@@ -201,3 +201,19 @@ the status recorded here.
 | `2-research-analytics` project evidence table | E-002, E-014, E-015, E-016, E-017, E-020, E-024, E-025, E-026, E-029, E-030, E-031, E-033, E-034, E-035, E-036, E-038, E-039, E-040, E-041 | SOURCE_PROVEN boundary and prior-art pattern; DECISION_NEEDED for selected data products, cost refresh, cross-market feature source proof, storage pointers, lifecycle policy, artifact index consumption/write boundaries, source-proof consumption, promotion review ownership, and query/read-model tooling |
 | `3-dashboard` project evidence table | E-017, E-018, E-019, E-020, E-023, E-024, E-026, E-028, E-029, E-031, E-034, E-035, E-036, E-038, E-039, E-040, E-041 | SOURCE_PROVEN source basis; DECISION_NEEDED for product path, artifact pointers, lifecycle display/restore status, source-proof/claim-limit display, read-only artifact index consumption, promotion-status display boundaries, and PnL completeness prerequisites |
 | Existing issue lookup before mutation | E-020 | SOURCE_PROVEN |
+
+## Implementation Status Snapshot - 2026-06-06
+
+- Merged BTE foundation: PR #541 establishes the minimal accepted source proof
+  -> canonical Bybit spot trade table -> NT catalog projection -> NT
+  `BacktestNode` -> objective result contract path. PR #588 and PR #589 harden
+  that path with portable/redacted operator artifacts, stricter manifest/result
+  validation, sealed accepted-data provenance, and source URL host binding to
+  the source-binding registry.
+- Backfill reference state: PR #582 is merged as reference-only handoff. It does
+  not add maintained backfill tooling, machine-enforced source-proof
+  acceptance, canonical normalized tables, or NT-ready catalogs.
+- Converter state: PR #571 is closed unmerged. Its closing disposition records
+  that the broad converter claim was unsupported by real-object evidence and
+  that the full conversion did not complete. Future converter work must start
+  from current `main` and port only reviewed/proven pieces.

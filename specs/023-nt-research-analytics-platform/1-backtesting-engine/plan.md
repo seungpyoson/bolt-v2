@@ -1,5 +1,30 @@
 # Plan: Backtesting Engine
 
+## Current Main Baseline - 2026-06-06
+
+`main` at `44655776` contains the accepted minimal BTE foundation from PR #541
+and follow-up hardening from PR #588 and PR #589. That foundation proves one
+verified path:
+
+```text
+accepted SourceProofReport
+  -> canonical Bybit spot trade table
+  -> NT ParquetDataCatalog projection
+  -> NT BacktestNode run
+  -> objective BacktestResultContract
+```
+
+This is not the full Backtesting Engine. The remaining critical path is:
+
+1. Keep `tasks.md`, this plan, and reference status docs aligned with `main`.
+2. Clean stale backtesting worktrees/branches after the read-only audit is
+   reviewed.
+3. Rebuild the venue-converter boundary from fresh `main`; closed PR #571 is
+   reference-only and not accepted implementation.
+4. Add the next accepted source-proof fixture and converter behind that
+   boundary.
+5. Implement Artifact Index publishing and configured S3 catalog production.
+
 ## Architecture
 
 ```text

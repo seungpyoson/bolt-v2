@@ -7,6 +7,21 @@ is actually wired today.
 PR context: PR #582 preserves this handoff as the reference-only replacement for
 PR #578. It does not add or bless the one-off scripts as maintained tooling.
 
+## Repository Status - 2026-06-06
+
+- PR #582 is merged and is the accepted reference-only handoff for this
+  one-off backfill state.
+- PR #578 remains closed as superseded. Its one-off Python scripts were not
+  merged because the draft mixed reference docs, runnable operator scripts, and
+  unrelated edits; review also found script robustness/API issues.
+- PR #571 remains closed unmerged. Its converter implementation must not be
+  treated as accepted NT-catalog production code: the closing disposition records
+  whole-object materialization, incomplete OKX extraction, repeated scans, and a
+  full conversion that did not complete with OKX and Polymarket still partial.
+- PR #541 plus PR #588/#589 merged a minimal BTE foundation and hardening only.
+  They do not make this one-off backfill data canonical, globally source-proof
+  accepted, or NT-ready.
+
 ## Naming
 
 - Report PMXT as `Polymarket (PMXT source)` in user-facing tables.

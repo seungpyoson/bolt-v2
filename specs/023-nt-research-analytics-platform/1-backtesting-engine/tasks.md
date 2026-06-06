@@ -1,5 +1,28 @@
 # Tasks: Backtesting Engine
 
+## Current Main Status - 2026-06-06
+
+The checklist below remains the broader Backtesting Engine plan. The merged
+mainline status is narrower:
+
+- [x] PR #541 merged the minimal BTE vertical slice:
+  accepted source proof -> canonical Bybit spot trade table -> NT catalog
+  projection -> NT `BacktestNode` run -> objective result contract.
+- [x] PR #588 merged hardening for portable/redacted operator artifacts,
+  starting-balance validation, specific instrument-id errors, provenance field
+  validation, and the spec typo fix.
+- [x] PR #589 merged source URL host binding to the source-binding registry.
+- [x] PR #582 merged scoped backfill handoff references only.
+- [ ] Full Backtesting Engine remains open: multi-fixture source proofs,
+  converter-boundary work, Artifact Index publishing, configured S3 catalog
+  production, lifecycle policy, and direct S3 catalog proof are not complete.
+- [ ] PR #571 closed unmerged and must not be treated as accepted converter
+  implementation. Its replacement should start from current `main` and port
+  only reviewed/proven pieces.
+- [ ] Stale branch/worktree cleanup is tracked in
+  `../reference/backtesting-worktree-audit-2026-06-06.md`; no branch/worktree
+  should be deleted until that read-only audit is reviewed.
+
 - [ ] BACKTESTING_ENGINE-001 Use the NT version resolved by the target `bolt-v2` branch and prove required `nautilus-backtest` crate/feature enablement.
 - [ ] BACKTESTING_ENGINE-002 Define `BacktestingRunManifest` obligations and validation rules, including source proof id/version, `run_purpose`, latest accepted proof default for `normal`, explicit older-proof pin for non-normal reproducibility/audit/comparison runs with required `proof_pin_reason_code` and conditional `proof_pin_reason_detail`, and deferred future currentness-rule slots for NT version, strategy config hash, catalog hash, manifest schema, and execution model.
 - [ ] BACKTESTING_ENGINE-003 Define `binary option` and `perps/spot` proof fixtures, with concrete venue/provider selected only through TOML/registry bindings.

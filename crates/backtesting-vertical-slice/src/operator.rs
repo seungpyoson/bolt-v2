@@ -20,24 +20,35 @@ use anyhow::{Context, Result, ensure};
 use bytes::Bytes;
 use nautilus_persistence::parquet::create_object_store_from_path;
 use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, path::Path as ObjectPath};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
     canonical_trades::{
-        CanonicalInstrumentIdentity, ConverterConfig, require_registered_trade_converter,
+        CanonicalInstrumentIdentity, CanonicalTradesTable, ConverterConfig,
+        require_registered_trade_converter,
     },
-    catalog_projection::SpotInstrumentSpec,
+    catalog_projection::{
+        CatalogProjection, SpotInstrumentSpec, logical_catalog_hash, read_back_trade_ticks,
+    },
     conversion_boundary::{
-        CATALOG_METADATA_FILE, ConversionCheckpoint, ConversionFingerprint, ConversionOutputState,
+        CATALOG_METADATA_FILE, ConversionCatalogMetadata, ConversionCheckpoint,
+        ConversionFingerprint, ConversionManifest, ConversionOutputState,
         inspect_conversion_output, write_completed_conversion_artifacts,
         write_conversion_checkpoint,
     },
-    result_contract::ResultArtifactUris,
+    result_contract::{ResultArtifactUris, ResultContractInputs, build_result_contract},
     run_manifest::{BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE},
-    runner::{BacktestRunInputs, BacktestRunOutput, run_backtest, run_nt_backtest_node},
+    runner::{
+        BacktestRunInputs, BacktestRunOutput, assert_time_window_overlaps_data,
+        expected_iterations, iterations_mismatch, market_structure_label,
+        nt_extension_surface_claim_limits, result_contract_warnings, run_backtest,
+        run_nt_backtest_node, run_purpose_label,
+    },
     source_proof::{
-        AcceptanceMode, IngestManifestObjectRecord, SourceProofReport, select_accepted_dataset,
+        AcceptanceMode, AcceptedDataset, IngestManifestObjectRecord, SourceProofReport,
+        select_accepted_dataset,
     },
 };
 
@@ -171,6 +182,201 @@ fn validate_converter_config(converter: &ConverterConfig) -> Result<()> {
     Ok(())
 }
 
+struct CompletedOutputInputs<'a> {
+    verified_sha256: String,
+    accepted_source_proof: SourceProofReport,
+    accepted: &'a AcceptedDataset,
+    canonical_artifact_path: PathBuf,
+    catalog_root: PathBuf,
+    proof_path: PathBuf,
+    contract_path: PathBuf,
+    run_manifest_path: PathBuf,
+    conversion_manifest_path: PathBuf,
+    conversion_checkpoint_path: PathBuf,
+    catalog_metadata_path: PathBuf,
+    manifest: BacktestingRunManifest,
+    contract_manifest_hash: String,
+    conversion_manifest_hash: String,
+    conversion_checkpoint_hash: String,
+    expected_catalog_hash: String,
+    artifact_uris: ResultArtifactUris,
+    created_at: &'a str,
+    spec_manifest: &'a BacktestingRunManifest,
+}
+
+fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArtifacts> {
+    let conversion_checkpoint: ConversionCheckpoint =
+        read_json_artifact(&inputs.conversion_checkpoint_path)?;
+    ensure!(
+        conversion_checkpoint.content_hash()? == inputs.conversion_checkpoint_hash,
+        "completed conversion checkpoint hash changed after inspection"
+    );
+    let conversion_manifest: ConversionManifest =
+        read_json_artifact(&inputs.conversion_manifest_path)?;
+    ensure!(
+        conversion_manifest.content_hash()? == inputs.conversion_manifest_hash,
+        "completed conversion manifest hash changed after inspection"
+    );
+    ensure!(
+        conversion_manifest.output_catalog_uri == inputs.artifact_uris.nt_catalog_uri,
+        "completed conversion output_catalog_uri does not match current run manifest"
+    );
+    let conversion_catalog_metadata: ConversionCatalogMetadata =
+        read_json_artifact(&inputs.catalog_metadata_path)?;
+    ensure!(
+        conversion_catalog_metadata.checkpoint_hash == inputs.conversion_checkpoint_hash,
+        "completed catalog metadata checkpoint_hash mismatch"
+    );
+    ensure!(
+        conversion_catalog_metadata.manifest_hash == inputs.conversion_manifest_hash,
+        "completed catalog metadata manifest_hash mismatch"
+    );
+    ensure!(
+        conversion_catalog_metadata.catalog_hash == inputs.expected_catalog_hash,
+        "completed catalog metadata catalog_hash mismatch"
+    );
+    let conversion_catalog_metadata_hash = conversion_catalog_metadata
+        .content_hash()
+        .context("hash completed catalog metadata")?;
+
+    let actual_catalog_hash = logical_catalog_hash(&inputs.catalog_root)
+        .with_context(|| format!("verify catalog hash {}", inputs.catalog_root.display()))?;
+    ensure!(
+        actual_catalog_hash == inputs.expected_catalog_hash,
+        "completed NT catalog hash mismatch: expected {:?}, got {:?}",
+        inputs.expected_catalog_hash,
+        actual_catalog_hash
+    );
+
+    let canonical_table =
+        CanonicalTradesTable::read_parquet(&inputs.canonical_artifact_path, inputs.accepted)?;
+    ensure!(
+        canonical_table.rows.len() == conversion_manifest.canonical_rows,
+        "completed canonical row count mismatch: manifest has {}, parquet has {}",
+        conversion_manifest.canonical_rows,
+        canonical_table.rows.len()
+    );
+    ensure!(
+        canonical_table.schema_version == conversion_manifest.normalized_schema_version,
+        "completed canonical schema mismatch"
+    );
+    ensure!(
+        conversion_manifest.nt_instrument_id == inputs.manifest.catalog_input.nt_instrument_id,
+        "completed conversion instrument does not match run manifest"
+    );
+    assert_time_window_overlaps_data(&inputs.manifest, &canonical_table)?;
+
+    let read_back =
+        read_back_trade_ticks(&inputs.catalog_root, &conversion_manifest.nt_instrument_id)
+            .context("read back completed NT catalog")?;
+    ensure!(
+        read_back.len() == canonical_table.rows.len(),
+        "completed NT catalog read-back count {} does not match canonical rows {}",
+        read_back.len(),
+        canonical_table.rows.len()
+    );
+
+    let nt_result = run_nt_backtest_node(&inputs.manifest)?;
+    let expected = expected_iterations(
+        &canonical_table.rows,
+        inputs.manifest.start_time,
+        inputs.manifest.end_time,
+    );
+    if let Some(reason) = iterations_mismatch(nt_result.iterations, expected) {
+        anyhow::bail!("backtest did not consume the accepted data: {reason}");
+    }
+
+    let mut claim_limits = canonical_table.forbidden_claims.clone();
+    claim_limits.extend(nt_extension_surface_claim_limits(&inputs.manifest)?);
+    let contract = build_result_contract(ResultContractInputs {
+        run_id: &inputs.manifest.run_id,
+        source_proof_id: &inputs.accepted.source_proof_id,
+        source_proof_version: inputs.accepted.source_proof_version,
+        manifest_hash: &inputs.contract_manifest_hash,
+        acceptance_mode: inputs.accepted.acceptance_mode,
+        accepted_by: &inputs.accepted.accepted_by,
+        accepted_at: &inputs.accepted.accepted_at,
+        accepted_object_sha256: &inputs.accepted.accepted_object_sha256,
+        converter_identity: &conversion_manifest.fingerprint.converter_identity,
+        converter_version: &conversion_manifest.fingerprint.converter_version,
+        converter_config_hash: &conversion_manifest.fingerprint.converter_config_hash,
+        conversion_manifest_hash: &inputs.conversion_manifest_hash,
+        conversion_checkpoint_hash: &inputs.conversion_checkpoint_hash,
+        catalog_hash: &actual_catalog_hash,
+        catalog_metadata_hash: &conversion_catalog_metadata_hash,
+        strategy: &inputs.manifest.strategy,
+        run_purpose: run_purpose_label(&inputs.manifest),
+        market_structure_fixture: market_structure_label(&inputs.manifest),
+        fidelity_class: canonical_table.fidelity_class,
+        claim_limits,
+        warnings: result_contract_warnings(&nt_result),
+        mechanical_blockers: Vec::new(),
+        nt_result: &nt_result,
+        artifact_uris: inputs.artifact_uris,
+        created_at: inputs.created_at,
+    })?;
+
+    let projection = CatalogProjection {
+        catalog_root: inputs.catalog_root.clone(),
+        nt_instrument_id: conversion_catalog_metadata.nt_instrument_id.clone(),
+        data_type: conversion_catalog_metadata.nt_data_type.clone(),
+        trade_count: conversion_catalog_metadata.canonical_rows,
+        catalog_hash: actual_catalog_hash,
+        fidelity_class: canonical_table.fidelity_class,
+    };
+    let read_back_count = read_back.len();
+    let mut output = BacktestRunOutput {
+        canonical_table,
+        projection,
+        conversion_checkpoint,
+        conversion_manifest,
+        conversion_catalog_metadata,
+        conversion_checkpoint_hash: inputs.conversion_checkpoint_hash,
+        conversion_manifest_hash: inputs.conversion_manifest_hash,
+        read_back_count,
+        nt_result,
+        contract,
+    };
+    redact_operator_contract(&mut output);
+
+    fs::write(
+        &inputs.proof_path,
+        serde_json::to_string_pretty(&inputs.accepted_source_proof)
+            .context("serialize accepted source proof")?,
+    )
+    .with_context(|| format!("write {}", inputs.proof_path.display()))?;
+    fs::write(
+        &inputs.contract_path,
+        serde_json::to_string_pretty(&output.contract).context("serialize result contract")?,
+    )
+    .with_context(|| format!("write {}", inputs.contract_path.display()))?;
+    fs::write(
+        &inputs.run_manifest_path,
+        serde_json::to_string_pretty(&inputs.spec_manifest.to_artifact_manifest()?)
+            .context("serialize resolved run manifest")?,
+    )
+    .with_context(|| format!("write {}", inputs.run_manifest_path.display()))?;
+
+    Ok(RunArtifacts {
+        verified_sha256: inputs.verified_sha256,
+        accepted_source_proof: inputs.accepted_source_proof,
+        canonical_artifact_path: inputs.canonical_artifact_path,
+        catalog_root: inputs.catalog_root,
+        proof_path: inputs.proof_path,
+        contract_path: inputs.contract_path,
+        run_manifest_path: inputs.run_manifest_path,
+        conversion_manifest_path: inputs.conversion_manifest_path,
+        conversion_checkpoint_path: inputs.conversion_checkpoint_path,
+        catalog_metadata_path: inputs.catalog_metadata_path,
+        output,
+    })
+}
+
+fn read_json_artifact<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+}
+
 /// Run the vertical slice from a parsed [`RunSpec`] and the raw `.csv.gz` bytes
 /// of the accepted object, writing artifacts under `output_dir`.
 ///
@@ -204,12 +410,6 @@ pub fn run_from_run_spec(
         spec.accepted_object.sha256
     );
 
-    // Decompress to CSV text.
-    let mut csv_text = String::new();
-    flate2::read::GzDecoder::new(gz_bytes)
-        .read_to_string(&mut csv_text)
-        .context("decompress gzip object")?;
-
     // Gate 1: accept the source proof and bind the object via the ledger.
     let accepted_proof = spec
         .source_proof
@@ -235,16 +435,66 @@ pub fn run_from_run_spec(
             .content_hash()
             .context("hash converter config")?,
     };
+    let canonical_path = output_dir.join(CANONICAL_ARTIFACT_FILE);
+    let catalog_root = output_dir.join(CATALOG_DIR);
+    let contract_path = output_dir.join(RESULT_CONTRACT_FILE);
+    let run_manifest_path = output_dir.join(BACKTEST_RUN_MANIFEST_FILE);
+    let proof_path = output_dir.join(ACCEPTED_SOURCE_PROOF_FILE);
+    let conversion_manifest_path =
+        output_dir.join(crate::conversion_boundary::CONVERSION_MANIFEST_FILE);
+    let conversion_checkpoint_path =
+        output_dir.join(crate::conversion_boundary::CONVERSION_CHECKPOINT_FILE);
+    let catalog_metadata_path = output_dir.join(crate::conversion_boundary::CATALOG_METADATA_FILE);
+    let catalog_path = catalog_root
+        .to_str()
+        .context("catalog path is not valid UTF-8")?
+        .to_string();
+
+    // Bind the manifest catalog input to the local projection root.
+    let contract_manifest_hash = spec.manifest.manifest_hash();
+    let mut manifest = spec.manifest.clone();
+    manifest.catalog_input.catalog_path = catalog_path;
+    manifest.catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
+    manifest.catalog_input.catalog_fs_storage_options.clear();
+    manifest
+        .catalog_input
+        .catalog_fs_rust_storage_options
+        .clear();
+    let artifact_uris = portable_artifact_uris(&manifest);
+
     match inspect_conversion_output(output_dir, &conversion_fingerprint)? {
-        ConversionOutputState::CleanNew
-        | ConversionOutputState::ResumeFromCheckpoint { .. }
-        | ConversionOutputState::Complete { .. } => {}
+        ConversionOutputState::Complete {
+            manifest_hash,
+            checkpoint_hash,
+            catalog_hash,
+        } => {
+            return run_from_completed_output(CompletedOutputInputs {
+                verified_sha256,
+                accepted_source_proof: accepted_proof,
+                accepted: &accepted,
+                canonical_artifact_path: canonical_path,
+                catalog_root,
+                proof_path,
+                contract_path,
+                run_manifest_path,
+                conversion_manifest_path,
+                conversion_checkpoint_path,
+                catalog_metadata_path,
+                manifest,
+                contract_manifest_hash,
+                conversion_manifest_hash: manifest_hash,
+                conversion_checkpoint_hash: checkpoint_hash,
+                expected_catalog_hash: catalog_hash,
+                artifact_uris,
+                created_at: &spec.created_at_utc,
+                spec_manifest: &spec.manifest,
+            });
+        }
+        ConversionOutputState::CleanNew | ConversionOutputState::ResumeFromCheckpoint { .. } => {}
     }
 
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create output dir {}", output_dir.display()))?;
-    let canonical_path = output_dir.join(CANONICAL_ARTIFACT_FILE);
-    let catalog_root = output_dir.join(CATALOG_DIR);
     for stale_completed_artifact in [
         crate::conversion_boundary::CONVERSION_MANIFEST_FILE,
         crate::conversion_boundary::CATALOG_METADATA_FILE,
@@ -267,25 +517,13 @@ pub fn run_from_run_spec(
         fs::remove_dir_all(&catalog_root)
             .with_context(|| format!("clean catalog root {}", catalog_root.display()))?;
     }
-    let catalog_path = catalog_root
-        .to_str()
-        .context("catalog path is not valid UTF-8")?
-        .to_string();
-    let contract_path = output_dir.join(RESULT_CONTRACT_FILE);
-    let run_manifest_path = output_dir.join(BACKTEST_RUN_MANIFEST_FILE);
-    let proof_path = output_dir.join(ACCEPTED_SOURCE_PROOF_FILE);
 
-    // Bind the manifest catalog input to the local projection root.
-    let contract_manifest_hash = spec.manifest.manifest_hash();
-    let mut manifest = spec.manifest.clone();
-    manifest.catalog_input.catalog_path = catalog_path.clone();
-    manifest.catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
-    manifest.catalog_input.catalog_fs_storage_options.clear();
-    manifest
-        .catalog_input
-        .catalog_fs_rust_storage_options
-        .clear();
-    let artifact_uris = portable_artifact_uris(&manifest);
+    // Decompress to CSV text only when conversion is required. Completed
+    // outputs are reused from the proven canonical Parquet artifact.
+    let mut csv_text = String::new();
+    flate2::read::GzDecoder::new(gz_bytes)
+        .read_to_string(&mut csv_text)
+        .context("decompress gzip object")?;
 
     let mut output = run_backtest(BacktestRunInputs {
         accepted: &accepted,
@@ -1057,14 +1295,50 @@ mod tests {
     }
 
     #[test]
-    fn run_from_run_spec_cleans_stale_catalog() {
+    fn run_from_run_spec_accepts_completed_output_on_second_run() {
         let gz = gzip(SAMPLE_CSV);
         let spec = run_spec_for(&gz);
         let dir = tempfile::TempDir::new().unwrap();
         run_from_run_spec(&spec, &gz, dir.path()).expect("first run");
-        // A second run into the same output dir must clean the stale catalog and
-        // succeed, not trip the dirty-catalog guard.
-        run_from_run_spec(&spec, &gz, dir.path()).expect("second run cleans stale catalog");
+        run_from_run_spec(&spec, &gz, dir.path()).expect("second run accepts completed output");
+    }
+
+    #[test]
+    fn run_from_run_spec_reuses_completed_output_without_rebuilding_catalog() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().unwrap();
+        let first = run_from_run_spec(&spec, &gz, dir.path()).expect("first run");
+        let checkpoint_json =
+            fs::read_to_string(&first.conversion_checkpoint_path).expect("checkpoint");
+        let manifest_json = fs::read_to_string(&first.conversion_manifest_path).expect("manifest");
+        let metadata_json = fs::read_to_string(&first.catalog_metadata_path).expect("metadata");
+        let catalog_hash = first.output.projection.catalog_hash.clone();
+        let read_back_count = first.output.read_back_count;
+
+        let catalog_marker = first.catalog_root.join(".reuse-sentinel");
+        fs::write(&catalog_marker, b"must survive completed-output reuse").expect("marker");
+
+        let second = run_from_run_spec(&spec, &gz, dir.path()).expect("second run");
+
+        assert!(
+            catalog_marker.exists(),
+            "completed conversion output must be reused without deleting the NT catalog root"
+        );
+        assert_eq!(
+            fs::read_to_string(&second.conversion_checkpoint_path).expect("checkpoint"),
+            checkpoint_json
+        );
+        assert_eq!(
+            fs::read_to_string(&second.conversion_manifest_path).expect("manifest"),
+            manifest_json
+        );
+        assert_eq!(
+            fs::read_to_string(&second.catalog_metadata_path).expect("metadata"),
+            metadata_json
+        );
+        assert_eq!(second.output.projection.catalog_hash, catalog_hash);
+        assert_eq!(second.output.read_back_count, read_back_count);
     }
 
     #[test]

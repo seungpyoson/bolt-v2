@@ -55,7 +55,9 @@ fn nt_surface_classification_label(classification: NtSurfaceClassification) -> &
     }
 }
 
-fn nt_extension_surface_claim_limits(manifest: &BacktestingRunManifest) -> Result<Vec<String>> {
+pub(crate) fn nt_extension_surface_claim_limits(
+    manifest: &BacktestingRunManifest,
+) -> Result<Vec<String>> {
     Ok(manifest
         .resolved_nt_surfaces()?
         .into_iter()
@@ -69,6 +71,20 @@ fn nt_extension_surface_claim_limits(manifest: &BacktestingRunManifest) -> Resul
             )
         })
         .collect())
+}
+
+pub(crate) fn result_contract_warnings(nt_result: &BacktestResult) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if nt_result.total_orders == 0 {
+        warnings.push(
+            "No orders were placed: the accepted data is trade-only and carries no quote ticks, \
+             and the configured strategy's order entry is quote-driven. NautilusTrader still \
+             aggregated the accepted trades into bars and ran the strategy's signal logic. This \
+             reflects the TRADE_REPLAY fidelity of the source, not a defect."
+                .to_string(),
+        );
+    }
+    warnings
 }
 
 /// Inputs for one end-to-end backtest run over accepted data.
@@ -320,16 +336,7 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         .context("hash catalog metadata")?;
 
     // Gate 6: objective result contract.
-    let mut warnings = Vec::new();
-    if nt_result.total_orders == 0 {
-        warnings.push(
-            "No orders were placed: the accepted data is trade-only and carries no quote ticks, \
-             and the configured strategy's order entry is quote-driven. NautilusTrader still \
-             aggregated the accepted trades into bars and ran the strategy's signal logic. This \
-             reflects the TRADE_REPLAY fidelity of the source, not a defect."
-                .to_string(),
-        );
-    }
+    let warnings = result_contract_warnings(&nt_result);
     let mut claim_limits = canonical_table.forbidden_claims.clone();
     claim_limits.extend(nt_extension_surface_claim_limits(inputs.manifest)?);
     let contract = build_result_contract(ResultContractInputs {
@@ -375,7 +382,7 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     })
 }
 
-fn run_purpose_label(manifest: &BacktestingRunManifest) -> &'static str {
+pub(crate) fn run_purpose_label(manifest: &BacktestingRunManifest) -> &'static str {
     use super::run_manifest::RunPurpose;
     match manifest.run_purpose {
         RunPurpose::Normal => "normal",
@@ -386,7 +393,7 @@ fn run_purpose_label(manifest: &BacktestingRunManifest) -> &'static str {
     }
 }
 
-fn market_structure_label(manifest: &BacktestingRunManifest) -> &'static str {
+pub(crate) fn market_structure_label(manifest: &BacktestingRunManifest) -> &'static str {
     use super::run_manifest::MarketStructureFixture;
     match manifest.market_structure_fixture {
         MarketStructureFixture::BinaryOption => "binary-option",
@@ -725,7 +732,7 @@ fn aggressor_label(side: AggressorSide) -> &'static str {
 /// Reason the NautilusTrader engine did not process exactly the accepted data, or
 /// `None` when its iteration count equals the accepted-trade count. NautilusTrader
 /// increments `iterations` once per data point delivered to the engine loop.
-fn iterations_mismatch(iterations: usize, expected: usize) -> Option<String> {
+pub(crate) fn iterations_mismatch(iterations: usize, expected: usize) -> Option<String> {
     if iterations == 0 {
         return Some(format!(
             "NautilusTrader engine iterated zero times; it processed none of the {expected} \
@@ -749,7 +756,11 @@ fn iterations_mismatch(iterations: usize, expected: usize) -> Option<String> {
 /// `ts_init` equals its canonical `event_time`, so the windowed row count is
 /// exactly the engine's expected iteration count; with no bounds it is the whole
 /// accepted set, matching the read-back proof.
-fn expected_iterations(rows: &[CanonicalTradeRow], start: Option<i64>, end: Option<i64>) -> usize {
+pub(crate) fn expected_iterations(
+    rows: &[CanonicalTradeRow],
+    start: Option<i64>,
+    end: Option<i64>,
+) -> usize {
     rows.iter()
         .filter(|row| start.is_none_or(|start| row.event_time >= start))
         .filter(|row| end.is_none_or(|end| row.event_time <= end))
@@ -761,7 +772,7 @@ fn expected_iterations(rows: &[CanonicalTradeRow], start: Option<i64>, end: Opti
 /// rows bound the accepted data's event range; a `start_time` after the last
 /// trade (or an `end_time` at/ before the first) would leave the engine with no
 /// data while the run still reports the accepted source/catalog hash.
-fn assert_time_window_overlaps_data(
+pub(crate) fn assert_time_window_overlaps_data(
     manifest: &BacktestingRunManifest,
     canonical_table: &CanonicalTradesTable,
 ) -> Result<()> {

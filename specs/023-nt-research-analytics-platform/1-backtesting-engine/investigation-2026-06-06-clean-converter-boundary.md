@@ -256,7 +256,9 @@ GREEN checks after implementation:
 - `just bte-test committed_result_contract_records_nt_extension_surface_claim_limits`: RED failed because the checked-in reference result contract lacked NT extension-surface claim limits; GREEN passed after updating the reference fixture
 - `just bte-test run_from_run_spec_writes_resolved_run_manifest_artifact`: RED failed with missing `BacktestRunManifestArtifact`, `NtSurfaceClassification`, and `RunArtifacts.run_manifest_path`; GREEN passed after adding the portable `backtest-run-manifest.json` artifact with submitted manifest hash, submitted manifest, and structured resolved NT surface records
 - `just bte-test research_analytics_artifacts_use_typed_subfamilies_and_one_kind_pointer research_analytics_records_require_matching_subfamily_prefix`: RED failed with missing `ResearchAnalyticsSubfamily` and RA-specific staged-record constructor; GREEN passed after adding typed RA subfamilies, enforcing `research-analytics/v1/<subfamily>/` manifest prefixes, and keeping every RA subfamily on the single `research_analytics` Artifact Index pointer
-- `just bte-test`: 220 passed, including 2 slow public API tests
+- `just bte-test run_from_run_spec_reuses_completed_output_without_rebuilding_catalog`: RED failed because a second run into a completed output deleted the existing NT catalog root; GREEN passed after `ConversionOutputState::Complete` began loading the proven canonical Parquet artifact, recomputing the logical NT catalog hash, running NT read-back/BacktestNode checks, and preserving the completed conversion checkpoint/manifest/catalog metadata plus catalog root
+- `just bte-test run_from_run_spec_reuses_completed_output_without_rebuilding_catalog run_from_run_spec_accepts_completed_output_on_second_run`: 2 passed after the completed-output reuse path was added
+- `just bte-test`: 221 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed
@@ -313,6 +315,15 @@ Confirmed root causes:
   `run=okx-3m-8e300a494d2bd6e1` records zero script errors but is rejected from
   accepted totals because payload selectors include `ALL_SWAP`, which violates
   the base-ticker filter. A run can be technically complete and still unusable.
+- Completed-output operator gap: the conversion boundary already classified a
+  matching completed checkpoint/manifest/catalog-metadata chain as `Complete`,
+  but `run_from_run_spec` treated `Complete` the same as clean/resumable output.
+  It wrote a started checkpoint, deleted the NT catalog root, decompressed the
+  raw object, and reran conversion/catalog projection. The fixed path now
+  reuses completed output only after re-verifying the accepted object SHA,
+  loading the canonical Parquet artifact, recomputing the logical NT catalog
+  hash from NT reads, proving read-back count, and running BacktestNode against
+  the verified catalog.
 - Partial manifest coverage: the handoff records PMXT physical S3 objects that
   exceed accepted manifest-backed objects. A fresh S3 check on 2026-06-06
   returned 915 objects and 344,758,798,407 bytes under
@@ -418,6 +429,12 @@ No-repeat controls before any future broad backfill or BTE conversion:
     instead of being overwritten.
 19. Publish-path artifact-store validation must happen before reading the local
     accepted object, not merely before conversion/backtest.
+20. A completed conversion output must be a verified reuse path, not permission
+    to delete and rebuild the NT catalog. Reuse requires matching source proof,
+    accepted object hash, converter identity/version/config hash, completed
+    checkpoint/manifest/catalog metadata, canonical Parquet source-proof
+    binding, logical NT catalog hash, NT read-back count, and BacktestNode
+    iteration checks.
 
 
 ## Recommendation

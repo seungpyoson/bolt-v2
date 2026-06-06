@@ -277,7 +277,7 @@ pub fn project_canonical_trades_to_catalog(
         nt_instrument_id: instrument_id.to_string(),
         data_type: NT_DATA_TYPE_TRADE_TICK.to_string(),
         trade_count,
-        catalog_hash: catalog_hash(catalog_root)?,
+        catalog_hash: logical_catalog_hash(catalog_root)?,
         fidelity_class: table.fidelity_class,
     })
 }
@@ -310,7 +310,7 @@ pub fn read_back_trade_ticks(
 /// This intentionally hashes NT-read instruments and `TradeTick` values, not
 /// raw Parquet bytes or paths. Parquet writer metadata can legitimately drift
 /// across NT/Arrow builds while representing identical logical catalog input.
-fn catalog_hash(root: &Path) -> Result<String> {
+pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
     let mut catalog = ParquetDataCatalog::new(root, None, None, None, None);
     let mut instruments = catalog
         .query_instruments(None)
@@ -981,7 +981,7 @@ mod tests {
         fs::write(dir.path().join("writer-version.txt"), b"nt writer metadata").unwrap();
         assert_eq!(
             projection.catalog_hash,
-            catalog_hash(dir.path()).unwrap(),
+            logical_catalog_hash(dir.path()).unwrap(),
             "catalog hash must describe logical catalog contents, not unrelated writer files"
         );
     }
@@ -998,8 +998,8 @@ mod tests {
         fs::create_dir_all(root_b.path().join("data/beta")).unwrap();
         fs::write(root_b.path().join("data/beta/file.parquet"), b"identical").unwrap();
         assert_eq!(
-            catalog_hash(root_a.path()).unwrap(),
-            catalog_hash(root_b.path()).unwrap(),
+            logical_catalog_hash(root_a.path()).unwrap(),
+            logical_catalog_hash(root_b.path()).unwrap(),
             "unrelated bytes under different relative paths must not change the logical hash"
         );
     }

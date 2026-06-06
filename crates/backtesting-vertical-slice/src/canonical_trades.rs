@@ -17,11 +17,11 @@ use std::{fs::File, path::Path, sync::Arc};
 
 use anyhow::{Context, Result, bail, ensure};
 use arrow::{
-    array::{Int64Array, StringArray},
+    array::{Array, Int64Array, StringArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use parquet::arrow::ArrowWriter;
+use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -794,6 +794,216 @@ impl CanonicalTradesTable {
         writer.close().context("failed to finalize parquet")?;
         Ok(())
     }
+
+    /// Read a canonical normalized table from an existing Parquet artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact does not match the canonical schema or
+    /// does not bind to the accepted source proof/object.
+    pub fn read_parquet(path: &Path, accepted: &AcceptedDataset) -> Result<Self> {
+        let file = File::open(path)
+            .with_context(|| format!("failed to open canonical artifact {}", path.display()))?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+            .context("failed to construct canonical parquet reader")?
+            .build()
+            .context("failed to build canonical parquet reader")?;
+
+        let mut rows = Vec::new();
+        for batch in reader {
+            let batch = batch.context("failed to read canonical parquet batch")?;
+            let schema_version = string_column(&batch, "schema_version")?;
+            let ingest_run_id = string_column(&batch, "ingest_run_id")?;
+            let source_binding = string_column(&batch, "source_binding")?;
+            let venue = string_column(&batch, "venue")?;
+            let product_family = string_column(&batch, "product_family")?;
+            let product_category = string_column(&batch, "product_category")?;
+            let instrument_id = string_column(&batch, "instrument_id")?;
+            let canonical_instrument_key = string_column(&batch, "canonical_instrument_key")?;
+            let venue_symbol = string_column(&batch, "venue_symbol")?;
+            let nt_instrument_id = string_column(&batch, "nt_instrument_id")?;
+            let event_time = int64_column(&batch, "event_time")?;
+            let capture_time = int64_column(&batch, "capture_time")?;
+            let availability_time = int64_column(&batch, "availability_time")?;
+            let source_sequence = string_column(&batch, "source_sequence")?;
+            let raw_payload_id = string_column(&batch, "raw_payload_id")?;
+            let source_proof_id = string_column(&batch, "source_proof_id")?;
+            let payload_hash = string_column(&batch, "payload_hash")?;
+            let row_transform_hash = string_column(&batch, "transform_hash")?;
+            let trade_source_type = string_column(&batch, "trade_source_type")?;
+            let trade_id = string_column(&batch, "trade_id")?;
+            let aggressor_side = string_column(&batch, "aggressor_side")?;
+            let price = string_column(&batch, "price")?;
+            let size = string_column(&batch, "size")?;
+            let notional = string_column(&batch, "notional")?;
+
+            for index in 0..batch.num_rows() {
+                rows.push(CanonicalTradeRow {
+                    schema_version: required_string(schema_version, index, "schema_version")?,
+                    ingest_run_id: required_string(ingest_run_id, index, "ingest_run_id")?,
+                    source_binding: required_string(source_binding, index, "source_binding")?,
+                    venue: required_string(venue, index, "venue")?,
+                    product_family: required_string(product_family, index, "product_family")?,
+                    product_category: required_string(product_category, index, "product_category")?,
+                    instrument_id: required_string(instrument_id, index, "instrument_id")?,
+                    canonical_instrument_key: required_string(
+                        canonical_instrument_key,
+                        index,
+                        "canonical_instrument_key",
+                    )?,
+                    venue_symbol: required_string(venue_symbol, index, "venue_symbol")?,
+                    nt_instrument_id: optional_string(nt_instrument_id, index),
+                    event_time: required_i64(event_time, index, "event_time")?,
+                    capture_time: required_i64(capture_time, index, "capture_time")?,
+                    availability_time: optional_i64(availability_time, index),
+                    source_sequence: optional_string(source_sequence, index),
+                    raw_payload_id: required_string(raw_payload_id, index, "raw_payload_id")?,
+                    source_proof_id: required_string(source_proof_id, index, "source_proof_id")?,
+                    payload_hash: required_string(payload_hash, index, "payload_hash")?,
+                    transform_hash: required_string(row_transform_hash, index, "transform_hash")?,
+                    trade_source_type: required_string(
+                        trade_source_type,
+                        index,
+                        "trade_source_type",
+                    )?,
+                    trade_id: required_string(trade_id, index, "trade_id")?,
+                    aggressor_side: required_string(aggressor_side, index, "aggressor_side")?,
+                    price: required_string(price, index, "price")?,
+                    size: required_string(size, index, "size")?,
+                    notional: required_string(notional, index, "notional")?,
+                });
+            }
+        }
+
+        let first = rows.first().context("canonical trades parquet is empty")?;
+        let table = Self {
+            schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
+            partition: TradesPartition {
+                venue: first.venue.clone(),
+                product_family: first.product_family.clone(),
+                product_category: first.product_category.clone(),
+                instrument_id: first.instrument_id.clone(),
+                dt: accepted.object.archive_date.clone(),
+            },
+            source_proof_id: accepted.source_proof_id.clone(),
+            source_proof_version: accepted.source_proof_version,
+            fidelity_class: accepted.fidelity_class,
+            forbidden_claims: accepted.forbidden_claims.clone(),
+            transform_hash: transform_hash(),
+            payload_hash: accepted.object.sha256.clone(),
+            rows,
+        };
+        table.validate()?;
+        table.validate_loaded_against_accepted(accepted)?;
+        Ok(table)
+    }
+
+    fn validate_loaded_against_accepted(&self, accepted: &AcceptedDataset) -> Result<()> {
+        ensure!(
+            self.partition.venue == accepted.venue,
+            "canonical artifact venue mismatch: expected {:?}, got {:?}",
+            accepted.venue,
+            self.partition.venue
+        );
+        ensure!(
+            self.partition.product_family == accepted.product_family,
+            "canonical artifact product_family mismatch"
+        );
+        ensure!(
+            self.partition.product_category == accepted.product_category,
+            "canonical artifact product_category mismatch"
+        );
+        ensure!(
+            self.partition.dt == accepted.object.archive_date,
+            "canonical artifact date mismatch"
+        );
+        ensure!(
+            self.source_proof_id == accepted.source_proof_id,
+            "canonical artifact source_proof_id mismatch"
+        );
+        ensure!(
+            self.source_proof_version == accepted.source_proof_version,
+            "canonical artifact source_proof_version mismatch"
+        );
+        ensure!(
+            self.payload_hash == accepted.object.sha256,
+            "canonical artifact payload_hash mismatch"
+        );
+        for (index, row) in self.rows.iter().enumerate() {
+            ensure!(
+                row.source_binding == accepted.source_binding,
+                "row {index}: source_binding mismatch"
+            );
+            ensure!(row.venue == accepted.venue, "row {index}: venue mismatch");
+            ensure!(
+                row.product_family == accepted.product_family,
+                "row {index}: product_family mismatch"
+            );
+            ensure!(
+                row.product_category == accepted.product_category,
+                "row {index}: product_category mismatch"
+            );
+            ensure!(
+                row.raw_payload_id == accepted.object.sha256,
+                "row {index}: raw_payload_id mismatch"
+            );
+            ensure!(
+                row.payload_hash == accepted.object.sha256,
+                "row {index}: payload_hash mismatch"
+            );
+            ensure!(
+                row.source_proof_id == accepted.source_proof_id,
+                "row {index}: source_proof_id mismatch"
+            );
+            ensure!(
+                row.transform_hash == self.transform_hash,
+                "row {index}: transform_hash mismatch"
+            );
+        }
+        Ok(())
+    }
+}
+
+fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray> {
+    batch
+        .column_by_name(name)
+        .with_context(|| format!("canonical parquet missing column {name:?}"))?
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .with_context(|| format!("canonical parquet column {name:?} is not Utf8"))
+}
+
+fn int64_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Int64Array> {
+    batch
+        .column_by_name(name)
+        .with_context(|| format!("canonical parquet missing column {name:?}"))?
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .with_context(|| format!("canonical parquet column {name:?} is not Int64"))
+}
+
+fn required_string(column: &StringArray, row: usize, name: &str) -> Result<String> {
+    ensure!(
+        !column.is_null(row),
+        "row {row}: required column {name:?} is null"
+    );
+    Ok(column.value(row).to_string())
+}
+
+fn optional_string(column: &StringArray, row: usize) -> Option<String> {
+    (!column.is_null(row)).then(|| column.value(row).to_string())
+}
+
+fn required_i64(column: &Int64Array, row: usize, name: &str) -> Result<i64> {
+    ensure!(
+        !column.is_null(row),
+        "row {row}: required column {name:?} is null"
+    );
+    Ok(column.value(row))
+}
+
+fn optional_i64(column: &Int64Array, row: usize) -> Option<i64> {
+    (!column.is_null(row)).then(|| column.value(row))
 }
 
 #[cfg(test)]

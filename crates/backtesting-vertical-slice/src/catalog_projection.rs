@@ -162,6 +162,7 @@ pub fn build_currency_pair(spec: &SpotInstrumentSpec) -> Result<CurrencyPair> {
 
 fn rescaled(value: &str, precision: u8) -> Result<String> {
     let mut decimal = Decimal::from_str(value).with_context(|| format!("decimal {value:?}"))?;
+    decimal.normalize_assign();
     ensure!(
         decimal.scale() <= u32::from(precision),
         "value {value:?} has more precision than instrument allows ({precision})"
@@ -330,9 +331,7 @@ fn catalog_hash(root: &Path) -> Result<String> {
     hasher.update(b"nautilus-logical-catalog.v1");
     for instrument in instruments {
         hasher.update([0u8]);
-        hasher.update(instrument.id().to_string().as_bytes());
-        hasher.update([1u8]);
-        hasher.update(format!("{instrument:?}").as_bytes());
+        update_instrument_hash(&mut hasher, &instrument)?;
     }
     for tick in ticks {
         hasher.update([2u8]);
@@ -344,14 +343,154 @@ fn catalog_hash(root: &Path) -> Result<String> {
         hasher.update([5u8]);
         hasher.update(tick.size.as_decimal().to_string().as_bytes());
         hasher.update([6u8]);
-        hasher.update(format!("{:?}", tick.aggressor_side).as_bytes());
+        hasher.update(tick.aggressor_side.to_string().as_bytes());
         hasher.update([7u8]);
-        hasher.update(tick.ts_event.as_u64().to_le_bytes());
+        hasher.update(tick.ts_event.as_u64().to_string().as_bytes());
         hasher.update([8u8]);
-        hasher.update(tick.ts_init.as_u64().to_le_bytes());
-        hasher.update([0u8]);
+        hasher.update(tick.ts_init.as_u64().to_string().as_bytes());
     }
     Ok(hex::encode(hasher.finalize()))
+}
+
+fn update_hash_field(hasher: &mut Sha256, label: &str, value: &str) {
+    hasher.update(label.as_bytes());
+    hasher.update([0]);
+    hasher.update(value.as_bytes());
+    hasher.update([0xff]);
+}
+
+fn update_optional_hash_field<T: ToString>(hasher: &mut Sha256, label: &str, value: Option<&T>) {
+    match value {
+        Some(value) => update_hash_field(hasher, label, &value.to_string()),
+        None => update_hash_field(hasher, label, "<none>"),
+    }
+}
+
+fn update_instrument_hash(hasher: &mut Sha256, instrument: &InstrumentAny) -> Result<()> {
+    match instrument {
+        InstrumentAny::CurrencyPair(currency_pair) => {
+            update_currency_pair_hash(hasher, currency_pair)?
+        }
+        other => {
+            anyhow::bail!(
+                "logical catalog hash does not support instrument type for {}",
+                other.id()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn update_currency_pair_hash(hasher: &mut Sha256, instrument: &CurrencyPair) -> Result<()> {
+    ensure!(
+        instrument.info.is_none(),
+        "logical catalog hash does not support opaque currency pair info for {}",
+        instrument.id
+    );
+    update_hash_field(hasher, "instrument.type", "currency_pair");
+    update_hash_field(hasher, "instrument.id", &instrument.id.to_string());
+    update_hash_field(
+        hasher,
+        "instrument.raw_symbol",
+        instrument.raw_symbol.as_ref(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.base_currency",
+        &instrument.base_currency.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.quote_currency",
+        &instrument.quote_currency.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.price_precision",
+        &instrument.price_precision.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.size_precision",
+        &instrument.size_precision.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.price_increment",
+        &instrument.price_increment.as_decimal().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.size_increment",
+        &instrument.size_increment.as_decimal().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.multiplier",
+        &instrument.multiplier.as_decimal().to_string(),
+    );
+    update_optional_hash_field(hasher, "instrument.lot_size", instrument.lot_size.as_ref());
+    update_optional_hash_field(
+        hasher,
+        "instrument.max_quantity",
+        instrument.max_quantity.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.min_quantity",
+        instrument.min_quantity.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.max_notional",
+        instrument.max_notional.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.min_notional",
+        instrument.min_notional.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.max_price",
+        instrument.max_price.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.min_price",
+        instrument.min_price.as_ref(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.margin_init",
+        &instrument.margin_init.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.margin_maint",
+        &instrument.margin_maint.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.maker_fee",
+        &instrument.maker_fee.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.taker_fee",
+        &instrument.taker_fee.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.ts_event",
+        &instrument.ts_event.as_u64().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.ts_init",
+        &instrument.ts_init.as_u64().to_string(),
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -546,6 +685,30 @@ mod tests {
     }
 
     #[test]
+    fn canonical_rows_to_trade_ticks_accepts_trailing_zero_source_values() {
+        let csv = "id,timestamp,price,volume,side,rpi\n\
+            1,1772323201665,617.20,0.3000,buy,0\n";
+        let identity = CanonicalInstrumentIdentity {
+            instrument_id: "BNBUSDC".to_string(),
+            venue_symbol: "BNBUSDC".to_string(),
+            nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
+        };
+        let table = normalize_bybit_spot_tick_trades(
+            &accepted_dataset(),
+            &identity,
+            csv,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize");
+        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let ticks = canonical_rows_to_trade_ticks(&table, &instrument)
+            .expect("trailing zero source values are exact at instrument precision");
+        assert_eq!(ticks[0].price, Price::from("617.2"));
+        assert_eq!(ticks[0].size, Quantity::from("0.3000"));
+    }
+
+    #[test]
     fn builds_currency_pair_from_accepted_spec() {
         let instrument = build_currency_pair(&spec()).expect("build instrument");
         assert_eq!(instrument.id().to_string(), "BNBUSDC.BYBIT");
@@ -625,6 +788,180 @@ mod tests {
         assert_ne!(
             a.catalog_hash, b.catalog_hash,
             "different trade data must change the catalog hash"
+        );
+    }
+
+    fn expected_hash_field(hasher: &mut Sha256, label: &str, value: &str) {
+        hasher.update(label.as_bytes());
+        hasher.update([0]);
+        hasher.update(value.as_bytes());
+        hasher.update([0xff]);
+    }
+
+    fn expected_hash_optional_field<T: ToString>(
+        hasher: &mut Sha256,
+        label: &str,
+        value: Option<&T>,
+    ) {
+        match value {
+            Some(value) => expected_hash_field(hasher, label, &value.to_string()),
+            None => expected_hash_field(hasher, label, "<none>"),
+        }
+    }
+
+    fn expected_hash_currency_pair(hasher: &mut Sha256, instrument: &CurrencyPair) {
+        assert!(
+            instrument.info.is_none(),
+            "test fixture uses no opaque info"
+        );
+        expected_hash_field(hasher, "instrument.type", "currency_pair");
+        expected_hash_field(hasher, "instrument.id", &instrument.id.to_string());
+        expected_hash_field(
+            hasher,
+            "instrument.raw_symbol",
+            &instrument.raw_symbol.to_string(),
+        );
+        expected_hash_field(
+            hasher,
+            "instrument.base_currency",
+            &instrument.base_currency.to_string(),
+        );
+        expected_hash_field(
+            hasher,
+            "instrument.quote_currency",
+            &instrument.quote_currency.to_string(),
+        );
+        expected_hash_field(
+            hasher,
+            "instrument.price_precision",
+            &instrument.price_precision.to_string(),
+        );
+        expected_hash_field(
+            hasher,
+            "instrument.size_precision",
+            &instrument.size_precision.to_string(),
+        );
+        expected_hash_field(
+            hasher,
+            "instrument.price_increment",
+            &instrument.price_increment.as_decimal().to_string(),
+        );
+        expected_hash_field(
+            hasher,
+            "instrument.size_increment",
+            &instrument.size_increment.as_decimal().to_string(),
+        );
+        expected_hash_field(
+            hasher,
+            "instrument.multiplier",
+            &instrument.multiplier.as_decimal().to_string(),
+        );
+        expected_hash_optional_field(hasher, "instrument.lot_size", instrument.lot_size.as_ref());
+        expected_hash_optional_field(
+            hasher,
+            "instrument.max_quantity",
+            instrument.max_quantity.as_ref(),
+        );
+        expected_hash_optional_field(
+            hasher,
+            "instrument.min_quantity",
+            instrument.min_quantity.as_ref(),
+        );
+        expected_hash_optional_field(
+            hasher,
+            "instrument.max_notional",
+            instrument.max_notional.as_ref(),
+        );
+        expected_hash_optional_field(
+            hasher,
+            "instrument.min_notional",
+            instrument.min_notional.as_ref(),
+        );
+        expected_hash_optional_field(
+            hasher,
+            "instrument.max_price",
+            instrument.max_price.as_ref(),
+        );
+        expected_hash_optional_field(
+            hasher,
+            "instrument.min_price",
+            instrument.min_price.as_ref(),
+        );
+        expected_hash_field(
+            hasher,
+            "instrument.margin_init",
+            &instrument.margin_init.to_string(),
+        );
+        expected_hash_field(
+            hasher,
+            "instrument.margin_maint",
+            &instrument.margin_maint.to_string(),
+        );
+        expected_hash_field(
+            hasher,
+            "instrument.maker_fee",
+            &instrument.maker_fee.to_string(),
+        );
+        expected_hash_field(
+            hasher,
+            "instrument.taker_fee",
+            &instrument.taker_fee.to_string(),
+        );
+        expected_hash_field(
+            hasher,
+            "instrument.ts_event",
+            &instrument.ts_event.as_u64().to_string(),
+        );
+        expected_hash_field(
+            hasher,
+            "instrument.ts_init",
+            &instrument.ts_init.as_u64().to_string(),
+        );
+    }
+
+    fn expected_logical_catalog_hash(instrument: &CurrencyPair, ticks: &[TradeTick]) -> String {
+        let mut ticks = ticks.to_vec();
+        ticks.sort_by_key(|tick| {
+            (
+                tick.ts_event.as_u64(),
+                tick.trade_id.to_string(),
+                tick.instrument_id.to_string(),
+            )
+        });
+        let mut hasher = Sha256::new();
+        hasher.update(b"nautilus-logical-catalog.v1");
+        hasher.update([0u8]);
+        expected_hash_currency_pair(&mut hasher, instrument);
+        for tick in ticks {
+            hasher.update([2u8]);
+            hasher.update(tick.instrument_id.to_string().as_bytes());
+            hasher.update([3u8]);
+            hasher.update(tick.trade_id.to_string().as_bytes());
+            hasher.update([4u8]);
+            hasher.update(tick.price.as_decimal().to_string().as_bytes());
+            hasher.update([5u8]);
+            hasher.update(tick.size.as_decimal().to_string().as_bytes());
+            hasher.update([6u8]);
+            hasher.update(tick.aggressor_side.to_string().as_bytes());
+            hasher.update([7u8]);
+            hasher.update(tick.ts_event.as_u64().to_string().as_bytes());
+            hasher.update([8u8]);
+            hasher.update(tick.ts_init.as_u64().to_string().as_bytes());
+        }
+        hex::encode(hasher.finalize())
+    }
+
+    #[test]
+    fn catalog_hash_matches_stable_currency_pair_fields() {
+        let table = canonical_table();
+        let dir = tempfile::TempDir::new().unwrap();
+        let projection = project_canonical_trades_to_catalog(&table, &spec(), dir.path()).unwrap();
+        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let ticks = canonical_rows_to_trade_ticks(&table, &instrument).expect("ticks");
+        assert_eq!(
+            projection.catalog_hash,
+            expected_logical_catalog_hash(&instrument, &ticks),
+            "catalog hash must use explicit stable instrument fields, not Debug output"
         );
     }
 

@@ -210,6 +210,10 @@ jobs:
       - name: Check required lanes
         shell: bash
         run: |
+          if [[ "${{ needs.detect.result }}" != "success" ]]; then
+            echo "bvs-detect did not succeed (${{ needs.detect.result }})"
+            exit 1
+          fi
           if [[ "${{ needs.detect.outputs.bvs_changed }}" != "true" ]]; then
             echo "no crate changes; gate is a no-op"
             exit 0

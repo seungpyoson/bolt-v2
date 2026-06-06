@@ -1,15 +1,17 @@
 # Handoff — Backtester CI always-present gate (issue #554)
 
 - **Date:** 2026-06-03
-- **Branch:** `chore/554-backtester-ci-gate` (stacked on `codex/backtesting-vertical-slice`, i.e. PR #541 head `f92fe0139d071afec36adadf7ed68b0db2df294d`)
+- **Updated:** 2026-06-06
+- **Original branch:** `chore/554-backtester-ci-gate` (stacked on `codex/backtesting-vertical-slice`, i.e. PR #541 head `f92fe0139d071afec36adadf7ed68b0db2df294d`)
+- **Shipping branch:** `codex/backtesting-vertical-slice` / PR #541
 - **Tracking issue:** #554
-- **Why this branch exists:** to keep the CI redesign OUT of PR #541 and parked with a record, per the operator's instruction. PR #541's branch is untouched.
+- **Final scope decision:** the backtester CI gate now ships in PR #541 because the workflow gates the new crate introduced by PR #541 and depends on that crate's root `justfile` recipes. This document records the original parked-branch context and the final fold-in decision.
 
-## What happened (read this first — it's a scope mistake)
+## What happened
 
 The operator asked me to "use a workflow to complete the incomplete job for the **backtesting engine**." I read "the engine" as the **CI plumbing** (this issue, #554) and ran a workflow that produced the CI edit on this branch. **The operator meant the functional engine** — converting raw S3 venue data into NautilusTrader-backtestable format. I had even flagged that ambiguity earlier in the session and then resolved it myself instead of confirming. Wrong target.
 
-So: this CI work is correct and validated, but it was **not** what was asked for at that moment. It is parked here, not committed into #541. **The real next task is the converter (see bottom).**
+The original plan was to park this CI work outside #541. That is no longer the final state: the CI gate is part of #541's declared review surface, and the PR body must continue to name it explicitly. The converter remains separate follow-on work.
 
 ## What this branch contains
 
@@ -21,7 +23,7 @@ One edit to `.github/workflows/backtester-ci.yml`: replaces the **advisory + pat
 - `backtester-gate` is `if: always()`, `needs: [detect, fmt, clippy, test]`: **no-op success** when the crate is untouched, and **fails** if any lane `!= success` when the crate changed. So the `backtester-gate` context **always reports** — safe for the operator to mark required later without GitHub's path-filtered "frozen PR" trap.
 - Root `justfile` added to the `detect` path-list **and** both `managed-target-bvs-v1-*` cache keys (it owns the `bte-*` recipes the lanes call).
 
-### Validated — but LOCALLY only (not yet on a real GitHub run)
+### Validated
 
 | Check | Result |
 |---|---|
@@ -30,17 +32,16 @@ One edit to `.github/workflows/backtester-ci.yml`: replaces the **advisory + pat
 | `just bte-fmt-check` | exit 0 |
 | `cargo tree -p bolt-v2 \| grep nautilus-backtest` | 0 matches (live binary isolation holds) |
 
-The previous green Backtester CI run was the OLD path-filtered version. The new gate logic has **not** been exercised on a real GitHub run yet.
+The PR now also has GitHub Backtester CI green on the folded workflow.
 
-## Known caveat in the gate logic (fail-open detector)
+## Resolved caveat in the gate logic
 
-If the `detect` job itself fails or is cancelled, `bvs_changed` is empty, the gate's guard sees `!= "true"` and exits 0 (green no-op). If the operator later marks **only** `backtester-gate` required (not `bvs-detect`), a `detect` failure would be masked. **Mitigation:** mark `bvs-detect` required alongside `backtester-gate`, or accept that a `detect` failure shows up as its own red check on the PR.
+Earlier versions let `backtester-gate` no-op if `detect` failed before setting `bvs_changed`. PR #541 now makes `backtester-gate` fail closed when `needs.detect.result != success`, so marking only `backtester-gate` required no longer masks a detector failure.
 
-## Open decisions (operator's call — do NOT pre-decide)
+## Remaining decisions
 
 1. Whether `backtester-gate` becomes a **required** merge check, and via classic branch protection vs a ruleset. **No ruleset / branch-protection change has been made.** (Both Codex and Gemini confirmed GitHub ruleset "required workflows" ignore workflow `paths:` filters — which is why the gate was made always-present instead.)
-2. Whether the CI ships as its **own PR** or folds back into #541. The workflow file originates in #541, and the gate depends on #541's crate + root `justfile` `bte-*` recipes + `setup-environment` action — so a truly `main`-based standalone CI PR would be a non-functional fragment until #541 lands. That is why this branch is stacked on #541, not branched off `main`.
-3. Root `ci.yml` nextest cache still hashes `crates/**` (fix 3 in #554, deferred). `scripts/verify_ci_workflow_hygiene.py` enforces `crates/**` as a **required** substring in the test-archive cache key, so removing it trips the hygiene lint. Needs a verifier change first — do not just delete it.
+2. Root `ci.yml` nextest cache still hashes `crates/**` (fix 3 in #554, deferred). `scripts/verify_ci_workflow_hygiene.py` enforces `crates/**` as a **required** substring in the test-archive cache key, so removing it trips the hygiene lint. Needs a verifier change first — do not just delete it.
 
 ## External review trail
 

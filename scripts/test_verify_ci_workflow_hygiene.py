@@ -2996,6 +2996,7 @@ def assert_v6_red_workflow_policy_gaps() -> None:
         assert_v6_red_no_mistakes_raw_cargo_is_reported,
         assert_v6_red_exact_head_governance_inputs_are_cache_keyed,
         assert_v6_red_backtester_cache_keys_include_crate_sources,
+        assert_v6_red_backtester_gate_fails_when_detect_fails,
     ]
     failures: list[str] = []
     for check in checks:
@@ -3026,6 +3027,43 @@ def assert_v6_red_backtester_cache_keys_include_crate_sources() -> None:
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
     assert not [
         error for error in good_errors if "backtester managed-target cache key must include" in error
+    ], good_errors
+
+
+def assert_v6_red_backtester_gate_fails_when_detect_fails() -> None:
+    verifier = load_verifier()
+    bad = """jobs:
+  detect:
+    name: bvs-detect
+    outputs:
+      bvs_changed: ${{ steps.detect.outputs.bvs_changed }}
+    steps:
+      - id: detect
+        run: echo "bvs_changed=false" >> "$GITHUB_OUTPUT"
+  gate:
+    name: backtester-gate
+    needs: [detect, fmt, clippy, test]
+    if: ${{ always() }}
+    steps:
+      - run: |
+          if [[ "${{ needs.detect.outputs.bvs_changed }}" != "true" ]]; then
+            echo "no crate changes; gate is a no-op"
+            exit 0
+          fi
+"""
+    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
+    assert any("backtester-gate must check needs.detect.result" in error for error in errors), errors
+    good = bad.replace(
+        '          if [[ "${{ needs.detect.outputs.bvs_changed }}" != "true" ]]; then',
+        '          if [[ "${{ needs.detect.result }}" != "success" ]]; then\n'
+        '            echo "bvs-detect did not succeed (${{ needs.detect.result }})"\n'
+        "            exit 1\n"
+        "          fi\n"
+        '          if [[ "${{ needs.detect.outputs.bvs_changed }}" != "true" ]]; then',
+    )
+    good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
+    assert not [
+        error for error in good_errors if "backtester-gate must check needs.detect.result" in error
     ], good_errors
 
 

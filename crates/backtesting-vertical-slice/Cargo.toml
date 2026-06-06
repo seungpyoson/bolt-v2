@@ -38,5 +38,4 @@ nautilus-persistence = { git = "https://github.com/nautechsystems/nautilus_trade
 nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 
 [dev-dependencies]
-arrow = "58.3.0"
 tempfile = "3"

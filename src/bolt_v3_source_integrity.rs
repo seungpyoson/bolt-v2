@@ -161,9 +161,10 @@ mod tests {
     // independent hand-framed source-set stream in these tests.
     //
     // Re-derived again by A7 after moving source-proof / replay / evidence
-    // derivation into `src/strategies/binary_oracle_edge_taker/source_proof.rs`.
+    // derivation into `src/strategies/binary_oracle_edge_taker/source_proof.rs`,
+    // then refreshing the venue-filter wrong-control fixture in that file.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "56f554dded69c892235a67ed7404b66ba7fe74078fc56bc6c6cbd85702fac4c4";
+        "3b8f879141ecf8da899fb4b9df25b07ddc8a3393069072d81649d80d1f31a9ae";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 

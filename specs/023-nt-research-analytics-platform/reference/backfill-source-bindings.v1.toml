@@ -1,0 +1,320 @@
+schema_version = "backfill-source-bindings.v1"
+contract_version = "backfill-table-contract.v1"
+
+[default_window]
+start_utc = "2025-06-01T00:00:00Z"
+end_utc = "2026-06-01T00:00:00Z"
+
+[[source_binding]]
+key = "binance-spot-instruments"
+venue = "binance"
+product_family = "spot"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://api.binance.com/api/v3/exchangeInfo"
+payload_extension = "json"
+extractor = "binance_exchange_info"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "binance-usd-m-perpetual-instruments"
+venue = "binance"
+product_family = "usd_m_perpetual"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+payload_extension = "json"
+extractor = "binance_exchange_info"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "binance-usd-m-delivery-instruments"
+venue = "binance"
+product_family = "usd_m_delivery"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+payload_extension = "json"
+extractor = "binance_exchange_info"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "binance-coin-m-perpetual-instruments"
+venue = "binance"
+product_family = "coin_m_perpetual"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://dapi.binance.com/dapi/v1/exchangeInfo"
+payload_extension = "json"
+extractor = "binance_exchange_info"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "binance-coin-m-delivery-instruments"
+venue = "binance"
+product_family = "coin_m_delivery"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://dapi.binance.com/dapi/v1/exchangeInfo"
+payload_extension = "json"
+extractor = "binance_exchange_info"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "okx-spot-instruments"
+venue = "okx"
+product_family = "spot"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://www.okx.com/api/v5/public/instruments?instType=SPOT"
+payload_extension = "json"
+extractor = "okx_data_inst_id"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "okx-swap-instruments"
+venue = "okx"
+product_family = "swap"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://www.okx.com/api/v5/public/instruments?instType=SWAP"
+payload_extension = "json"
+extractor = "okx_data_inst_id"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "okx-futures-instruments"
+venue = "okx"
+product_family = "future"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://www.okx.com/api/v5/public/instruments?instType=FUTURES"
+payload_extension = "json"
+extractor = "okx_data_inst_id"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "okx-option-underlyings"
+venue = "okx"
+product_family = "option"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://www.okx.com/api/v5/public/underlying?instType=OPTION"
+payload_extension = "json"
+extractor = "okx_data_value"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "okx-option-btc-usd-instruments"
+venue = "okx"
+product_family = "option"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://www.okx.com/api/v5/public/instruments?instType=OPTION&uly=BTC-USD"
+payload_extension = "json"
+extractor = "okx_data_inst_id"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "okx-option-eth-usd-instruments"
+venue = "okx"
+product_family = "option"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://www.okx.com/api/v5/public/instruments?instType=OPTION&uly=ETH-USD"
+payload_extension = "json"
+extractor = "okx_data_inst_id"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "bybit-spot-instruments"
+venue = "bybit"
+product_family = "spot"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://api.bybit.com/v5/market/instruments-info?category=spot&limit=1000"
+payload_extension = "json"
+extractor = "bybit_result_list_symbol"
+pagination = "bybit_next_page_cursor"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "bybit-linear-instruments"
+venue = "bybit"
+product_family = "linear"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://api.bybit.com/v5/market/instruments-info?category=linear&limit=1000"
+payload_extension = "json"
+extractor = "bybit_result_list_symbol"
+pagination = "bybit_next_page_cursor"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "bybit-inverse-instruments"
+venue = "bybit"
+product_family = "inverse"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://api.bybit.com/v5/market/instruments-info?category=inverse&limit=1000"
+payload_extension = "json"
+extractor = "bybit_result_list_symbol"
+pagination = "bybit_next_page_cursor"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "bybit-option-instruments"
+venue = "bybit"
+product_family = "option"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://api.bybit.com/v5/market/instruments-info?category=option&limit=1000"
+payload_extension = "json"
+extractor = "bybit_result_list_symbol"
+pagination = "bybit_next_page_cursor"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "deribit-spot-active-instruments"
+venue = "deribit"
+product_family = "spot"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://www.deribit.com/api/v2/public/get_instruments?currency=any&kind=spot&expired=false"
+payload_extension = "json"
+extractor = "deribit_result_instrument_name"
+evidence_state = "bounded_or_current_only"
+warning = "Active instruments only; expired one-year universe requires an explicit expired=true proof."
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "deribit-future-active-instruments"
+venue = "deribit"
+product_family = "future"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://www.deribit.com/api/v2/public/get_instruments?currency=any&kind=future&expired=false"
+payload_extension = "json"
+extractor = "deribit_result_instrument_name"
+evidence_state = "bounded_or_current_only"
+warning = "Active instruments only; expired one-year universe requires an explicit expired=true proof."
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "deribit-option-active-instruments"
+venue = "deribit"
+product_family = "option"
+fixture = "mixed"
+family = "instrument_universe"
+method = "GET"
+source_uri = "https://www.deribit.com/api/v2/public/get_instruments?currency=any&kind=option&expired=false"
+payload_extension = "json"
+extractor = "deribit_result_instrument_name"
+evidence_state = "bounded_or_current_only"
+warning = "Active instruments only; expired one-year universe requires an explicit expired=true proof."
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "hyperliquid-core-meta"
+venue = "hyperliquid"
+product_family = "core_perpetual"
+fixture = "mixed"
+family = "instrument_universe"
+method = "POST"
+source_uri = "https://api.hyperliquid.xyz/info"
+request_json = { type = "meta" }
+payload_extension = "json"
+extractor = "hyperliquid_meta_universe_name"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "hyperliquid-spot-meta"
+venue = "hyperliquid"
+product_family = "spot"
+fixture = "mixed"
+family = "instrument_universe"
+method = "POST"
+source_uri = "https://api.hyperliquid.xyz/info"
+request_json = { type = "spotMeta" }
+payload_extension = "json"
+extractor = "hyperliquid_spot_universe_name"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "hyperliquid-hip3-perp-dexs"
+venue = "hyperliquid"
+product_family = "hip3_perpetual"
+fixture = "mixed"
+family = "instrument_universe"
+method = "POST"
+source_uri = "https://api.hyperliquid.xyz/info"
+request_json = { type = "perpDexs" }
+payload_extension = "json"
+extractor = "hyperliquid_perp_dexs"
+evidence_state = "directly_backfillable"
+table_families = ["instruments"]
+
+[[source_binding]]
+key = "hyperliquid-hip4-outcome-meta"
+venue = "hyperliquid"
+product_family = "prediction_market_outcome"
+fixture = "prediction-market"
+family = "instrument_universe"
+method = "POST"
+source_uri = "https://api.hyperliquid.xyz/info"
+request_json = { type = "outcomeMeta" }
+payload_extension = "json"
+extractor = "hyperliquid_outcome_meta"
+evidence_state = "bounded_or_current_only"
+warning = "Historical HIP-4 outcome archive coverage and quoteToken parser fidelity remain pending."
+table_families = ["prediction_market_events", "prediction_market_outcomes"]
+
+[[source_binding]]
+key = "polymarket-parquet-archive-index"
+venue = "polymarket"
+product_family = "prediction_market_outcome"
+fixture = "prediction-market"
+family = "archive_index"
+method = "GET"
+source_uri = "https://archive.pmxt.dev/Polymarket/v2"
+payload_extension = "html"
+extractor = "html_parquet_links"
+pagination = "html_page_query"
+max_pages = 20
+evidence_state = "pending_source_proof"
+warning = "Archive index listing is source proof input; Parquet schema/license/coverage still require acceptance before canonical use."
+table_families = ["order_book_snapshots_fixed_depth", "order_book_snapshot_deltas", "bars"]

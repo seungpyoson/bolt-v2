@@ -339,6 +339,11 @@ pub enum AcceptanceError {
         expected: String,
         actual: String,
     },
+    /// The source proof references no configured source-binding registry row.
+    UnknownSourceBinding {
+        source_binding: String,
+        venue: String,
+    },
 }
 
 impl std::fmt::Display for AcceptanceError {
@@ -417,6 +422,15 @@ impl std::fmt::Display for AcceptanceError {
                 write!(
                     f,
                     "source_binding {field} mismatch: expected {expected:?}, got {actual:?}"
+                )
+            }
+            Self::UnknownSourceBinding {
+                source_binding,
+                venue,
+            } => {
+                write!(
+                    f,
+                    "source_binding {source_binding:?} for venue {venue:?} is not configured in the registry"
                 )
             }
         }
@@ -772,7 +786,10 @@ fn ensure_source_binding_metadata_matches(
     proof: &SourceProofReport,
 ) -> Result<(), AcceptanceError> {
     let Some(config) = source_binding_config(&proof.source_binding, &proof.venue) else {
-        return Ok(());
+        return Err(AcceptanceError::UnknownSourceBinding {
+            source_binding: proof.source_binding.clone(),
+            venue: proof.venue.clone(),
+        });
     };
     if proof.product_family != config.product_family {
         return Err(AcceptanceError::SourceBindingMismatch {
@@ -1187,15 +1204,16 @@ mod tests {
 
     #[test]
     fn select_rejects_unknown_source_binding() {
-        let mut candidate = candidate_proof();
-        candidate.source_binding = "bybit-does-not-exist".to_string();
-        let accepted = candidate
-            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
-            .unwrap();
+        let mut accepted = candidate_proof();
+        accepted.status = SourceProofStatus::Accepted;
+        accepted.acceptance_mode = Some(AcceptanceMode::Manual);
+        accepted.accepted_by = Some("operator".to_string());
+        accepted.accepted_at = Some("2026-06-02T00:00:00Z".to_string());
+        accepted.source_binding = "bybit-does-not-exist".to_string();
         let object = manifest_object();
         let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
         assert!(
-            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            matches!(err, AcceptanceError::UnknownSourceBinding { .. }),
             "{err:?}"
         );
     }
@@ -1445,6 +1463,21 @@ mod tests {
                 && err.to_string().contains("evidence_state")
                 && err.to_string().contains("OwnerArchiveBackfillable")
                 && err.to_string().contains("DirectlyBackfillable"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn acceptance_blocked_when_source_binding_missing_from_registry() {
+        let mut proof = candidate_proof();
+        proof.source_binding = "missing-native-trades".to_string();
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("source_binding")
+                && err.to_string().contains("registry")
+                && err.to_string().contains("missing-native-trades"),
             "{err}"
         );
     }

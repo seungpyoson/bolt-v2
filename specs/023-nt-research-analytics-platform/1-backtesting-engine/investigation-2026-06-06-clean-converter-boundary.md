@@ -12,6 +12,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - result contracts bind the source object, converter identity, conversion manifest hash, conversion checkpoint hash, and catalog hash
 - result contract `manifest_hash` binds the submitted portable run-spec manifest, not the operator's temporary local catalog path
 - converter identity/version are declared in the run-spec TOML and validated against the compiled converter before any converted output is reused
+- catalog metadata records both the portable output catalog URI and the actual execution catalog URI, plus whether direct S3 catalog access was proven
 - primitive NT `BacktestVenueConfig` controls are declared in TOML and mapped into NT rather than hidden behind NT defaults
 - NT `BacktestDataConfig` catalog filesystem protocol and storage options are declared in TOML and mapped into NT, so S3/cloud catalog consumption can use NT's own catalog path
 - S3 catalog storage options now fail before NT config construction if generic and Rust-specific maps are both set, or if an S3 option key is not supported by this pinned NT revision
@@ -22,6 +23,7 @@ No-go for broader production claims:
 - `s3://bolt-parquet/nt-research-analytics/` currently has no clean output artifacts: `Total Objects: 0`, `Total Size: 0`
 - the user confirmed converted artifacts were intentionally deleted during this investigation, so the empty prefix is expected current state, not accepted output evidence
 - no real S3 write has been performed through `--publish-output` in this branch without explicit operator approval
+- current operator runs still stamp `direct_s3_catalog_access_proven = false` because `BacktestNode` consumes the verified local projection root before optional publish
 - only the BNBUSDC 2026-03-01 trade-replay object is proven in this slice
 - complex NT model surfaces are not yet manifest-configurable: leverage maps, margin model, simulation modules, fill model, latency model, fee model, and settlement prices
 - artifact-root publish storage options are not yet TOML-modeled; `publish_output_artifacts` currently opens the output prefix with NT/object-store defaults
@@ -84,6 +86,7 @@ Updated `runner.rs` and `result_contract.rs`:
 - builds conversion checkpoint, manifest, and catalog metadata from the accepted dataset and projected NT catalog
 - adds `converter_identity`, `converter_version`, `conversion_manifest_hash`, and `conversion_checkpoint_hash` to the result contract
 - accepts an explicit `contract_manifest_hash` so operator runs can bind the portable submitted manifest while still letting NT consume the resolved local catalog path
+- writes catalog metadata with `output_catalog_uri`, `execution_catalog_uri`, and `direct_s3_catalog_access_proven`; the current operator-localized path records the local execution URI and `false`
 - validates those fields as required
 
 Updated `run_manifest.rs`:
@@ -119,6 +122,7 @@ RED checks observed before implementation:
 - `just bte-test data_config_maps_catalog_cloud_options` failed with `E0609` missing `ManifestCatalogInput` fields for catalog filesystem protocol and storage options
 - `just bte-test run_from_run_spec_contract_manifest_hash_is_portable_run_spec_hash` failed because the contract bound the mutated local execution manifest hash `6004a1fc1860ea65a0fdb887efe85a9efef428fe04d157fc5865b06072c8efa7` instead of the portable submitted run-spec manifest hash `921685dd70be98e8a5744b0eda33f9d91303999ab9098d89963a1e3747cd0dd5`
 - `just bte-test rejects_shadowed_catalog_storage_options_before_nt_config rejects_unknown_s3_catalog_rust_storage_option_before_nt_config` failed because `to_nt_data_config()` accepted mixed storage option maps and an S3 option key that NT ignores
+- `just bte-test clean_new_output_writes_manifest_checkpoint_and_catalog_metadata run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them` failed with missing `ConversionCatalogMetadata.execution_catalog_uri` and `direct_s3_catalog_access_proven` fields
 
 GREEN checks after implementation:
 
@@ -133,6 +137,7 @@ GREEN checks after implementation:
 - `just bte-test cli_publish_output_flag_is_explicit_opt_in run_from_run_spec_and_publish_copies_artifacts_to_configured_prefix`: 2 passed
 - `just bte-test run_from_run_spec_contract_manifest_hash_is_portable_run_spec_hash`: 1 passed
 - `just bte-test data_config_maps_catalog_cloud_options rejects_shadowed_catalog_storage_options_before_nt_config rejects_unknown_s3_catalog_rust_storage_option_before_nt_config`: 3 passed
+- `just bte-test clean_new_output_writes_manifest_checkpoint_and_catalog_metadata run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them`: 2 passed
 - `just bte-fmt-check`: passed
 - `just bte-test`: 161 passed, including 2 slow public API tests
 - `just bte-clippy`: passed
@@ -147,7 +152,7 @@ GREEN checks after implementation:
 | Clean production output proof under `nt-research-analytics/` | The prefix is empty, so there is no S3 proof of a clean catalog/result path | run the accepted BNBUSDC object through the operator into the configured prefix, upload checkpoint/manifest/metadata/catalog/contract, then verify S3 listing and hashes |
 | Broader source proof coverage | This slice proves one Bybit spot trade-replay object only | accept additional source proofs and bind each to converter identity, object hash, output prefix, and result contract |
 | Complex NT venue model policy | Primitive controls are now explicit, but leverage maps, margin model, simulation modules, fill model, latency model, fee model, and settlement prices are not yet manifest-configurable | add typed manifest sections for each NT model surface we intend to support; for each unsupported model, fail validation with an explicit unsupported-surface error rather than silently relying on hidden defaults |
-| Direct S3 catalog execution proof | Local operator path overrides catalog path to a local output root before running NT; the manifest can express S3 catalog config and the CLI can publish artifacts, but `BacktestNode` has not yet been proven to consume the published S3 catalog | run `--publish-output` with operator approval, verify the S3 artifact hashes, then run an explicit S3-backed catalog-consumption proof using NT `BacktestDataConfig` cloud fields and a single effective Rust storage option map |
+| Direct S3 catalog execution proof | Local operator path overrides catalog path to a local output root before running NT; metadata now exposes this by recording the local execution URI and `direct_s3_catalog_access_proven = false` | run `--publish-output` with operator approval, verify the S3 artifact hashes, then run an explicit S3-backed catalog-consumption proof using NT `BacktestDataConfig` cloud fields and a single effective Rust storage option map; only that path can stamp `direct_s3_catalog_access_proven = true` |
 | Artifact-root publish storage options | `publish_output_artifacts` opens `manifest.output_prefix` with NT/object-store defaults, not a TOML-modeled artifact-store option set | add a TOML-owned artifact store option section or prove defaults are sufficient for `s3://bolt-parquet/nt-research-analytics/`; do not rely on hidden fallback silently |
 | Old partial output disposition | Old outputs must not be promoted as clean | keep old outputs marked partial/dirty; after clean replacement exists, retain or archive them as forensic evidence, but do not use them as accepted result artifacts |
 

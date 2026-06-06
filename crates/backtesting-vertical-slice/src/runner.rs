@@ -282,6 +282,10 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         &conversion_manifest,
         conversion_manifest_hash.clone(),
         conversion_checkpoint_hash.clone(),
+    )
+    .with_execution_catalog_access(
+        execution_catalog_uri(inputs.manifest),
+        direct_s3_catalog_access_proven(inputs.manifest),
     );
 
     // Gate 6: objective result contract.
@@ -353,6 +357,20 @@ fn market_structure_label(manifest: &BacktestingRunManifest) -> &'static str {
         MarketStructureFixture::BinaryOption => "binary-option",
         MarketStructureFixture::PerpsSpot => "perps-spot",
     }
+}
+
+fn execution_catalog_uri(manifest: &BacktestingRunManifest) -> String {
+    match manifest.catalog_input.catalog_fs_protocol.as_str() {
+        crate::run_manifest::CATALOG_FS_PROTOCOL_NONE => {
+            manifest.catalog_input.catalog_path.clone()
+        }
+        protocol => format!("{protocol}://{}", manifest.catalog_input.catalog_path),
+    }
+}
+
+fn direct_s3_catalog_access_proven(manifest: &BacktestingRunManifest) -> bool {
+    manifest.catalog_input.catalog_fs_protocol == "s3"
+        && execution_catalog_uri(manifest).starts_with("s3://")
 }
 
 #[cfg(test)]

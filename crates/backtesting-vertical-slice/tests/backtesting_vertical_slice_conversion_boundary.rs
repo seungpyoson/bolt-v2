@@ -167,6 +167,15 @@ fn clean_new_output_writes_manifest_checkpoint_and_catalog_metadata() {
     let manifest_hash = manifest.content_hash().unwrap();
     let metadata =
         ConversionCatalogMetadata::from_manifest(&manifest, manifest_hash.clone(), checkpoint_hash);
+    assert_eq!(
+        metadata.output_catalog_uri,
+        "s3://bolt-parquet/nt-research-analytics/backtests/run/nt-catalog"
+    );
+    assert_eq!(metadata.execution_catalog_uri, metadata.output_catalog_uri);
+    assert!(
+        !metadata.direct_s3_catalog_access_proven,
+        "fresh metadata must not claim direct S3 catalog access unless a direct S3 BacktestNode run proved it"
+    );
     write_completed_conversion_artifacts(dir.path(), &manifest, &checkpoint, &metadata).unwrap();
 
     assert!(dir.path().join(CONVERSION_MANIFEST_FILE).exists());

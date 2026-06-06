@@ -598,6 +598,18 @@ mod tests {
             artifacts.output.projection.catalog_hash
         );
         assert_eq!(
+            metadata.output_catalog_uri,
+            artifacts.output.contract.artifact_uris.nt_catalog_uri
+        );
+        assert_eq!(
+            metadata.execution_catalog_uri,
+            dir.path().join(CATALOG_DIR).to_str().unwrap()
+        );
+        assert!(
+            !metadata.direct_s3_catalog_access_proven,
+            "local operator path must not claim direct S3 BacktestNode consumption"
+        );
+        assert_eq!(
             artifacts.output.contract.converter_identity,
             manifest.fingerprint.converter_identity
         );

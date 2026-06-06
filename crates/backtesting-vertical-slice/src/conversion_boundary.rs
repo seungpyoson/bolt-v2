@@ -261,6 +261,8 @@ pub struct ConversionCatalogMetadata {
     pub nt_instrument_id: String,
     pub canonical_rows: usize,
     pub output_catalog_uri: String,
+    pub execution_catalog_uri: String,
+    pub direct_s3_catalog_access_proven: bool,
 }
 
 impl ConversionCatalogMetadata {
@@ -279,7 +281,20 @@ impl ConversionCatalogMetadata {
             nt_instrument_id: manifest.nt_instrument_id.clone(),
             canonical_rows: manifest.canonical_rows,
             output_catalog_uri: manifest.output_catalog_uri.clone(),
+            execution_catalog_uri: manifest.output_catalog_uri.clone(),
+            direct_s3_catalog_access_proven: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_execution_catalog_access(
+        mut self,
+        execution_catalog_uri: impl Into<String>,
+        direct_s3_catalog_access_proven: bool,
+    ) -> Self {
+        self.execution_catalog_uri = execution_catalog_uri.into();
+        self.direct_s3_catalog_access_proven = direct_s3_catalog_access_proven;
+        self
     }
 
     fn validate_against(
@@ -324,6 +339,16 @@ impl ConversionCatalogMetadata {
         ensure!(
             self.output_catalog_uri == manifest.output_catalog_uri,
             "catalog metadata output_catalog_uri mismatch"
+        );
+        ensure!(
+            !self.execution_catalog_uri.trim().is_empty(),
+            "catalog metadata execution_catalog_uri must not be empty"
+        );
+        ensure!(
+            !self.direct_s3_catalog_access_proven
+                || self.execution_catalog_uri.starts_with("s3://"),
+            "catalog metadata cannot claim direct S3 access for non-S3 execution catalog URI {:?}",
+            self.execution_catalog_uri
         );
         Ok(())
     }

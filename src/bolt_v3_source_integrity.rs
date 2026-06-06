@@ -152,8 +152,11 @@ mod tests {
     //
     // Re-derived by A6 after moving the exposure state machine into
     // `src/strategies/binary_oracle_edge_taker/exposure.rs`; the dynamic source
-    // root walk includes the new file in canonical order. The value below must
-    // match the live build-emitted `OUT_DIR/strategy.canonical` and the
+    // root walk includes the new file in canonical order.
+    //
+    // Re-derived again by #581 after the binary-oracle runtime parser started
+    // rejecting malformed configured instrument ids fail-loud. The value below
+    // must match the live build-emitted `OUT_DIR/strategy.canonical` and the
     // independent hand-framed source-set stream in these tests.
     //
     // Re-derived again by A7 after moving source-proof / replay / evidence
@@ -161,13 +164,19 @@ mod tests {
     // refreshing the venue-filter wrong-control fixture in that file, and
     // addressing an exact-head review comment in the same source set.
     //
+    // Re-derived again after merging A7 with #581's configured-instrument
+    // parser rejection in the same canonical strategy source set.
+    //
     // Re-derived again by A9 after the strategy wrapper delegates submit
     // admission request construction to `src/bolt_v3_submit_admission.rs`.
     // Re-derived once more after the exit-position input borrows identifiers
     // through the shared builder in response to exact-head PR review comments
     // and the follow-up clippy cleanup of that borrow bridge.
+    //
+    // Re-derived again after merging A9 with #581's configured-instrument
+    // parser rejection in the same canonical strategy source set.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "99c335b850a345f0a491fef53a04e5adf1491dad76437e2f36ef761debb8a6a8";
+        "ccf929c17c8c6030682ea12610a45ac43f147564113627fcdcf5ac02c7840b9f";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

@@ -468,16 +468,7 @@ pub fn raw_taker_config(
     let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
     let reference_data = configured_reference_data(strategy)?;
     let signal_data = configured_signal_data(strategy)?;
-    let decision_reference =
-        configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
-    if reference_data.is_some() && decision_reference.is_some() {
-        return Err(BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
-            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-            message: format!(
-                "configure either [reference_data.<role>] or target.gate_subscriptions.{DECISION_REFERENCE_GATE_ROLE}, not both"
-            ),
-        });
-    }
+    validate_configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
     if let Some(reference_data) = reference_data {
         loaded
             .root
@@ -643,33 +634,17 @@ pub fn raw_taker_config(
         target.blocked_after_seconds,
     )?;
     insert_string(&mut table, "price_to_beat_source", price_to_beat_source);
-    match (reference_data, decision_reference) {
-        (Some(reference_data), None) => {
-            insert_string(
-                &mut table,
-                "reference_venue",
-                reference_data.data_client_id.to_string(),
-            );
-            insert_string(
-                &mut table,
-                "reference_instrument_id",
-                reference_data.instrument_id.to_string(),
-            );
-        }
-        (None, Some(decision_reference)) => {
-            insert_string(
-                &mut table,
-                "reference_venue",
-                decision_reference.provider_id,
-            );
-            insert_string(
-                &mut table,
-                "reference_instrument_id",
-                decision_reference.resolution_identity,
-            );
-        }
-        (None, None) => {}
-        (Some(_), Some(_)) => unreachable!("dual reference paths are rejected above"),
+    if let Some(reference_data) = reference_data {
+        insert_string(
+            &mut table,
+            "reference_venue",
+            reference_data.data_client_id.to_string(),
+        );
+        insert_string(
+            &mut table,
+            "reference_instrument_id",
+            reference_data.instrument_id.to_string(),
+        );
     }
     insert_string(
         &mut table,
@@ -872,15 +847,10 @@ fn resolution_gate_provider_id_from_target(
     )
 }
 
-struct DecisionReferenceTarget {
-    provider_id: String,
-    resolution_identity: String,
-}
-
-fn configured_decision_reference(
+fn validate_configured_decision_reference(
     strategy_instance_id: &str,
     target: &toml::Value,
-) -> Result<Option<DecisionReferenceTarget>, BinaryOracleEdgeTakerRuntimeConfigError> {
+) -> Result<(), BinaryOracleEdgeTakerRuntimeConfigError> {
     let Some(subscription) = target
         .as_table()
         .and_then(|target| target.get("gate_subscriptions"))
@@ -888,14 +858,14 @@ fn configured_decision_reference(
         .and_then(|subscriptions| subscriptions.get(DECISION_REFERENCE_GATE_ROLE))
         .and_then(toml::Value::as_table)
     else {
-        return Ok(None);
+        return Ok(());
     };
     let mapping = first_gate_market_mapping(
         strategy_instance_id,
         DECISION_REFERENCE_GATE_ROLE,
         subscription,
     )?;
-    let provider_id = gate_provider_id_from_subscription(
+    let _provider_id = gate_provider_id_from_subscription(
         strategy_instance_id,
         DECISION_REFERENCE_GATE_ROLE,
         subscription,
@@ -904,13 +874,9 @@ fn configured_decision_reference(
     let resolution_identity =
         required_resolution_mapping_string(strategy_instance_id, mapping, "resolution_identity")?
             .to_string();
-    // The source-owned decision_reference path binds this resolution_identity onto
-    // the strategy's `reference_instrument_id`, which the runtime accessor parses
-    // with `InstrumentId::from_str(..).ok()`. The path relies on a logical (non-NT)
-    // identity so the accessor yields `None` and the strategy does NOT subscribe to
-    // venue quotes -- its reference arrives via the readiness seed. A resolution_identity
-    // that parses as a valid NT instrument id would silently enable that subscription
-    // and could ingest the wrong reference data, so reject it LOUDLY here.
+    // decision_reference is a source-owned gate identity, not an NT quote
+    // instrument. Reject parseable InstrumentIds so source-gate config cannot be
+    // mistaken for venue quote subscription config.
     if resolution_identity.parse::<InstrumentId>().is_ok() {
         return Err(BinaryOracleEdgeTakerRuntimeConfigError::Target {
             strategy_instance_id: strategy_instance_id.to_string(),
@@ -919,10 +885,7 @@ fn configured_decision_reference(
             ),
         });
     }
-    Ok(Some(DecisionReferenceTarget {
-        provider_id,
-        resolution_identity,
-    }))
+    Ok(())
 }
 
 fn gate_provider_id_from_subscription(

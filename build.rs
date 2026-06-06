@@ -24,11 +24,6 @@ mod source_canonicalization;
 // `max_source_bytes` instead. This only bounds the bytes embedded into the
 // binary at build time.
 const BUILD_CANONICAL_MAX_BYTES: u64 = 8 * 1024 * 1024;
-// Bind source embeds to the checkout that compiled this build script. Cargo
-// tracks the `env!` dependency and `build_script_rerun_env_vars` emits the
-// matching rerun hint, so shared target dirs recompile/re-run when the manifest
-// dir changes across worktrees.
-const BUILD_SCRIPT_MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -107,7 +102,9 @@ pub fn build_script_rerun_env_vars() -> &'static [&'static str] {
 }
 
 pub fn build_script_manifest_dir() -> PathBuf {
-    PathBuf::from(BUILD_SCRIPT_MANIFEST_DIR)
+    PathBuf::from(
+        env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set by Cargo"),
+    )
 }
 
 pub fn canonical_source_rerun_paths(manifest_dir: &Path) -> io::Result<Vec<PathBuf>> {

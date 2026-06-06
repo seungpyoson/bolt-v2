@@ -105,7 +105,7 @@ replace_existing = false
 rotation_kind = "none"
 
 [aws]
-region = "eu-west-1"
+region = "eu-west-2"
 
 [gate_providers.resolution_oracle_primary]
 provider_kind = "chainlink_data_streams"
@@ -166,10 +166,10 @@ fee_cache_ttl_secs = 300
 transport_backend = "sockudo"
 
 [clients.polymarket_main.secrets]
-private_key_ssm_path = "/bolt/polymarket_main/private_key"
-api_key_ssm_path = "/bolt/polymarket_main/api_key"
-api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
-passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
+private_key_ssm_path = "/bolt/polymarket/private-key"
+api_key_ssm_path = "/bolt/polymarket/api-key"
+api_secret_ssm_path = "/bolt/polymarket/api-secret"
+passphrase_ssm_path = "/bolt/polymarket/api-passphrase"
 
 [clients.okx_data]
 venue = "OKX"

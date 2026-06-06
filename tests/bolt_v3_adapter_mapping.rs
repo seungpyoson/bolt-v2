@@ -1128,7 +1128,7 @@ replace_existing = false
 rotation_kind = "none"
 
 [aws]
-region = "eu-west-1"
+region = "eu-west-2"
 
 [clients.polymarket_main]
 venue = "POLYMARKET"
@@ -1227,7 +1227,7 @@ fn live_node_build_path_propagates_adapter_mapping_failures() {
     // is an unbound broad-readiness probe client and is not resolved by the
     // scoped path, so failing its secret would surface nothing here.)
     let bad_resolver = |region: &str, path: &str| -> Result<String, &'static str> {
-        if path == "/bolt/polymarket_main/api_secret" {
+        if path == "/bolt/polymarket/api-secret" {
             Err("simulated SSM permissions denied")
         } else {
             support::fake_bolt_v3_resolver(region, path)

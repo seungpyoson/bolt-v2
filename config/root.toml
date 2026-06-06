@@ -156,7 +156,7 @@ replace_existing = false
 rotation_kind = "none"
 
 [aws]
-region = "eu-west-1"
+region = "eu-west-2"
 
 [gate_providers.resolution_oracle_primary]
 provider_kind = "chainlink_data_streams"
@@ -222,10 +222,10 @@ chain_id = 999999
 collateral_token_address = "0x1111111111111111111111111111111111111111"
 
 [clients.polymarket_main.secrets]
-private_key_ssm_path = "/bolt/polymarket_main/private_key"
-api_key_ssm_path = "/bolt/polymarket_main/api_key"
-api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
-passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
+private_key_ssm_path = "/bolt/polymarket/private-key"
+api_key_ssm_path = "/bolt/polymarket/api-key"
+api_secret_ssm_path = "/bolt/polymarket/api-secret"
+passphrase_ssm_path = "/bolt/polymarket/api-passphrase"
 
 [clients.polymarket_main.readiness_probe]
 market_data_kind = "book"

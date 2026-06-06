@@ -156,11 +156,14 @@ mod tests {
     //
     // Re-derived again by A6 after moving the exposure state machine into
     // `src/strategies/binary_oracle_edge_taker/exposure.rs`; the dynamic source
-    // root walk includes the new file in canonical order. The value below must
-    // match the live build-emitted `OUT_DIR/strategy.canonical` and the
+    // root walk includes the new file in canonical order.
+    //
+    // Re-derived again by #581 after the binary-oracle runtime parser started
+    // rejecting malformed configured instrument ids fail-loud. The value below
+    // must match the live build-emitted `OUT_DIR/strategy.canonical` and the
     // independent hand-framed source-set stream in these tests.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "5e69a876a3f4df28bbb3796311a36eed10991133c120cec57abe2062d3c610f6";
+        "4e34b6e522e0931214dc84b5f025c0c409f8f734819a51a10a05a3c7dabdda14";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 

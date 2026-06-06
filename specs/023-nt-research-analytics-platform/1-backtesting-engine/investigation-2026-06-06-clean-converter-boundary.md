@@ -18,6 +18,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - S3 catalog storage options now fail before NT config construction if generic and Rust-specific maps are both set, or if an S3 option key is not supported by this pinned NT revision
 - the CLI has an explicit `--publish-output` opt-in that copies the verified local artifact tree to `manifest.output_prefix` through NT/object-store plumbing after the local run succeeds
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
+- the current `BacktestExtensionSurface` classification is recorded in `backtest-extension-surface-matrix.md`; supported primitive NT controls are TOML pass-throughs, Bolt-owned pieces are provenance/governance boundaries, and unmodeled NT model/system surfaces fail before NT config construction
 
 No-go for broader production claims:
 
@@ -28,7 +29,7 @@ No-go for broader production claims:
 - current operator runs still stamp `direct_s3_catalog_access_proven = false` because `BacktestNode` consumes the verified local projection root before optional publish
 - the direct S3 publish/proof command with only `region` configured now fails fast with `artifact_store.ssm_parameters must resolve access_key_id and secret_access_key before publishing to an s3 output_prefix`, and leaves no output directory
 - only the BNBUSDC 2026-03-01 trade-replay object is proven in this slice; Bybit is a sample source/proof, not a production converter special case
-- complex NT model surfaces are not yet manifest-configurable: leverage maps, margin model, simulation modules, fill model, latency model, fee model, and settlement prices
+- complex NT model surfaces are not yet manifest-configurable: leverage maps, margin model, simulation modules, fill model, latency model, fee model, and settlement prices. They are documented as `unsupported_for_now` and must not be accepted as inert TOML.
 - no execution-quality, queue-position, order-book-liquidity, multi-day, or multi-instrument claim is supported by this slice
 
 ## Current Source Facts
@@ -49,6 +50,8 @@ No-go for broader production claims:
 - Non-secret SSM parameter-name searches for `artifact` and `s3` returned no names, so direct real S3 proof cannot be completed until valid SSM parameter paths are provided or created outside this branch's code path
 
 ## NT Use Matrix
+
+Detailed extension-surface classification is recorded separately in `backtest-extension-surface-matrix.md`.
 
 | Surface | NT capability | Bolt current use | Status |
 | --- | --- | --- | --- |
@@ -178,6 +181,7 @@ GREEN checks after implementation:
 - `just bte-test run_from_run_spec_uses_configured_csv_trade_mapping run_from_run_spec_rejects_unregistered_converter_version run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them committed_result_contract_deserializes committed_result_contract_binds_catalog_metadata accepted_data_flows_through_to_objective_result_contract`: 6 passed
 - `just bte-test artifact_store_resolves_s3_credentials_from_ssm_parameters artifact_store_rejects_raw_s3_credentials_in_toml published_catalog_manifest_uses_resolved_artifact_store_options production_rust_does_not_hardcode_sample_venue_or_instrument cli_published_catalog_proof_requires_publish_output`: 5 passed
 - `just bte-test run_from_run_spec_and_publish_rejects_s3_without_ssm_before_running_backtest artifact_store_rejects_s3_publish_without_resolved_ssm_credentials`: 2 passed
+- `just bte-test rejects_unsupported_nt_venue_model_surface_requests_before_nt_config rejects_unsupported_nt_engine_surface_requests_before_nt_config`: 2 passed
 - `just bte-test`: 177 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
@@ -197,7 +201,7 @@ GREEN checks after implementation:
 | Clean production output proof under `nt-research-analytics/` | The prefix is empty, so there is no S3 proof of a clean catalog/result path | configure valid artifact-store SSM parameter paths, run the accepted BNBUSDC object through the operator into the configured prefix, upload checkpoint/manifest/metadata/catalog/contract, then verify S3 listing and hashes |
 | Artifact-store SSM parameter paths | Direct S3 proof cannot use AWS CLI/shared-credential fallback under repo rules, and current non-secret SSM name searches found no obvious artifact/S3 credential parameters | create or provide SSM parameter paths for S3 access key id and secret access key, optionally session token, then add only those paths to `[manifest.artifact_store.ssm_parameters]`; never put secret values in TOML or logs |
 | Broader source proof coverage | This slice proves one Bybit spot trade-replay object only, as a sample source | accept additional source proofs; for compatible CSV native-trade sources, add proof/run-spec `[converter.csv]` mapping without changing operator/runner/NT code; for non-CSV or non-trade data, add a new registered adapter and bind its converter config hash |
-| Complex NT venue model policy | Primitive controls are now explicit, but leverage maps, margin model, simulation modules, fill model, latency model, fee model, and settlement prices are not yet manifest-configurable | add typed manifest sections for each NT model surface we intend to support; for each unsupported model, fail validation with an explicit unsupported-surface error rather than silently relying on hidden defaults |
+| Complex NT venue model policy | Primitive controls are now explicit, and complex surfaces are classified in `backtest-extension-surface-matrix.md`, but leverage maps, margin model, simulation modules, fill model, latency model, fee model, and settlement prices are not yet manifest-configurable | keep them `unsupported_for_now` until typed manifest sections exist; if a typed placeholder schema is introduced, emit explicit unsupported-surface errors rather than silently relying on hidden defaults |
 | Direct S3 catalog execution proof | The proof path is implemented to pass resolved object-store options into NT, but it has not run against real S3 because SSM credential parameter paths are missing | after SSM paths are configured, run `--publish-output --prove-published-catalog`, verify S3 artifact hashes, and require the published-catalog proof to stamp `direct_s3_catalog_access_proven = true` |
 | Old partial output disposition | Old outputs must not be promoted as clean | keep old outputs marked partial/dirty; after clean replacement exists, retain or archive them as forensic evidence, but do not use them as accepted result artifacts |
 
@@ -284,5 +288,5 @@ Proceed with the next implementation slice as production proof plus remaining NT
 1. Create or provide SSM parameter paths for artifact-store S3 credentials, add only those parameter paths to the run spec, and rerun `--publish-output --prove-published-catalog` for the accepted BNBUSDC object.
 2. Verify S3 listing and artifact hashes under `nt-research-analytics/`, then require the published-catalog proof to show `BacktestNode` consumed the clean catalog using NT's `BacktestDataConfig` cloud catalog fields and the same resolved object-store option map.
 3. Add typed manifest/config coverage for NT leverage maps, margin model, simulation modules, fill model, latency model, fee model, and settlement prices.
-4. Make every unsupported NT venue model surface fail validation with an explicit contract error.
+4. Keep unsupported NT venue/system model surfaces rejected before NT config construction; if future TOML introduces typed placeholders for those surfaces, make the validation error explicit and contract-named.
 5. Only then claim a clean production BTE artifact path.

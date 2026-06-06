@@ -1879,4 +1879,38 @@ mod tests {
             .replace("[strategy]\n", "[strategy]\nunknown_blob = \"x\"\n");
         assert!(parse_manifest_toml(&text).is_err());
     }
+
+    #[test]
+    fn rejects_unsupported_nt_venue_model_surface_requests_before_nt_config() {
+        let serialized = toml::to_string(&valid_manifest()).expect("serialize");
+        for (field, value) in [
+            ("leverages", "{}"),
+            ("margin_model", "\"standard\""),
+            ("modules", "[]"),
+            ("fill_model", "\"probabilistic\""),
+            ("latency_model", "\"static\""),
+            ("fee_model", "\"maker_taker\""),
+            ("settlement_prices", "{}"),
+        ] {
+            let text = serialized.replace("[venue]\n", &format!("[venue]\n{field} = {value}\n"));
+            let err = parse_manifest_toml(&text).unwrap_err().to_string();
+            assert!(
+                err.contains(field),
+                "unsupported venue surface {field:?} must fail fast, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_nt_engine_surface_requests_before_nt_config() {
+        let text = format!(
+            "[engine]\nrisk_engine = {{ bypass = true }}\n{}",
+            toml::to_string(&valid_manifest()).expect("serialize")
+        );
+        let err = parse_manifest_toml(&text).unwrap_err().to_string();
+        assert!(
+            err.contains("engine"),
+            "unsupported engine surface must fail fast, got {err}"
+        );
+    }
 }

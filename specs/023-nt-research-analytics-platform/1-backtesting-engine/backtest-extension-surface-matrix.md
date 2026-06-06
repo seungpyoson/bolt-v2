@@ -71,6 +71,12 @@ For a compatible native-trade CSV source, the expected extension is:
 3. Reuse the generic `csv-native-trades-to-canonical-trades.v1` adapter.
 4. Let NT own `ParquetDataCatalog`, `BacktestDataConfig`, `BacktestVenueConfig`, and `BacktestNode`.
 
+The current source-binding registry exercises this rule with two configured
+backfillable native-trades bindings: the accepted Bybit sample binding and a
+Binance spot native-trades candidate binding. The Binance row is registry data
+only; it cannot become BTE input without the normal accepted source-proof,
+sample, hash, and NT mapping gates.
+
 For a non-compatible raw data shape, the expected extension is:
 
 1. Add a new registered raw-source-to-canonical adapter with tests and converter config hash binding.

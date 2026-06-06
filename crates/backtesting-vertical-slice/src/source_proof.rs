@@ -1483,6 +1483,87 @@ mod tests {
     }
 
     #[test]
+    fn native_trade_source_bindings_cover_multiple_configured_venues() {
+        let registry: toml::Value =
+            toml::from_str(SOURCE_BINDINGS_REGISTRY).expect("source bindings registry parses");
+        let bindings = registry
+            .get("source_binding")
+            .and_then(toml::Value::as_array)
+            .expect("source_binding array");
+        let mut venues = std::collections::BTreeSet::new();
+        let mut keys = Vec::new();
+        for binding in bindings {
+            let table_families = binding
+                .get("table_families")
+                .and_then(toml::Value::as_array)
+                .expect("table_families array");
+            let is_native_trade_fixture =
+                binding.get("fixture").and_then(toml::Value::as_str) == Some("native-trades");
+            let is_trade_table = table_families
+                .iter()
+                .any(|family| family.as_str() == Some("trades"));
+            let is_backfillable = matches!(
+                binding.get("evidence_state").and_then(toml::Value::as_str),
+                Some("directly_backfillable" | "owner_archive_backfillable")
+            );
+            if is_native_trade_fixture && is_trade_table && is_backfillable {
+                let key = binding
+                    .get("key")
+                    .and_then(toml::Value::as_str)
+                    .expect("key");
+                let venue = binding
+                    .get("venue")
+                    .and_then(toml::Value::as_str)
+                    .expect("venue");
+                let product_family = binding
+                    .get("product_family")
+                    .and_then(toml::Value::as_str)
+                    .expect("product_family");
+                let evidence_state = match binding
+                    .get("evidence_state")
+                    .and_then(toml::Value::as_str)
+                    .expect("evidence_state")
+                {
+                    "directly_backfillable" => EvidenceState::DirectlyBackfillable,
+                    "owner_archive_backfillable" => EvidenceState::OwnerArchiveBackfillable,
+                    other => panic!("unexpected backfillable evidence state {other:?}"),
+                };
+                let source_uri = binding
+                    .get("source_uri")
+                    .and_then(toml::Value::as_str)
+                    .expect("source_uri");
+
+                let mut proof = candidate_proof();
+                proof.source_proof_id = format!("source-proof-{key}");
+                proof.source_binding = key.to_string();
+                proof.venue = venue.to_string();
+                proof.product_family = product_family.to_string();
+                proof.product_category = product_family.to_string();
+                proof.evidence_state = evidence_state;
+                proof
+                    .evaluate_acceptance()
+                    .expect("configured native-trades source binding should pass proof acceptance");
+                let proof = proof
+                    .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+                    .expect("configured native-trades source binding should be acceptable");
+
+                let mut object = manifest_object();
+                object.source_url = source_uri.to_string();
+                select_accepted_dataset(&proof, &object, &object.sha256)
+                    .expect("configured native-trades source binding should select by host");
+
+                venues.insert(venue.to_string());
+                keys.push(key.to_string());
+            }
+        }
+
+        assert!(
+            venues.len() >= 2,
+            "native trade bindings must cover at least two configured venues; found venues={venues:?}, keys={keys:?}"
+        );
+    }
+
+    #[test]
     fn acceptance_blocked_when_schema_sample_hash_missing() {
         let mut proof = candidate_proof();
         proof.schema_sample_hash = "  ".to_string();

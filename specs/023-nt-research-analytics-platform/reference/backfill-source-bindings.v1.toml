@@ -19,6 +19,20 @@ evidence_state = "directly_backfillable"
 table_families = ["instruments"]
 
 [[source_binding]]
+key = "binance-spot-native-trades"
+venue = "binance"
+product_family = "spot"
+fixture = "native-trades"
+family = "market_data"
+method = "GET"
+source_uri = "https://data.binance.vision/data/spot/daily/trades/{symbol}/{symbol}-trades-{dt}.zip"
+payload_extension = "zip"
+extractor = "binance_data_vision_spot_trades"
+evidence_state = "directly_backfillable"
+warning = "Registry binding only; no Binance trade object is accepted for BTE until source proof, sample schema, checksum/hash, license, and NT mapping checks pass. Aggregated trades must not satisfy this native-trades binding."
+table_families = ["trades"]
+
+[[source_binding]]
 key = "binance-usd-m-perpetual-instruments"
 venue = "binance"
 product_family = "usd_m_perpetual"

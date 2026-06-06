@@ -720,10 +720,17 @@ impl TempObject {
         // keys (ENAMETOOLONG); the Arrow reader opens by file handle, so no real
         // extension is required.
         use std::hash::{Hash, Hasher};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_TEMP_OBJECT_ID: AtomicU64 = AtomicU64::new(0);
+
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         object_key.hash(&mut hasher);
-        let path =
-            std::env::temp_dir().join(format!("nt-convert-{:016x}.parquet", hasher.finish()));
+        let unique_id = NEXT_TEMP_OBJECT_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "nt-convert-{}-{unique_id:016x}-{:016x}.parquet",
+            std::process::id(),
+            hasher.finish()
+        ));
         fs::write(&path, bytes)
             .with_context(|| format!("stage object to temp file {}", path.display()))?;
         Ok(Self { path })
@@ -749,10 +756,13 @@ fn as_text(bytes: &[u8], object_key: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{get_bytes, object_key_matches_filters, parse_polymarket_asset_allowlist};
+    use super::{
+        TempObject, get_bytes, object_key_matches_filters, parse_polymarket_asset_allowlist,
+    };
     use backtesting_vertical_slice::io_safety::ByteLimit;
     use object_store::{ObjectStore, ObjectStoreExt, memory::InMemory};
     use std::collections::HashSet;
+    use std::fs;
     use std::sync::Arc;
 
     #[test]
@@ -809,6 +819,18 @@ mod tests {
             &["family=order_book_snapshots_fixed_depth"],
             &matching_runtime_filter,
         ));
+    }
+
+    #[test]
+    fn temp_object_paths_are_unique_for_same_key() {
+        let first =
+            TempObject::new("same/polymarket/object.parquet", b"first").expect("first temp");
+        let second =
+            TempObject::new("same/polymarket/object.parquet", b"second").expect("second temp");
+
+        assert_ne!(first.path(), second.path());
+        assert_eq!(fs::read(first.path()).expect("first contents"), b"first");
+        assert_eq!(fs::read(second.path()).expect("second contents"), b"second");
     }
 
     #[test]

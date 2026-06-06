@@ -32,13 +32,13 @@
     "NT pass_through surface run.id nt_field=BacktestRunConfig.id resolved_value=backtesting-vertical-slice-bnbusdc-2026-03-01",
     "NT pass_through surface run.start nt_field=BacktestRunConfig.start resolved_value=None",
     "NT pass_through surface run.end nt_field=BacktestRunConfig.end resolved_value=None",
-    "NT unsupported_for_now surface venue.leverages resolved_value=requests_rejected_before_nt_config",
-    "NT unsupported_for_now surface venue.margin_model resolved_value=requests_rejected_before_nt_config",
-    "NT unsupported_for_now surface venue.modules resolved_value=requests_rejected_before_nt_config",
-    "NT unsupported_for_now surface venue.fill_model resolved_value=requests_rejected_before_nt_config",
-    "NT unsupported_for_now surface venue.latency_model resolved_value=requests_rejected_before_nt_config",
-    "NT unsupported_for_now surface venue.fee_model resolved_value=requests_rejected_before_nt_config",
-    "NT unsupported_for_now surface venue.settlement_prices resolved_value=requests_rejected_before_nt_config"
+    "NT unsupported_for_now surface venue.leverages nt_field=BacktestVenueConfig.leverages resolved_value=requests_rejected_before_nt_config",
+    "NT unsupported_for_now surface venue.margin_model nt_field=BacktestVenueConfig.margin_model resolved_value=requests_rejected_before_nt_config",
+    "NT unsupported_for_now surface venue.modules nt_field=BacktestVenueConfig.modules resolved_value=requests_rejected_before_nt_config",
+    "NT unsupported_for_now surface venue.fill_model nt_field=BacktestVenueConfig.fill_model resolved_value=requests_rejected_before_nt_config",
+    "NT unsupported_for_now surface venue.latency_model nt_field=BacktestVenueConfig.latency_model resolved_value=requests_rejected_before_nt_config",
+    "NT unsupported_for_now surface venue.fee_model nt_field=BacktestVenueConfig.fee_model resolved_value=requests_rejected_before_nt_config",
+    "NT unsupported_for_now surface venue.settlement_prices nt_field=BacktestVenueConfig.settlement_prices resolved_value=requests_rejected_before_nt_config"
   ],
   "warnings": [
     "No orders were placed: the accepted data is trade-only and carries no quote ticks, and the configured strategy's order entry is quote-driven. NautilusTrader still aggregated the accepted trades into bars and ran the strategy's signal logic. This reflects the TRADE_REPLAY fidelity of the source, not a defect."

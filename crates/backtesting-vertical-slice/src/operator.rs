@@ -6,8 +6,8 @@
 //! output directory. [`run_from_run_spec`] re-verifies the object SHA-256
 //! against the run-spec before any normalization, decompresses the object,
 //! accepts the source proof and binds the object through the ledger, guarantees
-//! a clean catalog root, runs the backtest, and writes the accepted proof plus
-//! result contract as JSON artifacts.
+//! a clean catalog root, runs the backtest, and writes the accepted proof,
+//! artifact-local run manifest, and result contract as JSON artifacts.
 
 use std::{
     collections::BTreeMap,
@@ -47,6 +47,8 @@ pub const CANONICAL_ARTIFACT_FILE: &str = "canonical-trades.parquet";
 pub const CATALOG_DIR: &str = "nt-catalog";
 /// Objective result-contract artifact filename.
 pub const RESULT_CONTRACT_FILE: &str = "backtest-result-contract.json";
+/// Artifact-local run-manifest artifact filename.
+pub const BACKTEST_RUN_MANIFEST_FILE: &str = "backtest-run-manifest.json";
 /// Accepted source-proof artifact filename.
 pub const ACCEPTED_SOURCE_PROOF_FILE: &str = "accepted-source-proof.json";
 /// Published-catalog `BacktestNode` proof artifact filename.
@@ -81,6 +83,7 @@ pub struct RunArtifacts {
     pub catalog_root: PathBuf,
     pub proof_path: PathBuf,
     pub contract_path: PathBuf,
+    pub run_manifest_path: PathBuf,
     pub conversion_manifest_path: PathBuf,
     pub conversion_checkpoint_path: PathBuf,
     pub catalog_metadata_path: PathBuf,
@@ -269,6 +272,7 @@ pub fn run_from_run_spec(
         .context("catalog path is not valid UTF-8")?
         .to_string();
     let contract_path = output_dir.join(RESULT_CONTRACT_FILE);
+    let run_manifest_path = output_dir.join(BACKTEST_RUN_MANIFEST_FILE);
     let proof_path = output_dir.join(ACCEPTED_SOURCE_PROOF_FILE);
 
     // Bind the manifest catalog input to the local projection root.
@@ -309,6 +313,12 @@ pub fn run_from_run_spec(
         serde_json::to_string_pretty(&output.contract).context("serialize result contract")?,
     )
     .with_context(|| format!("write {}", contract_path.display()))?;
+    fs::write(
+        &run_manifest_path,
+        serde_json::to_string_pretty(&spec.manifest.to_artifact_manifest()?)
+            .context("serialize resolved run manifest")?,
+    )
+    .with_context(|| format!("write {}", run_manifest_path.display()))?;
     write_completed_conversion_artifacts(
         output_dir,
         &output.conversion_manifest,
@@ -323,6 +333,7 @@ pub fn run_from_run_spec(
         catalog_root,
         proof_path,
         contract_path,
+        run_manifest_path,
         conversion_manifest_path: output_dir
             .join(crate::conversion_boundary::CONVERSION_MANIFEST_FILE),
         conversion_checkpoint_path: output_dir
@@ -739,6 +750,7 @@ mod tests {
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionManifest,
     };
     use crate::result_contract::BacktestResultContract;
+    use crate::run_manifest::{BacktestRunManifestArtifact, NtSurfaceClassification};
 
     const COMMITTED_RUN_SPEC: &str = include_str!(
         "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
@@ -797,6 +809,10 @@ mod tests {
         assert_eq!(artifacts.output.read_back_count, 3);
         assert!(artifacts.contract_path.exists(), "result contract written");
         assert!(artifacts.proof_path.exists(), "accepted proof written");
+        assert!(
+            artifacts.run_manifest_path.exists(),
+            "resolved run manifest written"
+        );
         artifacts
             .output
             .contract
@@ -806,6 +822,53 @@ mod tests {
         let contract_json = fs::read_to_string(&artifacts.contract_path).unwrap();
         let parsed: BacktestResultContract = serde_json::from_str(&contract_json).unwrap();
         assert_eq!(parsed, artifacts.output.contract);
+    }
+
+    #[test]
+    fn run_from_run_spec_writes_resolved_run_manifest_artifact() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().unwrap();
+        let artifacts = run_from_run_spec(&spec, &gz, dir.path()).expect("operator run");
+
+        let manifest_json = fs::read_to_string(&artifacts.run_manifest_path).unwrap();
+        let parsed: BacktestRunManifestArtifact = serde_json::from_str(&manifest_json).unwrap();
+
+        assert_eq!(
+            parsed.submitted_manifest_hash,
+            spec.manifest.manifest_hash()
+        );
+        assert_eq!(parsed.manifest, spec.manifest);
+        assert!(
+            parsed.resolved_nt_surfaces.iter().any(|surface| {
+                surface.classification == NtSurfaceClassification::Defaulted
+                    && surface.surface == "run.chunk_size"
+                    && surface.resolved_value == "None"
+            }),
+            "{:?}",
+            parsed.resolved_nt_surfaces
+        );
+        assert!(
+            parsed.resolved_nt_surfaces.iter().any(|surface| {
+                surface.classification == NtSurfaceClassification::PassThrough
+                    && surface.surface == "run.id"
+                    && surface.resolved_value == spec.manifest.run_id
+            }),
+            "{:?}",
+            parsed.resolved_nt_surfaces
+        );
+        assert!(
+            parsed.resolved_nt_surfaces.iter().any(|surface| {
+                surface.classification == NtSurfaceClassification::UnsupportedForNow
+                    && surface.surface == "venue.fill_model"
+            }),
+            "{:?}",
+            parsed.resolved_nt_surfaces
+        );
+        assert!(
+            !manifest_json.contains(dir.path().to_str().unwrap()),
+            "published manifest artifact must not carry local execution paths"
+        );
     }
 
     #[test]
@@ -1021,6 +1084,13 @@ mod tests {
         assert!(
             !published.published_artifacts.is_empty(),
             "artifact publish set must be reported"
+        );
+        assert!(
+            published
+                .published_artifacts
+                .iter()
+                .any(|artifact| artifact.published_uri.ends_with(BACKTEST_RUN_MANIFEST_FILE)),
+            "publish set must include the artifact-local run manifest"
         );
         for artifact in &published.published_artifacts {
             assert!(

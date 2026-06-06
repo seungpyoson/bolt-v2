@@ -10,7 +10,7 @@
 //! There is no custom simulation behaviour: NautilusTrader owns the engine,
 //! catalog, fills, and results.
 
-use std::{fmt::Debug, path::Path, str::FromStr};
+use std::{path::Path, str::FromStr};
 
 use anyhow::{Context, Result, bail, ensure};
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
@@ -36,7 +36,7 @@ use super::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
     },
     run_manifest::{
-        BacktestingRunManifest, STRATEGY_HURST_VPIN_DIRECTIONAL, UNSUPPORTED_NT_VENUE_SURFACES,
+        BacktestingRunManifest, NtSurfaceClassification, STRATEGY_HURST_VPIN_DIRECTIONAL,
     },
     source_proof::AcceptedDataset,
 };
@@ -46,58 +46,29 @@ const PARAM_BAR_TYPE: &str = "bar_type";
 /// Strategy parameter key for the trade size.
 const PARAM_TRADE_SIZE: &str = "trade_size";
 
-fn option_value<T: Debug>(value: Option<T>) -> String {
-    match value {
-        Some(value) => format!("{value:?}"),
-        None => "None".to_string(),
+fn nt_surface_classification_label(classification: NtSurfaceClassification) -> &'static str {
+    match classification {
+        NtSurfaceClassification::Defaulted => "defaulted",
+        NtSurfaceClassification::PassThrough => "pass_through",
+        NtSurfaceClassification::CustomOwned => "custom_owned",
+        NtSurfaceClassification::UnsupportedForNow => "unsupported_for_now",
     }
 }
 
 fn nt_extension_surface_claim_limits(manifest: &BacktestingRunManifest) -> Result<Vec<String>> {
-    let run_config = manifest
-        .to_nt_run_config()
-        .map_err(|error| anyhow::anyhow!("manifest to NautilusTrader config failed: {error}"))?;
-    let engine = run_config.engine();
-    let mut claim_limits = vec![
-        format!(
-            "NT defaulted surface engine.config nt_field=BacktestRunConfig.engine \
-             resolved_value=BacktestEngineConfig::default(run_analysis={},bypass_logging={})",
-            engine.run_analysis, engine.bypass_logging
-        ),
-        format!(
-            "NT defaulted surface run.chunk_size nt_field=BacktestRunConfig.chunk_size \
-             resolved_value={}",
-            option_value(run_config.chunk_size())
-        ),
-        format!(
-            "NT defaulted surface run.raise_exception \
-             nt_field=BacktestRunConfig.raise_exception resolved_value={}",
-            run_config.raise_exception()
-        ),
-        format!(
-            "NT defaulted surface run.dispose_on_completion \
-             nt_field=BacktestRunConfig.dispose_on_completion resolved_value={}",
-            run_config.dispose_on_completion()
-        ),
-        format!(
-            "NT pass_through surface run.id nt_field=BacktestRunConfig.id resolved_value={}",
-            run_config.id()
-        ),
-        format!(
-            "NT pass_through surface run.start nt_field=BacktestRunConfig.start resolved_value={}",
-            option_value(run_config.start())
-        ),
-        format!(
-            "NT pass_through surface run.end nt_field=BacktestRunConfig.end resolved_value={}",
-            option_value(run_config.end())
-        ),
-    ];
-    claim_limits.extend(UNSUPPORTED_NT_VENUE_SURFACES.iter().map(|surface| {
-        format!(
-            "NT unsupported_for_now surface venue.{surface} resolved_value=requests_rejected_before_nt_config"
-        )
-    }));
-    Ok(claim_limits)
+    Ok(manifest
+        .resolved_nt_surfaces()?
+        .into_iter()
+        .map(|surface| {
+            format!(
+                "NT {} surface {} nt_field={} resolved_value={}",
+                nt_surface_classification_label(surface.classification),
+                surface.surface,
+                surface.nt_field,
+                surface.resolved_value
+            )
+        })
+        .collect())
 }
 
 /// Inputs for one end-to-end backtest run over accepted data.

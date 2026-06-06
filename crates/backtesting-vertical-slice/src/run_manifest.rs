@@ -10,7 +10,7 @@
 //! by a registry key (see [`registered_strategies`]); the manifest never carries
 //! executable strategy code or a runtime path.
 
-use std::{collections::BTreeMap, str::FromStr};
+use std::{collections::BTreeMap, fmt::Debug, str::FromStr};
 
 use anyhow::{Result, bail};
 use nautilus_backtest::config::{
@@ -48,6 +48,8 @@ pub const UNSUPPORTED_NT_VENUE_SURFACES: &[&str] = &[
     "fee_model",
     "settlement_prices",
 ];
+/// Artifact-local manifest version written beside each backtest result.
+pub const BACKTEST_RUN_MANIFEST_ARTIFACT_VERSION: &str = "backtest-run-manifest.v1";
 
 const CATALOG_STORAGE_OPTIONS_SHADOWED: &str =
     "cannot be combined with catalog_fs_rust_storage_options";
@@ -91,6 +93,55 @@ pub enum RunPurpose {
     Audit,
     Regression,
     Migration,
+}
+
+/// Classification vocabulary for NT/custom backtest extension surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NtSurfaceClassification {
+    Defaulted,
+    PassThrough,
+    CustomOwned,
+    UnsupportedForNow,
+}
+
+/// Resolved evidence for one NT/custom extension surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedNtSurface {
+    pub surface: String,
+    pub classification: NtSurfaceClassification,
+    pub nt_field: String,
+    pub resolved_value: String,
+}
+
+/// Artifact-local backtest run manifest with resolved NT/default surfaces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BacktestRunManifestArtifact {
+    pub manifest_version: String,
+    pub submitted_manifest_hash: String,
+    pub manifest: BacktestingRunManifest,
+    pub resolved_nt_surfaces: Vec<ResolvedNtSurface>,
+}
+
+fn option_value<T: Debug>(value: Option<T>) -> String {
+    match value {
+        Some(value) => format!("{value:?}"),
+        None => "None".to_string(),
+    }
+}
+
+fn resolved_surface(
+    surface: &str,
+    classification: NtSurfaceClassification,
+    nt_field: &str,
+    resolved_value: impl Into<String>,
+) -> ResolvedNtSurface {
+    ResolvedNtSurface {
+        surface: surface.to_string(),
+        classification,
+        nt_field: nt_field.to_string(),
+        resolved_value: resolved_value.into(),
+    }
 }
 
 /// Structured reason for pinning a non-latest accepted source proof.
@@ -594,6 +645,87 @@ impl BacktestingRunManifest {
                 .expect("BacktestingRunManifest JSON serialization must be infallible"),
         );
         hex::encode(hasher.finalize())
+    }
+
+    /// Build the artifact-local manifest that records submitted run intent plus
+    /// resolved NT/default surface values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the submitted manifest cannot map to NT config.
+    pub fn to_artifact_manifest(&self) -> Result<BacktestRunManifestArtifact, ManifestError> {
+        Ok(BacktestRunManifestArtifact {
+            manifest_version: BACKTEST_RUN_MANIFEST_ARTIFACT_VERSION.to_string(),
+            submitted_manifest_hash: self.manifest_hash(),
+            manifest: self.clone(),
+            resolved_nt_surfaces: self.resolved_nt_surfaces()?,
+        })
+    }
+
+    /// Resolve the NT/custom extension-surface records for this manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest cannot map to NT config.
+    pub fn resolved_nt_surfaces(&self) -> Result<Vec<ResolvedNtSurface>, ManifestError> {
+        let run_config = self.to_nt_run_config()?;
+        let engine = run_config.engine();
+        let mut surfaces = vec![
+            resolved_surface(
+                "engine.config",
+                NtSurfaceClassification::Defaulted,
+                "BacktestRunConfig.engine",
+                format!(
+                    "BacktestEngineConfig::default(run_analysis={},bypass_logging={})",
+                    engine.run_analysis, engine.bypass_logging
+                ),
+            ),
+            resolved_surface(
+                "run.chunk_size",
+                NtSurfaceClassification::Defaulted,
+                "BacktestRunConfig.chunk_size",
+                option_value(run_config.chunk_size()),
+            ),
+            resolved_surface(
+                "run.raise_exception",
+                NtSurfaceClassification::Defaulted,
+                "BacktestRunConfig.raise_exception",
+                run_config.raise_exception().to_string(),
+            ),
+            resolved_surface(
+                "run.dispose_on_completion",
+                NtSurfaceClassification::Defaulted,
+                "BacktestRunConfig.dispose_on_completion",
+                run_config.dispose_on_completion().to_string(),
+            ),
+            resolved_surface(
+                "run.id",
+                NtSurfaceClassification::PassThrough,
+                "BacktestRunConfig.id",
+                run_config.id(),
+            ),
+            resolved_surface(
+                "run.start",
+                NtSurfaceClassification::PassThrough,
+                "BacktestRunConfig.start",
+                option_value(run_config.start()),
+            ),
+            resolved_surface(
+                "run.end",
+                NtSurfaceClassification::PassThrough,
+                "BacktestRunConfig.end",
+                option_value(run_config.end()),
+            ),
+        ];
+        surfaces.extend(UNSUPPORTED_NT_VENUE_SURFACES.iter().map(|surface| {
+            resolved_surface(
+                &format!("venue.{surface}"),
+                NtSurfaceClassification::UnsupportedForNow,
+                &format!("BacktestVenueConfig.{surface}"),
+                "requests_rejected_before_nt_config",
+            )
+        }));
+        Ok(surfaces)
     }
 
     /// Validate the manifest against gate-4 rules and bind it to an accepted

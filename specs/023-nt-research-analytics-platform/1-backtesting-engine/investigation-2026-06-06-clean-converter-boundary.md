@@ -25,6 +25,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - Artifact lifecycle config now rejects default delete/expiration rules, requires `active`/`archive`/`deep_archive` storage profiles, and derives active-to-inactive state from a configured quiet window
 - S3 catalog storage options now fail before NT config construction if generic and Rust-specific maps are both set, or if an S3 option key is not supported by this pinned NT revision
 - source-proof acceptance now enforces the schema rule that accepted canonical backfill input must use `directly_backfillable` or `owner_archive_backfillable`; bounded/current-only, pending, vendor/forward-capture-only, not-applicable, or excluded evidence states cannot become accepted BTE input
+- source-proof acceptance now cross-checks registered TOML source-binding metadata for `product_family`, `table_family`, and `evidence_state`; a proof cannot reuse a registered host/key while silently changing the data family or acceptance state
 - the CLI has an explicit `--publish-output` opt-in that copies the verified local artifact tree to `manifest.output_prefix` through NT/object-store plumbing after the local run succeeds
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
 - the current `BacktestExtensionSurface` classification is recorded in `backtest-extension-surface-matrix.md`; supported primitive NT controls are TOML pass-throughs, Bolt-owned pieces are provenance/governance boundaries, and unmodeled NT model/system surfaces fail before NT config construction
@@ -39,6 +40,7 @@ No-go for broader production claims:
 - the direct S3 publish/proof command with only `region` configured now fails fast with `artifact_store.ssm_parameters must resolve access_key_id and secret_access_key before publishing to an s3 output_prefix`, and leaves no output directory
 - only the BNBUSDC 2026-03-01 trade-replay object is proven in this slice; Bybit is a sample source/proof, not a production converter special case
 - complex NT model surfaces are not yet manifest-configurable: leverage maps, margin model, simulation modules, fill model, latency model, fee model, and settlement prices. They are documented as `unsupported_for_now` and must not be accepted as inert TOML.
+- compatible CSV native-trade spot venues can be added through source proof plus run-spec TOML mapping; new NT data classes or instrument families beyond the current `TradeTick`/`CurrencyPair` path are not yet TOML-only and must fail fast until a typed NT projection path is added
 - no execution-quality, queue-position, order-book-liquidity, multi-day, or multi-instrument claim is supported by this slice
 
 ## Current Source Facts
@@ -172,6 +174,7 @@ RED checks observed before implementation:
 - `just bte-test run_from_run_spec_uses_configured_csv_trade_mapping` failed with missing `ConverterConfig.csv`, proving raw CSV column mapping was not yet config-owned
 - `just bte-test run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them` failed with missing `converter_config_hash` on converter config, conversion fingerprint, and result contract
 - `just bte-test acceptance_blocked_when_evidence_state_is_not_backfillable` failed because `evaluate_acceptance()` still admitted accepted source proofs whose `evidence_state` was bounded/current-only, pending, vendor/forward-capture-only, not-applicable, or excluded
+- `just bte-test acceptance_blocked_when_source_binding_family_disagrees_with_registry` failed because `evaluate_acceptance()` still admitted a proof whose `product_family` disagreed with the registered TOML source binding
 
 GREEN checks after implementation:
 
@@ -204,7 +207,8 @@ GREEN checks after implementation:
 - `just bte-test immutable_event_create_is_idempotent_for_same_payload immutable_event_create_rejects_different_payload_at_same_uri`: RED failed with missing event object/create-plan contract types, then GREEN passed after adding the pure immutable event-create helper
 - `just bte-test data_config_preserves_configured_object_store_conditional_put artifact_store_preserves_conditional_put_after_ssm_resolution artifact_store_rejects_disabled_conditional_put_for_s3_commit_path`: RED failed because the manifest rejected `conditional_put`; GREEN passed after preserving canonical `conditional_put = "etag"` through NT/object-store options and rejecting `disabled` for S3 Artifact Index commit readiness
 - `just bte-test acceptance_blocked_when_evidence_state_is_not_backfillable`: GREEN passed after source-proof acceptance began rejecting non-backfillable evidence states
-- `just bte-test`: 203 passed, including 2 slow public API tests
+- `just bte-test acceptance_blocked_when_source_binding_family_disagrees_with_registry`: GREEN passed after source-proof acceptance began binding proof `product_family`, `table_family`, and `evidence_state` to the TOML source-binding registry
+- `just bte-test`: 204 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed
@@ -281,6 +285,12 @@ Confirmed root causes:
   enforce that field. That meant a bounded/current-only, pending-source-proof,
   vendor/forward-capture-only, not-applicable, or excluded record could pass
   `evaluate_acceptance()` if its required checks were otherwise marked passed.
+- Source-binding metadata mismatch: the TOML registry carries
+  `product_family`, `table_families`, and `evidence_state`, but the Rust
+  acceptance path previously used the registry only for source URL host
+  validation. A proof could reuse a registered source binding while changing
+  the data family or acceptance state, making venue/data-type additions less
+  systematic than the registry implied.
 
 No-repeat controls before any future broad backfill or BTE conversion:
 
@@ -315,6 +325,10 @@ No-repeat controls before any future broad backfill or BTE conversion:
 13. Accepted source proofs must carry a backfillable evidence state; bounded or
     pending evidence may be recorded for research, but not promoted into
     canonical BTE input.
+14. Accepted source proofs must match the configured source-binding registry's
+    product family, table family, and evidence state; adding a compatible source
+    means updating registry/source-proof/run-spec TOML, not changing operator or
+    runner branches.
 
 
 ## Recommendation

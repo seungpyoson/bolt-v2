@@ -43,7 +43,11 @@ struct SourceBindingRegistry {
 struct SourceBindingConfig {
     key: String,
     venue: String,
+    product_family: String,
     source_uri: String,
+    evidence_state: EvidenceState,
+    #[serde(default)]
+    table_families: Vec<String>,
 }
 
 /// Lifecycle status of a source-proof record.
@@ -329,6 +333,12 @@ pub enum AcceptanceError {
     SourceVenueMismatch { venue: String, source_url: String },
     /// The evidence state is not allowed for accepted canonical backfill input.
     EvidenceStateNotBackfillable(EvidenceState),
+    /// The source proof disagrees with the configured source-binding metadata.
+    SourceBindingMismatch {
+        field: &'static str,
+        expected: String,
+        actual: String,
+    },
 }
 
 impl std::fmt::Display for AcceptanceError {
@@ -399,6 +409,16 @@ impl std::fmt::Display for AcceptanceError {
                     "evidence_state {evidence_state:?} is not backfillable for accepted source proof"
                 )
             }
+            Self::SourceBindingMismatch {
+                field,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "source_binding {field} mismatch: expected {expected:?}, got {actual:?}"
+                )
+            }
         }
     }
 }
@@ -467,6 +487,7 @@ impl SourceProofReport {
         }
         self.check_required_identity()?;
         ensure_backfillable_evidence_state(self.evidence_state)?;
+        ensure_source_binding_metadata_matches(self)?;
         ensure_coverage_within_requested(&self.requested_time_range, &self.coverage_time_range)?;
         if self.nt_mapping_status != NtMappingStatus::Accepted {
             return Err(AcceptanceError::NtMappingNotAccepted(
@@ -691,10 +712,10 @@ pub fn select_accepted_dataset(
 }
 
 fn source_url_matches_declared_source(source_url: &str, source_binding: &str, venue: &str) -> bool {
-    let Some(declared_source_uri) = source_binding_source_uri(source_binding, venue) else {
+    let Some(config) = source_binding_config(source_binding, venue) else {
         return false;
     };
-    let Some(declared_host) = https_host(&declared_source_uri) else {
+    let Some(declared_host) = https_host(&config.source_uri) else {
         return false;
     };
     let Some(object_host) = https_host(source_url) else {
@@ -703,7 +724,7 @@ fn source_url_matches_declared_source(source_url: &str, source_binding: &str, ve
     object_host.eq_ignore_ascii_case(declared_host)
 }
 
-fn source_binding_source_uri(source_binding: &str, venue: &str) -> Option<String> {
+fn source_binding_config(source_binding: &str, venue: &str) -> Option<SourceBindingConfig> {
     let source_binding = source_binding.trim();
     let venue = venue.trim();
     if source_binding.is_empty() || venue.is_empty() {
@@ -715,7 +736,6 @@ fn source_binding_source_uri(source_binding: &str, venue: &str) -> Option<String
         .into_iter()
         // Binding keys are canonical config IDs; venue labels are operator-facing names.
         .find(|binding| binding.key == source_binding && binding.venue.eq_ignore_ascii_case(venue))
-        .map(|binding| binding.source_uri)
 }
 
 fn https_host(source_url: &str) -> Option<&str> {
@@ -746,6 +766,41 @@ fn ensure_backfillable_evidence_state(
         EvidenceState::DirectlyBackfillable | EvidenceState::OwnerArchiveBackfillable => Ok(()),
         other => Err(AcceptanceError::EvidenceStateNotBackfillable(other)),
     }
+}
+
+fn ensure_source_binding_metadata_matches(
+    proof: &SourceProofReport,
+) -> Result<(), AcceptanceError> {
+    let Some(config) = source_binding_config(&proof.source_binding, &proof.venue) else {
+        return Ok(());
+    };
+    if proof.product_family != config.product_family {
+        return Err(AcceptanceError::SourceBindingMismatch {
+            field: "product_family",
+            expected: config.product_family,
+            actual: proof.product_family.clone(),
+        });
+    }
+    if proof.evidence_state != config.evidence_state {
+        return Err(AcceptanceError::SourceBindingMismatch {
+            field: "evidence_state",
+            expected: format!("{:?}", config.evidence_state),
+            actual: format!("{:?}", proof.evidence_state),
+        });
+    }
+    if !config.table_families.is_empty()
+        && !config
+            .table_families
+            .iter()
+            .any(|table_family| table_family == &proof.table_family)
+    {
+        return Err(AcceptanceError::SourceBindingMismatch {
+            field: "table_family",
+            expected: config.table_families.join(","),
+            actual: proof.table_family.clone(),
+        });
+    }
+    Ok(())
 }
 
 fn ensure_coverage_within_requested(
@@ -1350,6 +1405,48 @@ mod tests {
                 "{evidence_state:?}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn acceptance_blocked_when_source_binding_family_disagrees_with_registry() {
+        let mut proof = candidate_proof();
+        proof.product_family = "linear".to_string();
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("source_binding")
+                && err.to_string().contains("product_family")
+                && err.to_string().contains("spot")
+                && err.to_string().contains("linear"),
+            "{err}"
+        );
+
+        let mut proof = candidate_proof();
+        proof.table_family = "order_book_snapshots_fixed_depth".to_string();
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("source_binding")
+                && err.to_string().contains("table_family")
+                && err.to_string().contains("trades")
+                && err.to_string().contains("order_book_snapshots_fixed_depth"),
+            "{err}"
+        );
+
+        let mut proof = candidate_proof();
+        proof.evidence_state = EvidenceState::DirectlyBackfillable;
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("source_binding")
+                && err.to_string().contains("evidence_state")
+                && err.to_string().contains("OwnerArchiveBackfillable")
+                && err.to_string().contains("DirectlyBackfillable"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -27,6 +27,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - source-proof acceptance now enforces the schema rule that accepted canonical backfill input must use `directly_backfillable` or `owner_archive_backfillable`; bounded/current-only, pending, vendor/forward-capture-only, not-applicable, or excluded evidence states cannot become accepted BTE input
 - source-proof acceptance now cross-checks registered TOML source-binding metadata for `product_family`, `table_family`, and `evidence_state`; a proof cannot reuse a registered host/key while silently changing the data family or acceptance state
 - non-latest source-proof pins now require structured manifest justification: `normal` runs still cannot pin them, non-normal pins require `proof_pin_reason_code`, and `audit_or_investigation` pins require `proof_pin_reason_detail`
+- the accepted `proof_pin_reason_code` vocabulary now matches the plan/reference contract, including published-result reproduction and regression-comparison pins
 - the CLI has an explicit `--publish-output` opt-in that copies the verified local artifact tree to `manifest.output_prefix` through NT/object-store plumbing after the local run succeeds
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
 - the current `BacktestExtensionSurface` classification is recorded in `backtest-extension-surface-matrix.md`; supported primitive NT controls are TOML pass-throughs, Bolt-owned pieces are provenance/governance boundaries, and unmodeled NT model/system surfaces fail before NT config construction
@@ -178,6 +179,7 @@ RED checks observed before implementation:
 - `just bte-test acceptance_blocked_when_source_binding_family_disagrees_with_registry` failed because `evaluate_acceptance()` still admitted a proof whose `product_family` disagreed with the registered TOML source binding
 - `just bte-test rejects_non_latest_proof_pin_without_reason_code` failed because `BacktestingRunManifest::validate()` accepted an audit run that set `pins_non_latest_proof = true` without a structured reason code
 - `just bte-test rejects_audit_non_latest_proof_pin_without_reason_detail` failed because `BacktestingRunManifest::validate()` accepted an `audit_or_investigation` proof pin without detail
+- `just bte-test accepts_all_configured_non_latest_proof_pin_reason_codes_from_toml` failed because TOML accepted only `baseline_reproduction`, `audit_or_investigation`, and `migration_validation`, while the plan/reference contract also allows `published_result_reproduction` and `regression_comparison`
 
 GREEN checks after implementation:
 
@@ -212,7 +214,8 @@ GREEN checks after implementation:
 - `just bte-test acceptance_blocked_when_evidence_state_is_not_backfillable`: GREEN passed after source-proof acceptance began rejecting non-backfillable evidence states
 - `just bte-test acceptance_blocked_when_source_binding_family_disagrees_with_registry`: GREEN passed after source-proof acceptance began binding proof `product_family`, `table_family`, and `evidence_state` to the TOML source-binding registry
 - `just bte-test rejects_non_latest_proof_pin_for_normal_run rejects_non_latest_proof_pin_without_reason_code rejects_audit_non_latest_proof_pin_without_reason_detail accepts_non_latest_reproduction_pin_with_reason_code`: 4 passed after adding typed non-latest proof-pin reason fields
-- `just bte-test`: 207 passed, including 2 slow public API tests
+- `just bte-test accepts_all_configured_non_latest_proof_pin_reason_codes_from_toml`: 1 passed after adding the missing `published_result_reproduction` and `regression_comparison` enum variants
+- `just bte-test`: 208 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed
@@ -300,6 +303,11 @@ Confirmed root causes:
   `proof_pin_reason_code`, with detail for `audit_or_investigation`, but the
   manifest previously had only a boolean `pins_non_latest_proof`. Non-normal
   runs could therefore pin old proof versions without recording why.
+- Proof-pin vocabulary mismatch: the plan/reference contract allows
+  `published_result_reproduction` and `regression_comparison`, but the Rust
+  enum previously omitted them. TOML manifests using those documented reason
+  codes failed deserialization before validation, so the governance vocabulary
+  was not actually usable end to end.
 
 No-repeat controls before any future broad backfill or BTE conversion:
 
@@ -341,6 +349,9 @@ No-repeat controls before any future broad backfill or BTE conversion:
 15. Non-latest source-proof pins must be explicit and auditable: `normal` runs
     cannot pin them, and every allowed non-normal pin must carry the structured
     reason fields required by the manifest.
+16. The Rust manifest enum, reference contract, and plan vocabulary for
+    `proof_pin_reason_code` must stay in lockstep; every documented reason code
+    needs a TOML deserialization test.
 
 
 ## Recommendation

@@ -88,6 +88,8 @@ pub enum RunPurpose {
 #[serde(rename_all = "snake_case")]
 pub enum ProofPinReasonCode {
     BaselineReproduction,
+    PublishedResultReproduction,
+    RegressionComparison,
     AuditOrInvestigation,
     MigrationValidation,
 }
@@ -1936,6 +1938,33 @@ mod tests {
         manifest
             .validate(&accepted_dataset())
             .expect("reproduction pin with structured reason should validate");
+    }
+
+    #[test]
+    fn accepts_all_configured_non_latest_proof_pin_reason_codes_from_toml() {
+        for (run_purpose, reason_code) in [
+            ("reproduction", "published_result_reproduction"),
+            ("regression", "regression_comparison"),
+        ] {
+            let toml = toml::to_string(&valid_manifest())
+                .expect("serialize manifest")
+                .replace(
+                    "run_purpose = \"normal\"",
+                    &format!("run_purpose = \"{run_purpose}\""),
+                )
+                .replace(
+                    "pins_non_latest_proof = false",
+                    &format!(
+                        "pins_non_latest_proof = true\nproof_pin_reason_code = \"{reason_code}\""
+                    ),
+                );
+            let manifest: BacktestingRunManifest =
+                toml::from_str(&toml).expect("parse allowed proof-pin reason code");
+
+            manifest
+                .validate(&accepted_dataset())
+                .expect("allowed proof-pin reason code should validate");
+        }
     }
 
     #[test]

@@ -1,0 +1,24 @@
+# Chainlink PRR Reference Source Implementation Risk Check
+
+## Scope
+
+This note records the pre-implementation checks for the Chainlink+PRR reference-source plan. It must not contain secrets, raw endpoints, raw reports, or credential values.
+
+The provider names in this note are edge/provider examples from the handoff plan. The implementation architecture must stay provider-agnostic: runtime source selection, comparator policy, and thresholds must be TOML-owned, while provider-specific provenance stays at provider edges.
+
+## Results
+
+| Risk | Status | Evidence | Decision |
+| --- | --- | --- | --- |
+| Chainlink adapter/config API shape | closed | Current branch exposes signed report provenance in `src/bolt_v3_providers/chainlink/report.rs`: `PriceToBeatReportBinding` has `provider_id`, `feed_id`, `schema_version`, and `decimal_scale`; `DecodedPriceToBeatReport` has `feed_id`, `valid_from_timestamp_ms`, `observations_timestamp_ms`, and `benchmark_price`; `ChainlinkDataStreamsReportSource` parses `feedID`, `validFromTimestamp`, `observationsTimestamp`, and `fullReport` (`src/bolt_v3_providers/chainlink/report.rs:41`). | Use existing Chainlink report/provenance path for boundary `price_to_beat`; do not let a generic reference-price quote replace this boundary proof. |
+| Root config fixture shape | closed | Root config is loaded from `BoltV3RootConfig`, `strategy_files`, and `LoadedBoltV3Config` through `load_bolt_v3_config`, which reads root TOML, follows strategy files, and validates root plus loaded strategies (`src/bolt_v3_config.rs:60`, `src/bolt_v3_config.rs:556`). Existing config tests also parse minimal root mutations with `toml::from_str::<BoltV3RootConfig>` (`tests/config_parsing.rs:6397`). | Task 1 config tests can use minimal TOML for root-shape validation and full fixture loading when strategy/root interaction is under test. |
+| Strategy reference-quote bridge shape | closed | Current pricing bridge type is `FastSpotObservation { venue, price, observed_ts_ms }`; `TakerPricingState::observe_reference_quote` updates reference fair value only for positive finite prices (`src/bolt_v3_taker_pricing.rs:25`, `src/bolt_v3_taker_pricing.rs:139`). The strategy reference quote path converts quote ticks to `FastSpotObservation` and separately binds `price_to_beat` only through `observe_resolution_strike` (`src/strategies/binary_oracle_edge_taker/mod.rs:833`, `src/strategies/binary_oracle_edge_taker/mod.rs:870`, `src/strategies/binary_oracle_edge_taker/mod.rs:1126`). | A normalized active reference quote can be adapted into `FastSpotObservation`; `price_to_beat` assignment must remain on the resolution-strike path. |
+| PRR SSM credential readiness | closed | The SSM-only secret path is provider-extensible through `ProviderSecretRequirement`, `ProviderSecretResolveContext`, and `SsmSecretResolver` (`src/bolt_v3_providers/mod.rs:80`). `bolt_v3_secrets` resolves configured provider secrets through AWS SSM using `[aws].region` and forbids environment fallbacks (`src/bolt_v3_secrets.rs:10`). Name-only SSM checks on 2026-06-06 found `/bolt/polyresearch/api-key` and `/bolt/polyresearch/websocket-endpoint` in `eu-west-2`; `eu-west-1` lacks those PolyResearch paths. No secret values were fetched. | Runtime PRR/PolyResearch work may proceed only through a provider binding that resolves its configured SSM parameter paths with the existing Rust SDK path. No 1Password, CLI, environment, file, or Python fallback is allowed. |
+| Freshness/drift threshold policy | closed | The 2026-06-05 overlap probe recorded Chainlink with one `gaps_gt_1500` and zero `gaps_gt_2000` per symbol, while PRR had `19-22` `gaps_gt_1500` and `2-4` `gaps_gt_2000`; PRR p95 interval was `1549.8-1582.2ms`; absolute drift max was `2.8-6.0 bps`; arrival-order results differed between archived and current probes (`docs/bolt-v3/research/chainlink-prr-ws-overlap-2026-06-05.raw.log:9`, `docs/bolt-v3/research/chainlink-prr-ws-overlap-2026-06-05.raw.log:13`, `docs/bolt-v3/research/prr-chainlink-source-semantics-2026-06-05.md:101`). | Keep thresholds TOML-owned. `2500ms` is the initial PRR-active freshness threshold, `1500ms` is a strict test threshold, `10 bps` is an initial hard drift threshold, and arrival order is telemetry only. |
+
+## Stop Conditions
+
+- Stop implementation if Chainlink signed-report provenance cannot provide `feed_id`, `full_report`, `valid_from_timestamp_ms`, and `observations_timestamp_ms`.
+- Stop implementation if PRR runtime credentials are not available through AWS SSM via the Rust SDK.
+- Stop implementation if implementing PRR requires environment-variable, local-file, 1Password, AWS CLI, or Python runtime fallback.
+- Stop implementation if `ReferenceQuote` cannot be kept separate from Chainlink `price_to_beat` binding.

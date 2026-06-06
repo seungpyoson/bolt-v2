@@ -280,6 +280,28 @@ impl BinaryOracleEdgeTakerBuilder {
             config.trade_flow_max_samples > 0,
             "trade_flow_max_samples must be positive"
         );
+        for (field, value) in [
+            (
+                stringify!(trade_flow_window_secs),
+                config.trade_flow_window_secs,
+            ),
+            (
+                stringify!(spike_guard_cooldown_secs),
+                config.spike_guard_cooldown_secs,
+            ),
+            (stringify!(vol_window_secs), config.vol_window_secs),
+            (stringify!(vol_gap_reset_secs), config.vol_gap_reset_secs),
+            (
+                stringify!(vol_min_observations),
+                config.vol_min_observations,
+            ),
+            (
+                stringify!(vol_bridge_valid_secs),
+                config.vol_bridge_valid_secs,
+            ),
+        ] {
+            anyhow::ensure!(value > u64::MIN, "{field} must be positive");
+        }
         Self::ensure_configured_instrument_id_fields_parse(&config)?;
         Ok(config)
     }

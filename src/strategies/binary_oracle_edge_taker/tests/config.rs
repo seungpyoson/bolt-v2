@@ -2,6 +2,16 @@
 
 use super::*;
 
+const ZERO_INTEGER_CONFIG_VALUE: i64 = 0;
+const POSITIVE_REQUIRED_INTEGER_FIELDS: &[&str] = &[
+    stringify!(trade_flow_window_secs),
+    stringify!(spike_guard_cooldown_secs),
+    stringify!(vol_window_secs),
+    stringify!(vol_gap_reset_secs),
+    stringify!(vol_min_observations),
+    stringify!(vol_bridge_valid_secs),
+];
+
 #[test]
 fn strategy_core_uses_configured_nt_order_tag_and_oms_type() {
     let strategy = test_strategy();
@@ -77,6 +87,26 @@ fn parse_config_rejects_zero_trade_flow_max_samples() {
             .contains("trade_flow_max_samples must be positive"),
         "expected positivity rejection, got: {err}"
     );
+}
+
+#[test]
+fn parse_config_rejects_zero_positive_required_window_knobs() {
+    for field in POSITIVE_REQUIRED_INTEGER_FIELDS {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert(
+                (*field).to_string(),
+                Value::Integer(ZERO_INTEGER_CONFIG_VALUE),
+            );
+        let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("zero positive-required config field must be rejected");
+        assert!(
+            err.to_string()
+                .contains(&format!("{field} must be positive")),
+            "expected positivity rejection for {field}, got: {err}"
+        );
+    }
 }
 
 #[test]

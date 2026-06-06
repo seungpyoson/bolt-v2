@@ -162,9 +162,10 @@ mod tests {
     //
     // Re-derived again by A7 after moving source-proof / replay / evidence
     // derivation into `src/strategies/binary_oracle_edge_taker/source_proof.rs`,
-    // then refreshing the venue-filter wrong-control fixture in that file.
+    // refreshing the venue-filter wrong-control fixture in that file, and
+    // addressing an exact-head review comment in the same source set.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "3b8f879141ecf8da899fb4b9df25b07ddc8a3393069072d81649d80d1f31a9ae";
+        "efa065b6d5241b390d4036f57f79f543c3ed8e073ff1e9fd0d7389efb0fa881e";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 

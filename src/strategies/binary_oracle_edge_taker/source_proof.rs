@@ -443,12 +443,10 @@ fn apply_entry_decision_source_book(
     book.last_observed_instrument_id = Some(instrument_id);
     book.bid_levels.clear();
     book.ask_levels.clear();
-    let best_bid = Price::new_checked(source.best_bid, price_precision).map_err(|source| {
-        anyhow::anyhow!("entry decision evidence book bid is invalid: {source}")
-    })?;
-    let best_ask = Price::new_checked(source.best_ask, price_precision).map_err(|source| {
-        anyhow::anyhow!("entry decision evidence book ask is invalid: {source}")
-    })?;
+    let best_bid = Price::new_checked(source.best_bid, price_precision)
+        .map_err(|err| anyhow::anyhow!("entry decision evidence book bid is invalid: {err}"))?;
+    let best_ask = Price::new_checked(source.best_ask, price_precision)
+        .map_err(|err| anyhow::anyhow!("entry decision evidence book ask is invalid: {err}"))?;
     book.bid_levels.insert(best_bid, source.bid_quantity);
     book.ask_levels.insert(best_ask, source.ask_quantity);
     book.best_bid = Some(source.best_bid);

@@ -12,6 +12,12 @@ with `mod.rs` (struct + `DataActor` orchestration + intent/signal glue) plus
 submodules; genuinely shared, agnostic math/state moves to `src/` shared modules the
 #488 maker reuses.
 
+**A6 branch refresh (2026-06-06):** source anchors below are treated as symbol
+clusters, not line numbers. Current `origin/main` already has A3, A4, A5, and A8
+merged; A6 starts from `da7247f0` with `mod.rs` at 17,480 lines. GitHub reports
+#507, #508, #510, and #520 are still open/unmerged, so no dependent-PR matrix entries
+are removed as merged on this branch.
+
 ## Technical Context
 
 - **Language**: Rust, workspace toolchain. NT crates at the rev pinned in `Cargo.toml`
@@ -48,9 +54,9 @@ Naming is a reviewable proposal; the agnostic shared names follow the spec-023 c
 
 Each row is one gated PR, ordered **by internal dependency only** (execution order =
 A1→A10; A2 is foundational because A4/A6/A9 consume the side type it homes). Per
-operator direction **#522 LEADS**: the in-flight PRs (#507/#510/#520/#508) are NOT
+operator direction **#522 LEADS**: the open dependent PRs (#507/#510/#520/#508) are NOT
 prerequisites here — they rebase onto each merged slice (see the Rebase Matrix). The
-last column names which in-flight PR must rebase after a slice lands. Line ranges are
+last column names which dependent PR must rebase after a slice lands. Line ranges are
 current-main anchors, re-verified per-slice before movement.
 
 ### Track A — strategy monolith
@@ -59,13 +65,13 @@ current-main anchors, re-verified per-slice before movement.
 |---|---|---|---|---|
 | **A1** | **OutcomeSide-free** pure math → new `bolt_v3_taker_signal.rs`; generic numeric primitives → existing `bolt_v3_numeric.rs` | consts 6817–6819; fns 6875–6929, 7017–7053, 7119–7147; structs 7009, 7034, 7110 | pure-logic | — (first slice; no overlap) |
 | **A2** | Consolidate `OutcomeSide` into the market-family layer (merge with `UpdownOutcomeSide`; **partially resolves findings-doc #13 — OutcomeSide sub-item**); move the side-using math (`compute_worst_case_ev_bps`+`WorstCaseEvInputs`, `choose_entry_side`+`SideSelectionInputs`, `outcome_side_evidence_label`) into `bolt_v3_taker_signal` depending on that owner | 6883–6894, 7026–7032, 7056–7108; 93 refs repointed | cross-cutting type move | — |
-| **A3** | Market selection + candidate snapshot construction (pure) → `selection.rs` (**completes findings-doc #13 — the strategy-local `CandidateMarket` wrapper over market-family output**) | 407–482, 6419–6601 | pure-logic | — |
-| **A4** | Order-book state + VWAP/slippage sizing → `bolt_v3_book_sizing.rs` (rule #9) | 493–777 | state-struct + pure | — |
-| **A5** | Pricing state (reference/RV/lead-venue) → `bolt_v3_taker_pricing.rs` | 956–1666 | NT-actor-coupled state | #520 (SignedTradeFlow 835–955), #508 (864–974) |
-| **A6** | Exposure/recovery state machine → `exposure.rs` | 977–1258, 2415–2655 | state-struct | #507 (sizer evidence on position state) |
-| **A7** | Source-proof / replay / evidence derivation → `source_proof.rs` | 5931–6317 | pure-logic | — |
-| **A8** | Config structs + parse/validate → `config.rs` (or archetype) | 86–403, 5557–5886 | pure-logic | #508 (config guards 5150+) |
-| **A9** | Admission-request construction + valuation → `bolt_v3_submit_admission.rs` (rule #9; kill test-only dup :7546). **Owns the base — #507/#510 rebase their admission edits onto it.** | 4228–4400, 7546 | pure-logic | #507 (+1946), #510 (+134) |
+| **A3** | Market selection + candidate snapshot construction (pure) → `selection.rs` (**completes findings-doc #13 — the strategy-local `CandidateMarket` wrapper over market-family output**) | symbol cluster in `slices/A3.md`; merged to main | pure-logic | — |
+| **A4** | Order-book state + VWAP/slippage sizing → `bolt_v3_book_sizing.rs` (rule #9) | symbol cluster in merged `src/bolt_v3_book_sizing.rs`; merged to main | state-struct + pure | — |
+| **A5** | Pricing state (reference/RV/lead-venue) → `bolt_v3_taker_pricing.rs` | symbol cluster in merged `src/bolt_v3_taker_pricing.rs`; merged to main | NT-actor-coupled state | #520 (SignedTradeFlow), #508 (pricing guards) |
+| **A6** | Exposure/recovery state machine → `exposure.rs` | symbol cluster in `slices/A6.md`: exposure state structs/enums, support predicates, forced-flat predicates | state-struct | #507 (sizer evidence on position state) |
+| **A7** | Source-proof / replay / evidence derivation → `source_proof.rs` | symbol cluster in `slices/A7.md` once A6 lands | pure-logic | — |
+| **A8** | Config structs + parse/validate → `config.rs` (or archetype) | symbol cluster in merged `config.rs`; merged to main | pure-logic | #508 (config guards) |
+| **A9** | Admission-request construction + valuation → `bolt_v3_submit_admission.rs` (rule #9; kill test-only dup). **Owns the base — #507/#510 rebase their admission edits onto it.** | symbol cluster to refresh after A7; no stale line anchors | pure-logic | #507, #510 |
 | **A10** | Split the 229 tests to mirror submodules; `mod.rs` = struct + `DataActor` + glue | 7599–18205 | tests | — |
 
 ### Track B — operator_artifacts (parallel, conflict-free with Track A)
@@ -75,7 +81,7 @@ redaction, data-client-readiness, financial-envelope/approval-nonce,
 market-selection-source, abort-plan-proof, strategy-input-evidence, chainlink-streams,
 entry-decision-source, live-canary-terminal/secret-scan); core-glue (json-io, the
 70-variant error enum, the 200+ constants) stays in `mod.rs`. Public API re-exported so
-`tests/bolt_v3_operator_artifacts.rs` (in-flight #507/#510) stays green. Sliced into a
+`tests/bolt_v3_operator_artifacts.rs` (dependent #507/#510) stays green. Sliced into a
 handful of gated PRs by concern.
 
 ### Wave-2 shared-layer cleanups (after A8 lands)
@@ -85,21 +91,25 @@ evidence rename (finding #12); provider credential/HTTP dedup (#447) + CLOB-v2
 vendor-type relocation + fee-provider coupling (#446); live-node probe-orchestration
 extraction. Tracked here, planned when their prerequisite slices land.
 
-## Rebase Matrix (#522 leads; in-flight PRs rebase onto merged slices)
+## Rebase Matrix (#522 leads; open dependent PRs rebase onto merged slices)
 
-Resolves the ordering ambiguity: the in-flight PRs are **not** prerequisites for any
+Resolves the ordering ambiguity: the dependent PRs are **not** prerequisites for any
 #522 slice. Each rebases its edits onto the relevant slice **after** that slice merges.
 The admission slice (A9) deliberately owns the base for the rule-#9 region so the
 heavy admission editors rebase onto the cleaned module — not the reverse.
 
-| In-flight PR | Region it edits | Rebases after | What it rebases |
+Verified via GitHub during A6 on 2026-06-06: #507, #508, #510, and #520 remain open and
+unmerged. Do not delete these rows as merged evidence until their PR state changes on
+GitHub.
+
+| Dependent PR | Region it edits | Rebases after | What it rebases |
 |---|---|---|---|
 | #520 hoist SignedTradeFlow | strategy 835–955 | A5 | the hoist re-targets the extracted pricing/trade-flow module |
 | #508 causality/config hardening | strategy 864–974, 5150+ | A5, A8 | guards re-applied on the extracted pricing + config modules |
 | #507 position-sizer | `submit_admission` +1946, `decision_evidence` +538, strategy 4216–4358 | A9 (and A6) | admission/evidence integration re-applied on the extracted admission-request module |
 | #510 loss-governor | `submit_admission` +134, `live_node`, `decision_evidence` | A9 | admission rejection path re-applied on the extracted module |
 
-If product priorities require an in-flight PR to merge *before* its dependent slice,
+If product priorities require a dependent PR to merge *before* its dependent slice,
 that slice instead rebases onto the PR — but the default, per operator direction, is
 #522-leads. Either way there is exactly one deterministic base at any time.
 
@@ -129,7 +139,7 @@ that slice instead rebases onto the PR — but the default, per operator directi
   is verified by reading the signature before the slice commits to a shared module.
 - **Test fixtures coupled to the struct**: relocating tests may require exposing
   builders; keep these `#[cfg(test)]` and `pub(crate)`.
-- **Rebase load on in-flight PRs**: accepted by operator; early slices avoid the hottest
+- **Rebase load on dependent PRs**: accepted by operator; early slices avoid the hottest
   regions (A4/A8 sequenced last among their tracks) to minimize churn before merge.
 - **Re-export drift**: a re-export that outlives its need becomes a dual surface; each
   slice's final state removes the re-export only when all callers are migrated (tracked).

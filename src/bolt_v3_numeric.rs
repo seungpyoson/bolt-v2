@@ -7,6 +7,7 @@
 
 pub(crate) const ZERO_F64: f64 = 0.0;
 pub(crate) const UNIT_F64: f64 = 1.0;
+pub(crate) const TWO_F64: f64 = 2.0;
 pub(crate) const POWER_OF_TWO: i32 = 2;
 pub(crate) const DAYS_PER_YEAR_F64: f64 = 365.25;
 pub(crate) const HOURS_PER_DAY_F64: f64 = 24.0;

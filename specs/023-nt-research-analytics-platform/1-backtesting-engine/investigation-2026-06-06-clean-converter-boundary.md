@@ -15,6 +15,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - catalog metadata records both the portable output catalog URI and the actual execution catalog URI, plus whether direct S3 catalog access was proven
 - primitive NT `BacktestVenueConfig` controls are declared in TOML and mapped into NT rather than hidden behind NT defaults
 - NT `BacktestDataConfig` catalog filesystem protocol and storage options are declared in TOML and mapped into NT, so S3/cloud catalog consumption can use NT's own catalog path
+- artifact-root typed subpaths now resolve from the single configured root for `raw`, `nt-catalog`, `source-proofs`, `backtests`, `artifact-index`, and `research-analytics`; unsupported artifact-root schemes fail validation before a run
 - S3 catalog storage options now fail before NT config construction if generic and Rust-specific maps are both set, or if an S3 option key is not supported by this pinned NT revision
 - the CLI has an explicit `--publish-output` opt-in that copies the verified local artifact tree to `manifest.output_prefix` through NT/object-store plumbing after the local run succeeds
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
@@ -183,7 +184,8 @@ GREEN checks after implementation:
 - `just bte-test run_from_run_spec_and_publish_rejects_s3_without_ssm_before_running_backtest artifact_store_rejects_s3_publish_without_resolved_ssm_credentials`: 2 passed
 - `just bte-test rejects_unsupported_nt_venue_model_surface_requests_before_nt_config rejects_unsupported_nt_engine_surface_requests_before_nt_config`: 2 passed
 - `just bte-test alternate_venue_provider_swap_is_toml_only`: 1 passed
-- `just bte-test`: 177 passed, including 2 slow public API tests
+- `just bte-test artifact_root_resolves_typed_subpaths_without_extra_root_knobs rejects_unsupported_artifact_root_scheme`: 2 passed after RED compile failure on missing typed artifact-subpath API
+- `just bte-test`: 182 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed

@@ -176,6 +176,29 @@ pub struct ManifestArtifactStore {
     pub ssm_parameters: Option<ManifestArtifactStoreSsmParameters>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactSubpath {
+    Raw,
+    NtCatalog,
+    SourceProofs,
+    Backtests,
+    ArtifactIndex,
+    ResearchAnalytics,
+}
+
+impl ArtifactSubpath {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Raw => "raw",
+            Self::NtCatalog => "nt-catalog",
+            Self::SourceProofs => "source-proofs",
+            Self::Backtests => "backtests",
+            Self::ArtifactIndex => "artifact-index",
+            Self::ResearchAnalytics => "research-analytics",
+        }
+    }
+}
+
 /// SSM parameter paths for artifact-store credentials.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -575,6 +598,7 @@ impl BacktestingRunManifest {
             &self.artifact_store.rust_storage_options,
         )?;
         validate_artifact_store_secrets(&self.artifact_store)?;
+        validate_artifact_root_protocol(&self.artifact_root)?;
         ensure_data_type_matches_fidelity(&self.catalog_input.data_type, accepted.fidelity_class)?;
         validate_strategy_source(&self.strategy)?;
         validate_starting_balances(&self.venue.starting_balances)?;
@@ -620,6 +644,20 @@ impl BacktestingRunManifest {
             return Err(ManifestError::OutputPrefixOutsideArtifactRoot);
         }
         Ok(())
+    }
+
+    /// Resolve a typed artifact subpath under the configured artifact root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `artifact_root` uses an unsupported scheme.
+    pub fn artifact_subpath_uri(&self, subpath: ArtifactSubpath) -> Result<String, ManifestError> {
+        validate_artifact_root_protocol(&self.artifact_root)?;
+        Ok(format!(
+            "{}/{}",
+            self.artifact_root.trim_end_matches('/'),
+            subpath.as_str()
+        ))
     }
 
     /// Map the venue settings into a NautilusTrader [`BacktestVenueConfig`].
@@ -887,6 +925,20 @@ fn output_prefix_protocol(output_prefix: &str) -> Option<&str> {
     output_prefix
         .split_once("://")
         .map(|(protocol, _)| protocol)
+}
+
+fn validate_artifact_root_protocol(artifact_root: &str) -> Result<(), ManifestError> {
+    match output_prefix_protocol(artifact_root) {
+        Some("s3" | "file") => Ok(()),
+        Some(other) => Err(ManifestError::UnsupportedEnum {
+            field: "artifact_root",
+            value: other.to_string(),
+        }),
+        None => Err(ManifestError::UnsupportedEnum {
+            field: "artifact_root",
+            value: CATALOG_FS_PROTOCOL_NONE.to_string(),
+        }),
+    }
 }
 
 fn validate_catalog_storage_options(
@@ -1701,6 +1753,62 @@ mod tests {
         assert_eq!(
             manifest.validate(&accepted_dataset()).unwrap_err(),
             ManifestError::OutputPrefixOutsideArtifactRoot
+        );
+    }
+
+    #[test]
+    fn artifact_root_resolves_typed_subpaths_without_extra_root_knobs() {
+        let manifest = valid_manifest();
+        assert_eq!(
+            manifest
+                .artifact_subpath_uri(ArtifactSubpath::Raw)
+                .expect("raw subpath"),
+            "s3://bolt-parquet/nt-research-analytics/raw"
+        );
+        assert_eq!(
+            manifest
+                .artifact_subpath_uri(ArtifactSubpath::NtCatalog)
+                .expect("nt catalog subpath"),
+            "s3://bolt-parquet/nt-research-analytics/nt-catalog"
+        );
+        assert_eq!(
+            manifest
+                .artifact_subpath_uri(ArtifactSubpath::SourceProofs)
+                .expect("source proof subpath"),
+            "s3://bolt-parquet/nt-research-analytics/source-proofs"
+        );
+        assert_eq!(
+            manifest
+                .artifact_subpath_uri(ArtifactSubpath::Backtests)
+                .expect("backtest subpath"),
+            "s3://bolt-parquet/nt-research-analytics/backtests"
+        );
+        assert_eq!(
+            manifest
+                .artifact_subpath_uri(ArtifactSubpath::ArtifactIndex)
+                .expect("artifact index subpath"),
+            "s3://bolt-parquet/nt-research-analytics/artifact-index"
+        );
+        assert_eq!(
+            manifest
+                .artifact_subpath_uri(ArtifactSubpath::ResearchAnalytics)
+                .expect("research analytics subpath"),
+            "s3://bolt-parquet/nt-research-analytics/research-analytics"
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_artifact_root_scheme() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_root = "http://example.test/nt-research-analytics".to_string();
+        manifest.output_prefix =
+            "http://example.test/nt-research-analytics/backtests/run".to_string();
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "artifact_root",
+                value: "http".to_string(),
+            }
         );
     }
 

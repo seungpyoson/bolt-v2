@@ -22,12 +22,16 @@ use rust_decimal::Decimal;
 
 use super::{
     canonical_trades::{
-        CanonicalInstrumentIdentity, CanonicalTradeRow, CanonicalTradesTable, TradeAggressorSide,
+        CanonicalInstrumentIdentity, CanonicalTradeRow, CanonicalTradesTable,
+        NORMALIZED_SCHEMA_VERSION, TRANSFORM_IDENTITY, TradeAggressorSide,
         normalize_bybit_spot_tick_trades,
     },
     catalog_projection::{
         CatalogProjection, SpotInstrumentSpec, project_canonical_trades_to_catalog,
         read_back_trade_ticks,
+    },
+    conversion_boundary::{
+        ConversionCatalogMetadata, ConversionCheckpoint, ConversionFingerprint, ConversionManifest,
     },
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
@@ -50,6 +54,8 @@ pub struct BacktestRunInputs<'a> {
     pub csv_text: &'a str,
     pub capture_time_nanos: i64,
     pub manifest: &'a BacktestingRunManifest,
+    pub converter_identity: &'a str,
+    pub converter_version: &'a str,
     /// Local path for the canonical normalized Parquet artifact.
     pub canonical_artifact_path: &'a Path,
     /// Local catalog projection root.
@@ -62,6 +68,11 @@ pub struct BacktestRunInputs<'a> {
 pub struct BacktestRunOutput {
     pub canonical_table: CanonicalTradesTable,
     pub projection: CatalogProjection,
+    pub conversion_checkpoint: ConversionCheckpoint,
+    pub conversion_manifest: ConversionManifest,
+    pub conversion_catalog_metadata: ConversionCatalogMetadata,
+    pub conversion_checkpoint_hash: String,
+    pub conversion_manifest_hash: String,
     pub read_back_count: usize,
     pub nt_result: BacktestResult,
     pub contract: BacktestResultContract,
@@ -119,6 +130,16 @@ fn add_manifest_strategy(
 /// validation, catalog projection, read-back proof, NautilusTrader execution, or
 /// result-contract construction.
 pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> {
+    ensure!(
+        inputs.converter_identity == TRANSFORM_IDENTITY,
+        "converter_identity {:?} does not match compiled converter {TRANSFORM_IDENTITY:?}",
+        inputs.converter_identity
+    );
+    ensure!(
+        !inputs.converter_version.trim().is_empty(),
+        "converter_version must not be empty"
+    );
+
     // Gate 2: canonical normalization + canonical artifact.
     let canonical_table = normalize_bybit_spot_tick_trades(
         inputs.accepted,
@@ -222,6 +243,42 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         bail!("backtest did not consume the accepted data: {reason}");
     }
 
+    let conversion_fingerprint = ConversionFingerprint {
+        source_proof_id: inputs.accepted.source_proof_id.clone(),
+        source_proof_version: inputs.accepted.source_proof_version,
+        accepted_object_sha256: inputs.accepted.accepted_object_sha256.clone(),
+        converter_identity: inputs.converter_identity.to_string(),
+        converter_version: inputs.converter_version.to_string(),
+    };
+    let conversion_checkpoint = ConversionCheckpoint::completed(
+        conversion_fingerprint.clone(),
+        canonical_table.rows.len(),
+        projection.catalog_hash.clone(),
+        inputs.created_at,
+    );
+    let conversion_checkpoint_hash = conversion_checkpoint
+        .content_hash()
+        .context("hash conversion checkpoint")?;
+    let conversion_manifest = ConversionManifest::completed(
+        conversion_fingerprint,
+        NORMALIZED_SCHEMA_VERSION,
+        projection.data_type.clone(),
+        projection.nt_instrument_id.clone(),
+        canonical_table.rows.len(),
+        inputs.artifact_uris.nt_catalog_uri.clone(),
+        projection.catalog_hash.clone(),
+        conversion_checkpoint_hash.clone(),
+        inputs.created_at,
+    );
+    let conversion_manifest_hash = conversion_manifest
+        .content_hash()
+        .context("hash conversion manifest")?;
+    let conversion_catalog_metadata = ConversionCatalogMetadata::from_manifest(
+        &conversion_manifest,
+        conversion_manifest_hash.clone(),
+        conversion_checkpoint_hash.clone(),
+    );
+
     // Gate 6: objective result contract.
     let mut warnings = Vec::new();
     if nt_result.total_orders == 0 {
@@ -243,6 +300,10 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         accepted_by: &inputs.accepted.accepted_by,
         accepted_at: &inputs.accepted.accepted_at,
         accepted_object_sha256: &inputs.accepted.accepted_object_sha256,
+        converter_identity: &conversion_manifest.fingerprint.converter_identity,
+        converter_version: &conversion_manifest.fingerprint.converter_version,
+        conversion_manifest_hash: &conversion_manifest_hash,
+        conversion_checkpoint_hash: &conversion_checkpoint_hash,
         catalog_hash: &projection.catalog_hash,
         strategy: &inputs.manifest.strategy,
         run_purpose: run_purpose_label(inputs.manifest),
@@ -260,6 +321,11 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     Ok(BacktestRunOutput {
         canonical_table,
         projection,
+        conversion_checkpoint,
+        conversion_manifest,
+        conversion_catalog_metadata,
+        conversion_checkpoint_hash,
+        conversion_manifest_hash,
         read_back_count: read_back.len(),
         nt_result,
         contract,

@@ -138,6 +138,10 @@ pub struct BacktestResultContract {
     pub accepted_by: String,
     pub accepted_at: String,
     pub accepted_object_sha256: String,
+    pub converter_identity: String,
+    pub converter_version: String,
+    pub conversion_manifest_hash: String,
+    pub conversion_checkpoint_hash: String,
     pub catalog_hash: String,
     pub strategy_config_hash: String,
     pub run_purpose: String,
@@ -191,6 +195,16 @@ impl BacktestResultContract {
             (
                 "accepted_object_sha256",
                 self.accepted_object_sha256.as_str(),
+            ),
+            ("converter_identity", self.converter_identity.as_str()),
+            ("converter_version", self.converter_version.as_str()),
+            (
+                "conversion_manifest_hash",
+                self.conversion_manifest_hash.as_str(),
+            ),
+            (
+                "conversion_checkpoint_hash",
+                self.conversion_checkpoint_hash.as_str(),
             ),
             ("catalog_hash", self.catalog_hash.as_str()),
             ("strategy_config_hash", self.strategy_config_hash.as_str()),
@@ -259,6 +273,10 @@ pub struct ResultContractInputs<'a> {
     pub accepted_by: &'a str,
     pub accepted_at: &'a str,
     pub accepted_object_sha256: &'a str,
+    pub converter_identity: &'a str,
+    pub converter_version: &'a str,
+    pub conversion_manifest_hash: &'a str,
+    pub conversion_checkpoint_hash: &'a str,
     pub catalog_hash: &'a str,
     pub strategy: &'a StrategySource,
     pub run_purpose: &'a str,
@@ -294,6 +312,10 @@ pub fn build_result_contract(
         accepted_by: inputs.accepted_by.to_string(),
         accepted_at: inputs.accepted_at.to_string(),
         accepted_object_sha256: inputs.accepted_object_sha256.to_string(),
+        converter_identity: inputs.converter_identity.to_string(),
+        converter_version: inputs.converter_version.to_string(),
+        conversion_manifest_hash: inputs.conversion_manifest_hash.to_string(),
+        conversion_checkpoint_hash: inputs.conversion_checkpoint_hash.to_string(),
         catalog_hash: inputs.catalog_hash.to_string(),
         strategy_config_hash: strategy_config_hash(inputs.strategy),
         run_purpose: inputs.run_purpose.to_string(),
@@ -343,6 +365,11 @@ mod tests {
             accepted_at: "2026-06-02T00:00:00Z".to_string(),
             accepted_object_sha256:
                 "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598".to_string(),
+            converter_identity: "bybit-public-archive-spot-tick-trades-to-canonical-trades.v1"
+                .to_string(),
+            converter_version: "1".to_string(),
+            conversion_manifest_hash: "conversionmanifestabc".to_string(),
+            conversion_checkpoint_hash: "conversioncheckpointabc".to_string(),
             catalog_hash: "abc123".to_string(),
             strategy_config_hash: "def456".to_string(),
             run_purpose: "normal".to_string(),
@@ -405,6 +432,13 @@ features = ["streaming", "examples"]
             c.accepted_object_sha256,
             "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598"
         );
+        assert_eq!(
+            c.converter_identity,
+            "bybit-public-archive-spot-tick-trades-to-canonical-trades.v1"
+        );
+        assert_eq!(c.converter_version, "1");
+        assert_eq!(c.conversion_manifest_hash, "conversionmanifestabc");
+        assert_eq!(c.conversion_checkpoint_hash, "conversioncheckpointabc");
 
         let json = serde_json::to_value(&c).expect("serialize");
         for field in [
@@ -413,6 +447,10 @@ features = ["streaming", "examples"]
             "accepted_by",
             "accepted_at",
             "accepted_object_sha256",
+            "converter_identity",
+            "converter_version",
+            "conversion_manifest_hash",
+            "conversion_checkpoint_hash",
         ] {
             assert!(
                 json.get(field).is_some(),

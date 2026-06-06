@@ -19,10 +19,11 @@ use nautilus_backtest::config::{
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::BarType,
-    enums::{AccountType, BookType, OmsType},
+    enums::{AccountType, BookType, OmsType, OtoTriggerMode},
     identifiers::InstrumentId,
-    types::{Money, Quantity},
+    types::{Currency, Money, Quantity},
 };
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ustr::Ustr;
@@ -35,6 +36,8 @@ pub const STRATEGY_HURST_VPIN_DIRECTIONAL: &str = "hurst_vpin_directional";
 pub const STRATEGY_PARAM_BAR_TYPE: &str = "bar_type";
 /// Strategy parameter key for the trade size.
 pub const STRATEGY_PARAM_TRADE_SIZE: &str = "trade_size";
+/// Explicit manifest value for no catalog filesystem protocol.
+pub const CATALOG_FS_PROTOCOL_NONE: &str = "NONE";
 
 /// Existing compiled Rust strategies selectable from a run manifest.
 ///
@@ -100,6 +103,44 @@ pub struct ManifestVenueConfig {
     pub book_type: String,
     /// Starting balances such as `["1_000_000 USDC"]`.
     pub starting_balances: Vec<String>,
+    /// If multi-venue routing should be enabled for the execution client.
+    pub routing: bool,
+    /// If the account for this exchange is frozen.
+    pub frozen_account: bool,
+    /// If stop orders are rejected when trigger price is in the market.
+    pub reject_stop_orders: bool,
+    /// If GTD time-in-force orders are supported by the venue.
+    pub support_gtd_orders: bool,
+    /// If contingent orders are supported/respected by the venue.
+    pub support_contingent_orders: bool,
+    /// If venue position IDs are generated on fills.
+    pub use_position_ids: bool,
+    /// If venue order IDs and position IDs are random UUID4s.
+    pub use_random_ids: bool,
+    /// If reduce-only execution instructions are honored.
+    pub use_reduce_only: bool,
+    /// If bars should be processed by the matching engine.
+    pub bar_execution: bool,
+    /// If bar high/low ordering should use NT's adaptive heuristic.
+    pub bar_adaptive_high_low_ordering: bool,
+    /// If trades should be processed by the matching engine.
+    pub trade_execution: bool,
+    /// If market orders should emit `OrderAccepted` events.
+    pub use_market_order_acks: bool,
+    /// If order book liquidity consumption should be tracked per level.
+    pub liquidity_consumption: bool,
+    /// If negative cash balances are allowed.
+    pub allow_cash_borrowing: bool,
+    /// If limit order queue-position tracking is enabled.
+    pub queue_position: bool,
+    /// One of `PARTIAL` or `FULL`.
+    pub oto_trigger_mode: String,
+    /// Account base currency, or `NONE` for a multi-currency account.
+    pub base_currency: String,
+    /// Account default leverage as a decimal string.
+    pub default_leverage: String,
+    /// Exchange-calculated market-order price protection boundary in points.
+    pub price_protection_points: u32,
 }
 
 /// Catalog input mapped into [`BacktestDataConfig`].
@@ -107,6 +148,12 @@ pub struct ManifestVenueConfig {
 #[serde(deny_unknown_fields)]
 pub struct ManifestCatalogInput {
     pub catalog_path: String,
+    /// Catalog filesystem protocol, or `NONE` when `catalog_path` is already complete.
+    pub catalog_fs_protocol: String,
+    /// NT filesystem storage options for Python/fsspec-compatible paths.
+    pub catalog_fs_storage_options: BTreeMap<String, String>,
+    /// NT Rust object-store options for cloud-backed catalog paths.
+    pub catalog_fs_rust_storage_options: BTreeMap<String, String>,
     /// NautilusTrader data type, currently `TradeTick`.
     pub data_type: String,
     /// NautilusTrader instrument id, for example `BNBUSDC.BYBIT`.
@@ -167,6 +214,12 @@ pub enum ManifestError {
     },
     InvalidStartingBalance {
         balance: String,
+    },
+    InvalidBaseCurrency {
+        currency: String,
+    },
+    InvalidDefaultLeverage {
+        leverage: String,
     },
     InvalidInstrumentId {
         instrument_id: String,
@@ -245,6 +298,12 @@ impl std::fmt::Display for ManifestError {
             ),
             Self::InvalidStartingBalance { balance } => {
                 write!(f, "invalid starting balance: {balance:?}")
+            }
+            Self::InvalidBaseCurrency { currency } => {
+                write!(f, "invalid base currency: {currency:?}")
+            }
+            Self::InvalidDefaultLeverage { leverage } => {
+                write!(f, "invalid default leverage: {leverage:?}")
             }
             Self::InvalidInstrumentId { instrument_id } => {
                 write!(f, "invalid instrument id: {instrument_id:?}")
@@ -465,9 +524,25 @@ impl BacktestingRunManifest {
             ("artifact_root", self.artifact_root.as_str()),
             ("output_prefix", self.output_prefix.as_str()),
             ("venue.nt_venue", self.venue.nt_venue.as_str()),
+            ("venue.oms_type", self.venue.oms_type.as_str()),
+            ("venue.account_type", self.venue.account_type.as_str()),
+            ("venue.book_type", self.venue.book_type.as_str()),
+            (
+                "venue.oto_trigger_mode",
+                self.venue.oto_trigger_mode.as_str(),
+            ),
+            ("venue.base_currency", self.venue.base_currency.as_str()),
+            (
+                "venue.default_leverage",
+                self.venue.default_leverage.as_str(),
+            ),
             (
                 "catalog_input.catalog_path",
                 self.catalog_input.catalog_path.as_str(),
+            ),
+            (
+                "catalog_input.catalog_fs_protocol",
+                self.catalog_input.catalog_fs_protocol.as_str(),
             ),
             (
                 "catalog_input.nt_instrument_id",
@@ -480,6 +555,7 @@ impl BacktestingRunManifest {
         }
         ensure_supported_enums(self)?;
         ensure_supported_data_type(&self.catalog_input.data_type)?;
+        parse_catalog_fs_protocol(&self.catalog_input.catalog_fs_protocol)?;
         ensure_data_type_matches_fidelity(&self.catalog_input.data_type, accepted.fidelity_class)?;
         validate_strategy_source(&self.strategy)?;
         validate_starting_balances(&self.venue.starting_balances)?;
@@ -539,6 +615,25 @@ impl BacktestingRunManifest {
             .account_type(parse_account_type(&self.venue.account_type)?)
             .book_type(parse_book_type(&self.venue.book_type)?)
             .starting_balances(self.venue.starting_balances.clone())
+            .routing(self.venue.routing)
+            .frozen_account(self.venue.frozen_account)
+            .reject_stop_orders(self.venue.reject_stop_orders)
+            .support_gtd_orders(self.venue.support_gtd_orders)
+            .support_contingent_orders(self.venue.support_contingent_orders)
+            .use_position_ids(self.venue.use_position_ids)
+            .use_random_ids(self.venue.use_random_ids)
+            .use_reduce_only(self.venue.use_reduce_only)
+            .bar_execution(self.venue.bar_execution)
+            .bar_adaptive_high_low_ordering(self.venue.bar_adaptive_high_low_ordering)
+            .trade_execution(self.venue.trade_execution)
+            .use_market_order_acks(self.venue.use_market_order_acks)
+            .liquidity_consumption(self.venue.liquidity_consumption)
+            .allow_cash_borrowing(self.venue.allow_cash_borrowing)
+            .queue_position(self.venue.queue_position)
+            .oto_trigger_mode(parse_oto_trigger_mode(&self.venue.oto_trigger_mode)?)
+            .maybe_base_currency(parse_base_currency(&self.venue.base_currency)?)
+            .default_leverage(parse_default_leverage(&self.venue.default_leverage)?)
+            .price_protection_points(self.venue.price_protection_points)
             .build())
     }
 
@@ -566,6 +661,39 @@ impl BacktestingRunManifest {
         Ok(BacktestDataConfig::builder()
             .data_type(data_type)
             .catalog_path(self.catalog_input.catalog_path.clone())
+            .maybe_catalog_fs_protocol(parse_catalog_fs_protocol(
+                &self.catalog_input.catalog_fs_protocol,
+            )?)
+            .maybe_catalog_fs_storage_options(
+                if self.catalog_input.catalog_fs_storage_options.is_empty() {
+                    None
+                } else {
+                    Some(
+                        self.catalog_input
+                            .catalog_fs_storage_options
+                            .clone()
+                            .into_iter()
+                            .collect(),
+                    )
+                },
+            )
+            .maybe_catalog_fs_rust_storage_options(
+                if self
+                    .catalog_input
+                    .catalog_fs_rust_storage_options
+                    .is_empty()
+                {
+                    None
+                } else {
+                    Some(
+                        self.catalog_input
+                            .catalog_fs_rust_storage_options
+                            .clone()
+                            .into_iter()
+                            .collect(),
+                    )
+                },
+            )
             .instrument_id(instrument_id)
             .build())
     }
@@ -653,6 +781,9 @@ fn ensure_supported_enums(manifest: &BacktestingRunManifest) -> Result<(), Manif
     parse_oms_type(&manifest.venue.oms_type)?;
     parse_account_type(&manifest.venue.account_type)?;
     parse_book_type(&manifest.venue.book_type)?;
+    parse_oto_trigger_mode(&manifest.venue.oto_trigger_mode)?;
+    parse_base_currency(&manifest.venue.base_currency)?;
+    parse_default_leverage(&manifest.venue.default_leverage)?;
     Ok(())
 }
 
@@ -661,6 +792,17 @@ fn ensure_supported_data_type(value: &str) -> Result<(), ManifestError> {
         "TradeTick" => Ok(()),
         other => Err(ManifestError::UnsupportedDataType {
             data_type: other.to_string(),
+        }),
+    }
+}
+
+fn parse_catalog_fs_protocol(value: &str) -> Result<Option<String>, ManifestError> {
+    match value {
+        CATALOG_FS_PROTOCOL_NONE => Ok(None),
+        "s3" | "gs" | "gcs" | "az" | "abfs" | "http" | "https" => Ok(Some(value.to_string())),
+        other => Err(ManifestError::UnsupportedEnum {
+            field: "catalog_input.catalog_fs_protocol",
+            value: other.to_string(),
         }),
     }
 }
@@ -710,6 +852,40 @@ fn parse_book_type(value: &str) -> Result<BookType, ManifestError> {
             value: other.to_string(),
         }),
     }
+}
+
+fn parse_oto_trigger_mode(value: &str) -> Result<OtoTriggerMode, ManifestError> {
+    match value {
+        "PARTIAL" => Ok(OtoTriggerMode::Partial),
+        "FULL" => Ok(OtoTriggerMode::Full),
+        other => Err(ManifestError::UnsupportedEnum {
+            field: "venue.oto_trigger_mode",
+            value: other.to_string(),
+        }),
+    }
+}
+
+fn parse_base_currency(value: &str) -> Result<Option<Currency>, ManifestError> {
+    if value == "NONE" {
+        return Ok(None);
+    }
+    Currency::from_str(value)
+        .map(Some)
+        .map_err(|_| ManifestError::InvalidBaseCurrency {
+            currency: value.to_string(),
+        })
+}
+
+fn parse_default_leverage(value: &str) -> Result<Decimal, ManifestError> {
+    let leverage = Decimal::from_str(value).map_err(|_| ManifestError::InvalidDefaultLeverage {
+        leverage: value.to_string(),
+    })?;
+    if leverage <= Decimal::ZERO {
+        return Err(ManifestError::InvalidDefaultLeverage {
+            leverage: value.to_string(),
+        });
+    }
+    Ok(leverage)
 }
 
 /// Build the typed manifest from TOML text.
@@ -825,9 +1001,31 @@ mod tests {
                 account_type: "CASH".to_string(),
                 book_type: "L1_MBP".to_string(),
                 starting_balances: vec!["1_000_000 USDC".to_string()],
+                routing: false,
+                frozen_account: false,
+                reject_stop_orders: true,
+                support_gtd_orders: true,
+                support_contingent_orders: true,
+                use_position_ids: true,
+                use_random_ids: false,
+                use_reduce_only: true,
+                bar_execution: true,
+                bar_adaptive_high_low_ordering: false,
+                trade_execution: true,
+                use_market_order_acks: false,
+                liquidity_consumption: false,
+                allow_cash_borrowing: false,
+                queue_position: false,
+                oto_trigger_mode: "PARTIAL".to_string(),
+                base_currency: "NONE".to_string(),
+                default_leverage: "1".to_string(),
+                price_protection_points: 0,
             },
             catalog_input: ManifestCatalogInput {
                 catalog_path: "/tmp/catalog".to_string(),
+                catalog_fs_protocol: CATALOG_FS_PROTOCOL_NONE.to_string(),
+                catalog_fs_storage_options: BTreeMap::new(),
+                catalog_fs_rust_storage_options: BTreeMap::new(),
                 data_type: "TradeTick".to_string(),
                 nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
             },
@@ -846,6 +1044,87 @@ mod tests {
         assert_eq!(run.id(), "backtesting-vertical-slice-bnbusdc-2026-03-01");
         assert_eq!(run.venues().len(), 1);
         assert_eq!(run.data().len(), 1);
+    }
+
+    #[test]
+    fn venue_config_maps_explicit_nt_venue_controls() {
+        let mut manifest = valid_manifest();
+        manifest.venue.routing = true;
+        manifest.venue.frozen_account = true;
+        manifest.venue.reject_stop_orders = false;
+        manifest.venue.support_gtd_orders = false;
+        manifest.venue.support_contingent_orders = false;
+        manifest.venue.use_position_ids = false;
+        manifest.venue.use_random_ids = true;
+        manifest.venue.use_reduce_only = false;
+        manifest.venue.bar_execution = false;
+        manifest.venue.bar_adaptive_high_low_ordering = true;
+        manifest.venue.trade_execution = false;
+        manifest.venue.use_market_order_acks = true;
+        manifest.venue.liquidity_consumption = true;
+        manifest.venue.allow_cash_borrowing = true;
+        manifest.venue.queue_position = true;
+        manifest.venue.oto_trigger_mode = "FULL".to_string();
+        manifest.venue.base_currency = "USDC".to_string();
+        manifest.venue.default_leverage = "2".to_string();
+        manifest.venue.price_protection_points = 7;
+
+        let venue = manifest.to_nt_venue_config().expect("venue config");
+        assert!(venue.routing());
+        assert!(venue.frozen_account());
+        assert!(!venue.reject_stop_orders());
+        assert!(!venue.support_gtd_orders());
+        assert!(!venue.support_contingent_orders());
+        assert!(!venue.use_position_ids());
+        assert!(venue.use_random_ids());
+        assert!(!venue.use_reduce_only());
+        assert!(!venue.bar_execution());
+        assert!(venue.bar_adaptive_high_low_ordering());
+        assert!(!venue.trade_execution());
+        assert!(venue.use_market_order_acks());
+        assert!(venue.liquidity_consumption());
+        assert!(venue.allow_cash_borrowing());
+        assert!(venue.queue_position());
+        assert_eq!(
+            venue.oto_trigger_mode(),
+            nautilus_model::enums::OtoTriggerMode::Full
+        );
+        assert_eq!(
+            venue.base_currency().expect("base currency").to_string(),
+            "USDC"
+        );
+        assert_eq!(venue.default_leverage(), rust_decimal::Decimal::from(2));
+        assert_eq!(venue.price_protection_points(), 7);
+    }
+
+    #[test]
+    fn data_config_maps_catalog_cloud_options() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.catalog_path =
+            "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
+        manifest.catalog_input.catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_input.catalog_fs_storage_options =
+            BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
+        manifest.catalog_input.catalog_fs_rust_storage_options = BTreeMap::from([(
+            "aws_virtual_hosted_style_request".to_string(),
+            "false".to_string(),
+        )]);
+
+        let data = manifest.to_nt_data_config().expect("data config");
+        assert_eq!(data.catalog_path(), manifest.catalog_input.catalog_path);
+        assert_eq!(data.catalog_fs_protocol(), Some("s3"));
+        assert_eq!(
+            data.catalog_fs_storage_options()
+                .expect("storage options")
+                .get("region"),
+            Some(&"us-east-1".to_string())
+        );
+        assert_eq!(
+            data.catalog_fs_rust_storage_options()
+                .expect("rust storage options")
+                .get("aws_virtual_hosted_style_request"),
+            Some(&"false".to_string())
+        );
     }
 
     #[test]
@@ -1078,6 +1357,19 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unsupported_catalog_fs_protocol() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.catalog_fs_protocol = "ftp".to_string();
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "catalog_input.catalog_fs_protocol",
+                value: "ftp".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn rejects_fidelity_data_type_mismatch() {
         let manifest = valid_manifest();
         let mut accepted = accepted_dataset();
@@ -1106,6 +1398,43 @@ mod tests {
             ManifestError::UnsupportedEnum {
                 field: "venue.oms_type",
                 value: "INVALID".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_oto_trigger_mode() {
+        let mut manifest = valid_manifest();
+        manifest.venue.oto_trigger_mode = "INVALID".to_string();
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "venue.oto_trigger_mode",
+                value: "INVALID".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_base_currency() {
+        let mut manifest = valid_manifest();
+        manifest.venue.base_currency = "NOT_A_CURRENCY".to_string();
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::InvalidBaseCurrency {
+                currency: "NOT_A_CURRENCY".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_non_positive_default_leverage() {
+        let mut manifest = valid_manifest();
+        manifest.venue.default_leverage = "0".to_string();
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::InvalidDefaultLeverage {
+                leverage: "0".to_string(),
             }
         );
     }

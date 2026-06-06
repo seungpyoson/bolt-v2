@@ -21,6 +21,7 @@
 
 pub mod canonical_trades;
 pub mod catalog_projection;
+pub mod conversion_boundary;
 pub mod operator;
 pub mod result_contract;
 pub mod run_manifest;

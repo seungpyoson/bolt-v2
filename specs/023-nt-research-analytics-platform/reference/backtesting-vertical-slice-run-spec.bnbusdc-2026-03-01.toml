@@ -117,6 +117,10 @@ instrument_id = "BNBUSDC"
 venue_symbol = "BNBUSDC"
 nt_instrument_id = "BNBUSDC.BYBIT"
 
+[converter]
+identity = "bybit-public-archive-spot-tick-trades-to-canonical-trades.v1"
+version = "1"
+
 [manifest]
 run_id = "backtesting-vertical-slice-bnbusdc-2026-03-01"
 market_structure_fixture = "perps-spot"
@@ -141,8 +145,30 @@ oms_type = "NETTING"
 account_type = "CASH"
 book_type = "L1_MBP"
 starting_balances = ["1_000_000 USDC"]
+routing = false
+frozen_account = false
+reject_stop_orders = true
+support_gtd_orders = true
+support_contingent_orders = true
+use_position_ids = true
+use_random_ids = false
+use_reduce_only = true
+bar_execution = true
+bar_adaptive_high_low_ordering = false
+trade_execution = true
+use_market_order_acks = false
+liquidity_consumption = false
+allow_cash_borrowing = false
+queue_position = false
+oto_trigger_mode = "PARTIAL"
+base_currency = "NONE"
+default_leverage = "1"
+price_protection_points = 0
 
 [manifest.catalog_input]
 catalog_path = "overridden-by-binary-at-runtime"
+catalog_fs_protocol = "NONE"
+catalog_fs_storage_options = {}
+catalog_fs_rust_storage_options = {}
 data_type = "TradeTick"
 nt_instrument_id = "BNBUSDC.BYBIT"

@@ -69,7 +69,7 @@ current-main anchors, re-verified per-slice before movement.
 | **A4** | Order-book state + VWAP/slippage sizing → `bolt_v3_book_sizing.rs` (rule #9) | symbol cluster in merged `src/bolt_v3_book_sizing.rs`; merged to main | state-struct + pure | — |
 | **A5** | Pricing state (reference/RV/lead-venue) → `bolt_v3_taker_pricing.rs` | symbol cluster in merged `src/bolt_v3_taker_pricing.rs`; merged to main | NT-actor-coupled state | #520 (SignedTradeFlow), #508 (pricing guards) |
 | **A6** | Exposure/recovery state machine → `exposure.rs` | symbol cluster in `slices/A6.md`: exposure state structs/enums, support predicates, forced-flat predicates | state-struct | #507 (sizer evidence on position state) |
-| **A7** | Source-proof / replay / evidence derivation → `source_proof.rs` | symbol cluster in `slices/A7.md` once A6 lands | pure-logic | — |
+| **A7** | Source-proof / replay / evidence derivation → `source_proof.rs` | symbol cluster in `slices/A7.md`; base anchors `mod.rs:4771-5191` after A6 merge | pure-logic | — |
 | **A8** | Config structs + parse/validate → `config.rs` (or archetype) | symbol cluster in merged `config.rs`; merged to main | pure-logic | #508 (config guards) |
 | **A9** | Admission-request construction + valuation → `bolt_v3_submit_admission.rs` (rule #9; kill test-only dup). **Owns the base — #507/#510 rebase their admission edits onto it.** | symbol cluster to refresh after A7; no stale line anchors | pure-logic | #507, #510 |
 | **A10** | Split the 229 tests to mirror submodules; `mod.rs` = struct + `DataActor` + glue | 7599–18205 | tests | — |

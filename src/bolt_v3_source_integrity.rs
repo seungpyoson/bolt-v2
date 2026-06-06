@@ -154,13 +154,16 @@ mod tests {
     // VWAP/slippage sizing out of the strategy wrapper, so the strategy source
     // set is now the strategy directory plus `src/bolt_v3_book_sizing.rs`.
     //
-    // Re-derived again by A6 after moving the exposure state machine into
+    // Re-derived by A6 after moving the exposure state machine into
     // `src/strategies/binary_oracle_edge_taker/exposure.rs`; the dynamic source
     // root walk includes the new file in canonical order. The value below must
     // match the live build-emitted `OUT_DIR/strategy.canonical` and the
     // independent hand-framed source-set stream in these tests.
+    //
+    // Re-derived again by A7 after moving source-proof / replay / evidence
+    // derivation into `src/strategies/binary_oracle_edge_taker/source_proof.rs`.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "5e69a876a3f4df28bbb3796311a36eed10991133c120cec57abe2062d3c610f6";
+        "ed0187d6c1223c6c2ebd094bcb6004a34837ef8fac5bdf905d8551b32fe25442";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 

@@ -26,7 +26,6 @@ MAKER_SCOPE_CONTRACT_DOC = (
 MAKER_SCOPE_DATA_MODEL_DOC = REPO_ROOT / "specs/022-nt-maker-order-scope/data-model.md"
 AGENTS_DOC = REPO_ROOT / "AGENTS.md"
 FEATURE_JSON = REPO_ROOT / ".specify/feature.json"
-TINY_CANARY_EVIDENCE = REPO_ROOT / "src/bolt_v3_tiny_canary_evidence.rs"
 VALIDATE_SOURCE = REPO_ROOT / "src/bolt_v3_validate.rs"
 ARCHETYPE_BINARY_ORACLE_SOURCE = (
     REPO_ROOT / "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -94,6 +93,7 @@ STALE_SCHEMA_PHRASES = (
     "separate market-exit TOML fields",
     "`record_type`",
     "payload key matching the record type",
+    "`financial_envelope` fields:",
 )
 REQUIRED_SCHEMA_PHRASES = (
     "delegates accepted values to NautilusTrader `OmsType`",
@@ -238,23 +238,6 @@ def extract_labeled_schema_fields(text: str, marker: str) -> list[str]:
     return fields
 
 
-def extract_phase8_financial_envelope_fields(rust_source: str) -> list[str]:
-    struct_marker = "struct Phase8FinancialEnvelopeEvidenceFile {"
-    start = rust_source.find(struct_marker)
-    if start == -1:
-        return []
-
-    fields: list[str] = []
-    for line in rust_source[start + len(struct_marker) :].splitlines():
-        if line.strip() == "}":
-            break
-        match = RUST_STRUCT_FIELD_PATTERN.match(line)
-        if match is None:
-            continue
-        fields.append(match.group("field"))
-    return fields
-
-
 def extract_supported_strategy_schema_version(validate_source: str) -> int | None:
     match = SUPPORTED_STRATEGY_SCHEMA_VERSION_PATTERN.search(validate_source)
     if match is None:
@@ -374,7 +357,6 @@ def validate_docs(
     maker_scope_data_model: str = "",
     agents_doc: str | None = None,
     feature_json: str | None = None,
-    financial_envelope_source: str = "",
     validate_source: str = "",
     archetype_source: str = "",
     strategy_source: str = "",
@@ -446,30 +428,6 @@ def validate_docs(
                 findings.append(
                     f"schema order-parameters section missing position_side value {position_side}"
                 )
-
-    if financial_envelope_source:
-        financial_envelope_fields = extract_phase8_financial_envelope_fields(
-            financial_envelope_source
-        )
-        if not financial_envelope_fields:
-            findings.append(
-                "source missing Phase8FinancialEnvelopeEvidenceFile fields for schema validation"
-            )
-        financial_envelope_section = extract_labeled_section(schema, "`financial_envelope` fields:")
-        if not financial_envelope_section:
-            findings.append("schema missing `financial_envelope` fields section")
-        else:
-            documented_financial_envelope_fields = extract_labeled_schema_fields(
-                schema, "`financial_envelope` fields:"
-            )
-            documented_financial_envelope_field_set = set(documented_financial_envelope_fields)
-            for field in financial_envelope_fields:
-                if field not in documented_financial_envelope_field_set:
-                    findings.append(f"schema financial_envelope section missing `{field}`")
-            financial_envelope_source_fields = set(financial_envelope_fields)
-            for field in documented_financial_envelope_fields:
-                if field not in financial_envelope_source_fields:
-                    findings.append(f"schema financial_envelope section has unknown `{field}`")
 
     if validate_source:
         supported_strategy_schema_version = extract_supported_strategy_schema_version(
@@ -570,7 +528,6 @@ def main() -> int:
         maker_scope_data_model=MAKER_SCOPE_DATA_MODEL_DOC.read_text(encoding="utf-8"),
         agents_doc=AGENTS_DOC.read_text(encoding="utf-8"),
         feature_json=FEATURE_JSON.read_text(encoding="utf-8"),
-        financial_envelope_source=TINY_CANARY_EVIDENCE.read_text(encoding="utf-8"),
         validate_source=VALIDATE_SOURCE.read_text(encoding="utf-8"),
         archetype_source=ARCHETYPE_BINARY_ORACLE_SOURCE.read_text(encoding="utf-8"),
         strategy_source=module_text(STRATEGY_SOURCE_ROOTS),

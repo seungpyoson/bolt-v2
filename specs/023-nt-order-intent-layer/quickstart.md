@@ -48,4 +48,4 @@ no-mistakes status
 - Passing strategy construction tests prove Bolt builds the expected NT `OrderAny` only.
 - Passing local tests do not prove adapter or live exchange execution.
 - no-mistakes output is useful only after confirming it is running for this branch and exact head.
-- Live/no-submit/canary proof requires explicit approval and exact-head artifacts.
+- Live strategy-free or live-submit proof requires explicit approval and exact-head artifacts.

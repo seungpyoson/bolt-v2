@@ -425,7 +425,6 @@ async fn fetch_strike_index_price(
         .map_err(|_| anyhow::anyhow!("Chainlink strike report source could not serialize"))?;
 
     let binding = PriceToBeatReportBinding {
-        provider_id: request.instrument_id.to_string(),
         feed_id: request.feed_id.clone(),
         schema_version: request.report_schema_version,
         decimal_scale: request.report_decimal_scale,
@@ -713,7 +712,6 @@ mod tests {
             TEST_DECIMAL_SCALE,
         );
         let binding = PriceToBeatReportBinding {
-            provider_id: instrument_id.to_string(),
             feed_id: TEST_FEED_ID.to_string(),
             schema_version: 3,
             decimal_scale: TEST_DECIMAL_SCALE,
@@ -791,7 +789,6 @@ mod tests {
             TEST_DECIMAL_SCALE,
         );
         let binding = PriceToBeatReportBinding {
-            provider_id: instrument_id.to_string(),
             feed_id: TEST_FEED_ID.to_string(),
             schema_version: 3,
             decimal_scale: TEST_DECIMAL_SCALE,

@@ -31,11 +31,9 @@ pub mod polyresearch;
 // module path, provider type, or provider-key literal.
 pub use chainlink::KEY as RESOLUTION_ORACLE_VENUE_KEY;
 pub use chainlink::PROVIDER_KIND as RESOLUTION_ORACLE_PROVIDER_KIND;
-pub(crate) use chainlink::{
-    PriceToBeatReportBinding, STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM, is_lowercase_chainlink_feed_id,
-};
+pub(crate) use chainlink::STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM;
 
-use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, pin::Pin, sync::Arc};
+use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, sync::Arc};
 
 use nautilus_model::identifiers::Venue;
 use rust_decimal::Decimal;
@@ -48,10 +46,7 @@ use crate::{
     bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3MarketClockFn},
     bolt_v3_config::{BoltV3RootConfig, ClientBlock, LoadedBoltV3Config},
     bolt_v3_market_families::MarketIdentityPlan,
-    bolt_v3_operator_artifacts::{
-        BoltV3OperatorArtifactError, CanaryProofArtifactsCollectionRequest,
-        CanaryProofArtifactsWritten, WrittenOperatorArtifact,
-    },
+    bolt_v3_operator_artifacts::{BoltV3OperatorArtifactError, WrittenOperatorArtifact},
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     strategies::registry::FeeProvider,
 };
@@ -102,64 +97,6 @@ pub struct ProviderSecretResolveContext<'a> {
 pub struct ProviderSsmPathReference {
     pub field_name: &'static str,
     pub ssm_path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GateProviderEvidenceBinding {
-    pub provider_id: String,
-    pub provider_kind: String,
-    pub capabilities: Vec<String>,
-    pub max_age_ms: u64,
-    pub max_clock_skew_ms: u64,
-}
-
-pub fn gate_provider_evidence_binding(
-    loaded: &LoadedBoltV3Config,
-    provider_id: &str,
-) -> Result<GateProviderEvidenceBinding, BoltV3OperatorArtifactError> {
-    let provider = loaded
-        .root
-        .gate_providers
-        .as_ref()
-        .and_then(|providers| providers.get(provider_id))
-        .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
-            field: "provider_id",
-        })?;
-    let provider_kind = provider.provider_kind.as_deref().ok_or(
-        BoltV3OperatorArtifactError::GateEvidenceInvalid {
-            field: "provider_kind",
-        },
-    )?;
-    let capabilities =
-        provider
-            .capabilities
-            .as_ref()
-            .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
-                field: "capabilities",
-            })?;
-    let freshness = provider
-        .freshness
-        .as_ref()
-        .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid { field: "freshness" })?;
-    let max_age_ms =
-        freshness
-            .max_age_ms
-            .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
-                field: "freshness.max_age_ms",
-            })?;
-    let max_clock_skew_ms =
-        freshness
-            .max_clock_skew_ms
-            .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
-                field: "freshness.max_clock_skew_ms",
-            })?;
-    Ok(GateProviderEvidenceBinding {
-        provider_id: provider_id.to_string(),
-        provider_kind: provider_kind.to_string(),
-        capabilities: capabilities.clone(),
-        max_age_ms,
-        max_clock_skew_ms,
-    })
 }
 
 pub struct ProviderAdapterMapContext<'a> {
@@ -322,18 +259,6 @@ type ProductSubmitProofArtifactWriter =
         ProviderProductSubmitProofArtifactRequest<'a>,
     ) -> Result<WrittenOperatorArtifact, anyhow::Error>;
 
-pub struct CanaryProofArtifactsProviderContext<'a> {
-    pub loaded: &'a LoadedBoltV3Config,
-    pub strategy_instance_id: &'a str,
-    pub request: CanaryProofArtifactsCollectionRequest<'a>,
-}
-
-pub type CanaryProofArtifactsCollector = for<'a> fn(
-    CanaryProofArtifactsProviderContext<'a>,
-) -> Pin<
-    Box<dyn Future<Output = Result<CanaryProofArtifactsWritten, BoltV3OperatorArtifactError>> + 'a>,
->;
-
 // PROVIDER-SPECIFIC (Polymarket CLOB v2) — DEFER (P3-F3). Every `ClobV2*` type and
 // `*_clob_v2_*` fn below materializes Polymarket CLOB v2 signing / fee / collateral
 // evidence from NT `nautilus_polymarket` sources — they are NOT venue-agnostic despite
@@ -391,7 +316,6 @@ pub struct ClobV2CollateralAccountingSourceMaterialization {
     pub p_usd_balance: String,
     pub p_usd_allowance: String,
     pub collateral_accounting_source_sha256: String,
-    pub(crate) confirmation_policy: ExternalSnapshotConfirmationPolicy,
 }
 
 pub struct ClobV2BalanceAllowanceCacheSyncRequest<'a> {
@@ -605,7 +529,6 @@ pub struct ProviderBinding {
     pub write_live_submit_approval_artifact: Option<LiveSubmitApprovalArtifactWriter>,
     pub write_product_submit_proof_artifact: Option<ProductSubmitProofArtifactWriter>,
     pub build_fee_provider: Option<FeeProviderBuilder>,
-    pub collect_canary_proof_artifacts: Option<CanaryProofArtifactsCollector>,
 }
 
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
@@ -625,7 +548,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: Some(polymarket::build_fee_provider),
-        collect_canary_proof_artifacts: Some(polymarket::collect_canary_proof_artifacts),
     },
     ProviderBinding {
         key: binance::KEY,
@@ -643,7 +565,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: hyperliquid::KEY,
@@ -663,7 +584,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         ),
         write_product_submit_proof_artifact: Some(hyperliquid::write_product_submit_proof_artifact),
         build_fee_provider: Some(hyperliquid::build_fee_provider),
-        collect_canary_proof_artifacts: Some(hyperliquid::collect_canary_proof_artifacts),
     },
     ProviderBinding {
         key: market_data::BITMEX_KEY,
@@ -681,7 +601,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::BYBIT_KEY,
@@ -699,7 +618,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::COINBASE_KEY,
@@ -717,7 +635,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::DERIBIT_KEY,
@@ -735,7 +652,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::OKX_KEY,
@@ -753,7 +669,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::KRAKEN_KEY,
@@ -771,7 +686,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: chainlink::KEY,
@@ -789,7 +703,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_canary_proof_artifacts: None,
     },
 ];
 
@@ -863,15 +776,6 @@ pub async fn materialize_clob_v2_collateral_accounting_source_from_configured_ba
     request: ClobV2CollateralAccountingSourceMaterializationRequest<'_>,
 ) -> Result<ClobV2CollateralAccountingSourceMaterialization, BoltV3OperatorArtifactError> {
     polymarket::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance(
-        request,
-    )
-    .await
-}
-
-pub(crate) async fn materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once(
-    request: ClobV2CollateralAccountingSourceMaterializationRequest<'_>,
-) -> Result<ClobV2CollateralAccountingSourceMaterialization, BoltV3OperatorArtifactError> {
-    polymarket::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once(
         request,
     )
     .await

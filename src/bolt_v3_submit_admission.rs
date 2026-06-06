@@ -3,7 +3,6 @@ use crate::bolt_v3_decision_evidence::{
     BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, compiled_order_price_source,
 };
 use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
-use crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport;
 use anyhow::Context;
 use nautilus_model::{
     enums::{OrderSide, PositionSide},
@@ -16,7 +15,6 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use crate::bolt_v3_canary_proof_policy::CANARY_PROOF_CLAIM;
 pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
 
 const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
@@ -75,7 +73,6 @@ pub struct BoltV3SubmitAdmissionState {
 
 #[derive(Debug)]
 struct BoltV3SubmitAdmissionInner {
-    gate_report: Option<BoltV3LiveCanaryGateReport>,
     kill_switch_state: KillSwitchState,
     kill_switch_forced_reduction_policy: Option<BoltV3KillSwitchForcedReductionPolicy>,
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
@@ -98,7 +95,6 @@ impl BoltV3SubmitAdmissionState {
     ) -> Self {
         Self {
             inner: Mutex::new(BoltV3SubmitAdmissionInner {
-                gate_report: None,
                 kill_switch_state: KillSwitchState::Armed,
                 kill_switch_forced_reduction_policy: None,
                 live_submit_approval_limits,
@@ -111,27 +107,6 @@ impl BoltV3SubmitAdmissionState {
             }),
             decision_evidence,
         }
-    }
-
-    pub fn arm(
-        &self,
-        report: BoltV3LiveCanaryGateReport,
-    ) -> Result<(), BoltV3SubmitAdmissionError> {
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("submit admission state mutex should not be poisoned");
-        if inner.gate_report.is_some() {
-            return Err(BoltV3SubmitAdmissionError::AlreadyArmed);
-        }
-        inner.gate_report = Some(report);
-        inner.admitted_order_count = 0;
-        inner.admitted_order_count_by_execution_client.clear();
-        inner.admitted_entry_order_count = 0;
-        inner.admitted_risk_reducing_exit_order_count = 0;
-        inner.admitted_replace_submit_order_count = 0;
-        inner.live_kill_switch_forced_reduction_order_count = 0;
-        Ok(())
     }
 
     pub fn record_kill_switch_forced_reduction_terminal(&self) {
@@ -209,7 +184,6 @@ impl BoltV3SubmitAdmissionState {
                 }
                 Ok(BoltV3SubmitAdmissionPermit(()))
             }
-            BoltV3AdmissionOutcome::RejectedNotArmed => Err(BoltV3SubmitAdmissionError::NotArmed),
             BoltV3AdmissionOutcome::RejectedKillSwitchLatched => {
                 Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
                     state: inner.kill_switch_state.kind(),
@@ -225,9 +199,6 @@ impl BoltV3SubmitAdmissionState {
             }
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => {
                 Err(BoltV3SubmitAdmissionError::NotionalCapExceeded)
-            }
-            BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim => {
-                Err(BoltV3SubmitAdmissionError::InvalidCanaryProofClaim)
             }
             BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof => {
                 Err(BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof)
@@ -281,33 +252,8 @@ impl BoltV3SubmitAdmissionState {
                 return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
             }
         }
-        let Some(report) = inner.gate_report.as_ref() else {
-            if request.canary_proof_claim.is_some() {
-                return BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim;
-            }
-            return BoltV3AdmissionOutcome::Admitted;
-        };
-
-        if matches!(
-            request.intent_kind,
-            BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
-        ) && request.notional > report.max_notional_per_order()
-        {
-            return BoltV3AdmissionOutcome::RejectedNotionalCapExceeded;
-        }
-        if request
-            .canary_proof_claim
-            .as_deref()
-            .is_some_and(|claim| claim != CANARY_PROOF_CLAIM)
-        {
-            return BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim;
-        }
         match request.intent_kind {
-            BoltV3SubmitIntentKind::Entry => {
-                if inner.admitted_entry_order_count >= report.max_live_entry_order_count() {
-                    return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-                }
-            }
+            BoltV3SubmitIntentKind::Entry => {}
             BoltV3SubmitIntentKind::RiskReducingExit => {
                 let Some(proof) = request.risk_reducing_exit_proof.as_ref() else {
                     return BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof;
@@ -315,19 +261,8 @@ impl BoltV3SubmitAdmissionState {
                 if !proof.is_valid_for(request) {
                     return BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof;
                 }
-                if inner.admitted_risk_reducing_exit_order_count
-                    >= report.max_live_risk_reducing_exit_order_count()
-                {
-                    return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-                }
             }
-            BoltV3SubmitIntentKind::ReplaceSubmit => {
-                if inner.admitted_replace_submit_order_count
-                    >= report.max_live_replace_submit_order_count()
-                {
-                    return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-                }
-            }
+            BoltV3SubmitIntentKind::ReplaceSubmit => {}
             BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
                 unreachable!("kill-switch forced reduction is evaluated before normal admission")
             }
@@ -368,21 +303,6 @@ impl BoltV3SubmitAdmissionState {
             .lock()
             .expect("submit admission state mutex should not be poisoned")
             .admitted_order_count
-    }
-
-    /// Gate-approved maximum reference-quote age (seconds) carried by the armed
-    /// gate report, or `None` when the state is not yet armed. This is the single
-    /// authoritative freshness bound when the optional gate is armed (A5): the
-    /// submit / forced-flat stale check plumbs this value in so the gate-validated
-    /// freshness policy — not an independent strategy-config value — governs
-    /// whether a reference quote is fresh enough to keep trading.
-    pub fn reference_quote_max_age_seconds(&self) -> Option<u64> {
-        self.inner
-            .lock()
-            .expect("submit admission state mutex should not be poisoned")
-            .gate_report
-            .as_ref()
-            .map(BoltV3LiveCanaryGateReport::reference_quote_max_age_seconds)
     }
 }
 
@@ -576,7 +496,6 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub order_quantity: Decimal,
     pub intent_kind: BoltV3SubmitIntentKind,
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
-    pub canary_proof_claim: Option<String>,
     pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
     pub kill_switch_forced_reduction: Option<BoltV3KillSwitchForcedReductionClaim>,
 }
@@ -689,7 +608,6 @@ where
         order_quantity: quantity,
         intent_kind,
         lifecycle_policy: input.lifecycle_policy,
-        canary_proof_claim: None,
         risk_reducing_exit_proof,
         kill_switch_forced_reduction: None,
     })
@@ -948,8 +866,6 @@ fn forced_reduction_admissible_halt_id(state: &KillSwitchState) -> Option<&str> 
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum BoltV3SubmitAdmissionError {
-    NotArmed,
-    AlreadyArmed,
     KillSwitchLatched {
         state: KillSwitchStateKind,
     },
@@ -968,7 +884,6 @@ pub enum BoltV3SubmitAdmissionError {
     ExchangeMutationsObserved {
         mutation_count: u64,
     },
-    InvalidCanaryProofClaim,
     InvalidRiskReducingExitProof,
     KillSwitchForcedReductionProofInvalid,
     KillSwitchForcedReductionCapExceeded,
@@ -980,8 +895,6 @@ pub enum BoltV3SubmitAdmissionError {
 impl std::fmt::Display for BoltV3SubmitAdmissionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotArmed => write!(f, "bolt-v3 submit admission is not armed"),
-            Self::AlreadyArmed => write!(f, "bolt-v3 submit admission is already armed"),
             Self::KillSwitchLatched { state } => write!(
                 f,
                 "bolt-v3 submit admission is blocked by kill-switch state {state:?}"
@@ -1011,15 +924,14 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
                 "bolt-v3 submit admission rejected: rounded order notional {rounded_base_notional} exceeded operator-intended notional {intended_notional}"
             ),
             Self::ExchangeMutationCountOverflow => {
-                write!(f, "bolt-v3 no-submit exchange mutation counter overflowed")
+                write!(
+                    f,
+                    "bolt-v3 strategy-free exchange mutation counter overflowed"
+                )
             }
             Self::ExchangeMutationsObserved { mutation_count } => write!(
                 f,
-                "bolt-v3 no-submit exchange mutation guard observed {mutation_count} mutating request(s)"
-            ),
-            Self::InvalidCanaryProofClaim => write!(
-                f,
-                "bolt-v3 submit admission canary proof claim must be proof_only"
+                "bolt-v3 strategy-free exchange mutation guard observed {mutation_count} mutating request(s)"
             ),
             Self::InvalidRiskReducingExitProof => write!(
                 f,

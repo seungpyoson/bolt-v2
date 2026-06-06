@@ -92,4 +92,4 @@ When forced-flat submission finds a managed pending-entry remainder, it MUST use
 - No NT order-emulation surface without a separate approved slice.
 - No second submit path.
 - No mock exchange universe as live-readiness proof.
-- No live/canary claim without exact-head no-submit or canary artifact.
+- No live-submit claim without exact-head strategy-free or live-submit artifact.

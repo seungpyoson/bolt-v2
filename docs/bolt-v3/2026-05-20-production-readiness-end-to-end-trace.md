@@ -27,7 +27,7 @@ Related tracking:
 
 Not production-ready.
 
-Current source code contains the intended single bolt-v3 production path and local tests cover several fail-closed gates. That is not enough for production-grade live trading. Required operator evidence still includes real no-submit connectivity, accepted gate report, live canary artifact, order lifecycle evidence, restart reconciliation, repeated-operation controls, monitoring, deploy provenance, and post-run hygiene.
+Current source code contains the intended single bolt-v3 production path and local tests cover several fail-closed controls. That is not enough for production-grade live trading. Required operator evidence still includes real strategy-free connectivity, accepted submit-admission state, order lifecycle evidence, restart reconciliation, repeated-operation controls, monitoring, deploy provenance, and post-run hygiene.
 
 ## End-to-End Production Run Path
 
@@ -77,14 +77,11 @@ Current source code contains the intended single bolt-v3 production path and loc
    - Strategy contexts receive mandatory decision evidence and the shared submit-admission state.
    - Trace meaning: strategy construction cannot be treated as live-ready unless decision evidence and admission state are wired into the registered strategy context.
 
-8. Live canary gate before runner entry
-   - `src/bolt_v3_live_node.rs:454-464`
-   - `src/bolt_v3_live_canary_gate.rs:308-430`
-   - `src/bolt_v3_live_canary_gate.rs:474-585`
-   - `src/bolt_v3_live_canary_gate.rs:588-690`
-   - The live runner checks `[live_canary].operator_evidence`, the no-submit readiness report, report freshness, approval hash, executable identity, config bundle checksum, configured caps, and required satisfied stages before arming submit admission.
-   - The operator approval window is checked before report validation and again after report validation using the late gate timestamp. The same late timestamp validates `generated_at_unix_seconds` against TOML-owned `readiness_report_max_age_seconds`.
-   - Trace meaning: missing operator evidence, expired approval, expired readiness report, or a report with failed, skipped, stale, or mismatched stages is not live-runner evidence.
+8. Live runner entry
+   - `src/bolt_v3_live_node.rs:454-470`
+   - The live runner sets up runtime capture and enters NT through
+     `run_bolt_v3_live_node`.
+   - Trace meaning: production entry stays on the single Bolt-v3 wrapper path.
 
 9. Submit admission before NT submit
    - `src/bolt_v3_submit_admission.rs:20-81`
@@ -96,37 +93,32 @@ Current source code contains the intended single bolt-v3 production path and loc
 
 10. NT runner
     - `src/bolt_v3_live_node.rs:454-470`
-    - After gate/admission setup, `run_bolt_v3_live_node` starts runtime capture and calls `node.run()`.
-    - Trace meaning: entering NT runner is only allowed after the gate and admission state are ready.
+    - `run_bolt_v3_live_node` starts runtime capture and calls `node.run()`.
+    - Trace meaning: entering NT runner is not a production-readiness claim by itself; every live submit candidate still has to pass submit admission.
 
-## No-Submit Readiness Path
+## Strategy-Free Readiness Path
 
 1. CLI entrypoint
    - `src/main.rs:53-57`
-   - `NoSubmitReadiness` loads config, runs no-submit readiness, then writes the configured report.
+   - The retired readiness command loaded config, ran strategy-free connectivity checks, then wrote the configured report.
 
-2. No-submit runner
-   - `src/bolt_v3_no_submit_readiness.rs:493-534`
-   - Builds the live node, computes metadata, then runs readiness inside a dedicated Tokio runtime and `LocalSet`.
+2. Strategy-free runner
+   - Built the live node, computed metadata, then ran readiness inside a dedicated Tokio runtime and `LocalSet`.
 
 3. Controlled connect/reference/disconnect stages
-   - `src/bolt_v3_no_submit_readiness.rs:275-311`
-   - `src/bolt_v3_no_submit_readiness.rs:413-508`
    - `src/bolt_v3_live_node.rs:721-843`
    - Stage builder records operator approval, secret resolution, live-node build, controlled connect, reference readiness, controlled disconnect, report write, and top-level `generated_at_unix_seconds`.
-   - Reference readiness now requires configured quote evidence from the no-submit reference quote probe. Cache-only instrument-ID membership remains fail-closed and is not treated as live reference-data freshness.
-   - `[live_canary].reference_quote_max_age_seconds` bounds accepted quote age. `[live_canary].reference_quote_wait_timeout_seconds` bounds the probe wait before the runner stops. `[live_canary].reference_quote_probe_*` owns the NT `DataActorConfig` values.
+   - Reference readiness required configured quote evidence from the strategy-free reference quote probe. Cache-only instrument-ID membership remained fail-closed and was not treated as live reference-data freshness.
+   - Configured quote freshness and wait-timeout fields bounded the accepted quote age and the probe wait before the runner stopped.
 
-4. Gate consumption
-   - `src/bolt_v3_live_canary_gate.rs:493-598`
-   - `src/bolt_v3_live_canary_gate.rs:1381`
-   - Gate requires all readiness stages to be present and satisfied, the generated timestamp to be fresh under `[live_canary].readiness_report_max_age_seconds`, and the report linkage fields to match the current approval, executable identity, and config bundle checksum.
+4. Readiness consumption
+   - Current live submit safety is owned by submit admission and strategy decision evidence, not by a separate pre-run evidence gate.
 
 Current hard-evidence requirements:
 
 - Before this trace is used as current PR evidence, rerun
-  `cargo test --test bolt_v3_no_submit_readiness -- --nocapture`,
-  `cargo test --test bolt_v3_live_canary_gate -- --nocapture`,
+  `cargo test --test bolt_v3_submit_admission -- --nocapture`,
+  `cargo test --test bolt_v3_strategy_registration -- --nocapture`,
   `cargo fmt --check`, and `git diff --check origin/main...HEAD` on the exact
   pushed PR head.
 - A passing command on an older branch head is not production-readiness evidence
@@ -134,13 +126,13 @@ Current hard-evidence requirements:
 
 Current live-operator evidence:
 
-- 2026-05-21 18:34:44 KST: a local no-submit command was run with explicit approval against local operator config and real SSM/venue surfaces at head `3190803c5cb51ffeaebbd80a029c4a65bf3291c4`.
-- Command: `cargo run --bin bolt-v2 -- no-submit-readiness --config config/live.local.toml`.
+- 2026-05-21 18:34:44 KST: a local strategy-free command was run with explicit approval against local operator config and real SSM/venue surfaces at head `3190803c5cb51ffeaebbd80a029c4a65bf3291c4`.
+- Command: retired T038 readiness command with `config/live.local.toml`.
 - Because this attempt used a relative config path before the later two-config audit, it is retained only as failed-connect history. It is not used as config-identity proof; the later absolute-path current-head rerun below is the config-bound T038 evidence attempt, and it still failed.
-- Report path: `/Users/spson/Projects/Claude/bolt-v2/var/bolt-v3-live/reports/no-submit-readiness.json`; mode observed as `-rw-------`, size `1283` bytes.
-- Report fields: schema `bolt-v3.no-submit-readiness.v2`, generated timestamp `1779356084`, config bundle checksum `a6f0f1d1e472c88d848b8505dc138e136a55314ec89d80dbb6be926ab7b88639`, executable identity `ec913e9f98ab11d60b8a2dd921e92d99163cc0e959f124e0bd9c3199fb31c601`.
+- Report path: readiness report under `/Users/spson/Projects/Claude/bolt-v2/var/bolt-v3-live/reports/`; mode observed as `-rw-------`, size `1283` bytes.
+- Report fields: retired strategy-free readiness schema v2, generated timestamp `1779356084`, config bundle checksum `a6f0f1d1e472c88d848b8505dc138e136a55314ec89d80dbb6be926ab7b88639`, executable identity `ec913e9f98ab11d60b8a2dd921e92d99163cc0e959f124e0bd9c3199fb31c601`.
 - Satisfied stages: `operator_approval`, `secret_resolution`, `live_node_build`, `controlled_disconnect`, and `report_write`.
-- Failed stage: `controlled_connect`, with report detail `bolt-v3 no-submit controlled-run reached NT Running but live reference quote evidence was not observed; engine connectivity cannot be treated as proven: reference quote probe did not observe all configured reference_data quotes within [live_canary].reference_quote_wait_timeout_seconds=20`.
+- Failed stage: `controlled_connect`, with report detail that the strategy-free controlled run reached NT Running but live reference quote evidence was not observed; engine connectivity could not be treated as proven because the reference quote probe did not observe all configured reference_data quotes within the configured wait timeout.
 - Skipped stage: `reference_readiness`, with report detail `controlled connect failed`.
 - Runtime log evidence showed `polymarket_main` data and execution connected, `binance_reference` data did not connect, `DataEngine.check_connected() == false`, `ExecEngine.check_connected() == true`, and NT refused to start the trader.
 - The observed Binance reference failure was a WebSocket handshake rejection from `stream-sbe.binance.com/ws` with HTTP 400 and `Invalid X-MBX-APIKEY header`; no credential value was printed.
@@ -148,53 +140,46 @@ Current live-operator evidence:
 - 2026-05-21 19:34:17 KST follow-up root-cause probe at head `d69b43c22ce22d018bc1c39006bbd2e7d642c372` pinned `binance_reference` and printed no secret values. It fetched both configured SSM parameters successfully, observed the configured Binance API key was nonempty, validated the private key as Ed25519 PKCS#8 key material, reached Binance `/api/v3/time` with HTTP `200`, then signed read-only `/api/v3/account` and received HTTP `401` with Binance code `-2015` (`Invalid API-key, IP, or permissions for action.`). Binance official Spot docs classify `-2015` as invalid API key, IP, or permissions; Binance official SBE docs require an Ed25519 API key in `X-MBX-APIKEY` and state IP whitelists still restrict SBE market data access. This rules out empty configured SSM values and malformed Ed25519 private-key shape in this probe, but it does not identify whether the remaining blocker is a wrong configured SSM parameter target, key pairing/state, IP whitelist, permission, account, or environment configuration.
 - 2026-05-21 21:11:39 KST metadata audit executed at pre-doc-commit head `7dcda025f987d80f261500ca3094fb42ab9ce9de` printed no secret values. `secrets check` and `secrets resolve` both passed against `/Users/spson/Projects/Claude/bolt-v2/.worktrees/production-readiness-evidence-audit/config/live.local.toml`. Metadata-only AWS SSM inspection showed both configured Binance parameters are `SecureString`; the API-key path hash `eccf04de99238729f0c9a8c8ef51f554e6f457b5b11fdc362d6005e2cf4e4c52` is version `1` last modified `2026-04-19T18:47:41.113000+09:00`, while the API-secret path hash `0b2c3cf8a9b4da6ce15fd42428902d08c4f65e917f45592a614d35615088f7cb` is version `2` last modified `2026-05-20T09:12:33.893000+09:00`. This strengthens key-secret pairing/state as the leading hypothesis, but it does not prove the root cause because IP whitelist, permission, account, environment, and Binance-side key state remain unverified.
 - 2026-05-21 21:28:36 KST non-secret Binance auth probe executed at pre-doc-commit head `dfd60bd5d10779ec6ea48c39a7a066b2cf382a48` printed no secret values. It derived only the Ed25519 public-key fingerprint from the configured SSM API secret (`sha256=1d29db2eb2abf9f63afc99dd580125d83c9966a94e38d875f7adf0e5581c3df9`, derived public key length `32` bytes), reached Binance `/api/v3/time` with HTTP `200`, then signed read-only `/api/v3/account` and received HTTP `401` with Binance code `-2015` (`Invalid API-key, IP, or permissions for action.`). The fingerprint is diagnostic evidence only: it can support a later operator-console public-key comparison, but by itself it does not prove the Binance API key is active, paired to this private key, permissioned, IP-whitelisted, or accepted by Binance.
-- The same audit found two different ignored operator configs: the worktree config SHA-256 is `85fe8e17f2ffe813d464e8f5fe1908604060b5af9c5fd79f7b22ffe770b25289`, mode `0600`, with SBE WebSocket endpoint and live-canary freshness fields; `/Users/spson/Projects/Claude/bolt-v2/config/live.local.toml` SHA-256 is `62e6b2dd793753e77f7042376adf6be1c9245969393c695a50e5de65946bacc7`, mode `0644`, with JSON WebSocket endpoint and without those freshness fields. After this audit, approved no-submit evidence must record absolute config path, raw config SHA, resulting `config_bundle_checksum`, exact head, and report hash before any readiness claim.
-- External review consensus for this root-cause slice: Gemini `60d5d717-8c75-4224-8469-5d42ff67a2bf`, Claude `7d37939d-55da-43cc-9860-5d7441e03d2c`, GLM `job_fe2699da-d790-4d74-ba3a-03217b6b09b5`, DeepSeek `job_76cdd847-8126-4ae2-83a7-b322c23427a6`, and Kimi `da8ccf8d-3931-4f1c-b5f2-174fe3330e81` approved the classification. Consensus: no runtime code change is supported, T038 and T046 remain unchecked, `secrets resolve` proves only SSM fetch plus local shape validation, key-secret pairing is a lead but not proof, and no tiny canary may run before a fresh satisfied no-submit report is accepted by the gate.
+- The same audit found two different ignored operator configs: the worktree config SHA-256 is `85fe8e17f2ffe813d464e8f5fe1908604060b5af9c5fd79f7b22ffe770b25289`, mode `0600`, with SBE WebSocket endpoint and retired freshness fields; `/Users/spson/Projects/Claude/bolt-v2/config/live.local.toml` SHA-256 is `62e6b2dd793753e77f7042376adf6be1c9245969393c695a50e5de65946bacc7`, mode `0644`, with JSON WebSocket endpoint and without those freshness fields. After this audit, approved strategy-free evidence must record absolute config path, raw config SHA, resulting `config_bundle_checksum`, exact head, and report hash before any readiness claim.
+- External review consensus for this root-cause slice: Gemini `60d5d717-8c75-4224-8469-5d42ff67a2bf`, Claude `7d37939d-55da-43cc-9860-5d7441e03d2c`, GLM `job_fe2699da-d790-4d74-ba3a-03217b6b09b5`, DeepSeek `job_76cdd847-8126-4ae2-83a7-b322c23427a6`, and Kimi `da8ccf8d-3931-4f1c-b5f2-174fe3330e81` approved the classification. Consensus: no runtime code change is supported, T038 and T046 remain unchecked, `secrets resolve` proves only SSM fetch plus local shape validation, key-secret pairing is a lead but not proof, and no single-submit live run may proceed before fresh strategy-free readiness and submit-admission evidence are accepted.
 - Follow-up selected-source review of the 2026-05-21 21:28:36 KST auth-probe wording also approved the same evidence-safety classification with no blockers: Gemini `e236bc8a-2465-40ea-bf4f-52490a2ded3c` / session `f56be8f9-aa7f-4e32-aedc-21471f169031`, Claude `190343b2-065f-4470-84b3-a8596bce16c4`, GLM `job_450b4d53-fb29-4f3e-8f60-d28c8f30ecb8` / session `20260521203845df7a674876b949f1`, DeepSeek `job_967b9d7a-3b23-48ca-b379-14997b6350d5` / session `6bd094ad-b650-46b9-b237-2b8895cded5f`, and Kimi `2380be2e-60ad-48d7-8c5d-c48a95a824c8` / session `f7374be5-5118-415d-a55b-b4093b17bdff`.
-- 2026-05-21 22:00:06 KST approved current-head T038 rerun at head `c4f65cdc3f68f23668c8be37da7270df8bc4f167` used absolute config path `/Users/spson/Projects/Claude/bolt-v2/.worktrees/production-readiness-evidence-audit/config/live.local.toml`, config SHA-256 `85fe8e17f2ffe813d464e8f5fe1908604060b5af9c5fd79f7b22ffe770b25289`, and mode `0600`; `secrets check` and `secrets resolve` passed without printing secret values. The no-submit run wrote `/Users/spson/Projects/Claude/bolt-v2/var/bolt-v3-live/reports/no-submit-readiness.json`, mode `-rw-------`, size `1283`, report SHA-256 `5918e03c3cfa66243a56d55c43b075a39bd345bad25a52bc895274b4c32ecb1a`, schema `bolt-v3.no-submit-readiness.v2`, generated timestamp `1779368467` (`2026-05-21 22:01:07 KST`), config bundle checksum `a6f0f1d1e472c88d848b8505dc138e136a55314ec89d80dbb6be926ab7b88639`, and executable identity `c9e55c6df8fff29eeac1ad9f8fe8325d1c5251e50337065351c16f528411d04a`. The report satisfied `operator_approval`, `secret_resolution`, `live_node_build`, `controlled_disconnect`, and `report_write`; failed `controlled_connect`; skipped `reference_readiness`. Runtime evidence again showed `polymarket_main` data/execution connected, `binance_reference` data not connected, `DataEngine.check_connected() == false`, `ExecEngine.check_connected() == true`, NT did not start the trader, and Binance SBE rejected the WebSocket handshake with `Invalid X-MBX-APIKEY header`. This is fresh blocker evidence only and still does not complete T038.
-- This does not prove no-submit live connectivity readiness and does not complete T038. Do not treat command exit status or partial Polymarket connectivity as readiness proof.
+- 2026-05-21 22:00:06 KST approved current-head T038 rerun at head `c4f65cdc3f68f23668c8be37da7270df8bc4f167` used absolute config path `/Users/spson/Projects/Claude/bolt-v2/.worktrees/production-readiness-evidence-audit/config/live.local.toml`, config SHA-256 `85fe8e17f2ffe813d464e8f5fe1908604060b5af9c5fd79f7b22ffe770b25289`, and mode `0600`; `secrets check` and `secrets resolve` passed without printing secret values. The strategy-free run wrote a readiness report under `/Users/spson/Projects/Claude/bolt-v2/var/bolt-v3-live/reports/`, mode `-rw-------`, size `1283`, report SHA-256 `5918e03c3cfa66243a56d55c43b075a39bd345bad25a52bc895274b4c32ecb1a`, retired strategy-free schema v2, generated timestamp `1779368467` (`2026-05-21 22:01:07 KST`), config bundle checksum `a6f0f1d1e472c88d848b8505dc138e136a55314ec89d80dbb6be926ab7b88639`, and executable identity `c9e55c6df8fff29eeac1ad9f8fe8325d1c5251e50337065351c16f528411d04a`. The report satisfied `operator_approval`, `secret_resolution`, `live_node_build`, `controlled_disconnect`, and `report_write`; failed `controlled_connect`; skipped `reference_readiness`. Runtime evidence again showed `polymarket_main` data/execution connected, `binance_reference` data not connected, `DataEngine.check_connected() == false`, `ExecEngine.check_connected() == true`, NT did not start the trader, and Binance SBE rejected the WebSocket handshake with `Invalid X-MBX-APIKEY header`. This is fresh blocker evidence only and still does not complete T038.
+- This does not prove strategy-free live connectivity readiness and does not complete T038. Do not treat command exit status or partial Polymarket connectivity as readiness proof.
 - Detailed secret-management mutation metadata is intentionally not committed here.
 
-## Tiny-Canary Path
+## Single-Submit Live Path
 
 1. Operator harness and preflight
-   - `tests/bolt_v3_tiny_canary_operator.rs:1366-1391`
-   - `src/bolt_v3_tiny_canary_evidence.rs:483`
    - Preflight blocks before live runner if the approval/evidence envelope is incomplete.
-   - Production `Run` also requires `[live_canary].operator_evidence` at the live canary gate. The gate validates required evidence fields and the active approval window before submit admission can arm.
+   - Production `Run` also requires submit-admission approval evidence before any live submit candidate can pass admission.
 
 2. Live runner entry
-   - `tests/bolt_v3_tiny_canary_operator.rs:1426-1430`
    - Harness uses `run_bolt_v3_live_node`, not a separate live architecture.
 
 3. Required artifact paths
-   - `tests/bolt_v3_tiny_canary_operator.rs:1552-1617`
-   - `tests/bolt_v3_tiny_canary_operator.rs:1620-1650`
    - Harness requires venue order state, optional strategy cancel, restart reconciliation, and other evidence paths.
 
 4. Evidence validation
-   - `tests/bolt_v3_tiny_canary_operator.rs:2036-2065`
-   - `tests/bolt_v3_tiny_canary_operator.rs:207-260`
    - Evidence hashes and references are bound before proof is accepted.
    - Operator-envelope regressions cover approval-window rejection, nonce hash mismatch, SSM manifest hash mismatch, strategy-input hash mismatch, financial-envelope hash mismatch, and pre-run evidence hash mismatch.
 
 Current hard evidence:
 
-- T046 remains unchecked in `specs/001-thin-live-canary-path/tasks.md`.
+- T046 remains unchecked in the retired single-submit readiness tracker.
 - Issue #360 is closed, but that closure is only historical tracking state and
   is not accepted as T046 evidence.
-- No tiny-capital canary artifact was produced in this trace.
+- No single-submit live artifact was produced in this trace.
 - Therefore no production-grade readiness claim is supported.
 
 ## Production-Grade Gap Surface
 
 Issue #369 remains the production-grade control issue. The new Speckit checklist at `specs/001-thin-live-canary-path/checklists/production-readiness.md` defines 38 requirements-quality checks covering:
 
-- production-grade readiness versus tiny-canary readiness;
+- production-grade readiness versus single-submit readiness;
 - end-to-end traceability;
 - no-hardcode and registry-driven core requirements;
 - SSM-only credential hygiene and non-disclosure requirements;
-- real no-submit and live gate evidence;
+- real strategy-free connectivity and submit-admission evidence;
 - adapter and venue protocol drift;
 - order lifecycle and restart reconciliation;
 - repeated-live operation;

@@ -524,7 +524,7 @@ def test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere()
             raise AssertionError(f"expected {fragment!r} in findings, got {findings!r}")
 
 
-def test_validate_docs_rejects_gtd_broad_support_and_live_canary_overclaims() -> None:
+def test_validate_docs_rejects_gtd_broad_support_and_live_execution_overclaims() -> None:
     findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA
         + "\nThe current order-intent layer supports GTD maker orders in live execution.",
@@ -544,7 +544,7 @@ def test_validate_docs_rejects_gtd_broad_support_and_live_canary_overclaims() ->
             raise AssertionError(f"expected {fragment!r} in findings, got {findings!r}")
 
 
-def test_validate_docs_rejects_equivalent_live_canary_and_broad_venue_overclaims() -> None:
+def test_validate_docs_rejects_equivalent_live_execution_and_broad_venue_overclaims() -> None:
     findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA + "\nThe current order-intent layer enables GTD live trading.",
         CURRENT_STATUS_MAP + "\nCanary support is enabled for maker orders.",
@@ -682,113 +682,19 @@ def test_validate_docs_rejects_stale_decision_evidence_record_type_wording() -> 
         raise AssertionError(f"expected stale record_type wording finding, got {findings!r}")
 
 
-def test_extracts_phase8_financial_envelope_fields_from_source_struct() -> None:
-    rust_source = """
-#[derive(Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct Phase8FinancialEnvelopeEvidenceFile {
-    max_live_order_count: u32,
-    entry_side: String,
-    entry_activation_price: Option<f64>,
-}
-
-impl Phase8FinancialEnvelopeEvidenceFile {
-"""
-
-    fields = VERIFIER.extract_phase8_financial_envelope_fields(rust_source)
-
-    expected_fields = [
-        "max_live_order_count",
-        "entry_side",
-        "entry_activation_price",
-    ]
-    if fields != expected_fields:
-        raise AssertionError(f"expected source-derived fields {expected_fields!r}, got {fields!r}")
-
-
-def test_validate_docs_rejects_financial_envelope_schema_missing_source_field() -> None:
-    rust_source = """
-#[derive(Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct Phase8FinancialEnvelopeEvidenceFile {
-    max_live_order_count: u32,
-    entry_side: String,
-}
-
-impl Phase8FinancialEnvelopeEvidenceFile {
-"""
-    complete_schema = (
+def test_validate_docs_rejects_retired_financial_envelope_schema_section() -> None:
+    findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA
         + """
 `financial_envelope` fields:
 
 - `max_live_order_count`: integer
-- `entry_side`: string
-
-`pre_run_state` fields:
-"""
-    )
-    missing_schema = complete_schema.replace("- `entry_side`: string\n", "")
-
-    complete_findings = VERIFIER.validate_docs(
-        complete_schema,
+""",
         CURRENT_STATUS_MAP,
-        financial_envelope_source=rust_source,
-    )
-    if complete_findings:
-        raise AssertionError(f"expected complete synthetic schema to pass, got {complete_findings!r}")
-
-    missing_findings = VERIFIER.validate_docs(
-        missing_schema,
-        CURRENT_STATUS_MAP,
-        financial_envelope_source=rust_source,
-    )
-    if not any("financial_envelope" in finding and "`entry_side`" in finding for finding in missing_findings):
-        raise AssertionError(f"expected missing source-derived field finding, got {missing_findings!r}")
-
-
-def test_validate_docs_rejects_financial_envelope_schema_extra_doc_field() -> None:
-    rust_source = """
-#[derive(Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct Phase8FinancialEnvelopeEvidenceFile {
-    max_live_order_count: u32,
-    entry_side: String,
-}
-
-impl Phase8FinancialEnvelopeEvidenceFile {
-"""
-    complete_schema = (
-        CURRENT_SCHEMA
-        + """
-`financial_envelope` fields:
-
-- `max_live_order_count`: integer
-- `entry_side`: string
-
-`pre_run_state` fields:
-"""
-    )
-    extra_schema = complete_schema.replace(
-        "- `entry_side`: string\n",
-        "- `entry_side`: string\n- `stale_doc_field`: string\n",
     )
 
-    complete_findings = VERIFIER.validate_docs(
-        complete_schema,
-        CURRENT_STATUS_MAP,
-        financial_envelope_source=rust_source,
-    )
-    if complete_findings:
-        raise AssertionError(f"expected complete synthetic schema to pass, got {complete_findings!r}")
-
-    extra_findings = VERIFIER.validate_docs(
-        extra_schema,
-        CURRENT_STATUS_MAP,
-        financial_envelope_source=rust_source,
-    )
-    if not any("financial_envelope" in finding and "`stale_doc_field`" in finding for finding in extra_findings):
-        raise AssertionError(f"expected extra doc field finding, got {extra_findings!r}")
+    if not any("financial_envelope" in finding for finding in findings):
+        raise AssertionError(f"expected retired financial_envelope finding, got {findings!r}")
 
 
 def test_validate_docs_rejects_duplicate_position_contract_helpers() -> None:
@@ -858,8 +764,8 @@ def main() -> int:
         test_validate_docs_requires_phase51_dependency_note_when_tasks_are_checked,
         test_validate_docs_rejects_terminal_only_final_dependency_notes_after_wait_cap,
         test_validate_docs_rejects_current_unsupported_scope_overclaims_everywhere,
-        test_validate_docs_rejects_gtd_broad_support_and_live_canary_overclaims,
-        test_validate_docs_rejects_equivalent_live_canary_and_broad_venue_overclaims,
+        test_validate_docs_rejects_gtd_broad_support_and_live_execution_overclaims,
+        test_validate_docs_rejects_equivalent_live_execution_and_broad_venue_overclaims,
         test_validate_docs_rejects_short_and_exit_quote_overclaims_with_without_clause,
         test_validate_docs_allows_live_trading_config_value_without_support_claim,
         test_validate_docs_allows_spec_architecture_risk_context,
@@ -867,9 +773,7 @@ def main() -> int:
         test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift,
         test_validate_docs_rejects_stale_strategy_schema_version_examples,
         test_validate_docs_rejects_stale_decision_evidence_record_type_wording,
-        test_extracts_phase8_financial_envelope_fields_from_source_struct,
-        test_validate_docs_rejects_financial_envelope_schema_missing_source_field,
-        test_validate_docs_rejects_financial_envelope_schema_extra_doc_field,
+        test_validate_docs_rejects_retired_financial_envelope_schema_section,
         test_validate_docs_rejects_duplicate_position_contract_helpers,
     ]
     for test in tests:

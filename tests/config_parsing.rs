@@ -146,194 +146,6 @@ fn bolt_v3_root_trader_id_rejects_empty_string_at_parse_time() {
 }
 
 #[test]
-fn bolt_v3_live_canary_proof_policy_is_absent_or_disabled_by_default() {
-    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
-
-    let loaded = load_bolt_v3_config(&support::repo_path("config/root.toml"))
-        .expect("root config should load");
-    let live_canary = loaded
-        .root
-        .live_canary
-        .expect("fixture should declare live canary controls");
-
-    if let Some(proof_policy) = live_canary.proof_policy {
-        assert!(
-            !proof_policy.enabled,
-            "fixture proof policy must not arm canary proof by default"
-        );
-    }
-}
-
-#[test]
-fn bolt_v3_live_canary_proof_policy_rejects_non_proof_only_claim() {
-    let messages = validate_root_messages_with_live_canary_proof_policy(
-        &valid_live_canary_proof_policy_block().replace(
-            "proof_claim = \"proof_only\"",
-            "proof_claim = \"alpha_ready\"",
-        ),
-    );
-
-    assert!(
-        messages.iter().any(|message| {
-            message.contains("live_canary.proof_policy.proof_claim")
-                && message.contains("proof_only")
-        }),
-        "non-proof-only claims must fail closed: {messages:#?}"
-    );
-}
-
-#[test]
-fn bolt_v3_live_canary_proof_policy_rejects_notional_above_canary_cap() {
-    let with_proof_policy = root_config_with_live_canary_proof_policy(
-        &valid_live_canary_proof_policy_block()
-            .replace("proof_notional = \"1.00\"", "proof_notional = \"5.01\""),
-    )
-    .replace(
-        "max_notional_per_order = \"1.00\"",
-        "max_notional_per_order = \"5.00\"",
-    );
-    let messages = validate_root_messages_from_source(&with_proof_policy);
-
-    assert!(
-        messages.iter().any(|message| {
-            message.contains("live_canary.proof_policy.proof_notional")
-                && message.contains("max_notional_per_order")
-        }),
-        "proof notional above live canary cap must fail closed: {messages:#?}"
-    );
-}
-
-#[test]
-fn bolt_v3_live_canary_proof_policy_rejects_unsupported_policy_kind() {
-    let messages = validate_root_messages_with_live_canary_proof_policy(
-        &valid_live_canary_proof_policy_block().replace(
-            "policy_kind = \"least_bad_strategy_candidate\"",
-            "policy_kind = \"specific_venue_probe\"",
-        ),
-    );
-
-    assert!(
-        messages.iter().any(|message| {
-            message.contains("live_canary.proof_policy.policy_kind")
-                && message.contains("least_bad_strategy_candidate")
-        }),
-        "unsupported proof policy kind must fail closed: {messages:#?}"
-    );
-}
-
-#[test]
-fn bolt_v3_live_canary_proof_policy_rejects_unsupported_notional_mode() {
-    let messages = validate_root_messages_with_live_canary_proof_policy(
-        &valid_live_canary_proof_policy_block()
-            .replace("notional_mode = \"fixed\"", "notional_mode = \"adaptive\""),
-    );
-
-    assert!(
-        messages.iter().any(|message| {
-            message.contains("live_canary.proof_policy.notional_mode") && message.contains("fixed")
-        }),
-        "unsupported proof policy notional mode must fail closed: {messages:#?}"
-    );
-}
-
-#[test]
-fn bolt_v3_live_canary_proof_policy_rejects_unsupported_candidate_score_source() {
-    let messages = validate_root_messages_with_live_canary_proof_policy(
-        &valid_live_canary_proof_policy_block().replace(
-            "candidate_score_source = \"proof_source\"",
-            "candidate_score_source = \"external_override\"",
-        ),
-    );
-
-    assert!(
-        messages.iter().any(|message| {
-            message.contains("live_canary.proof_policy.candidate_score_source")
-                && message.contains("proof_source")
-        }),
-        "unsupported proof policy candidate score source must fail closed: {messages:#?}"
-    );
-}
-
-#[test]
-fn bolt_v3_live_canary_proof_policy_rejects_rotation_min_above_attempts() {
-    let messages = validate_root_messages_with_live_canary_proof_policy(
-        &valid_live_canary_proof_policy_block().replace(
-            "rotation_min_distinct_markets = 1\nrotation_max_attempts = 1",
-            "rotation_min_distinct_markets = 2\nrotation_max_attempts = 1",
-        ),
-    );
-
-    assert!(
-        messages.iter().any(|message| {
-            message.contains("live_canary.proof_policy.rotation_min_distinct_markets")
-                && message.contains("rotation_max_attempts")
-        }),
-        "rotation minimum above attempts must fail closed: {messages:#?}"
-    );
-}
-
-#[test]
-fn bolt_v3_live_canary_proof_policy_rejects_zero_book_snapshot_interval() {
-    let messages = validate_root_messages_with_live_canary_proof_policy(
-        &valid_live_canary_proof_policy_block().replace(
-            "book_snapshot_interval_millis = 1000",
-            "book_snapshot_interval_millis = 0",
-        ),
-    );
-
-    assert!(
-        messages
-            .iter()
-            .any(|message| message.contains("book_snapshot_interval_millis")),
-        "zero proof policy book snapshot interval must fail closed: {messages:#?}"
-    );
-}
-
-#[test]
-fn bolt_v3_live_canary_proof_policy_rejects_quote_quantity() {
-    // The canary proof executor sizes the proof order from a base share quantity. A
-    // quote-quantity proof order would denominate that base quantity as a quote-currency amount
-    // and issue an extra venue collateral-balance REST request, so it must fail closed at load.
-    let messages = validate_root_messages_with_live_canary_proof_policy(
-        &valid_live_canary_proof_policy_block()
-            .replace("is_quote_quantity = false", "is_quote_quantity = true"),
-    );
-
-    assert!(
-        messages.iter().any(|message| {
-            message.contains("live_canary.proof_policy.is_quote_quantity")
-                && message.contains("base share quantity")
-        }),
-        "quote-quantity proof policy must fail closed at load: {messages:#?}"
-    );
-}
-
-#[test]
-fn bolt_v3_live_canary_proof_policy_rejects_blank_strategy_or_execution_client() {
-    let messages = validate_root_messages_with_live_canary_proof_policy(
-        &valid_live_canary_proof_policy_block()
-            .replace(
-                "strategy_instance_id = \"configured_strategy\"",
-                "strategy_instance_id = \"\"",
-            )
-            .replace(
-                "execution_client_id = \"configured_execution_client\"",
-                "execution_client_id = \"\"",
-            ),
-    );
-
-    for expected in [
-        "live_canary.proof_policy.strategy_instance_id",
-        "live_canary.proof_policy.execution_client_id",
-    ] {
-        assert!(
-            messages.iter().any(|message| message.contains(expected)),
-            "blank proof policy identity field `{expected}` must fail closed: {messages:#?}"
-        );
-    }
-}
-
-#[test]
 fn bolt_v3_polymarket_account_id_uses_nt_typed_identifier() {
     // `PolymarketExecutionConfig.account_id` is typed as
     // `nautilus_model::identifiers::AccountId` so NT's identifier macro
@@ -454,24 +266,24 @@ fn bolt_v3_polymarket_and_nautilus_config_rejects_nt_field_aliases() {
 }
 
 #[test]
-fn bolt_v3_operator_evidence_allows_unassigned_order_ids() {
+fn retired_gate_config_block_is_rejected() {
     use bolt_v2::bolt_v3_config::BoltV3RootConfig;
 
-    let source = std::fs::read_to_string(support::repo_path("config/root.toml"))
+    let source = fs::read_to_string(support::repo_path("config/root.toml"))
         .expect("root config should be readable");
-    assert!(!source.contains("client_order_id_hash"));
-    assert!(!source.contains("venue_order_id_hash"));
+    let stale_section = [
+        "[live",
+        "_canary.operator",
+        "_evidence]\n",
+        "enabled = true\n",
+    ]
+    .concat();
+    let source = format!("{source}\n{stale_section}");
 
-    let parsed = toml::from_str::<BoltV3RootConfig>(&source)
-        .expect("operator evidence should not require order IDs before submit");
-
-    assert!(
-        parsed
-            .live_canary
-            .and_then(|live_canary| live_canary.operator_evidence)
-            .is_some(),
-        "operator evidence should remain configured"
-    );
+    let error = toml::from_str::<BoltV3RootConfig>(&source)
+        .expect_err("retired gate config block should be rejected");
+    let rendered = error.to_string();
+    assert!(rendered.contains("unknown field"));
 }
 
 #[test]
@@ -601,30 +413,6 @@ fn shipped_chainlink_strike_client_pins_each_asset_feed_binding() {
             "{instrument_id} reuses another asset's feed_id ({actual_feed}); cross-asset feed collision"
         );
     }
-}
-
-#[test]
-fn bolt_v3_operator_evidence_rejects_pre_run_egress_probe_inputs() {
-    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
-
-    let source = std::fs::read_to_string(support::repo_path("config/root.toml"))
-        .expect("root config should be readable");
-    let with_operator_evidence_probe_inputs = source.replace(
-        "[live_canary.operator_evidence]\n",
-        concat!(
-            "[live_canary.operator_evidence]\n",
-            "egress_identity_observed_path = \"/var/lib/bolt/operator-evidence/egress-identity-observed.txt\"\n",
-            "approved_egress_identity_sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"\n",
-        ),
-    );
-
-    let error = toml::from_str::<BoltV3RootConfig>(&with_operator_evidence_probe_inputs)
-        .expect_err("pre-run egress probe inputs must not be accepted in operator evidence");
-    let rendered = error.to_string();
-    assert!(
-        rendered.contains("unknown field"),
-        "operator-evidence egress probe input rejection should come from deny_unknown_fields, got: {rendered}"
-    );
 }
 
 #[test]
@@ -5529,55 +5317,6 @@ fn replace_in_fixture_section(section_header: &str, replacements: &[(&str, &str)
         );
     }
     rewritten.join("\n")
-}
-
-fn root_config_with_live_canary_proof_policy(proof_policy_block: &str) -> String {
-    let source = fs::read_to_string(support::repo_path("config/root.toml"))
-        .expect("root config should read");
-    assert!(
-        source.contains("[live_canary.operator_evidence]\n"),
-        "root config must contain the live canary operator evidence block"
-    );
-    source.replace(
-        "[live_canary.operator_evidence]\n",
-        &format!("{proof_policy_block}\n\n[live_canary.operator_evidence]\n"),
-    )
-}
-
-fn validate_root_messages_with_live_canary_proof_policy(proof_policy_block: &str) -> Vec<String> {
-    validate_root_messages_from_source(&root_config_with_live_canary_proof_policy(
-        proof_policy_block,
-    ))
-}
-
-fn validate_root_messages_from_source(source: &str) -> Vec<String> {
-    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
-
-    let root: BoltV3RootConfig = toml::from_str(source).expect("proof policy root should parse");
-    validate_root_only(&root)
-}
-
-fn valid_live_canary_proof_policy_block() -> &'static str {
-    r#"[live_canary.proof_policy]
-enabled = true
-policy_kind = "least_bad_strategy_candidate"
-proof_claim = "proof_only"
-executor_strategy_id = "canary-proof-executor-proof"
-strategy_instance_id = "configured_strategy"
-execution_client_id = "configured_execution_client"
-book_type = "l2_mbp"
-book_snapshot_interval_millis = 1000
-time_in_force = "fok"
-is_post_only = false
-is_reduce_only = false
-is_quote_quantity = false
-notional_mode = "fixed"
-proof_notional = "1.00"
-candidate_score_source = "proof_source"
-allow_negative_expected_ev = true
-rotation_observation_enabled = true
-rotation_min_distinct_markets = 1
-rotation_max_attempts = 1"#
 }
 
 fn fixture_root_with_binance_reference_client() -> String {

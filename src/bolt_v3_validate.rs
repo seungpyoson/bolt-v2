@@ -42,7 +42,7 @@ use std::{
 
 use nautilus_model::{
     enums::{BarAggregation, BarIntervalType},
-    identifiers::{ClientOrderId, InstrumentId, StrategyId},
+    identifiers::{ClientOrderId, InstrumentId},
 };
 use rust_decimal::Decimal;
 
@@ -50,9 +50,8 @@ use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
     ClientBlock, DataClientReadinessProbeQuoteTargetSource, GATE_PROVIDER_CAPABILITIES,
     GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, KillSwitchConfigBlock,
-    LiveCanaryBlock, LiveCanaryProofPolicyBlock, LoadedStrategy, NautilusBlock,
-    PRICE_GATE_VALUE_KIND, PersistenceBlock, RiskBlock, SSM_CREDENTIAL_PARAMETER_FIELD,
-    TEST_DOUBLE_PROVIDER_KIND,
+    LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock, RiskBlock,
+    SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
 
@@ -129,10 +128,6 @@ const TARGET_RESOLUTION_KIND_FIELD: &str = "resolution_kind";
 const TARGET_PROVIDER_ID_FIELD: &str = "provider_id";
 const TARGET_PROVIDER_PREFERENCE_FIELD: &str = "provider_preference";
 const TARGET_ALLOWED_PROVIDER_IDS_FIELD: &str = "allowed_provider_ids";
-const LIVE_CANARY_PROOF_POLICY_KIND: &str = "least_bad_strategy_candidate";
-const LIVE_CANARY_PROOF_POLICY_CANDIDATE_SCORE_SOURCE: &str = "proof_source";
-const LIVE_CANARY_PROOF_POLICY_NOTIONAL_MODE: &str = "fixed";
-const LIVE_CANARY_PROOF_POLICY_REQUIRED_PROOF_CLAIM: &str = "proof_only";
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct ResolutionFeedBindingKey {
@@ -178,189 +173,6 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));
     }
     errors.extend(crate::bolt_v3_providers::validate_resolution_oracle_client_consistency(root));
-    if let Some(live_canary) = root.live_canary.as_ref() {
-        // Validate the live-money-gating base fields unconditionally. The
-        // previous code only ran when `proof_policy` was present, so a
-        // `[live_canary]` block without a proof policy skipped all of it — a
-        // zero/negative or over-cap `max_notional_per_order` passed config load.
-        // Operator-evidence integrity (sha256/head_sha shapes, approval window)
-        // is validated by the live-canary gate at run time (single source of
-        // truth) and is intentionally not duplicated here.
-        errors.extend(validate_live_canary_block(
-            live_canary,
-            &root.risk.default_max_notional_per_order,
-        ));
-        if let Some(proof_policy) = live_canary.proof_policy.as_ref() {
-            errors.extend(validate_live_canary_proof_policy(
-                proof_policy,
-                &live_canary.max_notional_per_order,
-            ));
-        }
-    }
-
-    errors
-}
-
-/// Validates the live-money-gating base fields of a `[live_canary]` block at
-/// config load, independent of whether a `[live_canary.proof_policy]` subtable
-/// is present. The operator-evidence integrity fields (sha256/head_sha shapes,
-/// approval-consumption window) are owned by the live-canary gate at run time
-/// and are intentionally not re-validated here (single source of truth / no
-/// dual paths).
-fn validate_live_canary_block(
-    live_canary: &LiveCanaryBlock,
-    default_max_notional_per_order: &str,
-) -> Vec<String> {
-    let mut errors = Vec::new();
-
-    if live_canary.approval_id.trim().is_empty() {
-        errors.push("live_canary.approval_id must not be blank".to_string());
-    }
-    if live_canary.max_live_order_count == 0 {
-        errors.push("live_canary.max_live_order_count must be a positive integer".to_string());
-    }
-
-    match (
-        parse_decimal_string(&live_canary.max_notional_per_order),
-        parse_decimal_string(default_max_notional_per_order),
-    ) {
-        (Ok(max_notional), _) if max_notional <= Decimal::ZERO => {
-            errors.push(
-                "live_canary.max_notional_per_order must be a positive decimal string".to_string(),
-            );
-        }
-        (Ok(max_notional), Ok(default_max)) if max_notional > default_max => {
-            errors.push(
-                "live_canary.max_notional_per_order must be <= risk.default_max_notional_per_order"
-                    .to_string(),
-            );
-        }
-        (Err(reason), _) => errors.push(format!(
-            "live_canary.max_notional_per_order is not a valid decimal string ({reason}): `{}`",
-            live_canary.max_notional_per_order
-        )),
-        // A positive max_notional with a malformed risk.default_max_notional_per_order
-        // is left to validate_risk_block to report; a positive max_notional within the
-        // cap is valid.
-        _ => {}
-    }
-
-    errors
-}
-
-fn validate_live_canary_proof_policy(
-    policy: &LiveCanaryProofPolicyBlock,
-    max_notional_per_order: &str,
-) -> Vec<String> {
-    let mut errors = Vec::new();
-
-    if policy.enabled && policy.proof_claim.trim() != LIVE_CANARY_PROOF_POLICY_REQUIRED_PROOF_CLAIM
-    {
-        errors.push(format!(
-            "live_canary.proof_policy.proof_claim must be `{}` when enabled",
-            LIVE_CANARY_PROOF_POLICY_REQUIRED_PROOF_CLAIM
-        ));
-    }
-    if policy.enabled && policy.policy_kind.trim() != LIVE_CANARY_PROOF_POLICY_KIND {
-        errors.push(format!(
-            "live_canary.proof_policy.policy_kind must be `{}` when enabled",
-            LIVE_CANARY_PROOF_POLICY_KIND
-        ));
-    }
-    if policy.enabled && policy.notional_mode.trim() != LIVE_CANARY_PROOF_POLICY_NOTIONAL_MODE {
-        errors.push(format!(
-            "live_canary.proof_policy.notional_mode must be `{}` when enabled",
-            LIVE_CANARY_PROOF_POLICY_NOTIONAL_MODE
-        ));
-    }
-    if policy.enabled
-        && policy.candidate_score_source.trim() != LIVE_CANARY_PROOF_POLICY_CANDIDATE_SCORE_SOURCE
-    {
-        errors.push(format!(
-            "live_canary.proof_policy.candidate_score_source must be `{}` when enabled",
-            LIVE_CANARY_PROOF_POLICY_CANDIDATE_SCORE_SOURCE
-        ));
-    }
-    if policy.enabled && policy.strategy_instance_id.trim().is_empty() {
-        errors.push(
-            "live_canary.proof_policy.strategy_instance_id must not be blank when enabled"
-                .to_string(),
-        );
-    }
-    if policy.enabled && policy.executor_strategy_id.trim().is_empty() {
-        errors.push(
-            "live_canary.proof_policy.executor_strategy_id must not be blank when enabled"
-                .to_string(),
-        );
-    } else if policy.enabled
-        && let Err(reason) = StrategyId::new_checked(policy.executor_strategy_id.trim())
-    {
-        errors.push(format!(
-            "live_canary.proof_policy.executor_strategy_id is invalid: {reason}"
-        ));
-    }
-    if policy.enabled && policy.execution_client_id.trim().is_empty() {
-        errors.push(
-            "live_canary.proof_policy.execution_client_id must not be blank when enabled"
-                .to_string(),
-        );
-    }
-    if policy.enabled && policy.book_snapshot_interval_millis == 0 {
-        errors.push(
-            "live_canary.proof_policy.book_snapshot_interval_millis must be positive when enabled"
-                .to_string(),
-        );
-    }
-    if policy.enabled && policy.is_quote_quantity {
-        // The canary proof executor sizes the proof order from a base share quantity. With
-        // is_quote_quantity=true the pinned NT Polymarket adapter would (a) reinterpret that base
-        // share count as a quote-currency (collateral) amount, committing the wrong notional, and
-        // (b) issue an extra pre-submit collateral-balance REST request. Downstream admission fails
-        // closed on the resulting notional, but forbid the mode at load so the canary cannot be
-        // misconfigured into the broken quote-quantity path in the first place.
-        errors.push(
-            "live_canary.proof_policy.is_quote_quantity must be false: the canary proof executor sizes the proof order from a base share quantity, so a quote-quantity order would denominate that base quantity as a quote-currency amount and issue an extra venue collateral-balance REST request"
-                .to_string(),
-        );
-    }
-
-    match (
-        parse_decimal_string(&policy.proof_notional),
-        parse_decimal_string(max_notional_per_order),
-    ) {
-        (Ok(proof_notional), Ok(max_notional)) => {
-            if proof_notional <= Decimal::ZERO {
-                errors.push("live_canary.proof_policy.proof_notional must be positive".to_string());
-            }
-            if proof_notional > max_notional {
-                errors.push(
-                    "live_canary.proof_policy.proof_notional must be <= live_canary.max_notional_per_order"
-                        .to_string(),
-                );
-            }
-        }
-        (Err(reason), _) => errors.push(format!(
-            "live_canary.proof_policy.proof_notional is invalid: {reason}"
-        )),
-        (_, Err(reason)) => errors.push(format!(
-            "live_canary.max_notional_per_order is invalid: {reason}"
-        )),
-    }
-
-    if policy.enabled && policy.rotation_min_distinct_markets == 0 {
-        errors.push(
-            "live_canary.proof_policy.rotation_min_distinct_markets must be positive".to_string(),
-        );
-    }
-    if policy.enabled && policy.rotation_max_attempts == 0 {
-        errors.push("live_canary.proof_policy.rotation_max_attempts must be positive".to_string());
-    }
-    if policy.enabled && policy.rotation_min_distinct_markets > policy.rotation_max_attempts {
-        errors.push(
-            "live_canary.proof_policy.rotation_min_distinct_markets must be <= rotation_max_attempts"
-                .to_string(),
-        );
-    }
 
     errors
 }
@@ -1564,7 +1376,7 @@ fn validate_unique_client_readiness_probe_instruments(
                         if existing_client_key != client_key =>
                     {
                         errors.push(format!(
-                            "clients.{client_key}.readiness_probe.quote_targets.{target_id}.instrument_id `{instrument_id}` is also used by clients.{existing_client_key}.readiness_probe.quote_targets.{existing_target_id}.instrument_id; QuoteTick does not carry data_client_id, so no-submit data-client quote probe evidence cannot distinguish data clients for the same instrument"
+                            "clients.{client_key}.readiness_probe.quote_targets.{target_id}.instrument_id `{instrument_id}` is also used by clients.{existing_client_key}.readiness_probe.quote_targets.{existing_target_id}.instrument_id; QuoteTick does not carry data_client_id, so strategy-free data-client quote probe evidence cannot distinguish data clients for the same instrument"
                         ));
                     }
                     None => {
@@ -2043,7 +1855,7 @@ fn validate_reference_quote_probe_sources(strategies: &[LoadedStrategy]) -> Vec<
                     if *existing_data_client_id != data_client_id =>
                 {
                     errors.push(format!(
-                        "{context}: reference_data.{role}.instrument_id `{instrument_id}` with data_client_id `{data_client_id}` is also used by {existing_context}: reference_data.{existing_role}.instrument_id with data_client_id `{existing_data_client_id}`; QuoteTick does not carry data_client_id, so no-submit reference quote evidence cannot distinguish data clients for the same instrument"
+                        "{context}: reference_data.{role}.instrument_id `{instrument_id}` with data_client_id `{data_client_id}` is also used by {existing_context}: reference_data.{existing_role}.instrument_id with data_client_id `{existing_data_client_id}`; QuoteTick does not carry data_client_id, so strategy-free reference quote evidence cannot distinguish data clients for the same instrument"
                     ));
                 }
                 None => {

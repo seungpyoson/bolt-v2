@@ -39,7 +39,6 @@ const CHAINLINK_FEED_ID_PREFIX: &str = "0x";
 const CHAINLINK_FEED_ID_HEX_LENGTH: usize = 64;
 
 pub(crate) struct PriceToBeatReportBinding {
-    pub(crate) provider_id: String,
     pub(crate) feed_id: String,
     pub(crate) schema_version: u64,
     pub(crate) decimal_scale: u64,
@@ -373,7 +372,6 @@ mod tests {
 
     fn binding(feed_id: &str, schema_version: u64, decimal_scale: u64) -> PriceToBeatReportBinding {
         PriceToBeatReportBinding {
-            provider_id: "test-provider".to_string(),
             feed_id: feed_id.to_string(),
             schema_version,
             decimal_scale,

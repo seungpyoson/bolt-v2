@@ -91,12 +91,12 @@
 
 ## Phase 9: Adapter-Proof Harness Planning
 
-**Goal**: Prove venue legality through NT source or no-submit smoke, not Bolt runtime policy.
+**Goal**: Prove venue legality through NT source or strategy-free smoke, not Bolt runtime policy.
 
 - [x] T033 [US4] Document adapter source evidence requirements for every adapter named by a support claim in `research.md`
-- [x] T034 [US4] Define no-submit smoke proof boundaries for order templates without live submit
-- [x] T035 [US4] Keep live/canary proof explicitly blocked until user approval
-- [x] T036 [US4] Record absence of no-submit/canary artifacts as residual scope for any execution claim
+- [x] T034 [US4] Define strategy-free smoke proof boundaries for order templates without live submit
+- [x] T035 [US4] Keep live-submit proof explicitly blocked until user approval
+- [x] T036 [US4] Record absence of strategy-free/live-submit artifacts as residual scope for any execution claim
 
 ## Phase 10: Post-Implementation Review And Verification
 
@@ -271,7 +271,7 @@
 
 - [x] T119 [P] [US3] Record source-backed evidence for stale active docs: `oms_type`, enabled order templates, factory-gap order types, and status-map single-value enum wording
 - [x] T120 [US3] RED: Add a docs consistency verifier proving the active schema/status docs still contain superseded netting-only and tuple-policy claims
-- [x] T121 [US3] GREEN: Update active docs to reflect current NT-backed order template scope while preserving live/no-submit/canary proof boundaries
+- [x] T121 [US3] GREEN: Update active docs to reflect current NT-backed order template scope while preserving live/strategy-free/live-submit proof boundaries
 - [x] T122 [US3] Verify the docs verifier, source fences as possible, branch cleanliness, exact-head gate state, and reviewer/no-mistakes state
 
 ## Phase 28: TDD Slice 24 - Strategy Economics Boundary After Order Template Widening
@@ -346,9 +346,9 @@
 - [x] T153 [US2] GREEN: Include `data-model.md` in the verifier, update expiry wording, and add config/runtime pass-through regressions
 - [x] T154 [US2] Verify focused non-GTD expiry tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
 
-## Phase 36: TDD Slice 32 - Tiny-Canary Order-Field Approval Binding
+## Phase 36: TDD Slice 32 - Single-Submit Live Order-Field Approval Binding
 
-**Goal**: Treat no-mistakes `b30f4044` as a live/canary proof hardening slice, not a source order-intent gap, by binding the Phase 8 financial envelope to every currently TOML-owned entry/exit order-shape field that can change the approved order intent.
+**Goal**: Treat no-mistakes `b30f4044` as a live-submit proof hardening slice, not a source order-intent gap, by binding the Phase 8 financial envelope to every currently TOML-owned entry/exit order-shape field that can change the approved order intent.
 
 - [x] T155 [P] [US3] Record read-only local and multi-agent evidence that the current canary envelope binds only order type, TIF, and boolean flags
 - [x] T156 [US3] RED: Add a tiny-canary precondition regression proving side or position-side drift can still consume approval
@@ -520,9 +520,9 @@
 
 ## Phase 54: TDD Slice 50 - Forced-Exit Approval Envelope Binding
 
-**Goal**: Resolve exact-head no-mistakes evidence that Phase 8 approval envelopes bind entry and normal-exit order-shape fields but not the TOML-owned `forced_exit_order` introduced by Phase 47. The fix is live/canary approval-envelope hardening only; it must not change runtime order construction, add venue policy, or touch the shared order-intent layer.
+**Goal**: Resolve exact-head no-mistakes evidence that Phase 8 approval envelopes bind entry and normal-exit order-shape fields but not the TOML-owned `forced_exit_order` introduced by Phase 47. The fix is live-submit approval-envelope hardening only; it must not change runtime order construction, add venue policy, or touch the shared order-intent layer.
 
-- [x] T237 [P] [US3] Record exact-head no-mistakes evidence for the forced-exit approval-envelope gap and the live/canary boundary decision
+- [x] T237 [P] [US3] Record exact-head no-mistakes evidence for the forced-exit approval-envelope gap and the live-submit boundary decision
 - [x] T238 [US3] RED: Add an approval-envelope regression proving `forced_exit_order` drift can consume approval
 - [x] T239 [US3] GREEN: Bind required and optional `forced_exit_order` order-shape fields in `Phase8FinancialEnvelopeEvidenceFile`
 - [x] T240 [US3] Verify focused tiny-canary tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
@@ -725,7 +725,7 @@
 - Phase 33 blocks completion because source inspection found the Speckit spec still claimed short-side acceptance after Phase 28 restored current strategy-economics rejection.
 - Phase 34 closes the original TrailingStopMarket NT-default pass-through implementation; Phase 51 closes the active schema-default drift and equivalent-wording verifier gap.
 - Phase 35 blocks completion because no-mistakes produced a non-terminal blanket non-GTD expiry patch that conflicts with pinned NT Rust behavior and prior Speckit decisions.
-- Phase 36 blocks live/canary proof claims because no-mistakes and read-only reviewers found the Phase 8 financial envelope did not bind every currently TOML-owned order-shape field.
+- Phase 36 blocks live-submit proof claims because no-mistakes and read-only reviewers found the Phase 8 financial envelope did not bind every currently TOML-owned order-shape field.
 - Phase 37 blocks completion because read-only audit found the pre-admission order-intent evidence did not include the compiled NT order fields needed to explain Bolt admission.
 - Phase 38 blocks submit-context completion claims because current source inspection found no path that can set non-empty NT submit params.
 - Phase 39 blocks triggered-order field-completeness claims because pinned-NT review found `trigger_instrument_id` is accepted by enabled NT factories but currently dropped by Bolt, and `emulation_trigger` is not listed as residual scope.
@@ -776,4 +776,4 @@
 2. Execute one TDD slice at a time.
 3. Keep implementation inside the listed source/test files unless a review finding proves extraction is necessary.
 4. Verify each slice before moving to the next.
-5. Treat source-level proof, no-submit proof, and live proof as separate evidence classes.
+5. Treat source-level proof, strategy-free proof, and live proof as separate evidence classes.

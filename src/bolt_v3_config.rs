@@ -66,7 +66,6 @@ pub struct BoltV3RootConfig {
     pub risk: RiskBlock,
     pub logging: LoggingBlock,
     pub persistence: PersistenceBlock,
-    pub live_canary: Option<LiveCanaryBlock>,
     pub aws: AwsBlock,
     pub clients: BTreeMap<String, ClientBlock>,
     pub gate_providers: Option<BTreeMap<String, GateProviderBlock>>,
@@ -224,101 +223,6 @@ pub struct DecisionEvidenceBlock {
     pub order_intents_relative_path: String,
 }
 
-/// Operator approval and canary bounds required by the bolt-v3 live
-/// canary gate before `run_bolt_v3_live_node` may enter NT's runner
-/// loop. Field semantics are defined by the `[live_canary]` schema
-/// section.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct LiveCanaryBlock {
-    pub approval_id: String,
-    pub no_submit_readiness_report_path: String,
-    pub max_no_submit_readiness_report_bytes: u64,
-    pub readiness_report_max_age_seconds: u64,
-    pub reference_quote_max_age_seconds: u64,
-    pub reference_quote_wait_timeout_seconds: u64,
-    pub reference_quote_probe_actor_id: String,
-    pub reference_quote_probe_log_events: bool,
-    pub reference_quote_probe_log_commands: bool,
-    pub max_live_order_count: u32,
-    pub max_notional_per_order: String,
-    pub egress_identity_observed_path: Option<String>,
-    pub egress_identity_observed_max_bytes: Option<u64>,
-    pub approved_egress_identity_sha256: Option<String>,
-    pub proof_policy: Option<LiveCanaryProofPolicyBlock>,
-    pub operator_evidence: Option<LiveCanaryOperatorEvidenceBlock>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct LiveCanaryProofPolicyBlock {
-    pub enabled: bool,
-    pub policy_kind: String,
-    pub proof_claim: String,
-    pub executor_strategy_id: String,
-    pub strategy_instance_id: String,
-    pub execution_client_id: String,
-    pub book_type: DataClientReadinessProbeBookType,
-    pub book_snapshot_interval_millis: u64,
-    pub time_in_force: LiveCanaryProofTimeInForce,
-    pub is_post_only: bool,
-    pub is_reduce_only: bool,
-    pub is_quote_quantity: bool,
-    pub notional_mode: String,
-    pub proof_notional: String,
-    pub candidate_score_source: String,
-    pub allow_negative_expected_ev: bool,
-    pub rotation_observation_enabled: bool,
-    pub rotation_min_distinct_markets: u32,
-    pub rotation_max_attempts: u32,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct LiveCanaryOperatorEvidenceBlock {
-    pub head_sha: String,
-    pub max_operator_evidence_file_bytes: u64,
-    pub approval_consumption_max_age_seconds: u64,
-    pub approval_envelope_path: String,
-    pub approval_envelope_sha256: String,
-    pub ssm_manifest_path: String,
-    pub ssm_manifest_sha256: String,
-    pub strategy_input_evidence_path: String,
-    pub strategy_input_evidence_sha256: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gate_session_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expected_gate_session_sha256: Option<String>,
-    pub financial_envelope_path: String,
-    pub financial_envelope_sha256: String,
-    pub pre_run_state_path: String,
-    pub pre_run_state_sha256: String,
-    pub abort_plan_path: String,
-    pub abort_plan_sha256: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canary_proof_candidate_source_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canary_proof_candidate_source_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canary_proof_order_intent_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canary_proof_order_intent_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub no_submit_readiness_report_sha256: Option<String>,
-    pub canary_evidence_path: String,
-    pub approval_not_before_unix_seconds: i64,
-    pub approval_not_after_unix_seconds: i64,
-    pub approval_nonce_path: String,
-    pub approval_nonce_sha256: String,
-    pub approval_consumption_path: String,
-    pub decision_evidence_path: String,
-    pub nt_submit_event_path: String,
-    pub venue_order_state_path: String,
-    pub strategy_cancel_path: Option<String>,
-    pub restart_reconciliation_path: String,
-    pub post_run_hygiene_path: String,
-}
-
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct StreamingBlock {
@@ -422,14 +326,6 @@ pub enum DataClientReadinessProbeBookType {
     L1Mbp,
     L2Mbp,
     L3Mbo,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum LiveCanaryProofTimeInForce {
-    Fok,
-    Gtc,
-    Ioc,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -701,30 +597,6 @@ mod tests {
         assert!(strategy.reference_data.is_empty());
     }
 
-    /// A `[live_canary]` block with a configurable per-order cap and no
-    /// `proof_policy` / `operator_evidence` (both optional), used to exercise
-    /// the unconditional base-field validation in `validate_live_canary_block`.
-    fn live_canary_block_with_cap(max_notional_per_order: &str) -> LiveCanaryBlock {
-        LiveCanaryBlock {
-            approval_id: "approval-1".to_string(),
-            no_submit_readiness_report_path: "/tmp/readiness.json".to_string(),
-            max_no_submit_readiness_report_bytes: 1024,
-            readiness_report_max_age_seconds: 60,
-            reference_quote_max_age_seconds: 10,
-            reference_quote_wait_timeout_seconds: 20,
-            reference_quote_probe_actor_id: "probe-1".to_string(),
-            reference_quote_probe_log_events: false,
-            reference_quote_probe_log_commands: false,
-            max_live_order_count: 1,
-            max_notional_per_order: max_notional_per_order.to_string(),
-            egress_identity_observed_path: None,
-            egress_identity_observed_max_bytes: None,
-            approved_egress_identity_sha256: None,
-            proof_policy: None,
-            operator_evidence: None,
-        }
-    }
-
     #[test]
     fn risk_default_max_notional_must_be_positive_decimal() {
         let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
@@ -748,64 +620,6 @@ mod tests {
                 .any(|e| e
                     .contains("risk.default_max_notional_per_order is not a valid decimal string")),
             "malformed default_max_notional must keep the syntax error; got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn live_canary_max_notional_validated_without_proof_policy() {
-        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
-        // No proof_policy: the cap must still be range-validated at config load.
-        root.live_canary = Some(live_canary_block_with_cap("0.00"));
-        let errors = crate::bolt_v3_validate::validate_root_only(&root);
-        assert!(
-            errors.iter().any(|e| e
-                .contains("live_canary.max_notional_per_order must be a positive decimal string")),
-            "a non-positive canary cap must fail even without proof_policy; got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn live_canary_max_notional_must_not_exceed_default_max() {
-        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
-        root.risk.default_max_notional_per_order = "1.00".to_string();
-        root.live_canary = Some(live_canary_block_with_cap("1000.00"));
-        let errors = crate::bolt_v3_validate::validate_root_only(&root);
-        assert!(
-            errors.iter().any(|e| e.contains(
-                "live_canary.max_notional_per_order must be <= risk.default_max_notional_per_order"
-            )),
-            "a canary cap above the entity cap must fail; got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn live_canary_max_live_order_count_must_be_positive() {
-        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
-        let mut block = live_canary_block_with_cap("1.00");
-        block.max_live_order_count = 0;
-        root.live_canary = Some(block);
-        let errors = crate::bolt_v3_validate::validate_root_only(&root);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("live_canary.max_live_order_count must be a positive integer")),
-            "a zero max_live_order_count must fail; got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn live_canary_valid_block_passes_base_field_checks() {
-        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
-        root.risk.default_max_notional_per_order = "100.00".to_string();
-        root.live_canary = Some(live_canary_block_with_cap("10.00"));
-        let errors = crate::bolt_v3_validate::validate_root_only(&root);
-        assert!(
-            !errors
-                .iter()
-                .any(|e| e.contains("live_canary.max_notional_per_order")
-                    || e.contains("live_canary.max_live_order_count")
-                    || e.contains("live_canary.approval_id")),
-            "a valid canary block must not produce base-field errors; got: {errors:?}"
         );
     }
 }

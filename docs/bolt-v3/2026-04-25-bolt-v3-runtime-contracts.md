@@ -90,7 +90,7 @@ Current `updown` readiness gates:
 - if the Chainlink Data Streams report is missing, non-numeric, non-positive, or ambiguous, live validation fails for order readiness
 - no readiness check may use broad Gamma polling, standalone market-selection services, midpoint/spot/question/threshold fallback, or strategy-side discovery HTTP
 
-Implementation status: this Chainlink anchor is the runtime contract target, not current production-readiness proof. The current bolt-v3 provider binding surface registers Polymarket and Binance only; Chainlink data-feed binding and real no-submit evidence remain required before any Chainlink-dependent live readiness claim.
+Implementation status: this Chainlink anchor is the runtime contract target, not current production-readiness proof. The current bolt-v3 provider binding surface registers Polymarket and Binance only; Chainlink data-feed binding and real provider readiness evidence remain required before any Chainlink-dependent live readiness claim.
 
 Market-selection validation result classes:
 
@@ -836,7 +836,7 @@ Definitions:
   - the exact deployed release directory name selected by deploy automation
   - current deployment rule: release directory names are the git commit SHA string for the built artifact
 - `config_hash`
-  - when emitted by bolt-v3 decision evidence, this must equal the loaded config bundle checksum used by no-submit readiness and live-canary gate linkage
+  - when emitted by bolt-v3 decision evidence, this must equal the loaded config bundle checksum used by decision evidence and submit-admission linkage
   - SHA-256 over the exact loaded TOML text bytes after UTF-8 decoding, with no line-ending normalization, BOM stripping, path rewriting, or separator-free concatenation
   - hash framing:
     1. domain separator bytes `bolt-v3.config-bundle.v1\n`
@@ -1412,21 +1412,17 @@ If no clients are configured, the check still emits `Satisfied` root facts for s
 
 The built `LiveNode` is discarded after the build fact is recorded. The check must not call `connect_bolt_v3_clients`, `disconnect_bolt_v3_clients`, any user-level subscription API, any runner API, any strategy actor API, or any order API. Controlled-connect remains an explicit, separate caller action under Section 11.6.
 
-### 11.8 Live canary gate boundary
+### 11.8 Live submit admission boundary
 
-The bolt-v3 live canary gate is the fail-closed admission boundary before `run_bolt_v3_live_node` enters NT's `LiveNode::run` runner loop. Production code must call `run_bolt_v3_live_node` instead of calling `LiveNode::run` directly for the bolt-v3 path.
+Production code must call `run_bolt_v3_live_node` instead of calling `LiveNode::run` directly for the bolt-v3 path. The runner wrapper is intentionally thin: it enters NT's runner loop and does not block startup on the retired pre-run evidence gate.
 
-The gate validates only operator approval and prior no-submit readiness evidence. It checks that `[live_canary]` is present, `approval_id` is non-empty, `max_no_submit_readiness_report_bytes` is positive, `readiness_report_max_age_seconds` is positive, `reference_quote_max_age_seconds` is positive, `reference_quote_wait_timeout_seconds` is positive, `reference_quote_probe_actor_id` is a non-empty valid NT actor identifier without surrounding whitespace, `max_live_order_count` is positive, `max_notional_per_order` is a positive decimal, and `max_notional_per_order` is less than or equal to `risk.default_max_notional_per_order`. When `[live_canary]` is present, `[live_canary.operator_evidence]` is also required with a 40-character lowercase `head_sha`, positive `max_operator_evidence_file_bytes`, and positive `approval_consumption_max_age_seconds`. The configured `head_sha` must match the build-owned head captured at compile time; if the build-owned head is unavailable or invalid, the gate fails closed.
+Live submit safety is enforced before NT submit by `src/bolt_v3_submit_admission.rs`. Submit admission evaluates the built order and request context, records admission-decision evidence, and rejects before NT submit when lifecycle policy, kill-switch state, provider approval limits, notional bounds, quote-quantity floors, market-style price ceilings, or rounding safeguards fail.
 
-The gate reads at most the configured `max_no_submit_readiness_report_bytes` from `no_submit_readiness_report_path` and requires a JSON object with a non-empty `stages` array. Each stage must expose `stage` and `status = "satisfied"` case-insensitively. Missing, unreadable, oversized, unparsable, non-array, empty, or unsatisfied reports reject the run before NT's runner loop is entered.
+Provider live-submit approvals are loaded during live-node adapter mapping for execution clients that require them. The resulting order-count and per-order-notional limits are carried into shared submit admission. Invalid, missing, mismatched, oversized, or already-consumed provider approval artifacts fail before approval consumption or before NT submit, depending on the provider check that fails.
 
-The gate also bounds `approval_envelope_path`, sha256-bound pre-run artifact reads, and `approval_consumption_path` by `max_operator_evidence_file_bytes`, rejects non-regular files before hashing or parsing, and validates the approval-consumption proof against `schema_version = 1`, `record_kind`, TOML-owned and build-owned `head_sha`, the current root TOML sha256 computed from the loaded root path, configured evidence sha256s, `approval_id_hash`, approval window, `canary_evidence_path_hash`, optional `strategy_cancel_path_hash` when `strategy_cancel_path` is configured, and `consumed_unix_secs`. Proof consumption must be inside the approval window, not in the future, and no older than `approval_consumption_max_age_seconds` at first gate observation. Live order id hashes are unknown before submit and are bound by post-run live-result proof. The remaining configured output/result paths are required non-empty binding strings and are validated by later operator evidence, not read by this admission gate.
+The submit-admission boundary does not connect clients, subscribe to data, register strategies, select markets, construct orders, cancel orders, or mutate venue state by itself. It is the shared last Bolt-owned check before the strategy reaches NT submit APIs. Kill-switch forced-reduction orders use the same boundary with a separate proof claim and cap so risk-reducing exits remain possible under explicitly modeled halt states.
 
-The gate is read-only. It does not connect clients, subscribe to data, register strategies, select markets, construct orders, submit orders, cancel orders, or mutate NT state. The built `LiveNode` may already exist when the gate runs, but a gate rejection must occur before `LiveNode::run`.
-
-The gate validates canary bounds before the runner starts; it does not itself count orders or enforce per-order notional at submit time. Submit-admission code must independently consume the validated `BoltV3LiveCanaryGateReport` bounds before any live canary order is allowed. The report carries the TOML-owned no-submit readiness report byte and report freshness caps so downstream evidence can reference the exact admitted bounds without reparsing `[live_canary]`. No-submit readiness separately consumes `reference_quote_max_age_seconds`, `reference_quote_wait_timeout_seconds`, `reference_quote_probe_actor_id`, `reference_quote_probe_log_events`, and `reference_quote_probe_log_commands`; cache-only reference membership is not enough for a satisfied `reference_readiness` stage.
-
-No-submit quote evidence requires every configured `reference_data` `instrument_id` to map to one `data_client_id` only. NautilusTrader `QuoteTick` does not carry the producing data-client identifier, so validation rejects same-instrument reference data split across distinct data clients before the probe can turn one quote into ambiguous multi-client evidence.
+Strategy-free data-client readiness probes remain build/startup diagnostics only. They can prove that a configured market-data path emits fresh observations, but they do not authorize order submission and are not a pre-run evidence gate.
 
 ## 12. Panic Gate: Issue `#239`
 

@@ -23,95 +23,6 @@ const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";
 const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
-const GATE_SATISFACTION_KIND_EVIDENCE: &str = "evidence";
-const GATE_SATISFACTION_KIND_NO_RESOLUTION: &str = "no_resolution";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BoltV3ReadinessGateEvidenceSnapshot {
-    pub gate_session_hash: String,
-    pub selected_market_key: String,
-    pub gate_evidence: BTreeMap<String, BoltV3GateEvidenceIdentity>,
-}
-
-impl BoltV3ReadinessGateEvidenceSnapshot {
-    pub fn from_entry_readiness_gate_session(
-        session: &crate::bolt_v3_operator_artifacts::EntryReadinessGateSession,
-    ) -> Self {
-        let gate_evidence = session
-            .satisfied_roles
-            .iter()
-            .map(|(role, satisfaction)| {
-                (
-                    role.clone(),
-                    BoltV3GateEvidenceIdentity::from_gate_satisfaction(satisfaction),
-                )
-            })
-            .collect();
-
-        Self {
-            gate_session_hash: session.session_hash.clone(),
-            selected_market_key: session.selected_market.selected_market_key.clone(),
-            gate_evidence,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BoltV3GateEvidenceIdentity {
-    pub satisfaction_kind: String,
-    pub selected_market_key: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub value_kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub normalized_value_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_provenance_sha256: Option<String>,
-    pub artifact_sha256s: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resolution_identity: Option<String>,
-}
-
-impl BoltV3GateEvidenceIdentity {
-    fn from_gate_satisfaction(
-        satisfaction: &crate::bolt_v3_operator_artifacts::GateSatisfaction,
-    ) -> Self {
-        match satisfaction {
-            crate::bolt_v3_operator_artifacts::GateSatisfaction::Evidence { evidence } => Self {
-                satisfaction_kind: GATE_SATISFACTION_KIND_EVIDENCE.to_string(),
-                selected_market_key: evidence.selected_market_key.clone(),
-                provider_id: Some(evidence.provider_id.clone()),
-                provider_kind: Some(evidence.provider_kind.clone()),
-                value_kind: Some(evidence.value_kind.clone()),
-                normalized_value_sha256: Some(evidence.normalized_value_sha256.clone()),
-                provider_provenance_sha256: Some(evidence.provider_provenance_sha256.clone()),
-                artifact_sha256s: evidence
-                    .artifact_refs
-                    .iter()
-                    .map(|artifact| artifact.sha256.clone())
-                    .collect(),
-                resolution_identity: None,
-            },
-            crate::bolt_v3_operator_artifacts::GateSatisfaction::NoResolution {
-                selected_market_key,
-                resolution_identity,
-            } => Self {
-                satisfaction_kind: GATE_SATISFACTION_KIND_NO_RESOLUTION.to_string(),
-                selected_market_key: selected_market_key.clone(),
-                provider_id: None,
-                provider_kind: None,
-                value_kind: None,
-                normalized_value_sha256: None,
-                provider_provenance_sha256: None,
-                artifact_sha256s: Vec::new(),
-                resolution_identity: Some(resolution_identity.clone()),
-            },
-        }
-    }
-}
 
 pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
     fn record_strategy_input_snapshot(
@@ -148,8 +59,6 @@ pub struct BoltV3OrderIntentEvidence {
     pub order_side: String,
     pub price: String,
     pub quantity: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canary_proof_claim: Option<String>,
     pub order_fields: BoltV3OrderIntentOrderFields,
 }
 
@@ -189,7 +98,6 @@ impl BoltV3OrderIntentEvidence {
             order_side: order.order_side().to_string(),
             price: compiled_order_price_source(fallback_price, order),
             quantity: order.quantity().to_string(),
-            canary_proof_claim: None,
             order_fields: BoltV3OrderIntentOrderFields::from_order(order),
         }
     }
@@ -247,9 +155,6 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub strategy_id: String,
     pub configured_target_id: String,
     pub market_selection_ruleset_id: String,
-    pub gate_session_hash: String,
-    pub selected_market_key: String,
-    pub gate_evidence: BTreeMap<String, BoltV3GateEvidenceIdentity>,
     pub market_selection_outcome: String,
     pub market_id: Option<String>,
     pub polymarket_condition_id: Option<String>,
@@ -288,12 +193,10 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3AdmissionOutcome {
     Admitted,
-    RejectedNotArmed,
     RejectedKillSwitchLatched,
     RejectedSubmitLifecycleDisallowed,
     RejectedNonPositiveNotional,
     RejectedNotionalCapExceeded,
-    RejectedInvalidCanaryProofClaim,
     RejectedInvalidRiskReducingExitProof,
     RejectedCountCapExhausted,
     RejectedKillSwitchForcedReductionProofInvalid,
@@ -631,7 +534,6 @@ fn validate_entry_decision_chain(
     intent: BoltV3OrderIntentEvidence,
     admission: BoltV3AdmissionDecisionEvidence,
 ) -> Result<BoltV3EntryDecisionEvidenceChain> {
-    validate_strategy_input_readiness_evidence(&snapshot)?;
     if snapshot.strategy_id != intent.strategy_id || snapshot.strategy_id != admission.strategy_id {
         return Err(anyhow!(
             "bolt-v3 entry decision evidence strategy_id mismatch"
@@ -660,104 +562,6 @@ fn validate_entry_decision_chain(
         intent,
         admission,
     })
-}
-
-pub(crate) fn validate_strategy_input_readiness_evidence(
-    snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-) -> Result<()> {
-    validate_readiness_gate_evidence_snapshot(&BoltV3ReadinessGateEvidenceSnapshot {
-        gate_session_hash: snapshot.gate_session_hash.clone(),
-        selected_market_key: snapshot.selected_market_key.clone(),
-        gate_evidence: snapshot.gate_evidence.clone(),
-    })
-}
-
-pub(crate) fn validate_readiness_gate_evidence_snapshot(
-    snapshot: &BoltV3ReadinessGateEvidenceSnapshot,
-) -> Result<()> {
-    ensure_non_empty(
-        snapshot.gate_session_hash.as_str(),
-        "bolt-v3 entry decision evidence gate_session_hash is missing",
-    )?;
-    ensure_non_empty(
-        snapshot.selected_market_key.as_str(),
-        "bolt-v3 entry decision evidence selected_market_key is missing",
-    )?;
-    if snapshot.gate_evidence.is_empty() {
-        return Err(anyhow!(
-            "bolt-v3 entry decision evidence gate_evidence is missing"
-        ));
-    }
-    for (role, identity) in &snapshot.gate_evidence {
-        ensure_non_empty(
-            role.as_str(),
-            "bolt-v3 entry decision evidence gate_evidence role is missing",
-        )?;
-        if identity.selected_market_key != snapshot.selected_market_key {
-            return Err(anyhow!(
-                "bolt-v3 entry decision evidence selected_market_key mismatch for gate_evidence role `{role}`"
-            ));
-        }
-        ensure_non_empty(
-            identity.satisfaction_kind.as_str(),
-            "bolt-v3 entry decision evidence gate_evidence satisfaction_kind is missing",
-        )?;
-        match identity.satisfaction_kind.as_str() {
-            GATE_SATISFACTION_KIND_EVIDENCE => {
-                ensure_option_non_empty(
-                    identity.provider_id.as_deref(),
-                    "bolt-v3 entry decision evidence gate_evidence provider_id is missing",
-                )?;
-                ensure_option_non_empty(
-                    identity.provider_kind.as_deref(),
-                    "bolt-v3 entry decision evidence gate_evidence provider_kind is missing",
-                )?;
-                ensure_option_non_empty(
-                    identity.value_kind.as_deref(),
-                    "bolt-v3 entry decision evidence gate_evidence value_kind is missing",
-                )?;
-                ensure_option_non_empty(
-                    identity.normalized_value_sha256.as_deref(),
-                    "bolt-v3 entry decision evidence gate_evidence normalized_value_sha256 is missing",
-                )?;
-                ensure_option_non_empty(
-                    identity.provider_provenance_sha256.as_deref(),
-                    "bolt-v3 entry decision evidence gate_evidence provider_provenance_sha256 is missing",
-                )?;
-                if identity.artifact_sha256s.is_empty() {
-                    return Err(anyhow!(
-                        "bolt-v3 entry decision evidence gate_evidence artifact_sha256s is missing"
-                    ));
-                }
-            }
-            GATE_SATISFACTION_KIND_NO_RESOLUTION => {
-                ensure_option_non_empty(
-                    identity.resolution_identity.as_deref(),
-                    "bolt-v3 entry decision evidence gate_evidence resolution_identity is missing",
-                )?;
-            }
-            other => {
-                return Err(anyhow!(
-                    "bolt-v3 entry decision evidence gate_evidence satisfaction_kind `{other}` is unsupported"
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn ensure_option_non_empty(value: Option<&str>, message: &'static str) -> Result<()> {
-    let Some(value) = value else {
-        return Err(anyhow!(message));
-    };
-    ensure_non_empty(value, message)
-}
-
-fn ensure_non_empty(value: &str, message: &'static str) -> Result<()> {
-    if value.is_empty() {
-        return Err(anyhow!(message));
-    }
-    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -956,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn encode_order_intent_line_wraps_intent_with_full_gate_metadata() {
+    fn encode_order_intent_line_wraps_intent_with_metadata() {
         let intent = BoltV3OrderIntentEvidence {
             strategy_id: "strategy-one".to_string(),
             intent_kind: BoltV3OrderIntentKind::Entry,
@@ -965,7 +769,6 @@ mod tests {
             order_side: OrderSide::Buy.to_string(),
             price: "0.42".to_string(),
             quantity: "1".to_string(),
-            canary_proof_claim: None,
             order_fields: BoltV3OrderIntentOrderFields {
                 order_type: OrderType::Limit.to_string(),
                 time_in_force: TimeInForce::Gtc.to_string(),
@@ -1117,27 +920,11 @@ mod tests {
     }
 
     #[test]
-    fn encode_strategy_input_snapshot_line_wraps_snapshot_with_full_gate_metadata() {
+    fn encode_strategy_input_snapshot_line_wraps_snapshot_with_metadata() {
         let snapshot = BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: "strategy-one".to_string(),
             configured_target_id: "target-one".to_string(),
             market_selection_ruleset_id: "target-one".to_string(),
-            gate_session_hash: "gate-session-hash-one".to_string(),
-            selected_market_key: "selected-market-key-one".to_string(),
-            gate_evidence: BTreeMap::from([(
-                "resolution_price".to_string(),
-                BoltV3GateEvidenceIdentity {
-                    satisfaction_kind: "evidence".to_string(),
-                    selected_market_key: "selected-market-key-one".to_string(),
-                    provider_id: Some("provider-one".to_string()),
-                    provider_kind: Some("chainlink_data_streams".to_string()),
-                    value_kind: Some("price".to_string()),
-                    normalized_value_sha256: Some("normalized-value-sha-one".to_string()),
-                    provider_provenance_sha256: Some("provider-provenance-sha-one".to_string()),
-                    artifact_sha256s: vec!["artifact-sha-one".to_string()],
-                    resolution_identity: None,
-                },
-            )]),
             market_selection_outcome: "current".to_string(),
             market_id: Some("market-one".to_string()),
             polymarket_condition_id: Some("condition-one".to_string()),
@@ -1195,18 +982,12 @@ mod tests {
         );
         let snapshot_field = &decoded["snapshot"];
         assert_eq!(snapshot_field["strategy_id"], "strategy-one");
-        assert_eq!(snapshot_field["gate_session_hash"], "gate-session-hash-one");
         assert_eq!(
-            snapshot_field["selected_market_key"],
-            "selected-market-key-one"
-        );
-        assert_eq!(
-            snapshot_field["gate_evidence"]["resolution_price"]["provider_id"],
-            "provider-one"
-        );
-        assert_eq!(
-            snapshot_field["gate_evidence"]["resolution_price"]["normalized_value_sha256"],
-            "normalized-value-sha-one"
+            snapshot_field
+                .as_object()
+                .expect("snapshot should encode as an object")
+                .len(),
+            35
         );
         assert_eq!(snapshot_field["price_to_beat_source"], "source-one");
         assert_eq!(snapshot_field["reference_quote_ts_event"], 1200);
@@ -1214,14 +995,12 @@ mod tests {
     }
 
     #[test]
-    fn encode_admission_decision_line_wraps_decision_with_full_gate_metadata() {
+    fn encode_admission_decision_line_wraps_decision_with_metadata() {
         for outcome in [
             BoltV3AdmissionOutcome::Admitted,
-            BoltV3AdmissionOutcome::RejectedNotArmed,
             BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed,
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
-            BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim,
             BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,
         ] {
@@ -1266,7 +1045,6 @@ mod tests {
             assert_eq!(decision_field["intent_kind"], "entry");
             let expected_outcome = match outcome {
                 BoltV3AdmissionOutcome::Admitted => "admitted",
-                BoltV3AdmissionOutcome::RejectedNotArmed => "rejected_not_armed",
                 BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
                     "rejected_submit_lifecycle_disallowed"
                 }
@@ -1275,9 +1053,6 @@ mod tests {
                 }
                 BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => {
                     "rejected_notional_cap_exceeded"
-                }
-                BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim => {
-                    "rejected_invalid_canary_proof_claim"
                 }
                 BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof => {
                     "rejected_invalid_risk_reducing_exit_proof"

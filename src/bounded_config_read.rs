@@ -91,6 +91,7 @@ pub(crate) fn read_to_string(path: &Path) -> Result<String, ConfigFileReadError>
     bytes_to_string(path, bytes)
 }
 
+#[cfg(test)]
 pub(crate) async fn read_to_string_async(path: &Path) -> Result<String, ConfigFileReadError> {
     use tokio::io::AsyncReadExt;
 

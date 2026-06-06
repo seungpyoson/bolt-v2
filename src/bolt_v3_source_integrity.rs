@@ -14,11 +14,9 @@
 //!    [`production_module_source_text`] (test-submodule-free text), both in the
 //!    SAME canonicalization order as the digest.
 //!
-//! The verifier ([`crate::bolt_v3_tiny_canary_evidence`]) hashes the
-//! compile-time-embedded canonical bytes (`$OUT_DIR/<key>.canonical`, produced
-//! by `build.rs` from the SAME walk) — tamper-evidence preserved. The producer
-//! ([`crate::bolt_v3_operator_artifacts`]) and every test call the registry-keyed
-//! digest / text accessors here.
+//! `build.rs` emits compile-time canonical bytes (`$OUT_DIR/<key>.canonical`)
+//! from the SAME walk. Tests and provider artifact helpers call the
+//! registry-keyed digest / text accessors here.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -159,14 +157,6 @@ mod tests {
     // must match the live build-emitted `OUT_DIR/strategy.canonical` and the
     // independent hand-framed source-set stream in these tests.
     //
-    // Re-derived again by A7 after moving source-proof / replay / evidence
-    // derivation into `src/strategies/binary_oracle_edge_taker/source_proof.rs`,
-    // refreshing the venue-filter wrong-control fixture in that file, and
-    // addressing an exact-head review comment in the same source set.
-    //
-    // Re-derived again after merging A7 with #581's configured-instrument
-    // parser rejection in the same canonical strategy source set.
-    //
     // Re-derived again by A9 after the strategy wrapper delegates submit
     // admission request construction to `src/bolt_v3_submit_admission.rs`.
     // Re-derived once more after the exit-position input borrows identifiers
@@ -175,13 +165,16 @@ mod tests {
     //
     // Re-derived again after merging A9 with #581's configured-instrument
     // parser rejection in the same canonical strategy source set.
+    // Re-derived again by #579 after deleting retired evidence-gate source.
+    // Re-derived again after #579 clippy cleanup changed the CLI source.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "ccf929c17c8c6030682ea12610a45ac43f147564113627fcdcf5ac02c7840b9f";
+        "cd6343712bffa6356d12251e426b49aea209b0374aefbf08909678114b18dd37";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
+    // Re-derived again by #579 after deleting retired evidence-gate source.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "1623a62796641c874695bc3479dc4f370f73c12fbe609fb176ec58efdcccdf5e";
+        "1b402cfdcde0efafe7355ef0dd23e87c368decb508a09e74773ce17432f39401";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
@@ -438,30 +431,6 @@ mod tests {
     }
 
     #[test]
-    fn verifier_no_longer_self_includes_monolith_roots() {
-        // The production verifier must NOT `include_str!` either monolith root
-        // directly — it embeds the build-emitted canonical bytes instead. This
-        // is the core no-dual-path regression guard for the gate itself.
-        let verifier = std::fs::read_to_string(repo_path_from_manifest(
-            "src/bolt_v3_tiny_canary_evidence.rs",
-        ))
-        .unwrap();
-        assert!(
-            !verifier.contains("include_str!(\"strategies/binary_oracle_edge_taker.rs\")"),
-            "verifier must not self-include the strategy monolith root"
-        );
-        assert!(
-            !verifier.contains("include_str!(\"bolt_v3_submit_admission.rs\")"),
-            "verifier must not self-include the submit_admission monolith root"
-        );
-        assert!(
-            verifier.contains("/strategy.canonical")
-                && verifier.contains("/submit_admission.canonical"),
-            "verifier must embed the build-emitted OUT_DIR canonical bytes"
-        );
-    }
-
-    #[test]
     fn no_external_monolith_root_include_str_remains() {
         // No `src/` or `tests/` file may `include_str!` either monolith root via
         // an EXTERNAL path (e.g. "strategies/binary_oracle_edge_taker.rs",
@@ -492,10 +461,6 @@ mod tests {
             offenders.is_empty(),
             "scattered monolith-root include_str! must not return: {offenders:?}"
         );
-    }
-
-    fn repo_path_from_manifest(relative: &str) -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
     }
 
     fn collect_offending_includes(

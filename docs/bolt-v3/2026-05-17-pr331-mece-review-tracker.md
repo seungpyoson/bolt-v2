@@ -420,7 +420,7 @@ IN-SCOPE FILES:
 - tests/bolt_v3_decision_evidence.rs
 - tests/support/stub_runtime_strategy.rs
 
-OUT-OF-SCOPE: provider wiring (P3); market family selection (P5); live-canary/no-submit gates (P6); config parsing (P2).
+OUT-OF-SCOPE: provider wiring (P3); market family selection (P5); retired live evidence gates (P6); config parsing (P2).
 
 CONTEXT: T040 generalized order-shape policy; T063 removed pricing fallback (fast venue → reference); T064 removed outcome-side inference from `-UP.`/`-DOWN.` instrument-id suffixes; T065 removed `.POLYMARKET` pin; T039 moved live-order cap to TOML; T061 added injection seam for strategy validation dispatch.
 
@@ -478,32 +478,24 @@ You are reviewing PR #331 in seungpyoson/bolt-v2 at exact head bcd83f751ca9876bc
 PACKET P6 — verify readiness/canary gates fail closed and have no silent-pass paths; verify caps are TOML-sourced.
 
 IN-SCOPE FILES:
-- src/bolt_v3_no_submit_readiness.rs
-- src/bolt_v3_no_submit_readiness_schema.rs
+- retired live evidence gate modules and tests
 - src/bolt_v3_readiness.rs
-- src/bolt_v3_live_canary_gate.rs
-- src/bolt_v3_tiny_canary_evidence.rs
-- tests/bolt_v3_no_submit_readiness.rs
-- tests/bolt_v3_no_submit_readiness_operator.rs
-- tests/bolt_v3_live_canary_gate.rs
 - tests/bolt_v3_readiness.rs
-- tests/bolt_v3_tiny_canary_operator.rs
-- tests/bolt_v3_tiny_canary_preconditions.rs
 
 OUT-OF-SCOPE: strategy semantics (P4); provider/secret (P3); config parsing (P2).
 
-CONTEXT: T039 — `[live_canary].max_live_order_count` is TOML-sourced; live proof accepts positive admitted-submit count up to the TOML cap and rejects zero or above-cap evidence. T036 — `run_bolt_v3_live_node` capture-failure regression must preserve the live-node run future and avoid false capture-failure logging on closed notification.
+CONTEXT: T039 — live-submit max order count is TOML-sourced; live proof accepts positive admitted-submit count up to the TOML cap and rejects zero or above-cap evidence. T036 — `run_bolt_v3_live_node` capture-failure regression must preserve the live-node run future and avoid false capture-failure logging on closed notification.
 
 REQUIRED QUESTIONS:
-1. Live-canary gate: every threshold/cap from TOML? Any literal cap remaining in code (other than protocol-required minimums)?
-2. tiny_canary_evidence.rs — does it accept a positive admitted submit count up to `max_live_order_count`, and reject zero or above-cap? Cite the test that proves both red sides.
+1. Live-submit admission: every threshold/cap from TOML? Any literal cap remaining in code (other than protocol-required minimums)?
+2. Single-submit evidence — does it accept a positive admitted submit count up to `max_live_order_count`, and reject zero or above-cap? Cite the test that proves both red sides.
 3. Is there any path where an absent or empty evidence artifact silently passes? Any `if let Ok(_)` or `unwrap_or_default()` that turns "missing" into "pass"?
-4. no_submit_readiness.rs — does it require explicit operator config AND evidence? What happens if either is missing?
-5. no_submit_readiness_schema.rs — does the schema reject partial/empty submissions fail-closed, or does it have any optional field that should be required?
-6. live_canary_gate.rs — does the gate run BEFORE `node.run()` and arm submit admission? Is the ordering enforced by a test?
-7. tests/bolt_v3_tiny_canary_preconditions.rs — does it exercise all preconditions (operator config, SSM, evidence hash), or only a subset?
+4. Strategy-free readiness — does it require explicit operator config AND evidence? What happens if either is missing?
+5. Strategy-free schema — does the schema reject partial/empty submissions fail-closed, or does it have any optional field that should be required?
+6. Live-submit admission — does the admission boundary run before exchange submit? Is the ordering enforced by a test?
+7. Retired single-submit preconditions — did they exercise all preconditions (operator config, SSM, evidence hash), or only a subset?
 8. Does any test in this packet set up a fake "live ready" state that production code accepts but should not?
-9. Is there any path that, when run without `[live_canary]` configured, defaults to a permissive state instead of fail-closed?
+9. Is there any path that, when run without live-submit admission configured, defaults to a permissive state instead of fail-closed?
 10. Does run_bolt_v3_live_node correctly propagate capture failures without false-positive logging on closed notification (T036)?
 
 REQUIRED OUTPUT (same format).
@@ -577,12 +569,7 @@ IN-SCOPE FILES:
 - specs/001-thin-live-canary-path/plan.md
 - specs/001-thin-live-canary-path/quickstart.md
 - specs/001-thin-live-canary-path/research.md
-- specs/002-phase7-no-submit-readiness/checklists/phase7-requirements.md
-- specs/002-phase7-no-submit-readiness/checklists/requirements.md
-- specs/002-phase7-no-submit-readiness/external-review-phase7-disposition.md
-- specs/002-phase7-no-submit-readiness/quickstart.md
-- specs/002-phase7-no-submit-readiness/spec.md
-- specs/002-phase7-no-submit-readiness/tasks.md
+- retired Phase 7 strategy-free readiness spec files
 
 OUT-OF-SCOPE: Phase 9 audit artifacts (P0); production code (P1–P7).
 

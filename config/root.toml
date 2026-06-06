@@ -92,52 +92,6 @@ debug = false
 graceful_shutdown_on_error = false
 qsize = 100000
 
-[live_canary]
-approval_id = "operator-approved-canary-001"
-no_submit_readiness_report_path = "/var/lib/bolt/reports/no-submit-readiness.json"
-max_no_submit_readiness_report_bytes = 65536
-readiness_report_max_age_seconds = 300
-reference_quote_max_age_seconds = 10
-reference_quote_wait_timeout_seconds = 20
-reference_quote_probe_actor_id = "no-submit-reference-quote-probe"
-reference_quote_probe_log_events = true
-reference_quote_probe_log_commands = true
-max_live_order_count = 1
-max_notional_per_order = "1.00"
-egress_identity_observed_path = "/var/lib/bolt/operator-evidence/egress-identity-observed.txt"
-egress_identity_observed_max_bytes = 1024
-approved_egress_identity_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
-
-[live_canary.operator_evidence]
-head_sha = "0123456789abcdef0123456789abcdef01234567"
-max_operator_evidence_file_bytes = 65536
-approval_consumption_max_age_seconds = 60
-approval_envelope_path = "/var/lib/bolt/operator-evidence/approval-envelope.json"
-approval_envelope_sha256 = "9999999999999999999999999999999999999999999999999999999999999999"
-ssm_manifest_path = "/var/lib/bolt/operator-evidence/ssm-manifest.json"
-ssm_manifest_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-strategy_input_evidence_path = "/var/lib/bolt/operator-evidence/strategy-input.json"
-strategy_input_evidence_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-financial_envelope_path = "/var/lib/bolt/operator-evidence/financial-envelope.json"
-financial_envelope_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-pre_run_state_path = "/var/lib/bolt/operator-evidence/pre-run-state.json"
-pre_run_state_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-abort_plan_path = "/var/lib/bolt/operator-evidence/abort-plan.json"
-abort_plan_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-canary_evidence_path = "/var/lib/bolt/operator-evidence/canary-evidence.json"
-# Set this window immediately before an approved canary run. It must cover two
-# operator-evidence validation rounds plus report read, parse, and validation.
-approval_not_before_unix_seconds = 1893456000
-approval_not_after_unix_seconds = 1893456300
-approval_nonce_path = "/var/lib/bolt/operator-evidence/approval-nonce.json"
-approval_nonce_sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-approval_consumption_path = "/var/lib/bolt/operator-evidence/approval-consumed.json"
-decision_evidence_path = "/var/lib/bolt/operator-evidence/decision-evidence.jsonl"
-nt_submit_event_path = "/var/lib/bolt/operator-evidence/nt-submit-event.json"
-venue_order_state_path = "/var/lib/bolt/operator-evidence/venue-order-state.json"
-restart_reconciliation_path = "/var/lib/bolt/operator-evidence/restart-reconciliation.json"
-post_run_hygiene_path = "/var/lib/bolt/operator-evidence/post-run-hygiene.json"
-
 [logging]
 stdout_level = "INFO"
 fileout_level = "INFO"

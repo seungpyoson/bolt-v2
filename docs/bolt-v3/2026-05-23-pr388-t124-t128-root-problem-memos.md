@@ -17,7 +17,7 @@ Historical state anchor:
 
 Scope note:
 
-- These are Phase 0 diagnosis memos only. They do not claim no-submit, tiny-canary, or production-trade readiness.
+- These are Phase 0 diagnosis memos only. They do not claim strategy-free, single-submit, or production-trade readiness.
 - Evidence came from current source inspection and read-only subagents `019e54fb-400f-7262-82dd-ad3f7f0c2b3e`, `019e54fb-54f6-7d60-8d82-cbf1e59e0c21`, `019e54fb-6969-7681-8b84-cd0389d4fdd6`, `019e54fb-826e-7640-b213-039141f9c324`, and `019e54fb-970e-7252-ba73-0ce1b0a716c0`.
 
 ## Phase 0 External Review
@@ -35,14 +35,14 @@ Implementation notes carried forward from review:
 
 - When T125-T127 static-generation success paths become reachable, add those output files to the cleanup ledger used by `write_static_operator_artifacts`.
 - Bound market-selection source reads on the strategy-input writer path instead of using an unbounded `read_to_end`.
-- Keep embedded market-selection source paths bounded, symlink-rejected, and parent-dir-rejected; do not reject absolute paths without changing the existing operator-evidence path contract.
-- Treat market-selection source as bound into the final packet through strategy-input/pre-run proof hashes, not as a top-level `[live_canary.operator_evidence]` field.
+- Keep embedded market-selection source paths bounded, symlink-rejected, and parent-dir-rejected; do not reject absolute paths without changing the existing operator-packet path contract.
+- Treat market-selection source as bound into the final packet through strategy-input/pre-run proof hashes, not as a top-level config field.
 
 ## T124
 
 TASK: Add source-bound market-selection evidence generation for T115.
 
-ROOT PROBLEM: T115 needs `market-selection-source.json`, but the artifact must come from configured market-family selection and NT instrument facts plus runtime strategy-decision proof. Static/no-submit generation cannot synthesize it.
+ROOT PROBLEM: T115 needs `market-selection-source.json`, but the artifact must come from configured market-family selection and NT instrument facts plus runtime strategy-decision proof. Static strategy-free generation cannot synthesize it.
 
 CURRENT CODE PATH: `write_market_selection_source_artifact_from_decision_evidence_file` reads a bounded complete decision-evidence chain, checks configured target and price-to-beat source, rejects missing/unusable price-to-beat, requires `market_selection_timestamp_ms`, builds source evidence from loaded TOML and `InstrumentAny`, then validates it against the runtime snapshot before writing. The raw builder uses `target_runtime_fields_from_target`, `market_selection_candidate_windows_from_target`, and `select_binary_option_market_from_target`.
 
@@ -74,7 +74,7 @@ MISSING SOURCE PROOF: Missing real runtime JSONL with strategy snapshot, order i
 
 RUNTIME PATH THAT MUST OWN VALUE: `binary_oracle_edge_taker` must own price-to-beat source/value, reference quote timestamp, spot, volatility, time-to-end, pricing inputs, edge inputs, fee inputs, selected side, instrument ids, price, quantity, and client order id. Artifact code must validate only.
 
-ARTIFACT EXPECTED: `strategy-input.json` plus SHA-256, generated from runtime decision evidence and a matching market-selection-source artifact, then referenced by `[live_canary.operator_evidence]`.
+ARTIFACT EXPECTED: `strategy-input.json` plus SHA-256, generated from runtime decision evidence and a matching market-selection-source artifact, then referenced by the operator packet.
 
 RED TEST TO PROVE GAP: A packet-level test that static generation or packet assembly cannot produce/consume `strategy-input.json` unless the source decision-evidence chain exists and hashes match. Existing positive unit coverage proves fixture-chain promotion only.
 
@@ -130,19 +130,19 @@ CONFIDENCE: 100% for current code-path diagnosis, backed by source inspection an
 
 TASK: Add approval-envelope/operator-packet assembly that consumes existing artifact paths/hashes, writes no secrets, avoids circular hashes, and refuses static manifests with blockers.
 
-ROOT PROBLEM: Assembly and verification surfaces exist, but a real final packet is impossible until T124-T127 artifacts exist and `[live_canary.operator_evidence]` binds their paths/hashes.
+ROOT PROBLEM: Assembly and verification surfaces exist, but a real final packet is impossible until T124-T127 artifacts exist and the operator packet binds their paths/hashes.
 
 CURRENT CODE PATH: `write_static_operator_artifacts` writes static refs and blockers; `assemble_operator_packet_from_static_manifest` validates a blocker-free manifest and configured operator evidence, then writes `approval-envelope.json` and `operator-evidence-packet.json`; `verify_final_operator_packet` is exposed by CLI as `operator-artifacts verify-final`.
 
-CURRENT FAIL-CLOSED POINT: Assembly rejects missing `[live_canary.operator_evidence]`, non-empty static-manifest blockers, config-bundle drift, missing required artifact refs, and path/hash/file mismatch. Current static generation records blockers for market selection, strategy input, pre-run state, and abort plan.
+CURRENT FAIL-CLOSED POINT: Assembly rejects missing operator-packet references, non-empty static-manifest blockers, config-bundle drift, missing required artifact refs, and path/hash/file mismatch. Current static generation records blockers for market selection, strategy input, pre-run state, and abort plan.
 
 MISSING SOURCE PROOF: Missing source-owned artifacts from T124-T127 and missing final config-owned operator evidence block. Without those, no blocker-free static manifest or packet can be legitimate.
 
-RUNTIME PATH THAT MUST OWN VALUE: `[live_canary.operator_evidence]` in TOML owns all final packet paths and hashes. The live canary gate must consume those values and validate file hashes plus approval envelope before runner entry.
+RUNTIME PATH THAT MUST OWN VALUE: The operator packet owns all final packet paths and hashes. Submit-admission and packet validation must consume those values and validate file hashes plus approval envelope before live submit.
 
 ARTIFACT EXPECTED: blocker-free `static-artifacts-manifest.json`, non-circular `approval-envelope.json`, and `operator-evidence-packet.json` containing only path/SHA fields suitable for TOML-owned operator evidence.
 
-RED TEST TO PROVE GAP: Existing `approval_packet_assembly_refuses_static_manifest_with_blockers` proves refusal. The next useful RED is an end-to-end final-packet test that fails until T124-T127 source-owned artifacts and `[live_canary.operator_evidence]` exist together.
+RED TEST TO PROVE GAP: Existing `approval_packet_assembly_refuses_static_manifest_with_blockers` proves refusal. The next useful RED is an end-to-end final-packet test that fails until T124-T127 source-owned artifacts and operator-packet references exist together.
 
 WHY THIS IS NOT HARDCODED: Assembly copies loaded TOML operator-evidence values and verified artifact refs. It does not synthesize runtime policy, secrets, raw nonce material, SSM paths, venue ids, or order ids.
 
@@ -157,4 +157,4 @@ CONFIDENCE: 100% for current code-path diagnosis, backed by source inspection an
    - T127: add abort-path collectors.
    - T128: assemble only after the static manifest is blocker-free and TOML owns all paths/hashes.
 3. Only after T124-T128 artifacts are real and bound, run T130 aggregate verification.
-4. Only after T130 passes, resume T131/T122 final-packet EC2/EIP no-submit rerun.
+4. Only after T130 passes, resume T131/T122 final-packet EC2/EIP strategy-free rerun.

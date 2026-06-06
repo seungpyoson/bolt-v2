@@ -411,7 +411,7 @@ fn read_open_file_bounded(mut file: &fs::File, max_bytes: u64) -> std::io::Resul
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "operator artifact exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"
+                "provider artifact exceeds max_artifact_file_bytes={max_bytes} bytes (length={length})"
             ),
         ));
     }

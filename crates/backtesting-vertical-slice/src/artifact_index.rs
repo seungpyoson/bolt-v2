@@ -45,6 +45,26 @@ impl ArtifactKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ResearchAnalyticsSubfamily {
+    Datasets,
+    FeatureTables,
+    ExperimentResults,
+    PromotionPackages,
+}
+
+impl ResearchAnalyticsSubfamily {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Datasets => "datasets",
+            Self::FeatureTables => "feature-tables",
+            Self::ExperimentResults => "experiment-results",
+            Self::PromotionPackages => "promotion-packages",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WriteAuthority {
     ProducerOwned,
@@ -204,6 +224,16 @@ pub struct ArtifactIndexRecord {
     pub lifecycle_state: LifecycleState,
 }
 
+struct ArtifactIndexRecordDraft {
+    artifact_kind: ArtifactKind,
+    artifact_subfamily: Option<String>,
+    artifact_id: String,
+    producer_project: String,
+    manifest_uri: String,
+    content_hash: String,
+    lineage_ids: Vec<ArtifactIndexLineageRef>,
+}
+
 impl ArtifactIndexRecord {
     pub fn new_staged(
         artifact_root: &str,
@@ -214,16 +244,72 @@ impl ArtifactIndexRecord {
         content_hash: &str,
         lineage_ids: Vec<ArtifactIndexLineageRef>,
     ) -> Result<Self, ArtifactIndexError> {
+        if artifact_kind == ArtifactKind::ResearchAnalytics {
+            return Err(ArtifactIndexError::ResearchAnalyticsSubfamilyRequired);
+        }
+        Self::new_staged_from_draft(
+            artifact_root,
+            ArtifactIndexRecordDraft {
+                artifact_kind,
+                artifact_subfamily: None,
+                artifact_id: artifact_id.into(),
+                producer_project: producer_project.into(),
+                manifest_uri: manifest_uri.into(),
+                content_hash: content_hash.to_string(),
+                lineage_ids,
+            },
+        )
+    }
+
+    pub fn new_research_analytics_staged(
+        artifact_root: &str,
+        artifact_subfamily: ResearchAnalyticsSubfamily,
+        artifact_id: impl Into<String>,
+        producer_project: impl Into<String>,
+        manifest_uri: impl Into<String>,
+        content_hash: &str,
+        lineage_ids: Vec<ArtifactIndexLineageRef>,
+    ) -> Result<Self, ArtifactIndexError> {
+        Self::new_staged_from_draft(
+            artifact_root,
+            ArtifactIndexRecordDraft {
+                artifact_kind: ArtifactKind::ResearchAnalytics,
+                artifact_subfamily: Some(artifact_subfamily.as_str().to_string()),
+                artifact_id: artifact_id.into(),
+                producer_project: producer_project.into(),
+                manifest_uri: manifest_uri.into(),
+                content_hash: content_hash.to_string(),
+                lineage_ids,
+            },
+        )
+    }
+
+    fn new_staged_from_draft(
+        artifact_root: &str,
+        draft: ArtifactIndexRecordDraft,
+    ) -> Result<Self, ArtifactIndexError> {
+        let ArtifactIndexRecordDraft {
+            artifact_kind,
+            artifact_subfamily,
+            artifact_id,
+            producer_project,
+            manifest_uri,
+            content_hash,
+            lineage_ids,
+        } = draft;
+
         validate_artifact_root(artifact_root)?;
-        validate_sha256(content_hash)?;
+        validate_sha256(&content_hash)?;
         validate_lineage(&lineage_ids)?;
 
-        let artifact_id = artifact_id.into();
         validate_non_empty("artifact_id", &artifact_id)?;
-        let producer_project = producer_project.into();
         validate_non_empty("producer_project", &producer_project)?;
-        let manifest_uri = manifest_uri.into();
-        validate_manifest_uri(artifact_root, artifact_kind, &manifest_uri)?;
+        validate_manifest_uri(
+            artifact_root,
+            artifact_kind,
+            artifact_subfamily.as_deref(),
+            &manifest_uri,
+        )?;
 
         let root = artifact_root.trim_end_matches('/');
         let kind = artifact_kind.as_str();
@@ -236,14 +322,14 @@ impl ArtifactIndexRecord {
         Ok(Self {
             artifact_id,
             artifact_kind,
-            artifact_subfamily: None,
+            artifact_subfamily,
             producer_project,
             manifest_uri,
             event_uri,
             snapshot_id: None,
             snapshot_uri: None,
             latest_pointer_uri,
-            content_hash: content_hash.to_string(),
+            content_hash,
             lineage_ids,
             write_authority: WriteAuthority::ProducerOwned,
             commit_state: CommitState::Staged,
@@ -625,6 +711,7 @@ pub enum ArtifactIndexError {
     ImmutableEventOverwrite {
         event_uri: String,
     },
+    ResearchAnalyticsSubfamilyRequired,
 }
 
 impl fmt::Display for ArtifactIndexError {
@@ -726,6 +813,10 @@ impl fmt::Display for ArtifactIndexError {
                 f,
                 "artifact index immutable event overwrite rejected for {event_uri:?}"
             ),
+            Self::ResearchAnalyticsSubfamilyRequired => write!(
+                f,
+                "research analytics artifact index records require a typed subfamily"
+            ),
         }
     }
 }
@@ -745,13 +836,20 @@ fn validate_artifact_root(artifact_root: &str) -> Result<(), ArtifactIndexError>
 fn validate_manifest_uri(
     artifact_root: &str,
     artifact_kind: ArtifactKind,
+    artifact_subfamily: Option<&str>,
     manifest_uri: &str,
 ) -> Result<(), ArtifactIndexError> {
-    let required_prefix = format!(
-        "{}/{}/",
-        artifact_root.trim_end_matches('/'),
-        artifact_kind.artifact_subpath()
-    );
+    let root = artifact_root.trim_end_matches('/');
+    let required_prefix = if artifact_kind == ArtifactKind::ResearchAnalytics {
+        let subfamily =
+            artifact_subfamily.ok_or(ArtifactIndexError::ResearchAnalyticsSubfamilyRequired)?;
+        format!(
+            "{root}/{}/v1/{subfamily}/",
+            artifact_kind.artifact_subpath()
+        )
+    } else {
+        format!("{root}/{}/", artifact_kind.artifact_subpath())
+    };
     if manifest_uri.starts_with(&required_prefix) {
         Ok(())
     } else {

@@ -255,7 +255,8 @@ GREEN checks after implementation:
 - `just bte-test --test backtesting_vertical_slice_end_to_end accepted_data_flows_through_to_objective_result_contract`: RED failed because the result contract claim limits carried only source-fidelity limits and no NT surface/default records; GREEN passed after generated result contracts appended resolved NT default, pass-through, and unsupported-surface claim-limit entries derived from `BacktestRunConfig`
 - `just bte-test committed_result_contract_records_nt_extension_surface_claim_limits`: RED failed because the checked-in reference result contract lacked NT extension-surface claim limits; GREEN passed after updating the reference fixture
 - `just bte-test run_from_run_spec_writes_resolved_run_manifest_artifact`: RED failed with missing `BacktestRunManifestArtifact`, `NtSurfaceClassification`, and `RunArtifacts.run_manifest_path`; GREEN passed after adding the portable `backtest-run-manifest.json` artifact with submitted manifest hash, submitted manifest, and structured resolved NT surface records
-- `just bte-test`: 218 passed, including 2 slow public API tests
+- `just bte-test research_analytics_artifacts_use_typed_subfamilies_and_one_kind_pointer research_analytics_records_require_matching_subfamily_prefix`: RED failed with missing `ResearchAnalyticsSubfamily` and RA-specific staged-record constructor; GREEN passed after adding typed RA subfamilies, enforcing `research-analytics/v1/<subfamily>/` manifest prefixes, and keeping every RA subfamily on the single `research_analytics` Artifact Index pointer
+- `just bte-test`: 220 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed

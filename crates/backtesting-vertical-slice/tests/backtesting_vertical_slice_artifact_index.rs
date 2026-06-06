@@ -2,8 +2,9 @@ use backtesting_vertical_slice::artifact_index::{
     ArtifactIndexEventObject, ArtifactIndexEventWriteDecision, ArtifactIndexLatestPointer,
     ArtifactIndexLineageRef, ArtifactIndexObservedPointer, ArtifactIndexPointerPrecondition,
     ArtifactIndexRecord, ArtifactIndexSnapshotManifest, ArtifactKind, ArtifactLifecycleConfig,
-    CommitState, LifecycleState, StorageProfile, WriteAuthority, plan_index_event_create,
-    plan_latest_pointer_update, resolve_committed_snapshot, resolve_lineage_parent,
+    CommitState, LifecycleState, ResearchAnalyticsSubfamily, StorageProfile, WriteAuthority,
+    plan_index_event_create, plan_latest_pointer_update, resolve_committed_snapshot,
+    resolve_lineage_parent,
 };
 
 fn sha256_a() -> String {
@@ -404,4 +405,80 @@ fn immutable_event_create_rejects_different_payload_at_same_uri() {
         plan_index_event_create("backtesting-engine", &event, Some(&mutated_existing)).unwrap_err();
 
     assert!(err.to_string().contains("overwrite"), "{err}");
+}
+
+#[test]
+fn research_analytics_artifacts_use_typed_subfamilies_and_one_kind_pointer() {
+    let root = "s3://example-bucket/nt-research-analytics";
+    let record = ArtifactIndexRecord::new_research_analytics_staged(
+        root,
+        ResearchAnalyticsSubfamily::PromotionPackages,
+        "promotion-package-123",
+        "research-analytics",
+        "s3://example-bucket/nt-research-analytics/research-analytics/v1/promotion-packages/package-123/manifest.json",
+        &sha256_a(),
+        vec![ArtifactIndexLineageRef::new(
+            "backtest-run-123",
+            Some(1),
+            sha256_b(),
+        )],
+    )
+    .expect("research analytics record");
+
+    assert_eq!(record.artifact_kind, ArtifactKind::ResearchAnalytics);
+    assert_eq!(
+        record.artifact_subfamily.as_deref(),
+        Some("promotion-packages")
+    );
+    assert_eq!(
+        record.event_uri,
+        format!(
+            "{root}/artifact-index/v1/events/kind=research_analytics/artifact_id=promotion-package-123/hash={}.json",
+            sha256_a()
+        )
+    );
+    assert_eq!(
+        record.latest_pointer_uri,
+        format!("{root}/artifact-index/v1/pointers/kind=research_analytics/latest.json")
+    );
+    assert!(
+        !record.latest_pointer_uri.contains("promotion-packages"),
+        "RA subfamilies must not get separate latest pointers"
+    );
+}
+
+#[test]
+fn research_analytics_records_require_matching_subfamily_prefix() {
+    let root = "s3://example-bucket/nt-research-analytics";
+    let err = ArtifactIndexRecord::new_staged(
+        root,
+        ArtifactKind::ResearchAnalytics,
+        "promotion-package-123",
+        "research-analytics",
+        "s3://example-bucket/nt-research-analytics/research-analytics/v1/promotion-packages/package-123/manifest.json",
+        &sha256_a(),
+        vec![ArtifactIndexLineageRef::new(
+            "backtest-run-123",
+            Some(1),
+            sha256_b(),
+        )],
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("subfamily"), "{err}");
+
+    let err = ArtifactIndexRecord::new_research_analytics_staged(
+        root,
+        ResearchAnalyticsSubfamily::PromotionPackages,
+        "promotion-package-123",
+        "research-analytics",
+        "s3://example-bucket/nt-research-analytics/research-analytics/v1/datasets/package-123/manifest.json",
+        &sha256_a(),
+        vec![ArtifactIndexLineageRef::new(
+            "backtest-run-123",
+            Some(1),
+            sha256_b(),
+        )],
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("promotion-packages"), "{err}");
 }

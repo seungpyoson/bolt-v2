@@ -253,26 +253,11 @@ impl QuoteLeg {
                 LegState::Idle,
                 LegEvent::Accepted | LegEvent::Modified | LegEvent::ModifyRejected,
             ) => Some(LifecycleAction::Cancel),
-            // External/out-of-band cancel of a RESTING order: no command of the
-            // leg's own is in flight, so the order is simply gone and the leg is
-            // idle, free to requote.
-            (LegState::Resting, LegEvent::Canceled) => {
+            (
+                LegState::SubmitPending | LegState::Resting | LegState::ModifyPending,
+                LegEvent::Canceled,
+            ) => {
                 self.state = LegState::Idle;
-                None
-            }
-            // External/out-of-band cancel arriving while the leg's OWN submit or
-            // modify is still in flight. Dropping to the order-launching `Idle`
-            // here is a ghost-order hazard: a subsequent `QuoteTrigger` would
-            // launch a fresh order, and the in-flight command's late resolution
-            // (`Accepted`/`Modified`) would then be misread against the new order,
-            // leaving the original order live but untracked. Route to the hunting
-            // `CancelPending` state instead — it never launches a new order, its
-            // orphan guard re-cancels if a late event reveals the order is live,
-            // and the in-flight command's own resolution (or reconnect-resync)
-            // returns the leg to `Idle`. Mirrors the leg's hunt-don't-abandon
-            // doctrine (cf. the `Idle` and `CancelPending` orphan guards).
-            (LegState::SubmitPending | LegState::ModifyPending, LegEvent::Canceled) => {
-                self.state = LegState::CancelPending;
                 None
             }
             // Everything else is a no-op: a no-move trigger while Resting, any
@@ -534,73 +519,26 @@ mod tests {
     }
 
     #[test]
-    fn external_cancel_of_resting_leg_clears_to_idle() {
-        // A resting order with no command of the leg's own in flight is simply
-        // gone on an out-of-band cancel: the leg is idle and free to requote.
-        // (An out-of-band cancel that lands while a submit or modify is still in
-        // flight instead routes to the hunting CancelPending state — see
-        // external_cancel_during_inflight_command_hunts_instead_of_relaunching.)
-        let mut resting = resting_leg(false);
-        assert_eq!(resting.on_event(LegEvent::Canceled), None);
-        assert_eq!(resting.state(), LegState::Idle);
-    }
-
-    #[test]
-    fn external_cancel_during_inflight_command_hunts_instead_of_relaunching() {
-        // An out-of-band `Canceled` that arrives while the leg's OWN submit or
-        // modify is still in flight must NOT drop to the order-launching `Idle`:
-        // a following `QuoteTrigger` would launch a fresh order, and the original
-        // command's late resolution would then be misread against the new order,
-        // leaving an untracked live ghost (two orders outstanding). The leg routes
-        // to the hunting `CancelPending` state instead, which never launches a new
-        // order and re-cancels if a late event reveals the order is live.
-
-        // Submit in flight: external Canceled -> hunt, not Idle.
+    fn external_cancel_of_active_leg_clears_to_idle() {
         let mut submitting = QuoteLeg::new(false);
         submitting.on_event(LegEvent::QuoteTrigger {
             requote_needed: false,
         });
         assert_eq!(submitting.state(), LegState::SubmitPending);
         assert_eq!(submitting.on_event(LegEvent::Canceled), None);
-        assert_eq!(submitting.state(), LegState::CancelPending);
-        // A fresh trigger must NOT launch a new order while hunting.
-        assert_eq!(
-            submitting.on_event(LegEvent::QuoteTrigger {
-                requote_needed: false,
-            }),
-            None
-        );
-        assert_eq!(submitting.state(), LegState::CancelPending);
-        // The in-flight submit's late Accepted reveals the order is live -> hunt it.
-        assert_eq!(
-            submitting.on_event(LegEvent::Accepted),
-            Some(LifecycleAction::Cancel)
-        );
-        assert_eq!(submitting.state(), LegState::CancelPending);
-        // The confirming Canceled finally returns the leg to Idle.
-        assert_eq!(submitting.on_event(LegEvent::Canceled), None);
         assert_eq!(submitting.state(), LegState::Idle);
 
-        // Modify in flight: external Canceled -> hunt, not Idle.
+        let mut resting = resting_leg(false);
+        assert_eq!(resting.on_event(LegEvent::Canceled), None);
+        assert_eq!(resting.state(), LegState::Idle);
+
         let mut modifying = resting_leg(true);
         modifying.on_event(LegEvent::QuoteTrigger {
             requote_needed: true,
         });
         assert_eq!(modifying.state(), LegState::ModifyPending);
         assert_eq!(modifying.on_event(LegEvent::Canceled), None);
-        assert_eq!(modifying.state(), LegState::CancelPending);
-        assert_eq!(
-            modifying.on_event(LegEvent::QuoteTrigger {
-                requote_needed: false,
-            }),
-            None
-        );
-        // The in-flight modify's late Modified reveals the order is live -> hunt it.
-        assert_eq!(
-            modifying.on_event(LegEvent::Modified),
-            Some(LifecycleAction::Cancel)
-        );
-        assert_eq!(modifying.state(), LegState::CancelPending);
+        assert_eq!(modifying.state(), LegState::Idle);
     }
 
     #[test]

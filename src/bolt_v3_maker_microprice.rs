@@ -30,7 +30,9 @@
 //! bounds and the zero/unit weight endpoints) comes from
 //! [`crate::bolt_v3_numeric`].
 
-use crate::bolt_v3_numeric::{UNIT_F64, ZERO_F64};
+use crate::bolt_v3_numeric::{
+    UNIT_F64, ZERO_F64, is_non_negative_finite, is_positive_finite, sanitize_probability,
+};
 
 /// Normalised top-of-book size imbalance `(bid_size − ask_size)/(bid_size +
 /// ask_size)`, in `[−1, 1]`.
@@ -47,10 +49,7 @@ use crate::bolt_v3_numeric::{UNIT_F64, ZERO_F64};
 /// - both sizes are zero — an empty touch has no pressure to read, and the
 ///   `0/0` ratio is undefined.
 pub fn book_imbalance(bid_size: f64, ask_size: f64) -> Option<f64> {
-    if !bid_size.is_finite() || !ask_size.is_finite() {
-        return None;
-    }
-    if bid_size < ZERO_F64 || ask_size < ZERO_F64 {
+    if !is_non_negative_finite(bid_size) || !is_non_negative_finite(ask_size) {
         return None;
     }
     // Both sizes are now non-negative finite, so `total` is non-negative; the
@@ -88,14 +87,11 @@ pub fn book_imbalance(bid_size: f64, ask_size: f64) -> Option<f64> {
 /// `[0, 1]`, so it is in-band by construction and benign float rounding is
 /// snapped back into the band.
 pub fn micro_price(best_bid: f64, best_ask: f64, bid_size: f64, ask_size: f64) -> Option<f64> {
-    if !best_bid.is_finite()
-        || !best_ask.is_finite()
-        || !bid_size.is_finite()
-        || !ask_size.is_finite()
+    if !is_non_negative_finite(best_bid)
+        || !is_non_negative_finite(best_ask)
+        || !is_non_negative_finite(bid_size)
+        || !is_non_negative_finite(ask_size)
     {
-        return None;
-    }
-    if best_bid < ZERO_F64 || best_ask < ZERO_F64 || bid_size < ZERO_F64 || ask_size < ZERO_F64 {
         return None;
     }
     // A crossed touch (bid above ask) is stale or corrupt market data.
@@ -106,7 +102,7 @@ pub fn micro_price(best_bid: f64, best_ask: f64, bid_size: f64, ask_size: f64) -
     // leaves the weighted price undefined (0/0); an absurd-but-finite pair whose
     // sum overflows past the float range is a degenerate book — fail closed.
     let total = bid_size + ask_size;
-    if total <= ZERO_F64 || !total.is_finite() {
+    if !is_positive_finite(total) {
         return None;
     }
     // Interpolate weight-first. The fraction of the way from the bid touch toward
@@ -154,9 +150,7 @@ pub fn micro_price_anchor(oracle_fair: f64, micro: Option<f64>, micro_weight: f6
     if !oracle_fair.is_finite() {
         return None;
     }
-    if !micro_weight.is_finite() || !(ZERO_F64..=UNIT_F64).contains(&micro_weight) {
-        return None;
-    }
+    let micro_weight = sanitize_probability(micro_weight)?;
     // Graceful fallback: a degenerate (or non-finite) book this tick means no
     // nudge — the maker quotes off its oracle prior unchanged.
     let micro = match micro {

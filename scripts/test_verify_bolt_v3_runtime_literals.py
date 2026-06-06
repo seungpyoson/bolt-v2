@@ -105,6 +105,7 @@ def test_scan_universe() -> None:
         "src/strategies/binary_oracle_edge_taker/config.rs",
         "src/strategies/binary_oracle_edge_taker/mod.rs",
         "src/strategies/binary_oracle_edge_taker/selection.rs",
+        "src/strategies/binary_oracle_edge_taker/source_proof.rs",
         "src/strategies/mod.rs",
         "src/strategies/registry.rs",
         "src/venue_contract.rs",

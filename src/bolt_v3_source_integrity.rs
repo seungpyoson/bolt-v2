@@ -179,8 +179,11 @@ mod tests {
     // Re-derived again by A10 after moving the binary-oracle-edge-taker embedded
     // test inventory into inner-cfg test-only split files under
     // `src/strategies/binary_oracle_edge_taker/tests/`.
+    //
+    // Re-derived again by #574 after scoped taker config and trade-flow
+    // hardening changed the canonical strategy source set.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "381b105a8326a50017ba48358a07fc1780ebadbc4a84e23dc217b60218deb4af";
+        "5279dfd8eb633945631e2f081a79ba59c2f1227c895ab88719d02bf606ccca4e";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

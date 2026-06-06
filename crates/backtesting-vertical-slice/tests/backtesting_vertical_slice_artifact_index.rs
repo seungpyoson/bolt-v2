@@ -1,8 +1,9 @@
 use backtesting_vertical_slice::artifact_index::{
-    ArtifactIndexLatestPointer, ArtifactIndexLineageRef, ArtifactIndexObservedPointer,
-    ArtifactIndexPointerPrecondition, ArtifactIndexRecord, ArtifactIndexSnapshotManifest,
-    ArtifactKind, ArtifactLifecycleConfig, CommitState, LifecycleState, StorageProfile,
-    WriteAuthority, plan_latest_pointer_update, resolve_committed_snapshot, resolve_lineage_parent,
+    ArtifactIndexEventObject, ArtifactIndexEventWriteDecision, ArtifactIndexLatestPointer,
+    ArtifactIndexLineageRef, ArtifactIndexObservedPointer, ArtifactIndexPointerPrecondition,
+    ArtifactIndexRecord, ArtifactIndexSnapshotManifest, ArtifactKind, ArtifactLifecycleConfig,
+    CommitState, LifecycleState, StorageProfile, WriteAuthority, plan_index_event_create,
+    plan_latest_pointer_update, resolve_committed_snapshot, resolve_lineage_parent,
 };
 
 fn sha256_a() -> String {
@@ -374,4 +375,33 @@ fn cross_kind_parent_resolution_rejects_independent_latest_parent_hash() {
     let err = resolve_lineage_parent(&child, &stale_parent).unwrap_err();
 
     assert!(err.to_string().contains("manifest lineage"), "{err}");
+}
+
+#[test]
+fn immutable_event_create_is_idempotent_for_same_payload() {
+    let root = "s3://example-bucket/nt-research-analytics";
+    let record = backtest_record(root);
+    let event = ArtifactIndexEventObject::from_record(&record).expect("event");
+
+    let decision =
+        plan_index_event_create("backtesting-engine", &event, Some(&event)).expect("decision");
+
+    assert_eq!(
+        decision,
+        ArtifactIndexEventWriteDecision::AlreadyExistsSamePayload
+    );
+}
+
+#[test]
+fn immutable_event_create_rejects_different_payload_at_same_uri() {
+    let root = "s3://example-bucket/nt-research-analytics";
+    let record = backtest_record(root);
+    let event = ArtifactIndexEventObject::from_record(&record).expect("event");
+    let mut mutated_existing = event.clone();
+    mutated_existing.payload_hash = sha256_c();
+
+    let err =
+        plan_index_event_create("backtesting-engine", &event, Some(&mutated_existing)).unwrap_err();
+
+    assert!(err.to_string().contains("overwrite"), "{err}");
 }

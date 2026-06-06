@@ -7,6 +7,7 @@
 use std::{error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -283,6 +284,70 @@ impl ArtifactIndexRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactIndexEventObject {
+    pub artifact_kind: ArtifactKind,
+    pub artifact_id: String,
+    pub producer_project: String,
+    pub event_uri: String,
+    pub payload_hash: String,
+}
+
+impl ArtifactIndexEventObject {
+    pub fn from_record(record: &ArtifactIndexRecord) -> Result<Self, ArtifactIndexError> {
+        record.validate_write_authority(&record.producer_project)?;
+        validate_non_empty("event_uri", &record.event_uri)?;
+
+        Ok(Self {
+            artifact_kind: record.artifact_kind,
+            artifact_id: record.artifact_id.clone(),
+            producer_project: record.producer_project.clone(),
+            event_uri: record.event_uri.clone(),
+            payload_hash: event_payload_hash(record)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactIndexEventWriteDecision {
+    CreateWithIfNoneMatchAny,
+    AlreadyExistsSamePayload,
+}
+
+pub fn plan_index_event_create(
+    requester_project: &str,
+    event: &ArtifactIndexEventObject,
+    existing: Option<&ArtifactIndexEventObject>,
+) -> Result<ArtifactIndexEventWriteDecision, ArtifactIndexError> {
+    validate_non_empty("requester_project", requester_project)?;
+    validate_non_empty("event_uri", &event.event_uri)?;
+    validate_sha256_field("event.payload_hash", &event.payload_hash)?;
+    if event.producer_project != requester_project {
+        return Err(ArtifactIndexError::ReadOnlyConsumer {
+            artifact_id: event.artifact_id.clone(),
+            requester_project: requester_project.to_string(),
+            producer_project: event.producer_project.clone(),
+        });
+    }
+
+    let Some(existing) = existing else {
+        return Ok(ArtifactIndexEventWriteDecision::CreateWithIfNoneMatchAny);
+    };
+    if existing.event_uri != event.event_uri {
+        return Err(ArtifactIndexError::EventUriMismatch {
+            expected_uri: event.event_uri.clone(),
+            actual_uri: existing.event_uri.clone(),
+        });
+    }
+    if existing.payload_hash == event.payload_hash {
+        Ok(ArtifactIndexEventWriteDecision::AlreadyExistsSamePayload)
+    } else {
+        Err(ArtifactIndexError::ImmutableEventOverwrite {
+            event_uri: event.event_uri.clone(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactIndexSnapshotManifest {
     pub artifact_kind: ArtifactKind,
     pub snapshot_id: String,
@@ -552,6 +617,14 @@ pub enum ArtifactIndexError {
         child_artifact_id: String,
         parent_artifact_id: String,
     },
+    EventPayloadSerialization(String),
+    EventUriMismatch {
+        expected_uri: String,
+        actual_uri: String,
+    },
+    ImmutableEventOverwrite {
+        event_uri: String,
+    },
 }
 
 impl fmt::Display for ArtifactIndexError {
@@ -635,6 +708,23 @@ impl fmt::Display for ArtifactIndexError {
             } => write!(
                 f,
                 "artifact index parent {parent_artifact_id:?} does not match manifest lineage ids and sha256 hashes for child {child_artifact_id:?}"
+            ),
+            Self::EventPayloadSerialization(message) => {
+                write!(
+                    f,
+                    "artifact index event payload serialization failed: {message}"
+                )
+            }
+            Self::EventUriMismatch {
+                expected_uri,
+                actual_uri,
+            } => write!(
+                f,
+                "artifact index event URI mismatch: expected {expected_uri:?}, got {actual_uri:?}"
+            ),
+            Self::ImmutableEventOverwrite { event_uri } => write!(
+                f,
+                "artifact index immutable event overwrite rejected for {event_uri:?}"
             ),
         }
     }
@@ -755,4 +845,12 @@ fn expected_snapshot_uri(
         artifact_root.trim_end_matches('/'),
         artifact_kind.as_str()
     )
+}
+
+fn event_payload_hash(record: &ArtifactIndexRecord) -> Result<String, ArtifactIndexError> {
+    let bytes = serde_json::to_vec(record)
+        .map_err(|err| ArtifactIndexError::EventPayloadSerialization(err.to_string()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(hex::encode(hasher.finalize()))
 }

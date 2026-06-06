@@ -33,6 +33,14 @@
     "No L2/L3 order-book replay claims from trade prints.",
     "Coverage is limited to BNBUSDC spot 2026-03-01; no multi-day or multi-instrument claims."
   ],
+  "acceptance_scope": {
+    "planned_objects": 1,
+    "completed_objects": 1,
+    "failed_objects": 0,
+    "skipped_objects": 0,
+    "accepted_bytes": 8505,
+    "selector_scope_violations": 0
+  },
   "gap_policy_id": "",
   "required_checks": {
     "source_access": {

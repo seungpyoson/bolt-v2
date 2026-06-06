@@ -245,6 +245,17 @@ pub struct TimeRange {
     pub end_utc: String,
 }
 
+/// Structured run-scope summary for the source proof's accepted manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptanceScope {
+    pub planned_objects: u64,
+    pub completed_objects: u64,
+    pub failed_objects: u64,
+    pub skipped_objects: u64,
+    pub accepted_bytes: u64,
+    pub selector_scope_violations: u64,
+}
+
 /// A thin source-proof record per the `backfill-source-proof.v1` contract.
 ///
 /// The report is a proof pointer and claim-limit gate, not a data store: it
@@ -276,6 +287,10 @@ pub struct SourceProofReport {
     pub nt_mapping_status: NtMappingStatus,
     pub fidelity_class: SourceProofFidelityClass,
     pub forbidden_claims: Vec<String>,
+    /// Structured manifest/run summary proving acceptance is bounded by object
+    /// counts, byte counts, failures, skips, and selector-scope checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_scope: Option<AcceptanceScope>,
     /// Required when gaps are tolerated; empty string when not applicable.
     pub gap_policy_id: String,
     pub required_checks: RequiredChecks,
@@ -343,6 +358,12 @@ pub enum AcceptanceError {
     UnknownSourceBinding {
         source_binding: String,
         venue: String,
+    },
+    /// The structured manifest/run scope summary is not admissible for an
+    /// accepted source proof.
+    InvalidAcceptanceScope {
+        field: &'static str,
+        reason: &'static str,
     },
 }
 
@@ -433,6 +454,9 @@ impl std::fmt::Display for AcceptanceError {
                     "source_binding {source_binding:?} for venue {venue:?} is not configured in the registry"
                 )
             }
+            Self::InvalidAcceptanceScope { field, reason } => {
+                write!(f, "acceptance_scope.{field} {reason}")
+            }
         }
     }
 }
@@ -502,6 +526,11 @@ impl SourceProofReport {
         self.check_required_identity()?;
         ensure_backfillable_evidence_state(self.evidence_state)?;
         ensure_source_binding_metadata_matches(self)?;
+        let acceptance_scope = self
+            .acceptance_scope
+            .as_ref()
+            .ok_or(AcceptanceError::MissingField("acceptance_scope"))?;
+        validate_acceptance_scope(acceptance_scope, &self.gap_policy_id)?;
         ensure_coverage_within_requested(&self.requested_time_range, &self.coverage_time_range)?;
         if self.nt_mapping_status != NtMappingStatus::Accepted {
             return Err(AcceptanceError::NtMappingNotAccepted(
@@ -657,6 +686,16 @@ pub fn select_accepted_dataset(
     // through.
     proof.evaluate_acceptance()?;
     object.check_complete()?;
+    let acceptance_scope = proof
+        .acceptance_scope
+        .as_ref()
+        .ok_or(AcceptanceError::MissingField("acceptance_scope"))?;
+    if object.bytes > acceptance_scope.accepted_bytes {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "accepted_bytes",
+            reason: "must be at least selected object bytes",
+        });
+    }
 
     if verified_object_sha256 != object.sha256 {
         return Err(AcceptanceError::ContentHashMismatch {
@@ -780,6 +819,63 @@ fn ensure_backfillable_evidence_state(
         EvidenceState::DirectlyBackfillable | EvidenceState::OwnerArchiveBackfillable => Ok(()),
         other => Err(AcceptanceError::EvidenceStateNotBackfillable(other)),
     }
+}
+
+fn validate_acceptance_scope(
+    scope: &AcceptanceScope,
+    gap_policy_id: &str,
+) -> Result<(), AcceptanceError> {
+    if scope.planned_objects == 0 {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "planned_objects",
+            reason: "must be positive",
+        });
+    }
+    if scope.completed_objects == 0 {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "completed_objects",
+            reason: "must be positive",
+        });
+    }
+    if scope.accepted_bytes == 0 {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "accepted_bytes",
+            reason: "must be positive",
+        });
+    }
+    if scope.failed_objects != 0 {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "failed_objects",
+            reason: "must be zero",
+        });
+    }
+    if scope.selector_scope_violations != 0 {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "selector_scope_violations",
+            reason: "must be zero",
+        });
+    }
+    let accounted_objects = scope
+        .completed_objects
+        .checked_add(scope.failed_objects)
+        .and_then(|value| value.checked_add(scope.skipped_objects))
+        .ok_or(AcceptanceError::InvalidAcceptanceScope {
+            field: "planned_objects",
+            reason: "must not overflow completed + failed + skipped object counts",
+        })?;
+    if accounted_objects != scope.planned_objects {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "planned_objects",
+            reason: "must equal completed_objects + failed_objects + skipped_objects",
+        });
+    }
+    if scope.skipped_objects != 0 && gap_policy_id.trim().is_empty() {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "skipped_objects",
+            reason: "requires gap_policy_id",
+        });
+    }
+    Ok(())
 }
 
 fn ensure_source_binding_metadata_matches(
@@ -914,6 +1010,17 @@ mod tests {
         }
     }
 
+    fn accepted_scope() -> AcceptanceScope {
+        AcceptanceScope {
+            planned_objects: 1,
+            completed_objects: 1,
+            failed_objects: 0,
+            skipped_objects: 0,
+            accepted_bytes: 8505,
+            selector_scope_violations: 0,
+        }
+    }
+
     fn candidate_proof() -> SourceProofReport {
         SourceProofReport {
             source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
@@ -950,6 +1057,7 @@ mod tests {
             forbidden_claims: vec![
                 "No execution-quality, queue-position, or order-book-liquidity claims.".to_string(),
             ],
+            acceptance_scope: Some(accepted_scope()),
             gap_policy_id: String::new(),
             required_checks: passing_checks(),
             acceptance_mode: None,
@@ -1426,6 +1534,43 @@ mod tests {
     }
 
     #[test]
+    fn acceptance_blocked_when_structured_scope_summary_missing() {
+        let mut proof = candidate_proof();
+        proof.acceptance_scope = None;
+
+        assert_eq!(
+            proof.evaluate_acceptance().unwrap_err(),
+            AcceptanceError::MissingField("acceptance_scope")
+        );
+    }
+
+    #[test]
+    fn acceptance_blocked_when_structured_scope_summary_has_failures_or_scope_violations() {
+        let mut proof = candidate_proof();
+        let scope = proof.acceptance_scope.as_mut().expect("acceptance scope");
+        scope.failed_objects = 1;
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("failed_objects") && err.to_string().contains("must be zero"),
+            "{err}"
+        );
+
+        let mut proof = candidate_proof();
+        let scope = proof.acceptance_scope.as_mut().expect("acceptance scope");
+        scope.selector_scope_violations = 1;
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("selector_scope_violations")
+                && err.to_string().contains("must be zero"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn acceptance_blocked_when_source_binding_family_disagrees_with_registry() {
         let mut proof = candidate_proof();
         proof.product_family = "linear".to_string();
@@ -1630,6 +1775,28 @@ mod tests {
         let object = manifest_object();
         let err = select_accepted_dataset(&proof, &object, &object.sha256).unwrap_err();
         assert!(matches!(err, AcceptanceError::ContentHashMismatch { .. }));
+    }
+
+    #[test]
+    fn ledger_rejects_object_bytes_exceeding_structured_acceptance_scope() {
+        let mut proof = candidate_proof();
+        proof
+            .acceptance_scope
+            .as_mut()
+            .expect("acceptance scope")
+            .accepted_bytes = manifest_object().bytes - 1;
+        let proof = proof
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let object = manifest_object();
+
+        let err = select_accepted_dataset(&proof, &object, &object.sha256).unwrap_err();
+
+        assert!(
+            err.to_string().contains("accepted_bytes")
+                && err.to_string().contains("selected object bytes"),
+            "{err}"
+        );
     }
 
     #[test]

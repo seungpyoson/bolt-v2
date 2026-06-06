@@ -499,7 +499,7 @@ mod tests {
     use crate::{
         canonical_trades::{CanonicalInstrumentIdentity, normalize_sample_spot_tick_trades},
         source_proof::{
-            AcceptanceMode, AcceptedDataset, EvidenceState, FixtureType,
+            AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
             IngestManifestObjectRecord, NtMappingStatus, RequiredCheck, RequiredChecks,
             SourceProofReport, SourceProofStatus, TimeRange, select_accepted_dataset,
         },
@@ -580,6 +580,14 @@ mod tests {
             nt_mapping_status: NtMappingStatus::Accepted,
             fidelity_class: SourceProofFidelityClass::TradeReplay,
             forbidden_claims: vec!["No execution-quality claims.".to_string()],
+            acceptance_scope: Some(AcceptanceScope {
+                planned_objects: 1,
+                completed_objects: 1,
+                failed_objects: 0,
+                skipped_objects: 0,
+                accepted_bytes: object.bytes,
+                selector_scope_violations: 0,
+            }),
             gap_policy_id: String::new(),
             required_checks: checks,
             acceptance_mode: None,

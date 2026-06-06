@@ -27,6 +27,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - source-proof acceptance now enforces the schema rule that accepted canonical backfill input must use `directly_backfillable` or `owner_archive_backfillable`; bounded/current-only, pending, vendor/forward-capture-only, not-applicable, or excluded evidence states cannot become accepted BTE input
 - source-proof acceptance now cross-checks registered TOML source-binding metadata for `product_family`, `table_family`, and `evidence_state`; a proof cannot reuse a registered host/key while silently changing the data family or acceptance state
 - source-proof acceptance now rejects unknown `source_binding`/venue pairs before an accepted proof can be stamped; object selection keeps a defense-in-depth rejection for forged accepted records
+- source-proof acceptance now requires structured `acceptance_scope` facts (`planned_objects`, `completed_objects`, `failed_objects`, `skipped_objects`, `accepted_bytes`, and `selector_scope_violations`) instead of accepting prose-only completeness evidence; failed objects, selector-scope violations, inconsistent object accounting, skipped objects without a gap policy, and selected objects whose bytes exceed accepted bytes fail before canonical conversion
 - non-latest source-proof pins now require structured manifest justification: `normal` runs still cannot pin them, non-normal pins require `proof_pin_reason_code`, and `audit_or_investigation` pins require `proof_pin_reason_detail`
 - the accepted `proof_pin_reason_code` vocabulary now matches the plan/reference contract, including published-result reproduction and regression-comparison pins
 - the CLI has an explicit `--publish-output` opt-in that copies the verified local artifact tree to `manifest.output_prefix` through NT/object-store plumbing after the local run succeeds
@@ -248,7 +249,10 @@ GREEN checks after implementation:
 - `just bte-test typed_unsupported_nt_venue_model_surfaces_parse_then_fail_before_nt_config`: RED failed with `E0599` because `ManifestError::UnsupportedNtSurface` and typed unsupported-surface schema did not exist
 - `just bte-test rejects_unsupported_nt_venue_model_surface_requests_before_nt_config typed_unsupported_nt_venue_model_surfaces_parse_then_fail_before_nt_config`: 2 passed after adding optional manifest placeholders for NT leverage maps, margin model, modules, fill model, latency model, fee model, and settlement prices plus structured pre-NT rejection
 - `just bte-test native_trade_source_bindings_cover_multiple_configured_venues`: RED failed with only `venues={"bybit"}` and `keys=["bybit-spot-tick-trades"]`; GREEN passed after adding `binance-spot-native-trades` as a registry-only candidate and requiring the test to exercise proof acceptance plus host selection for each configured native-trades binding
-- `just bte-test`: 212 passed, including 2 slow public API tests
+- `just bte-test acceptance_blocked_when_structured_scope_summary_missing`: RED failed with `E0609` because `SourceProofReport` had no `acceptance_scope` field; GREEN passed after adding structured scope facts and requiring them before proof acceptance
+- `just bte-test acceptance_blocked_when_structured_scope_summary_has_failures_or_scope_violations`: RED failed because `evaluate_acceptance()` returned `Ok(())` with `failed_objects = 1`; GREEN passed after rejecting failed objects and selector-scope violations in the structured scope summary
+- `just bte-test ledger_rejects_object_bytes_exceeding_structured_acceptance_scope`: RED failed because `select_accepted_dataset()` admitted an object whose bytes exceeded `acceptance_scope.accepted_bytes`; GREEN passed after object selection compares selected object bytes against the structured accepted byte count
+- `just bte-test`: 216 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed

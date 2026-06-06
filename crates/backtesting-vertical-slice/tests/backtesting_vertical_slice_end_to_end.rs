@@ -25,9 +25,10 @@ use backtesting_vertical_slice::{
     },
     runner::{BacktestRunInputs, run_backtest},
     source_proof::{
-        AcceptanceMode, AcceptedDataset, EvidenceState, FixtureType, IngestManifestObjectRecord,
-        NtMappingStatus, RequiredCheck, RequiredChecks, SourceProofFidelityClass,
-        SourceProofReport, SourceProofStatus, TimeRange, select_accepted_dataset,
+        AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
+        IngestManifestObjectRecord, NtMappingStatus, RequiredCheck, RequiredChecks,
+        SourceProofFidelityClass, SourceProofReport, SourceProofStatus, TimeRange,
+        select_accepted_dataset,
     },
 };
 
@@ -127,6 +128,14 @@ fn accepted_dataset() -> AcceptedDataset {
             "Coverage is limited to BNBUSDC spot 2026-03-01; no multi-day or multi-instrument claims."
                 .to_string(),
         ],
+        acceptance_scope: Some(AcceptanceScope {
+            planned_objects: 1,
+            completed_objects: 1,
+            failed_objects: 0,
+            skipped_objects: 0,
+            accepted_bytes: object.bytes,
+            selector_scope_violations: 0,
+        }),
         gap_policy_id: String::new(),
         required_checks: passing_checks(),
         acceptance_mode: None,

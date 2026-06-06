@@ -1313,9 +1313,9 @@ pub fn parse_manifest_toml(text: &str) -> Result<BacktestingRunManifest> {
 mod tests {
     use super::*;
     use crate::source_proof::{
-        AcceptanceMode, EvidenceState, FixtureType, IngestManifestObjectRecord, NtMappingStatus,
-        RequiredCheck, RequiredChecks, SourceProofFidelityClass, SourceProofReport,
-        SourceProofStatus, TimeRange, select_accepted_dataset,
+        AcceptanceMode, AcceptanceScope, EvidenceState, FixtureType, IngestManifestObjectRecord,
+        NtMappingStatus, RequiredCheck, RequiredChecks, SourceProofFidelityClass,
+        SourceProofReport, SourceProofStatus, TimeRange, select_accepted_dataset,
     };
 
     fn accepted_dataset() -> AcceptedDataset {
@@ -1371,6 +1371,14 @@ mod tests {
             nt_mapping_status: NtMappingStatus::Accepted,
             fidelity_class: SourceProofFidelityClass::TradeReplay,
             forbidden_claims: vec!["No execution-quality claims.".to_string()],
+            acceptance_scope: Some(AcceptanceScope {
+                planned_objects: 1,
+                completed_objects: 1,
+                failed_objects: 0,
+                skipped_objects: 0,
+                accepted_bytes: object.bytes,
+                selector_scope_violations: 0,
+            }),
             gap_policy_id: String::new(),
             required_checks: checks,
             acceptance_mode: None,

@@ -41,6 +41,9 @@ Required fields:
   `TRADE_BAR_REPLAY`, `METADATA_ONLY`, `SIGNAL_ONLY`, or
   `FORWARD_CAPTURE_PENDING`.
 - `forbidden_claims`: claims this source must not support.
+- `acceptance_scope`: structured manifest/run summary with `planned_objects`,
+  `completed_objects`, `failed_objects`, `skipped_objects`, `accepted_bytes`,
+  and `selector_scope_violations`.
 - `claim_limits`: list of machine-readable limitation records with `id`,
   `severity`, `claim`, `reason`, and `evidence_ref`.
 - `gap_policy_id`: required when gaps are tolerated.
@@ -92,6 +95,21 @@ NautilusTrader catalog/backtest replay claims.
 
 All checks must pass before `status=accepted`. Pending or failed checks keep the
 proof out of canonical backfill selection.
+
+## Acceptance Scope
+
+Accepted source proofs must carry `acceptance_scope` so broad or failed backfill
+runs cannot be promoted by prose-only completeness evidence.
+
+- `planned_objects` must be positive.
+- `completed_objects` must be positive.
+- `accepted_bytes` must be positive and must cover every selected object that
+  becomes canonical backtest input.
+- `failed_objects` must be zero.
+- `selector_scope_violations` must be zero.
+- `planned_objects` must equal
+  `completed_objects + failed_objects + skipped_objects`.
+- `skipped_objects` greater than zero requires `gap_policy_id`.
 
 ## Ingest Manifest Record
 

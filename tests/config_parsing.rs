@@ -6399,8 +6399,8 @@ fn rejects_ssm_paths_missing_leading_slash() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "private_key_ssm_path = \"/bolt/polymarket_main/private_key\"",
-        "private_key_ssm_path = \"bolt/polymarket_main/private_key\"",
+        "private_key_ssm_path = \"/bolt/polymarket/private-key\"",
+        "private_key_ssm_path = \"bolt/polymarket/private-key\"",
     );
     let root: BoltV3RootConfig = toml::from_str(&mutated).expect("ssm-path mutation should parse");
     let messages = validate_root_only(&root);
@@ -6423,13 +6423,13 @@ fn rejects_ssm_paths_with_leading_or_trailing_whitespace() {
     for (field, original, replacement) in [
         (
             "clients.polymarket_main.secrets.private_key_ssm_path",
-            "private_key_ssm_path = \"/bolt/polymarket_main/private_key\"",
-            "private_key_ssm_path = \" /bolt/polymarket_main/private_key\"",
+            "private_key_ssm_path = \"/bolt/polymarket/private-key\"",
+            "private_key_ssm_path = \" /bolt/polymarket/private-key\"",
         ),
         (
             "clients.polymarket_main.secrets.api_secret_ssm_path",
-            "api_secret_ssm_path = \"/bolt/polymarket_main/api_secret\"",
-            "api_secret_ssm_path = \"/bolt/polymarket_main/api_secret \"",
+            "api_secret_ssm_path = \"/bolt/polymarket/api-secret\"",
+            "api_secret_ssm_path = \"/bolt/polymarket/api-secret \"",
         ),
     ] {
         let mutated = replace_in_fixture_root(original, replacement);

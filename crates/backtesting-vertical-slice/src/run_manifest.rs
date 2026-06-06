@@ -41,6 +41,9 @@ pub const CATALOG_FS_PROTOCOL_NONE: &str = "NONE";
 
 const CATALOG_STORAGE_OPTIONS_SHADOWED: &str =
     "cannot be combined with catalog_fs_rust_storage_options";
+const S3_OPTION_CONDITIONAL_PUT: &str = "conditional_put";
+const S3_CONDITIONAL_PUT_ETAG: &str = "etag";
+const S3_CONDITIONAL_PUT_DISABLED: &str = "disabled";
 
 /// Existing compiled Rust strategies selectable from a run manifest.
 ///
@@ -598,6 +601,11 @@ impl BacktestingRunManifest {
             &self.artifact_store.rust_storage_options,
         )?;
         validate_artifact_store_secrets(&self.artifact_store)?;
+        ensure_artifact_store_conditional_put_enabled(
+            output_prefix_protocol(&self.output_prefix),
+            &self.artifact_store.storage_options,
+            &self.artifact_store.rust_storage_options,
+        )?;
         validate_artifact_root_protocol(&self.artifact_root)?;
         ensure_data_type_matches_fidelity(&self.catalog_input.data_type, accepted.fidelity_class)?;
         validate_strategy_source(&self.strategy)?;
@@ -851,6 +859,11 @@ impl BacktestingRunManifest {
             &self.artifact_store.rust_storage_options,
         )?;
         validate_artifact_store_secrets(&self.artifact_store)?;
+        ensure_artifact_store_conditional_put_enabled(
+            output_prefix_protocol(&self.output_prefix),
+            &self.artifact_store.storage_options,
+            &self.artifact_store.rust_storage_options,
+        )?;
         if !self.artifact_store.rust_storage_options.is_empty() {
             Ok(Some(self.artifact_store.rust_storage_options.clone()))
         } else if !self.artifact_store.storage_options.is_empty() {
@@ -959,28 +972,72 @@ fn validate_catalog_storage_options(
         });
     }
     if protocol == Some("s3") {
-        for key in storage_options.keys() {
-            ensure_supported_s3_storage_option("catalog_input.catalog_fs_storage_options", key)?;
+        for (key, value) in storage_options {
+            ensure_supported_s3_storage_option(
+                "catalog_input.catalog_fs_storage_options",
+                key,
+                value,
+            )?;
         }
-        for key in rust_storage_options.keys() {
+        for (key, value) in rust_storage_options {
             ensure_supported_s3_storage_option(
                 "catalog_input.catalog_fs_rust_storage_options",
                 key,
+                value,
             )?;
         }
     }
     Ok(())
 }
 
-fn ensure_supported_s3_storage_option(field: &'static str, key: &str) -> Result<(), ManifestError> {
+fn ensure_supported_s3_storage_option(
+    field: &'static str,
+    key: &str,
+    value: &str,
+) -> Result<(), ManifestError> {
     match key {
         "endpoint_url" | "region" | "access_key_id" | "key" | "secret_access_key" | "secret"
         | "session_token" | "token" | "allow_http" => Ok(()),
+        S3_OPTION_CONDITIONAL_PUT => validate_s3_conditional_put_value(field, value),
         other => Err(ManifestError::UnsupportedEnum {
             field,
             value: other.to_string(),
         }),
     }
+}
+
+fn validate_s3_conditional_put_value(
+    field: &'static str,
+    value: &str,
+) -> Result<(), ManifestError> {
+    match value {
+        S3_CONDITIONAL_PUT_ETAG | S3_CONDITIONAL_PUT_DISABLED => Ok(()),
+        other => Err(ManifestError::UnsupportedEnum {
+            field,
+            value: format!("{S3_OPTION_CONDITIONAL_PUT}={other}"),
+        }),
+    }
+}
+
+fn ensure_artifact_store_conditional_put_enabled(
+    protocol: Option<&str>,
+    storage_options: &BTreeMap<String, String>,
+    rust_storage_options: &BTreeMap<String, String>,
+) -> Result<(), ManifestError> {
+    if protocol != Some("s3") {
+        return Ok(());
+    }
+    for options in [storage_options, rust_storage_options] {
+        if options.get(S3_OPTION_CONDITIONAL_PUT).map(String::as_str)
+            == Some(S3_CONDITIONAL_PUT_DISABLED)
+        {
+            return Err(ManifestError::UnsupportedEnum {
+                field: "artifact_store.rust_storage_options.conditional_put",
+                value: "disabled cannot support Artifact Index create-only event writes or conditional latest-pointer updates".to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_artifact_store_secrets(
@@ -1440,6 +1497,26 @@ mod tests {
     }
 
     #[test]
+    fn data_config_preserves_configured_object_store_conditional_put() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.catalog_path =
+            "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
+        manifest.catalog_input.catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_input.catalog_fs_rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("conditional_put".to_string(), "etag".to_string()),
+        ]);
+
+        let data = manifest.to_nt_data_config().expect("data config");
+        assert_eq!(
+            data.catalog_fs_rust_storage_options()
+                .expect("rust storage options")
+                .get("conditional_put"),
+            Some(&"etag".to_string())
+        );
+    }
+
+    #[test]
     fn artifact_store_options_are_toml_owned_for_publish_and_catalog_proof() {
         let mut manifest = valid_manifest();
         manifest.artifact_root = "file:///bolt-artifacts".to_string();
@@ -1455,6 +1532,58 @@ mod tests {
             .expect("rust storage options present");
         assert_eq!(options.get("region"), Some(&"us-east-1".to_string()));
         assert_eq!(options.get("allow_http"), Some(&"false".to_string()));
+    }
+
+    #[test]
+    fn artifact_store_preserves_conditional_put_after_ssm_resolution() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_store.rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("conditional_put".to_string(), "etag".to_string()),
+        ]);
+        manifest.artifact_store.ssm_parameters = Some(ManifestArtifactStoreSsmParameters {
+            region: "us-east-1".to_string(),
+            access_key_id: "/bolt/artifacts/access-key-id".to_string(),
+            secret_access_key: "/bolt/artifacts/secret-access-key".to_string(),
+            session_token: None,
+        });
+
+        let options = manifest
+            .artifact_store_storage_options_resolved(&mut |_region, path| match path {
+                "/bolt/artifacts/access-key-id" => Ok("AKIATEST".to_string()),
+                "/bolt/artifacts/secret-access-key" => Ok("secret-value".to_string()),
+                other => Err(format!("unexpected path {other}")),
+            })
+            .expect("resolved artifact store options")
+            .expect("artifact store options");
+
+        assert_eq!(options.get("conditional_put"), Some(&"etag".to_string()));
+        assert_eq!(options.get("access_key_id"), Some(&"AKIATEST".to_string()));
+        assert_eq!(
+            options.get("secret_access_key"),
+            Some(&"secret-value".to_string())
+        );
+    }
+
+    #[test]
+    fn artifact_store_rejects_disabled_conditional_put_for_s3_commit_path() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_store.rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("conditional_put".to_string(), "disabled".to_string()),
+        ]);
+
+        let err = manifest
+            .artifact_store_storage_options_resolved(&mut |_region, _path| {
+                Ok("unused-secret".to_string())
+            })
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("conditional_put")
+                && err.to_string().contains("Artifact Index"),
+            "{err}"
+        );
     }
 
     #[test]

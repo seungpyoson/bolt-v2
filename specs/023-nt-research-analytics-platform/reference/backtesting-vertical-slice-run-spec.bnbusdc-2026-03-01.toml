@@ -144,7 +144,7 @@ output_prefix = "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-v
 
 [manifest.artifact_store]
 storage_options = {}
-rust_storage_options = { region = "us-east-1" }
+rust_storage_options = { region = "us-east-1", conditional_put = "etag" }
 
 [manifest.strategy]
 registry_key = "hurst_vpin_directional"

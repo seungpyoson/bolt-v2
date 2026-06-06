@@ -215,6 +215,11 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
         output_prefix:
             "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-end-to-end"
                 .to_string(),
+        artifact_store: backtesting_vertical_slice::run_manifest::ManifestArtifactStore {
+            storage_options: BTreeMap::new(),
+            rust_storage_options: BTreeMap::new(),
+            ssm_parameters: None,
+        },
         start_time: None,
         end_time: None,
     }

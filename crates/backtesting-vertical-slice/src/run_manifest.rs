@@ -163,6 +163,34 @@ pub struct ManifestCatalogInput {
     pub nt_instrument_id: String,
 }
 
+/// Artifact output store options used for publishing and published-catalog proof.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestArtifactStore {
+    /// NT/object-store options for Python/fsspec-compatible artifact writes.
+    pub storage_options: BTreeMap<String, String>,
+    /// NT/object-store options for the Rust cloud-backed artifact path.
+    pub rust_storage_options: BTreeMap<String, String>,
+    /// SSM parameters resolved into the Rust object-store options at runtime.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ssm_parameters: Option<ManifestArtifactStoreSsmParameters>,
+}
+
+/// SSM parameter paths for artifact-store credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestArtifactStoreSsmParameters {
+    /// AWS region used when resolving the configured SSM parameters.
+    pub region: String,
+    /// SSM parameter path whose decrypted value is the S3 access key id.
+    pub access_key_id: String,
+    /// SSM parameter path whose decrypted value is the S3 secret access key.
+    pub secret_access_key: String,
+    /// Optional SSM parameter path whose decrypted value is the S3 session token.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_token: Option<String>,
+}
+
 /// The typed backtest run manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -184,6 +212,8 @@ pub struct BacktestingRunManifest {
     pub artifact_root: String,
     /// Output prefix under `artifact_root/backtests/`.
     pub output_prefix: String,
+    /// Artifact-store options for output publication and direct catalog proof.
+    pub artifact_store: ManifestArtifactStore,
     /// Optional inclusive start time (Unix nanos).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub start_time: Option<i64>,
@@ -255,6 +285,18 @@ pub enum ManifestError {
     InvertedTimeWindow {
         start: i64,
         end: i64,
+    },
+    RawArtifactStoreCredential {
+        field: &'static str,
+        key: String,
+    },
+    ArtifactStoreS3CredentialsNotResolved,
+    InvalidArtifactStoreSsmParameter {
+        field: &'static str,
+    },
+    ArtifactStoreSecretResolution {
+        field: &'static str,
+        source: String,
     },
 }
 
@@ -350,6 +392,22 @@ impl std::fmt::Display for ManifestError {
             Self::InvertedTimeWindow { start, end } => {
                 write!(f, "start_time {start} must not be after end_time {end}")
             }
+            Self::RawArtifactStoreCredential { field, key } => write!(
+                f,
+                "{field}.{key} contains artifact_store credential material; configure artifact_store.ssm_parameters and resolve through SSM"
+            ),
+            Self::ArtifactStoreS3CredentialsNotResolved => write!(
+                f,
+                "artifact_store.ssm_parameters must resolve access_key_id and secret_access_key before publishing to an s3 output_prefix"
+            ),
+            Self::InvalidArtifactStoreSsmParameter { field } => write!(
+                f,
+                "artifact_store.ssm_parameters.{field} must be an absolute SSM parameter path without whitespace"
+            ),
+            Self::ArtifactStoreSecretResolution { field, source } => write!(
+                f,
+                "artifact_store.ssm_parameters.{field} SSM resolution failed: {source}"
+            ),
         }
     }
 }
@@ -511,6 +569,12 @@ impl BacktestingRunManifest {
             &self.catalog_input.catalog_fs_storage_options,
             &self.catalog_input.catalog_fs_rust_storage_options,
         )?;
+        validate_catalog_storage_options(
+            output_prefix_protocol(&self.output_prefix),
+            &self.artifact_store.storage_options,
+            &self.artifact_store.rust_storage_options,
+        )?;
+        validate_artifact_store_secrets(&self.artifact_store)?;
         ensure_data_type_matches_fidelity(&self.catalog_input.data_type, accepted.fidelity_class)?;
         validate_strategy_source(&self.strategy)?;
         validate_starting_balances(&self.venue.starting_balances)?;
@@ -658,6 +722,106 @@ impl BacktestingRunManifest {
             .build())
     }
 
+    /// Return the single effective artifact-store option map for publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the configured artifact-store options conflict with
+    /// the output prefix protocol or use an unsupported S3 option key.
+    pub fn artifact_store_storage_options(
+        &self,
+    ) -> Result<Option<BTreeMap<String, String>>, ManifestError> {
+        if self.artifact_store.ssm_parameters.is_some() {
+            return Err(ManifestError::UnsupportedEnum {
+                field: "artifact_store.ssm_parameters",
+                value: "requires SSM resolver".to_string(),
+            });
+        }
+        let options = self
+            .artifact_store_base_storage_options()?
+            .unwrap_or_default();
+        ensure_artifact_store_s3_credentials_resolved(
+            output_prefix_protocol(&self.output_prefix),
+            &options,
+        )?;
+        if options.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(options))
+        }
+    }
+
+    pub fn artifact_store_storage_options_resolved<F>(
+        &self,
+        resolver: &mut F,
+    ) -> Result<Option<BTreeMap<String, String>>, ManifestError>
+    where
+        F: FnMut(&str, &str) -> Result<String, String>,
+    {
+        let mut options = self
+            .artifact_store_base_storage_options()?
+            .unwrap_or_default();
+        if let Some(parameters) = &self.artifact_store.ssm_parameters {
+            validate_artifact_store_ssm_parameters(parameters)?;
+            options.insert(
+                "access_key_id".to_string(),
+                resolve_artifact_store_secret(
+                    resolver,
+                    &parameters.region,
+                    "access_key_id",
+                    &parameters.access_key_id,
+                )?,
+            );
+            options.insert(
+                "secret_access_key".to_string(),
+                resolve_artifact_store_secret(
+                    resolver,
+                    &parameters.region,
+                    "secret_access_key",
+                    &parameters.secret_access_key,
+                )?,
+            );
+            if let Some(session_token) = &parameters.session_token {
+                options.insert(
+                    "session_token".to_string(),
+                    resolve_artifact_store_secret(
+                        resolver,
+                        &parameters.region,
+                        "session_token",
+                        session_token,
+                    )?,
+                );
+            }
+        }
+        ensure_artifact_store_s3_credentials_resolved(
+            output_prefix_protocol(&self.output_prefix),
+            &options,
+        )?;
+        if options.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(options))
+        }
+    }
+
+    fn artifact_store_base_storage_options(
+        &self,
+    ) -> Result<Option<BTreeMap<String, String>>, ManifestError> {
+        validate_catalog_storage_options(
+            output_prefix_protocol(&self.output_prefix),
+            &self.artifact_store.storage_options,
+            &self.artifact_store.rust_storage_options,
+        )?;
+        validate_artifact_store_secrets(&self.artifact_store)?;
+        if !self.artifact_store.rust_storage_options.is_empty() {
+            Ok(Some(self.artifact_store.rust_storage_options.clone()))
+        } else if !self.artifact_store.storage_options.is_empty() {
+            Ok(Some(self.artifact_store.storage_options.clone()))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Map the manifest into a NautilusTrader [`BacktestRunConfig`].
     ///
     /// # Errors
@@ -719,6 +883,12 @@ fn parse_catalog_fs_protocol(value: &str) -> Result<Option<String>, ManifestErro
     }
 }
 
+fn output_prefix_protocol(output_prefix: &str) -> Option<&str> {
+    output_prefix
+        .split_once("://")
+        .map(|(protocol, _)| protocol)
+}
+
 fn validate_catalog_storage_options(
     protocol: Option<&str>,
     storage_options: &BTreeMap<String, String>,
@@ -759,6 +929,105 @@ fn ensure_supported_s3_storage_option(field: &'static str, key: &str) -> Result<
             value: other.to_string(),
         }),
     }
+}
+
+fn validate_artifact_store_secrets(
+    artifact_store: &ManifestArtifactStore,
+) -> Result<(), ManifestError> {
+    reject_raw_artifact_store_credentials(
+        "artifact_store.storage_options",
+        &artifact_store.storage_options,
+    )?;
+    reject_raw_artifact_store_credentials(
+        "artifact_store.rust_storage_options",
+        &artifact_store.rust_storage_options,
+    )?;
+    if let Some(parameters) = &artifact_store.ssm_parameters {
+        validate_artifact_store_ssm_parameters(parameters)?;
+    }
+    Ok(())
+}
+
+fn ensure_artifact_store_s3_credentials_resolved(
+    protocol: Option<&str>,
+    options: &BTreeMap<String, String>,
+) -> Result<(), ManifestError> {
+    if protocol != Some("s3") {
+        return Ok(());
+    }
+    let has_access_key = options.contains_key("access_key_id") || options.contains_key("key");
+    let has_secret_key =
+        options.contains_key("secret_access_key") || options.contains_key("secret");
+    if has_access_key && has_secret_key {
+        Ok(())
+    } else {
+        Err(ManifestError::ArtifactStoreS3CredentialsNotResolved)
+    }
+}
+
+fn reject_raw_artifact_store_credentials(
+    field: &'static str,
+    options: &BTreeMap<String, String>,
+) -> Result<(), ManifestError> {
+    for key in options.keys() {
+        if is_s3_credential_option(key) {
+            return Err(ManifestError::RawArtifactStoreCredential {
+                field,
+                key: key.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn is_s3_credential_option(key: &str) -> bool {
+    matches!(
+        key,
+        "access_key_id" | "key" | "secret_access_key" | "secret" | "session_token" | "token"
+    )
+}
+
+fn validate_artifact_store_ssm_parameters(
+    parameters: &ManifestArtifactStoreSsmParameters,
+) -> Result<(), ManifestError> {
+    if parameters.region.trim().is_empty() {
+        return Err(ManifestError::MissingField(
+            "artifact_store.ssm_parameters.region",
+        ));
+    }
+    for (field, value) in [
+        ("access_key_id", parameters.access_key_id.as_str()),
+        ("secret_access_key", parameters.secret_access_key.as_str()),
+    ] {
+        validate_artifact_store_ssm_parameter(field, value)?;
+    }
+    if let Some(session_token) = &parameters.session_token {
+        validate_artifact_store_ssm_parameter("session_token", session_token)?;
+    }
+    Ok(())
+}
+
+fn validate_artifact_store_ssm_parameter(
+    field: &'static str,
+    value: &str,
+) -> Result<(), ManifestError> {
+    if !value.starts_with('/') || value.trim() != value || value.chars().any(char::is_whitespace) {
+        return Err(ManifestError::InvalidArtifactStoreSsmParameter { field });
+    }
+    Ok(())
+}
+
+fn resolve_artifact_store_secret<F>(
+    resolver: &mut F,
+    region: &str,
+    field: &'static str,
+    path: &str,
+) -> Result<String, ManifestError>
+where
+    F: FnMut(&str, &str) -> Result<String, String>,
+{
+    resolver(region, path)
+        .map_err(|source| ManifestError::ArtifactStoreSecretResolution { field, source })
 }
 
 fn ensure_data_type_matches_fidelity(
@@ -985,6 +1254,11 @@ mod tests {
             },
             artifact_root: "s3://bolt-parquet/nt-research-analytics".to_string(),
             output_prefix: "s3://bolt-parquet/nt-research-analytics/backtests/bnbusdc".to_string(),
+            artifact_store: ManifestArtifactStore {
+                storage_options: BTreeMap::new(),
+                rust_storage_options: BTreeMap::new(),
+                ssm_parameters: None,
+            },
             start_time: None,
             end_time: None,
         }
@@ -1077,6 +1351,115 @@ mod tests {
                 .expect("rust storage options")
                 .get("allow_http"),
             Some(&"false".to_string())
+        );
+    }
+
+    #[test]
+    fn artifact_store_options_are_toml_owned_for_publish_and_catalog_proof() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_root = "file:///bolt-artifacts".to_string();
+        manifest.output_prefix = "file:///bolt-artifacts/backtests/bnbusdc".to_string();
+        manifest.artifact_store.rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("allow_http".to_string(), "false".to_string()),
+        ]);
+
+        let options = manifest
+            .artifact_store_storage_options()
+            .expect("artifact store options")
+            .expect("rust storage options present");
+        assert_eq!(options.get("region"), Some(&"us-east-1".to_string()));
+        assert_eq!(options.get("allow_http"), Some(&"false".to_string()));
+    }
+
+    #[test]
+    fn artifact_store_rejects_s3_publish_without_resolved_ssm_credentials() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_store.rust_storage_options =
+            BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
+        let mut resolver_called = false;
+
+        let err = manifest
+            .artifact_store_storage_options_resolved(&mut |_region, _path| {
+                resolver_called = true;
+                Ok("unexpected-secret".to_string())
+            })
+            .unwrap_err();
+
+        assert!(
+            !resolver_called,
+            "missing SSM parameter config must fail before any secret lookup"
+        );
+        assert!(
+            err.to_string().contains("artifact_store.ssm_parameters")
+                && err.to_string().contains("s3 output_prefix")
+                && !err.to_string().contains("unexpected-secret"),
+            "error must explain the missing SSM credential binding without exposing values: {err}"
+        );
+    }
+
+    #[test]
+    fn artifact_store_resolves_s3_credentials_from_ssm_parameters() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_store.rust_storage_options =
+            BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
+        manifest.artifact_store.ssm_parameters = Some(ManifestArtifactStoreSsmParameters {
+            region: "us-east-1".to_string(),
+            access_key_id: "/bolt/artifacts/access-key-id".to_string(),
+            secret_access_key: "/bolt/artifacts/secret-access-key".to_string(),
+            session_token: Some("/bolt/artifacts/session-token".to_string()),
+        });
+
+        let mut requested_paths = Vec::new();
+        let options = manifest
+            .artifact_store_storage_options_resolved(&mut |region, path| {
+                assert_eq!(region, "us-east-1");
+                requested_paths.push(path.to_string());
+                match path {
+                    "/bolt/artifacts/access-key-id" => Ok("AKIATEST".to_string()),
+                    "/bolt/artifacts/secret-access-key" => Ok("secret-value".to_string()),
+                    "/bolt/artifacts/session-token" => Ok("session-value".to_string()),
+                    other => Err(format!("unexpected path {other}")),
+                }
+            })
+            .expect("resolved artifact store options")
+            .expect("s3 options");
+
+        assert_eq!(
+            requested_paths,
+            vec![
+                "/bolt/artifacts/access-key-id".to_string(),
+                "/bolt/artifacts/secret-access-key".to_string(),
+                "/bolt/artifacts/session-token".to_string(),
+            ]
+        );
+        assert_eq!(options.get("region"), Some(&"us-east-1".to_string()));
+        assert_eq!(options.get("access_key_id"), Some(&"AKIATEST".to_string()));
+        assert_eq!(
+            options.get("secret_access_key"),
+            Some(&"secret-value".to_string())
+        );
+        assert_eq!(
+            options.get("session_token"),
+            Some(&"session-value".to_string())
+        );
+    }
+
+    #[test]
+    fn artifact_store_rejects_raw_s3_credentials_in_toml() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_store.rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("secret_access_key".to_string(), "not-from-ssm".to_string()),
+        ]);
+
+        let err = manifest.artifact_store_storage_options().unwrap_err();
+
+        assert!(
+            err.to_string().contains("artifact_store")
+                && err.to_string().contains("SSM")
+                && !err.to_string().contains("not-from-ssm"),
+            "error must reject raw credentials without rendering secret value: {err}"
         );
     }
 

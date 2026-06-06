@@ -142,6 +142,10 @@ pins_non_latest_proof = false
 artifact_root = "s3://bolt-parquet/nt-research-analytics"
 output_prefix = "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-bnbusdc-2026-03-01"
 
+[manifest.artifact_store]
+storage_options = {}
+rust_storage_options = { region = "us-east-1" }
+
 [manifest.strategy]
 registry_key = "hurst_vpin_directional"
 

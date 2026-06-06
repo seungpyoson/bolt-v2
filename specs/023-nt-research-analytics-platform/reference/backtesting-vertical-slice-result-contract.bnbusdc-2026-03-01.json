@@ -4,7 +4,7 @@
   "nt_version": "6e059dcbb59ac1e582132fc431a581936c216c3c",
   "source_proof_id": "source-proof-bybit-spot-tick-trades",
   "source_proof_version": 1,
-  "manifest_hash": "921685dd70be98e8a5744b0eda33f9d91303999ab9098d89963a1e3747cd0dd5",
+  "manifest_hash": "4162f66301860594591dbbea9c2dcaac3be15ca6256e8f9dc14b85669ef59f0e",
   "acceptance_mode": "manual",
   "accepted_by": "backtesting-vertical-slice-operator",
   "accepted_at": "2026-06-02T00:00:00Z",

@@ -120,6 +120,27 @@ fn add_manifest_strategy(
     }
 }
 
+pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<BacktestResult> {
+    let run_config = manifest
+        .to_nt_run_config()
+        .map_err(|error| anyhow::anyhow!("manifest to NautilusTrader config failed: {error}"))?;
+    let mut node = BacktestNode::new(vec![run_config]).context("construct BacktestNode")?;
+    node.build().context("build BacktestNode")?;
+    {
+        let engine = node
+            .get_engine_mut(&manifest.run_id)
+            .with_context(|| format!("no engine for run id {}", manifest.run_id))?;
+        add_manifest_strategy(engine, manifest)?;
+    }
+    let mut results = node.run().context("run BacktestNode")?;
+    ensure!(
+        results.len() == 1,
+        "expected exactly one backtest result, got {}",
+        results.len()
+    );
+    Ok(results.remove(0))
+}
+
 /// Run one minimal NautilusTrader `BacktestNode` backtest over accepted data and
 /// return all produced artifacts plus the objective result contract.
 ///
@@ -204,25 +225,7 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     assert_time_window_overlaps_data(inputs.manifest, &canonical_table)?;
 
     // Gate 5: BacktestNode execution.
-    let run_config = inputs
-        .manifest
-        .to_nt_run_config()
-        .map_err(|error| anyhow::anyhow!("manifest to NautilusTrader config failed: {error}"))?;
-    let mut node = BacktestNode::new(vec![run_config]).context("construct BacktestNode")?;
-    node.build().context("build BacktestNode")?;
-    {
-        let engine = node
-            .get_engine_mut(&inputs.manifest.run_id)
-            .with_context(|| format!("no engine for run id {}", inputs.manifest.run_id))?;
-        add_manifest_strategy(engine, inputs.manifest)?;
-    }
-    let mut results = node.run().context("run BacktestNode")?;
-    ensure!(
-        results.len() == 1,
-        "expected exactly one backtest result, got {}",
-        results.len()
-    );
-    let nt_result = results.remove(0);
+    let nt_result = run_nt_backtest_node(inputs.manifest)?;
     // The read-back proof above loads the catalog through one NautilusTrader code
     // path; the engine consumed it through another. Bind the two by asserting the
     // engine's own iteration count equals the number of accepted trades inside the

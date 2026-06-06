@@ -10,6 +10,7 @@
 //! result contract as JSON artifacts.
 
 use std::{
+    collections::BTreeMap,
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
@@ -19,7 +20,7 @@ use anyhow::{Context, Result, ensure};
 use bytes::Bytes;
 use nautilus_persistence::parquet::create_object_store_from_path;
 use object_store::{ObjectStoreExt, path::Path as ObjectPath};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -34,7 +35,7 @@ use crate::{
     },
     result_contract::ResultArtifactUris,
     run_manifest::{BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE},
-    runner::{BacktestRunInputs, BacktestRunOutput, run_backtest},
+    runner::{BacktestRunInputs, BacktestRunOutput, run_backtest, run_nt_backtest_node},
     source_proof::{
         AcceptanceMode, IngestManifestObjectRecord, SourceProofReport, select_accepted_dataset,
     },
@@ -48,6 +49,8 @@ pub const CATALOG_DIR: &str = "nt-catalog";
 pub const RESULT_CONTRACT_FILE: &str = "backtest-result-contract.json";
 /// Accepted source-proof artifact filename.
 pub const ACCEPTED_SOURCE_PROOF_FILE: &str = "accepted-source-proof.json";
+/// Published-catalog `BacktestNode` proof artifact filename.
+pub const PUBLISHED_CATALOG_PROOF_FILE: &str = "published-catalog-proof.json";
 
 /// Config-driven dataset facts for one operator run.
 #[derive(Debug, Clone, Deserialize)]
@@ -97,6 +100,27 @@ pub struct PublishedArtifact {
 pub struct PublishedRunArtifacts {
     pub run: RunArtifacts,
     pub published_artifacts: Vec<PublishedArtifact>,
+    pub published_catalog_proof: Option<PublishedCatalogProof>,
+}
+
+/// Optional publish-time proof configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PublishOptions {
+    pub prove_published_catalog: bool,
+}
+
+/// Evidence that NautilusTrader consumed the published catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedCatalogProof {
+    pub proof_version: String,
+    pub catalog_uri: String,
+    pub catalog_fs_protocol: String,
+    pub direct_s3_catalog_access_proven: bool,
+    pub expected_iterations: usize,
+    pub nt_iterations: usize,
+    pub run_config_id: Option<String>,
+    pub nt_version: String,
+    pub created_at: String,
 }
 
 /// Parse an RFC 3339 timestamp into Unix nanoseconds.
@@ -313,11 +337,65 @@ pub fn run_from_run_spec_and_publish(
     gz_bytes: &[u8],
     output_dir: &Path,
 ) -> Result<PublishedRunArtifacts> {
-    let run = run_from_run_spec(spec, gz_bytes, output_dir)?;
-    let published_artifacts = publish_output_artifacts(output_dir, &spec.manifest.output_prefix)?;
+    run_from_run_spec_and_publish_with_options(
+        spec,
+        gz_bytes,
+        output_dir,
+        PublishOptions::default(),
+    )
+}
+
+pub fn run_from_run_spec_and_publish_with_options(
+    spec: &RunSpec,
+    gz_bytes: &[u8],
+    output_dir: &Path,
+    options: PublishOptions,
+) -> Result<PublishedRunArtifacts> {
+    let mut resolver = |_region: &str, _path: &str| {
+        Err("artifact-store SSM resolver was not configured".to_string())
+    };
+    run_from_run_spec_and_publish_with_resolver(spec, gz_bytes, output_dir, options, &mut resolver)
+}
+
+pub fn run_from_run_spec_and_publish_with_resolver<F>(
+    spec: &RunSpec,
+    gz_bytes: &[u8],
+    output_dir: &Path,
+    options: PublishOptions,
+    resolver: &mut F,
+) -> Result<PublishedRunArtifacts>
+where
+    F: FnMut(&str, &str) -> std::result::Result<String, String>,
+{
+    let storage_options = spec
+        .manifest
+        .artifact_store_storage_options_resolved(resolver)
+        .map_err(|error| anyhow::anyhow!("artifact-store options rejected: {error}"))?;
+    let mut run = run_from_run_spec(spec, gz_bytes, output_dir)?;
+    let mut published_artifacts = publish_output_artifacts_with_storage_options(
+        output_dir,
+        &spec.manifest.output_prefix,
+        storage_options.as_ref(),
+    )?;
+    let published_catalog_proof = if options.prove_published_catalog {
+        let proof =
+            prove_published_catalog_consumption(spec, &run.output, storage_options.as_ref())
+                .context("published catalog proof failed")?;
+        let updated_paths = write_published_catalog_proof(output_dir, &mut run, &proof)?;
+        published_artifacts.extend(publish_selected_artifacts_with_storage_options(
+            output_dir,
+            &updated_paths,
+            &spec.manifest.output_prefix,
+            storage_options.as_ref(),
+        )?);
+        Some(proof)
+    } else {
+        None
+    };
     Ok(PublishedRunArtifacts {
         run,
         published_artifacts,
+        published_catalog_proof,
     })
 }
 
@@ -332,6 +410,14 @@ pub fn publish_output_artifacts(
     output_dir: &Path,
     output_prefix: &str,
 ) -> Result<Vec<PublishedArtifact>> {
+    publish_output_artifacts_with_storage_options(output_dir, output_prefix, None)
+}
+
+fn publish_output_artifacts_with_storage_options(
+    output_dir: &Path,
+    output_prefix: &str,
+    storage_options: Option<&BTreeMap<String, String>>,
+) -> Result<Vec<PublishedArtifact>> {
     ensure!(
         output_dir.is_dir(),
         "output directory does not exist: {}",
@@ -344,9 +430,27 @@ pub fn publish_output_artifacts(
         output_dir.display()
     );
 
+    publish_selected_artifacts_with_storage_options(
+        output_dir,
+        &files,
+        output_prefix,
+        storage_options,
+    )
+}
+
+fn publish_selected_artifacts_with_storage_options(
+    output_dir: &Path,
+    files: &[PathBuf],
+    output_prefix: &str,
+    storage_options: Option<&BTreeMap<String, String>>,
+) -> Result<Vec<PublishedArtifact>> {
     ensure_local_publish_root_exists(output_prefix)?;
-    let (object_store, base_path, _) = create_object_store_from_path(output_prefix, None)
-        .with_context(|| format!("open output prefix {output_prefix:?}"))?;
+    let object_store_options = storage_options
+        .cloned()
+        .map(|options| options.into_iter().collect());
+    let (object_store, base_path, _) =
+        create_object_store_from_path(output_prefix, object_store_options)
+            .with_context(|| format!("open output prefix {output_prefix:?}"))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -355,9 +459,9 @@ pub fn publish_output_artifacts(
 
     let mut published = Vec::with_capacity(files.len());
     for local_path in files {
-        let relative = artifact_relative_path(output_dir, &local_path)?;
+        let relative = artifact_relative_path(output_dir, local_path)?;
         let bytes =
-            fs::read(&local_path).with_context(|| format!("read {}", local_path.display()))?;
+            fs::read(local_path).with_context(|| format!("read {}", local_path.display()))?;
         let byte_len = bytes.len() as u64;
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
@@ -372,7 +476,7 @@ pub fn publish_output_artifacts(
             .block_on(object_store.put(&object_path, Bytes::from(bytes).into()))
             .with_context(|| format!("publish artifact {relative} to {output_prefix}"))?;
         published.push(PublishedArtifact {
-            local_path,
+            local_path: local_path.clone(),
             published_uri: format!("{normalized_prefix}/{relative}"),
             bytes: byte_len,
             sha256,
@@ -380,6 +484,113 @@ pub fn publish_output_artifacts(
     }
 
     Ok(published)
+}
+
+fn prove_published_catalog_consumption(
+    spec: &RunSpec,
+    local_output: &BacktestRunOutput,
+    storage_options: Option<&BTreeMap<String, String>>,
+) -> Result<PublishedCatalogProof> {
+    let (manifest, catalog_uri) = published_catalog_manifest(spec, storage_options)?;
+    let nt_result = run_nt_backtest_node(&manifest)?;
+    let expected_iterations = local_output.nt_result.iterations;
+    ensure!(
+        nt_result.iterations == expected_iterations,
+        "published catalog BacktestNode iterations {} did not match local verified iterations {}",
+        nt_result.iterations,
+        expected_iterations
+    );
+    let direct_s3_catalog_access_proven =
+        manifest.catalog_input.catalog_fs_protocol == "s3" && catalog_uri.starts_with("s3://");
+    Ok(PublishedCatalogProof {
+        proof_version: "published-catalog-proof.v1".to_string(),
+        catalog_uri,
+        catalog_fs_protocol: manifest.catalog_input.catalog_fs_protocol,
+        direct_s3_catalog_access_proven,
+        expected_iterations,
+        nt_iterations: nt_result.iterations,
+        run_config_id: nt_result.run_config_id,
+        nt_version: local_output.contract.nt_version.clone(),
+        created_at: spec.created_at_utc.clone(),
+    })
+}
+
+fn published_catalog_manifest(
+    spec: &RunSpec,
+    storage_options: Option<&BTreeMap<String, String>>,
+) -> Result<(BacktestingRunManifest, String)> {
+    let catalog_uri = portable_artifact_uri(&spec.manifest.output_prefix, CATALOG_DIR);
+    let mut manifest = spec.manifest.clone();
+    manifest.catalog_input.catalog_fs_storage_options.clear();
+    manifest
+        .catalog_input
+        .catalog_fs_rust_storage_options
+        .clear();
+    manifest.artifact_store.storage_options.clear();
+    manifest.artifact_store.rust_storage_options.clear();
+    manifest.artifact_store.ssm_parameters = None;
+    if let Some(local_path) = catalog_uri.strip_prefix("file://") {
+        manifest.catalog_input.catalog_path = local_path.to_string();
+        manifest.catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
+    } else if let Some((protocol, path)) = catalog_uri.split_once("://") {
+        manifest.catalog_input.catalog_path = path.to_string();
+        manifest.catalog_input.catalog_fs_protocol = protocol.to_string();
+        manifest.catalog_input.catalog_fs_rust_storage_options =
+            storage_options.cloned().unwrap_or_default();
+    } else {
+        manifest.catalog_input.catalog_path = catalog_uri.clone();
+        manifest.catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
+    }
+    Ok((manifest, catalog_uri))
+}
+
+fn write_published_catalog_proof(
+    output_dir: &Path,
+    run: &mut RunArtifacts,
+    proof: &PublishedCatalogProof,
+) -> Result<Vec<PathBuf>> {
+    let proof_path = output_dir.join(PUBLISHED_CATALOG_PROOF_FILE);
+    fs::write(
+        &proof_path,
+        serde_json::to_string_pretty(proof).context("serialize published catalog proof")?,
+    )
+    .with_context(|| format!("write {}", proof_path.display()))?;
+
+    run.output.conversion_catalog_metadata = run
+        .output
+        .conversion_catalog_metadata
+        .clone()
+        .with_execution_catalog_access(
+            proof.catalog_uri.clone(),
+            proof.direct_s3_catalog_access_proven,
+        );
+    write_completed_conversion_artifacts(
+        output_dir,
+        &run.output.conversion_manifest,
+        &run.output.conversion_checkpoint,
+        &run.output.conversion_catalog_metadata,
+    )?;
+    run.output.contract.catalog_metadata_hash = run
+        .output
+        .conversion_catalog_metadata
+        .content_hash()
+        .context("hash updated catalog metadata")?;
+    run.output
+        .contract
+        .validate()
+        .map_err(|error| anyhow::anyhow!("updated result contract rejected: {error}"))?;
+    fs::write(
+        &run.contract_path,
+        serde_json::to_string_pretty(&run.output.contract)
+            .context("serialize updated result contract")?,
+    )
+    .with_context(|| format!("write {}", run.contract_path.display()))?;
+
+    Ok(vec![
+        proof_path,
+        output_dir.join(CATALOG_METADATA_FILE),
+        run.contract_path.clone(),
+    ])
 }
 
 fn ensure_local_publish_root_exists(output_prefix: &str) -> Result<()> {
@@ -743,6 +954,125 @@ mod tests {
     }
 
     #[test]
+    fn run_from_run_spec_and_publish_can_prove_published_catalog_consumption() {
+        let gz = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&gz);
+        let local_dir = tempfile::TempDir::new().unwrap();
+        let published_root = tempfile::TempDir::new().unwrap();
+        let artifact_root = format!("file://{}", published_root.path().display());
+        spec.manifest.artifact_root = artifact_root.clone();
+        spec.manifest.output_prefix = format!("{artifact_root}/backtests/published-run");
+
+        let published = run_from_run_spec_and_publish_with_options(
+            &spec,
+            &gz,
+            local_dir.path(),
+            PublishOptions {
+                prove_published_catalog: true,
+            },
+        )
+        .expect("published run with catalog proof");
+
+        let proof = published
+            .published_catalog_proof
+            .expect("published catalog proof");
+        assert_eq!(proof.nt_iterations, 3);
+        assert_eq!(proof.expected_iterations, 3);
+        assert_eq!(
+            proof.catalog_uri,
+            format!("{}/{}", spec.manifest.output_prefix, CATALOG_DIR)
+        );
+        assert!(
+            !proof.direct_s3_catalog_access_proven,
+            "file publish proof must not claim direct S3"
+        );
+        assert!(
+            published_root
+                .path()
+                .join("backtests/published-run/published-catalog-proof.json")
+                .is_file(),
+            "published proof artifact must be copied after the direct catalog run"
+        );
+    }
+
+    #[test]
+    fn run_from_run_spec_and_publish_rejects_s3_without_ssm_before_running_backtest() {
+        let gz = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&gz);
+        let local_dir = tempfile::TempDir::new().unwrap();
+        spec.manifest.output_prefix = "s3://example-bucket/backtests/published-run".to_string();
+        spec.manifest.artifact_store.rust_storage_options =
+            BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
+
+        let err = match run_from_run_spec_and_publish_with_options(
+            &spec,
+            &gz,
+            local_dir.path(),
+            PublishOptions {
+                prove_published_catalog: true,
+            },
+        ) {
+            Ok(_) => panic!("publish must reject missing SSM credential binding"),
+            Err(error) => error,
+        };
+
+        assert!(
+            err.to_string()
+                .contains("artifact_store.ssm_parameters must resolve"),
+            "publish must fail on missing SSM credential binding: {err}"
+        );
+        assert!(
+            !local_dir.path().join(CONVERSION_MANIFEST_FILE).exists(),
+            "publish credential validation must happen before local conversion/backtest artifacts are written"
+        );
+    }
+
+    #[test]
+    fn published_catalog_manifest_uses_resolved_artifact_store_options() {
+        let gz = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&gz);
+        spec.manifest.output_prefix = "s3://example-bucket/backtests/published-run".to_string();
+        spec.manifest.artifact_store.rust_storage_options =
+            BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
+        spec.manifest.artifact_store.ssm_parameters =
+            Some(crate::run_manifest::ManifestArtifactStoreSsmParameters {
+                region: "us-east-1".to_string(),
+                access_key_id: "/bolt/artifacts/access-key-id".to_string(),
+                secret_access_key: "/bolt/artifacts/secret-access-key".to_string(),
+                session_token: None,
+            });
+        let resolved_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("access_key_id".to_string(), "AKIATEST".to_string()),
+            ("secret_access_key".to_string(), "secret-value".to_string()),
+        ]);
+
+        let (manifest, catalog_uri) =
+            published_catalog_manifest(&spec, Some(&resolved_options)).expect("manifest");
+
+        assert_eq!(
+            catalog_uri,
+            "s3://example-bucket/backtests/published-run/nt-catalog"
+        );
+        assert_eq!(manifest.catalog_input.catalog_fs_protocol, "s3");
+        assert_eq!(
+            manifest.catalog_input.catalog_path,
+            "example-bucket/backtests/published-run/nt-catalog"
+        );
+        assert!(manifest.catalog_input.catalog_fs_storage_options.is_empty());
+        assert_eq!(
+            manifest.catalog_input.catalog_fs_rust_storage_options,
+            resolved_options
+        );
+        assert!(
+            !serde_json::to_string(&manifest)
+                .expect("serialize manifest")
+                .contains("/bolt/artifacts"),
+            "published catalog manifest must not carry SSM parameter paths into NT"
+        );
+    }
+
+    #[test]
     fn committed_run_spec_deserializes() {
         let spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
         assert_eq!(
@@ -836,6 +1166,14 @@ mod tests {
         contract
             .validate()
             .expect("committed contract is objective");
+    }
+
+    #[test]
+    fn committed_result_contract_manifest_hash_matches_run_spec() {
+        let spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
+        let contract: BacktestResultContract =
+            serde_json::from_str(COMMITTED_RESULT_CONTRACT).expect("result contract parses");
+        assert_eq!(contract.manifest_hash, spec.manifest.manifest_hash());
     }
 
     #[test]

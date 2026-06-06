@@ -1,5 +1,5 @@
-//! Binary: run the NautilusTrader backtesting vertical slice over a real
-//! accepted Bybit public-archive tick-trades object.
+//! Binary: run the NautilusTrader backtesting vertical slice over an accepted
+//! dataset object.
 //!
 //! Everything that identifies the dataset (accepted object, source proof, run
 //! manifest, instrument spec) comes from a config-driven run-spec TOML; the only
@@ -13,11 +13,15 @@ use std::{fs, path::PathBuf};
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use backtesting_vertical_slice::operator::{
-    PublishedArtifact, RunSpec, run_from_run_spec, run_from_run_spec_and_publish,
+use backtesting_vertical_slice::{
+    artifact_store_secrets::{ArtifactStoreSecretResolver, ArtifactStoreSsmResolver},
+    operator::{
+        PublishOptions, PublishedArtifact, PublishedCatalogProof, RunSpec, run_from_run_spec,
+        run_from_run_spec_and_publish_with_options, run_from_run_spec_and_publish_with_resolver,
+    },
 };
 
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[command(about = "Run the NautilusTrader backtesting vertical slice over an accepted dataset.")]
 struct Cli {
     /// Path to the run-spec TOML (dataset facts: object, source proof, manifest).
@@ -32,6 +36,9 @@ struct Cli {
     /// Publish produced artifacts to manifest.output_prefix after the local run succeeds.
     #[arg(long)]
     publish_output: bool,
+    /// After publishing, run BacktestNode against the published catalog and publish the proof.
+    #[arg(long, requires = "publish_output")]
+    prove_published_catalog: bool,
 }
 
 fn main() -> Result<()> {
@@ -42,13 +49,43 @@ fn main() -> Result<()> {
     let gz_bytes = fs::read(&cli.object_gz)
         .with_context(|| format!("read object {}", cli.object_gz.display()))?;
 
-    let (artifacts, published_artifacts): (_, Option<Vec<PublishedArtifact>>) =
-        if cli.publish_output {
-            let published = run_from_run_spec_and_publish(&spec, &gz_bytes, &cli.output_dir)?;
-            (published.run, Some(published.published_artifacts))
-        } else {
-            (run_from_run_spec(&spec, &gz_bytes, &cli.output_dir)?, None)
+    let (artifacts, published_artifacts, published_catalog_proof): (
+        _,
+        Option<Vec<PublishedArtifact>>,
+        Option<PublishedCatalogProof>,
+    ) = if cli.publish_output {
+        let publish_options = PublishOptions {
+            prove_published_catalog: cli.prove_published_catalog,
         };
+        let published = if spec.manifest.artifact_store.ssm_parameters.is_some() {
+            let mut resolver = ArtifactStoreSsmResolver::new()?;
+            run_from_run_spec_and_publish_with_resolver(
+                &spec,
+                &gz_bytes,
+                &cli.output_dir,
+                publish_options,
+                &mut |region, path| resolver.resolve_secret(region, path),
+            )?
+        } else {
+            run_from_run_spec_and_publish_with_options(
+                &spec,
+                &gz_bytes,
+                &cli.output_dir,
+                publish_options,
+            )?
+        };
+        (
+            published.run,
+            Some(published.published_artifacts),
+            published.published_catalog_proof,
+        )
+    } else {
+        (
+            run_from_run_spec(&spec, &gz_bytes, &cli.output_dir)?,
+            None,
+            None,
+        )
+    };
     let output = &artifacts.output;
 
     println!("accepted_object_sha256 = {}", artifacts.verified_sha256);
@@ -93,6 +130,17 @@ fn main() -> Result<()> {
     println!("fidelity_class = {:?}", output.contract.fidelity_class);
     println!("result_contract = {}", artifacts.contract_path.display());
     println!("accepted_source_proof = {}", artifacts.proof_path.display());
+    if let Some(proof) = published_catalog_proof {
+        println!("published_catalog_proof = {}", proof.catalog_uri);
+        println!(
+            "published_catalog_direct_s3 = {}",
+            proof.direct_s3_catalog_access_proven
+        );
+        println!(
+            "published_catalog_iterations = {}/{}",
+            proof.nt_iterations, proof.expected_iterations
+        );
+    }
     if let Some(published_artifacts) = published_artifacts {
         println!("published_artifacts = {}", published_artifacts.len());
         for artifact in published_artifacts {
@@ -108,6 +156,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::error::ErrorKind;
 
     #[test]
     fn cli_publish_output_flag_is_explicit_opt_in() {
@@ -135,5 +184,37 @@ mod tests {
         )
         .expect("publish cli parses");
         assert!(publish_cli.publish_output);
+    }
+
+    #[test]
+    fn cli_published_catalog_proof_requires_publish_output() {
+        let base_args = [
+            "backtesting-vertical-slice",
+            "--run-spec",
+            "run.toml",
+            "--object-gz",
+            "object.csv.gz",
+            "--output-dir",
+            "out",
+        ];
+
+        let err = Cli::try_parse_from(
+            base_args
+                .into_iter()
+                .chain(["--prove-published-catalog"])
+                .collect::<Vec<_>>(),
+        )
+        .expect_err("catalog proof must require publish-output");
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+
+        let cli = Cli::try_parse_from(
+            base_args
+                .into_iter()
+                .chain(["--publish-output", "--prove-published-catalog"])
+                .collect::<Vec<_>>(),
+        )
+        .expect("publish plus catalog proof parses");
+        assert!(cli.publish_output);
+        assert!(cli.prove_published_catalog);
     }
 }

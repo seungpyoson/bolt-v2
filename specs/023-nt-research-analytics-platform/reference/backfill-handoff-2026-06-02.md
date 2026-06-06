@@ -4,6 +4,9 @@ This is the handoff entry point for the one-off backfill state. It separates
 uploaded/manifest-backed evidence from venue-complete coverage and records what
 is actually wired today.
 
+PR context: PR #582 preserves this handoff as the reference-only replacement for
+PR #578. It does not add or bless the one-off scripts as maintained tooling.
+
 ## Naming
 
 - Report PMXT as `Polymarket (PMXT source)` in user-facing tables.
@@ -84,10 +87,10 @@ steps:
 | Deribit | 7,544 raw objects / 15,346,229 bytes | Partial | Manifest has 1,118 errors and incomplete base coverage |
 | Hyperliquid HIP-3 | 25 objects / 2,184,326 bytes | Targeted tranche only | HIP-3 metadata/funding style tranche |
 
-Seven-token venue accepted total excluding Polymarket: 28,686 objects and
-131,741,428,234 bytes.
+Seven-token venue accepted total excluding Polymarket: 28,681 objects and
+131,741,424,234 bytes.
 
-Combined accepted total including Polymarket (PMXT source): 418,562,440,536
+Combined accepted total including Polymarket (PMXT source): 418,562,436,536
 bytes.
 
 ## Important Open Gaps

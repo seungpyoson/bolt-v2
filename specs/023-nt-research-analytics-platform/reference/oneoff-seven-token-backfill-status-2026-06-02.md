@@ -8,7 +8,11 @@ Script names in this status are historical provenance for the one-off operator r
 
 Denomination rule: filter by base ticker only; retain every source-proven quote, settlement, and market variant as separate instruments. USDT, USDC, USD, inverse or coin-margined, and venue-specific spot quotes are not collapsed. The raw backfill stores denomination as source instrument identity; USD-normalized views are derived analytics only.
 
+Hash rule: when both `Manifest SHA256 field` and `Local manifest file SHA256` appear, the field is the manifest's embedded content hash recorded by the operator run, while the local file SHA256 is the checksum of the final manifest file after the embedded hash field was written. Differences are expected for those self-referential manifests; both values are retained for audit.
+
 Local retention rule: raw payloads must be uploaded to S3 and not retained on local disk. Local files are allowed only as transient hash/schema/upload buffers and as small manifests/source proofs. `scripts/backfill_bybit_to_s3.py` was patched on 2026-06-02 to delete transient payload files immediately after S3 upload and record `local_retention=deleted_after_s3_upload`.
+
+Local `/private/tmp` paths below are historical audit breadcrumbs only, not durable artifact URIs.
 
 Local cleanup evidence: on 2026-06-02, old local raw/progress caches were removed from `/private/tmp/bolt-v2-polymarket-backfill-full-v1/raw`, `/private/tmp/bolt-v2-bybit-backfill-target-full-3m/uploaded-payloads`, and `/private/tmp/bolt-v2-hyperliquid-core-3m-full-seven/manifests/progress`. Their roots now retain only small manifest or metadata files, and `/private/tmp` had 69 GiB free after cleanup.
 
@@ -16,11 +20,11 @@ Window used by current runs: 2026-03-01 through 2026-06-01 inclusive for date-pa
 
 ## Accepted
 
-Current accepted manifest-backed seven-token venue coverage as of 2026-06-02 16:06 KST: 28,686 payload/staged objects and 131,741,428,234 bytes, about 131.74 GB decimal or 122.69 GiB. This excludes Polymarket (PMXT source), unmanifested in-flight Bybit REST and OKX uploads, and excludes the completed-but-not-accepted OKX 2026-04-01 target manifest below because it contains a non-base-scoped `ALL_SWAP` payload selector.
+Current accepted manifest-backed seven-token venue coverage as of 2026-06-02 16:06 KST: 28,681 payload/staged objects and 131,741,424,234 bytes, about 131.74 GB decimal or 122.69 GiB. This excludes Polymarket (PMXT source), unmanifested in-flight Bybit REST and OKX uploads, and excludes the completed-but-not-accepted OKX 2026-04-01 target manifest below because it contains a non-base-scoped `ALL_SWAP` payload selector.
 
 Current accepted manifest-backed Polymarket (PMXT source) coverage: 748 hourly parquet objects and 286,821,012,302 bytes, about 286.82 GB decimal or 267.12 GiB. S3 physically contains 914 objects and 344,758,628,885 bytes under `s3://bolt-parquet/backfill-staging/2026-06-01/polymarket-pmxt-v2-streaming/`; the difference is not counted as accepted until covered by completed manifests.
 
-Combined accepted manifest-backed staged coverage including Polymarket (PMXT source): 418,562,440,536 bytes, about 418.56 GB decimal or 389.82 GiB.
+Combined accepted manifest-backed staged coverage including Polymarket (PMXT source): 418,562,436,536 bytes, about 418.56 GB decimal or 389.82 GiB.
 
 ### Binance
 

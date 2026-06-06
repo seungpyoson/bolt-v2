@@ -46,6 +46,9 @@ table_families = [
   "prediction_market_fee_models",
 ]
 
+# Evidence-state arrays contain table-family names only. Source-specific
+# prerequisites that are not table families live in `pending_checks`.
+
 [[venue_product_group]]
 venue = "binance"
 product_families = ["spot"]
@@ -120,25 +123,26 @@ vendor_or_forward_capture_only = ["order_book_deltas"]
 [[venue_product_group]]
 venue = "deribit"
 product_families = ["spot"]
-directly_backfillable = ["instruments", "trades", "bars"]
-bounded_or_current_only = ["quotes", "order_book_snapshots_fixed_depth"]
-pending_source_proof = ["instrument_universe_expired_window"]
+directly_backfillable = ["trades", "bars"]
+bounded_or_current_only = ["instruments", "quotes", "order_book_snapshots_fixed_depth"]
+pending_checks = ["instrument_universe_expired_window"]
 vendor_or_forward_capture_only = ["order_book_deltas", "order_book_snapshots_full"]
 
 [[venue_product_group]]
 venue = "deribit"
 product_families = ["future"]
-directly_backfillable = ["instruments", "trades", "bars", "index_prices", "funding_rates", "settlements", "delivery_prices", "liquidations"]
-bounded_or_current_only = ["quotes", "open_interest", "order_book_snapshots_fixed_depth"]
-pending_source_proof = ["instrument_universe_expired_window"]
+directly_backfillable = ["trades", "bars", "index_prices", "funding_rates", "settlements", "delivery_prices", "liquidations"]
+bounded_or_current_only = ["instruments", "quotes", "open_interest", "order_book_snapshots_fixed_depth"]
+pending_checks = ["instrument_universe_expired_window"]
 vendor_or_forward_capture_only = ["order_book_deltas", "order_book_snapshots_full"]
 
 [[venue_product_group]]
 venue = "deribit"
 product_families = ["option"]
-directly_backfillable = ["instruments", "trades", "bars", "settlements", "delivery_prices"]
-bounded_or_current_only = ["quotes", "option_greeks", "implied_volatility", "open_interest", "order_book_snapshots_fixed_depth"]
-pending_source_proof = ["instrument_universe_expired_window", "mark_prices"]
+directly_backfillable = ["trades", "bars", "settlements", "delivery_prices"]
+bounded_or_current_only = ["instruments", "quotes", "option_greeks", "implied_volatility", "open_interest", "order_book_snapshots_fixed_depth"]
+pending_source_proof = ["mark_prices"]
+pending_checks = ["instrument_universe_expired_window"]
 vendor_or_forward_capture_only = ["order_book_deltas", "order_book_snapshots_full", "forward_prices"]
 
 [[venue_product_group]]
@@ -147,7 +151,8 @@ product_families = ["core_perpetual"]
 directly_backfillable = ["instruments", "funding_rates"]
 owner_archive_backfillable = ["order_book_snapshots_fixed_depth", "order_book_snapshots_full", "open_interest", "trades"]
 bounded_or_current_only = ["quotes", "bars"]
-pending_source_proof = ["node_fills_trade_dedupe", "mark_prices", "index_prices", "archive_lag"]
+pending_source_proof = ["mark_prices", "index_prices"]
+pending_checks = ["node_fills_trade_dedupe", "archive_lag"]
 vendor_or_forward_capture_only = ["order_book_deltas"]
 
 [[venue_product_group]]
@@ -155,29 +160,31 @@ venue = "hyperliquid"
 product_families = ["spot"]
 directly_backfillable = ["instruments"]
 bounded_or_current_only = ["quotes", "bars", "order_book_snapshots_fixed_depth"]
-pending_source_proof = ["trades", "historical_spot_archive_coverage"]
+pending_source_proof = ["trades"]
+pending_checks = ["historical_spot_archive_coverage"]
 vendor_or_forward_capture_only = ["order_book_deltas", "open_interest", "funding_rates"]
 
 [[venue_product_group]]
 venue = "hyperliquid"
 product_families = ["hip3_perpetual"]
 directly_backfillable = ["instruments", "funding_rates"]
-bounded_or_current_only = ["quotes", "bars", "order_book_snapshots_fixed_depth", "dex_fields"]
-pending_source_proof = ["trades", "market_listing_age", "dex_qualified_archive_coverage"]
+bounded_or_current_only = ["quotes", "bars", "order_book_snapshots_fixed_depth"]
+pending_source_proof = ["trades"]
+pending_checks = ["dex_fields", "market_listing_age", "dex_qualified_archive_coverage"]
 vendor_or_forward_capture_only = ["order_book_deltas"]
 
 [[venue_product_group]]
 venue = "hyperliquid"
 product_families = ["prediction_market_outcome"]
 bounded_or_current_only = ["prediction_market_events", "prediction_market_outcomes", "trades", "bars", "order_book_snapshots_fixed_depth", "quotes"]
-pending_source_proof = ["outcome_archive_coverage", "quote_token_parser_fidelity", "outcome_metadata_history"]
+pending_checks = ["outcome_archive_coverage", "quote_token_parser_fidelity", "outcome_metadata_history"]
 vendor_or_forward_capture_only = ["order_book_deltas"]
 
 [[venue_product_group]]
 venue = "polymarket"
 product_families = ["prediction_market_outcome"]
-directly_backfillable = ["prediction_market_events", "prediction_market_outcomes", "prediction_market_fee_models"]
-owner_archive_backfillable = ["trades", "order_book_snapshots_fixed_depth", "order_book_snapshot_deltas", "bars"]
+directly_backfillable = []
+pending_source_proof = ["prediction_market_events", "prediction_market_outcomes", "prediction_market_fee_models", "trades", "order_book_snapshots_fixed_depth", "order_book_snapshot_deltas", "bars"]
 bounded_or_current_only = ["quotes"]
-pending_source_proof = ["native_deltas_vs_snapshots", "license", "coverage"]
+pending_checks = ["native_deltas_vs_snapshots", "license", "coverage"]
 vendor_or_forward_capture_only = ["order_book_deltas"]

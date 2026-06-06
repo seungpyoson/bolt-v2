@@ -26,7 +26,8 @@ Required fields:
 - `evidence_state`: one of the states in `backfill-table-contract.v1`.
 - `fixture_type`: `prediction-market`, `perps-spot`, `options`, or `mixed`.
 - `requested_time_range`: inclusive start and exclusive end in UTC.
-- `coverage_time_range`: proven source coverage in UTC.
+- `coverage_time_range`: proven source coverage in UTC, using the same
+  inclusive start and exclusive end convention as `requested_time_range`.
 - `instrument_universe_id`: manifest id for instruments active during the
   requested window.
 - `raw_sample_uri`: portable sample raw-payload pointer under `artifact_root`.
@@ -40,12 +41,23 @@ Required fields:
   `TRADE_BAR_REPLAY`, `METADATA_ONLY`, `SIGNAL_ONLY`, or
   `FORWARD_CAPTURE_PENDING`.
 - `forbidden_claims`: claims this source must not support.
+- `claim_limits`: list of machine-readable limitation records with `id`,
+  `severity`, `claim`, `reason`, and `evidence_ref`.
 - `gap_policy_id`: required when gaps are tolerated.
 - `required_checks`: structured check results.
 
 Accepted records are immutable. A new schema, source, coverage window, parser,
 license, or fidelity finding creates a new `source_proof_version` or a new
 `source_proof_id` that supersedes the prior record.
+
+Accepted proofs require a backfillable evidence state. `status=accepted` is
+valid for a positive canonical backfill claim only when `evidence_state` is
+`directly_backfillable` or `owner_archive_backfillable`.
+`bounded_or_current_only`, `pending_source_proof`,
+`vendor_or_forward_capture_only`, `not_applicable`, and
+`excluded_from_current_scope` cannot be accepted for canonical one-year backfill
+selection. They can be recorded only as rejected, excluded, or bounded evidence
+with explicit `claim_limits`.
 
 ## Required Checks
 
@@ -68,6 +80,15 @@ Every source proof has explicit pass/fail/pending checks:
   signal/metadata only.
 - `storage`: raw payload, schema sample, and manifest pointers are under the
   configured `artifact_root`.
+
+Each required check is a structured record with `check_id`, `status`,
+`evidence_ref`, `checked_at`, and `summary`. `status` is `passed`, `pending`,
+`failed`, or `not_applicable`. `not_applicable` is valid only when the source
+proof records the claim limit that makes the check irrelevant.
+
+For `METADATA_ONLY` or `SIGNAL_ONLY` proofs, the `nt_mapping` check passes only
+when `nt_mapping_status = not_applicable` and `claim_limits` forbid
+NautilusTrader catalog/backtest replay claims.
 
 All checks must pass before `status=accepted`. Pending or failed checks keep the
 proof out of canonical backfill selection.

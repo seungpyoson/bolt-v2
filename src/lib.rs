@@ -20,6 +20,7 @@ pub mod bolt_v3_order_intent;
 pub mod bolt_v3_position_contract;
 pub mod bolt_v3_price_to_beat;
 pub mod bolt_v3_providers;
+pub mod bolt_v3_quote_lifecycle;
 pub mod bolt_v3_readiness;
 pub mod bolt_v3_secrets;
 pub mod bolt_v3_source_integrity;

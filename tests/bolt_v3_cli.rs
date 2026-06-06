@@ -3333,10 +3333,7 @@ max_notional_per_order = "10.00"
 #[test]
 fn bolt_v3_secrets_check_rejects_missing_provider_secret_field() {
     let config_path = write_bolt_v3_fixture_root(|root| {
-        root.replace(
-            "api_secret_ssm_path = \"/bolt/polymarket/api-secret\"\n",
-            "",
-        )
+        root.replace("api_secret_ssm_path = \"/bolt/polymarket/api-secret\"", "")
     });
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([

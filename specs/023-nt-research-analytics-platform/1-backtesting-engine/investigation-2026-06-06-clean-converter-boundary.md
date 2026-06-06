@@ -30,6 +30,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - non-latest source-proof pins now require structured manifest justification: `normal` runs still cannot pin them, non-normal pins require `proof_pin_reason_code`, and `audit_or_investigation` pins require `proof_pin_reason_detail`
 - the accepted `proof_pin_reason_code` vocabulary now matches the plan/reference contract, including published-result reproduction and regression-comparison pins
 - the CLI has an explicit `--publish-output` opt-in that copies the verified local artifact tree to `manifest.output_prefix` through NT/object-store plumbing after the local run succeeds
+- published artifacts are create-only: the operator preflights the bounded target artifact set and writes through object-store `PutMode::Create`, so an existing published artifact rejects the run instead of being overwritten
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
 - the current `BacktestExtensionSurface` classification is recorded in `backtest-extension-surface-matrix.md`; supported primitive NT controls are TOML pass-throughs, Bolt-owned pieces are provenance/governance boundaries, and unmodeled NT model/system surfaces fail before NT config construction
 
@@ -236,7 +237,9 @@ GREEN checks after implementation:
 - `just bte-test acceptance_blocked_when_source_binding_family_disagrees_with_registry acceptance_blocked_when_source_binding_missing_from_registry select_rejects_unknown_source_binding select_rejects_object_from_other_venue select_accepts_configured_source_host_with_url_variations`: 5 passed after source-proof acceptance began rejecting registry-missing source bindings and selection kept a forged-record guard
 - `just bte-test rejects_non_latest_proof_pin_for_normal_run rejects_non_latest_proof_pin_without_reason_code rejects_audit_non_latest_proof_pin_without_reason_detail accepts_non_latest_reproduction_pin_with_reason_code`: 4 passed after adding typed non-latest proof-pin reason fields
 - `just bte-test accepts_all_configured_non_latest_proof_pin_reason_codes_from_toml`: 1 passed after adding the missing `published_result_reproduction` and `regression_comparison` enum variants
-- `just bte-test`: 209 passed, including 2 slow public API tests
+- `just bte-test publish_output_artifacts_rejects_existing_published_artifact_without_overwrite`: RED failed because publish used default object-store overwrite semantics, then GREEN passed after bounded target preflight plus `PutMode::Create`
+- `just bte-test publish_output_artifacts_rejects_existing_published_artifact_without_overwrite run_from_run_spec_and_publish_can_prove_published_catalog_consumption`: 2 passed after proof-mode publish stopped publishing the metadata/contract artifacts before the proof updates them
+- `just bte-test`: 210 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed
@@ -333,6 +336,13 @@ Confirmed root causes:
   enum previously omitted them. TOML manifests using those documented reason
   codes failed deserialization before validation, so the governance vocabulary
   was not actually usable end to end.
+- Published-output overwrite mismatch: object-store `put` defaults to
+  overwrite/upsert, so a dirty or partially populated publish prefix could be
+  overwritten by a new run. That violated the clean-output proof requirement
+  and could hide stale converted artifacts. Publish now performs a bounded
+  target preflight and writes with object-store `PutMode::Create`; proof-mode
+  publish withholds the metadata and result-contract files until the
+  published-catalog proof updates them, avoiding intentional double-writes.
 
 No-repeat controls before any future broad backfill or BTE conversion:
 
@@ -380,6 +390,9 @@ No-repeat controls before any future broad backfill or BTE conversion:
 17. The Rust manifest enum, reference contract, and plan vocabulary for
     `proof_pin_reason_code` must stay in lockstep; every documented reason code
     needs a TOML deserialization test.
+18. Published artifacts must be create-only under the configured output prefix;
+    an existing target object is dirty-prefix evidence and must reject the run
+    instead of being overwritten.
 
 
 ## Recommendation
@@ -387,7 +400,7 @@ No-repeat controls before any future broad backfill or BTE conversion:
 Proceed with the next implementation slice as production proof plus remaining NT-surface hardening, not custom simulator work:
 
 1. Create or provide SSM parameter paths for artifact-store S3 credentials, keep `conditional_put = "etag"` in the artifact-store Rust options, add only those parameter paths to the run spec, and rerun `--publish-output --prove-published-catalog` for the accepted BNBUSDC object.
-2. Verify S3 listing and artifact hashes under `nt-research-analytics/`, then require the published-catalog proof to show `BacktestNode` consumed the clean catalog using NT's `BacktestDataConfig` cloud catalog fields and the same resolved object-store option map.
+2. Verify the configured S3 output prefix is empty before the run, then verify the post-run S3 listing and artifact hashes under `nt-research-analytics/`; require the published-catalog proof to show `BacktestNode` consumed the clean catalog using NT's `BacktestDataConfig` cloud catalog fields and the same resolved object-store option map.
 3. Add typed manifest/config coverage for NT leverage maps, margin model, simulation modules, fill model, latency model, fee model, and settlement prices.
 4. Keep unsupported NT venue/system model surfaces rejected before NT config construction; if future TOML introduces typed placeholders for those surfaces, make the validation error explicit and contract-named.
 5. Only then claim a clean production BTE artifact path.

@@ -19,7 +19,7 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use bytes::Bytes;
 use nautilus_persistence::parquet::create_object_store_from_path;
-use object_store::{ObjectStoreExt, path::Path as ObjectPath};
+use object_store::{Error as ObjectStoreError, ObjectStoreExt, PutMode, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -379,11 +379,20 @@ where
         .artifact_store_storage_options_resolved(resolver)
         .map_err(|error| anyhow::anyhow!("artifact-store options rejected: {error}"))?;
     let mut run = run_from_run_spec(spec, gz_bytes, output_dir)?;
-    let mut published_artifacts = publish_output_artifacts_with_storage_options(
-        output_dir,
-        &spec.manifest.output_prefix,
-        storage_options.as_ref(),
-    )?;
+    let mut published_artifacts = if options.prove_published_catalog {
+        publish_output_artifacts_with_storage_options_excluding(
+            output_dir,
+            &spec.manifest.output_prefix,
+            storage_options.as_ref(),
+            &[CATALOG_METADATA_FILE, RESULT_CONTRACT_FILE],
+        )?
+    } else {
+        publish_output_artifacts_with_storage_options(
+            output_dir,
+            &spec.manifest.output_prefix,
+            storage_options.as_ref(),
+        )?
+    };
     let published_catalog_proof = if options.prove_published_catalog {
         let proof =
             prove_published_catalog_consumption(spec, &run.output, storage_options.as_ref())
@@ -425,12 +434,33 @@ fn publish_output_artifacts_with_storage_options(
     output_prefix: &str,
     storage_options: Option<&BTreeMap<String, String>>,
 ) -> Result<Vec<PublishedArtifact>> {
+    publish_output_artifacts_with_storage_options_excluding(
+        output_dir,
+        output_prefix,
+        storage_options,
+        &[],
+    )
+}
+
+fn publish_output_artifacts_with_storage_options_excluding(
+    output_dir: &Path,
+    output_prefix: &str,
+    storage_options: Option<&BTreeMap<String, String>>,
+    excluded_relative_paths: &[&str],
+) -> Result<Vec<PublishedArtifact>> {
     ensure!(
         output_dir.is_dir(),
         "output directory does not exist: {}",
         output_dir.display()
     );
-    let files = collect_output_files(output_dir)?;
+    let files = collect_output_files(output_dir)?
+        .into_iter()
+        .filter(|path| {
+            artifact_relative_path(output_dir, path)
+                .map(|relative| !excluded_relative_paths.contains(&relative.as_str()))
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
     ensure!(
         !files.is_empty(),
         "output directory has no artifacts: {}",
@@ -464,23 +494,40 @@ fn publish_selected_artifacts_with_storage_options(
         .context("build object-store runtime")?;
     let normalized_prefix = output_prefix.trim_end_matches('/');
 
-    let mut published = Vec::with_capacity(files.len());
+    let mut targets = Vec::with_capacity(files.len());
     for local_path in files {
         let relative = artifact_relative_path(output_dir, local_path)?;
+        let object_path = ObjectPath::from(published_object_key(&base_path, &relative));
+        targets.push((local_path, relative, object_path));
+    }
+    for (_, relative, object_path) in &targets {
+        match runtime.block_on(object_store.head(object_path)) {
+            Ok(_) => anyhow::bail!(
+                "published artifact {relative} already exists under {output_prefix}; choose a clean output_prefix"
+            ),
+            Err(ObjectStoreError::NotFound { .. }) => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("check published artifact {relative} under {output_prefix}")
+                });
+            }
+        }
+    }
+
+    let mut published = Vec::with_capacity(targets.len());
+    for (local_path, relative, object_path) in targets {
         let bytes =
             fs::read(local_path).with_context(|| format!("read {}", local_path.display()))?;
         let byte_len = bytes.len() as u64;
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
         let sha256 = hex::encode(hasher.finalize());
-        let object_key = if base_path.is_empty() {
-            relative.clone()
-        } else {
-            format!("{}/{}", base_path.trim_end_matches('/'), relative)
-        };
-        let object_path = ObjectPath::from(object_key);
         runtime
-            .block_on(object_store.put(&object_path, Bytes::from(bytes).into()))
+            .block_on(object_store.put_opts(
+                &object_path,
+                Bytes::from(bytes).into(),
+                PutMode::Create.into(),
+            ))
             .with_context(|| format!("publish artifact {relative} to {output_prefix}"))?;
         published.push(PublishedArtifact {
             local_path: local_path.clone(),
@@ -491,6 +538,14 @@ fn publish_selected_artifacts_with_storage_options(
     }
 
     Ok(published)
+}
+
+fn published_object_key(base_path: &str, relative: &str) -> String {
+    if base_path.is_empty() {
+        relative.to_string()
+    } else {
+        format!("{}/{}", base_path.trim_end_matches('/'), relative)
+    }
 }
 
 fn prove_published_catalog_consumption(
@@ -977,6 +1032,37 @@ mod tests {
                 .join("backtests/published-run/nt-catalog/data/trades/BNBUSDC.BYBIT")
                 .is_dir(),
             "published NT catalog tree must include trade data"
+        );
+    }
+
+    #[test]
+    fn publish_output_artifacts_rejects_existing_published_artifact_without_overwrite() {
+        let output_dir = tempfile::TempDir::new().unwrap();
+        fs::write(
+            output_dir.path().join("result-contract.json"),
+            b"new-result",
+        )
+        .unwrap();
+        let published_root = tempfile::TempDir::new().unwrap();
+        let output_prefix = format!(
+            "file://{}/backtests/published-run",
+            published_root.path().display()
+        );
+        let existing = published_root
+            .path()
+            .join("backtests/published-run/result-contract.json");
+        fs::create_dir_all(existing.parent().unwrap()).unwrap();
+        fs::write(&existing, b"existing-result").unwrap();
+
+        let err = publish_output_artifacts(output_dir.path(), &output_prefix)
+            .err()
+            .expect("publish must reject pre-existing artifact");
+
+        assert!(err.to_string().contains("already exists"), "{err}");
+        assert_eq!(
+            fs::read(&existing).unwrap(),
+            b"existing-result",
+            "existing published artifact must not be overwritten"
         );
     }
 

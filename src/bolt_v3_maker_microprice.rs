@@ -97,10 +97,20 @@ pub fn micro_price(best_bid: f64, best_ask: f64, bid_size: f64, ask_size: f64) -
     // Sizes are now non-negative finite, so `total` is non-negative; a zero
     // total leaves the weighted price undefined (0/0).
     let total = bid_size + ask_size;
-    if total <= ZERO_F64 {
+    if total <= ZERO_F64 || !total.is_finite() {
         return None;
     }
-    Some((best_ask * bid_size + best_bid * ask_size) / total)
+    let micro = (best_ask * bid_size + best_bid * ask_size) / total;
+    // The micro-price is a convex combination of the two touch prices, so it MUST
+    // lie in `[best_bid, best_ask]`. The only way it escapes is overflow in the
+    // size arithmetic for absurd-but-finite inputs: the sum saturating to a
+    // non-finite `total` (guarded above) or the weighted numerator overflowing to
+    // non-finite. Both fail closed here so a degenerate value never escapes the
+    // band into a quote.
+    if !micro.is_finite() {
+        return None;
+    }
+    Some(micro)
 }
 
 /// Convex blend of the oracle fair (the prior) and the book micro-price (the
@@ -149,7 +159,15 @@ pub fn micro_price_anchor(oracle_fair: f64, micro: Option<f64>, micro_weight: f6
     if micro_weight == UNIT_F64 {
         return Some(micro);
     }
-    Some(oracle_fair + micro_weight * (micro - oracle_fair))
+    let blended = oracle_fair + micro_weight * (micro - oracle_fair);
+    // Defensive: with a finite oracle, a finite micro, and w ∈ [0, 1], the blend
+    // is always finite for the probability inputs this maker uses. Guard it anyway
+    // so arbitrary finite-but-extreme magnitudes (e.g. near ±f64::MAX) fail closed
+    // rather than emit a non-finite quote.
+    if !blended.is_finite() {
+        return None;
+    }
+    Some(blended)
 }
 
 #[cfg(test)]
@@ -278,6 +296,23 @@ mod tests {
         assert!(micro_price(0.40, 0.60, 10.0, f64::INFINITY).is_none());
     }
 
+    #[test]
+    fn micro_price_returns_the_locked_touch_when_book_is_locked() {
+        // A locked book (best_bid == best_ask) is not crossed; the weighted touch
+        // collapses to that single price for any valid sizes.
+        let micro = micro_price(0.50, 0.50, 10.0, 5.0).expect("locked book is valid");
+        assert!((micro - 0.50).abs() < EPSILON);
+    }
+
+    #[test]
+    fn micro_price_fails_closed_on_size_overflow() {
+        // Absurd-but-finite sizes whose sum overflows to a non-finite total must
+        // not let a degenerate value escape the [best_bid, best_ask] band.
+        assert!(micro_price(0.40, 0.60, f64::MAX, f64::MAX).is_none());
+        // Numerator overflow with a finite total likewise fails closed.
+        assert!(micro_price(f64::MAX, f64::MAX, f64::MAX, 1.0).is_none());
+    }
+
     // ---- micro_price_anchor ----
 
     #[test]
@@ -332,6 +367,27 @@ mod tests {
     }
 
     #[test]
+    fn anchor_is_monotonic_decreasing_when_micro_below_oracle() {
+        // Mirror of the rising property: with the micro BELOW the oracle, the
+        // anchor falls monotonically as w sweeps 0 -> 1, staying within
+        // [micro, oracle] throughout.
+        let oracle = 0.70;
+        let micro = 0.30;
+        let weights = [0.0, 0.1, 0.2, 0.4, 0.5, 0.6, 0.8, 0.9, 1.0];
+        let mut prev = micro_price_anchor(oracle, Some(micro), weights[0]).unwrap();
+        assert!((prev - oracle).abs() < EPSILON);
+        for &w in &weights[1..] {
+            let cur = micro_price_anchor(oracle, Some(micro), w).unwrap();
+            assert!(cur <= prev + EPSILON, "anchor must fall with w (w = {w})");
+            assert!(
+                micro - EPSILON <= cur && cur <= oracle + EPSILON,
+                "anchor {cur} outside [micro, oracle] at w = {w}"
+            );
+            prev = cur;
+        }
+    }
+
+    #[test]
     fn anchor_falls_back_to_the_oracle_when_the_book_is_degenerate() {
         // A degenerate book yields micro = None; the anchor must still quote off
         // the oracle prior unchanged, for any valid weight.
@@ -367,6 +423,14 @@ mod tests {
         assert!(micro_price_anchor(0.50, Some(0.5), f64::NAN).is_none());
         // A non-finite oracle fails closed even when the book is degenerate.
         assert!(micro_price_anchor(f64::NAN, None, 0.5).is_none());
+    }
+
+    #[test]
+    fn anchor_fails_closed_on_a_non_finite_blend() {
+        // Oracle and micro are each finite and the weight is in range, but their
+        // extreme magnitudes overflow the blend to non-finite -> fail closed rather
+        // than emit a non-finite quote.
+        assert!(micro_price_anchor(f64::MAX, Some(f64::MIN), 0.5).is_none());
     }
 
     #[test]

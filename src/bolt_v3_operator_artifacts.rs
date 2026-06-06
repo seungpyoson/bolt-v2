@@ -53,6 +53,7 @@ use crate::{
         sample_metadata_response_targets, trade_chunk_count_probe_passed,
     },
     bolt_v3_market_families::{self, MarketSelectionTarget, SelectedMarketRequirement},
+    bolt_v3_numeric::is_positive_finite,
     bolt_v3_providers::{
         ClobV2AdapterSigningSourceMaterializationRequest,
         ClobV2CollateralAccountingSourceMaterialization,
@@ -3702,7 +3703,7 @@ fn data_client_trade_probe_events_for_targets(
         if trade.data_client_id != client_key || !trade_targets.contains(&trade.instrument_id) {
             continue;
         }
-        if trade.size <= 0.0 || !trade.size.is_finite() {
+        if !is_positive_finite(trade.size) {
             return Err(
                 BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
                     field: "trade.size",

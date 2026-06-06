@@ -13242,14 +13242,6 @@ reason = "Clamps min-observed targets to at least one against trade targets; alg
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
-kind = "number"
-literal = '''0.0'''
-context = '''if trade.size <= 0.0 || !trade.size.is_finite() {'''
-classification = "trade_size_nonpositive_guard"
-reason = "Rejects non-positive or non-finite trade sizes in the trade probe; validation guard, not a tunable value."
-
-[[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"trade.captured_at_unix_nanos"'''
 context = '''nanos_to_millis_checked(trade.captured_at_unix_nanos, "trade.captured_at_unix_nanos")?;'''

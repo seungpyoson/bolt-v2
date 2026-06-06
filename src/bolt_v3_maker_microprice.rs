@@ -137,9 +137,18 @@ pub fn micro_price_anchor(oracle_fair: f64, micro: Option<f64>, micro_weight: f6
         Some(m) if m.is_finite() => m,
         _ => return Some(oracle_fair),
     };
-    // `oracle + w·(micro − oracle)` is the convex blend written so that w = 0
-    // returns the oracle EXACTLY and w = 1 returns the micro exactly (no float
-    // drift from `(1 − w)` rounding), and is monotonic in w.
+    // Endpoint exactness is guaranteed by construction, not by float luck:
+    //   - w = 0: the blend below already returns the oracle exactly (`0·Δ = 0`),
+    //     which is why it is written as `oracle + w·Δ` rather than
+    //     `(1 − w)·oracle + w·micro` (the latter would drift at w = 0).
+    //   - w = 1: `oracle + 1·(micro − oracle)` is NOT guaranteed to recover
+    //     `micro` bit-exactly — the subtraction then re-addition can round (e.g.
+    //     oracle = 0.03, micro = 0.30 lands on 0.30000000000000004) — so the
+    //     w = 1 endpoint is short-circuited to the micro.
+    // The interior blend `oracle + w·(micro − oracle)` is monotonic in w.
+    if micro_weight == UNIT_F64 {
+        return Some(micro);
+    }
     Some(oracle_fair + micro_weight * (micro - oracle_fair))
 }
 
@@ -283,6 +292,16 @@ mod tests {
         let micro = 0.61;
         let anchored = micro_price_anchor(0.55, Some(micro), 1.0).unwrap();
         assert_eq!(anchored, micro, "w = 1 must return the micro exactly");
+
+        // Decimal pairs where the raw blend `oracle + 1·(micro − oracle)` drifts
+        // by a ULP (here 0.03 + (0.30 − 0.03) = 0.30000000000000004) must STILL
+        // return the micro bit-exactly — the w = 1 endpoint is short-circuited,
+        // not left to float round-trip luck.
+        let drifty = micro_price_anchor(0.03, Some(0.30), 1.0).unwrap();
+        assert_eq!(
+            drifty, 0.30,
+            "w = 1 must return the micro exactly even when the raw blend drifts"
+        );
     }
 
     #[test]

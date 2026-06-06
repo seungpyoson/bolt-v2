@@ -559,6 +559,10 @@ pub struct AcceptedDataset {
     pub(crate) instrument_universe_id: String,
     pub(crate) fidelity_class: SourceProofFidelityClass,
     pub(crate) forbidden_claims: Vec<String>,
+    pub(crate) acceptance_mode: AcceptanceMode,
+    pub(crate) accepted_by: String,
+    pub(crate) accepted_at: String,
+    pub(crate) accepted_object_sha256: String,
     pub(crate) object: IngestManifestObjectRecord,
     _accepted_gate: AcceptedGate,
 }
@@ -626,6 +630,20 @@ pub fn select_accepted_dataset(
         });
     }
 
+    let acceptance_mode = proof
+        .acceptance_mode
+        .ok_or(AcceptanceError::MissingField("acceptance_mode"))?;
+    let accepted_by = proof
+        .accepted_by
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(AcceptanceError::MissingField("accepted_by"))?;
+    let accepted_at = proof
+        .accepted_at
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(AcceptanceError::MissingField("accepted_at"))?;
+
     Ok(AcceptedDataset {
         source_proof_id: proof.source_proof_id.clone(),
         source_proof_version: proof.source_proof_version,
@@ -636,6 +654,10 @@ pub fn select_accepted_dataset(
         instrument_universe_id: proof.instrument_universe_id.clone(),
         fidelity_class: proof.fidelity_class,
         forbidden_claims: proof.forbidden_claims.clone(),
+        acceptance_mode,
+        accepted_by: accepted_by.clone(),
+        accepted_at: accepted_at.clone(),
+        accepted_object_sha256: object.sha256.clone(),
         object: object.clone(),
         _accepted_gate: AcceptedGate,
     })
@@ -856,6 +878,26 @@ mod tests {
         assert_eq!(accepted.status, SourceProofStatus::Accepted);
         assert_eq!(accepted.acceptance_mode, Some(AcceptanceMode::Manual));
         assert!(accepted.is_accepted());
+    }
+
+    #[test]
+    fn accepted_dataset_carries_acceptance_provenance() {
+        let object = manifest_object();
+        let proof = candidate_proof()
+            .accept(
+                AcceptanceMode::Manual,
+                "vertical-slice-operator",
+                "2026-06-02T00:00:00Z",
+            )
+            .expect("accepted proof");
+
+        let accepted =
+            select_accepted_dataset(&proof, &object, &object.sha256).expect("accepted dataset");
+
+        assert_eq!(accepted.acceptance_mode, AcceptanceMode::Manual);
+        assert_eq!(accepted.accepted_by, "vertical-slice-operator");
+        assert_eq!(accepted.accepted_at, "2026-06-02T00:00:00Z");
+        assert_eq!(accepted.accepted_object_sha256, object.sha256);
     }
 
     #[test]

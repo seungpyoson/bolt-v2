@@ -14,7 +14,10 @@ use nautilus_backtest::result::BacktestResult;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{run_manifest::StrategySource, source_proof::SourceProofFidelityClass};
+use super::{
+    run_manifest::StrategySource,
+    source_proof::{AcceptanceMode, SourceProofFidelityClass},
+};
 
 /// Result contract schema version.
 pub const RESULT_CONTRACT_VERSION: &str = "backtest-result-contract.v1";
@@ -130,6 +133,11 @@ pub struct BacktestResultContract {
     pub nt_version: String,
     pub source_proof_id: String,
     pub source_proof_version: u32,
+    pub manifest_hash: String,
+    pub acceptance_mode: AcceptanceMode,
+    pub accepted_by: String,
+    pub accepted_at: String,
+    pub accepted_object_sha256: String,
     pub catalog_hash: String,
     pub strategy_config_hash: String,
     pub run_purpose: String,
@@ -176,6 +184,13 @@ impl BacktestResultContract {
             ("run_id", self.run_id.as_str()),
             ("nt_version", self.nt_version.as_str()),
             ("source_proof_id", self.source_proof_id.as_str()),
+            ("manifest_hash", self.manifest_hash.as_str()),
+            ("accepted_by", self.accepted_by.as_str()),
+            ("accepted_at", self.accepted_at.as_str()),
+            (
+                "accepted_object_sha256",
+                self.accepted_object_sha256.as_str(),
+            ),
             ("catalog_hash", self.catalog_hash.as_str()),
             ("strategy_config_hash", self.strategy_config_hash.as_str()),
             ("created_at", self.created_at.as_str()),
@@ -233,6 +248,11 @@ pub struct ResultContractInputs<'a> {
     pub run_id: &'a str,
     pub source_proof_id: &'a str,
     pub source_proof_version: u32,
+    pub manifest_hash: &'a str,
+    pub acceptance_mode: AcceptanceMode,
+    pub accepted_by: &'a str,
+    pub accepted_at: &'a str,
+    pub accepted_object_sha256: &'a str,
     pub catalog_hash: &'a str,
     pub strategy: &'a StrategySource,
     pub run_purpose: &'a str,
@@ -263,6 +283,11 @@ pub fn build_result_contract(
         nt_version,
         source_proof_id: inputs.source_proof_id.to_string(),
         source_proof_version: inputs.source_proof_version,
+        manifest_hash: inputs.manifest_hash.to_string(),
+        acceptance_mode: inputs.acceptance_mode,
+        accepted_by: inputs.accepted_by.to_string(),
+        accepted_at: inputs.accepted_at.to_string(),
+        accepted_object_sha256: inputs.accepted_object_sha256.to_string(),
         catalog_hash: inputs.catalog_hash.to_string(),
         strategy_config_hash: strategy_config_hash(inputs.strategy),
         run_purpose: inputs.run_purpose.to_string(),
@@ -306,6 +331,12 @@ mod tests {
             nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
             source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
             source_proof_version: 1,
+            manifest_hash: "manifestabc".to_string(),
+            acceptance_mode: AcceptanceMode::Manual,
+            accepted_by: "vertical-slice-operator".to_string(),
+            accepted_at: "2026-06-02T00:00:00Z".to_string(),
+            accepted_object_sha256:
+                "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598".to_string(),
             catalog_hash: "abc123".to_string(),
             strategy_config_hash: "def456".to_string(),
             run_purpose: "normal".to_string(),
@@ -354,6 +385,34 @@ features = ["streaming", "examples"]
     #[test]
     fn objective_contract_validates() {
         contract().validate().expect("objective contract is valid");
+    }
+
+    #[test]
+    fn result_contract_binds_manifest_and_acceptance_provenance() {
+        let c = contract();
+
+        assert_eq!(c.manifest_hash, "manifestabc");
+        assert_eq!(c.acceptance_mode, AcceptanceMode::Manual);
+        assert_eq!(c.accepted_by, "vertical-slice-operator");
+        assert_eq!(c.accepted_at, "2026-06-02T00:00:00Z");
+        assert_eq!(
+            c.accepted_object_sha256,
+            "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598"
+        );
+
+        let json = serde_json::to_value(&c).expect("serialize");
+        for field in [
+            "manifest_hash",
+            "acceptance_mode",
+            "accepted_by",
+            "accepted_at",
+            "accepted_object_sha256",
+        ] {
+            assert!(
+                json.get(field).is_some(),
+                "missing serialized field {field}"
+            );
+        }
     }
 
     #[test]

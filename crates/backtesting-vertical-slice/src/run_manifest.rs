@@ -24,6 +24,7 @@ use nautilus_model::{
     types::Quantity,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use ustr::Ustr;
 
 use super::source_proof::{AcceptedDataset, SourceProofFidelityClass};
@@ -360,6 +361,72 @@ fn validate_strategy_source(strategy: &StrategySource) -> Result<(), ManifestErr
 }
 
 impl BacktestingRunManifest {
+    /// Deterministic SHA-256 over every typed manifest field that affects a run.
+    #[must_use]
+    pub fn manifest_hash(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"backtesting-run-manifest.v1");
+        hash_str(&mut hasher, "run_id", &self.run_id);
+        hash_str(
+            &mut hasher,
+            "market_structure_fixture",
+            market_structure_fixture_label(self.market_structure_fixture),
+        );
+        hash_str(&mut hasher, "venue_binding_key", &self.venue_binding_key);
+        hash_str(
+            &mut hasher,
+            "run_purpose",
+            run_purpose_label(self.run_purpose),
+        );
+        hash_str(&mut hasher, "source_proof_id", &self.source_proof_id);
+        hash_u32(
+            &mut hasher,
+            "source_proof_version",
+            self.source_proof_version,
+        );
+        hash_bool(
+            &mut hasher,
+            "pins_non_latest_proof",
+            self.pins_non_latest_proof,
+        );
+        hash_str(
+            &mut hasher,
+            "strategy.registry_key",
+            &self.strategy.registry_key,
+        );
+        for (key, value) in &self.strategy.parameters {
+            hash_str(&mut hasher, "strategy.parameters.key", key);
+            hash_str(&mut hasher, "strategy.parameters.value", value);
+        }
+        hash_str(&mut hasher, "venue.nt_venue", &self.venue.nt_venue);
+        hash_str(&mut hasher, "venue.oms_type", &self.venue.oms_type);
+        hash_str(&mut hasher, "venue.account_type", &self.venue.account_type);
+        hash_str(&mut hasher, "venue.book_type", &self.venue.book_type);
+        for balance in &self.venue.starting_balances {
+            hash_str(&mut hasher, "venue.starting_balances", balance);
+        }
+        hash_str(
+            &mut hasher,
+            "catalog_input.catalog_path",
+            &self.catalog_input.catalog_path,
+        );
+        hash_str(
+            &mut hasher,
+            "catalog_input.data_type",
+            &self.catalog_input.data_type,
+        );
+        hash_str(
+            &mut hasher,
+            "catalog_input.nt_instrument_id",
+            &self.catalog_input.nt_instrument_id,
+        );
+        hash_str(&mut hasher, "artifact_root", &self.artifact_root);
+        hash_str(&mut hasher, "output_prefix", &self.output_prefix);
+        hash_i64_opt(&mut hasher, "start_time", self.start_time);
+        hash_i64_opt(&mut hasher, "end_time", self.end_time);
+        hex::encode(hasher.finalize())
+    }
+
     /// Validate the manifest against gate-4 rules and bind it to an accepted
     /// dataset (the only admissible data source).
     ///
@@ -504,6 +571,54 @@ impl BacktestingRunManifest {
             .maybe_start(start)
             .maybe_end(end)
             .build())
+    }
+}
+
+fn hash_str(hasher: &mut Sha256, field: &str, value: &str) {
+    hasher.update([0]);
+    hasher.update(field.as_bytes());
+    hasher.update([1]);
+    hasher.update(value.len().to_le_bytes());
+    hasher.update(value.as_bytes());
+}
+
+fn hash_bool(hasher: &mut Sha256, field: &str, value: bool) {
+    hash_str(hasher, field, if value { "true" } else { "false" });
+}
+
+fn hash_u32(hasher: &mut Sha256, field: &str, value: u32) {
+    hasher.update([0]);
+    hasher.update(field.as_bytes());
+    hasher.update([2]);
+    hasher.update(value.to_le_bytes());
+}
+
+fn hash_i64_opt(hasher: &mut Sha256, field: &str, value: Option<i64>) {
+    hasher.update([0]);
+    hasher.update(field.as_bytes());
+    match value {
+        Some(value) => {
+            hasher.update([3]);
+            hasher.update(value.to_le_bytes());
+        }
+        None => hasher.update([4]),
+    }
+}
+
+fn market_structure_fixture_label(fixture: MarketStructureFixture) -> &'static str {
+    match fixture {
+        MarketStructureFixture::BinaryOption => "binary-option",
+        MarketStructureFixture::PerpsSpot => "perps-spot",
+    }
+}
+
+fn run_purpose_label(purpose: RunPurpose) -> &'static str {
+    match purpose {
+        RunPurpose::Normal => "normal",
+        RunPurpose::Reproduction => "reproduction",
+        RunPurpose::Audit => "audit",
+        RunPurpose::Regression => "regression",
+        RunPurpose::Migration => "migration",
     }
 }
 
@@ -704,6 +819,18 @@ mod tests {
         assert_eq!(run.id(), "backtesting-vertical-slice-bnbusdc-2026-03-01");
         assert_eq!(run.venues().len(), 1);
         assert_eq!(run.data().len(), 1);
+    }
+
+    #[test]
+    fn manifest_hash_is_stable_and_content_sensitive() {
+        let manifest = valid_manifest();
+        let round_tripped: BacktestingRunManifest =
+            toml::from_str(&toml::to_string(&manifest).expect("serialize")).expect("parse");
+        assert_eq!(manifest.manifest_hash(), round_tripped.manifest_hash());
+
+        let mut changed = manifest.clone();
+        changed.start_time = Some(1_772_323_200_000_000_000);
+        assert_ne!(manifest.manifest_hash(), changed.manifest_hash());
     }
 
     #[test]

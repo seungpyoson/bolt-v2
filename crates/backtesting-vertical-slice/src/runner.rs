@@ -233,10 +233,16 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
                 .to_string(),
         );
     }
+    let manifest_hash = inputs.manifest.manifest_hash();
     let contract = build_result_contract(ResultContractInputs {
         run_id: &inputs.manifest.run_id,
         source_proof_id: &inputs.accepted.source_proof_id,
         source_proof_version: inputs.accepted.source_proof_version,
+        manifest_hash: &manifest_hash,
+        acceptance_mode: inputs.accepted.acceptance_mode,
+        accepted_by: &inputs.accepted.accepted_by,
+        accepted_at: &inputs.accepted.accepted_at,
+        accepted_object_sha256: &inputs.accepted.accepted_object_sha256,
         catalog_hash: &projection.catalog_hash,
         strategy: &inputs.manifest.strategy,
         run_purpose: run_purpose_label(inputs.manifest),

@@ -204,6 +204,13 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             base_currency: "NONE".to_string(),
             default_leverage: "1".to_string(),
             price_protection_points: 0,
+            leverages: None,
+            margin_model: None,
+            modules: None,
+            fill_model: None,
+            latency_model: None,
+            fee_model: None,
+            settlement_prices: None,
         },
         catalog_input: ManifestCatalogInput {
             catalog_path: catalog_path.to_string(),

@@ -158,6 +158,27 @@ pub struct ManifestVenueConfig {
     pub default_leverage: String,
     /// Exchange-calculated market-order price protection boundary in points.
     pub price_protection_points: u32,
+    /// NT per-instrument leverage map. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leverages: Option<BTreeMap<String, String>>,
+    /// NT margin model selector. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin_model: Option<String>,
+    /// NT simulation module selectors. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modules: Option<Vec<String>>,
+    /// NT fill model selector. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_model: Option<String>,
+    /// NT latency model selector. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_model: Option<String>,
+    /// NT fee model selector. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_model: Option<String>,
+    /// NT settlement prices keyed by instrument id. Unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_prices: Option<BTreeMap<String, String>>,
 }
 
 /// Catalog input mapped into [`BacktestDataConfig`].
@@ -318,6 +339,9 @@ pub enum ManifestError {
         field: &'static str,
         value: String,
     },
+    UnsupportedNtSurface {
+        field: &'static str,
+    },
     OutputPrefixOutsideArtifactRoot,
     NegativeTime {
         field: &'static str,
@@ -424,6 +448,10 @@ impl std::fmt::Display for ManifestError {
             Self::UnsupportedEnum { field, value } => {
                 write!(f, "unsupported value {value:?} for {field}")
             }
+            Self::UnsupportedNtSurface { field } => write!(
+                f,
+                "unsupported NT venue surface {field}: add typed BacktestVenueConfig mapping before use"
+            ),
             Self::OutputPrefixOutsideArtifactRoot => {
                 write!(f, "output prefix must live under artifact_root/backtests/")
             }
@@ -602,6 +630,7 @@ impl BacktestingRunManifest {
             }
         }
         ensure_supported_enums(self)?;
+        ensure_unsupported_nt_venue_surfaces_absent(&self.venue)?;
         ensure_supported_data_type(&self.catalog_input.data_type)?;
         let catalog_fs_protocol =
             parse_catalog_fs_protocol(&self.catalog_input.catalog_fs_protocol)?;
@@ -700,6 +729,7 @@ impl BacktestingRunManifest {
     ///
     /// Returns an error if an enum value is unsupported.
     pub fn to_nt_venue_config(&self) -> Result<BacktestVenueConfig, ManifestError> {
+        ensure_unsupported_nt_venue_surfaces_absent(&self.venue)?;
         Ok(BacktestVenueConfig::builder()
             .name(Ustr::from(&self.venue.nt_venue))
             .oms_type(parse_oms_type(&self.venue.oms_type)?)
@@ -937,6 +967,25 @@ fn ensure_supported_enums(manifest: &BacktestingRunManifest) -> Result<(), Manif
     parse_oto_trigger_mode(&manifest.venue.oto_trigger_mode)?;
     parse_base_currency(&manifest.venue.base_currency)?;
     parse_default_leverage(&manifest.venue.default_leverage)?;
+    Ok(())
+}
+
+fn ensure_unsupported_nt_venue_surfaces_absent(
+    venue: &ManifestVenueConfig,
+) -> Result<(), ManifestError> {
+    for (field, present) in [
+        ("leverages", venue.leverages.is_some()),
+        ("margin_model", venue.margin_model.is_some()),
+        ("modules", venue.modules.is_some()),
+        ("fill_model", venue.fill_model.is_some()),
+        ("latency_model", venue.latency_model.is_some()),
+        ("fee_model", venue.fee_model.is_some()),
+        ("settlement_prices", venue.settlement_prices.is_some()),
+    ] {
+        if present {
+            return Err(ManifestError::UnsupportedNtSurface { field });
+        }
+    }
     Ok(())
 }
 
@@ -1380,6 +1429,13 @@ mod tests {
                 base_currency: "NONE".to_string(),
                 default_leverage: "1".to_string(),
                 price_protection_points: 0,
+                leverages: None,
+                margin_model: None,
+                modules: None,
+                fill_model: None,
+                latency_model: None,
+                fee_model: None,
+                settlement_prices: None,
             },
             catalog_input: ManifestCatalogInput {
                 catalog_path: "/tmp/catalog".to_string(),
@@ -2255,10 +2311,39 @@ mod tests {
             ("settlement_prices", "{}"),
         ] {
             let text = serialized.replace("[venue]\n", &format!("[venue]\n{field} = {value}\n"));
-            let err = parse_manifest_toml(&text).unwrap_err().to_string();
+            let manifest = parse_manifest_toml(&text)
+                .expect("unsupported NT venue surface should be represented in schema");
+            let err = manifest
+                .validate(&accepted_dataset())
+                .expect_err("unsupported NT venue surface must fail validation");
             assert!(
-                err.contains(field),
+                matches!(err, ManifestError::UnsupportedNtSurface { field: actual } if actual == field),
                 "unsupported venue surface {field:?} must fail fast, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_unsupported_nt_venue_model_surfaces_parse_then_fail_before_nt_config() {
+        let serialized = toml::to_string(&valid_manifest()).expect("serialize");
+        for (field, value) in [
+            ("leverages", "{ \"BTCUSDT.BINANCE\" = \"2\" }"),
+            ("margin_model", "\"standard\""),
+            ("modules", "[\"latency-probe\"]"),
+            ("fill_model", "\"probabilistic\""),
+            ("latency_model", "\"static\""),
+            ("fee_model", "\"maker_taker\""),
+            ("settlement_prices", "{ \"BTCUSDT.BINANCE\" = \"65000\" }"),
+        ] {
+            let text = serialized.replace("[venue]\n", &format!("[venue]\n{field} = {value}\n"));
+            let manifest = parse_manifest_toml(&text)
+                .expect("unsupported NT venue surface should be represented in schema");
+            let err = manifest
+                .to_nt_venue_config()
+                .expect_err("unsupported NT venue surface must not reach NT config");
+            assert!(
+                matches!(err, ManifestError::UnsupportedNtSurface { field: actual } if actual == field),
+                "unsupported venue surface {field:?} should fail with a structured error, got {err}"
             );
         }
     }

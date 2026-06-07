@@ -1422,6 +1422,16 @@ Midpoint table-family coverage audit:
   estimates before payload pulls, sample-first schema inspection, bounded
   fixture/source/time/object/byte budgets, idempotent manifests, and no source
   choice by venue name.
+- BTE-028 now has an explicit cost-cut lever status artifact:
+  `specs/023-nt-research-analytics-platform/reference/source-proof-cost-cut-levers-status.backtesting-engine-028.2026-06-08.json`.
+  It closes only the planning-control task, not source selection, NT mapping, or
+  broad backfill authorization. The approved levers are coverage-ledger gating
+  before payload download, a one-object PMXT Polymarket proof cap before
+  tranche expansion, source-proof acceptance before conversion, NT-native
+  catalog projection/read-back as the expansion gate, bounded validation
+  queries, and lifecycle placement after proof. It explicitly forbids treating
+  cheaper lower-fidelity data, venue/provider hardcodes, local prototypes,
+  skipped NT read-back, or broad-history-first downloads as valid cost cuts.
 - BTE-022 now has an explicit open mapping-status artifact:
   `specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-evaluation.backtesting-engine.2026-06-08.json`.
   It does not mark BTE-022 complete. It records that the only currently accepted

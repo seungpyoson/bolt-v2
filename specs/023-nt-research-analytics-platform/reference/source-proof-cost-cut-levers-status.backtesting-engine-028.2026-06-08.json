@@ -1,0 +1,189 @@
+{
+  "schema_version": "backtesting-engine-cost-cut-levers-status.v1",
+  "task_id": "BACKTESTING_ENGINE-028",
+  "status": "complete_for_planning_controls",
+  "recorded_at_utc": "2026-06-08T00:00:00Z",
+  "not_source_selection": true,
+  "not_broad_backfill_authorization": true,
+  "not_backtest_engine_completion": true,
+  "preconditions_met": [
+    {
+      "precondition": "fidelity claims are explicit",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fidelity-evaluation.backtesting-engine.2026-06-08.json",
+      "evidence_summary": "BTE-025 identifies highest-fidelity candidates, records weaker-fidelity claim limits, and keeps source selection/backfill gated by BTE-022 and BTE-027."
+    },
+    {
+      "precondition": "source-contract claims are explicit",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-row-to-nt-contract.2026-06-08.json",
+      "evidence_summary": "The PMXT Polymarket sample contract records row shapes, bounded grouping evidence, and unresolved NT mapping gates before implementation or broad backfill."
+    },
+    {
+      "precondition": "source-to-NT catalog status is explicit",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json",
+      "evidence_summary": "BTE-022 remains open for binary-option L2 until NT Polymarket parser reuse, ParquetDataCatalog read-back, and BacktestNode consumption are proven."
+    },
+    {
+      "precondition": "cost baseline exists",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-cost-estimate.backtesting-engine.2026-06-08.json",
+      "evidence_summary": "BTE-026 records AWS/provider cost baselines and PMXT Polymarket one-year byte/cost extrapolation."
+    }
+  ],
+  "slow_backfill_root_cause_evidence": {
+    "primary_risk": "Broad binary-option L2 archives are large enough that downloading before proof repeats the previous inefficient backfill pattern.",
+    "pmxt_polymarket_hourly_sample": {
+      "source_uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+      "bytes": 361365244,
+      "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+      "event_rows_in_sample": 64877467
+    },
+    "pmxt_polymarket_index_extrapolation": {
+      "average_mb_per_hour": 514.0,
+      "estimated_gib_per_day": 12.046875,
+      "estimated_tib_per_year": 4.2940521240234375,
+      "one_year_s3_standard_storage_monthly_usd": 101.133515625,
+      "one_year_athena_full_scan_once_usd": 21.470260620117188,
+      "one_year_internet_transfer_out_once_after_100gb_free_usd": 386.73984375,
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-cost-estimate.backtesting-engine.2026-06-08.json scenario_id=pmxt_polymarket_v2_recent_index_extrapolation"
+    },
+    "row_shape_compute_risk": [
+      "The full one-hour PMXT sample has 64,768,138 price_change rows.",
+      "Grouping by market and source timestamp yields 32,066,846 groups, with 31,981,978 multi-row groups.",
+      "A safe converter cannot stream each flattened row as an independent NT batch; it must group by source contract before catalog write."
+    ]
+  },
+  "approved_cost_cut_levers": [
+    {
+      "lever": "coverage-ledger before payload download",
+      "rule": "Build source coverage and byte ledgers from indexes/manifests before downloading raw payloads.",
+      "saves": [
+        "unneeded object downloads",
+        "conversion work on uncovered or unaccepted windows",
+        "storage of raw objects outside accepted scope"
+      ],
+      "required_evidence_before_expansion": [
+        "object count",
+        "byte total",
+        "coverage gaps",
+        "checksum/hash availability",
+        "freshness lag"
+      ]
+    },
+    {
+      "lever": "one-object proof before tranche expansion",
+      "rule": "The next binary-option L2 run is capped to one verified hourly PMXT Polymarket object until NT catalog read-back and BacktestNode consumption are proven.",
+      "current_cap": {
+        "max_objects": 1,
+        "max_raw_bytes": 400000000,
+        "source_binding": "polymarket-parquet-archive-index",
+        "table_family": "orderbook_l2",
+        "not_production_backfill": true
+      },
+      "required_evidence_before_expansion": [
+        "raw download throughput",
+        "normalization throughput",
+        "catalog write throughput",
+        "catalog read-back throughput",
+        "peak memory",
+        "output catalog bytes",
+        "result-contract provenance bindings"
+      ]
+    },
+    {
+      "lever": "source-proof acceptance before conversion",
+      "rule": "Convert only accepted source-proof tranches into NT catalog data.",
+      "saves": [
+        "discarded catalog projection work",
+        "unusable backtest runs",
+        "ambiguous license or storage cleanup"
+      ],
+      "required_evidence_before_expansion": [
+        "accepted source proof id/version",
+        "accepted object hashes and byte counts",
+        "license/storage evidence",
+        "fidelity class and claim limits",
+        "NT mapping proof"
+      ]
+    },
+    {
+      "lever": "NT-native projection and read-back as the expansion gate",
+      "rule": "Use NautilusTrader data classes, ParquetDataCatalog, and BacktestNode as the proof boundary; do not build a custom simulator or custom catalog path to save time.",
+      "saves": [
+        "duplicate engine behavior",
+        "custom fill/account/replay code",
+        "later rewrite cost"
+      ],
+      "required_evidence_before_expansion": [
+        "InstrumentAny::BinaryOption catalog write/read-back",
+        "OrderBookDelta catalog write/read-back",
+        "TradeTick catalog write/read-back",
+        "BacktestNode consumption of the same catalog path"
+      ]
+    },
+    {
+      "lever": "bounded validation queries",
+      "rule": "Use metadata, object indexes, schema samples, and bounded DuckDB checks for proof; avoid full-history group-bys or scans unless they are explicitly budgeted benchmark runs.",
+      "saves": [
+        "repeat multi-hour local scans",
+        "unbounded Athena/query charges",
+        "local disk pressure"
+      ],
+      "required_evidence_before_expansion": [
+        "declared query scope",
+        "declared row/time/object filter",
+        "query runtime",
+        "bytes scanned when available"
+      ]
+    },
+    {
+      "lever": "lifecycle placement after proof",
+      "rule": "Keep current proof objects active/queryable, but move non-current raw and catalog artifacts through configured active/archive/deep_archive profiles only after proof status and restore cost are explicit.",
+      "saves": [
+        "long-running active storage cost",
+        "accidental deletion risk",
+        "restore surprises"
+      ],
+      "required_evidence_before_expansion": [
+        "artifact kind",
+        "lineage id",
+        "content hash",
+        "active/queryable requirement",
+        "restore expectation"
+      ]
+    }
+  ],
+  "explicit_non_levers": [
+    {
+      "non_lever": "downgrade fidelity to trades/bars for execution-quality claims",
+      "reason": "Lower-fidelity sources must carry claim limits; they cannot be used to save cost while claiming L2 replay, queue position, fillability, liquidity, or execution-quality behavior."
+    },
+    {
+      "non_lever": "hardcode venue or provider names in production logic",
+      "reason": "Source choice must come from accepted source-proof state, config-owned source bindings, data family, fidelity, NT mapping, and cost proof."
+    },
+    {
+      "non_lever": "skip NT catalog read-back",
+      "reason": "Local prototype conversion or raw row inspection does not prove BacktestNode can consume the resulting data."
+    },
+    {
+      "non_lever": "download broad history first",
+      "reason": "The PMXT Polymarket v2 estimate is multi-terabyte per year before conversion and validation scans."
+    },
+    {
+      "non_lever": "treat cheaper provider fee as source selection",
+      "reason": "Provider fee is only one input; license, coverage, schema, storage, fidelity, NT mapping, and result-contract proof still gate source selection."
+    }
+  ],
+  "current_decision": {
+    "bte_028_can_close": true,
+    "bte_027_can_close": false,
+    "bte_022_can_close": false,
+    "broad_backfill_allowed": false,
+    "next_allowed_work": "Implement or further prove the one-object PMXT Polymarket NT mapping/read-back path only after the dependency-boundary scope is explicitly accepted."
+  },
+  "open_follow_on_tasks": [
+    "BACKTESTING_ENGINE-022",
+    "BACKTESTING_ENGINE-027",
+    "BACKTESTING_ENGINE-029",
+    "BACKTESTING_ENGINE-041"
+  ]
+}

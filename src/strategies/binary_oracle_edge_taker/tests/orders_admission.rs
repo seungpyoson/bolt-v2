@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
     let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
             RecordingDecisionEvidenceWriter,
         )),
     );
@@ -73,15 +73,11 @@ fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
 }
 
 #[test]
-fn armed_submit_admission_allows_nt_submit_after_evidence() {
-    let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-            RecordingDecisionEvidenceWriter,
-        )),
+fn provider_limited_submit_admission_allows_nt_submit_after_evidence() {
+    let submit_admission = submit_admission_with_provider_cap(
+        Decimal::new(1, 0),
+        Arc::new(RecordingDecisionEvidenceWriter),
     );
-    submit_admission
-        .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
-        .expect("valid gate report should arm submit admission");
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     // Zero fee keeps the notional (0.50) under the 1.0 cap so admission
     // succeeds; the test then proves the submit reaches NT (and panics
@@ -148,14 +144,10 @@ fn armed_submit_admission_allows_nt_submit_after_evidence() {
 
 #[test]
 fn submit_context_routes_non_empty_nt_params_to_submit_order() {
-    let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-            RecordingDecisionEvidenceWriter,
-        )),
+    let submit_admission = submit_admission_with_provider_cap(
+        Decimal::new(1, 0),
+        Arc::new(RecordingDecisionEvidenceWriter),
     );
-    submit_admission
-        .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
-        .expect("valid gate report should arm submit admission");
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     // Zero fee leaves the 0.50 notional under the 1.0 cap; this test
     // exercises submit-param routing, not the fee-inclusive cap.
@@ -216,14 +208,10 @@ fn submit_context_routes_non_empty_nt_params_to_submit_order() {
 
 #[test]
 fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
-    let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-            RecordingDecisionEvidenceWriter,
-        )),
+    let submit_admission = submit_admission_with_provider_cap(
+        Decimal::new(1, 0),
+        Arc::new(RecordingDecisionEvidenceWriter),
     );
-    submit_admission
-        .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
-        .expect("valid gate report should arm submit admission");
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     // Zero fee isolates the assertion to "compiled order price drives the
     // notional": the compiled 2.0 notional still exceeds the 1.0 cap, while
@@ -839,14 +827,8 @@ fn over_notional_submit_admission_rejects_before_nt_submit() {
     // / `zero_fee_submit_admission_admits_at_same_cap` below; this test
     // only proves a grossly over-cap raw notional is rejected before NT
     // submit.
-    let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-            RecordingDecisionEvidenceWriter,
-        )),
-    );
-    submit_admission
-        .arm(live_canary_gate_report(1, Decimal::ONE))
-        .expect("valid gate report should arm submit admission");
+    let submit_admission =
+        submit_admission_with_provider_cap(Decimal::ONE, Arc::new(RecordingDecisionEvidenceWriter));
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
@@ -926,14 +908,10 @@ fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
     // `binary_oracle_edge_taker.rs:3972` is pinned by the
     // `fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit`
     // / `zero_fee_submit_admission_admits_at_same_cap` pair below.
-    let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-            RecordingDecisionEvidenceWriter,
-        )),
+    let submit_admission = submit_admission_with_provider_cap(
+        Decimal::new(10025, 4),
+        Arc::new(RecordingDecisionEvidenceWriter),
     );
-    submit_admission
-        .arm(live_canary_gate_report(1, Decimal::new(10025, 4)))
-        .expect("valid gate report should arm submit admission");
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
@@ -1015,14 +993,10 @@ fn fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit() {
     // The zero-fee CONTROL `zero_fee_submit_admission_admits_at_same_cap`
     // below uses the SAME raw 1.00 notional and SAME 1.001 cap and ADMITS,
     // proving the rejection here is caused by the fee scaling.
-    let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-            RecordingDecisionEvidenceWriter,
-        )),
+    let submit_admission = submit_admission_with_provider_cap(
+        Decimal::new(1001, 3),
+        Arc::new(RecordingDecisionEvidenceWriter),
     );
-    submit_admission
-        .arm(live_canary_gate_report(1, Decimal::new(1001, 3)))
-        .expect("valid gate report should arm submit admission");
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
@@ -1099,14 +1073,10 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
     // admission passed. Together with the reject test this pair proves the
     // rejection there is caused by the fee scaling specifically, not by the
     // raw notional (which admits at this cap when the fee is zero).
-    let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-            RecordingDecisionEvidenceWriter,
-        )),
+    let submit_admission = submit_admission_with_provider_cap(
+        Decimal::new(1001, 3),
+        Arc::new(RecordingDecisionEvidenceWriter),
     );
-    submit_admission
-        .arm(live_canary_gate_report(1, Decimal::new(1001, 3)))
-        .expect("valid gate report should arm submit admission");
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
@@ -1174,19 +1144,15 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
 
 #[test]
 fn exhausted_count_submit_admission_rejects_before_nt_submit() {
-    let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-            RecordingDecisionEvidenceWriter,
-        )),
+    let submit_admission = submit_admission_with_provider_cap(
+        Decimal::new(1, 0),
+        Arc::new(RecordingDecisionEvidenceWriter),
     );
-    submit_admission
-        .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
-        .expect("valid gate report should arm submit admission");
     submit_admission
         .admit(
             &crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest {
                 strategy_id: "strategy-a".to_string(),
-                execution_client_id: "polymarket_main".to_string(),
+                execution_client_id: "POLYMARKET".to_string(),
                 client_order_id: "client-order-0".to_string(),
                 instrument_id: "instrument-0".to_string(),
                 notional: Decimal::new(50, 2),
@@ -1196,7 +1162,6 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
                 lifecycle_policy: crate::bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy::new(
                     true,
                 ),
-                canary_proof_claim: None,
                 risk_reducing_exit_proof: None,
                 kill_switch_forced_reduction: None,
             },
@@ -1388,37 +1353,6 @@ fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
         Decimal::from_str("1.998").expect("expected decimal should parse"),
         "a market-style MarketIfTouched entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
     );
-}
-
-#[test]
-fn submit_admission_request_drops_canary_proof_order_intent_claim() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    let _cache = register_test_strategy(&mut strategy);
-    let instrument_id = selected_entry_instrument(&strategy);
-    let quantity = Quantity::new(2.0, 2);
-    let price = Price::new(0.50, 2);
-    let order = strategy
-        .build_configured_entry_order(
-            instrument_id,
-            OrderSide::Buy,
-            quantity,
-            price,
-            ClientOrderId::from("O-19700101-000000-001-PROOF-1"),
-        )
-        .expect("configured entry order should build");
-    let mut intent = BoltV3OrderIntentEvidence::from_compiled_order(
-        strategy.config.strategy_id.clone(),
-        BoltV3OrderIntentKind::Entry,
-        price.to_string(),
-        &order,
-    );
-    intent.canary_proof_claim = Some("proof_only".to_string());
-
-    let admission =
-        submit_admission_request_from_order_for_client("polymarket_main", &intent, &order)
-            .expect("entry intent should map into submit admission");
-
-    assert_eq!(admission.canary_proof_claim, None);
 }
 
 #[test]
@@ -1925,13 +1859,12 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
         RecordingFeeProvider::cold(),
         Arc::new(RecordingDecisionEvidenceWriter),
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         ),
         fixture_execution_venue(),
-    )
-    .with_readiness_evidence(test_readiness_gate_evidence());
+    );
     let mut strategy = BinaryOracleEdgeTaker::new(config, context);
     let _cache = register_test_strategy(&mut strategy);
     let trigger_instrument_id = InstrumentId::from("TRIGGER.SOURCE");
@@ -1973,13 +1906,12 @@ fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
         RecordingFeeProvider::cold(),
         Arc::new(RecordingDecisionEvidenceWriter),
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         ),
         fixture_execution_venue(),
-    )
-    .with_readiness_evidence(test_readiness_gate_evidence());
+    );
     let mut strategy = BinaryOracleEdgeTaker::new(config, context);
     let _cache = register_test_strategy(&mut strategy);
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());

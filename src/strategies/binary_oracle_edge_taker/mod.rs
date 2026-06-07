@@ -114,19 +114,6 @@ use self::exposure::{
     supports_strategy_managed_position,
 };
 
-mod source_proof;
-
-pub use self::source_proof::{
-    BinaryOracleEntryBookSideSource, BinaryOracleEntryBooksSource,
-    BinaryOracleEntryDecisionEvidenceSource, BinaryOracleEntryFeeSource,
-    BinaryOracleEntryRealizedVolatilitySource, BinaryOracleEntryReferenceProofSources,
-    BinaryOracleEntryReferenceQuoteSource, BinaryOracleEntrySignalQuoteSource,
-    BinaryOracleReferenceQuoteObservationSource, ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND,
-    ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION,
-    derive_entry_reference_proofs_from_quote_observations,
-    record_entry_decision_evidence_from_source,
-};
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ConfiguredNtOrderTemplate {
     order_type: OrderType,
@@ -379,14 +366,12 @@ impl PricingState {
         if let Some(fair_value) = snapshot
             .fair_value
             .filter(|fair_value| fair_value.is_finite() && *fair_value > 0.0)
-        {
-            if !self
+            && self
                 .last_reference_observed_ts_ms
-                .is_some_and(|last| snapshot.ts_ms <= last)
-            {
-                self.last_reference_observed_ts_ms = Some(snapshot.ts_ms);
-                self.last_reference_fair_value = Some(fair_value);
-            }
+                .is_none_or(|last| snapshot.ts_ms > last)
+        {
+            self.last_reference_observed_ts_ms = Some(snapshot.ts_ms);
+            self.last_reference_fair_value = Some(fair_value);
         }
 
         let candidates = self.build_lead_venue_signals(snapshot);
@@ -1744,29 +1729,8 @@ impl BinaryOracleEdgeTaker {
         EntryGateDecision { blocked_by }
     }
 
-    /// Single source of truth for the reference-quote freshness bound enforced
-    /// by the forced-flat stale check (A5). When the live canary gate is armed,
-    /// the gate-approved `[live_canary].reference_quote_max_age_seconds` is the
-    /// authoritative freshness policy for the live path, so it is plumbed in here
-    /// rather than letting the submit/stale path run an independent
-    /// strategy-config policy. The effective bound is the STRICTER (smaller) of
-    /// the gate-approved bound and the strategy's `forced_flat_stale_reference_ms`
-    /// so plumbing the gate value can only ever TIGHTEN the existing guard, never
-    /// loosen it (a larger gate bound never relaxes the strategy bound, and the
-    /// strategy bound never relaxes the gate's). Pre-arm there is no gate bound
-    /// and no order can be submitted anyway, so the strategy bound alone applies.
     fn effective_stale_reference_after_ms(&self) -> u64 {
-        let config_bound_ms = self.config.forced_flat_stale_reference_ms;
-        match self
-            .context
-            .submit_admission()
-            .reference_quote_max_age_seconds()
-        {
-            Some(gate_seconds) => {
-                config_bound_ms.min(gate_seconds.saturating_mul(MILLIS_PER_SECOND_U64))
-            }
-            None => config_bound_ms,
-        }
+        self.config.forced_flat_stale_reference_ms
     }
 
     fn active_forced_flat_reasons_at(&self, now_ms: u64) -> Vec<ForcedFlatReason> {
@@ -2141,10 +2105,8 @@ impl BinaryOracleEdgeTaker {
     }
 
     /// Resolve the max entry fee bound (in bps) used to compute the
-    /// fee-inclusive admission notional, mirroring the proof executor's
-    /// `fee_provider.max_entry_fee_bps(&instrument, price)` lookup
-    /// (`bolt_v3_canary_proof_executor` line 108-116). Fail-closed: a missing
-    /// instrument context or absent fee bound is a hard error so the
+    /// fee-inclusive admission notional from the configured fee provider.
+    /// Fail-closed: a missing instrument context or absent fee bound is a hard error so the
     /// downstream cap check never silently passes a raw notional.
     ///
     /// In production the order is built from a cached instrument, so
@@ -3453,27 +3415,10 @@ impl BinaryOracleEdgeTaker {
         let order_side = decision.order_side.ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires submission order side")
         })?;
-        // The operator readiness gate session is an offline-replay artifact; the
-        // live runtime derives its strike from the configured resolution oracle
-        // and carries no operator gate identity. Record an empty gate identity
-        // rather than blocking the live entry path on operator evidence.
-        let (gate_session_hash, selected_market_key, gate_evidence) =
-            match self.context.readiness_evidence() {
-                Some(readiness_evidence) => (
-                    readiness_evidence.gate_session_hash.clone(),
-                    readiness_evidence.selected_market_key.clone(),
-                    readiness_evidence.gate_evidence.clone(),
-                ),
-                None => (String::new(), String::new(), BTreeMap::new()),
-            };
-
         Ok(BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: self.config.strategy_id.clone(),
             configured_target_id: self.config.configured_target_id.clone(),
             market_selection_ruleset_id: self.config.configured_target_id.clone(),
-            gate_session_hash,
-            selected_market_key,
-            gate_evidence,
             market_selection_outcome: market_selection_outcome.to_string(),
             market_id: self.active.market_id.clone(),
             polymarket_condition_id: self
@@ -4842,7 +4787,6 @@ fn refresh_fee_readiness_for_active(
         .is_some();
 }
 
-const INITIAL_COUNTER_USIZE: usize = 0;
 const INITIAL_COUNTER_U64: u64 = 0;
 const COUNTER_INCREMENT: usize = 1;
 const COUNTER_INCREMENT_U64: u64 = 1;
@@ -5363,8 +5307,7 @@ fn submit_admission_request_from_order_for_client(
     // strategy method). It is NOT a divergent copy of the notional
     // math — for the shapes it DOES accept (base-quantity firm-limit orders) it
     // reuses the shared base-quantity definition so the order is sized
-    // identically here, in the production strategy, and in the canary proof
-    // executor.
+    // identically here and in the production strategy.
     anyhow::ensure!(
         !order.is_quote_quantity(),
         "test submit admission helper requires strategy cache context for quote-quantity orders"

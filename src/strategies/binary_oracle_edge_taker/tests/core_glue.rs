@@ -102,7 +102,7 @@ fn effective_stale_bound_uses_gate_freshness_as_single_source_when_armed() {
     // forced-flat stale check as the STRICTER of (gate bound, strategy
     // config bound) so arming can only tighten, never loosen.
     let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
             RecordingDecisionEvidenceWriter,
         )),
     );
@@ -112,30 +112,21 @@ fn effective_stale_bound_uses_gate_freshness_as_single_source_when_armed() {
         submit_admission.clone(),
     );
 
-    // Unarmed: no gate bound exists, so the strategy config bound applies.
     strategy.config.forced_flat_stale_reference_ms = 1_500;
     assert_eq!(strategy.effective_stale_reference_after_ms(), 1_500);
 
-    // Arm the gate. `for_test` carries reference_quote_max_age_seconds = 10
-    // (10_000 ms). With a LARGER strategy config bound the gate value wins
-    // (it tightens the stale check to the gate-approved freshness).
-    submit_admission
-        .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
-        .expect("valid gate report should arm submit admission");
     strategy.config.forced_flat_stale_reference_ms = 20_000;
     assert_eq!(
         strategy.effective_stale_reference_after_ms(),
-        10_000,
-        "armed gate freshness bound (10s) must tighten a looser strategy config bound (20s)"
+        20_000,
+        "strategy config is the stale-reference freshness bound"
     );
 
-    // With a SMALLER strategy config bound the config value wins — arming
-    // never loosens the existing strategy guard.
     strategy.config.forced_flat_stale_reference_ms = 1_500;
     assert_eq!(
         strategy.effective_stale_reference_after_ms(),
         1_500,
-        "arming must never loosen a stricter strategy config freshness bound"
+        "strategy config updates must apply directly"
     );
 }
 
@@ -209,7 +200,7 @@ fn production_strategy_has_no_offline_readiness_seed_arming() {
 
 #[test]
 fn book_delta_submit_admission_error_does_not_escape_actor_loop() {
-    let rejecting_submit_admission = submit_admission_armed_with_cap(
+    let rejecting_submit_admission = submit_admission_with_provider_cap(
         Decimal::new(1, 2),
         Arc::new(RecordingDecisionEvidenceWriter),
     );
@@ -228,7 +219,7 @@ fn book_delta_submit_admission_error_does_not_escape_actor_loop() {
         "test setup must prove submit-admission failure path: {direct_error:#}"
     );
 
-    let rejecting_submit_admission = submit_admission_armed_with_cap(
+    let rejecting_submit_admission = submit_admission_with_provider_cap(
         Decimal::new(1, 2),
         Arc::new(RecordingDecisionEvidenceWriter),
     );
@@ -262,8 +253,8 @@ fn book_delta_submit_admission_error_does_not_escape_actor_loop() {
 
 #[test]
 fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
-    let rejecting_submit_admission = submit_admission_armed_with_cap(
-        Decimal::new(1, 2),
+    let rejecting_submit_admission = submit_admission_with_provider_cap(
+        Decimal::new(1, 0),
         Arc::new(RecordingDecisionEvidenceWriter),
     );
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
@@ -320,7 +311,6 @@ fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
             order_quantity: exit_quantity,
             intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,
             lifecycle_policy: strategy.submit_lifecycle_policy(),
-            canary_proof_claim: None,
             risk_reducing_exit_proof: Some(BoltV3RiskReducingExitProof {
                 position_id: managed_position.position.position_id.to_string(),
                 instrument_id: managed_position.position.instrument_id.to_string(),
@@ -422,13 +412,12 @@ fn book_delta_refreshes_fee_readiness_after_warm_populates_provider() {
         fee_provider.clone(),
         Arc::new(RecordingDecisionEvidenceWriter),
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         ),
         fixture_execution_venue(),
-    )
-    .with_readiness_evidence(test_readiness_gate_evidence());
+    );
     strategy.active.outcome_fees.up_ready = false;
     strategy.active.outcome_fees.down_ready = false;
     register_test_strategy_with_active_instruments(&mut strategy);

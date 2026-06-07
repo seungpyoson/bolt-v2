@@ -210,32 +210,30 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
 - implementation status:
   - approved doctrine; verifier locations are not yet selected
 
-## 16. Bolt-v3 live canary gate
+## 16. Bolt-v3 live submit admission
 
 - invariant:
-  - Bolt-v3 live canary admission must fail closed before `LiveNode::run`
-    unless operator approval, no-submit readiness evidence, and canary
-    bounds satisfy the runtime contract.
+  - Bolt-v3 live submit admission must fail closed unless the configured
+    approval limits, kill switch state, lifecycle policy, and submit bounds
+    satisfy the runtime contract.
 - canonical owner:
   - `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 11.8
 - dependent references:
-  - `docs/bolt-v3/2026-04-25-bolt-v3-schema.md` Section `[live_canary]`
-  - `src/bolt_v3_live_canary_gate.rs`
+  - `docs/bolt-v3/2026-04-25-bolt-v3-schema.md` submit-admission sections
+  - `src/bolt_v3_submit_admission.rs`
   - `src/bolt_v3_live_node.rs::run_bolt_v3_live_node`
 - implementation status:
-  - implemented for the bolt-v3 run wrapper; submit-time cap consumption remains a separate live-submit blocker
+  - implemented through the shared live-submit admission state
 
 ## 17. Bolt-v3 production readiness levels
 
 - invariant:
   - Production-grade live trading readiness is separate from Issue #360
-    tiny-canary readiness and requires explicit staged-live and production-live
-    evidence gates before broad readiness claims.
+    single-submit readiness and requires explicit staged-live and
+    production-live evidence before broad readiness claims.
 - canonical owner:
   - `docs/bolt-v3/2026-05-18-production-readiness-contract.md`
 - dependent references:
-  - `specs/001-thin-live-canary-path/contracts/live-canary-gates.md`
-  - `specs/002-phase7-no-submit-readiness/contracts/no-submit-readiness.md`
   - `docs/bolt-v3/2026-04-28-source-grounded-status-map.md` rows 34-48
 - implementation status:
   - contract defined; staged-live and production-live evidence packages,

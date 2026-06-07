@@ -400,59 +400,9 @@ fn resolution_strike_reissue_unsubscribes_before_each_subscribe_to_defeat_nt_ded
 }
 
 #[test]
-fn entry_strategy_input_evidence_records_empty_gate_identity_without_readiness_evidence() {
-    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-    let submit_admission = submit_admission_armed_with_cap(Decimal::new(1, 2), evidence.clone());
-    let mut strategy =
-        ready_to_trade_strategy_with_decision_evidence_and_submit_admission_without_readiness_evidence(
-            evidence.clone(),
-            submit_admission,
-        );
-    register_test_strategy_with_active_instruments(&mut strategy);
-
-    let error = strategy
-        .try_submit_entry_order(1_200)
-        .expect_err("submit admission should reject after evidence capture");
-    assert!(
-        error.to_string().contains("notional cap is exceeded"),
-        "regular live path must reach submit_admission without operator readiness evidence: {error:#}"
-    );
-
-    let events = evidence.events();
-    let [
-        RecordedDecisionEvidenceEvent::StrategyInput(snapshot),
-        RecordedDecisionEvidenceEvent::OrderIntent(_),
-        RecordedDecisionEvidenceEvent::AdmissionDecision(_),
-    ] = events.as_slice()
-    else {
-        panic!("expected strategy input, order intent, admission sequence; got {events:#?}");
-    };
-
-    assert!(
-        snapshot.gate_session_hash.is_empty(),
-        "regular path carries no operator gate session hash: {:?}",
-        snapshot.gate_session_hash
-    );
-    assert!(
-        snapshot.selected_market_key.is_empty(),
-        "regular path carries no operator selected-market key: {:?}",
-        snapshot.selected_market_key
-    );
-    assert!(
-        snapshot.gate_evidence.is_empty(),
-        "regular path carries no operator gate evidence: {:?}",
-        snapshot.gate_evidence
-    );
-    assert_eq!(
-        snapshot.price_to_beat_value, "3100",
-        "live source-bound entry snapshot is still captured"
-    );
-}
-
-#[test]
 fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_intent() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-    let submit_admission = submit_admission_armed_with_cap(Decimal::new(1, 2), evidence.clone());
+    let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         submit_admission,
@@ -478,15 +428,6 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
     };
 
     assert_eq!(snapshot.strategy_id, strategy.config.strategy_id);
-    assert_eq!(snapshot.gate_session_hash, "gate-session-hash-one");
-    assert_eq!(snapshot.selected_market_key, "selected-market-key-one");
-    assert_eq!(
-        snapshot
-            .gate_evidence
-            .get("resolution_price")
-            .and_then(|identity| identity.normalized_value_sha256.as_deref()),
-        Some("normalized-value-sha-one")
-    );
     assert_eq!(snapshot.price_to_beat_value, "3100");
     assert_eq!(snapshot.reference_quote_ts_event, 1_200);
     assert_eq!(snapshot.spot_price, "3100.5");
@@ -529,7 +470,7 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
 #[test]
 fn strategy_input_evidence_market_end_uses_selection_expiry_not_remaining_seconds() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-    let submit_admission = submit_admission_armed_with_cap(Decimal::new(1, 2), evidence.clone());
+    let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         submit_admission,
@@ -559,7 +500,7 @@ fn strategy_input_evidence_market_end_uses_selection_expiry_not_remaining_second
 #[test]
 fn strategy_input_evidence_records_next_market_selection_outcome() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-    let submit_admission = submit_admission_armed_with_cap(Decimal::new(1, 2), evidence.clone());
+    let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         submit_admission,

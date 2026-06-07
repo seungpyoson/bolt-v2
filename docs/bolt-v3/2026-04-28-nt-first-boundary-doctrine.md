@@ -124,7 +124,7 @@ The following source anchors were verified before writing this doctrine:
 
 - `Cargo.toml` pins NT to release `v1.227.0`
   (`7c2aafb30fb143069c915a3f2057bb12174405f6`). The 2026-05-20 pin slice
-  verified focused compile/test compatibility for the no-submit readiness
+  verified focused compile/test compatibility for the strategy-free readiness
   blockers; it did not re-audit all NT-owned behaviors cited by this doctrine.
 - The NT pin-change audit and compatibility probe are recorded under
   `docs/bolt-v3/research/nt-pin-change/`; the CLOB V2 live-readiness gate

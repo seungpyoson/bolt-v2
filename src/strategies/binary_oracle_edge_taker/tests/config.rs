@@ -33,13 +33,12 @@ fn strategy_core_accepts_nt_hedging_oms_type() {
         RecordingFeeProvider::cold(),
         Arc::new(RecordingDecisionEvidenceWriter),
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         ),
         fixture_execution_venue(),
-    )
-    .with_readiness_evidence(test_readiness_gate_evidence());
+    );
 
     let strategy = BinaryOracleEdgeTaker::new(config, context);
 
@@ -146,13 +145,12 @@ fn strategy_core_uses_explicit_configured_nt_strategy_fields() {
             RecordingFeeProvider::cold(),
             Arc::new(RecordingDecisionEvidenceWriter),
             Arc::new(
-                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                     RecordingDecisionEvidenceWriter,
                 )),
             ),
             fixture_execution_venue(),
-        )
-        .with_readiness_evidence(test_readiness_gate_evidence()),
+        ),
     );
 
     assert!(strategy.core.config.use_uuid_client_order_ids);

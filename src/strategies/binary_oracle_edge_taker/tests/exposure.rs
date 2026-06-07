@@ -883,14 +883,10 @@ fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
         &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
     );
     for instrument_id in configured_instruments {
-        let submit_admission = Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-                RecordingDecisionEvidenceWriter,
-            )),
+        let submit_admission = submit_admission_with_provider_cap(
+            Decimal::new(10_000, 0),
+            Arc::new(RecordingDecisionEvidenceWriter),
         );
-        submit_admission
-            .arm(live_canary_gate_report(1, Decimal::new(10_000, 0)))
-            .expect("valid gate report should arm submit admission");
         let (mut strategy, fee_provider) =
             ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.context = StrategyBuildContext::new(
@@ -898,8 +894,7 @@ fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission,
             fixture_execution_venue(),
-        )
-        .with_readiness_evidence(test_readiness_gate_evidence());
+        );
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.is_post_only = true;
         strategy.active.phase = SelectionPhase::Freeze;

@@ -107,11 +107,11 @@ REQUIRED_STATUS_MAP_PHRASES = (
     "configured family key",
     "| 28 | Reference data through NT subscriptions | Implemented for current strategy path; live proof still missing |",
     "| 33 | Risk and sizing policy | Implemented for current strategy/admission path; live proof still missing |",
-    "`src/bolt_v3_submit_admission.rs` enforces the TOML-derived live canary max-notional cap before NT submit",
+    "`src/bolt_v3_submit_admission.rs` enforces operator submit approval notional/count caps before NT submit",
     "| 39 | Order construction using NT-native IDs/types | Implemented for current strategy path; live proof still missing |",
     "Order construction uses the shared `src/bolt_v3_order_intent.rs` builder for entry, exit, and configured `[parameters.forced_exit_order]` templates",
-    "| 41 | Execution gate / kill switch | Implemented for live canary submit gate; broader kill switch missing |",
-    "`src/bolt_v3_live_canary_gate.rs` validates approval, no-submit readiness, order-count cap, and notional caps before runner entry",
+    "| 41 | Submit admission / kill switch | Implemented for current live-submit path |",
+    "`src/bolt_v3_submit_admission.rs` enforces operator submit approval limits, lifecycle policy, fee-inclusive notional caps, quote-quantity notional floors, and kill-switch forced-reduction rules before NT submit",
 )
 
 

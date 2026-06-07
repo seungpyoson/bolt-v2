@@ -305,28 +305,6 @@ pub(super) fn fixture_execution_venue() -> Venue {
     Venue::from("POLYMARKET")
 }
 
-pub(super) fn test_readiness_gate_evidence()
--> crate::bolt_v3_decision_evidence::BoltV3ReadinessGateEvidenceSnapshot {
-    crate::bolt_v3_decision_evidence::BoltV3ReadinessGateEvidenceSnapshot {
-        gate_session_hash: "gate-session-hash-one".to_string(),
-        selected_market_key: "selected-market-key-one".to_string(),
-        gate_evidence: BTreeMap::from([(
-            "resolution_price".to_string(),
-            crate::bolt_v3_decision_evidence::BoltV3GateEvidenceIdentity {
-                satisfaction_kind: "evidence".to_string(),
-                selected_market_key: "selected-market-key-one".to_string(),
-                provider_id: Some("provider-one".to_string()),
-                provider_kind: Some("chainlink_data_streams".to_string()),
-                value_kind: Some("price".to_string()),
-                normalized_value_sha256: Some("normalized-value-sha-one".to_string()),
-                provider_provenance_sha256: Some("provider-provenance-sha-one".to_string()),
-                artifact_sha256s: vec!["artifact-sha-one".to_string()],
-                resolution_identity: None,
-            },
-        )]),
-    }
-}
-
 pub(super) fn test_strategy() -> BinaryOracleEdgeTaker {
     test_strategy_with_fee_provider(RecordingFeeProvider::cold())
 }
@@ -403,7 +381,7 @@ pub(super) fn test_strategy_with_fee_provider(
         fee_provider,
         Arc::new(RecordingDecisionEvidenceWriter),
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         ),
@@ -418,7 +396,7 @@ pub(super) fn test_strategy_with_fee_provider_and_decision_evidence(
         fee_provider,
         decision_evidence,
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         ),
@@ -539,8 +517,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             decision_evidence,
             submit_admission,
             fixture_execution_venue(),
-        )
-        .with_readiness_evidence(test_readiness_gate_evidence()),
+        ),
     )
 }
 
@@ -617,27 +594,24 @@ pub(super) fn test_identifier_token(raw: &str) -> String {
         .collect()
 }
 
-pub(super) fn live_canary_gate_report(
-    max_live_order_count: u32,
-    max_notional_per_order: Decimal,
-) -> crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport {
-    crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport::for_test(
-        max_live_order_count,
-        max_notional_per_order,
-    )
-}
-
-pub(super) fn submit_admission_armed_with_cap(
+pub(super) fn submit_admission_with_provider_cap(
     max_notional_per_order: Decimal,
     decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
 ) -> Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState> {
-    let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(decision_evidence),
+    let mut limits = BTreeMap::new();
+    limits.insert(
+        "POLYMARKET".to_string(),
+        crate::bolt_v3_submit_admission::BoltV3LiveSubmitApprovalLimits {
+            max_order_count: 1,
+            max_order_notional: max_notional_per_order,
+        },
     );
-    submit_admission
-        .arm(live_canary_gate_report(1, max_notional_per_order))
-        .expect("valid gate report should arm submit admission");
-    submit_admission
+    Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+            decision_evidence,
+            limits,
+        ),
+    )
 }
 
 pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
@@ -758,24 +732,6 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
 }
 
 pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
-    decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
-    submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
-) -> BinaryOracleEdgeTaker {
-    let (mut strategy, fee_provider) =
-        ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
-    strategy.context = StrategyBuildContext::new(
-        fee_provider,
-        decision_evidence,
-        submit_admission,
-        fixture_execution_venue(),
-    )
-    .with_readiness_evidence(test_readiness_gate_evidence());
-    strategy.config.edge_threshold_basis_points = 1;
-    strategy.active.price_to_beat = Some(3_100.0);
-    strategy
-}
-
-pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admission_without_readiness_evidence(
     decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
 ) -> BinaryOracleEdgeTaker {

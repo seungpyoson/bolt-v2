@@ -13,9 +13,7 @@ use rust_decimal::Decimal;
 use toml::Value;
 
 use crate::{
-    bolt_v3_decision_evidence::{
-        BoltV3DecisionEvidenceWriter, BoltV3ReadinessGateEvidenceSnapshot,
-    },
+    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 
@@ -59,7 +57,6 @@ pub struct StrategyBuildContext {
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     execution_venue: Venue,
-    readiness_evidence: Option<BoltV3ReadinessGateEvidenceSnapshot>,
 }
 
 impl StrategyBuildContext {
@@ -80,16 +77,7 @@ impl StrategyBuildContext {
             decision_evidence,
             submit_admission,
             execution_venue,
-            readiness_evidence: None,
         }
-    }
-
-    pub fn with_readiness_evidence(
-        mut self,
-        readiness_evidence: BoltV3ReadinessGateEvidenceSnapshot,
-    ) -> Self {
-        self.readiness_evidence = Some(readiness_evidence);
-        self
     }
 
     pub fn fee_provider(&self) -> &dyn FeeProvider {
@@ -116,10 +104,6 @@ impl StrategyBuildContext {
     /// real order can only ever fire against an instrument on the venue it routes to.
     pub fn execution_venue(&self) -> Venue {
         self.execution_venue
-    }
-
-    pub fn readiness_evidence(&self) -> Option<&BoltV3ReadinessGateEvidenceSnapshot> {
-        self.readiness_evidence.as_ref()
     }
 }
 
@@ -388,7 +372,7 @@ mod tests {
         StrategyBuildContext::new(
             Arc::new(NoopFeeProvider),
             Arc::new(NoopDecisionEvidenceWriter),
-            Arc::new(BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
                 NoopDecisionEvidenceWriter,
             ))),
             // Fixture venue for registry tests. These exercise strategy registration, not

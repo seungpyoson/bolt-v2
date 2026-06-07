@@ -81,23 +81,23 @@
 
 ### Tests for User Story 2
 
-- [ ] T037 [P] [US2] Add failing option-greeks subscription planner test in `tests/bolt_v3_iv_subscription.rs`
-- [ ] T038 [P] [US2] Add failing option-chain subscription planner test in `tests/bolt_v3_iv_subscription.rs`
-- [ ] T039 [P] [US2] Add failing aggregate-greeks subscription planner test in `tests/bolt_v3_iv_subscription.rs`
-- [ ] T040 [P] [US2] Add failing custom-implied-volatility subscription planner test in `tests/bolt_v3_iv_subscription.rs`
-- [ ] T041 [P] [US2] Add failing reload/unsubscribe/source-removal test in `tests/bolt_v3_iv_subscription.rs`
-- [ ] T042 [US2] Record US2 RED evidence in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T037 [P] [US2] Add failing option-greeks subscription planner test in `tests/bolt_v3_iv_subscription.rs`
+- [X] T038 [P] [US2] Add failing option-chain subscription planner test in `tests/bolt_v3_iv_subscription.rs`
+- [X] T039 [P] [US2] Add failing aggregate-greeks subscription planner test in `tests/bolt_v3_iv_subscription.rs`
+- [X] T040 [P] [US2] Add failing custom-implied-volatility subscription planner test in `tests/bolt_v3_iv_subscription.rs`
+- [X] T041 [P] [US2] Add failing reload/unsubscribe/source-removal test in `tests/bolt_v3_iv_subscription.rs`
+- [X] T042 [US2] Record US2 RED evidence in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
 ### Implementation for User Story 2
 
-- [ ] T043 [P] [US2] Define `IvSubscriptionPlan` in `src/bolt_v3_iv/subscription.rs`
-- [ ] T044 [P] [US2] Implement option-greeks subscription planning in `src/bolt_v3_iv/subscription.rs`
-- [ ] T045 [P] [US2] Implement option-chain subscription planning in `src/bolt_v3_iv/subscription.rs`
-- [ ] T046 [P] [US2] Implement aggregate-greeks subscription planning in `src/bolt_v3_iv/subscription.rs`
-- [ ] T047 [P] [US2] Implement custom-implied-volatility subscription planning in `src/bolt_v3_iv/subscription.rs`
-- [ ] T048 [US2] Implement reload, unsubscribe, and source-removal planning in `src/bolt_v3_iv/subscription.rs`
-- [ ] T049 [US2] Implement runtime binding adapter traits in `src/bolt_v3_iv/runtime.rs`
-- [ ] T050 [US2] Record US2 GREEN evidence and NT runtime mapping decisions in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T043 [P] [US2] Define `IvSubscriptionPlan` in `src/bolt_v3_iv/subscription.rs`
+- [X] T044 [P] [US2] Implement option-greeks subscription planning in `src/bolt_v3_iv/subscription.rs`
+- [X] T045 [P] [US2] Implement option-chain subscription planning in `src/bolt_v3_iv/subscription.rs`
+- [X] T046 [P] [US2] Implement aggregate-greeks subscription planning in `src/bolt_v3_iv/subscription.rs`
+- [X] T047 [P] [US2] Implement custom-implied-volatility subscription planning in `src/bolt_v3_iv/subscription.rs`
+- [X] T048 [US2] Implement reload, unsubscribe, and source-removal planning in `src/bolt_v3_iv/subscription.rs`
+- [X] T049 [US2] Implement runtime binding adapter traits in `src/bolt_v3_iv/runtime.rs`
+- [X] T050 [US2] Record US2 GREEN evidence and NT runtime mapping decisions in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
 **Checkpoint**: Configured IV sources map to bounded NT subscription operations.
 

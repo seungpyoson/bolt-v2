@@ -88,3 +88,31 @@ Phase 1 adds documentation, module boundaries, and fixture inventory only. Runti
 | `cargo test --locked --test bolt_v3_iv_capability` | GREEN | 4 tests passed after adding the capability resolver, scanners, explicit ledger model, and TOML fixture. |
 
 NT-first decisions for US1: the Cargo resolver derives NT evidence from `cargo metadata` and `Cargo.lock`; scanners operate against source files from the resolved checkout shape; no FV/RV, strategy-specific, venue-specific, or sidecar collection behavior was introduced.
+
+## Phase 4 User Story 2 Subscription Planning
+
+| Task | Evidence | Status |
+|---|---|---|
+| `T037` | `tests/bolt_v3_iv_subscription.rs` asserts option-greeks sources map to NT option-greeks subscribe operations with configured client, selector, params, and generation. | Complete |
+| `T038` | `tests/bolt_v3_iv_subscription.rs` asserts option-chain sources map to NT option-chain subscribe operations with configured series and strike-range selector. | Complete |
+| `T039` | `tests/bolt_v3_iv_subscription.rs` asserts aggregate-greeks sources map to NT greeks-topic subscribe operations. | Complete |
+| `T040` | `tests/bolt_v3_iv_subscription.rs` asserts custom implied-volatility sources map to ledger-compatible NT custom-data subscribe operations. | Complete |
+| `T041` | `tests/bolt_v3_iv_subscription.rs` asserts reload unsubscribes stale generations, subscribes the new generation, and emits source-removal operations for deleted sources. | Complete |
+| `T042` | RED evidence below records the missing subscription/runtime module failure. | Complete |
+| `T043` | `src/bolt_v3_iv/subscription.rs` defines `IvSubscriptionPlan`, profile/source subscription config, lifecycle, runtime operation, and NT source-kind enums. | Complete |
+| `T044` | `src/bolt_v3_iv/subscription.rs` maps option-greeks sources to subscribe/unsubscribe option-greeks operations. | Complete |
+| `T045` | `src/bolt_v3_iv/subscription.rs` maps option-chain sources to subscribe/unsubscribe option-chain operations. | Complete |
+| `T046` | `src/bolt_v3_iv/subscription.rs` maps aggregate-greeks sources to subscribe/unsubscribe aggregate-greeks topic operations. | Complete |
+| `T047` | `src/bolt_v3_iv/subscription.rs` maps custom implied-volatility sources to subscribe/unsubscribe custom-data operations. | Complete |
+| `T048` | `src/bolt_v3_iv/subscription.rs` implements start, stop, reload, unsubscribe, and source-removal planning. | Complete |
+| `T049` | `src/bolt_v3_iv/runtime.rs` defines the runtime binding adapter trait and plan outcome/source-health bridge. | Complete |
+| `T050` | GREEN evidence below records the passing focused US2 test target. | Complete |
+
+## Phase 4 RED/GREEN Evidence
+
+| Command | Outcome | Notes |
+|---|---|---|
+| `cargo test --locked --test bolt_v3_iv_subscription` | RED | Failed with unresolved imports because `bolt_v2::bolt_v3_iv::runtime` and `bolt_v2::bolt_v3_iv::subscription` did not exist. |
+| `cargo test --locked --test bolt_v3_iv_subscription` | GREEN | 5 tests passed after adding typed subscription planning, reload/source-removal planning, and runtime binding adapter outcomes. |
+
+NT runtime mapping decisions for US2: subscription plans carry only configured profile/source/client/selector/params/generation values; source kind to NT operation mapping is explicit and typed; no strategy, venue, market, asset, instrument, cadence, source ID, timeout, or policy runtime value is introduced in core logic.

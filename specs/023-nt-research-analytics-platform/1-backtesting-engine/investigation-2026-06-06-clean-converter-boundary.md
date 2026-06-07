@@ -44,6 +44,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - source-proof migration preflight is now a cheap TOML-driven gate over the legacy derivability report: requested table families, required derivable fields, raw-payload count, S3-bound status, and byte budget are config-owned, so candidate selection does not depend on venue names or provider-specific branches
 - combined backfill readiness is now a cheap TOML-driven gate over the backfill preflight report and the source-proof migration preflight report, so a path is not considered ready unless both the canonical-ready tranche and required source-proof candidate are selected
 - source-binding coverage is now a cheap TOML-driven gate over the configured source-binding registry and coverage ledger; it reports whether required table-family bindings have ledger records without inferring from prefixes or venue names
+- source-proof scope coverage is now a cheap object-level gate over one accepted proof and one manifest; it proves whether the proof's raw sample object exists inside a manifest and whether the enclosing manifest is broader than the accepted proof scope
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
 - the current `BacktestExtensionSurface` classification is recorded in `backtest-extension-surface-matrix.md`; supported primitive NT controls are TOML pass-throughs, Bolt-owned pieces are provenance/governance boundaries, unmodeled NT model/system surfaces fail before NT config construction, and each successful run now writes `backtest-run-manifest.json` plus result-contract claim-limit entries for resolved NT defaults, supported run/venue/catalog pass-through fields, and unsupported NT surfaces
 
@@ -710,6 +711,21 @@ Current evidence:
   the next backfill unblocker is not converter execution: current manifests must
   be safely bound to configured source-binding keys and source proofs before any
   broad canonical conversion can be selected.
+- The source-proof scope CLI was run against the accepted reference trades
+  proof and the matching raw staging manifest:
+  `/private/tmp/bte-coverage-ledger-20260607/backfill-source-proof-scope-reference-trades-output/backfill-source-proof-scope-report.json`
+  has content hash
+  `db110e9baf7a6bf710cbb35387424b3867404f79a4afd022cf85917c8b910e3b`,
+  size 1092 bytes, `status = candidate_found`, source proof
+  `source-proof-bybit-spot-tick-trades` version 1, source binding
+  `bybit-spot-tick-trades`, and manifest
+  `bybit-backfill-run-fdcc0758bbd03113`. The accepted proof scope is one
+  object and 8505 bytes; the enclosing manifest has 49 payload objects. The
+  report found exactly one matching object, the accepted
+  `s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BNBUSDC/object=d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598.csv.gz`,
+  and `object_level_tranche_required = true`. Therefore the safe next backfill
+  unit is an object-level tranche selected by source-proof raw sample identity,
+  not a run-level binding of the 49-object manifest.
 - Binance run `binance-backfill-run-d928f6666827dd47` records 4,701 completed
   payload objects, 42,358,207,176 payload bytes, zero errors, and
   `payload_completion_ok = true`, but it is still raw staging and not a
@@ -749,7 +765,9 @@ Distance from the overall backtesting engine:
    source-proof migration preflight selector that proves whether the staged
    legacy proofs contain a candidate for a requested table family, and a
    combined readiness report that joins both gates for the selected NT data
-   path, plus source-binding coverage over the registry and ledger. A real
+   path, source-binding coverage over the registry and ledger, and object-level
+   source-proof scope coverage proving the accepted sample is inside a broader
+   raw staging manifest. A real
    manifest-only ledger can now be generated across all 190 observed manifests,
    and real source-proof admissibility/derivability/preflight reports can now
    be generated across the current staged evidence. The
@@ -760,7 +778,8 @@ Distance from the overall backtesting engine:
    are to carry detailed coverage evidence, and 146 supported manifest records
    still lack source-proof binding. There are no accepted normalized row tables,
    no accepted
-   instrument/gap policy ledger, and no NT catalog export from that data.
+   instrument/gap policy ledger, no object-level accepted-tranche manifest, and
+   no NT catalog export from that data.
 3. Production BTE: blocked by the backfill foundation. Running production BTE
    before the ledger/normalization/catalog gates would only prove the existing
    single-object sample path, not the overall research/backtesting platform.

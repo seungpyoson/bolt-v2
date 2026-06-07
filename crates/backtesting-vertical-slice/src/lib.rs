@@ -25,6 +25,7 @@ pub mod backfill_binding_coverage;
 pub mod backfill_coverage;
 pub mod backfill_preflight;
 pub mod backfill_readiness;
+pub mod backfill_source_proof_scope;
 pub mod canonical_trades;
 pub mod catalog_projection;
 pub mod conversion_boundary;

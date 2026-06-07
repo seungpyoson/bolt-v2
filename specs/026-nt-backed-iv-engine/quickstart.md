@@ -8,10 +8,10 @@ An IV profile is the lifecycle boundary. Sources, strategy authorization, strate
 
 ```text
 [iv]
-schema_version = operator_schema_version
 
 [[iv.profiles]]
 profile_id = "operator_iv_profile"
+schema_version = operator_schema_version
 strategy_ids = ["operator_strategy"]
 enabled_products = [
   "iv_point",
@@ -43,7 +43,10 @@ enabled_raw_products = [
   "raw_aggregate_greeks",
   "raw_custom_implied_volatility",
 ]
-access_purpose = "operator_audit_or_replay_purpose"
+authorized_audit_handles = ["operator_audit_handle"]
+access_purposes = ["operator_audit_or_replay_purpose"]
+eligible_sources = ["operator_source_id"]
+audit_retention = operator_positive_integer
 
 [iv.profiles.memory_bounds]
 max_raw_events = operator_positive_integer

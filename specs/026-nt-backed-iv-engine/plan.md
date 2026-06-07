@@ -45,11 +45,21 @@ specs/026-nt-backed-iv-engine/
 ├── quickstart.md
 ├── checklists/
 │   └── requirements.md
+├── reference/
+│   ├── overlap-ledger.md
+│   ├── repository-truth.md
+│   ├── evidence-ledger.md
+│   ├── nt-evidence.md
+│   ├── implementation-ledger.md
+│   ├── internal-review.md
+│   ├── external-review.md
+│   └── final-summary.md
 └── contracts/
     └── iv-engine-api.md
 ```
 
 The repository's active `.specify/feature.json` and AGENTS Speckit block point at this IV packet for planning and task generation.
+Reference files other than `overlap-ledger.md` are created or updated by the executable tasks in `tasks.md`.
 
 ### Source Code (repository root)
 

@@ -55,7 +55,7 @@
 
 - [ ] T025 [P] [US1] Add failing test for Cargo metadata and `Cargo.lock` NT checkout resolution in `tests/bolt_v3_iv_capability.rs`
 - [ ] T026 [P] [US1] Add failing test for seed-family IV/options surface discovery in `tests/bolt_v3_iv_capability.rs`
-- [ ] T027 [P] [US1] Add failing test for whole-checkout candidate sweep terms in `tests/bolt_v3_iv_capability.rs`
+- [ ] T027 [P] [US1] Add failing test for whole-checkout candidate sweep terms from FR-054 in `tests/bolt_v3_iv_capability.rs`, including option, options, greeks, implied, iv, volatility, smile, surface, chain, custom data, strike, expiry, expiration, tenor, moneyness, skew, premium, and vol
 - [ ] T028 [P] [US1] Add failing test for unclassified candidate rejection in `tests/bolt_v3_iv_capability.rs`
 - [ ] T029 [US1] Record US1 RED evidence in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
@@ -243,8 +243,8 @@
 - [ ] T120 [P] Update IV API contract with final public type names in `specs/026-nt-backed-iv-engine/contracts/iv-engine-api.md`
 - [ ] T121 [P] Update implementation evidence ledger with all RED/GREEN command outputs in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 - [ ] T122 [P] Update overlap ledger and close any fully ported issues or PRs in `specs/026-nt-backed-iv-engine/reference/overlap-ledger.md`
-- [ ] T123 Run focused IV test targets and record outcomes in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
-- [ ] T124 Run broader repository verification gates and record outcomes in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [ ] T123 Run focused IV test targets (`cargo test --locked bolt_v3_iv`, `cargo test --locked --test bolt_v3_iv_capability`, `cargo test --locked --test bolt_v3_iv_config`, `cargo test --locked --test bolt_v3_iv_live_integration`, `cargo test --locked --test bolt_v3_iv_subscription`, `cargo test --locked --test bolt_v3_iv_ingest`, `cargo test --locked --test bolt_v3_iv_store`, `cargo test --locked --test bolt_v3_iv_query`, `cargo test --locked --test bolt_v3_iv_policy`, `cargo test --locked --test bolt_v3_iv_derive`, `cargo test --locked --test bolt_v3_iv_source_fence`, `cargo test --locked --test config_parsing`) and record outcomes in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [ ] T124 Run broader repository verification gates (`cargo fmt --check`, `cargo clippy --locked --lib -- -D warnings`, `just source-fence`) and record outcomes in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 - [ ] T125 Conduct internal adversarial review and record findings in `specs/026-nt-backed-iv-engine/reference/internal-review.md`
 - [ ] T126 Request external reviews only after exact-head local verification and CI are green, then record results in `specs/026-nt-backed-iv-engine/reference/external-review.md`
 - [ ] T127 If a new commit lands after review approval, rerun external reviews and update `specs/026-nt-backed-iv-engine/reference/external-review.md`

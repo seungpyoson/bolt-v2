@@ -41,6 +41,7 @@ Fields:
 - `freshness`
 - `retention`
 - `memory_bounds`
+- `bounds`
 - `accepted_conventions`
 - `enabled_bases`
 - `interpolation_policy`
@@ -56,7 +57,8 @@ Validation:
 - Profile IDs are unique and non-empty.
 - Unknown or unsupported schema versions reject at startup.
 - Supported schema versions and migration behavior are declared in `schema_version_policy`; no best-effort schema compatibility is allowed.
-- Strategy authorization, sources, source lifecycle, enabled products, memory bounds, and query policies live in this profile boundary.
+- Strategy authorization, sources, source lifecycle, enabled products, memory bounds, numeric bounds, and query policies live in this profile boundary.
+- Bounds reference named `IvNumericBounds` and convention-bound policies used by ingestion, projection, helper inputs, helper outputs, quorum agreement bands, and configured operator values.
 - Swapping, renaming, adding, or removing a source requires editing only this profile.
 - A profile with no source and no derived-input policy rejects at startup.
 - No runtime value is inferred from code when TOML omits it.
@@ -92,7 +94,6 @@ Fields:
 - `source_kind`
 - `selector`
 - `nt_params`
-- `enabled_products`
 
 Validation:
 
@@ -100,6 +101,7 @@ Validation:
 - Source kind is a known enum from the capability ledger.
 - Selector is a typed `IvSelector` variant compatible with the source kind.
 - Numeric bounds are positive where required.
+- Source product exposure is controlled by the owning profile's `enabled_products`; source configs do not declare a second product allow-list.
 - Source config does not carry strategy authorization outside its owning profile.
 
 ## IvSelector

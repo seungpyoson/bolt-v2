@@ -63,4 +63,4 @@
 - The spec intentionally requires a pinned NT capability ledger because "use all NT offers" is otherwise unverifiable.
 - The spec intentionally preserves raw NT payloads inside the IV engine and exposes them through audit/replay handles only, so strategies use IV products without owning subscription or derivation mechanics.
 - The spec intentionally groups IV sources and strategy authorization inside one IV profile to avoid multi-section source swaps.
-- Active Speckit pointers remain pinned to the existing source-fence-owned order-intent packet; this IV packet is addressed by explicit path.
+- Active Speckit pointers in `.specify/feature.json` and `AGENTS.md` point to this IV packet for planning and task generation.

@@ -1,8 +1,8 @@
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
 use backtesting_vertical_slice::source_proof::{
-    CheckOutcome, FixtureType, SourceCandidateClass, SourceProofReport, SourceProofStatus,
-    SourceSelectionStatus,
+    CheckOutcome, FixtureType, NtMappingStatus, SourceCandidateClass, SourceProofFidelityClass,
+    SourceProofReport, SourceProofStatus, SourceSelectionStatus,
 };
 use serde_json::Value;
 
@@ -125,6 +125,49 @@ fn assert_sample_evidence_is_inspected(path: &PathBuf, report: &SourceProofRepor
     );
 }
 
+fn assert_nt_mapping_evidence_is_bounded(path: &PathBuf, report: &SourceProofReport) {
+    match (report.table_family.as_str(), report.fidelity_class) {
+        ("trades", SourceProofFidelityClass::TradeReplay) => {
+            assert_eq!(
+                report.nt_mapping_status,
+                NtMappingStatus::Accepted,
+                "trade-replay fixture report {path:?} must carry accepted NT catalog mapping evidence"
+            );
+            assert_eq!(
+                report.required_checks.nt_mapping.outcome,
+                CheckOutcome::Passed,
+                "trade-replay fixture report {path:?} must pass NT mapping before provider selection"
+            );
+            let evidence = report.required_checks.nt_mapping.evidence_ref.as_str();
+            assert!(
+                evidence.contains("TradeTick") && evidence.contains("ParquetDataCatalog"),
+                "trade-replay fixture report {path:?} must bind mapping evidence to NT TradeTick catalog readback"
+            );
+        }
+        (_, SourceProofFidelityClass::MetadataOnly) => {
+            assert_eq!(
+                report.nt_mapping_status,
+                NtMappingStatus::NotApplicable,
+                "metadata-only fixture report {path:?} must not claim a replay catalog mapping"
+            );
+            assert_eq!(
+                report.required_checks.nt_mapping.outcome,
+                CheckOutcome::NotApplicable,
+                "metadata-only fixture report {path:?} must mark NT replay mapping as not applicable"
+            );
+            assert!(
+                report.forbidden_claims.iter().any(|claim| {
+                    claim.contains("NT catalog")
+                        || claim.contains("BinaryOption mapping")
+                        || claim.contains("backtest")
+                }),
+                "metadata-only fixture report {path:?} must carry a no-overclaim mapping guard"
+            );
+        }
+        _ => {}
+    }
+}
+
 fn assert_kimchi_premium_component_shape(path: &PathBuf, report: &SourceProofReport) {
     let roles = report
         .cross_market_components
@@ -176,6 +219,7 @@ fn reference_fixtures_include_unselected_binary_option_source_proof() {
     for (path, value, report) in binary_option_reports {
         assert_unselected_official_free_candidate(path, report);
         assert_sample_evidence_is_inspected(path, report);
+        assert_nt_mapping_evidence_is_bounded(path, report);
         assert_no_heavy_payloads(path, value);
     }
 }
@@ -195,6 +239,7 @@ fn reference_fixtures_include_unselected_perps_spot_source_proof() {
     for (path, value, report) in perps_spot_reports {
         assert_unselected_official_free_candidate(path, report);
         assert_sample_evidence_is_inspected(path, report);
+        assert_nt_mapping_evidence_is_bounded(path, report);
         assert_no_heavy_payloads(path, value);
         if report.product_category == "kimchi-premium" {
             assert_kimchi_premium_component_shape(path, report);

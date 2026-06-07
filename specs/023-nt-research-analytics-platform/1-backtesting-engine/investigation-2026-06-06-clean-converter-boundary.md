@@ -1267,6 +1267,23 @@ Midpoint table-family coverage audit:
   selection. Focused verification passed:
   `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_source_proof_reference_fixtures -- --nocapture`
   (2 tests).
+- BTE-022 is split by actual NT-compatible data class, not by venue. Pinned NT
+  exposes `BinaryOption` as an `InstrumentAny` catalog instrument and can write
+  instrument records through `ParquetDataCatalog::write_instruments`, but
+  `BacktestDataConfig.data_type` dispatches replay inputs through market-data
+  classes such as `TradeTick`, `QuoteTick`, `Bar`, `OrderBookDelta`, and
+  `OrderBookDepth10`. The current binary-option sample is Hyperliquid outcome
+  metadata only, so it remains `METADATA_ONLY`, `nt_mapping_status =
+  not_applicable`, and blocked from NT catalog/backtest claims. The perps/spot
+  native-trades fixture now carries the already proven NT `TradeTick` mapping:
+  `nt_mapping_status = accepted`, `required_checks.nt_mapping.outcome =
+  passed`, and evidence bound to the accepted Binance BNBUSDC 2026-03-01 sample
+  plus `ParquetDataCatalog` projection/query read-back. RED/GREEN focused test
+  evidence: the reference-fixture test first failed because the perps/spot
+  fixture still had pending NT mapping, then passed after binding the generic
+  trade-replay-to-`TradeTick` evidence. BTE-022 remains open overall until the
+  binary-option fixture either proves replay data into an NT data class or is
+  explicitly routed through an approved non-replay signal/input contract.
 
 ## Recommendation
 

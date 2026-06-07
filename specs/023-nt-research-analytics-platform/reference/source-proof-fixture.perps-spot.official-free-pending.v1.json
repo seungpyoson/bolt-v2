@@ -30,12 +30,12 @@
   "license_scope": "unknown",
   "retention_ref": "pending://source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/version=1/retention-freshness-evidence",
   "cost_ref": "pending://source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/version=1/cost-evidence",
-  "nt_mapping_status": "pending",
+  "nt_mapping_status": "accepted",
   "fidelity_class": "TRADE_REPLAY",
   "l2_replay_evidence": {},
   "forbidden_claims": [
     "No NT catalog or backtest input from this pending perps/spot candidate proof.",
-    "No provider-selected production source claim until source proof, license, sample, NT mapping, fidelity, and cost checks pass.",
+    "No provider-selected production source claim until source proof, license, retention, coverage, fidelity, storage, and cost checks pass.",
     "No L2/L3 order-book replay, execution-quality, queue-position, liquidity, fillability, or sizing claims from trade-print replay.",
     "No broad one-year or multi-instrument coverage claim until object scope, hashes, and gap policy are proven."
   ],
@@ -44,13 +44,13 @@
       "id": "perps-spot-source-proof-claim-limit-001",
       "severity": "blocking",
       "claim": "No NT catalog or backtest input from this pending perps/spot candidate proof.",
-      "reason": "The report records an official/free candidate before license, retention, full coverage, storage, and NT mapping checks have passed for the fixture-level selection path.",
+      "reason": "The report records an official/free candidate before license, retention, full coverage, storage, and source selection checks have passed for the fixture-level selection path.",
       "evidence_ref": "source-proof://source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/status"
     },
     {
       "id": "perps-spot-source-proof-claim-limit-002",
       "severity": "blocking",
-      "claim": "No provider-selected production source claim until source proof, license, NT mapping, fidelity, and cost checks pass.",
+      "claim": "No provider-selected production source claim until source proof, license, retention, coverage, fidelity, storage, and cost checks pass.",
       "reason": "This fixture report exists to make candidate evaluation explicit before provider selection; it is not an accepted source proof.",
       "evidence_ref": "source-proof://source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/source_selection_status"
     },
@@ -108,8 +108,8 @@
       "evidence_ref": "pending row counts, object counts, checksum sidecars, and gap threshold evidence"
     },
     "nt_mapping": {
-      "outcome": "pending",
-      "evidence_ref": "pending NautilusTrader TradeTick/CurrencyPair mapping and ParquetDataCatalog readback proof"
+      "outcome": "passed",
+      "evidence_ref": "nautilus_model::data::TradeTick; proven by ParquetDataCatalog projection + query_typed_data read-back for accepted Binance BNBUSDC 2026-03-01 sample sha256=433d32b8d828abee5e1937e01372d16f7edadc14c41fe736b0b9577541fa5e81"
     },
     "cost": {
       "outcome": "pending",

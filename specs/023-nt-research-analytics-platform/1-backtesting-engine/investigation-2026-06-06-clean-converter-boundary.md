@@ -491,13 +491,99 @@ No-repeat controls before any future broad backfill or BTE conversion:
     binding, logical NT catalog hash, NT read-back count, and BacktestNode
     iteration checks.
 
+## Backfill-First Status
+
+As of the 2026-06-07 bounded S3 recheck, the overall BTE is blocked on accepted
+data, not on custom simulator construction.
+
+Current evidence:
+
+- `s3://bolt-parquet/nt-research-analytics/` is still empty:
+  `list-objects-v2` returned `KeyCount: 0`. There is no production NT catalog,
+  result contract, or published BTE artifact under the clean output prefix.
+- `s3://bolt-parquet/backfill-staging/2026-06-01/` has staging prefixes for
+  Binance, Bybit, Chainlink, Deribit, Hyperliquid core/targeted/HIP-3/HIP-4,
+  OKX, Polymarket PMXT streaming/page1, and source-proof-v3. These are staging
+  inputs/evidence, not BTE outputs.
+- Representative manifest inspection confirms the current data state is raw
+  staging: Binance, OKX, PMXT, and Bybit representative manifests all declare
+  `write_mode = s3_staging` and `canonical_s3_write = false`.
+- Binance run `binance-backfill-run-d928f6666827dd47` records 4,701 completed
+  payload objects, 42,358,207,176 payload bytes, zero errors, and
+  `payload_completion_ok = true`, but it is still raw staging and not a
+  canonical NT catalog.
+- OKX run `okx-3m-d812548c6c5871b5` records one strict daily tranche for
+  2026-03-01 with 200 payload objects, 6,279,257,571 payload bytes, zero errors,
+  and no selector-scope violations. The OKX manifest directory currently has
+  116 manifest/progress objects, so acceptance must be ledgered per run/tranche,
+  not inferred from prefix presence.
+- Polymarket PMXT streaming still has physical data beyond accepted coverage:
+  the prefix contains 915 objects and 344,758,798,407 bytes, while the inspected
+  orphan acceptance manifest covers 149 objects and 57,936,847,067 bytes for
+  2026-04-15 through 2026-04-23. Raw PMXT object presence is therefore physical
+  evidence only until reconciled into accepted manifest coverage.
+- Bybit has a large orphan acceptance manifest covering 30,710 objects and
+  21,946,409,144 bytes with `source_proof_id = null`. That may be useful for
+  reconciliation, but it is not acceptable as canonical BTE input until source
+  proof binding, data families, gap policy, and normalization are validated.
+- Hyperliquid core manifest listing is truncated at 1,000 keys, indicating a
+  large manifest/progress surface that must be summarized through a ledger
+  rather than manually inspected. Deribit remains high-risk because prior
+  manifests recorded many provider-rate and invalid-instrument errors.
+
+Distance from the overall backtesting engine:
+
+1. Local single-object vertical slice: close. It has a tested accepted sample
+   proof, generic run/proof/result boundaries, and NT execution through
+   `BacktestNode`.
+2. Backfill foundation: not complete. There is substantial staged raw data, but
+   no machine-readable accepted coverage ledger, no accepted normalized row
+   tables, no accepted instrument/gap policy ledger, and no NT catalog export
+   from that data.
+3. Production BTE: blocked by the backfill foundation. Running production BTE
+   before the ledger/normalization/catalog gates would only prove the existing
+   single-object sample path, not the overall research/backtesting platform.
+4. Scalable new venue/data-family onboarding: partially shaped by the
+   source-binding registry and typed run/proof boundaries, but not complete
+   until the coverage ledger and normalization adapters are registry-driven and
+   tested against more than the current sample.
+
+Backfill must therefore be the next deliverable. The efficient order is:
+
+1. Build a machine-readable coverage ledger from existing manifests and S3
+   inventory only; no broad downloads.
+2. Reconcile physical-only S3 objects, starting with PMXT and Bybit orphan
+   acceptance manifests, into accepted or rejected coverage records.
+3. Normalize one bounded accepted tranche into the declared table contract with
+   source-proof and gap-policy checks.
+4. Export an NT catalog from that normalized tranche and run BTE only after the
+   catalog proof exists.
 
 ## Recommendation
 
-Proceed with the next implementation slice as production proof plus remaining NT-surface hardening, not custom simulator work:
+Proceed with backfill-first proof, then production BTE proof; do not start
+broad historical backfill or custom simulator work:
 
-1. Create or provide SSM parameter paths for artifact-store S3 credentials, keep `conditional_put = "etag"` in the artifact-store Rust options, add only those parameter paths to the run spec, and rerun `--publish-output --prove-published-catalog` for the accepted BNBUSDC object.
-2. Verify the configured S3 output prefix is empty before the run, then verify the post-run S3 listing and artifact hashes under `nt-research-analytics/`; require the published-catalog proof to show `BacktestNode` consumed the clean catalog using NT's `BacktestDataConfig` cloud catalog fields and the same resolved object-store option map.
-3. Add real typed NT mappings for leverage maps, margin model, simulation modules, fill model, latency model, fee model, and settlement prices only when source proof and result-contract claim limits justify each surface.
-4. Keep unsupported NT venue/system model surfaces rejected before NT config construction; the declared venue placeholders must continue producing structured errors until real NT mappings land.
-5. Only then claim a clean production BTE artifact path.
+1. Add a coverage-ledger implementation that consumes manifest objects and S3
+   inventory summaries without venue-specific code branches, records accepted,
+   rejected, gap, and physical-only coverage, and fails on unbounded selectors
+   before any download/conversion work.
+2. Use the ledger to choose one bounded accepted tranche for normalization. Do
+   not choose by venue name; choose by source-binding evidence state, completed
+   manifest status, object count/byte budget, data family, and gap policy.
+3. Normalize that tranche into the declared table contract, preserving
+   source-proof id/version, source binding, raw object hash, byte count, table
+   family, instrument universe metadata, and gap reason.
+4. Export an NT catalog from the normalized tranche and prove that
+   `BacktestNode` consumes it using NT's catalog/data config APIs.
+5. Only after the backfill ledger, normalized rows, gap policy, and NT catalog
+   proof exist should the branch create or provide SSM parameter paths for
+   artifact-store S3 credentials and run `--publish-output
+   --prove-published-catalog` under `nt-research-analytics/`.
+6. Add real typed NT mappings for leverage maps, margin model, simulation
+   modules, fill model, latency model, fee model, and settlement prices only
+   when accepted source proof and result-contract claim limits justify each
+   surface.
+7. Keep unsupported NT venue/system model surfaces rejected before NT config
+   construction; the declared venue placeholders must continue producing
+   structured errors until real NT mappings land.

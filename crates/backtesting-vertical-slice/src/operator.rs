@@ -1173,6 +1173,12 @@ mod tests {
     const COMMITTED_ACCEPTED_PROOF: &str = include_str!(
         "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.bnbusdc-2026-03-01.json"
     );
+    const COMMITTED_BINANCE_RUN_SPEC: &str = include_str!(
+        "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.binance-bnbusdc-2026-03-01.toml"
+    );
+    const COMMITTED_BINANCE_ACCEPTED_PROOF: &str = include_str!(
+        "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.binance-bnbusdc-2026-03-01.json"
+    );
     const COMMITTED_SOURCE_BINDINGS: &str = include_str!(
         "../../../specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
     );
@@ -2051,5 +2057,64 @@ mod tests {
         let proof: SourceProofReport =
             serde_json::from_str(COMMITTED_ACCEPTED_PROOF).expect("accepted proof parses");
         assert!(proof.is_accepted(), "committed proof is accepted");
+    }
+
+    #[test]
+    fn committed_binance_reference_binds_accepted_source_proof_without_scratch_evidence() {
+        assert_no_scratch_evidence(COMMITTED_BINANCE_RUN_SPEC);
+        assert_no_scratch_evidence(COMMITTED_BINANCE_ACCEPTED_PROOF);
+
+        let spec: RunSpec =
+            toml::from_str(COMMITTED_BINANCE_RUN_SPEC).expect("binance run-spec parses");
+        let proof: SourceProofReport = serde_json::from_str(COMMITTED_BINANCE_ACCEPTED_PROOF)
+            .expect("binance accepted proof parses");
+
+        proof
+            .evaluate_acceptance()
+            .expect("binance reference proof still satisfies acceptance invariants");
+        let accepted_from_run_spec = spec
+            .source_proof
+            .clone()
+            .accept(
+                AcceptanceMode::Manual,
+                spec.accepted_by.clone(),
+                spec.accepted_at_utc.clone(),
+            )
+            .expect("run-spec candidate proof accepts with run-spec provenance");
+        assert_eq!(
+            accepted_from_run_spec, proof,
+            "run-spec candidate proof must stamp into committed accepted proof"
+        );
+
+        let accepted = crate::source_proof::select_accepted_dataset(
+            &proof,
+            &spec.accepted_object,
+            &spec.accepted_object.sha256,
+        )
+        .expect("committed binance object remains accepted");
+
+        assert_eq!(accepted.source_proof_id, spec.manifest.source_proof_id);
+        assert_eq!(
+            accepted.source_proof_version,
+            spec.manifest.source_proof_version
+        );
+        assert_eq!(accepted.source_binding, spec.manifest.venue_binding_key);
+        assert_eq!(
+            spec.manifest.output_prefix,
+            format!(
+                "{}/backtests/{}",
+                spec.manifest.artifact_root.trim_end_matches('/'),
+                spec.manifest.run_id
+            )
+        );
+    }
+
+    fn assert_no_scratch_evidence(text: &str) {
+        for forbidden in ["scratch://", "placeholder", "not production acceptance"] {
+            assert!(
+                !text.contains(forbidden),
+                "committed reference contains scratch evidence marker {forbidden:?}"
+            );
+        }
     }
 }

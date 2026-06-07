@@ -2,7 +2,7 @@
 #
 # Dataset facts for the minimal accepted dataset: Binance Data Vision spot
 # native trades for BNBUSDC on 2026-03-01, staged and covered by the accepted
-# ingest manifest run `bybit-backfill-run-fdcc0758bbd03113` (errors=0).
+# source-proof scope and accepted-tranche artifacts for one daily object.
 #
 # This file is config-driven input for `cargo run --bin backtesting_vertical_slice
 # -- --run-spec <this file> --object <local accepted object> --output-dir <dir>`.
@@ -100,7 +100,7 @@ end_utc = "2026-03-02T00:00:00Z"
 
 [source_proof.required_checks.source_access]
 outcome = "passed"
-evidence_ref = "https://data.binance.vision daily ZIP HTTP 200 and CHECKSUM matched"
+evidence_ref = "https://data.binance.vision/data/spot/daily/trades/BNBUSDC/BNBUSDC-trades-2026-03-01.zip and .CHECKSUM matched SHA256 433d32b8d828abee5e1937e01372d16f7edadc14c41fe736b0b9577541fa5e81"
 
 [source_proof.required_checks.license]
 outcome = "passed"

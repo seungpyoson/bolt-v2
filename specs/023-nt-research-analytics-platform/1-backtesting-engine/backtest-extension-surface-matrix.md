@@ -73,10 +73,12 @@ For a compatible native-trade CSV source, the expected extension is:
 4. Let NT own `ParquetDataCatalog`, `BacktestDataConfig`, `BacktestVenueConfig`, and `BacktestNode`.
 
 The current source-binding registry exercises this rule with two configured
-backfillable native-trades bindings: the accepted Bybit sample binding and a
-Binance spot native-trades candidate binding. The Binance row is registry data
-only; it cannot become BTE input without the normal accepted source-proof,
-sample, hash, and NT mapping gates.
+backfillable native-trades bindings: the accepted Bybit sample binding and the
+Binance spot native-trades binding. One Binance BNBUSDC daily object is accepted
+and direct-S3-proven through the normal source-proof, sample, hash, and NT
+mapping gates. Additional Binance symbols, dates, monthly files, or data
+families still require their own accepted proof/scope/tranche path; the
+registered binding alone is never enough to become BTE input.
 
 For a non-compatible raw data shape, the expected extension is:
 

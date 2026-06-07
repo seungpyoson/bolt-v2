@@ -459,7 +459,7 @@ fn strategy_build_context_requires_decision_evidence_value() {
         Arc::new(NoopFeeProvider),
         Arc::new(NoopDecisionEvidenceWriter),
         Arc::new(
-            bolt_v2::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            bolt_v2::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                 NoopDecisionEvidenceWriter,
             )),
         ),

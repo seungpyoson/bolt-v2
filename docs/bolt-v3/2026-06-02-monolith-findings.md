@@ -399,7 +399,7 @@ The inspected files above total 34,611 lines.
    Evidence:
    - `build_live_node_with_clients` starts at `src/bolt_v3_live_node.rs:3231`.
    - It chooses `NoStrategyDecisionEvidenceWriter` vs
-     `JsonlBoltV3DecisionEvidenceWriter`, creates unarmed
+     `JsonlBoltV3DecisionEvidenceWriter`, creates a fresh
      `BoltV3SubmitAdmissionState`, registers clients, builds the NT node,
      and registers strategies.
 

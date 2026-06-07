@@ -250,7 +250,7 @@ fn live_node_runner_does_not_require_evidence_gate_admission_before_nt_run() {
 
 #[test]
 fn ungated_submit_admission_allows_production_submit() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+    let admission = BoltV3SubmitAdmissionState::new(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
     ));
     let request = submit_request(Decimal::new(1, 0));
@@ -291,7 +291,7 @@ fn limited_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
 
 #[test]
 fn live_submit_approval_limits_bound_provider_submit_before_nt_submit() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed_with_live_submit_limits(
+    let admission = BoltV3SubmitAdmissionState::new_with_live_submit_limits(
         Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         BTreeMap::from([(
             "hyperliquid_perps".to_string(),
@@ -732,7 +732,7 @@ fn fresh_live_node_build_keeps_submit_admission_internal() {
 
 #[test]
 fn strategy_build_context_carries_shared_submit_admission_handle() {
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
     )));
     let context = StrategyBuildContext::new(
@@ -861,7 +861,7 @@ fn limited_admission_with_writer(
     max_order_count: u32,
     max_notional: Decimal,
 ) -> BoltV3SubmitAdmissionState {
-    BoltV3SubmitAdmissionState::new_unarmed_with_live_submit_limits(
+    BoltV3SubmitAdmissionState::new_with_live_submit_limits(
         writer,
         BTreeMap::from([(
             "polymarket_main".to_string(),

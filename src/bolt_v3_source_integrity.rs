@@ -187,15 +187,19 @@ mod tests {
     // and review cleanup over #574's strategy source-set hardening.
     // Re-derived once more after the exact PR merge-head source-integrity check
     // exposed the stale intermediate digest from conflict resolution.
+    // Re-derived again after removing vestigial retired gate arming constructor
+    // terminology from submit-admission construction and its call sites.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "6d313e872e55caa5828907e3ab486bb211400892bb3e699bc76b98892c4431a8";
+        "d865cc2c9111f5151bf6d6e5ddc14997d5d53257f8ef7af10e02dade9fd82c4d";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
     // Re-derived again by #579 after deleting retired evidence-gate source.
     // Re-derived again after removing a stale deleted-executor comment.
+    // Re-derived again after removing vestigial retired gate arming constructor
+    // terminology from submit-admission construction.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "09196eebd97402728f909442392cd0792d4a39de459772fec69c1ada7b9ac1e4";
+        "4a2c6952ac4765dfef711859599e8ffa74d92a4a4d6a7f2a63e7cb2513d3b408";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

@@ -372,7 +372,7 @@ mod tests {
         StrategyBuildContext::new(
             Arc::new(NoopFeeProvider),
             Arc::new(NoopDecisionEvidenceWriter),
-            Arc::new(BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
                 NoopDecisionEvidenceWriter,
             ))),
             // Fixture venue for registry tests. These exercise strategy registration, not

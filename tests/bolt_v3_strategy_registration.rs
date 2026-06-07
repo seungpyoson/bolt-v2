@@ -101,9 +101,7 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
     let decision_evidence: Arc<
         dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
     > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(
-        decision_evidence.clone(),
-    ));
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
     let mut node = make_bolt_v3_live_node_builder(&empty_loaded)
         .expect("v3 LiveNodeBuilder should construct before strategy registration")
         .build()
@@ -551,7 +549,7 @@ fn binary_oracle_runtime_mapping_preserves_stop_market_entry_order_round_trip() 
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
         writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
@@ -619,7 +617,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_entry_order_round_t
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
         writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
@@ -699,7 +697,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_tr
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
         writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
@@ -790,7 +788,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_entry_order_roun
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
         writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
@@ -880,7 +878,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
         writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
@@ -952,7 +950,7 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_entry_order_round_trip() {
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
         writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
@@ -1024,7 +1022,7 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_entry_order_round_tr
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
         writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
@@ -1155,7 +1153,7 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_exit_order_round_trip() {
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
         writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
@@ -1227,7 +1225,7 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_exit_order_round_tri
     let context = StrategyBuildContext::new(
         Arc::new(NoopFeeProvider),
         writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)

@@ -1778,7 +1778,7 @@ kind = "number"
 literal = '''0'''
 context = '''admitted_order_count: 0,'''
 classification = "submit_admission_counter_identity"
-reason = "The submit admission counter starts empty for each fresh unarmed runtime state; the operator-provided cap comes from validated live submit approval limits."
+reason = "The submit admission counter starts empty for each fresh submit-admission runtime state; the operator-provided cap comes from validated live submit approval limits."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
@@ -1786,7 +1786,7 @@ kind = "number"
 literal = '''0'''
 context = '''admitted_entry_order_count: 0,'''
 classification = "submit_admission_counter_identity"
-reason = "The exposure-opening admission counter starts empty for each fresh unarmed runtime state; the operator-provided cap comes from validated live submit approval limits."
+reason = "The exposure-opening admission counter starts empty for each fresh submit-admission runtime state; the operator-provided cap comes from validated live submit approval limits."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
@@ -1794,7 +1794,7 @@ kind = "number"
 literal = '''0'''
 context = '''admitted_risk_reducing_exit_order_count: 0,'''
 classification = "submit_admission_counter_identity"
-reason = "The risk-reducing exit admission counter starts empty for each fresh unarmed runtime state; it is used only to enforce the explicit lifecycle policy."
+reason = "The risk-reducing exit admission counter starts empty for each fresh submit-admission runtime state; it is used only to enforce the explicit lifecycle policy."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"

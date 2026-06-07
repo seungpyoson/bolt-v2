@@ -381,7 +381,7 @@ pub(super) fn test_strategy_with_fee_provider(
         fee_provider,
         Arc::new(RecordingDecisionEvidenceWriter),
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         ),
@@ -396,7 +396,7 @@ pub(super) fn test_strategy_with_fee_provider_and_decision_evidence(
         fee_provider,
         decision_evidence,
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         ),
@@ -607,7 +607,7 @@ pub(super) fn submit_admission_with_provider_cap(
         },
     );
     Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed_with_live_submit_limits(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_with_live_submit_limits(
             decision_evidence,
             limits,
         ),

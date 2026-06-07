@@ -1868,12 +1868,10 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             })?,
         )
     };
-    let submit_admission = Arc::new(
-        BoltV3SubmitAdmissionState::new_unarmed_with_live_submit_limits(
-            decision_evidence.clone(),
-            live_submit_approval_limits,
-        ),
-    );
+    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+        decision_evidence.clone(),
+        live_submit_approval_limits,
+    ));
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)

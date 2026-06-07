@@ -102,7 +102,7 @@ fn effective_stale_bound_uses_gate_freshness_as_single_source_when_armed() {
     // forced-flat stale check as the STRICTER of (gate bound, strategy
     // config bound) so arming can only tighten, never loosen.
     let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
             RecordingDecisionEvidenceWriter,
         )),
     );
@@ -412,7 +412,7 @@ fn book_delta_refreshes_fee_readiness_after_warm_populates_provider() {
         fee_provider.clone(),
         Arc::new(RecordingDecisionEvidenceWriter),
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         ),

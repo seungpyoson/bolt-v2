@@ -33,7 +33,7 @@ fn strategy_core_accepts_nt_hedging_oms_type() {
         RecordingFeeProvider::cold(),
         Arc::new(RecordingDecisionEvidenceWriter),
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         ),
@@ -145,7 +145,7 @@ fn strategy_core_uses_explicit_configured_nt_strategy_fields() {
             RecordingFeeProvider::cold(),
             Arc::new(RecordingDecisionEvidenceWriter),
             Arc::new(
-                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                     RecordingDecisionEvidenceWriter,
                 )),
             ),

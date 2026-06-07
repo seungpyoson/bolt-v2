@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
     let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
             RecordingDecisionEvidenceWriter,
         )),
     );
@@ -1859,7 +1859,7 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
         RecordingFeeProvider::cold(),
         Arc::new(RecordingDecisionEvidenceWriter),
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         ),
@@ -1906,7 +1906,7 @@ fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
         RecordingFeeProvider::cold(),
         Arc::new(RecordingDecisionEvidenceWriter),
         Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         ),

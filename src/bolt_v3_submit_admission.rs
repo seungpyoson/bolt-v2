@@ -85,11 +85,11 @@ struct BoltV3SubmitAdmissionInner {
 }
 
 impl BoltV3SubmitAdmissionState {
-    pub fn new_unarmed(decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>) -> Self {
-        Self::new_unarmed_with_live_submit_limits(decision_evidence, BTreeMap::new())
+    pub fn new(decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>) -> Self {
+        Self::new_with_live_submit_limits(decision_evidence, BTreeMap::new())
     }
 
-    pub fn new_unarmed_with_live_submit_limits(
+    pub fn new_with_live_submit_limits(
         decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
         live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
     ) -> Self {

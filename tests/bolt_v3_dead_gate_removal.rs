@@ -297,6 +297,8 @@ fn repo_has_no_retired_evidence_gate_terms() {
         ["Tiny", "-", "canary"].concat(),
         ["tiny", " ", "canary"].concat(),
         ["Rejected", "NotArmed"].concat(),
+        ["new", "_unarmed"].concat(),
+        "unarmed".to_string(),
         ["gate", "_session_hash"].concat(),
         ["gate", "_evidence"].concat(),
         "GateEvidence".to_string(),

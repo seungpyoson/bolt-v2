@@ -590,6 +590,14 @@ Current evidence:
   still has 0 accepted records: 20 records are now specifically blocked by
   `source_proof_not_accepted`, while 146 records still have no source-proof
   binding.
+- Repo search found no checked-in source-proof-v3 generator or standalone
+  current-contract source-proof acceptance CLI. The existing promotion route is
+  the BTE operator run-spec path: `RunSpec.source_proof` must already deserialize
+  as the current `SourceProofReport`, then `SourceProofReport::accept` stamps it
+  and `select_accepted_dataset` binds exactly one hash-verified staged object.
+  A manifest metadata census found only 22 of 190 manifests with top-level
+  source-binding/source-proof fields; the other 168 cannot be safely bound by
+  prefix or venue inference without violating the source-proof contract.
 - Binance run `binance-backfill-run-d928f6666827dd47` records 4,701 completed
   payload objects, 42,358,207,176 payload bytes, zero errors, and
   `payload_completion_ok = true`, but it is still raw staging and not a

@@ -333,6 +333,7 @@ GREEN checks after implementation:
 - `cargo test --test backtesting_vertical_slice_backfill_readiness selected_source_proof`: RED failed with missing `SelectedSourceProofMismatch`; GREEN passed after combined readiness required the selected backfill record and selected source-proof candidate to share the same source-proof id and version.
 - `cargo test --test backtesting_vertical_slice_backfill_readiness selected_binding_has_no`: RED failed because readiness could report `ready` when selected binding coverage had zero accepted or zero canonical-ready records; GREEN passed after selected binding coverage required positive ledger, accepted, and canonical-ready counts for the required table family.
 - `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_blocks_when_binding_coverage_is_for_a_different_table_family`: RED failed because readiness could report `ready` when a `trades` readiness spec was paired with a ready `instruments` binding-coverage report for the same selected binding; GREEN passed after selected binding coverage required the binding's own `table_families` to include the readiness-required table family, instead of trusting a match flag computed for another report.
+- `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_blocks_when_selected_source_proof_candidate_has_acceptance_blockers`: RED failed because readiness could report `ready` when the selected source-proof migration candidate still carried `remaining_acceptance_blockers` such as a missing license check; GREEN passed after combined readiness treated any remaining source-proof acceptance blocker as a source-proof preflight blocker.
 - static provider-literal scan for the coverage source, coverage CLI, and their tests: no hits for current venue/provider/sample tokens, so the new coverage-ledger API, operator command, and tests are not hardcoded to the accepted sample or a specific venue
 - `just bte-test research_analytics_artifacts_use_typed_subfamilies_and_one_kind_pointer research_analytics_records_require_matching_subfamily_prefix`: RED failed with missing `ResearchAnalyticsSubfamily` and RA-specific staged-record constructor; GREEN passed after adding typed RA subfamilies, enforcing `research-analytics/v1/<subfamily>/` manifest prefixes, and keeping every RA subfamily on the single `research_analytics` Artifact Index pointer
 - `just bte-test approved_for_config_requires_objective_evidence_and_non_live_boundary promotion_package_rejects_proof_strength_upgrade_and_forbidden_actions promotion_package_artifacts_must_live_under_ra_promotion_family promotion_package_rejects_notebook_to_production_direct_promotion approved_for_config_accepts_preserved_claim_limited_typed_config_only`: RED failed with missing `research_analytics` module; GREEN passed after adding a pure `PromotionPackage` validator with canonical status enum, accepted source-proof refs, objective BTE result refs, preserved claim limits, fidelity upgrade rejection, notebook/runtime boundary checks, typed config artifact checks, reviewer-policy refs, and RA-owned promotion-family URI validation
@@ -758,6 +759,12 @@ Current evidence:
   byte count `911`, status `blocked`, and five blockers. This closes the
   artifact-pairing false-ready case without changing the current real no-go
   artifact.
+- After combined readiness was tightened to block selected source-proof
+  migration candidates with remaining acceptance blockers, rerunning the same
+  integrated readiness spec again preserved content hash
+  `659901841f7e95d6740e6c3ec1d928ea91a42151a595848ffe9842cc0ce1aab2`,
+  byte count `911`, status `blocked`, and five blockers because the real
+  TradeTick path still has no selected source-proof candidate.
 - The source-binding coverage CLI was run against the committed
   `backfill-source-bindings.v1.toml` registry and the current source-proof-bound
   coverage ledger for `required_table_families = ["trades"]`:

@@ -209,6 +209,9 @@ pub fn evaluate_backfill_readiness(
         Some(candidate) if candidate.table_family != required_table_family => {
             blockers.push(BackfillReadinessBlocker::SourceProofTableFamilyMismatch);
         }
+        Some(candidate) if !candidate.remaining_acceptance_blockers.is_empty() => {
+            blockers.push(BackfillReadinessBlocker::SourceProofMigrationPreflightBlocked);
+        }
         Some(_) => {}
     }
     let selected_backfill_binding = backfill_preflight

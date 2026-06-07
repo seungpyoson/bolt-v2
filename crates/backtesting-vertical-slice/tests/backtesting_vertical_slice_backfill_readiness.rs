@@ -237,6 +237,25 @@ fn readiness_blocks_when_selected_source_proof_version_differs() {
 }
 
 #[test]
+fn readiness_blocks_when_selected_source_proof_candidate_has_acceptance_blockers() {
+    let report = evaluate_backfill_readiness(
+        "synthetic-readiness",
+        ready_backfill_preflight(),
+        candidate_source_proof_preflight_with_acceptance_blocker("trades"),
+        ready_binding_coverage(),
+        "trades",
+        "TradeTick",
+    );
+
+    assert_eq!(report.status, BackfillReadinessStatus::Blocked);
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillReadinessBlocker::SourceProofMigrationPreflightBlocked)
+    );
+}
+
+#[test]
 fn readiness_is_ready_when_backfill_and_source_proof_preflights_align() {
     let report = evaluate_backfill_readiness(
         "synthetic-readiness",
@@ -482,6 +501,36 @@ fn candidate_source_proof_preflight_with_proof(
     source_proof_version: u32,
 ) -> backtesting_vertical_slice::source_proof_migration_preflight::SourceProofMigrationPreflightReport
 {
+    candidate_source_proof_preflight_with_proof_and_acceptance_blockers(
+        table_family,
+        source_binding,
+        source_proof_id,
+        source_proof_version,
+        Vec::new(),
+    )
+}
+
+fn candidate_source_proof_preflight_with_acceptance_blocker(
+    table_family: &str,
+) -> backtesting_vertical_slice::source_proof_migration_preflight::SourceProofMigrationPreflightReport
+{
+    candidate_source_proof_preflight_with_proof_and_acceptance_blockers(
+        table_family,
+        "synthetic-source-binding",
+        "source-proof-synthetic",
+        1,
+        vec![SourceProofLegacyDerivabilityIssue::LicenseNotPassed],
+    )
+}
+
+fn candidate_source_proof_preflight_with_proof_and_acceptance_blockers(
+    table_family: &str,
+    source_binding: &str,
+    source_proof_id: &str,
+    source_proof_version: u32,
+    remaining_acceptance_blockers: Vec<SourceProofLegacyDerivabilityIssue>,
+) -> backtesting_vertical_slice::source_proof_migration_preflight::SourceProofMigrationPreflightReport
+{
     backtesting_vertical_slice::source_proof_migration_preflight::SourceProofMigrationPreflightReport {
         schema_version: "source-proof-migration-preflight-report.v1".to_string(),
         preflight_id: "synthetic-source-proof-preflight".to_string(),
@@ -500,9 +549,7 @@ fn candidate_source_proof_preflight_with_proof(
             s3_bound_raw_payload_records: 1,
             accepted_bytes_from_s3: 100,
             derivable_fields: vec![SourceProofLegacyDerivableField::SourceBinding],
-            remaining_acceptance_blockers: vec![
-                SourceProofLegacyDerivabilityIssue::LicenseNotPassed,
-            ],
+            remaining_acceptance_blockers,
         }),
         blocking_reasons: Vec::new(),
     }

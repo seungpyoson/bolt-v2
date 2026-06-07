@@ -60,6 +60,7 @@ pub enum BackfillReadinessBlocker {
     SourceProofTableFamilyMismatch,
     SelectedSourceBindingMismatch,
     SelectedSourceBindingMissingFromCoverage,
+    SelectedSourceProofMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,6 +234,14 @@ pub fn evaluate_backfill_readiness(
         if !coverage_has_selected_binding {
             blockers.push(BackfillReadinessBlocker::SelectedSourceBindingMissingFromCoverage);
         }
+    }
+    if let (Some(backfill_record), Some(source_proof_candidate)) = (
+        backfill_preflight.selected_record.as_ref(),
+        source_proof_preflight.selected_candidate.as_ref(),
+    ) && (backfill_record.source_proof_id != source_proof_candidate.source_proof_id
+        || backfill_record.source_proof_version != source_proof_candidate.source_proof_version)
+    {
+        blockers.push(BackfillReadinessBlocker::SelectedSourceProofMismatch);
     }
 
     let status = if blockers.is_empty() {

@@ -125,6 +125,58 @@ fn readiness_blocks_when_binding_coverage_lacks_selected_binding() {
 }
 
 #[test]
+fn readiness_blocks_when_selected_source_proof_id_differs() {
+    let report = evaluate_backfill_readiness(
+        "synthetic-readiness",
+        ready_backfill_preflight_with_proof("synthetic-source-binding", "source-proof-backfill", 1),
+        candidate_source_proof_preflight_with_proof(
+            "trades",
+            "synthetic-source-binding",
+            "source-proof-candidate",
+            1,
+        ),
+        ready_binding_coverage(),
+        "trades",
+        "TradeTick",
+    );
+
+    assert_eq!(report.status, BackfillReadinessStatus::Blocked);
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillReadinessBlocker::SelectedSourceProofMismatch)
+    );
+}
+
+#[test]
+fn readiness_blocks_when_selected_source_proof_version_differs() {
+    let report = evaluate_backfill_readiness(
+        "synthetic-readiness",
+        ready_backfill_preflight_with_proof(
+            "synthetic-source-binding",
+            "source-proof-synthetic",
+            1,
+        ),
+        candidate_source_proof_preflight_with_proof(
+            "trades",
+            "synthetic-source-binding",
+            "source-proof-synthetic",
+            2,
+        ),
+        ready_binding_coverage(),
+        "trades",
+        "TradeTick",
+    );
+
+    assert_eq!(report.status, BackfillReadinessStatus::Blocked);
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillReadinessBlocker::SelectedSourceProofMismatch)
+    );
+}
+
+#[test]
 fn readiness_is_ready_when_backfill_and_source_proof_preflights_align() {
     let report = evaluate_backfill_readiness(
         "synthetic-readiness",
@@ -289,6 +341,14 @@ fn ready_backfill_preflight()
 fn ready_backfill_preflight_with_binding(
     source_binding: &str,
 ) -> backtesting_vertical_slice::backfill_preflight::BackfillPreflightReport {
+    ready_backfill_preflight_with_proof(source_binding, "source-proof-synthetic", 1)
+}
+
+fn ready_backfill_preflight_with_proof(
+    source_binding: &str,
+    source_proof_id: &str,
+    source_proof_version: u32,
+) -> backtesting_vertical_slice::backfill_preflight::BackfillPreflightReport {
     backtesting_vertical_slice::backfill_preflight::BackfillPreflightReport {
         schema_version: "backfill-preflight-report.v1".to_string(),
         preflight_id: "synthetic-backfill-preflight".to_string(),
@@ -308,8 +368,8 @@ fn ready_backfill_preflight_with_binding(
         selected_record: Some(BackfillPreflightSelectedRecord {
             record_id: "synthetic-backfill-record".to_string(),
             source_binding: source_binding.to_string(),
-            source_proof_id: "source-proof-synthetic".to_string(),
-            source_proof_version: 1,
+            source_proof_id: source_proof_id.to_string(),
+            source_proof_version,
             accepted_objects: 1,
             accepted_bytes: 100,
             skipped_objects: 0,
@@ -347,6 +407,21 @@ fn candidate_source_proof_preflight_with_binding(
     source_binding: &str,
 ) -> backtesting_vertical_slice::source_proof_migration_preflight::SourceProofMigrationPreflightReport
 {
+    candidate_source_proof_preflight_with_proof(
+        table_family,
+        source_binding,
+        "source-proof-synthetic",
+        1,
+    )
+}
+
+fn candidate_source_proof_preflight_with_proof(
+    table_family: &str,
+    source_binding: &str,
+    source_proof_id: &str,
+    source_proof_version: u32,
+) -> backtesting_vertical_slice::source_proof_migration_preflight::SourceProofMigrationPreflightReport
+{
     backtesting_vertical_slice::source_proof_migration_preflight::SourceProofMigrationPreflightReport {
         schema_version: "source-proof-migration-preflight-report.v1".to_string(),
         preflight_id: "synthetic-source-proof-preflight".to_string(),
@@ -357,8 +432,8 @@ fn candidate_source_proof_preflight_with_binding(
         eligible_candidate_count: 1,
         selected_candidate: Some(SourceProofMigrationPreflightCandidate {
             proof_uri: "proof://synthetic/source-proof.json".to_string(),
-            source_proof_id: "source-proof-synthetic".to_string(),
-            source_proof_version: 1,
+            source_proof_id: source_proof_id.to_string(),
+            source_proof_version,
             source_binding: source_binding.to_string(),
             table_family: table_family.to_string(),
             raw_payload_records: 1,

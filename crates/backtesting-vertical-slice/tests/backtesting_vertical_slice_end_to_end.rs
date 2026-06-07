@@ -26,10 +26,9 @@ use backtesting_vertical_slice::{
     runner::{BacktestRunInputs, run_backtest},
     source_proof::{
         AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
-        IngestManifestObjectRecord, L2ReplayEvidence, LicenseScope, NtMappingStatus,
-        RequiredCheck, RequiredChecks, SourceCandidateClass, SourceProofClaimLimit,
-        SourceProofFidelityClass, SourceProofReport, SourceProofStatus, SourceSelectionStatus,
-        TimeRange,
+        IngestManifestObjectRecord, L2ReplayEvidence, LicenseScope, NtMappingStatus, RequiredCheck,
+        RequiredChecks, SourceCandidateClass, SourceProofClaimLimit, SourceProofFidelityClass,
+        SourceProofReport, SourceProofStatus, SourceSelectionStatus, TimeRange,
         select_accepted_dataset,
     },
 };

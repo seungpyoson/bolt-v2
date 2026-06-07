@@ -61,9 +61,9 @@
     },
     {
       "prompt_requirement": "BacktestNode consumes exactly the verified catalog",
-      "bounded_first_proof_status": "proven_nt_surface_unproven_bte_l2_manifest_path",
-      "evidence": "NT BacktestNode queries OrderBookDelta from ParquetDataCatalog and validates L2_MBP venues have order-book data, but BTE manifest mapping currently admits only TradeTick.",
-      "required_before_acceptance": "Extend BTE manifest/data config generically to OrderBookDelta plus TradeTick data configs and prove BacktestNode consumes the same logical catalog hash."
+      "bounded_first_proof_status": "manifest_data_config_tdd_proven_catalog_consumption_unproven",
+      "evidence": "NT BacktestNode queries OrderBookDelta from ParquetDataCatalog and validates L2_MBP venues have order-book data. BTE manifest/data-config mapping is now TDD-proven for OrderBookDelta and configured instrument_ids, but no selected PMXT L2 catalog has been written, read back, logically hashed, and consumed by BacktestNode.",
+      "required_before_acceptance": "Write the selected PMXT L2 universe to ParquetDataCatalog, read back BinaryOption/OrderBookDelta/TradeTick classes, bind the logical catalog hash, and prove BacktestNode consumes that exact catalog."
     },
     {
       "prompt_requirement": "result contract provenance binds the run",
@@ -111,7 +111,8 @@
     },
     {
       "area": "manifest data config",
-      "required_shape": "Data-family driven support for multiple NT data configs, at minimum OrderBookDelta and TradeTick for L2Replay, without replacing existing TradeTick path."
+      "required_shape": "Data-family driven support for multiple NT data configs, at minimum OrderBookDelta and TradeTick for L2Replay, without replacing existing TradeTick path.",
+      "current_status": "TDD-proven for OrderBookDelta data config, configured instrument_ids, and OrderBookDelta/L2Replay fidelity binding; multi-data-config catalog/run assembly remains pending."
     },
     {
       "area": "catalog projection",
@@ -143,6 +144,14 @@
     "Write and read back BinaryOption instruments, OrderBookDelta rows, and TradeTick rows from ParquetDataCatalog.",
     "Run BacktestNode with L2_MBP venue config over only the verified catalog.",
     "Bind BacktestResultContract provenance and claim limits for the bounded PMXT first proof."
+  ],
+  "post_decision_tdd_progress": [
+    "RED just bte-test run_manifest::tests::l2_replay_accepts_order_book_delta_data_config failed with UnsupportedDataType for OrderBookDelta.",
+    "GREEN just bte-test run_manifest::tests::l2_replay_accepts_order_book_delta_data_config passed after mapping OrderBookDelta into NT BacktestDataConfig.",
+    "RED just bte-test run_manifest::tests::data_config_maps_configured_multi_instrument_ids failed with UnsupportedNtSurface for catalog_input.instrument_ids.",
+    "GREEN just bte-test run_manifest::tests::data_config_maps_configured_multi_instrument_ids passed after mapping configured instrument_ids into NT BacktestDataConfig.",
+    "just bte-test run_manifest::tests:: passed 65 focused manifest tests.",
+    "just bte-fmt-check passed."
   ],
   "still_blocking_broad_backfill": [
     "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven.",

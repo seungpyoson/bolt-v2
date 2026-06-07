@@ -53,11 +53,6 @@ pub const UNSUPPORTED_NT_VENUE_SURFACES: &[&str] = &[
 /// NT data-query surfaces declared in TOML but rejected until typed mappings exist.
 pub const UNSUPPORTED_NT_CATALOG_QUERY_SURFACES: &[(&str, &str, &str)] = &[
     (
-        "catalog.instrument_ids",
-        "catalog_input.instrument_ids",
-        "BacktestDataConfig.instrument_ids",
-    ),
-    (
         "catalog.start_time",
         "catalog_input.start_time",
         "BacktestDataConfig.start_time",
@@ -391,7 +386,7 @@ pub struct ManifestCatalogInput {
     pub catalog_fs_storage_options: BTreeMap<String, String>,
     /// NT Rust object-store options for cloud-backed catalog paths.
     pub catalog_fs_rust_storage_options: BTreeMap<String, String>,
-    /// NautilusTrader data type, currently `TradeTick`.
+    /// NautilusTrader data type.
     pub data_type: String,
     /// NautilusTrader instrument id, such as `SYMBOL.VENUE`.
     pub nt_instrument_id: String,
@@ -1450,19 +1445,40 @@ impl BacktestingRunManifest {
         ensure_unsupported_nt_catalog_query_surfaces_absent(&self.catalog_input)?;
         let data_type = match self.catalog_input.data_type.as_str() {
             "TradeTick" => NautilusDataType::TradeTick,
+            "OrderBookDelta" => NautilusDataType::OrderBookDelta,
             other => {
                 return Err(ManifestError::UnsupportedDataType {
                     data_type: other.to_string(),
                 });
             }
         };
-        let instrument_id = self
+        let instrument_ids = self
             .catalog_input
-            .nt_instrument_id
-            .parse::<InstrumentId>()
-            .map_err(|_| ManifestError::InvalidInstrumentId {
-                instrument_id: self.catalog_input.nt_instrument_id.clone(),
-            })?;
+            .instrument_ids
+            .as_ref()
+            .map(|ids| {
+                ids.iter()
+                    .map(|id| {
+                        id.parse::<InstrumentId>()
+                            .map_err(|_| ManifestError::InvalidInstrumentId {
+                                instrument_id: id.clone(),
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?;
+        let instrument_id = if instrument_ids.is_some() {
+            None
+        } else {
+            Some(
+                self.catalog_input
+                    .nt_instrument_id
+                    .parse::<InstrumentId>()
+                    .map_err(|_| ManifestError::InvalidInstrumentId {
+                        instrument_id: self.catalog_input.nt_instrument_id.clone(),
+                    })?,
+            )
+        };
         let catalog_fs_protocol =
             parse_catalog_fs_protocol(&self.catalog_input.catalog_fs_protocol)?;
         validate_catalog_storage_options(
@@ -1504,7 +1520,8 @@ impl BacktestingRunManifest {
                     )
                 },
             )
-            .instrument_id(instrument_id)
+            .maybe_instrument_id(instrument_id)
+            .maybe_instrument_ids(instrument_ids)
             .build())
     }
 
@@ -1702,38 +1719,34 @@ fn ensure_unsupported_nt_catalog_query_surfaces_absent(
     for (field, present) in [
         (
             UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[0].1,
-            catalog.instrument_ids.is_some(),
-        ),
-        (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[1].1,
             catalog.start_time.is_some(),
         ),
         (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[2].1,
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[1].1,
             catalog.end_time.is_some(),
         ),
         (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[3].1,
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[2].1,
             catalog.filter_expr.is_some(),
         ),
         (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[4].1,
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[3].1,
             catalog.client_id.is_some(),
         ),
         (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[5].1,
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[4].1,
             catalog.metadata.is_some(),
         ),
         (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[6].1,
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[5].1,
             catalog.bar_spec.is_some(),
         ),
         (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[7].1,
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[6].1,
             catalog.bar_types.is_some(),
         ),
         (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[8].1,
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[7].1,
             catalog.optimize_file_loading.is_some(),
         ),
     ] {
@@ -1746,7 +1759,7 @@ fn ensure_unsupported_nt_catalog_query_surfaces_absent(
 
 fn ensure_supported_data_type(value: &str) -> Result<(), ManifestError> {
     match value {
-        "TradeTick" => Ok(()),
+        "TradeTick" | "OrderBookDelta" => Ok(()),
         other => Err(ManifestError::UnsupportedDataType {
             data_type: other.to_string(),
         }),
@@ -1975,6 +1988,7 @@ fn ensure_data_type_matches_fidelity(
 ) -> Result<(), ManifestError> {
     match (data_type, fidelity_class) {
         ("TradeTick", SourceProofFidelityClass::TradeReplay) => Ok(()),
+        ("OrderBookDelta", SourceProofFidelityClass::L2Replay) => Ok(()),
         (data_type, fidelity_class) => Err(ManifestError::DataTypeFidelityMismatch {
             data_type: data_type.to_string(),
             fidelity_class,
@@ -3181,6 +3195,46 @@ mod tests {
     }
 
     #[test]
+    fn l2_replay_accepts_order_book_delta_data_config() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
+
+        manifest
+            .validate(&accepted)
+            .expect("L2Replay source proof should allow OrderBookDelta catalog input");
+        let data = manifest.to_nt_data_config().expect("data config");
+
+        assert_eq!(data.data_type(), NautilusDataType::OrderBookDelta);
+    }
+
+    #[test]
+    fn data_config_maps_configured_multi_instrument_ids() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.data_type = "OrderBookDelta".to_string();
+        manifest.catalog_input.instrument_ids = Some(vec![
+            "YES.TESTVENUE".to_string(),
+            "NO.TESTVENUE".to_string(),
+        ]);
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
+
+        manifest
+            .validate(&accepted)
+            .expect("configured instrument_ids should be supported for L2Replay");
+        let data = manifest.to_nt_data_config().expect("data config");
+
+        assert!(data.instrument_id().is_none());
+        let instrument_ids = data.instrument_ids().expect("instrument ids");
+        assert_eq!(instrument_ids.len(), 2);
+        assert_eq!(instrument_ids[0].to_string(), "YES.TESTVENUE");
+        assert_eq!(instrument_ids[1].to_string(), "NO.TESTVENUE");
+    }
+
+    #[test]
     fn rejects_unsupported_catalog_fs_protocol() {
         let mut manifest = valid_manifest();
         manifest.catalog_input.catalog_fs_protocol = "ftp".to_string();
@@ -3384,10 +3438,8 @@ mod tests {
     #[test]
     fn typed_unsupported_nt_catalog_query_surfaces_parse_then_fail_before_nt_config() {
         let serialized = toml::to_string(&valid_manifest()).expect("serialize");
-        let instrument_ids = format!("[\"{TEST_INSTRUMENT_ID}\"]");
         let bar_types = format!("[\"{TEST_BAR_TYPE}\"]");
         for (field, value) in [
-            ("instrument_ids", instrument_ids.as_str()),
             ("start_time", "1772323200000000000"),
             ("end_time", "1772409600000000000"),
             ("filter_expr", "\"price > 0\""),

@@ -64,20 +64,8 @@
       "evidence": "nt://crates/adapters/polymarket/src/http/data_api.rs:55"
     },
     {
-      "limitation": "ManifestCatalogInput documents and accepts only TradeTick as the supported catalog data type in this slice.",
-      "evidence": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs:394"
-    },
-    {
-      "limitation": "to_nt_data_config maps only TradeTick to NautilusDataType and rejects all other NT data classes.",
-      "evidence": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1449"
-    },
-    {
-      "limitation": "ensure_supported_data_type permits only TradeTick.",
-      "evidence": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1747"
-    },
-    {
-      "limitation": "Source-proof fidelity binding currently accepts only TradeTick with TradeReplay.",
-      "evidence": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1972"
+      "limitation": "The manifest/data-config path now maps TradeTick and OrderBookDelta plus configured instrument_ids, but this proves only NT data-config construction, not PMXT catalog projection/read-back or BacktestNode consumption of a verified PMXT L2 catalog.",
+      "evidence": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1448, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1524, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1762, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1991"
     },
     {
       "limitation": "Current catalog projection is a CurrencyPair plus TradeTick projection for canonical trades, not a generic BinaryOption L2 projection.",
@@ -134,9 +122,25 @@
       "Does not authorize broad backfill."
     ]
   },
+  "bounded_l2_manifest_mapping_status": {
+    "status": "tdd_proven_for_order_book_delta_and_configured_instrument_ids",
+    "evidence": [
+      "RED just bte-test run_manifest::tests::l2_replay_accepts_order_book_delta_data_config failed with UnsupportedDataType for OrderBookDelta.",
+      "GREEN just bte-test run_manifest::tests::l2_replay_accepts_order_book_delta_data_config passed after mapping OrderBookDelta to NautilusDataType::OrderBookDelta and L2Replay.",
+      "RED just bte-test run_manifest::tests::data_config_maps_configured_multi_instrument_ids failed with UnsupportedNtSurface for catalog_input.instrument_ids.",
+      "GREEN just bte-test run_manifest::tests::data_config_maps_configured_multi_instrument_ids passed after mapping configured instrument_ids into BacktestDataConfig.",
+      "just bte-test run_manifest::tests:: passed 65 focused manifest tests.",
+      "just bte-fmt-check passed."
+    ],
+    "claim_limits": [
+      "Does not prove PMXT BinaryOption catalog projection.",
+      "Does not prove PMXT OrderBookDelta or TradeTick read-back.",
+      "Does not prove BacktestNode consumes a verified PMXT L2 catalog.",
+      "Does not authorize broad PMXT backfill."
+    ]
+  },
   "non_hardcoding_decision": "Bybit, Binance, Polymarket, Kalshi, and Hyperliquid remain source-binding examples. The next mapping work must be data-family driven: source schema plus registry binding plus NT data class, with no runtime venue or instrument constants in production code.",
   "next_required_evidence": [
-    "TDD go/no-go decision before touching the isolated BTE crate dependency boundary.",
     "TDD proof that the configured first-proof selector computes per-asset PMXT event counts, excludes tick_size_change assets, applies a row budget, and records claim limits without venue or asset constants.",
     "Machine-checked BTE crate proof that nautilus-polymarket parser/provider is reused for Polymarket instruments and token-id joins.",
     "TDD proof for the selected PMXT historical TradeId path because pinned NT's build_polymarket_trade_id helper is crate-private; either mirror the pinned format with provenance or expose it upstream before claiming direct NT helper reuse.",

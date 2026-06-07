@@ -13,9 +13,12 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::source_proof_legacy_derivability::{
-    SourceProofLegacyDerivabilityIssue, SourceProofLegacyDerivabilityRecord,
-    SourceProofLegacyDerivabilityReport, SourceProofLegacyDerivableField,
+use crate::{
+    source_proof::{SourceBindingRegistry, resolve_source_bindings_path},
+    source_proof_legacy_derivability::{
+        SourceProofLegacyDerivabilityIssue, SourceProofLegacyDerivabilityRecord,
+        SourceProofLegacyDerivabilityReport, SourceProofLegacyDerivableField,
+    },
 };
 
 pub const SOURCE_PROOF_MIGRATION_PREFLIGHT_SCHEMA_VERSION: &str =
@@ -28,6 +31,7 @@ pub const SOURCE_PROOF_MIGRATION_PREFLIGHT_REPORT_FILE: &str =
 pub struct SourceProofMigrationPreflightSpec {
     pub preflight_id: String,
     pub derivability_report_path: PathBuf,
+    pub source_bindings_path: PathBuf,
     pub output_dir: PathBuf,
     pub selection: SourceProofMigrationPreflightSelection,
 }
@@ -101,6 +105,8 @@ pub struct SourceProofMigrationPreflightArtifact {
 pub enum SourceProofMigrationPreflightError {
     ReadSpec { path: String, error: String },
     ParseSpecToml { path: String, error: String },
+    ReadSourceBindings { path: String, error: String },
+    ParseSourceBindingsToml { path: String, error: String },
     ReadDerivabilityReport { path: String, error: String },
     ParseDerivabilityReportJson { path: String, error: String },
     CreateDir { path: String, error: String },
@@ -123,6 +129,12 @@ impl fmt::Display for SourceProofMigrationPreflightError {
                 f,
                 "parse source-proof migration preflight spec TOML {path}: {error}"
             ),
+            Self::ReadSourceBindings { path, error } => {
+                write!(f, "read source-bindings registry {path}: {error}")
+            }
+            Self::ParseSourceBindingsToml { path, error } => {
+                write!(f, "parse source-bindings registry TOML {path}: {error}")
+            }
             Self::ReadDerivabilityReport { path, error } => {
                 write!(f, "read source-proof derivability report {path}: {error}")
             }
@@ -160,10 +172,11 @@ impl fmt::Display for SourceProofMigrationPreflightError {
 
 impl Error for SourceProofMigrationPreflightError {}
 
-pub fn evaluate_source_proof_migration_preflight(
+pub fn evaluate_source_proof_migration_preflight_with_registry(
     preflight_id: impl Into<String>,
     derivability_report: &SourceProofLegacyDerivabilityReport,
     selection: &SourceProofMigrationPreflightSelection,
+    source_bindings_registry: &SourceBindingRegistry,
 ) -> SourceProofMigrationPreflightReport {
     let preflight_id = preflight_id.into();
     let mut blocking_reasons = Vec::new();
@@ -200,7 +213,9 @@ pub fn evaluate_source_proof_migration_preflight(
     }
 
     let selected_candidate = if blocking_reasons.is_empty() {
-        eligible.first().map(|record| selected_candidate(record))
+        eligible
+            .first()
+            .map(|record| selected_candidate(record, source_bindings_registry))
     } else {
         None
     };
@@ -278,6 +293,22 @@ pub fn write_source_proof_migration_preflight_report_from_spec_file(
             error: error.to_string(),
         }
     })?;
+    let resolved_source_bindings_path = resolve_source_bindings_path(&spec.source_bindings_path);
+    let source_bindings_path = spec.source_bindings_path.display().to_string();
+    let source_bindings_text =
+        fs::read_to_string(&resolved_source_bindings_path).map_err(|error| {
+            SourceProofMigrationPreflightError::ReadSourceBindings {
+                path: source_bindings_path.clone(),
+                error: error.to_string(),
+            }
+        })?;
+    let source_bindings_registry = SourceBindingRegistry::from_toml_str(&source_bindings_text)
+        .map_err(
+            |error| SourceProofMigrationPreflightError::ParseSourceBindingsToml {
+                path: source_bindings_path,
+                error: error.to_string(),
+            },
+        )?;
     let report_path = spec.derivability_report_path.display().to_string();
     let report_bytes = fs::read(&spec.derivability_report_path).map_err(|error| {
         SourceProofMigrationPreflightError::ReadDerivabilityReport {
@@ -292,10 +323,11 @@ pub fn write_source_proof_migration_preflight_report_from_spec_file(
                 error: error.to_string(),
             }
         })?;
-    let report = evaluate_source_proof_migration_preflight(
+    let report = evaluate_source_proof_migration_preflight_with_registry(
         spec.preflight_id,
         &derivability_report,
         &spec.selection,
+        &source_bindings_registry,
     );
     write_source_proof_migration_preflight_report(&spec.output_dir, &report)
 }
@@ -353,7 +385,14 @@ fn is_eligible(
 
 fn selected_candidate(
     record: &SourceProofLegacyDerivabilityRecord,
+    source_bindings_registry: &SourceBindingRegistry,
 ) -> SourceProofMigrationPreflightCandidate {
+    let mut remaining_acceptance_blockers = record.blocking_issues.clone();
+    for issue in source_binding_metadata_blockers(record, source_bindings_registry) {
+        if !remaining_acceptance_blockers.contains(&issue) {
+            remaining_acceptance_blockers.push(issue);
+        }
+    }
     SourceProofMigrationPreflightCandidate {
         proof_uri: record.proof_uri.clone(),
         source_proof_id: record.source_proof_id.clone().unwrap_or_default(),
@@ -364,8 +403,51 @@ fn selected_candidate(
         s3_bound_raw_payload_records: record.s3_bound_raw_payload_records,
         accepted_bytes_from_s3: record.accepted_bytes_from_s3,
         derivable_fields: record.derivable_fields.clone(),
-        remaining_acceptance_blockers: record.blocking_issues.clone(),
+        remaining_acceptance_blockers,
     }
+}
+
+fn source_binding_metadata_blockers(
+    record: &SourceProofLegacyDerivabilityRecord,
+    source_bindings_registry: &SourceBindingRegistry,
+) -> Vec<SourceProofLegacyDerivabilityIssue> {
+    let mut blockers = Vec::new();
+    let Some(source_binding) = record.source_binding.as_deref() else {
+        return blockers;
+    };
+    let Some(venue) = record.venue.as_deref() else {
+        blockers.push(SourceProofLegacyDerivabilityIssue::MissingVenue);
+        return blockers;
+    };
+    let Some(metadata) = source_bindings_registry.source_binding_metadata(source_binding, venue)
+    else {
+        blockers.push(SourceProofLegacyDerivabilityIssue::UnknownSourceBinding);
+        return blockers;
+    };
+    match record.product_family.as_deref() {
+        Some(product_family) if product_family == metadata.product_family => {}
+        Some(_) => {
+            blockers.push(SourceProofLegacyDerivabilityIssue::SourceBindingProductFamilyMismatch)
+        }
+        None => blockers.push(SourceProofLegacyDerivabilityIssue::MissingProductFamily),
+    }
+    match record.evidence_state {
+        Some(evidence_state) if evidence_state == metadata.evidence_state => {}
+        Some(_) => {
+            blockers.push(SourceProofLegacyDerivabilityIssue::SourceBindingEvidenceStateMismatch)
+        }
+        None => blockers.push(SourceProofLegacyDerivabilityIssue::MissingEvidenceState),
+    }
+    if let Some(table_family) = record.table_families.first()
+        && !metadata.table_families.is_empty()
+        && !metadata
+            .table_families
+            .iter()
+            .any(|configured| configured == table_family)
+    {
+        blockers.push(SourceProofLegacyDerivabilityIssue::SourceBindingTableFamilyMismatch);
+    }
+    blockers
 }
 
 fn content_hash(

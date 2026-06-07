@@ -361,6 +361,7 @@ GREEN checks after implementation:
 - `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --test backtesting_vertical_slice_source_proof_legacy_derivability legacy_derivability_reports_structural_fields_without_accepting_source_proof -- --nocapture`: RED failed with missing `table_family_counts` and `blocking_issue_counts` fields on `SourceProofLegacyDerivabilitySummary`, proving the report forced manual record-level scans to explain why legacy proofs were blocked.
 - `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --test backtesting_vertical_slice_source_proof_legacy_derivability -- --nocapture`: 3 passed after the legacy derivability summary began carrying deterministic aggregate table-family and blocker counts without accepting or mutating source proofs.
 - `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --test backtesting_vertical_slice_source_proof_migration_preflight -- --nocapture`: 4 passed after the migration-preflight test fixture was updated for the expanded derivability summary contract.
+- `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --test backtesting_vertical_slice_source_proof_migration_preflight migration_preflight_reports_source_binding_product_family_mismatch -- --nocapture`: RED failed with missing registry-aware preflight API, missing legacy metadata fields, and missing source-binding product-family mismatch blocker; GREEN passed after derivability preserved legacy `venue`/`product_family`/`evidence_state` fields and migration preflight loaded spec-owned source bindings before reporting remaining candidate acceptance blockers.
 - `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_blocks_when_table_family_does_not_match_required_nt_data_type`: RED failed because readiness could report `ready` for `required_table_family = "quotes"` with `required_nt_data_type = "TradeTick"`; GREEN passed after combined readiness required the requested table-family/data-type pair to be present in TOML-owned `supported_data_paths`.
 - static provider-literal scan for the coverage source, coverage CLI, and their tests: no hits for current venue/provider/sample tokens, so the new coverage-ledger API, operator command, and tests are not hardcoded to the accepted sample or a specific venue
 - `just bte-test research_analytics_artifacts_use_typed_subfamilies_and_one_kind_pointer research_analytics_records_require_matching_subfamily_prefix`: RED failed with missing `ResearchAnalyticsSubfamily` and RA-specific staged-record constructor; GREEN passed after adding typed RA subfamilies, enforcing `research-analytics/v1/<subfamily>/` manifest prefixes, and keeping every RA subfamily on the single `research_analytics` Artifact Index pointer
@@ -740,6 +741,31 @@ Current evidence:
   single-table market-data `trades` proof candidate for the existing converter
   path; an instrument-universe proof can be current-contract-shaped next, but it
   still cannot be accepted until those five evidence checks are explicit.
+- After derivability began preserving legacy source-proof `venue`,
+  `product_family`, and `evidence_state`, and migration preflight began loading
+  the spec-owned source-bindings registry, the same real proof set was rerun
+  without raw payload download or conversion. The metadata derivability report
+  at
+  `/private/tmp/bte-coverage-ledger-20260607/source-proof-legacy-derivability-with-metadata-output/source-proof-legacy-derivability-report.json`
+  has content hash
+  `e86a2c6bdee28275cc9fd184bf9c24e9fef56f64506ebd528f9fa005e8743a54`,
+  size 25,048 bytes, and the same 21 records. The current-registry instruments
+  preflight at
+  `/private/tmp/bte-coverage-ledger-20260607/source-proof-migration-preflight-instruments-with-metadata-registry-output/source-proof-migration-preflight-report.json`
+  has content hash
+  `a84d829d0ce6793d14e5dab88af4206c9b9d5db4db512af2be74bcf079f8eccf`,
+  size 1,835 bytes, `status = candidate_found`, and
+  `eligible_candidate_count = 19`; the selected `okx-option-underlyings`
+  candidate now reports six remaining acceptance blockers: license, NT mapping,
+  fidelity, forbidden-claim, schema-sample, and
+  `source_binding_product_family_mismatch`. The current-registry trades
+  preflight at
+  `/private/tmp/bte-coverage-ledger-20260607/source-proof-migration-preflight-trades-with-metadata-registry-output/source-proof-migration-preflight-report.json`
+  has content hash
+  `fc6ffff57a63b05865d92c566459ddbe27235bf06735a7854f39e44401aa4939`,
+  size 908 bytes, `status = blocked`, and `eligible_candidate_count = 0`.
+  Therefore the next accepted source proof is still blocked by evidence and
+  registry metadata, not by NT execution or catalog mechanics.
 - The committed reference `trades` source proof was separately checked through
   the config-driven source-proof admissibility CLI, using
   `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.bnbusdc-2026-03-01.json`

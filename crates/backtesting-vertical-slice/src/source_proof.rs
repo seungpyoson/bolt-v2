@@ -41,6 +41,15 @@ pub struct SourceBindingRegistry {
     source_bindings: Vec<SourceBindingConfig>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceBindingMetadata {
+    pub key: String,
+    pub venue: String,
+    pub product_family: String,
+    pub evidence_state: EvidenceState,
+    pub table_families: Vec<String>,
+}
+
 impl SourceBindingRegistry {
     pub fn from_toml_str(text: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(text)
@@ -62,6 +71,21 @@ impl SourceBindingRegistry {
                 binding.key == source_binding && binding.venue.eq_ignore_ascii_case(venue)
             })
             .cloned()
+    }
+
+    pub fn source_binding_metadata(
+        &self,
+        source_binding: &str,
+        venue: &str,
+    ) -> Option<SourceBindingMetadata> {
+        self.source_binding_config(source_binding, venue)
+            .map(|config| SourceBindingMetadata {
+                key: config.key,
+                venue: config.venue,
+                product_family: config.product_family,
+                evidence_state: config.evidence_state,
+                table_families: config.table_families,
+            })
     }
 }
 

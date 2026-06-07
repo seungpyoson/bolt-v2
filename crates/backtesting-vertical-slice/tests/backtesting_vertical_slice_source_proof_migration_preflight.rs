@@ -1,6 +1,7 @@
 use std::process::Command;
 
 use backtesting_vertical_slice::{
+    source_proof::{EvidenceState, SourceBindingRegistry},
     source_proof_legacy_derivability::{
         SourceProofLegacyDerivabilityIssue, SourceProofLegacyDerivabilityRecord,
         SourceProofLegacyDerivabilityReport, SourceProofLegacyDerivabilitySummary,
@@ -9,25 +10,38 @@ use backtesting_vertical_slice::{
     source_proof_migration_preflight::{
         SOURCE_PROOF_MIGRATION_PREFLIGHT_REPORT_FILE, SourceProofMigrationPreflightReason,
         SourceProofMigrationPreflightSelection, SourceProofMigrationPreflightStatus,
-        evaluate_source_proof_migration_preflight,
+        evaluate_source_proof_migration_preflight_with_registry,
         write_source_proof_migration_preflight_report_from_spec_file,
     },
 };
+
+const SYNTHETIC_VENUE: &str = "synthetic-venue";
+const SYNTHETIC_PRODUCT_FAMILY: &str = "synthetic-product-family";
+const SYNTHETIC_OTHER_PRODUCT_FAMILY: &str = "synthetic-other-product-family";
+const SYNTHETIC_TABLE_FAMILY: &str = "synthetic-table-family";
+const SYNTHETIC_OTHER_TABLE_FAMILY: &str = "synthetic-other-table-family";
+const SYNTHETIC_EVIDENCE_STATE: &str = "directly_backfillable";
 
 #[test]
 fn migration_preflight_blocks_when_required_table_family_has_no_candidate() {
     let report = derivability_report(vec![record(
         "proof://synthetic/instruments.json",
         "synthetic-instruments",
-        "instruments",
+        SYNTHETIC_OTHER_TABLE_FAMILY,
         1,
         100,
     )]);
 
-    let preflight = evaluate_source_proof_migration_preflight(
+    let registry = source_binding_registry(&[(
+        "synthetic-instruments",
+        SYNTHETIC_PRODUCT_FAMILY,
+        SYNTHETIC_OTHER_TABLE_FAMILY,
+    )]);
+    let preflight = evaluate_source_proof_migration_preflight_with_registry(
         "synthetic-migration-preflight",
         &report,
-        &selection(vec!["trades"]),
+        &selection(vec![SYNTHETIC_TABLE_FAMILY]),
+        &registry,
     );
 
     assert_eq!(
@@ -48,23 +62,36 @@ fn migration_preflight_selects_smallest_matching_candidate_without_source_consta
         record(
             "proof://synthetic/large.json",
             "synthetic-large",
-            "trades",
+            SYNTHETIC_TABLE_FAMILY,
             1,
             900,
         ),
         record(
             "proof://synthetic/small.json",
             "synthetic-small",
-            "trades",
+            SYNTHETIC_TABLE_FAMILY,
             1,
             100,
         ),
     ]);
 
-    let preflight = evaluate_source_proof_migration_preflight(
+    let registry = source_binding_registry(&[
+        (
+            "synthetic-large",
+            SYNTHETIC_PRODUCT_FAMILY,
+            SYNTHETIC_TABLE_FAMILY,
+        ),
+        (
+            "synthetic-small",
+            SYNTHETIC_PRODUCT_FAMILY,
+            SYNTHETIC_TABLE_FAMILY,
+        ),
+    ]);
+    let preflight = evaluate_source_proof_migration_preflight_with_registry(
         "synthetic-migration-preflight",
         &report,
-        &selection(vec!["trades"]),
+        &selection(vec![SYNTHETIC_TABLE_FAMILY]),
+        &registry,
     );
 
     assert_eq!(
@@ -73,7 +100,7 @@ fn migration_preflight_selects_smallest_matching_candidate_without_source_consta
     );
     let candidate = preflight.selected_candidate.expect("candidate");
     assert_eq!(candidate.source_binding, "synthetic-small");
-    assert_eq!(candidate.table_family, "trades");
+    assert_eq!(candidate.table_family, SYNTHETIC_TABLE_FAMILY);
     assert_eq!(candidate.accepted_bytes_from_s3, 100);
     assert_eq!(
         candidate.remaining_acceptance_blockers,
@@ -82,15 +109,53 @@ fn migration_preflight_selects_smallest_matching_candidate_without_source_consta
 }
 
 #[test]
+fn migration_preflight_reports_source_binding_product_family_mismatch() {
+    let report = derivability_report(vec![
+        record(
+            "proof://synthetic/metadata-mismatch.json",
+            "synthetic-metadata-mismatch",
+            SYNTHETIC_TABLE_FAMILY,
+            1,
+            100,
+        )
+        .with_product_family(SYNTHETIC_OTHER_PRODUCT_FAMILY),
+    ]);
+    let registry = source_binding_registry(&[(
+        "synthetic-metadata-mismatch",
+        SYNTHETIC_PRODUCT_FAMILY,
+        SYNTHETIC_TABLE_FAMILY,
+    )]);
+
+    let preflight = evaluate_source_proof_migration_preflight_with_registry(
+        "synthetic-migration-preflight",
+        &report,
+        &selection(vec![SYNTHETIC_TABLE_FAMILY]),
+        &registry,
+    );
+
+    assert_eq!(
+        preflight.status,
+        SourceProofMigrationPreflightStatus::CandidateFound
+    );
+    let candidate = preflight.selected_candidate.expect("candidate");
+    assert!(
+        candidate
+            .remaining_acceptance_blockers
+            .contains(&SourceProofLegacyDerivabilityIssue::SourceBindingProductFamilyMismatch)
+    );
+}
+
+#[test]
 fn migration_preflight_reads_toml_spec_and_writes_report_idempotently() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let report_path = dir.path().join("derivability.json");
+    let source_bindings_path = dir.path().join("source-bindings.toml");
     let output_dir = dir.path().join("out");
     let spec_path = dir.path().join("migration-preflight.toml");
     let report = derivability_report(vec![record(
         "proof://synthetic/ready.json",
         "synthetic-ready",
-        "trades",
+        SYNTHETIC_TABLE_FAMILY,
         1,
         100,
     )]);
@@ -100,14 +165,24 @@ fn migration_preflight_reads_toml_spec_and_writes_report_idempotently() {
     )
     .expect("write report");
     std::fs::write(
+        &source_bindings_path,
+        source_binding_registry_toml(&[(
+            "synthetic-ready",
+            SYNTHETIC_PRODUCT_FAMILY,
+            SYNTHETIC_TABLE_FAMILY,
+        )]),
+    )
+    .expect("write source bindings");
+    std::fs::write(
         &spec_path,
         format!(
             r#"preflight_id = "synthetic-migration-preflight"
 derivability_report_path = "{}"
+source_bindings_path = "{}"
 output_dir = "{}"
 
 [selection]
-allowed_table_families = ["trades"]
+allowed_table_families = ["{SYNTHETIC_TABLE_FAMILY}"]
 required_derivable_fields = [
   "source_binding",
   "table_family",
@@ -125,6 +200,7 @@ require_single_table_family = true
 require_s3_bound_payloads = true
 "#,
             report_path.display(),
+            source_bindings_path.display(),
             output_dir.display()
         ),
     )
@@ -146,12 +222,13 @@ require_s3_bound_payloads = true
 fn migration_preflight_cli_writes_blocked_report_for_missing_table_family() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let report_path = dir.path().join("derivability.json");
+    let source_bindings_path = dir.path().join("source-bindings.toml");
     let output_dir = dir.path().join("out");
     let spec_path = dir.path().join("migration-preflight.toml");
     let report = derivability_report(vec![record(
         "proof://synthetic/instruments.json",
         "synthetic-instruments",
-        "instruments",
+        SYNTHETIC_OTHER_TABLE_FAMILY,
         1,
         100,
     )]);
@@ -161,14 +238,24 @@ fn migration_preflight_cli_writes_blocked_report_for_missing_table_family() {
     )
     .expect("write report");
     std::fs::write(
+        &source_bindings_path,
+        source_binding_registry_toml(&[(
+            "synthetic-instruments",
+            SYNTHETIC_PRODUCT_FAMILY,
+            SYNTHETIC_OTHER_TABLE_FAMILY,
+        )]),
+    )
+    .expect("write source bindings");
+    std::fs::write(
         &spec_path,
         format!(
             r#"preflight_id = "synthetic-migration-preflight"
 derivability_report_path = "{}"
+source_bindings_path = "{}"
 output_dir = "{}"
 
 [selection]
-allowed_table_families = ["trades"]
+allowed_table_families = ["{SYNTHETIC_TABLE_FAMILY}"]
 required_derivable_fields = ["source_binding", "table_family"]
 max_raw_payload_records = 1
 max_accepted_bytes_from_s3 = 1000
@@ -176,6 +263,7 @@ require_single_table_family = true
 require_s3_bound_payloads = true
 "#,
             report_path.display(),
+            source_bindings_path.display(),
             output_dir.display()
         ),
     )
@@ -248,6 +336,9 @@ fn record(
         source_proof_id: Some(format!("source-proof-{source_binding}")),
         source_proof_version: Some(1),
         source_binding: Some(source_binding.to_string()),
+        venue: Some(SYNTHETIC_VENUE.to_string()),
+        product_family: Some(SYNTHETIC_PRODUCT_FAMILY.to_string()),
+        evidence_state: Some(EvidenceState::DirectlyBackfillable),
         legacy_status: Some("pending".to_string()),
         raw_payload_records,
         s3_bound_raw_payload_records: raw_payload_records,
@@ -266,6 +357,41 @@ fn record(
         ],
         blocking_issues: vec![SourceProofLegacyDerivabilityIssue::LicenseNotPassed],
     }
+}
+
+trait RecordFixtureExt {
+    fn with_product_family(self, product_family: &str) -> Self;
+}
+
+impl RecordFixtureExt for SourceProofLegacyDerivabilityRecord {
+    fn with_product_family(mut self, product_family: &str) -> Self {
+        self.product_family = Some(product_family.to_string());
+        self
+    }
+}
+
+fn source_binding_registry(entries: &[(&str, &str, &str)]) -> SourceBindingRegistry {
+    SourceBindingRegistry::from_toml_str(&source_binding_registry_toml(entries))
+        .expect("source binding registry")
+}
+
+fn source_binding_registry_toml(entries: &[(&str, &str, &str)]) -> String {
+    entries
+        .iter()
+        .map(|(source_binding, product_family, table_family)| {
+            format!(
+                r#"[[source_binding]]
+key = "{source_binding}"
+venue = "{SYNTHETIC_VENUE}"
+product_family = "{product_family}"
+source_uri = "https://synthetic.invalid/data"
+evidence_state = "{SYNTHETIC_EVIDENCE_STATE}"
+table_families = ["{table_family}"]
+"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn selection(allowed_table_families: Vec<&str>) -> SourceProofMigrationPreflightSelection {

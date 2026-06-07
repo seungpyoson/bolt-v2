@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::source_proof::EvidenceState;
+
 pub const SOURCE_PROOF_LEGACY_DERIVABILITY_SCHEMA_VERSION: &str =
     "source-proof-legacy-derivability-report.v1";
 pub const SOURCE_PROOF_LEGACY_DERIVABILITY_REPORT_FILE: &str =
@@ -47,6 +49,13 @@ pub enum SourceProofLegacyDerivabilityIssue {
     FidelityNotPassed,
     ForbiddenClaimsNotPassed,
     SchemaSampleNotPassed,
+    MissingVenue,
+    MissingProductFamily,
+    MissingEvidenceState,
+    UnknownSourceBinding,
+    SourceBindingProductFamilyMismatch,
+    SourceBindingEvidenceStateMismatch,
+    SourceBindingTableFamilyMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +65,9 @@ pub struct SourceProofLegacyDerivabilityRecord {
     pub source_proof_id: Option<String>,
     pub source_proof_version: Option<u32>,
     pub source_binding: Option<String>,
+    pub venue: Option<String>,
+    pub product_family: Option<String>,
+    pub evidence_state: Option<EvidenceState>,
     pub legacy_status: Option<String>,
     pub raw_payload_records: u64,
     pub s3_bound_raw_payload_records: u64,
@@ -563,6 +575,9 @@ fn classify_legacy_source_proof_json(
         source_proof_id: string_field(&proof, "source_proof_id"),
         source_proof_version: u32_field(&proof, "source_proof_version"),
         source_binding,
+        venue: string_field(&proof, "venue"),
+        product_family: string_field(&proof, "product_family"),
+        evidence_state: evidence_state_field(&proof),
         legacy_status: string_field(&proof, "status"),
         raw_payload_records: raw_payloads.len() as u64,
         s3_bound_raw_payload_records,
@@ -714,6 +729,13 @@ fn string_array_field(value: &Value, field: &str) -> Vec<String> {
 fn u32_field(value: &Value, field: &str) -> Option<u32> {
     let raw = value.get(field)?.as_u64()?;
     u32::try_from(raw).ok()
+}
+
+fn evidence_state_field(value: &Value) -> Option<EvidenceState> {
+    value
+        .get("evidence_state")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
 }
 
 fn u64_field(value: &Value, field: &str) -> Option<u64> {

@@ -50,6 +50,7 @@ pub enum BackfillExecutionPlanIssue {
     AcceptedTrancheBytesMismatch,
     RunSpecSourceProofMismatch,
     RunSpecSourceBindingMismatch,
+    RunSpecTableFamilyMismatch,
     RunSpecRawSampleUriMismatch,
     RunSpecRawSampleHashMismatch,
     RunSpecObjectS3UriMismatch,
@@ -68,6 +69,7 @@ pub struct BackfillExecutionRunBinding {
     pub source_proof_id: String,
     pub source_proof_version: u32,
     pub source_binding: String,
+    pub table_family: String,
     pub raw_sample_uri: String,
     pub raw_sample_hash: String,
     pub accepted_object_s3_uri: String,
@@ -88,6 +90,7 @@ impl BackfillExecutionRunBinding {
             source_proof_id: spec.manifest.source_proof_id.clone(),
             source_proof_version: spec.manifest.source_proof_version,
             source_binding: spec.manifest.venue_binding_key.clone(),
+            table_family: spec.source_proof.table_family.clone(),
             raw_sample_uri: spec.source_proof.raw_sample_uri.clone(),
             raw_sample_hash: spec.source_proof.raw_sample_hash.clone(),
             accepted_object_s3_uri: spec.accepted_object.s3_uri.clone(),
@@ -254,6 +257,9 @@ pub fn evaluate_backfill_execution_plan(
     }
     if tranche.source_binding != run_binding.source_binding {
         blocking_issues.push(BackfillExecutionPlanIssue::RunSpecSourceBindingMismatch);
+    }
+    if tranche.table_family != run_binding.table_family {
+        blocking_issues.push(BackfillExecutionPlanIssue::RunSpecTableFamilyMismatch);
     }
 
     if let Some(object) = tranche.objects.first() {

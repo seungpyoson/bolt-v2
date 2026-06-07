@@ -64,6 +64,28 @@ fn execution_plan_blocks_run_spec_object_mismatch_before_payload_fetch() {
 }
 
 #[test]
+fn execution_plan_blocks_run_spec_table_family_mismatch_before_payload_fetch() {
+    let mut tranche = accepted_tranche();
+    let binding = matching_run_binding();
+    tranche.table_family = format!("{}-mismatch", binding.table_family);
+
+    let plan = evaluate_backfill_execution_plan(
+        "synthetic-plan",
+        "synthetic-tranche-hash",
+        &tranche,
+        "synthetic-run-spec-hash",
+        &binding,
+    );
+
+    assert_eq!(plan.status, BackfillExecutionPlanStatus::Blocked);
+    assert!(plan.objects.is_empty());
+    assert!(
+        plan.blocking_issues
+            .contains(&BackfillExecutionPlanIssue::RunSpecTableFamilyMismatch)
+    );
+}
+
+#[test]
 fn execution_plan_writer_is_idempotent_and_refuses_dirty_existing_artifact() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let plan = evaluate_backfill_execution_plan(
@@ -118,6 +140,7 @@ fn matching_run_binding() -> BackfillExecutionRunBinding {
         source_proof_id: "source-proof-synthetic-native-trades".to_string(),
         source_proof_version: 3,
         source_binding: "synthetic-native-trades".to_string(),
+        table_family: "trades".to_string(),
         raw_sample_uri: "s3://synthetic-artifacts/raw/object=synthetic-object-sha.csv.gz"
             .to_string(),
         raw_sample_hash: "synthetic-object-sha".to_string(),

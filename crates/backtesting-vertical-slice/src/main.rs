@@ -264,6 +264,12 @@ fn validate_execution_plan_for_run_spec(
         "execution plan source binding mismatch"
     );
     ensure!(
+        plan.table_family == binding.table_family,
+        "execution plan table_family {} does not match submitted run-spec {}",
+        plan.table_family,
+        binding.table_family
+    );
+    ensure!(
         plan.object_count == 1 && plan.objects.len() == 1,
         "execution plan must bind exactly one accepted object"
     );
@@ -602,6 +608,50 @@ mod tests {
             .expect_err("execution-plan mismatch must reject before object read");
 
         assert!(err.to_string().contains("execution plan"), "{err}");
+        assert!(!object_reader_called);
+    }
+
+    #[test]
+    fn cli_execution_plan_table_family_mismatch_rejects_before_reading_object() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let run_spec_path = dir.path().join("run.toml");
+        fs::write(&run_spec_path, COMMITTED_RUN_SPEC).unwrap();
+        let spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
+        let run_spec_hash = sha256_hex(COMMITTED_RUN_SPEC.as_bytes());
+        let execution_plan_path = write_matching_execution_plan(dir.path(), &spec, &run_spec_hash);
+        let mut execution_plan: serde_json::Value =
+            serde_json::from_slice(&fs::read(&execution_plan_path).unwrap()).unwrap();
+        execution_plan["table_family"] =
+            serde_json::Value::String(format!("{}-mismatch", spec.source_proof.table_family));
+        fs::write(
+            &execution_plan_path,
+            serde_json::to_vec_pretty(&execution_plan).unwrap(),
+        )
+        .unwrap();
+        let cli = Cli {
+            run_spec: run_spec_path,
+            execution_plan: execution_plan_path,
+            object_path: dir.path().join("object.csv.gz"),
+            output_dir: dir.path().join("out"),
+            publish_output: false,
+            prove_published_catalog: false,
+        };
+        let mut object_reader_called = false;
+        let mut object_reader = |_path: &Path, _expected_bytes: u64| {
+            object_reader_called = true;
+            anyhow::bail!("object reader must not run after execution-plan table-family mismatch")
+        };
+        let mut resolver = |_region: &str, _path: &str| Ok::<String, String>("unused".to_string());
+
+        let err = run_cli_with_object_reader_and_resolver(&cli, &mut object_reader, &mut resolver)
+            .expect_err("execution-plan table-family mismatch must reject before object read");
+
+        let error_chain = err
+            .chain()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(error_chain.contains("table_family"), "{error_chain}");
         assert!(!object_reader_called);
     }
 }

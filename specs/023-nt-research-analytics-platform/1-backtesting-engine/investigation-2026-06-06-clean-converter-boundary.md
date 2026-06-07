@@ -988,6 +988,14 @@ Midpoint table-family coverage audit:
   through the last pre-fetch execution gate; the broader manifest-level
   backfill preflight remains blocked until accepted canonical-ready coverage
   records exist for non-sample tranches.
+- Follow-up enforcement fix: execution-plan generation and CLI pre-fetch
+  validation now reject table-family mismatches between the accepted tranche
+  and submitted run spec before object reads. The reference execution plan
+  rerun remained deterministic with hash
+  `3ee2fbb4bcc3ce42d204692a6882882aa1dc039f4362e40b78be6b2f0c263297`;
+  focused tests now cover both evaluator-level
+  `RunSpecTableFamilyMismatch` and CLI rejection before object-reader
+  invocation.
 
 ## Recommendation
 

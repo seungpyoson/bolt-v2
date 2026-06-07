@@ -33,6 +33,7 @@ fn execution_plan_is_ready_only_for_matching_accepted_tranche_and_run_spec_bindi
     assert_eq!(plan.source_proof_id, tranche.source_proof_id);
     assert_eq!(plan.source_proof_version, tranche.source_proof_version);
     assert_eq!(plan.source_binding, tranche.source_binding);
+    assert_eq!(plan.table_family, tranche.table_family);
     assert_eq!(plan.operator_run_id, binding.run_id);
     assert_eq!(plan.object_count, 1);
     assert_eq!(plan.accepted_bytes, 17);

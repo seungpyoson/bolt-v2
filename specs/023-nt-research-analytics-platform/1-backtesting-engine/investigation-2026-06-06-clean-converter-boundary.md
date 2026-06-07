@@ -978,6 +978,16 @@ Midpoint table-family coverage audit:
   `81782b053ac9adbc9be156adabd8b40f9c602a5b05e940626afa4f0dced8251f`,
   status `accepted`, `object_count = 1`, `accepted_bytes = 8505`, and
   `table_family = "trades"`.
+- The execution-plan handoff generated from that table-family-aware tranche
+  produced
+  `/private/tmp/bte-coverage-ledger-20260607/backfill-execution-plan-reference-trades-table-family-output/backfill-execution-plan.json`
+  with hash
+  `3ee2fbb4bcc3ce42d204692a6882882aa1dc039f4362e40b78be6b2f0c263297`,
+  status `ready`, `object_count = 1`, `accepted_bytes = 8505`, and
+  `table_family = "trades"`. This keeps the canonical table family attached
+  through the last pre-fetch execution gate; the broader manifest-level
+  backfill preflight remains blocked until accepted canonical-ready coverage
+  records exist for non-sample tranches.
 
 ## Recommendation
 

@@ -206,7 +206,7 @@ fn realized_volatility_validation_rejects_strategy_missing_surface_reference() {
 }
 
 #[test]
-fn runtime_mapping_emits_only_realized_volatility_surface_id_for_surfaced_mode() {
+fn runtime_mapping_emits_surface_id_and_signal_data_for_surfaced_mode() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     insert_realized_volatility_surface(&mut loaded.root, valid_realized_volatility_surface());
@@ -227,8 +227,18 @@ fn runtime_mapping_emits_only_realized_volatility_surface_id_for_surfaced_mode()
     assert!(!table.contains_key("vol_gap_reset_secs"));
     assert!(!table.contains_key("vol_min_observations"));
     assert!(!table.contains_key("vol_bridge_valid_secs"));
-    assert!(!table.contains_key("signal_venue"));
-    assert!(!table.contains_key("signal_instrument_id"));
+    assert_eq!(
+        table.get("signal_venue").and_then(toml::Value::as_str),
+        Some("okx_data"),
+        "surfaced RV mode still needs signal data for fast-spot pricing"
+    );
+    assert_eq!(
+        table
+            .get("signal_instrument_id")
+            .and_then(toml::Value::as_str),
+        Some("BTC-USDT.OKX"),
+        "surfaced RV mode must not remove the fast-spot instrument binding"
+    );
 }
 
 #[test]

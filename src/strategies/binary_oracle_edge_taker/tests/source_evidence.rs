@@ -44,8 +44,6 @@ fn test_strategy_with_realized_volatility_surface(
     let base = test_strategy();
     let mut config = base.config.clone();
     config.realized_volatility_surface_id = Some(TEST_SURFACE_ID.to_string());
-    config.signal_venue = None;
-    config.signal_instrument_id = None;
     config.vol_window_secs = None;
     config.vol_gap_reset_secs = None;
     config.vol_min_observations = None;

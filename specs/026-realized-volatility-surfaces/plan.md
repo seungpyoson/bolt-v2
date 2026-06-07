@@ -1213,7 +1213,7 @@ Add to `tests/bolt_v3_strategy_registration.rs`:
 
 ```rust
 #[test]
-fn runtime_mapping_emits_only_realized_volatility_surface_id_for_surfaced_mode() {
+fn runtime_mapping_emits_surface_id_and_signal_data_for_surfaced_mode() {
     let mut loaded = fixture_loaded_config();
     let strategy = loaded.strategies.first_mut().expect("fixture strategy");
     strategy.config.parameters
@@ -1227,8 +1227,8 @@ fn runtime_mapping_emits_only_realized_volatility_surface_id_for_surfaced_mode()
 
     assert_eq!(table.get("realized_volatility_surface_id").and_then(toml::Value::as_str), Some("<surface_id>"));
     assert!(!table.contains_key("vol_window_secs"));
-    assert!(!table.contains_key("signal_venue"));
-    assert!(!table.contains_key("signal_instrument_id"));
+    assert_eq!(table.get("signal_venue").and_then(toml::Value::as_str), Some("okx_data"));
+    assert_eq!(table.get("signal_instrument_id").and_then(toml::Value::as_str), Some("BTC-USDT.OKX"));
 }
 ```
 
@@ -1238,7 +1238,7 @@ Run:
 
 ```bash
 cargo test --lib surfaced_realized_volatility_mode_rejects_legacy_runtime_vol_fields -- --nocapture
-cargo test --test bolt_v3_strategy_registration runtime_mapping_emits_only_realized_volatility_surface_id_for_surfaced_mode -- --nocapture
+cargo test --test bolt_v3_strategy_registration runtime_mapping_emits_surface_id_and_signal_data_for_surfaced_mode -- --nocapture
 ```
 
 Expected: FAIL because surfaced mode is not parsed or mapped.
@@ -1250,8 +1250,8 @@ When present:
 
 - allow the field through `validate_table`
 - reject legacy `vol_window_secs`, `vol_gap_reset_secs`, `vol_min_observations`, `vol_bridge_valid_secs`
-- reject `signal_venue` and `signal_instrument_id` as RV inputs
-- map only `realized_volatility_surface_id` from strategy root config into runtime config
+- keep `signal_venue` and `signal_instrument_id` mapped for fast-spot pricing
+- map `realized_volatility_surface_id` from strategy root config into runtime config without legacy RV knobs
 
 - [ ] **Step 4: Run tests to verify GREEN**
 
@@ -1259,7 +1259,7 @@ Run:
 
 ```bash
 cargo test --lib surfaced_realized_volatility_mode_rejects_legacy_runtime_vol_fields -- --nocapture
-cargo test --test bolt_v3_strategy_registration runtime_mapping_emits_only_realized_volatility_surface_id_for_surfaced_mode -- --nocapture
+cargo test --test bolt_v3_strategy_registration runtime_mapping_emits_surface_id_and_signal_data_for_surfaced_mode -- --nocapture
 ```
 
 Expected: PASS.

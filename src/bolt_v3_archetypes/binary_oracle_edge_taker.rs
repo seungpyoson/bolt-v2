@@ -504,11 +504,7 @@ pub fn raw_taker_config(
     let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
     let realized_volatility_surface_id = strategy.config.realized_volatility_surface_id.as_deref();
     let reference_data = configured_reference_data(strategy)?;
-    let signal_data = if realized_volatility_surface_id.is_some() {
-        None
-    } else {
-        Some(configured_signal_data(strategy)?)
-    };
+    let signal_data = configured_signal_data(strategy)?;
     validate_configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
     if let Some(reference_data) = reference_data {
         loaded
@@ -523,19 +519,17 @@ pub fn raw_taker_config(
                 ),
             })?;
     }
-    if let Some(signal_data) = signal_data {
-        loaded
-            .root
-            .clients
-            .get(signal_data.data_client_id.as_str())
-            .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
-                strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-                message: format!(
-                    "signal_data data_client_id `{}` is not present in loaded clients",
-                    signal_data.data_client_id
-                ),
-            })?;
-    }
+    loaded
+        .root
+        .clients
+        .get(signal_data.data_client_id.as_str())
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: format!(
+                "signal_data data_client_id `{}` is not present in loaded clients",
+                signal_data.data_client_id
+            ),
+        })?;
     let resolution_data = configured_resolution_data(strategy);
     if let Some(resolution_data) = resolution_data {
         let resolution_client = loaded
@@ -689,18 +683,16 @@ pub fn raw_taker_config(
             reference_data.instrument_id.to_string(),
         );
     }
-    if let Some(signal_data) = signal_data {
-        insert_string(
-            &mut table,
-            "signal_venue",
-            signal_data.data_client_id.to_string(),
-        );
-        insert_string(
-            &mut table,
-            "signal_instrument_id",
-            signal_data.instrument_id.to_string(),
-        );
-    }
+    insert_string(
+        &mut table,
+        "signal_venue",
+        signal_data.data_client_id.to_string(),
+    );
+    insert_string(
+        &mut table,
+        "signal_instrument_id",
+        signal_data.instrument_id.to_string(),
+    );
     if let Some(surface_id) = realized_volatility_surface_id {
         insert_string(
             &mut table,

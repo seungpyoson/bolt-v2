@@ -200,8 +200,10 @@ mod tests {
     // as an explicit entry match to satisfy both clippy and source-fence.
     // Re-derived again after refreshing surfaced realized-volatility snapshots
     // before entry/exit pricing so stale sources block instead of freezing RV.
+    // Re-derived again after preserving signal-data bindings in surfaced RV
+    // mode while keeping legacy strategy-owned RV knobs rejected.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "bc99eb94e21ac7bb328e372777feaba46de12a72d9e24c7cefa7fac232d9f830";
+        "16d1cbf752ee54e0195112c546b3882348b42a2e4bfb662f560abe905939c7d7";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

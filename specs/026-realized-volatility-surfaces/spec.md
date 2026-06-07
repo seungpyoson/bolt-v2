@@ -87,8 +87,9 @@ realized_volatility_surface_id = "<surface_id>"
 ```
 
 When this field is present, validation rejects legacy strategy-owned RV knobs
-and legacy signal/reference RV warming fields as RV inputs. There must be one
-runtime source of truth for RV policy and RV source identity.
+as RV inputs. Existing signal data bindings remain valid for fast-spot pricing,
+but surfaced mode must not use them to warm or compute realized volatility.
+There must be one runtime source of truth for RV policy and RV source identity.
 
 ### RV-004 Source Identity
 

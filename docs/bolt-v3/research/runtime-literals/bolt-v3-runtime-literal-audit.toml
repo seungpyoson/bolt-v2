@@ -8915,14 +8915,6 @@ reason = "Taker strategy runtime config schema field name used to parse or rejec
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
-literal = '''"signal_venue"'''
-context = '''"signal_venue",'''
-classification = "strategy_runtime_schema_field"
-reason = "Taker strategy runtime config schema field name used to parse or reject legacy realized-volatility fields; runtime values remain supplied by bolt-v3 TOML."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
 literal = '''"legacy_realized_volatility_path"'''
 context = '''code: "legacy_realized_volatility_path",'''
 classification = "strategy_runtime_diagnostic"

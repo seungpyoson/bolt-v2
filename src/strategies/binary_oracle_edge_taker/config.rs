@@ -225,8 +225,6 @@ const LEGACY_REALIZED_VOLATILITY_RUNTIME_FIELDS: &[&str] = &[
     "vol_gap_reset_secs",
     "vol_min_observations",
     "vol_bridge_valid_secs",
-    "signal_venue",
-    "signal_instrument_id",
 ];
 
 macro_rules! match_order_field_names {

@@ -216,6 +216,13 @@ fn surfaced_realized_volatility_mode_rejects_legacy_runtime_vol_fields() {
         }),
         "surfaced RV mode must reject legacy vol fields: {errors:#?}"
     );
+    assert!(
+        !errors.iter().any(|error| {
+            error.field == "strategies[0].config.signal_venue"
+                || error.field == "strategies[0].config.signal_instrument_id"
+        }),
+        "surfaced RV mode must keep signal data available for fast-spot pricing: {errors:#?}"
+    );
 }
 
 #[test]

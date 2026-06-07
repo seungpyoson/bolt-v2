@@ -804,13 +804,17 @@ fn source_url_matches_declared_source(source_url: &str, source_binding: &str, ve
     let Some(config) = source_binding_config(source_binding, venue) else {
         return false;
     };
-    let Some(declared_host) = https_host(&config.source_uri) else {
+    if source_url.contains(['{', '}']) {
+        return false;
+    }
+    let Some(declared) = https_url_parts(&config.source_uri) else {
         return false;
     };
-    let Some(object_host) = https_host(source_url) else {
+    let Some(object) = https_url_parts(source_url) else {
         return false;
     };
-    object_host.eq_ignore_ascii_case(declared_host)
+    object.host.eq_ignore_ascii_case(declared.host)
+        && template_remainder_matches(declared.remainder, object.remainder)
 }
 
 fn source_binding_config(source_binding: &str, venue: &str) -> Option<SourceBindingConfig> {
@@ -827,16 +831,23 @@ fn source_binding_config(source_binding: &str, venue: &str) -> Option<SourceBind
         .find(|binding| binding.key == source_binding && binding.venue.eq_ignore_ascii_case(venue))
 }
 
-fn https_host(source_url: &str) -> Option<&str> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HttpsUrlParts<'a> {
+    host: &'a str,
+    remainder: &'a str,
+}
+
+fn https_url_parts(source_url: &str) -> Option<HttpsUrlParts<'_>> {
     let (scheme, after_scheme) = source_url.split_once("://")?;
     if !scheme.eq_ignore_ascii_case("https") {
         return None;
     }
-    let authority = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
-        .trim();
+    let without_fragment = after_scheme.split('#').next().unwrap_or_default();
+    let remainder_start = without_fragment
+        .find(['/', '?'])
+        .unwrap_or(without_fragment.len());
+    let authority = without_fragment[..remainder_start].trim();
+    let remainder = &without_fragment[remainder_start..];
     let host = authority
         .rsplit_once('@')
         .map_or(authority, |(_, host)| host)
@@ -845,7 +856,43 @@ fn https_host(source_url: &str) -> Option<&str> {
         .unwrap_or_default()
         .trim_matches(['[', ']'])
         .trim_matches('.');
-    if host.is_empty() { None } else { Some(host) }
+    if host.is_empty() {
+        None
+    } else {
+        Some(HttpsUrlParts { host, remainder })
+    }
+}
+
+fn template_remainder_matches(mut template: &str, mut actual: &str) -> bool {
+    while let Some(open) = template.find('{') {
+        let literal = &template[..open];
+        if !actual.starts_with(literal) {
+            return false;
+        }
+        actual = &actual[literal.len()..];
+        let Some(close_after_open) = template[open + 1..].find('}') else {
+            return false;
+        };
+        let close = open + 1 + close_after_open;
+        if close == open + 1 {
+            return false;
+        }
+        template = &template[close + 1..];
+        let next_literal_end = template.find('{').unwrap_or(template.len());
+        let next_literal = &template[..next_literal_end];
+        if next_literal.is_empty() {
+            return !actual.is_empty() && !actual.contains(['/', '?', '#']);
+        }
+        let Some(match_end) = actual.find(next_literal) else {
+            return false;
+        };
+        let matched_placeholder = &actual[..match_end];
+        if matched_placeholder.is_empty() || matched_placeholder.contains(['/', '?', '#']) {
+            return false;
+        }
+        actual = &actual[match_end..];
+    }
+    actual == template
 }
 
 fn ensure_backfillable_evidence_state(
@@ -1407,6 +1454,33 @@ mod tests {
     }
 
     #[test]
+    fn select_rejects_same_host_path_outside_declared_source_template() {
+        let mut proof = candidate_proof();
+        proof.source_proof_id = "source-proof-binance-spot-native-trades".to_string();
+        proof.source_binding = "binance-spot-native-trades".to_string();
+        proof.venue = "binance".to_string();
+        proof.evidence_state = EvidenceState::DirectlyBackfillable;
+        proof.raw_sample_uri =
+            "s3://bolt-parquet/.../binance/raw/object=monthly-trades.zip".to_string();
+        let raw_sample_uri = proof.raw_sample_uri.clone();
+        let accepted = proof
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.s3_uri = raw_sample_uri;
+        object.source_url =
+            "https://data.binance.vision/data/spot/monthly/trades/BNBUSDC/BNBUSDC-trades-2026-03.zip"
+                .to_string();
+
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+
+        assert!(
+            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
     fn select_accepts_configured_source_host_with_url_variations() {
         let accepted = candidate_proof()
             .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
@@ -1729,9 +1803,12 @@ mod tests {
                     .expect("configured native-trades source binding should be acceptable");
 
                 let mut object = manifest_object();
-                object.source_url = source_uri.to_string();
-                select_accepted_dataset(&proof, &object, &object.sha256)
-                    .expect("configured native-trades source binding should select by host");
+                object.source_url = source_uri
+                    .replace("{symbol}", "BNBUSDC")
+                    .replace("{dt}", "2026-03-01");
+                select_accepted_dataset(&proof, &object, &object.sha256).expect(
+                    "configured native-trades source binding should select by source template",
+                );
 
                 venues.insert(venue.to_string());
                 keys.push(key.to_string());

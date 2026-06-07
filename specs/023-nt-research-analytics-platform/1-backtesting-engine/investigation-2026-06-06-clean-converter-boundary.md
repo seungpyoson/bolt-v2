@@ -30,6 +30,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - source-proof acceptance now cross-checks registered TOML source-binding metadata for `product_family`, `table_family`, and `evidence_state`; a proof cannot reuse a registered host/key while silently changing the data family or acceptance state
 - source-proof acceptance now rejects unknown `source_binding`/venue pairs before an accepted proof can be stamped; object selection keeps a defense-in-depth rejection for forged accepted records
 - source-proof acceptance now requires `raw_sample_uri` and `schema_sample_uri` to be staged `s3://` artifact URIs, and accepted dataset selection requires the manifest object's `s3_uri` to exactly match the proof's `raw_sample_uri`
+- accepted dataset selection now validates the staged object's `source_url` against the registered source-binding URI template path/query, not just the HTTPS host; a same-host monthly, aggTrades, or other data-family path cannot satisfy a daily trades binding
 - source-proof acceptance now requires structured `acceptance_scope` facts (`planned_objects`, `completed_objects`, `failed_objects`, `skipped_objects`, `accepted_bytes`, and `selector_scope_violations`) instead of accepting prose-only completeness evidence; failed objects, selector-scope violations, inconsistent object accounting, skipped objects without a gap policy, and selected objects whose bytes exceed accepted bytes fail before canonical conversion
 - non-latest source-proof pins now require structured manifest justification: `normal` runs still cannot pin them, non-normal pins require `proof_pin_reason_code`, and `audit_or_investigation` pins require `proof_pin_reason_detail`
 - the accepted `proof_pin_reason_code` vocabulary now matches the plan/reference contract, including published-result reproduction and regression-comparison pins
@@ -64,6 +65,7 @@ No-go for broader production claims:
 - Run spec binds `[converter] identity = "csv-native-trades-to-canonical-trades.v1"`, `version = "1"`, `[converter.raw_payload] container = "csv_gzip"`, `max_object_bytes = 8505`, `max_decoded_bytes = 1048576`, and `[converter.csv] has_headers = true` plus column/timestamp/side-token mapping. The Bybit-specific values live in the sample source proof and run-spec data, not in operator/runner control flow.
 - Source-binding registry coverage is no longer single-venue for native trades: `bybit-spot-tick-trades` and `binance-spot-native-trades` are both configured as backfillable `native-trades`/`trades` bindings. The Binance row points at Binance Data Vision spot daily `trades` zip files and remains a candidate only; it does not create an accepted proof or bypass object/sample/hash gates.
 - Bounded Binance candidate evidence collected without broad backfill: `https://data.binance.vision/data/spot/daily/trades/BNBUSDC/BNBUSDC-trades-2026-03-01.zip` returned `200`, `content-length = 1066394`, one CSV member `BNBUSDC-trades-2026-03-01.csv`, decoded length `5287070`, row count `71431`, and ZIP SHA256 `433d32b8d828abee5e1937e01372d16f7edadc14c41fe736b0b9577541fa5e81`, matching the Binance `.CHECKSUM` sidecar. The CSV is headerless with columns matching Binance native-trades semantics (`trade_id`, `price`, `qty`, `quote_qty`, `time`, `is_buyer_maker`, `is_best_match`) and microsecond timestamps; it is evidence for adapter coverage only, not an accepted source proof.
+- Read-only fetch of the existing one-off Binance staging manifest from `s3://bolt-parquet/backfill-staging/2026-06-01/binance/manifests/v1/run=binance-backfill-run-d928f6666827dd47/binance-backfill-manifest.json` produced `4701` payload records, `11600667` bytes, and SHA256 `b37d01f30932c8af4d8b9bc112b031569afbdf3a2db3756ec1f2a79626880c36`. It contains no `spot`/`daily`/`trades`/`BNBUSDC` object for `2026-03-01`; the staged BNBUSDC trade object is monthly March 2026 at `s3://bolt-parquet/backfill-staging/2026-06-01/binance/raw/v1/source=data.binance.vision/product=spot/frequency=monthly/family=trades/symbol=BNBUSDC/dt=2026-03/object=9fcdae9872ab3c7ff8f13d5f3c1830b017b25561fe6140493decfa079ee56aa6.zip`, so it cannot satisfy the configured daily source binding.
 - Clean NT output prefix is empty as of this investigation: `aws s3 ls s3://bolt-parquet/nt-research-analytics/ --summarize --recursive` returned `Total Objects: 0`, `Total Size: 0`
 - Fresh read-only S3 object-count query after the CLI preflight fix returned `0` objects under `s3://bolt-parquet/nt-research-analytics/`
 - Converted artifacts were intentionally deleted by the user to avoid confusing stale partial outputs with accepted clean outputs
@@ -259,6 +261,7 @@ GREEN checks after implementation:
 - `just bte-test acceptance_blocked_when_evidence_state_is_not_backfillable`: GREEN passed after source-proof acceptance began rejecting non-backfillable evidence states
 - `just bte-test acceptance_blocked_when_source_binding_family_disagrees_with_registry`: GREEN passed after source-proof acceptance began binding proof `product_family`, `table_family`, and `evidence_state` to the TOML source-binding registry
 - `just bte-test acceptance_blocked_when_source_binding_family_disagrees_with_registry acceptance_blocked_when_source_binding_missing_from_registry select_rejects_unknown_source_binding select_rejects_object_from_other_venue select_accepts_configured_source_host_with_url_variations`: 5 passed after source-proof acceptance began rejecting registry-missing source bindings and selection kept a forged-record guard
+- `just bte-test select_rejects_same_host_path_outside_declared_source_template`: RED failed because a same-host Binance monthly trades object could satisfy the daily native-trades source binding; GREEN passed after selection began matching the object `source_url` path/query against the registered URI template
 - `just bte-test rejects_non_latest_proof_pin_for_normal_run rejects_non_latest_proof_pin_without_reason_code rejects_audit_non_latest_proof_pin_without_reason_detail accepts_non_latest_reproduction_pin_with_reason_code`: 4 passed after adding typed non-latest proof-pin reason fields
 - `just bte-test accepts_all_configured_non_latest_proof_pin_reason_codes_from_toml`: 1 passed after adding the missing `published_result_reproduction` and `regression_comparison` enum variants
 - `just bte-test publish_output_artifacts_rejects_existing_published_artifact_without_overwrite`: RED failed because publish used default object-store overwrite semantics, then GREEN passed after bounded target preflight plus `PutMode::Create`
@@ -299,7 +302,7 @@ GREEN checks after implementation:
 | --- | --- | --- |
 | Clean production output proof under `nt-research-analytics/` | The prefix is empty, so there is no S3 proof of a clean catalog/result path | configure valid artifact-store SSM parameter paths, run the accepted BNBUSDC object through the operator into the configured prefix, upload checkpoint/manifest/metadata/catalog/contract, then verify S3 listing and hashes |
 | Artifact-store SSM parameter paths | Direct S3 proof cannot use AWS CLI/shared-credential fallback under repo rules, and current non-secret SSM name searches found no obvious artifact/S3 credential parameters | create or provide SSM parameter paths for S3 access key id and secret access key, optionally session token, then add only those paths to `[manifest.artifact_store.ssm_parameters]`; never put secret values in TOML or logs |
-| Broader source proof coverage | This slice proves one Bybit spot trade-replay object only, as a sample source; registry coverage now has Bybit and Binance native-trades candidates, and the converter can process headerless Binance-style ZIP CSV, but Binance is not accepted input | accept additional source proofs only after raw/schema samples are staged under S3 artifact storage, checksums/hashes are bound, license/retention evidence is recorded, and historical instrument-universe proof exists; for compatible CSV native-trade sources, add proof/run-spec `[converter.csv]` mapping without changing operator/runner/NT code; for non-CSV or non-trade data, add a new registered adapter and bind its converter config hash |
+| Broader source proof coverage | This slice proves one Bybit spot trade-replay object only, as a sample source; registry coverage now has Bybit and Binance native-trades candidates, and the converter can process headerless Binance-style ZIP CSV, but Binance is not accepted input. The existing Binance staging manifest has monthly BNBUSDC trades, not the configured daily BNBUSDC object, and same-host monthly paths are now rejected under the daily binding | accept additional source proofs only after raw/schema samples are staged under S3 artifact storage, checksums/hashes are bound, license/retention evidence is recorded, and historical instrument-universe proof exists; for compatible CSV native-trade sources, add proof/run-spec `[converter.csv]` mapping without changing operator/runner/NT code; if accepting monthly Binance files, add a monthly source binding/proof path rather than reusing the daily binding; for non-CSV or non-trade data, add a new registered adapter and bind its converter config hash |
 | Complex NT venue model policy | Primitive controls are explicit, and complex surfaces are manifest-declared with structured unsupported-surface rejection, but leverage maps, margin model, simulation modules, fill model, latency model, fee model, and settlement prices are not yet mapped into NT | keep them `unsupported_for_now` until each field has a claim-limited typed mapping into NT `BacktestVenueConfig`; do not silently rely on hidden defaults |
 | Direct S3 catalog execution proof | The proof path is implemented to pass resolved object-store options into NT, but it has not run against real S3 because SSM credential parameter paths are missing | after SSM paths are configured, run `--publish-output --prove-published-catalog`, verify S3 artifact hashes, and require the published-catalog proof to stamp `direct_s3_catalog_access_proven = true` |
 | Artifact Index commit proof | The pure record and committed-discovery contracts are now validated locally, including pointer/snapshot hash checks, stale pointer rejection, staged/orphan rejection, active hot metadata, manifest-lineage parent resolution, immutable event idempotency/overwrite rejection, and first-write/update precondition modeling. The pinned object_store API and AWS backend support the needed create-only/update-if-etag primitives when `conditional_put = "etag"` is configured. Real S3 create-only object writes, actual conditional latest-pointer swaps, persisted snapshot serialization, conditional-failure retry/rebase against storage state, audit epoch object creation, and producer IAM scopes are not proven | keep events/snapshots proof-gated; after valid artifact-store SSM paths exist, run a small S3 Artifact Index commit/readback proof using object_store `PutMode::Create` for event/snapshot objects and `PutMode::Update(UpdateVersion)` for latest pointers; if real S3 rejects those semantics, select an approved coordinator/table format before relying on Artifact Index for committed discovery |
@@ -412,36 +415,39 @@ No-repeat controls before any future broad backfill or BTE conversion:
    reading it into memory.
 4. Require a manifest schema with planned, completed, failed, skipped, bytes,
    hashes, gap reasons, and source-proof ids before a run can be accepted.
-5. Fail preflight on unbounded selectors such as `ALL_SWAP`, `baseCoin=all`, or
+5. Require each staged object's source URL to match the accepted source
+   binding's configured URI template; matching the HTTPS host alone is not
+   sufficient.
+6. Fail preflight on unbounded selectors such as `ALL_SWAP`, `baseCoin=all`, or
    "full all-symbol" unless the operator explicitly approves that scope.
-6. Use streaming or bounded readers for compressed/archive payloads; never
+7. Use streaming or bounded readers for compressed/archive payloads; never
    decode whole large archives into memory. The current vertical slice now
    enforces TOML-owned `max_object_bytes` before object read/hash work and
    `max_decoded_bytes` during gzip/plain/ZIP CSV decoding.
-7. Isolate failures per object or per declared binding so one bad source object
+8. Isolate failures per object or per declared binding so one bad source object
    cannot abandon later good objects, while still exiting non-zero when any
    object failed.
-8. Delete transient local payload mirrors after S3 upload and hash verification;
+9. Delete transient local payload mirrors after S3 upload and hash verification;
    retain only manifests, source proofs, checkpoints, and small metadata.
-9. Treat raw S3 objects without completed accepted manifests as physical
+10. Treat raw S3 objects without completed accepted manifests as physical
    evidence only, not backtest input.
-10. Convert to NT catalog only after source proof, normalized row contract,
+11. Convert to NT catalog only after source proof, normalized row contract,
     instrument metadata, and gap policy are accepted.
-11. For this BTE branch, do not run a broad historical backfill. The only
+12. For this BTE branch, do not run a broad historical backfill. The only
     admissible next runtime proof is the single accepted BNBUSDC object unless
     a separate source proof and bounded plan are accepted first.
-12. Adding a compatible native-trade CSV source must mean adding source proof
+13. Adding a compatible native-trade CSV source must mean adding source proof
     plus `[converter.raw_payload]` and `[converter.csv]` mapping, including
     `has_headers`, not adding venue branches to operator, runner, result
     contract, catalog projection, or NT execution code.
-13. Accepted source proofs must carry a backfillable evidence state; bounded or
+14. Accepted source proofs must carry a backfillable evidence state; bounded or
     pending evidence may be recorded for research, but not promoted into
     canonical BTE input.
-14. Accepted source proofs must match the configured source-binding registry's
+15. Accepted source proofs must match the configured source-binding registry's
     product family, table family, and evidence state; adding a compatible source
     means updating registry/source-proof/run-spec TOML, not changing operator or
     runner branches.
-15. Accepted source proofs must reference a configured source-binding/venue row;
+16. Accepted source proofs must reference a configured source-binding/venue row;
     unknown binding keys fail at proof acceptance, not only at later object
     selection.
 16. Accepted source proofs must name staged `s3://` raw/schema sample artifacts,

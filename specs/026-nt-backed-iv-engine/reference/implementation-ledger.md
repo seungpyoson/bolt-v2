@@ -146,3 +146,31 @@ NT runtime mapping decisions for US2: subscription plans carry only configured p
 | `cargo test --locked --test bolt_v3_iv_ingest --test bolt_v3_iv_store` | GREEN | 6 tests passed after adding raw preservation, indexed products, audit-only raw reads, and provenance validation. |
 
 Raw-boundary decisions for US3: raw payloads stay in `IvRawEvent` and are reachable only through `raw_access`; strategy-role raw access rejects; strategy-safe products carry provenance references to raw event IDs but do not expose raw payload values.
+
+## Phase 6 User Story 4 NT Helper Derivation
+
+| Task | Evidence | Status |
+|---|---|---|
+| `T067` | `tests/bolt_v3_iv_derive.rs` asserts helper policy selection chooses the configured NT helper symbol. | Complete |
+| `T068` | `tests/bolt_v3_iv_derive.rs` asserts complete inputs derive IV through the NT helper and record helper provenance. | Complete |
+| `T069` | `tests/bolt_v3_iv_derive.rs` asserts every required derived-input field rejects when missing. | Complete |
+| `T070` | `tests/bolt_v3_iv_derive.rs` asserts stale/skewed input timestamps reject before helper invocation. | Complete |
+| `T071` | `tests/bolt_v3_iv_derive.rs` asserts expired operator-configured rate/carry inputs reject before helper invocation. | Complete |
+| `T072` | `tests/bolt_v3_iv_derive.rs` asserts helper output outside configured IV bounds rejects. | Complete |
+| `T073` | RED evidence below records the missing derive module failure. | Complete |
+| `T074` | `src/bolt_v3_iv/derive.rs` implements `IvHelperPolicy` and typed NT helper symbol selection. | Complete |
+| `T075` | `src/bolt_v3_iv/derive.rs` resolves required derived input fields from the typed input set. | Complete |
+| `T076` | `src/bolt_v3_iv/derive.rs` validates missing, non-finite, non-positive, skewed, and expired inputs before helper invocation. | Complete |
+| `T077` | `src/bolt_v3_iv/derive.rs` invokes `nautilus_model::data::imply_vol_and_greeks` from the pinned NT dependency. | Complete |
+| `T078` | `src/bolt_v3_iv/derive.rs` validates helper IV output against configured numeric/convention bounds. | Complete |
+| `T079` | `src/bolt_v3_iv/derive.rs` attaches `IvHelperIdentity` and `IvPolicyDecision::Helper` to derived-output provenance. | Complete |
+| `T080` | GREEN evidence below records the passing focused US4 test target. | Complete |
+
+## Phase 6 RED/GREEN Evidence
+
+| Command | Outcome | Notes |
+|---|---|---|
+| `cargo test --locked --test bolt_v3_iv_derive` | RED | Failed with unresolved import because `bolt_v2::bolt_v3_iv::derive` did not exist. |
+| `cargo test --locked --test bolt_v3_iv_derive` | GREEN | 6 tests passed after adding helper policy selection, complete-input derivation, fail-closed input validation, output-bound validation, and helper provenance. |
+
+Helper NT-source decisions for US4: the wrapper calls `nautilus_model::data::imply_vol_and_greeks`; test fixtures compute the expected price/vol from `nautilus_model::data::black_scholes_greeks`; no strategy-local or non-NT IV helper path was introduced.

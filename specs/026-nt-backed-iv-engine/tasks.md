@@ -143,23 +143,23 @@
 
 ### Tests for User Story 4
 
-- [ ] T067 [P] [US4] Add failing helper-policy selection test in `tests/bolt_v3_iv_derive.rs`
-- [ ] T068 [P] [US4] Add failing complete-input derived-IV test in `tests/bolt_v3_iv_derive.rs`
-- [ ] T069 [P] [US4] Add failing missing-input rejection matrix in `tests/bolt_v3_iv_derive.rs`
-- [ ] T070 [P] [US4] Add failing stale/skewed-input rejection test in `tests/bolt_v3_iv_derive.rs`
-- [ ] T071 [P] [US4] Add failing expired operator rate/carry rejection test in `tests/bolt_v3_iv_derive.rs`
-- [ ] T072 [P] [US4] Add failing helper-output-bound rejection test in `tests/bolt_v3_iv_derive.rs`
-- [ ] T073 [US4] Record US4 RED evidence in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T067 [P] [US4] Add failing helper-policy selection test in `tests/bolt_v3_iv_derive.rs`
+- [X] T068 [P] [US4] Add failing complete-input derived-IV test in `tests/bolt_v3_iv_derive.rs`
+- [X] T069 [P] [US4] Add failing missing-input rejection matrix in `tests/bolt_v3_iv_derive.rs`
+- [X] T070 [P] [US4] Add failing stale/skewed-input rejection test in `tests/bolt_v3_iv_derive.rs`
+- [X] T071 [P] [US4] Add failing expired operator rate/carry rejection test in `tests/bolt_v3_iv_derive.rs`
+- [X] T072 [P] [US4] Add failing helper-output-bound rejection test in `tests/bolt_v3_iv_derive.rs`
+- [X] T073 [US4] Record US4 RED evidence in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
 ### Implementation for User Story 4
 
-- [ ] T074 [P] [US4] Implement `IvHelperPolicy` in `src/bolt_v3_iv/derive.rs`
-- [ ] T075 [P] [US4] Implement `IvDerivedInputPolicy` resolution in `src/bolt_v3_iv/derive.rs`
-- [ ] T076 [P] [US4] Implement `IvDerivedInputSet` validation in `src/bolt_v3_iv/derive.rs`
-- [ ] T077 [US4] Implement NT helper invocation wrapper in `src/bolt_v3_iv/derive.rs`
-- [ ] T078 [US4] Implement helper output validation and typed rejection in `src/bolt_v3_iv/derive.rs`
-- [ ] T079 [US4] Implement helper provenance and `HelperDecision` recording in `src/bolt_v3_iv/provenance.rs`
-- [ ] T080 [US4] Record US4 GREEN evidence and helper NT-source decisions in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T074 [P] [US4] Implement `IvHelperPolicy` in `src/bolt_v3_iv/derive.rs`
+- [X] T075 [P] [US4] Implement `IvDerivedInputPolicy` resolution in `src/bolt_v3_iv/derive.rs`
+- [X] T076 [P] [US4] Implement `IvDerivedInputSet` validation in `src/bolt_v3_iv/derive.rs`
+- [X] T077 [US4] Implement NT helper invocation wrapper in `src/bolt_v3_iv/derive.rs`
+- [X] T078 [US4] Implement helper output validation and typed rejection in `src/bolt_v3_iv/derive.rs`
+- [X] T079 [US4] Implement helper provenance and `HelperDecision` recording in `src/bolt_v3_iv/provenance.rs`
+- [X] T080 [US4] Record US4 GREEN evidence and helper NT-source decisions in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
 **Checkpoint**: Derived IV is NT-backed, policy-selected, provenance-recorded, and fail-closed.
 

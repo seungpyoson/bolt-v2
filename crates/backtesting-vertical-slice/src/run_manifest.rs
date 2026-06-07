@@ -132,6 +132,21 @@ fn option_value<T: Debug>(value: Option<T>) -> String {
     }
 }
 
+fn storage_option_keys_value<'a, I>(value: Option<I>) -> String
+where
+    I: IntoIterator<Item = (&'a String, &'a String)>,
+{
+    let Some(value) = value else {
+        return "None".to_string();
+    };
+    let mut keys = value
+        .into_iter()
+        .map(|(key, _)| key.as_str())
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    format!("keys={keys:?}")
+}
+
 fn resolved_surface(
     surface: &str,
     classification: NtSurfaceClassification,
@@ -876,6 +891,14 @@ impl BacktestingRunManifest {
     pub fn resolved_nt_surfaces(&self) -> Result<Vec<ResolvedNtSurface>, ManifestError> {
         let run_config = self.to_nt_run_config()?;
         let engine = run_config.engine();
+        let venue = run_config
+            .venues()
+            .first()
+            .expect("BacktestingRunManifest always builds one BacktestVenueConfig");
+        let data = run_config
+            .data()
+            .first()
+            .expect("BacktestingRunManifest always builds one BacktestDataConfig");
         let mut surfaces = vec![
             resolved_surface(
                 "engine.config",
@@ -921,6 +944,186 @@ impl BacktestingRunManifest {
                 NtSurfaceClassification::PassThrough,
                 "BacktestRunConfig.end",
                 option_value(run_config.end()),
+            ),
+            resolved_surface(
+                "venue.name",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.name",
+                venue.name().to_string(),
+            ),
+            resolved_surface(
+                "venue.oms_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.oms_type",
+                format!("{:?}", venue.oms_type()),
+            ),
+            resolved_surface(
+                "venue.account_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.account_type",
+                format!("{:?}", venue.account_type()),
+            ),
+            resolved_surface(
+                "venue.book_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.book_type",
+                format!("{:?}", venue.book_type()),
+            ),
+            resolved_surface(
+                "venue.starting_balances",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.starting_balances",
+                format!("{:?}", venue.starting_balances()),
+            ),
+            resolved_surface(
+                "venue.routing",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.routing",
+                venue.routing().to_string(),
+            ),
+            resolved_surface(
+                "venue.frozen_account",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.frozen_account",
+                venue.frozen_account().to_string(),
+            ),
+            resolved_surface(
+                "venue.reject_stop_orders",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.reject_stop_orders",
+                venue.reject_stop_orders().to_string(),
+            ),
+            resolved_surface(
+                "venue.support_gtd_orders",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.support_gtd_orders",
+                venue.support_gtd_orders().to_string(),
+            ),
+            resolved_surface(
+                "venue.support_contingent_orders",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.support_contingent_orders",
+                venue.support_contingent_orders().to_string(),
+            ),
+            resolved_surface(
+                "venue.use_position_ids",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_position_ids",
+                venue.use_position_ids().to_string(),
+            ),
+            resolved_surface(
+                "venue.use_random_ids",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_random_ids",
+                venue.use_random_ids().to_string(),
+            ),
+            resolved_surface(
+                "venue.use_reduce_only",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_reduce_only",
+                venue.use_reduce_only().to_string(),
+            ),
+            resolved_surface(
+                "venue.bar_execution",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.bar_execution",
+                venue.bar_execution().to_string(),
+            ),
+            resolved_surface(
+                "venue.bar_adaptive_high_low_ordering",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.bar_adaptive_high_low_ordering",
+                venue.bar_adaptive_high_low_ordering().to_string(),
+            ),
+            resolved_surface(
+                "venue.trade_execution",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.trade_execution",
+                venue.trade_execution().to_string(),
+            ),
+            resolved_surface(
+                "venue.use_market_order_acks",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_market_order_acks",
+                venue.use_market_order_acks().to_string(),
+            ),
+            resolved_surface(
+                "venue.liquidity_consumption",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.liquidity_consumption",
+                venue.liquidity_consumption().to_string(),
+            ),
+            resolved_surface(
+                "venue.allow_cash_borrowing",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.allow_cash_borrowing",
+                venue.allow_cash_borrowing().to_string(),
+            ),
+            resolved_surface(
+                "venue.queue_position",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.queue_position",
+                venue.queue_position().to_string(),
+            ),
+            resolved_surface(
+                "venue.oto_trigger_mode",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.oto_trigger_mode",
+                format!("{:?}", venue.oto_trigger_mode()),
+            ),
+            resolved_surface(
+                "venue.base_currency",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.base_currency",
+                option_value(venue.base_currency()),
+            ),
+            resolved_surface(
+                "venue.default_leverage",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.default_leverage",
+                venue.default_leverage().to_string(),
+            ),
+            resolved_surface(
+                "venue.price_protection_points",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.price_protection_points",
+                venue.price_protection_points().to_string(),
+            ),
+            resolved_surface(
+                "catalog.data_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.data_type",
+                format!("{:?}", data.data_type()),
+            ),
+            resolved_surface(
+                "catalog.catalog_path",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_path",
+                data.catalog_path(),
+            ),
+            resolved_surface(
+                "catalog.catalog_fs_protocol",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_fs_protocol",
+                option_value(data.catalog_fs_protocol()),
+            ),
+            resolved_surface(
+                "catalog.catalog_fs_storage_options",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_fs_storage_options",
+                storage_option_keys_value(data.catalog_fs_storage_options()),
+            ),
+            resolved_surface(
+                "catalog.catalog_fs_rust_storage_options",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_fs_rust_storage_options",
+                storage_option_keys_value(data.catalog_fs_rust_storage_options()),
+            ),
+            resolved_surface(
+                "catalog.instrument_id",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.instrument_id",
+                option_value(data.instrument_id()),
             ),
         ];
         surfaces.extend(UNSUPPORTED_NT_VENUE_SURFACES.iter().map(|surface| {
@@ -2200,6 +2403,189 @@ mod tests {
                     BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
             },
         );
+    }
+
+    #[test]
+    fn resolved_nt_surfaces_record_supported_manifest_to_nt_mappings() {
+        let manifest = valid_manifest();
+        let surfaces = manifest.resolved_nt_surfaces().expect("resolved surfaces");
+
+        for (surface, classification, nt_field) in [
+            (
+                "run.id",
+                NtSurfaceClassification::PassThrough,
+                "BacktestRunConfig.id",
+            ),
+            (
+                "run.start",
+                NtSurfaceClassification::PassThrough,
+                "BacktestRunConfig.start",
+            ),
+            (
+                "run.end",
+                NtSurfaceClassification::PassThrough,
+                "BacktestRunConfig.end",
+            ),
+            (
+                "venue.name",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.name",
+            ),
+            (
+                "venue.oms_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.oms_type",
+            ),
+            (
+                "venue.account_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.account_type",
+            ),
+            (
+                "venue.book_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.book_type",
+            ),
+            (
+                "venue.starting_balances",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.starting_balances",
+            ),
+            (
+                "venue.routing",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.routing",
+            ),
+            (
+                "venue.frozen_account",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.frozen_account",
+            ),
+            (
+                "venue.reject_stop_orders",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.reject_stop_orders",
+            ),
+            (
+                "venue.support_gtd_orders",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.support_gtd_orders",
+            ),
+            (
+                "venue.support_contingent_orders",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.support_contingent_orders",
+            ),
+            (
+                "venue.use_position_ids",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_position_ids",
+            ),
+            (
+                "venue.use_random_ids",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_random_ids",
+            ),
+            (
+                "venue.use_reduce_only",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_reduce_only",
+            ),
+            (
+                "venue.bar_execution",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.bar_execution",
+            ),
+            (
+                "venue.bar_adaptive_high_low_ordering",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.bar_adaptive_high_low_ordering",
+            ),
+            (
+                "venue.trade_execution",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.trade_execution",
+            ),
+            (
+                "venue.use_market_order_acks",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_market_order_acks",
+            ),
+            (
+                "venue.liquidity_consumption",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.liquidity_consumption",
+            ),
+            (
+                "venue.allow_cash_borrowing",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.allow_cash_borrowing",
+            ),
+            (
+                "venue.queue_position",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.queue_position",
+            ),
+            (
+                "venue.oto_trigger_mode",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.oto_trigger_mode",
+            ),
+            (
+                "venue.base_currency",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.base_currency",
+            ),
+            (
+                "venue.default_leverage",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.default_leverage",
+            ),
+            (
+                "venue.price_protection_points",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.price_protection_points",
+            ),
+            (
+                "catalog.data_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.data_type",
+            ),
+            (
+                "catalog.catalog_path",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_path",
+            ),
+            (
+                "catalog.catalog_fs_protocol",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_fs_protocol",
+            ),
+            (
+                "catalog.catalog_fs_storage_options",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_fs_storage_options",
+            ),
+            (
+                "catalog.catalog_fs_rust_storage_options",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_fs_rust_storage_options",
+            ),
+            (
+                "catalog.instrument_id",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.instrument_id",
+            ),
+        ] {
+            assert!(
+                surfaces.iter().any(|resolved| {
+                    resolved.surface == surface
+                        && resolved.classification == classification
+                        && resolved.nt_field == nt_field
+                }),
+                "missing resolved NT surface {surface}"
+            );
+        }
     }
 
     #[test]

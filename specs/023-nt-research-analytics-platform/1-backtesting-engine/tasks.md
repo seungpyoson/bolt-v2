@@ -41,4 +41,4 @@
 - [ ] BACKTESTING_ENGINE-039 Link/update issue dependencies named in `spec.md` before implementation review.
 - [ ] BACKTESTING_ENGINE-040 Run Rust fmt, clippy/build/test checks required by the future implementation branch.
 - [ ] BACKTESTING_ENGINE-041 Finalize exact manifest TOML schema after every manifest obligation maps to NT config fields, including the deferred currentness rules for NT version, strategy config hash, catalog hash, manifest schema, and execution model.
-- [ ] BACKTESTING_ENGINE-042 Add tests that fail when manifest-to-NT mapping omits a required field.
+- [x] BACKTESTING_ENGINE-042 Add tests that fail when manifest-to-NT mapping omits a required field.

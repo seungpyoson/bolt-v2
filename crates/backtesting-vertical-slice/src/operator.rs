@@ -169,8 +169,15 @@ fn portable_artifact_uris(manifest: &BacktestingRunManifest) -> ResultArtifactUr
     }
 }
 
-fn redact_operator_contract(output: &mut BacktestRunOutput) {
+fn redact_operator_contract(output: &mut BacktestRunOutput, local_catalog_root: &Path) {
     output.contract.nt_result.machine_id = "operator-attested-redacted".to_string();
+    let local_catalog_root = local_catalog_root.to_string_lossy();
+    if !local_catalog_root.is_empty() {
+        let portable_catalog_uri = output.contract.artifact_uris.nt_catalog_uri.clone();
+        for claim_limit in &mut output.contract.claim_limits {
+            *claim_limit = claim_limit.replace(local_catalog_root.as_ref(), &portable_catalog_uri);
+        }
+    }
 }
 
 fn validate_converter_config(converter: &ConverterConfig) -> Result<()> {
@@ -436,7 +443,7 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         nt_result,
         contract,
     };
-    redact_operator_contract(&mut output);
+    redact_operator_contract(&mut output, &inputs.catalog_root);
 
     fs::write(
         &inputs.proof_path,
@@ -637,7 +644,7 @@ pub fn run_from_run_spec(
         created_at: &spec.created_at_utc,
         artifact_uris,
     })?;
-    redact_operator_contract(&mut output);
+    redact_operator_contract(&mut output, &catalog_root);
 
     fs::write(
         &proof_path,
@@ -1278,6 +1285,16 @@ mod tests {
                 "{uri}"
             );
         }
+        for claim_limit in &parsed.claim_limits {
+            assert!(
+                !claim_limit.contains(dir.path().to_string_lossy().as_ref()),
+                "{claim_limit}"
+            );
+        }
+        assert!(parsed.claim_limits.iter().any(|limit| {
+            limit.contains("NT pass_through surface catalog.catalog_path")
+                && limit.contains(&parsed.artifact_uris.nt_catalog_uri)
+        }));
     }
 
     #[test]
@@ -1952,6 +1969,14 @@ mod tests {
         assert!(contract.claim_limits.iter().any(|limit| {
             limit.contains("NT pass_through surface run.id")
                 && limit.contains("backtesting-vertical-slice-bnbusdc-2026-03-01")
+        }));
+        assert!(contract.claim_limits.iter().any(|limit| {
+            limit.contains("NT pass_through surface venue.name")
+                && limit.contains("resolved_value=BYBIT")
+        }));
+        assert!(contract.claim_limits.iter().any(|limit| {
+            limit.contains("NT pass_through surface catalog.catalog_path")
+                && limit.contains("s3://bolt-parquet/nt-research-analytics/backtests/")
         }));
         assert!(
             contract

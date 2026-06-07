@@ -37,7 +37,11 @@ impl MakerInventory {
             (Leg::No, QuoteSide::Buy) => -qty,
             (Leg::No, QuoteSide::Sell) => qty,
         };
-        self.net_position += signed;
+        let next_position = self.net_position + signed;
+        if !next_position.is_finite() {
+            return false;
+        }
+        self.net_position = next_position;
         true
     }
 }
@@ -95,5 +99,15 @@ mod tests {
         assert!(!book.apply_fill(Leg::No, QuoteSide::Buy, f64::NAN));
         assert!(!book.apply_fill(Leg::No, QuoteSide::Buy, f64::INFINITY));
         assert!((book.net_position() - 2.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn inventory_overflow_is_rejected_without_mutating_inventory() {
+        let mut book = MakerInventory::flat();
+
+        assert!(book.apply_fill(Leg::Yes, QuoteSide::Buy, f64::MAX));
+        assert_eq!(book.net_position(), f64::MAX);
+        assert!(!book.apply_fill(Leg::Yes, QuoteSide::Buy, f64::MAX));
+        assert_eq!(book.net_position(), f64::MAX);
     }
 }

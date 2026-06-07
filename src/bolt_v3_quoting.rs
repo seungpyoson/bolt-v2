@@ -102,7 +102,7 @@ pub fn time_widening_factor(tau: f64, reference_tau: f64, cap: f64) -> Option<f6
     Some(raw.max(UNIT_F64).min(cap))
 }
 
-/// Reward-shaping offset placeholder until the reward policy owns this slot.
+/// Neutral reward-shaping offset for this pure quote-layout slice.
 pub fn reward_shaping_offset() -> f64 {
     ZERO_F64
 }

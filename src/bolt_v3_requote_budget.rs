@@ -32,7 +32,7 @@ impl RequoteBudget {
     /// `now_ms`. Returns `true` and records the charge when both the interval
     /// and sliding-window budget allow it.
     pub fn try_acquire(&mut self, now_ms: u64, cost: u64) -> bool {
-        if cost == 0 {
+        if cost == 0 || self.window_ms == 0 {
             return false;
         }
         self.evict(now_ms);
@@ -123,6 +123,11 @@ mod tests {
         assert!(!disabled.try_acquire(1_000, 1));
         assert_eq!(disabled.in_window(), 0);
         assert_eq!(disabled.cost_in_window(), 0);
+
+        let mut zero_window = RequoteBudget::new(10, 0, 0);
+        assert!(!zero_window.try_acquire(1_000, 1));
+        assert_eq!(zero_window.in_window(), 0);
+        assert_eq!(zero_window.cost_in_window(), 0);
 
         let mut budget = RequoteBudget::new(10, ONE_MINUTE_MS, 0);
         assert!(!budget.try_acquire(1_000, 0));

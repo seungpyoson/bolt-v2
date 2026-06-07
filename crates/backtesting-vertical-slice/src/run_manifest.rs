@@ -164,13 +164,58 @@ pub struct ResolvedNtSurface {
     pub resolved_value: String,
 }
 
+/// Currentness dimension whose exact admission rule is intentionally deferred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManifestCurrentnessDimension {
+    NtVersion,
+    StrategyConfigHash,
+    CatalogHash,
+    ManifestSchema,
+    ExecutionModel,
+}
+
+/// Validation status for a manifest currentness dimension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManifestCurrentnessRuleStatus {
+    Deferred,
+}
+
+/// Manifest schema slot for a future non-source-proof currentness rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestCurrentnessRuleSlot {
+    pub dimension: ManifestCurrentnessDimension,
+    pub status: ManifestCurrentnessRuleStatus,
+}
+
 /// Artifact-local backtest run manifest with resolved NT/default surfaces.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BacktestRunManifestArtifact {
     pub manifest_version: String,
     pub submitted_manifest_hash: String,
+    pub currentness_rule_slots: Vec<ManifestCurrentnessRuleSlot>,
     pub manifest: BacktestingRunManifest,
     pub resolved_nt_surfaces: Vec<ResolvedNtSurface>,
+}
+
+fn deferred_currentness_rule_slot(
+    dimension: ManifestCurrentnessDimension,
+) -> ManifestCurrentnessRuleSlot {
+    ManifestCurrentnessRuleSlot {
+        dimension,
+        status: ManifestCurrentnessRuleStatus::Deferred,
+    }
+}
+
+fn manifest_currentness_rule_slots() -> Vec<ManifestCurrentnessRuleSlot> {
+    vec![
+        deferred_currentness_rule_slot(ManifestCurrentnessDimension::NtVersion),
+        deferred_currentness_rule_slot(ManifestCurrentnessDimension::StrategyConfigHash),
+        deferred_currentness_rule_slot(ManifestCurrentnessDimension::CatalogHash),
+        deferred_currentness_rule_slot(ManifestCurrentnessDimension::ManifestSchema),
+        deferred_currentness_rule_slot(ManifestCurrentnessDimension::ExecutionModel),
+    ]
 }
 
 fn option_value<T: Debug>(value: Option<T>) -> String {
@@ -953,6 +998,7 @@ impl BacktestingRunManifest {
         Ok(BacktestRunManifestArtifact {
             manifest_version: BACKTEST_RUN_MANIFEST_ARTIFACT_VERSION.to_string(),
             submitted_manifest_hash: self.manifest_hash(),
+            currentness_rule_slots: manifest_currentness_rule_slots(),
             manifest: self.clone(),
             resolved_nt_surfaces: self.resolved_nt_surfaces()?,
         })
@@ -2491,6 +2537,39 @@ mod tests {
                 manifest.catalog_input.catalog_fs_rust_storage_options =
                     BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
             },
+        );
+    }
+
+    #[test]
+    fn artifact_manifest_records_deferred_currentness_rule_slots() {
+        let artifact = valid_manifest()
+            .to_artifact_manifest()
+            .expect("build artifact manifest");
+
+        assert_eq!(
+            artifact.currentness_rule_slots,
+            vec![
+                ManifestCurrentnessRuleSlot {
+                    dimension: ManifestCurrentnessDimension::NtVersion,
+                    status: ManifestCurrentnessRuleStatus::Deferred,
+                },
+                ManifestCurrentnessRuleSlot {
+                    dimension: ManifestCurrentnessDimension::StrategyConfigHash,
+                    status: ManifestCurrentnessRuleStatus::Deferred,
+                },
+                ManifestCurrentnessRuleSlot {
+                    dimension: ManifestCurrentnessDimension::CatalogHash,
+                    status: ManifestCurrentnessRuleStatus::Deferred,
+                },
+                ManifestCurrentnessRuleSlot {
+                    dimension: ManifestCurrentnessDimension::ManifestSchema,
+                    status: ManifestCurrentnessRuleStatus::Deferred,
+                },
+                ManifestCurrentnessRuleSlot {
+                    dimension: ManifestCurrentnessDimension::ExecutionModel,
+                    status: ManifestCurrentnessRuleStatus::Deferred,
+                },
+            ]
         );
     }
 

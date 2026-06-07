@@ -474,6 +474,25 @@ impl ArtifactIndexSnapshotManifest {
             lifecycle_state: LifecycleState::Active,
         })
     }
+
+    pub fn new_with_computed_hash(
+        artifact_root: &str,
+        artifact_kind: ArtifactKind,
+        snapshot_id: impl Into<String>,
+        mut records: Vec<ArtifactIndexRecord>,
+    ) -> Result<Self, ArtifactIndexError> {
+        let snapshot_id = snapshot_id.into();
+        sort_snapshot_records(&mut records);
+        let snapshot_content_hash =
+            computed_snapshot_content_hash(artifact_root, artifact_kind, &snapshot_id, &records)?;
+        Self::new(
+            artifact_root,
+            artifact_kind,
+            snapshot_id,
+            &snapshot_content_hash,
+            records,
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -923,6 +942,67 @@ fn validate_snapshot_record(
     validate_sha256(&record.content_hash)?;
     validate_lineage(&record.lineage_ids)?;
     Ok(())
+}
+
+pub fn computed_snapshot_content_hash(
+    artifact_root: &str,
+    artifact_kind: ArtifactKind,
+    snapshot_id: &str,
+    records: &[ArtifactIndexRecord],
+) -> Result<String, ArtifactIndexError> {
+    validate_artifact_root(artifact_root)?;
+    validate_non_empty("snapshot_id", snapshot_id)?;
+    if records.is_empty() {
+        return Err(ArtifactIndexError::SnapshotWithoutRecords);
+    }
+    let snapshot_uri = expected_snapshot_uri(artifact_root, artifact_kind, snapshot_id);
+    let mut sorted_records = records.to_vec();
+    sort_snapshot_records(&mut sorted_records);
+    for record in &sorted_records {
+        validate_snapshot_record(record, artifact_kind, snapshot_id, &snapshot_uri)?;
+    }
+    let payload = ArtifactIndexSnapshotHashPayload {
+        schema_version: "artifact-index-snapshot-content-hash.v1",
+        artifact_kind,
+        snapshot_id,
+        snapshot_uri: snapshot_uri.as_str(),
+        lifecycle_state: LifecycleState::Active,
+        records: &sorted_records,
+    };
+    let bytes = serde_json::to_vec(&payload)
+        .map_err(|err| ArtifactIndexError::EventPayloadSerialization(err.to_string()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(hex::encode(hasher.finalize()))
+}
+
+#[derive(Serialize)]
+struct ArtifactIndexSnapshotHashPayload<'a> {
+    schema_version: &'static str,
+    artifact_kind: ArtifactKind,
+    snapshot_id: &'a str,
+    snapshot_uri: &'a str,
+    lifecycle_state: LifecycleState,
+    records: &'a [ArtifactIndexRecord],
+}
+
+fn sort_snapshot_records(records: &mut [ArtifactIndexRecord]) {
+    records.sort_by(|left, right| {
+        (
+            left.artifact_kind.as_str(),
+            left.artifact_subfamily.as_deref().unwrap_or(""),
+            left.artifact_id.as_str(),
+            left.content_hash.as_str(),
+            left.manifest_uri.as_str(),
+        )
+            .cmp(&(
+                right.artifact_kind.as_str(),
+                right.artifact_subfamily.as_deref().unwrap_or(""),
+                right.artifact_id.as_str(),
+                right.content_hash.as_str(),
+                right.manifest_uri.as_str(),
+            ))
+    });
 }
 
 fn expected_latest_pointer_uri(artifact_root: &str, artifact_kind: ArtifactKind) -> String {

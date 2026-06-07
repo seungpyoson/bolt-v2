@@ -183,14 +183,19 @@ mod tests {
     // Re-derived again by #574 follow-up review cleanup after decoupling stale
     // snapshot fair-value rejection from test-only signal candidate processing.
     //
+    // Re-derived again by #520 fresh post-#574 replacement after extracting the
+    // signed trade-flow buffer into `src/bolt_v3_trade_flow.rs` while keeping
+    // the strategy-local config projection in the canonical strategy source set.
     // Re-derived again by #579 after rebasing the retired evidence-gate removal
     // and review cleanup over #574's strategy source-set hardening.
     // Re-derived once more after the exact PR merge-head source-integrity check
     // exposed the stale intermediate digest from conflict resolution.
     // Re-derived again after removing vestigial retired gate arming constructor
     // terminology from submit-admission construction and its call sites.
+    // Re-derived again after merging current main's trade-flow extraction into
+    // the #579 retired-gate removal head.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "d865cc2c9111f5151bf6d6e5ddc14997d5d53257f8ef7af10e02dade9fd82c4d";
+        "e059376f430b66d5c437b816d093c992ed8ef1f007168c983df09737bfac45c4";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

@@ -84,12 +84,17 @@
       ],
       "current_bte_status": "pending",
       "parquet_catalog_status": "prototype_only_not_accepted",
+      "dependency_wiring_status": {
+        "root_bolt_v2_dependency": "Cargo.toml pins nautilus-polymarket at NT revision 6e059dcbb59ac1e582132fc431a581936c216c3c",
+        "backtesting_vertical_slice_dependency": "crates/backtesting-vertical-slice/Cargo.toml does not currently depend on nautilus-polymarket",
+        "decision": "BTE cannot claim machine-checked NT Polymarket parser/provider reuse until the isolated backtesting crate has an approved dependency path or another approved integration boundary."
+      },
       "evidence_refs": [
         "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json",
         "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json",
         "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook-instrument-join.2026-06-08.json"
       ],
-      "decision": "Do not build a custom BinaryOption instrument mapper. Reuse pinned NT Polymarket parser/provider for instruments and token-id lookup, then add a generic PMXT order-book data-family projection and committed ParquetDataCatalog read-back proof."
+      "decision": "Do not build a custom BinaryOption instrument mapper. Reuse pinned NT Polymarket parser/provider for instruments and token-id lookup, then add a generic PMXT order-book data-family projection and committed ParquetDataCatalog read-back proof. Current isolated BTE crate wiring does not yet allow that reuse."
     },
     {
       "source_binding": "kalshi-official-historical-api",

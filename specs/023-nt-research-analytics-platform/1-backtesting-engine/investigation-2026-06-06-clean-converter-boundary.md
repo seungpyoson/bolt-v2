@@ -1431,8 +1431,12 @@ Midpoint table-family coverage audit:
   catalog read-back proof exist. PMXT Polymarket remains a candidate for
   `OrderBookDelta` and `TradeTick`, but the artifact requires BTE to reuse the
   pinned NT Polymarket parser/provider for instruments instead of inventing a
-  custom BinaryOption mapper. Kalshi official history remains lower-fidelity
-  `Bar` or `TradeTick` candidate only; PMXT Kalshi L2 now has a bounded sample
+  custom BinaryOption mapper. Current dependency wiring matters: root `bolt-v2`
+  pins `nautilus-polymarket`, but the isolated
+  `crates/backtesting-vertical-slice` workspace does not depend on it yet, so
+  BTE cannot claim machine-checked reuse until that boundary is approved and
+  proved. Kalshi official history remains lower-fidelity `Bar` or `TradeTick`
+  candidate only; PMXT Kalshi L2 now has a bounded sample
   schema proving `orderbook_snapshot` and `orderbook_delta` rows, but still
   needs source-backed BinaryOption fields, timestamp policy, and NT catalog
   read-back before any mapping claim; HIP-4 remains metadata-only until exact

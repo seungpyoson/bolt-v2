@@ -15,6 +15,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
     bolt_v3_instrument_filters::InstrumentFilterError,
+    bolt_v3_quote_lifecycle::Leg,
+    bolt_v3_quoting::{FamilyQuoteInputs, QuoteTargets},
 };
 use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
 
@@ -25,7 +27,7 @@ use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
 /// prior family-local `UpdownOutcomeSide` and the strategy-local
 /// `OutcomeSide` it replaces (pure type-identity unification).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OutcomeSide {
+pub enum OutcomeSide {
     Up,
     Down,
 }
@@ -81,6 +83,9 @@ pub struct MarketFamilyValidationBinding {
     /// the family's inputs are degenerate (the strategy already treats
     /// `None` as "pricing unavailable").
     pub fair_probability_up: fn(&FairProbabilityInputs) -> Option<f64>,
+    pub(crate) maker_quote_targets: fn(FamilyQuoteInputs) -> Option<QuoteTargets>,
+    pub maker_settlement_payout: fn(OutcomeSide, Leg) -> Option<f64>,
+    pub(crate) maker_binary_fee_curve: fn(f64, f64) -> Option<f64>,
 }
 
 /// Shared pricing contract handed to a family's fair-value model.
@@ -278,6 +283,9 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         market_selection_candidate_windows: updown::market_selection_candidate_windows,
         selected_market_requirement: updown::selected_market_requirement,
         fair_probability_up: updown::fair_probability_up,
+        maker_quote_targets: updown::maker_quote_targets,
+        maker_settlement_payout: updown::maker_settlement_payout,
+        maker_binary_fee_curve: updown::maker_binary_fee_curve,
     },
     MarketFamilyValidationBinding {
         key: hyperliquid_instrument::KEY,
@@ -289,11 +297,26 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
             hyperliquid_instrument::market_selection_candidate_windows,
         selected_market_requirement: hyperliquid_instrument::selected_market_requirement,
         fair_probability_up: hyperliquid_instrument::fair_probability_up,
+        maker_quote_targets: unsupported_maker_quote_targets,
+        maker_settlement_payout: unsupported_maker_settlement_payout,
+        maker_binary_fee_curve: unsupported_maker_binary_fee_curve,
     },
 ];
 
 pub fn validation_bindings() -> &'static [MarketFamilyValidationBinding] {
     VALIDATION_BINDINGS
+}
+
+fn unsupported_maker_quote_targets(_inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
+    None
+}
+
+fn unsupported_maker_settlement_payout(_outcome: OutcomeSide, _leg: Leg) -> Option<f64> {
+    None
+}
+
+fn unsupported_maker_binary_fee_curve(_fee_rate: f64, _price: f64) -> Option<f64> {
+    None
 }
 
 pub fn market_identity_plan_from_config(
@@ -422,6 +445,74 @@ pub fn fair_probability_up_for_family_with_bindings(
         .iter()
         .find(|binding| binding.key == family_key)
         .and_then(|binding| (binding.fair_probability_up)(inputs))
+}
+
+pub fn maker_quote_targets_for_family(
+    family_key: &str,
+    inputs: FamilyQuoteInputs,
+) -> Option<QuoteTargets> {
+    maker_quote_targets_for_family_with_bindings(family_key, inputs, validation_bindings())
+}
+
+pub fn maker_quote_targets_for_family_with_bindings(
+    family_key: &str,
+    inputs: FamilyQuoteInputs,
+    bindings: &[MarketFamilyValidationBinding],
+) -> Option<QuoteTargets> {
+    bindings
+        .iter()
+        .find(|binding| binding.key == family_key)
+        .and_then(|binding| (binding.maker_quote_targets)(inputs))
+}
+
+pub fn maker_settlement_payout_for_family(
+    family_key: &str,
+    outcome: OutcomeSide,
+    leg: Leg,
+) -> Option<f64> {
+    maker_settlement_payout_for_family_with_bindings(
+        family_key,
+        outcome,
+        leg,
+        validation_bindings(),
+    )
+}
+
+pub fn maker_settlement_payout_for_family_with_bindings(
+    family_key: &str,
+    outcome: OutcomeSide,
+    leg: Leg,
+    bindings: &[MarketFamilyValidationBinding],
+) -> Option<f64> {
+    bindings
+        .iter()
+        .find(|binding| binding.key == family_key)
+        .and_then(|binding| (binding.maker_settlement_payout)(outcome, leg))
+}
+
+pub fn maker_binary_fee_curve_for_family(
+    family_key: &str,
+    fee_rate: f64,
+    price: f64,
+) -> Option<f64> {
+    maker_binary_fee_curve_for_family_with_bindings(
+        family_key,
+        fee_rate,
+        price,
+        validation_bindings(),
+    )
+}
+
+pub fn maker_binary_fee_curve_for_family_with_bindings(
+    family_key: &str,
+    fee_rate: f64,
+    price: f64,
+    bindings: &[MarketFamilyValidationBinding],
+) -> Option<f64> {
+    bindings
+        .iter()
+        .find(|binding| binding.key == family_key)
+        .and_then(|binding| (binding.maker_binary_fee_curve)(fee_rate, price))
 }
 
 pub fn market_selection_candidate_windows_from_target(
@@ -726,6 +817,10 @@ pub fn validate_strategy_target_with_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        bolt_v3_quote_lifecycle::Leg,
+        bolt_v3_quoting::{FamilyQuoteInputs, QuoteSide},
+    };
 
     fn fake_validate_target(_context: &str, _target: &toml::Value) -> Vec<String> {
         Vec::new()
@@ -741,6 +836,9 @@ mod tests {
             market_selection_candidate_windows: fake_market_selection_candidate_windows,
             selected_market_requirement: fake_selected_market_requirement,
             fair_probability_up: fake_fair_probability_up,
+            maker_quote_targets: fake_maker_quote_targets,
+            maker_settlement_payout: fake_maker_settlement_payout,
+            maker_binary_fee_curve: fake_maker_binary_fee_curve,
         }];
 
     fn fake_plan_strategy_target(
@@ -858,6 +956,18 @@ mod tests {
 
     fn fake_fair_probability_up(_inputs: &FairProbabilityInputs) -> Option<f64> {
         Some(0.5)
+    }
+
+    fn fake_maker_quote_targets(_inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
+        None
+    }
+
+    fn fake_maker_settlement_payout(_outcome: OutcomeSide, _leg: Leg) -> Option<f64> {
+        None
+    }
+
+    fn fake_maker_binary_fee_curve(_fee_rate: f64, _price: f64) -> Option<f64> {
+        None
     }
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
@@ -1130,6 +1240,58 @@ mod tests {
         .expect("injected family binding should own fair-value dispatch");
 
         assert_eq!(routed, 0.5);
+    }
+
+    fn fixture_quote_inputs() -> FamilyQuoteInputs {
+        FamilyQuoteInputs {
+            fair: 0.60,
+            reservation_bid: 0.58,
+            reservation_ask: 0.62,
+            inventory_skew: 0.0,
+            half_spread_floor: 0.0,
+            max_half_spread: 1.0,
+            eps: 0.000_001,
+            tau: 3_600.0,
+            reference_tau: 3_600.0,
+            time_widen_cap: 10.0,
+        }
+    }
+
+    #[test]
+    fn maker_quote_targets_route_through_canonical_updown_family_binding() {
+        let targets = maker_quote_targets_for_family(updown::KEY, fixture_quote_inputs())
+            .expect("updown binding should produce binary quote targets");
+
+        assert_eq!(targets.leg_a.side, QuoteSide::Buy);
+        assert_eq!(targets.leg_b.side, QuoteSide::Buy);
+        assert!(targets.leg_a.price < 0.60);
+        assert!(targets.leg_b.price < 0.40);
+    }
+
+    #[test]
+    fn maker_settlement_and_fee_curve_route_through_canonical_updown_family_binding() {
+        assert_eq!(
+            maker_settlement_payout_for_family(updown::KEY, OutcomeSide::Up, Leg::Yes),
+            Some(1.0)
+        );
+        assert_eq!(
+            maker_settlement_payout_for_family(updown::KEY, OutcomeSide::Up, Leg::No),
+            Some(0.0)
+        );
+
+        let fee = maker_binary_fee_curve_for_family(updown::KEY, 0.02, 0.5)
+            .expect("updown fee curve should accept an interior probability");
+        assert!((fee - 0.005).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unknown_family_maker_write_side_dispatch_fails_closed() {
+        assert!(maker_quote_targets_for_family("missing_family", fixture_quote_inputs()).is_none());
+        assert!(
+            maker_settlement_payout_for_family("missing_family", OutcomeSide::Up, Leg::Yes)
+                .is_none()
+        );
+        assert!(maker_binary_fee_curve_for_family("missing_family", 0.02, 0.5).is_none());
     }
 
     #[test]

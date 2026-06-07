@@ -64,6 +64,10 @@ use crate::{
         MILLIS_PER_SECOND_U64, POWER_OF_TWO, SECONDS_PER_YEAR_F64, UNIT_F64, ZERO_F64,
         is_positive_finite, sanitize_probability,
     },
+    bolt_v3_quote_lifecycle::Leg,
+    bolt_v3_quoting::{
+        FamilyQuoteInputs, QuoteSide, QuoteTargetLeg, QuoteTargets, compose_binary_legs,
+    },
 };
 
 pub const KEY: &str = "updown";
@@ -81,6 +85,52 @@ const METADATA_MARKET_SLUG_FIELD: &str = "market_slug";
 const METADATA_QUESTION_ID_FIELD: &str = "question_id";
 const METADATA_SOURCE_KIND_FIELD: &str = "source_kind";
 const METADATA_VENUE_FIELD: &str = "venue";
+
+pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
+    let p_up = sanitize_probability(inputs.fair)?;
+    let legs = compose_binary_legs(
+        p_up,
+        inputs.reservation_bid,
+        inputs.reservation_ask,
+        inputs.half_spread_floor,
+        inputs.max_half_spread,
+        inputs.tau,
+        inputs.reference_tau,
+        inputs.time_widen_cap,
+        inputs.inventory_skew,
+        inputs.eps,
+    )?;
+    Some(QuoteTargets {
+        leg_a: QuoteTargetLeg {
+            side: QuoteSide::Buy,
+            price: legs.yes_price,
+        },
+        leg_b: QuoteTargetLeg {
+            side: QuoteSide::Buy,
+            price: legs.no_price,
+        },
+    })
+}
+
+pub fn maker_settlement_payout(outcome: OutcomeSide, leg: Leg) -> Option<f64> {
+    Some(match (outcome, leg) {
+        (OutcomeSide::Up, Leg::Yes) | (OutcomeSide::Down, Leg::No) => UNIT_F64,
+        (OutcomeSide::Up, Leg::No) | (OutcomeSide::Down, Leg::Yes) => ZERO_F64,
+    })
+}
+
+pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {
+    if !fee_rate.is_finite() || fee_rate < ZERO_F64 {
+        return None;
+    }
+    let price = sanitize_probability(price)?;
+    let fee = fee_rate * price * (UNIT_F64 - price);
+    if fee.is_finite() && fee >= ZERO_F64 {
+        Some(fee)
+    } else {
+        None
+    }
+}
 
 /// Updown rotating-cadence target block. Owned by the updown market-
 /// family binding because `cadence_secs`, `underlying_asset`,

@@ -8,6 +8,7 @@
 pub(crate) const ZERO_F64: f64 = 0.0;
 pub(crate) const UNIT_F64: f64 = 1.0;
 pub(crate) const TWO_F64: f64 = 2.0;
+pub(crate) const HALF_F64: f64 = UNIT_F64 / TWO_F64;
 pub(crate) const POWER_OF_TWO: i32 = 2;
 pub(crate) const DAYS_PER_YEAR_F64: f64 = 365.25;
 pub(crate) const HOURS_PER_DAY_F64: f64 = 24.0;
@@ -36,6 +37,20 @@ pub(crate) fn clamp_probability(value: f64) -> f64 {
 
 pub(crate) fn sanitize_probability(value: f64) -> Option<f64> {
     if value.is_finite() && (ZERO_F64..=UNIT_F64).contains(&value) {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn sanitize_open_probability(value: f64, eps: f64) -> Option<f64> {
+    if !value.is_finite() || !eps.is_finite() {
+        return None;
+    }
+    if !(eps > ZERO_F64 && eps < HALF_F64) {
+        return None;
+    }
+    if eps < value && value < UNIT_F64 - eps {
         Some(value)
     } else {
         None
@@ -82,6 +97,29 @@ mod tests {
         assert_eq!(sanitize_probability(1.000_001), None);
         assert_eq!(sanitize_probability(f64::NAN), None);
         assert_eq!(sanitize_probability(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn sanitize_open_probability_accepts_strict_interior_values() {
+        let eps = 0.01;
+
+        assert_eq!(sanitize_open_probability(HALF_F64, eps), Some(HALF_F64));
+        assert_eq!(sanitize_open_probability(0.011, eps), Some(0.011));
+        assert_eq!(sanitize_open_probability(0.989, eps), Some(0.989));
+    }
+
+    #[test]
+    fn sanitize_open_probability_rejects_edges_bad_collar_and_non_finite_inputs() {
+        let eps = 0.01;
+
+        assert_eq!(sanitize_open_probability(eps, eps), None);
+        assert_eq!(sanitize_open_probability(UNIT_F64 - eps, eps), None);
+        assert_eq!(sanitize_open_probability(ZERO_F64, eps), None);
+        assert_eq!(sanitize_open_probability(UNIT_F64, eps), None);
+        assert_eq!(sanitize_open_probability(HALF_F64, ZERO_F64), None);
+        assert_eq!(sanitize_open_probability(HALF_F64, HALF_F64), None);
+        assert_eq!(sanitize_open_probability(f64::NAN, eps), None);
+        assert_eq!(sanitize_open_probability(HALF_F64, f64::INFINITY), None);
     }
 
     #[test]

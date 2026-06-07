@@ -1458,6 +1458,19 @@ impl BinaryOracleEdgeTaker {
 
     fn observe_reference_price_update(&mut self, update: &ReferencePriceUpdate) {
         self.ensure_reference_price_runtime_state();
+        match self.active.interval_start_ms {
+            Some(interval_start_ms)
+                if self
+                    .reference_price_quotes
+                    .values()
+                    .any(|quote| quote.observed_ts_ms() < interval_start_ms) =>
+            {
+                self.reference_price_quotes.clear();
+                self.reference_price_source_health =
+                    reference_price_source_health_from_config(&self.config);
+            }
+            _ => {}
+        }
         let quote = match update.to_reference_quote() {
             Ok(quote) => quote,
             Err(error) => {
@@ -1493,6 +1506,7 @@ impl BinaryOracleEdgeTaker {
         self.reference_price_quotes
             .insert(quote.source_id().to_string(), quote.clone());
 
+        let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
         let (Some(interval_start_ms), Some(interval_end_ms), Some(selector)) = (
             self.active.interval_start_ms,
             self.active.interval_end_ms,
@@ -1505,12 +1519,8 @@ impl BinaryOracleEdgeTaker {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        let Some(selection) = selector.select(
-            interval_start_ms,
-            interval_end_ms,
-            quote.received_ts_ms(),
-            &quotes,
-        ) else {
+        let Some(selection) = selector.select(interval_start_ms, interval_end_ms, now_ms, &quotes)
+        else {
             return;
         };
         if let Some(selected_quote) = self.reference_price_quotes.get(selection.source_id()) {

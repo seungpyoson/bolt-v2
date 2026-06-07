@@ -194,8 +194,12 @@ mod tests {
     // terminology from submit-admission construction and its call sites.
     // Re-derived again after merging current main's trade-flow extraction into
     // the #579 retired-gate removal head.
+    // Re-derived again by #606 after adding reference-price architecture state
+    // and subscription handling to the canonical strategy source set.
+    // Re-derived again by #606 review cleanup after resetting stale reference
+    // quote state on interval transition and using strategy clock time.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "e059376f430b66d5c437b816d093c992ed8ef1f007168c983df09737bfac45c4";
+        "87d051cb5147b8d148d7a5d91655c63ad53ccebccdb8edd799a22aa26384c431";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

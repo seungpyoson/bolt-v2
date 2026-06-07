@@ -8665,8 +8665,8 @@ reason = "Required secure WebSocket URL scheme for Chainlink reference-price con
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink_reference.rs"
 kind = "string"
-literal = '''"://"'''
-context = '''&& value[url.scheme().len()..].starts_with("://") => {}'''
+literal = '''"wss://"'''
+context = '''&& value.starts_with("wss://") => {}'''
 classification = "url_syntax_guard"
 reason = "URL syntax guard ensuring the Chainlink reference-price endpoint is an absolute WebSocket URL."
 

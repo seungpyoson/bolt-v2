@@ -28,6 +28,7 @@ fn custom_reference_price_update_does_not_mutate_price_to_beat() {
     strategy.config.reference_price = Some(reference_price_config());
     strategy.active =
         ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let _cache = register_test_strategy(&mut strategy);
     assert_eq!(strategy.active.price_to_beat, None);
 
     let update = ReferencePriceUpdate::try_new(
@@ -117,6 +118,7 @@ fn non_winning_reference_price_source_updates_health_without_trading_state() {
     strategy.config.reference_price = Some(reference_price);
     strategy.active =
         ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let _cache = register_test_strategy(&mut strategy);
 
     let backup = ReferencePriceUpdate::try_new(
         "BTC",
@@ -181,6 +183,83 @@ fn non_winning_reference_price_source_updates_health_without_trading_state() {
         .expect("winning backup quote should be handled");
 
     assert_eq!(strategy.active.reference_price, Some(66_301.25));
+    assert_eq!(
+        strategy.active.reference_price_source_id.as_deref(),
+        Some("polyresearch_backup")
+    );
+}
+
+#[test]
+fn reference_price_interval_transition_clears_stale_quotes_and_health() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price
+        .sources
+        .get_mut("chainlink_primary")
+        .expect("chainlink source should exist")
+        .required = false;
+    strategy.config.reference_price = Some(reference_price);
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let _cache = register_test_strategy(&mut strategy);
+
+    let first_interval_primary = ReferencePriceUpdate::try_new(
+        "BTC",
+        "chainlink_primary",
+        CHAINLINK_REFERENCE_PROVIDER,
+        66_300.25,
+        None,
+        None,
+        1_100,
+        1_110,
+    )
+    .expect("primary quote should construct")
+    .to_custom_data();
+    DataActor::on_data(&mut strategy, &first_interval_primary)
+        .expect("first interval quote should be handled");
+
+    assert!(
+        strategy
+            .reference_price_quotes
+            .contains_key("chainlink_primary")
+    );
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get("chainlink_primary")
+            .map(|health| health.status()),
+        Some(ReferencePriceSourceStatus::Available)
+    );
+
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-2", 1_200), 0);
+    let second_interval_backup = ReferencePriceUpdate::try_new(
+        "BTC",
+        "polyresearch_backup",
+        POLYRESEARCH_REFERENCE_PROVIDER,
+        66_500.25,
+        None,
+        None,
+        1_200,
+        1_210,
+    )
+    .expect("backup quote should construct")
+    .to_custom_data();
+    DataActor::on_data(&mut strategy, &second_interval_backup)
+        .expect("second interval quote should be handled");
+
+    assert!(
+        !strategy
+            .reference_price_quotes
+            .contains_key("chainlink_primary")
+    );
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get("chainlink_primary")
+            .map(|health| health.status()),
+        Some(ReferencePriceSourceStatus::Silent)
+    );
     assert_eq!(
         strategy.active.reference_price_source_id.as_deref(),
         Some("polyresearch_backup")

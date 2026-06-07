@@ -299,7 +299,7 @@ fn validate_wss_endpoint(field: &str, value: &str, errors: &mut Vec<String>) {
             if value.trim() == value
                 && url.scheme() == "wss"
                 && url.has_host()
-                && value[url.scheme().len()..].starts_with("://") => {}
+                && value.starts_with("wss://") => {}
         _ => errors.push(format!("{field} must be a valid wss URL")),
     }
 }

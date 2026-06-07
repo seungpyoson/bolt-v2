@@ -1919,9 +1919,7 @@ fn validate_reference_price(
         .collect();
     let declared: BTreeSet<&str> = reference_price.sources.keys().map(String::as_str).collect();
 
-    if reference_price.asset.trim().is_empty()
-        || reference_price.asset.trim() != reference_price.asset
-        || reference_price.asset.chars().any(char::is_whitespace)
+    if reference_price.asset.is_empty()
         || !reference_price
             .asset
             .chars()

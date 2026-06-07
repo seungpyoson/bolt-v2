@@ -90,10 +90,12 @@ Every source proof has explicit pass/fail/pending checks:
 - `storage`: raw payload, schema sample, and manifest pointers are under the
   configured `artifact_root`.
 
-Each required check is a structured record with `check_id`, `status`,
-`evidence_ref`, `checked_at`, and `summary`. `status` is `passed`, `pending`,
-`failed`, or `not_applicable`. `not_applicable` is valid only when the source
-proof records the claim limit that makes the check irrelevant.
+Each required check is a structured record with `status`, `evidence_ref`, and
+optional `expires_at_utc`. `status` is `passed`, `pending`, `failed`, or
+`not_applicable`. `not_applicable` is valid only when the source proof records
+the claim limit that makes the check irrelevant. If `expires_at_utc` is present,
+it must be greater than or equal to the proof's exclusive
+`coverage_time_range.end_utc`; otherwise the evidence is expired for that proof.
 
 For `METADATA_ONLY` or `SIGNAL_ONLY` proofs, the `nt_mapping` check passes only
 when `nt_mapping_status = not_applicable` and `claim_limits` forbid

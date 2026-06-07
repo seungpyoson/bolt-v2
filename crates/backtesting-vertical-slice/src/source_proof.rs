@@ -236,6 +236,10 @@ pub struct RequiredCheck {
     /// Pointer to the evidence backing this check (URI, hash, manifest id, or
     /// recorded attestation). Required for an accepted proof.
     pub evidence_ref: String,
+    /// Optional UTC expiry for the evidence backing this check. If present, it
+    /// must remain valid through the proof coverage end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_utc: Option<String>,
 }
 
 impl RequiredCheck {
@@ -244,6 +248,7 @@ impl RequiredCheck {
         Self {
             outcome: CheckOutcome::Passed,
             evidence_ref: evidence_ref.into(),
+            expires_at_utc: None,
         }
     }
 
@@ -252,6 +257,7 @@ impl RequiredCheck {
         Self {
             outcome: CheckOutcome::Pending,
             evidence_ref: evidence_ref.into(),
+            expires_at_utc: None,
         }
     }
 
@@ -301,6 +307,22 @@ impl RequiredChecks {
             &self.completeness,
             &self.nt_mapping,
             &self.storage,
+        ]
+    }
+
+    #[cfg(test)]
+    fn as_mut_slice(&mut self) -> [&mut RequiredCheck; 10] {
+        [
+            &mut self.source_access,
+            &mut self.license,
+            &mut self.schema,
+            &mut self.time_semantics,
+            &mut self.instrument_universe,
+            &mut self.coverage,
+            &mut self.granularity,
+            &mut self.completeness,
+            &mut self.nt_mapping,
+            &mut self.storage,
         ]
     }
 
@@ -471,6 +493,12 @@ pub enum AcceptanceError {
     },
     /// A cross-market signal source lacks point-in-time component proof.
     InvalidCrossMarketJoin { field: &'static str, reason: String },
+    /// Required-check evidence expired before the proof coverage ended.
+    ExpiredRequiredCheck {
+        check: &'static str,
+        expires_at_utc: String,
+        required_through_utc: String,
+    },
     /// A not-applicable required check lacks a matching structured claim limit.
     NotApplicableCheckMissingClaimLimit { check: &'static str },
     /// The proof referenced by the dataset is not accepted.
@@ -546,6 +574,14 @@ impl std::fmt::Display for AcceptanceError {
             Self::InvalidCrossMarketJoin { field, reason } => {
                 write!(f, "{field} {reason}")
             }
+            Self::ExpiredRequiredCheck {
+                check,
+                expires_at_utc,
+                required_through_utc,
+            } => write!(
+                f,
+                "required_checks.{check} evidence expired at {expires_at_utc:?}; required through {required_through_utc:?}"
+            ),
             Self::NotApplicableCheckMissingClaimLimit { check } => write!(
                 f,
                 "required_checks.{check} not_applicable requires matching claim_limits.evidence_ref"
@@ -730,6 +766,7 @@ impl SourceProofReport {
         }
         validate_claim_limits(self)?;
         validate_not_applicable_required_checks(self)?;
+        validate_required_check_expiry(self)?;
         validate_cross_market_components(self)?;
         // When the proof claims to supersede a prior proof, that reference must be
         // a real, distinct id — not blank and not the proof's own id.
@@ -1283,6 +1320,30 @@ fn validate_not_applicable_required_checks(
     Ok(())
 }
 
+fn validate_required_check_expiry(proof: &SourceProofReport) -> Result<(), AcceptanceError> {
+    let coverage_end =
+        coverage_bound_nanos(&proof.coverage_time_range.end_utc, "coverage end_utc")?;
+    for (check, check_name) in proof
+        .required_checks
+        .as_slice()
+        .into_iter()
+        .zip(RequiredChecks::NAMES)
+    {
+        let Some(expires_at_utc) = &check.expires_at_utc else {
+            continue;
+        };
+        let expires_at = coverage_bound_nanos(expires_at_utc, "required_checks.expires_at_utc")?;
+        if expires_at < coverage_end {
+            return Err(AcceptanceError::ExpiredRequiredCheck {
+                check: check_name,
+                expires_at_utc: expires_at_utc.clone(),
+                required_through_utc: proof.coverage_time_range.end_utc.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_cross_market_components(proof: &SourceProofReport) -> Result<(), AcceptanceError> {
     if proof.product_category == KIMCHI_PREMIUM_SIGNAL_FAMILY {
         for required_role in KIMCHI_REQUIRED_CROSS_MARKET_ROLES {
@@ -1664,6 +1725,51 @@ table_families = ["signals"]
     }
 
     #[test]
+    fn automated_acceptance_rejects_failed_required_checks() {
+        for (check_index, check_name) in RequiredChecks::NAMES.iter().enumerate() {
+            let mut proof = candidate_proof();
+            *proof.required_checks.as_mut_slice()[check_index] = RequiredCheck {
+                outcome: CheckOutcome::Failed,
+                evidence_ref: format!("failed://{}", check_name),
+                expires_at_utc: None,
+            };
+
+            let err = proof
+                .accept(
+                    AcceptanceMode::Automated,
+                    "automated-source-proof-gate",
+                    "2026-06-02T00:00:00Z",
+                )
+                .unwrap_err();
+
+            assert_eq!(err, AcceptanceError::UnmetChecks(vec![*check_name]));
+        }
+    }
+
+    #[test]
+    fn automated_acceptance_rejects_expired_required_check() {
+        let mut proof = candidate_proof();
+        proof.required_checks.license.expires_at_utc = Some("2026-03-01T23:59:59Z".to_string());
+
+        let err = proof
+            .accept(
+                AcceptanceMode::Automated,
+                "automated-source-proof-gate",
+                "2026-06-02T00:00:00Z",
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            err,
+            AcceptanceError::ExpiredRequiredCheck {
+                check: "license",
+                expires_at_utc: "2026-03-01T23:59:59Z".to_string(),
+                required_through_utc: "2026-03-02T00:00:00Z".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn kimchi_premium_source_proof_requires_configured_component_roles_without_venue_constants() {
         let registry = kimchi_registry();
         let mut proof = kimchi_signal_proof();
@@ -1735,6 +1841,7 @@ table_families = ["signals"]
         proof.required_checks.instrument_universe = RequiredCheck {
             outcome: CheckOutcome::NotApplicable,
             evidence_ref: evidence_ref.to_string(),
+            expires_at_utc: None,
         };
 
         let err = proof.evaluate_acceptance().unwrap_err();

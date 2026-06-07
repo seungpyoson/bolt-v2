@@ -37,7 +37,10 @@ use crate::{
         should_replace_book_subscriptions,
     },
     bolt_v3_decision_evidence::{
-        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        realized_volatility_aggregation_evidence_label,
+        realized_volatility_block_reason_evidence_label,
     },
     bolt_v3_market_families::{
         self, FairProbabilityInputs, MarketSelectionOutcome, OutcomeSide,
@@ -52,6 +55,10 @@ use crate::{
     bolt_v3_providers::{
         STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
         normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
+    },
+    bolt_v3_realized_volatility::{
+        RealizedVolEngine, RealizedVolObservation, RealizedVolSampleKind, RealizedVolSourceClass,
+        RealizedVolSourceConfig,
     },
     bolt_v3_submit_admission::{
         BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionRequest,
@@ -253,6 +260,14 @@ struct ReferenceSnapshot {
     venues: Vec<EffectiveVenueState>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RealizedVolSourceBinding {
+    source_id: String,
+    data_client_id: String,
+    source_class: RealizedVolSourceClass,
+    sample_kind: RealizedVolSampleKind,
+}
+
 impl OutcomePreparedBooks {
     fn from_market(market: &CandidateMarket) -> Self {
         Self {
@@ -328,21 +343,21 @@ fn visible_book_depth_side_for_order(
     }
 }
 
-/// Project the strategy's volatility-window TOML knobs into the foundational
-/// estimator's runtime config view. The strategy owns deserialization; this is
-/// the single place that maps those fields onto [`RealizedVolConfig`].
-fn realized_vol_config(config: &BinaryOracleEdgeTakerConfig) -> RealizedVolConfig {
-    RealizedVolConfig {
-        window_secs: config.vol_window_secs,
-        gap_reset_secs: config.vol_gap_reset_secs,
-        min_observations: config.vol_min_observations,
-        bridge_valid_secs: config.vol_bridge_valid_secs,
-    }
+/// Project legacy volatility-window TOML knobs into the foundational
+/// estimator's runtime config view when the legacy path is configured.
+fn realized_vol_config(config: &BinaryOracleEdgeTakerConfig) -> Option<RealizedVolConfig> {
+    Some(RealizedVolConfig {
+        window_secs: config.vol_window_secs?,
+        gap_reset_secs: config.vol_gap_reset_secs?,
+        min_observations: config.vol_min_observations?,
+        bridge_valid_secs: config.vol_bridge_valid_secs?,
+    })
 }
 
 fn taker_pricing_config(config: &BinaryOracleEdgeTakerConfig) -> TakerPricingConfig<'_> {
     TakerPricingConfig {
         realized_vol: realized_vol_config(config),
+        realized_volatility_surface_id: config.realized_volatility_surface_id.clone(),
         lead_agreement_min_corr: config.lead_agreement_min_corr,
         lead_jitter_max_ms: config.lead_jitter_max_ms,
         spike_guard_return_threshold: config.spike_guard_return_threshold,
@@ -353,6 +368,66 @@ fn taker_pricing_config(config: &BinaryOracleEdgeTakerConfig) -> TakerPricingCon
         pricing_kurtosis: config.pricing_kurtosis,
         rotating_market_family: config.rotating_market_family.as_str(),
     }
+}
+
+fn realized_volatility_runtime_from_context(
+    config: &BinaryOracleEdgeTakerConfig,
+    context: &StrategyBuildContext,
+) -> (
+    Option<RealizedVolEngine>,
+    BTreeMap<InstrumentId, Vec<RealizedVolSourceBinding>>,
+) {
+    let Some(surface_id) = config.realized_volatility_surface_id.as_deref() else {
+        return (None, BTreeMap::new());
+    };
+    let Some(engine_config) = context.realized_volatility_surface(surface_id).cloned() else {
+        log::error!(
+            "binary_oracle_edge_taker realized-volatility surface config missing from build context: strategy_id={} surface_id={}",
+            config.strategy_id,
+            surface_id,
+        );
+        return (None, BTreeMap::new());
+    };
+    let source_bindings = realized_vol_source_bindings(&engine_config.sources);
+    match RealizedVolEngine::from_config(engine_config) {
+        Ok(engine) => (Some(engine), source_bindings),
+        Err(error) => {
+            log::error!(
+                "binary_oracle_edge_taker realized-volatility engine config rejected: strategy_id={} surface_id={} error={}",
+                config.strategy_id,
+                surface_id,
+                error,
+            );
+            (None, source_bindings)
+        }
+    }
+}
+
+fn realized_vol_source_bindings(
+    sources: &[RealizedVolSourceConfig],
+) -> BTreeMap<InstrumentId, Vec<RealizedVolSourceBinding>> {
+    let mut bindings: BTreeMap<InstrumentId, Vec<RealizedVolSourceBinding>> = BTreeMap::new();
+    for source in sources.iter().filter(|source| source.enabled) {
+        let Ok(instrument_id) = InstrumentId::from_str(source.instrument_id.as_str()) else {
+            continue;
+        };
+        let binding = RealizedVolSourceBinding {
+            source_id: source.source_id.clone(),
+            data_client_id: source.data_client_id.clone(),
+            source_class: source.source_class,
+            sample_kind: source.sample_kind,
+        };
+        match bindings.remove(&instrument_id) {
+            Some(mut instrument_bindings) => {
+                instrument_bindings.push(binding);
+                let _ = bindings.insert(instrument_id, instrument_bindings);
+            }
+            None => {
+                let _ = bindings.insert(instrument_id, vec![binding]);
+            }
+        }
+    }
+    bindings
 }
 
 impl PricingState {
@@ -389,7 +464,8 @@ impl PricingState {
                     .observed_ts_ms
                     .expect("selected lead venue should carry timestamp"),
             };
-            self.realized_vol = self.selected_realized_vol_for_candidate(candidate);
+            let selected_realized_vol = self.selected_realized_vol_for_candidate(candidate);
+            self.realized_vol.set(selected_realized_vol);
             self.realized_vol_source_venue = Some(candidate.venue_name.clone());
             self.fast_spot = Some(fast_spot);
             self.last_lead_gap_probability = Some(candidate.lead_gap_probability);
@@ -420,7 +496,13 @@ impl PricingState {
         min_agreement_corr: f64,
         max_jitter_ms: u64,
     ) {
-        let estimator_template = self.realized_vol.empty_like();
+        let Some(estimator_template) = self
+            .realized_vol
+            .as_ref()
+            .map(RealizedVolEstimator::empty_like)
+        else {
+            return;
+        };
 
         for candidate in candidates {
             if !candidate.is_eligible(min_agreement_corr, max_jitter_ms) {
@@ -818,6 +900,8 @@ pub struct BinaryOracleEdgeTaker {
     exposure: ExposureState,
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
     pricing: PricingState,
+    realized_vol_engine: Option<RealizedVolEngine>,
+    realized_vol_source_bindings: BTreeMap<InstrumentId, Vec<RealizedVolSourceBinding>>,
     selection_missing_since_ms: Option<u64>,
     #[cfg(test)]
     book_subscription_events: Vec<BookSubscriptionEvent>,
@@ -838,6 +922,8 @@ pub struct BinaryOracleEdgeTaker {
 impl BinaryOracleEdgeTaker {
     fn new(config: BinaryOracleEdgeTakerConfig, context: StrategyBuildContext) -> Self {
         let pricing = PricingState::from_config(&taker_pricing_config(&config));
+        let (realized_vol_engine, realized_vol_source_bindings) =
+            realized_volatility_runtime_from_context(&config, &context);
         let oms_type = parse_configured_oms_type(CONFIG_FIELD_OMS_TYPE, &config.oms_type)
             .expect("validated binary_oracle_edge_taker oms_type");
         let market_exit_time_in_force = config.forced_exit_order.time_in_force;
@@ -873,6 +959,8 @@ impl BinaryOracleEdgeTaker {
             exposure: ExposureState::Flat,
             last_reported_exposure_occupancy: Cell::new(None),
             pricing,
+            realized_vol_engine,
+            realized_vol_source_bindings,
             selection_missing_since_ms: None,
             #[cfg(test)]
             book_subscription_events: Vec::new(),
@@ -1036,6 +1124,98 @@ impl BinaryOracleEdgeTaker {
             price: midpoint,
             observed_ts_ms,
         })
+    }
+
+    fn realized_vol_quote_observation(&self, quote: &QuoteTick) -> Option<RealizedVolObservation> {
+        let binding = self.realized_vol_source_binding_for(
+            &quote.instrument_id,
+            RealizedVolSourceClass::SpotQuote,
+            RealizedVolSampleKind::Midpoint,
+        )?;
+        let bid = quote.bid_price.as_f64();
+        let ask = quote.ask_price.as_f64();
+        if !is_positive_finite(bid) || !is_positive_finite(ask) {
+            return None;
+        }
+        let midpoint = (bid + ask) / MIDPOINT_DIVISOR_F64;
+        if !is_positive_finite(midpoint) {
+            return None;
+        }
+        Some(RealizedVolObservation {
+            source_id: binding.source_id.clone(),
+            source_class: binding.source_class,
+            sample_kind: binding.sample_kind,
+            price: midpoint,
+            event_ts_ms: quote.ts_event.as_u64() / NANOS_PER_MILLI_U64,
+            recv_ts_ms: quote.ts_init.as_u64() / NANOS_PER_MILLI_U64,
+        })
+    }
+
+    fn realized_vol_trade_observation(&self, trade: &TradeTick) -> Option<RealizedVolObservation> {
+        let binding = self.realized_vol_source_binding_for(
+            &trade.instrument_id,
+            RealizedVolSourceClass::Trade,
+            RealizedVolSampleKind::Trade,
+        )?;
+        let price = trade.price.as_f64();
+        if !is_positive_finite(price) {
+            return None;
+        }
+        Some(RealizedVolObservation {
+            source_id: binding.source_id.clone(),
+            source_class: binding.source_class,
+            sample_kind: binding.sample_kind,
+            price,
+            event_ts_ms: trade.ts_event.as_u64() / NANOS_PER_MILLI_U64,
+            recv_ts_ms: trade.ts_init.as_u64() / NANOS_PER_MILLI_U64,
+        })
+    }
+
+    fn realized_vol_index_observation(
+        &self,
+        update: &IndexPriceUpdate,
+    ) -> Option<RealizedVolObservation> {
+        let binding = self.realized_vol_source_binding_for(
+            &update.instrument_id,
+            RealizedVolSourceClass::Index,
+            RealizedVolSampleKind::Index,
+        )?;
+        let price = update.value.as_f64();
+        if !is_positive_finite(price) {
+            return None;
+        }
+        Some(RealizedVolObservation {
+            source_id: binding.source_id.clone(),
+            source_class: binding.source_class,
+            sample_kind: binding.sample_kind,
+            price,
+            event_ts_ms: update.ts_event.as_u64() / NANOS_PER_MILLI_U64,
+            recv_ts_ms: update.ts_init.as_u64() / NANOS_PER_MILLI_U64,
+        })
+    }
+
+    fn realized_vol_source_binding_for(
+        &self,
+        instrument_id: &InstrumentId,
+        source_class: RealizedVolSourceClass,
+        sample_kind: RealizedVolSampleKind,
+    ) -> Option<&RealizedVolSourceBinding> {
+        self.realized_vol_source_bindings
+            .get(instrument_id)?
+            .iter()
+            .find(|binding| {
+                binding.source_class == source_class && binding.sample_kind == sample_kind
+            })
+    }
+
+    fn observe_realized_volatility(&mut self, observation: RealizedVolObservation) {
+        let Some(engine) = self.realized_vol_engine.as_mut() else {
+            return;
+        };
+        let as_of_ms = observation.recv_ts_ms;
+        let _ = engine.observe(observation);
+        self.pricing
+            .observe_realized_vol_snapshot(engine.snapshot_at(as_of_ms));
     }
 
     fn refresh_fee_readiness(&mut self) {
@@ -1210,6 +1390,42 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
+    fn subscribe_realized_volatility_sources(&mut self) {
+        let sources = self
+            .realized_vol_source_bindings
+            .iter()
+            .flat_map(|(instrument_id, bindings)| {
+                bindings
+                    .iter()
+                    .map(|binding| (*instrument_id, binding.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (instrument_id, binding) in sources {
+            let client_id = Some(ClientId::from(binding.data_client_id.as_str()));
+            match (binding.source_class, binding.sample_kind) {
+                (RealizedVolSourceClass::SpotQuote, RealizedVolSampleKind::Midpoint) => {
+                    #[cfg(not(test))]
+                    self.subscribe_quotes(instrument_id, client_id, None);
+                    #[cfg(test)]
+                    let _ = (instrument_id, client_id);
+                }
+                (RealizedVolSourceClass::Trade, RealizedVolSampleKind::Trade) => {
+                    #[cfg(not(test))]
+                    self.subscribe_trades(instrument_id, client_id, None);
+                    #[cfg(test)]
+                    let _ = (instrument_id, client_id);
+                }
+                (RealizedVolSourceClass::Index, RealizedVolSampleKind::Index) => {
+                    #[cfg(not(test))]
+                    self.subscribe_index_prices(instrument_id, client_id, None);
+                    #[cfg(test)]
+                    let _ = (instrument_id, client_id);
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn unsubscribe_reference_quotes(&mut self) {
         if let Some(instrument_id) = self.reference_instrument_id() {
             #[cfg(not(test))]
@@ -1225,6 +1441,42 @@ impl BinaryOracleEdgeTaker {
             self.unsubscribe_quotes(instrument_id, None, None);
             #[cfg(test)]
             let _ = instrument_id;
+        }
+    }
+
+    fn unsubscribe_realized_volatility_sources(&mut self) {
+        let sources = self
+            .realized_vol_source_bindings
+            .iter()
+            .flat_map(|(instrument_id, bindings)| {
+                bindings
+                    .iter()
+                    .map(|binding| (*instrument_id, binding.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (instrument_id, binding) in sources {
+            let client_id = Some(ClientId::from(binding.data_client_id.as_str()));
+            match (binding.source_class, binding.sample_kind) {
+                (RealizedVolSourceClass::SpotQuote, RealizedVolSampleKind::Midpoint) => {
+                    #[cfg(not(test))]
+                    self.unsubscribe_quotes(instrument_id, client_id, None);
+                    #[cfg(test)]
+                    let _ = (instrument_id, client_id);
+                }
+                (RealizedVolSourceClass::Trade, RealizedVolSampleKind::Trade) => {
+                    #[cfg(not(test))]
+                    self.unsubscribe_trades(instrument_id, client_id, None);
+                    #[cfg(test)]
+                    let _ = (instrument_id, client_id);
+                }
+                (RealizedVolSourceClass::Index, RealizedVolSampleKind::Index) => {
+                    #[cfg(not(test))]
+                    self.unsubscribe_index_prices(instrument_id, client_id, None);
+                    #[cfg(test)]
+                    let _ = (instrument_id, client_id);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -3409,6 +3661,66 @@ impl BinaryOracleEdgeTaker {
         })?;
         let market_selection_outcome =
             strategy_input_market_selection_outcome(self.active.market_selection_outcome);
+        let realized_volatility_snapshot = self
+            .pricing
+            .latest_realized_vol_snapshot
+            .as_ref()
+            .filter(|snapshot| {
+                self.config
+                    .realized_volatility_surface_id
+                    .as_deref()
+                    .is_some_and(|surface_id| surface_id == snapshot.surface_id.as_str())
+            });
+        let (
+            realized_volatility_surface_id,
+            realized_volatility_as_of_ms,
+            realized_volatility_annualized_decimal,
+            realized_volatility_seconds_per_annum,
+            realized_volatility_aggregation,
+            realized_volatility_sources_used,
+            realized_volatility_source_diagnostics,
+            realized_volatility_blockers,
+            realized_volatility_config_fingerprint,
+        ) = match realized_volatility_snapshot {
+            Some(snapshot) => (
+                snapshot.surface_id.clone(),
+                Some(snapshot.as_of_ms),
+                snapshot
+                    .annualized_realized_vol_decimal
+                    .map(evidence_number)
+                    .unwrap_or_else(|| evidence_number(realized_volatility)),
+                evidence_number(snapshot.seconds_per_annum),
+                realized_volatility_aggregation_evidence_label(snapshot.aggregate_method)
+                    .to_string(),
+                snapshot.sources_used.clone(),
+                snapshot
+                    .source_diagnostics
+                    .iter()
+                    .map(
+                        BoltV3RealizedVolatilitySourceDiagnosticEvidence::from_realized_vol_diagnostic,
+                    )
+                    .collect(),
+                snapshot
+                    .blocked_reasons
+                    .iter()
+                    .map(|reason| {
+                        realized_volatility_block_reason_evidence_label(*reason).to_string()
+                    })
+                    .collect(),
+                snapshot.config_fingerprint.clone(),
+            ),
+            None => (
+                String::new(),
+                None,
+                evidence_number(realized_volatility),
+                String::new(),
+                String::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                String::new(),
+            ),
+        };
         let instrument_id = decision.instrument_id.ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires submission instrument id")
         })?;
@@ -3458,6 +3770,15 @@ impl BinaryOracleEdgeTaker {
             spot_price: evidence_number(spot_price),
             reference_fair_value: self.pricing.last_reference_fair_value.map(evidence_number),
             realized_volatility: evidence_number(realized_volatility),
+            realized_volatility_surface_id,
+            realized_volatility_as_of_ms,
+            realized_volatility_annualized_decimal,
+            realized_volatility_seconds_per_annum,
+            realized_volatility_aggregation,
+            realized_volatility_sources_used,
+            realized_volatility_source_diagnostics,
+            realized_volatility_blockers,
+            realized_volatility_config_fingerprint,
             seconds_to_market_end,
             pricing_kurtosis: evidence_number(self.config.pricing_kurtosis),
             theta_decay_factor: evidence_number(self.config.theta_decay_factor),
@@ -4117,10 +4438,12 @@ impl DataActor for BinaryOracleEdgeTaker {
         self.register_selection_retry_timer();
         self.subscribe_reference_quotes();
         self.subscribe_signal_quotes();
+        self.subscribe_realized_volatility_sources();
         Ok(())
     }
 
     fn on_stop(&mut self) -> Result<()> {
+        self.unsubscribe_realized_volatility_sources();
         self.unsubscribe_signal_quotes();
         self.unsubscribe_reference_quotes();
         self.deregister_selection_retry_timer();
@@ -4149,6 +4472,9 @@ impl DataActor for BinaryOracleEdgeTaker {
         {
             self.observe_signal_quote(&signal_quote);
         }
+        if let Some(observation) = self.realized_vol_quote_observation(quote) {
+            self.observe_realized_volatility(observation);
+        }
         Ok(())
     }
 
@@ -4162,6 +4488,9 @@ impl DataActor for BinaryOracleEdgeTaker {
             self.active
                 .observe_resolution_strike(update.value.as_f64(), window_open_ms, now_ms);
             self.sync_exposure_context_from_active();
+        }
+        if let Some(observation) = self.realized_vol_index_observation(update) {
+            self.observe_realized_volatility(observation);
         }
         Ok(())
     }
@@ -4225,6 +4554,9 @@ impl DataActor for BinaryOracleEdgeTaker {
     }
 
     fn on_trade(&mut self, trade: &TradeTick) -> anyhow::Result<()> {
+        if let Some(observation) = self.realized_vol_trade_observation(trade) {
+            self.observe_realized_volatility(observation);
+        }
         if let Some(trade_flow) = self.active.trade_flow.get_mut(&trade.instrument_id) {
             trade_flow.observe(trade);
         }

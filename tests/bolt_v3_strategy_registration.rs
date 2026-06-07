@@ -3,7 +3,12 @@ mod support;
 use anyhow::Result;
 use bolt_v2::{
     bolt_v3_archetypes::binary_oracle_edge_taker,
-    bolt_v3_config::{DECISION_REFERENCE_GATE_ROLE, ReferenceDataBlock, load_bolt_v3_config},
+    bolt_v3_config::{
+        BoltV3RootConfig, DECISION_REFERENCE_GATE_ROLE, RealizedVolatilityAggregationBlock,
+        RealizedVolatilityPolicyBlock, RealizedVolatilitySampleKindBlock,
+        RealizedVolatilitySourceBlock, RealizedVolatilitySourceClassBlock,
+        RealizedVolatilitySurfaceBlock, ReferenceDataBlock, load_bolt_v3_config,
+    },
     bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     bolt_v3_submit_admission::{
@@ -22,7 +27,7 @@ use nautilus_model::{
     identifiers::{ClientId, InstrumentId, StrategyId},
 };
 use rust_decimal::Decimal;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 struct NoopFeeProvider;
 
@@ -34,6 +39,186 @@ impl FeeProvider for NoopFeeProvider {
     fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
         async { Ok(()) }.boxed()
     }
+}
+
+fn valid_realized_volatility_surface() -> RealizedVolatilitySurfaceBlock {
+    RealizedVolatilitySurfaceBlock {
+        canonical_base_asset: "<BASE_ASSET>".to_string(),
+        canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
+        policy: RealizedVolatilityPolicyBlock {
+            window_ms: 4_000,
+            sampling_interval_ms: 1_000,
+            min_ready_sources: 1,
+            max_source_age_ms: 500,
+            max_event_receive_lag_ms: 250,
+            max_inter_sample_gap_ms: 2_000,
+            min_coverage_ratio: 0.75,
+            max_cross_source_dispersion: 0.50,
+            seconds_per_annum: 31_536_000.0,
+            aggregation: RealizedVolatilityAggregationBlock::UpperQuantile,
+            upper_quantile: 1.0,
+        },
+        sources: vec![RealizedVolatilitySourceBlock {
+            source_id: "<SOURCE_ID_A>".to_string(),
+            data_client_id: ClientId::from("polymarket_main"),
+            instrument_id: InstrumentId::from("<INSTRUMENT_ID_A>.<DATA_CLIENT_ID>"),
+            source_class: RealizedVolatilitySourceClassBlock::SpotQuote,
+            sample_kind: RealizedVolatilitySampleKindBlock::Midpoint,
+            enabled: true,
+            counts_toward_quorum: true,
+            canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
+        }],
+    }
+}
+
+fn insert_realized_volatility_surface(
+    root: &mut BoltV3RootConfig,
+    surface: RealizedVolatilitySurfaceBlock,
+) {
+    let _ = root
+        .realized_volatility_surfaces
+        .get_or_insert_with(BTreeMap::new)
+        .insert("<surface_id>".to_string(), surface);
+}
+
+fn realized_volatility_validation_errors(
+    mutate: impl FnOnce(&mut bolt_v2::bolt_v3_config::LoadedBoltV3Config),
+) -> Vec<String> {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    mutate(&mut loaded);
+    let mut errors = bolt_v2::bolt_v3_validate::validate_root_only(&loaded.root);
+    errors.extend(bolt_v2::bolt_v3_validate::validate_strategies(
+        &loaded.root,
+        &loaded.strategies,
+    ));
+    errors
+}
+
+fn assert_realized_volatility_validation_error(
+    mutate: impl FnOnce(&mut bolt_v2::bolt_v3_config::LoadedBoltV3Config),
+    expected: &str,
+) {
+    let errors = realized_volatility_validation_errors(mutate);
+    assert!(
+        errors
+            .iter()
+            .any(|message| message.contains("realized_volatility_surfaces")
+                && message.contains(expected)),
+        "expected realized_volatility_surfaces validation error containing `{expected}`, got: {errors:?}"
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_duplicate_source_id() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources.push(surface.sources[0].clone());
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "duplicate source_id",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_unknown_data_client_id() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources[0].data_client_id = ClientId::from("<UNKNOWN_DATA_CLIENT_ID>");
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "data_client_id",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_empty_source_list() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources.clear();
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "sources",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_quorum_larger_than_enabled_sources() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.policy.min_ready_sources = 2;
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "min_ready_sources",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_strategy_missing_surface_reference() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            loaded.strategies[0].config.realized_volatility_surface_id =
+                Some("<missing_surface_id>".to_string());
+        },
+        "realized_volatility_surface_id",
+    );
+}
+
+#[test]
+fn runtime_mapping_emits_only_realized_volatility_surface_id_for_surfaced_mode() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    insert_realized_volatility_surface(&mut loaded.root, valid_realized_volatility_surface());
+    loaded.strategies[0].config.realized_volatility_surface_id = Some("<surface_id>".to_string());
+
+    let strategy = loaded.strategies.first().expect("fixture strategy");
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+        .expect("surface id should map into runtime config");
+    let table = raw.as_table().expect("runtime config should be a table");
+
+    assert_eq!(
+        table
+            .get("realized_volatility_surface_id")
+            .and_then(toml::Value::as_str),
+        Some("<surface_id>")
+    );
+    assert!(!table.contains_key("vol_window_secs"));
+    assert!(!table.contains_key("vol_gap_reset_secs"));
+    assert!(!table.contains_key("vol_min_observations"));
+    assert!(!table.contains_key("vol_bridge_valid_secs"));
+    assert!(!table.contains_key("signal_venue"));
+    assert!(!table.contains_key("signal_instrument_id"));
+}
+
+#[test]
+fn surfaced_runtime_config_builds_without_legacy_realized_volatility_fields() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    insert_realized_volatility_surface(&mut loaded.root, valid_realized_volatility_surface());
+    loaded.strategies[0].config.realized_volatility_surface_id = Some("<surface_id>".to_string());
+
+    let raw = binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[0], &loaded)
+        .expect("surface id should map into runtime config");
+    let mut errors: Vec<ValidationError> = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+    assert!(
+        errors.is_empty(),
+        "surfaced runtime config should validate without legacy RV fields: {errors:?}"
+    );
+
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let context = StrategyBuildContext::new(
+        Arc::new(NoopFeeProvider),
+        writer.clone(),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        support::fixture_execution_venue(),
+    );
+    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
+        .expect("surfaced runtime config should build without legacy RV fields");
 }
 
 #[test]

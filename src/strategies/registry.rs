@@ -14,6 +14,7 @@ use toml::Value;
 
 use crate::{
     bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    bolt_v3_realized_volatility::RealizedVolEngineConfig,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 
@@ -57,6 +58,7 @@ pub struct StrategyBuildContext {
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     execution_venue: Venue,
+    realized_volatility_surfaces: Arc<BTreeMap<String, RealizedVolEngineConfig>>,
 }
 
 impl StrategyBuildContext {
@@ -77,7 +79,16 @@ impl StrategyBuildContext {
             decision_evidence,
             submit_admission,
             execution_venue,
+            realized_volatility_surfaces: Arc::new(BTreeMap::new()),
         }
+    }
+
+    pub fn with_realized_volatility_surfaces(
+        mut self,
+        surfaces: BTreeMap<String, RealizedVolEngineConfig>,
+    ) -> Self {
+        self.realized_volatility_surfaces = Arc::new(surfaces);
+        self
     }
 
     pub fn fee_provider(&self) -> &dyn FeeProvider {
@@ -104,6 +115,13 @@ impl StrategyBuildContext {
     /// real order can only ever fire against an instrument on the venue it routes to.
     pub fn execution_venue(&self) -> Venue {
         self.execution_venue
+    }
+
+    pub fn realized_volatility_surface(
+        &self,
+        surface_id: &str,
+    ) -> Option<&RealizedVolEngineConfig> {
+        self.realized_volatility_surfaces.get(surface_id)
     }
 }
 

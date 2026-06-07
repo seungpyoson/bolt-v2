@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_config::LoadedBoltV3Config;
 use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
+use crate::bolt_v3_realized_volatility::{
+    RealizedVolAggregation, RealizedVolBlockReason, RealizedVolSampleKind, RealizedVolSourceClass,
+    RealizedVolSourceDiagnostic, RealizedVolSourceRejectReason, RealizedVolSourceStatus,
+};
 
 pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 6;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -151,6 +155,141 @@ impl BoltV3OrderIntentOrderFields {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3RealizedVolatilitySourceDiagnosticEvidence {
+    pub source_id: String,
+    pub source_class: String,
+    pub sample_kind: String,
+    pub status: String,
+    pub annualized_realized_volatility_decimal: Option<String>,
+    pub first_sample_ts_ms: Option<u64>,
+    pub last_sample_ts_ms: Option<u64>,
+    pub raw_sample_count: usize,
+    pub grid_sample_count: usize,
+    pub coverage_ratio: String,
+    pub max_inter_sample_gap_ms: Option<u64>,
+    pub last_rejected_reason: Option<String>,
+    pub rejection_counters: BTreeMap<String, u64>,
+    pub block_reason: Option<String>,
+}
+
+impl BoltV3RealizedVolatilitySourceDiagnosticEvidence {
+    pub fn from_realized_vol_diagnostic(diagnostic: &RealizedVolSourceDiagnostic) -> Self {
+        Self {
+            source_id: diagnostic.source_id.clone(),
+            source_class: realized_volatility_source_class_evidence_label(diagnostic.source_class)
+                .to_string(),
+            sample_kind: realized_volatility_sample_kind_evidence_label(diagnostic.sample_kind)
+                .to_string(),
+            status: realized_volatility_source_status_evidence_label(diagnostic.status).to_string(),
+            annualized_realized_volatility_decimal: diagnostic
+                .annualized_realized_vol_decimal
+                .map(number_evidence),
+            first_sample_ts_ms: diagnostic.first_sample_ts_ms,
+            last_sample_ts_ms: diagnostic.last_sample_ts_ms,
+            raw_sample_count: diagnostic.raw_sample_count,
+            grid_sample_count: diagnostic.grid_sample_count,
+            coverage_ratio: number_evidence(diagnostic.coverage_ratio),
+            max_inter_sample_gap_ms: diagnostic.max_inter_sample_gap_ms,
+            last_rejected_reason: diagnostic
+                .last_rejected_reason
+                .map(realized_volatility_reject_reason_evidence_label)
+                .map(str::to_string),
+            rejection_counters: diagnostic
+                .rejection_counters
+                .iter()
+                .map(|(reason, count)| {
+                    (
+                        realized_volatility_reject_reason_evidence_label(*reason).to_string(),
+                        *count,
+                    )
+                })
+                .collect(),
+            block_reason: diagnostic
+                .block_reason
+                .map(realized_volatility_block_reason_evidence_label)
+                .map(str::to_string),
+        }
+    }
+}
+
+pub fn realized_volatility_aggregation_evidence_label(
+    aggregation: RealizedVolAggregation,
+) -> &'static str {
+    match aggregation {
+        RealizedVolAggregation::UpperQuantile { .. } => "upper_quantile",
+    }
+}
+
+pub fn realized_volatility_block_reason_evidence_label(
+    reason: RealizedVolBlockReason,
+) -> &'static str {
+    match reason {
+        RealizedVolBlockReason::InvalidConfig => "invalid_config",
+        RealizedVolBlockReason::QuorumNotReady => "quorum_not_ready",
+        RealizedVolBlockReason::SourceStale => "source_stale",
+        RealizedVolBlockReason::CoverageBelowMinimum => "coverage_below_minimum",
+        RealizedVolBlockReason::InterSampleGapExceeded => "inter_sample_gap_exceeded",
+        RealizedVolBlockReason::SourceClassMismatch => "source_class_mismatch",
+        RealizedVolBlockReason::SampleKindMismatch => "sample_kind_mismatch",
+        RealizedVolBlockReason::CrossSourceDispersion => "cross_source_dispersion",
+        RealizedVolBlockReason::AnnualizationBasisInvalid => "annualization_basis_invalid",
+        RealizedVolBlockReason::NotWarm => "not_warm",
+    }
+}
+
+fn realized_volatility_source_class_evidence_label(
+    source_class: RealizedVolSourceClass,
+) -> &'static str {
+    match source_class {
+        RealizedVolSourceClass::SpotQuote => "spot_quote",
+        RealizedVolSourceClass::Trade => "trade",
+        RealizedVolSourceClass::Mark => "mark",
+        RealizedVolSourceClass::Index => "index",
+    }
+}
+
+fn realized_volatility_sample_kind_evidence_label(
+    sample_kind: RealizedVolSampleKind,
+) -> &'static str {
+    match sample_kind {
+        RealizedVolSampleKind::Midpoint => "midpoint",
+        RealizedVolSampleKind::Trade => "trade",
+        RealizedVolSampleKind::Mark => "mark",
+        RealizedVolSampleKind::Index => "index",
+    }
+}
+
+fn realized_volatility_source_status_evidence_label(
+    status: RealizedVolSourceStatus,
+) -> &'static str {
+    match status {
+        RealizedVolSourceStatus::Ready => "ready",
+        RealizedVolSourceStatus::Waiting => "waiting",
+        RealizedVolSourceStatus::Rejected => "rejected",
+    }
+}
+
+fn realized_volatility_reject_reason_evidence_label(
+    reason: RealizedVolSourceRejectReason,
+) -> &'static str {
+    match reason {
+        RealizedVolSourceRejectReason::DisabledSource => "disabled_source",
+        RealizedVolSourceRejectReason::InvalidPrice => "invalid_price",
+        RealizedVolSourceRejectReason::SourceClassMismatch => "source_class_mismatch",
+        RealizedVolSourceRejectReason::SampleKindMismatch => "sample_kind_mismatch",
+        RealizedVolSourceRejectReason::EventTimeRegression => "event_time_regression",
+        RealizedVolSourceRejectReason::DuplicateTimestamp => "duplicate_timestamp",
+        RealizedVolSourceRejectReason::StaleSameEventUpdate => "stale_same_event_update",
+        RealizedVolSourceRejectReason::ReceiveBeforeEvent => "receive_before_event",
+        RealizedVolSourceRejectReason::EventReceiveLagExceeded => "event_receive_lag_exceeded",
+    }
+}
+
+fn number_evidence(value: f64) -> String {
+    value.to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub strategy_id: String,
     pub configured_target_id: String,
@@ -172,6 +311,16 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub spot_price: String,
     pub reference_fair_value: Option<String>,
     pub realized_volatility: String,
+    pub realized_volatility_surface_id: String,
+    pub realized_volatility_as_of_ms: Option<u64>,
+    pub realized_volatility_annualized_decimal: String,
+    pub realized_volatility_seconds_per_annum: String,
+    pub realized_volatility_aggregation: String,
+    pub realized_volatility_sources_used: Vec<String>,
+    pub realized_volatility_source_diagnostics:
+        Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
+    pub realized_volatility_blockers: Vec<String>,
+    pub realized_volatility_config_fingerprint: String,
     pub seconds_to_market_end: u64,
     pub pricing_kurtosis: String,
     pub theta_decay_factor: String,
@@ -942,6 +1091,15 @@ mod tests {
             spot_price: "3100.5".to_string(),
             reference_fair_value: Some("3100.5".to_string()),
             realized_volatility: "1.5".to_string(),
+            realized_volatility_surface_id: String::new(),
+            realized_volatility_as_of_ms: None,
+            realized_volatility_annualized_decimal: "1.5".to_string(),
+            realized_volatility_seconds_per_annum: String::new(),
+            realized_volatility_aggregation: String::new(),
+            realized_volatility_sources_used: Vec::new(),
+            realized_volatility_source_diagnostics: Vec::new(),
+            realized_volatility_blockers: Vec::new(),
+            realized_volatility_config_fingerprint: String::new(),
             seconds_to_market_end: 300,
             pricing_kurtosis: "0".to_string(),
             theta_decay_factor: "0".to_string(),

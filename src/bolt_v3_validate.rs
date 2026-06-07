@@ -54,6 +54,7 @@ use crate::bolt_v3_config::{
     SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
+use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 
 #[derive(Debug)]
 pub struct BoltV3ValidationError {
@@ -169,10 +170,124 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_clients_block(&root.clients));
+    errors.extend(validate_realized_volatility_surfaces(root));
     if let Some(gate_providers) = &root.gate_providers {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));
     }
     errors.extend(crate::bolt_v3_providers::validate_resolution_oracle_client_consistency(root));
+
+    errors
+}
+
+fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let Some(realized_volatility_surfaces) = root.realized_volatility_surfaces.as_ref() else {
+        return errors;
+    };
+
+    for (surface_id, surface) in realized_volatility_surfaces {
+        let context = format!("realized_volatility_surfaces.{surface_id}");
+        if surface_id.trim().is_empty() {
+            errors.push("realized_volatility_surfaces contains an empty surface id".to_string());
+        }
+        if surface.canonical_base_asset.trim().is_empty() {
+            errors.push(format!("{context}.canonical_base_asset must be non-empty"));
+        }
+        if surface.canonical_quote_asset.trim().is_empty() {
+            errors.push(format!("{context}.canonical_quote_asset must be non-empty"));
+        }
+        if surface.sources.is_empty() {
+            errors.push(format!(
+                "{context}.sources must contain at least one source"
+            ));
+        }
+
+        let policy = &surface.policy;
+        for (field, value) in [
+            ("window_ms", policy.window_ms),
+            ("sampling_interval_ms", policy.sampling_interval_ms),
+            ("min_ready_sources", policy.min_ready_sources as u64),
+            ("max_source_age_ms", policy.max_source_age_ms),
+            ("max_event_receive_lag_ms", policy.max_event_receive_lag_ms),
+            ("max_inter_sample_gap_ms", policy.max_inter_sample_gap_ms),
+        ] {
+            if value == 0 {
+                errors.push(format!(
+                    "{context}.policy.{field} must be a positive integer"
+                ));
+            }
+        }
+        if !is_positive_finite(policy.min_coverage_ratio) || policy.min_coverage_ratio > UNIT_F64 {
+            errors.push(format!(
+                "{context}.policy.min_coverage_ratio must be finite and in (0, 1]"
+            ));
+        }
+        if !policy.max_cross_source_dispersion.is_finite()
+            || policy.max_cross_source_dispersion < ZERO_F64
+        {
+            errors.push(format!(
+                "{context}.policy.max_cross_source_dispersion must be finite and non-negative"
+            ));
+        }
+        if !is_positive_finite(policy.seconds_per_annum) {
+            errors.push(format!(
+                "{context}.policy.seconds_per_annum must be positive finite"
+            ));
+        }
+        if !policy.upper_quantile.is_finite()
+            || !(HALF_F64..=UNIT_F64).contains(&policy.upper_quantile)
+        {
+            errors.push(format!(
+                "{context}.policy.upper_quantile must be finite and in [0.5, 1.0]"
+            ));
+        }
+
+        let mut seen_source_ids = BTreeSet::new();
+        let mut enabled_quorum_sources = 0usize;
+        for (index, source) in surface.sources.iter().enumerate() {
+            let source_context = format!("{context}.sources[{index}]");
+            if source.source_id.trim().is_empty() {
+                errors.push(format!("{source_context}.source_id must be non-empty"));
+            } else if !seen_source_ids.insert(source.source_id.as_str()) {
+                errors.push(format!(
+                    "{source_context}.source_id duplicate source_id `{}`",
+                    source.source_id
+                ));
+            }
+
+            match root.clients.get(source.data_client_id.as_str()) {
+                None => errors.push(format!(
+                    "{source_context}.data_client_id `{}` does not match any [clients.<id>] block",
+                    source.data_client_id
+                )),
+                Some(client) => {
+                    if client.data.is_none() {
+                        errors.push(format!(
+                            "{source_context}.data_client_id `{}` must reference a data-capable client (the referenced client has no [data] block)",
+                            source.data_client_id
+                        ));
+                    }
+                }
+            }
+
+            if source.canonical_quote_asset != surface.canonical_quote_asset {
+                errors.push(format!(
+                    "{source_context}.canonical_quote_asset `{}` must match {context}.canonical_quote_asset `{}`",
+                    source.canonical_quote_asset, surface.canonical_quote_asset
+                ));
+            }
+            if source.enabled && source.counts_toward_quorum {
+                enabled_quorum_sources += 1;
+            }
+        }
+
+        if policy.min_ready_sources > enabled_quorum_sources {
+            errors.push(format!(
+                "{context}.policy.min_ready_sources {} exceeds enabled quorum source count {}",
+                policy.min_ready_sources, enabled_quorum_sources
+            ));
+        }
+    }
 
     errors
 }
@@ -1455,6 +1570,17 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             errors.push(format!(
                 "{context}: order_id_tag `{}` is already used by another listed strategy",
                 strategy.order_id_tag
+            ));
+        }
+
+        if let Some(surface_id) = &strategy.realized_volatility_surface_id
+            && !root
+                .realized_volatility_surfaces
+                .as_ref()
+                .is_some_and(|surfaces| surfaces.contains_key(surface_id))
+        {
+            errors.push(format!(
+                "{context}: realized_volatility_surface_id `{surface_id}` references missing realized_volatility_surfaces.{surface_id}"
             ));
         }
 

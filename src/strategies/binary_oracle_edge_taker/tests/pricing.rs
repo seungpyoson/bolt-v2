@@ -300,7 +300,7 @@ fn selected_realized_vol_for_candidate_falls_closed_when_state_is_missing() {
 #[test]
 fn realized_vol_warms_across_lead_venue_switches_when_each_venue_has_history() {
     let mut strategy = ready_to_trade_strategy();
-    strategy.config.vol_min_observations = 3;
+    strategy.config.vol_min_observations = Some(3);
     strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
     for (ts_ms, venue_name, fair_value, fast_price) in [
@@ -337,7 +337,7 @@ fn realized_vol_warms_across_lead_venue_switches_when_each_venue_has_history() {
 #[test]
 fn realized_vol_warms_for_eligible_nonlead_candidates_before_selection() {
     let mut strategy = ready_to_trade_strategy();
-    strategy.config.vol_min_observations = 2;
+    strategy.config.vol_min_observations = Some(2);
     strategy.config.lead_agreement_min_corr = 0.999;
     strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
@@ -397,7 +397,7 @@ fn realized_vol_warms_for_eligible_nonlead_candidates_before_selection() {
 #[test]
 fn realized_vol_does_not_prewarm_ineligible_nonlead_candidates() {
     let mut strategy = ready_to_trade_strategy();
-    strategy.config.vol_min_observations = 2;
+    strategy.config.vol_min_observations = Some(2);
     strategy.config.lead_agreement_min_corr = 0.999;
     strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
@@ -448,7 +448,7 @@ fn realized_vol_does_not_prewarm_ineligible_nonlead_candidates() {
 #[test]
 fn realized_vol_does_not_borrow_ready_state_from_a_different_venue() {
     let mut strategy = ready_to_trade_strategy();
-    strategy.config.vol_min_observations = 2;
+    strategy.config.vol_min_observations = Some(2);
     strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
     for (ts_ms, fair_value, fast_price) in [
@@ -497,9 +497,9 @@ fn realized_vol_does_not_borrow_ready_state_from_a_different_venue() {
 #[test]
 fn realized_vol_resets_per_venue_after_gap_even_if_other_venue_keeps_warming() {
     let mut strategy = ready_to_trade_strategy();
-    strategy.config.vol_min_observations = 1;
-    strategy.config.vol_gap_reset_secs = 1;
-    strategy.config.vol_bridge_valid_secs = 10;
+    strategy.config.vol_min_observations = Some(1);
+    strategy.config.vol_gap_reset_secs = Some(1);
+    strategy.config.vol_bridge_valid_secs = Some(10);
     strategy.config.lead_jitter_max_ms = 10_000;
     strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
@@ -608,7 +608,7 @@ fn entry_evaluation_blocks_when_realized_vol_is_not_ready() {
 #[test]
 fn live_fair_probability_is_computed_from_strategy_state_once_vol_warms() {
     let mut strategy = ready_to_trade_strategy();
-    strategy.config.vol_min_observations = 3;
+    strategy.config.vol_min_observations = Some(3);
     strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
     for (ts_ms, fair_value, fast_spot_price) in [

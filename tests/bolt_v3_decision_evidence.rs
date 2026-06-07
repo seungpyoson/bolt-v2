@@ -34,6 +34,70 @@ impl FeeProvider for NoopFeeProvider {
 }
 
 #[test]
+fn strategy_input_evidence_records_realized_volatility_snapshot_provenance() {
+    let snapshot = strategy_input_snapshot_with_realized_volatility_snapshot();
+
+    assert_eq!(snapshot.realized_volatility_surface_id, "<surface_id>");
+    assert_eq!(snapshot.realized_volatility_annualized_decimal, "2.5");
+    assert_eq!(snapshot.realized_volatility_aggregation, "upper_quantile");
+    assert_eq!(
+        snapshot.realized_volatility_sources_used,
+        vec!["<SOURCE_ID_A>".to_string()]
+    );
+    assert!(snapshot.realized_volatility_blockers.is_empty());
+}
+
+fn strategy_input_snapshot_with_realized_volatility_snapshot() -> BoltV3StrategyInputEvidenceSnapshot
+{
+    BoltV3StrategyInputEvidenceSnapshot {
+        strategy_id: "strategy-one".to_string(),
+        configured_target_id: "target-one".to_string(),
+        market_selection_ruleset_id: "target-one".to_string(),
+        market_selection_outcome: "current".to_string(),
+        market_id: Some("market-one".to_string()),
+        polymarket_condition_id: Some("condition-one".to_string()),
+        polymarket_market_slug: Some("market-slug-one".to_string()),
+        polymarket_question_id: Some("question-one".to_string()),
+        up_instrument_id: Some("instrument-up".to_string()),
+        down_instrument_id: Some("instrument-down".to_string()),
+        market_selection_timestamp_ms: Some(1000),
+        selected_market_observed_timestamp_ms: Some(1000),
+        polymarket_market_start_timestamp_ms: Some(1000),
+        polymarket_market_end_timestamp_ms: Some(301000),
+        price_to_beat_source: "source-one".to_string(),
+        price_to_beat_value: "3100".to_string(),
+        reference_quote_ts_event: 1200,
+        spot_price: "3100.5".to_string(),
+        reference_fair_value: Some("3100.5".to_string()),
+        realized_volatility: "2.5".to_string(),
+        realized_volatility_surface_id: "<surface_id>".to_string(),
+        realized_volatility_as_of_ms: Some(1200),
+        realized_volatility_annualized_decimal: "2.5".to_string(),
+        realized_volatility_seconds_per_annum: "31536000".to_string(),
+        realized_volatility_aggregation: "upper_quantile".to_string(),
+        realized_volatility_sources_used: vec!["<SOURCE_ID_A>".to_string()],
+        realized_volatility_source_diagnostics: Vec::new(),
+        realized_volatility_blockers: Vec::new(),
+        realized_volatility_config_fingerprint: "<config_fingerprint>".to_string(),
+        seconds_to_market_end: 300,
+        pricing_kurtosis: "0".to_string(),
+        theta_decay_factor: "0".to_string(),
+        theta_scaled_min_edge_bps: "10".to_string(),
+        fair_probability_up: "0.6".to_string(),
+        uncertainty_band_probability: "0.01".to_string(),
+        expected_edge_basis_points: "10".to_string(),
+        worst_case_edge_basis_points: "10".to_string(),
+        fee_rate_basis_points: "0".to_string(),
+        selected_side: Some("up".to_string()),
+        submission_instrument_id: "instrument-up".to_string(),
+        submission_order_side: OrderSide::Buy.to_string(),
+        submission_price: "0.50".to_string(),
+        submission_quantity: "1".to_string(),
+        client_order_id: "client-order-one".to_string(),
+    }
+}
+
+#[test]
 fn latest_entry_decision_evidence_chain_binds_snapshot_order_intent_and_admission() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("decision-evidence.jsonl");
@@ -252,6 +316,15 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         spot_price: "3100.5".to_string(),
         reference_fair_value: Some("3100.5".to_string()),
         realized_volatility: "1.5".to_string(),
+        realized_volatility_surface_id: String::new(),
+        realized_volatility_as_of_ms: None,
+        realized_volatility_annualized_decimal: "1.5".to_string(),
+        realized_volatility_seconds_per_annum: String::new(),
+        realized_volatility_aggregation: String::new(),
+        realized_volatility_sources_used: Vec::new(),
+        realized_volatility_source_diagnostics: Vec::new(),
+        realized_volatility_blockers: Vec::new(),
+        realized_volatility_config_fingerprint: String::new(),
         seconds_to_market_end: 300,
         pricing_kurtosis: "0".to_string(),
         theta_decay_factor: "0".to_string(),

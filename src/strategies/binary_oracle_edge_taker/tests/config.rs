@@ -196,6 +196,29 @@ fn validate_config_rejects_missing_signal_data_pair() {
 }
 
 #[test]
+fn surfaced_realized_volatility_mode_rejects_legacy_runtime_vol_fields() {
+    let mut raw = valid_raw_config();
+    let table = raw
+        .as_table_mut()
+        .expect("valid raw config should be a TOML table");
+    table.insert(
+        "realized_volatility_surface_id".to_string(),
+        Value::String("<surface_id>".to_string()),
+    );
+
+    let mut errors = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    assert!(
+        errors.iter().any(|error| {
+            error.field == "strategies[0].config.vol_window_secs"
+                && error.code == "legacy_realized_volatility_path"
+        }),
+        "surfaced RV mode must reject legacy vol fields: {errors:#?}"
+    );
+}
+
+#[test]
 fn validate_config_rejects_resolution_data_with_only_one_field_set() {
     // The live Chainlink strike binding is optional, but both-or-neither: a
     // strategy either declares BOTH `resolution_client_id` +

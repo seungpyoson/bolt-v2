@@ -2,6 +2,132 @@
 
 use super::*;
 
+const TEST_SURFACE_ID: &str = "<surface_id>";
+const TEST_SOURCE_ID: &str = "<SOURCE_ID_A>";
+const TEST_TRADE_SOURCE_ID: &str = "<SOURCE_ID_TRADE>";
+const TEST_RV_INSTRUMENT_ID: &str = "<INSTRUMENT_ID_A>.<DATA_CLIENT_ID>";
+
+fn test_realized_volatility_engine_config()
+-> crate::bolt_v3_realized_volatility::RealizedVolEngineConfig {
+    crate::bolt_v3_realized_volatility::RealizedVolEngineConfig {
+        surface_id: TEST_SURFACE_ID.to_string(),
+        window_ms: 4_000,
+        sampling_interval_ms: 1_000,
+        min_ready_sources: 1,
+        max_source_age_ms: 500,
+        max_event_receive_lag_ms: 250,
+        max_inter_sample_gap_ms: 2_000,
+        min_coverage_ratio: 0.75,
+        max_cross_source_dispersion: 0.50,
+        seconds_per_annum: 31_536_000.0,
+        aggregation: crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
+            quantile: 1.0,
+        },
+        sources: vec![
+            crate::bolt_v3_realized_volatility::RealizedVolSourceConfig {
+                source_id: TEST_SOURCE_ID.to_string(),
+                data_client_id: "<DATA_CLIENT_ID>".to_string(),
+                instrument_id: TEST_RV_INSTRUMENT_ID.to_string(),
+                source_class: crate::bolt_v3_realized_volatility::RealizedVolSourceClass::SpotQuote,
+                sample_kind: crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Midpoint,
+                enabled: true,
+                counts_toward_quorum: true,
+                canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
+            },
+        ],
+    }
+}
+
+fn test_strategy_with_realized_volatility_surface(
+    engine_config: crate::bolt_v3_realized_volatility::RealizedVolEngineConfig,
+) -> BinaryOracleEdgeTaker {
+    let base = test_strategy();
+    let mut config = base.config.clone();
+    config.realized_volatility_surface_id = Some(TEST_SURFACE_ID.to_string());
+    config.signal_venue = None;
+    config.signal_instrument_id = None;
+    config.vol_window_secs = None;
+    config.vol_gap_reset_secs = None;
+    config.vol_min_observations = None;
+    config.vol_bridge_valid_secs = None;
+    let mut surfaces = std::collections::BTreeMap::new();
+    surfaces.insert(TEST_SURFACE_ID.to_string(), engine_config);
+    let decision_evidence = std::sync::Arc::new(RecordingDecisionEvidenceWriter);
+    let submit_admission = std::sync::Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(decision_evidence.clone()),
+    );
+    let context = StrategyBuildContext::new(
+        RecordingFeeProvider::cold(),
+        decision_evidence,
+        submit_admission,
+        fixture_execution_venue(),
+    )
+    .with_realized_volatility_surfaces(surfaces);
+    BinaryOracleEdgeTaker::new(config, context)
+}
+
+#[test]
+fn surfaced_realized_volatility_quote_source_forwards_snapshot_to_pricing() {
+    let mut strategy =
+        test_strategy_with_realized_volatility_surface(test_realized_volatility_engine_config());
+
+    strategy
+        .on_quote(&quote_tick(TEST_RV_INSTRUMENT_ID, 100.0, 102.0, 1_000))
+        .expect("configured RV quote source should process");
+
+    let snapshot = strategy
+        .pricing
+        .latest_realized_vol_snapshot
+        .as_ref()
+        .expect("RV forwarding should publish a pricing snapshot");
+    assert_eq!(snapshot.surface_id, TEST_SURFACE_ID);
+    assert_eq!(snapshot.source_diagnostics[0].source_id, TEST_SOURCE_ID);
+    assert_eq!(snapshot.source_diagnostics[0].raw_sample_count, 1);
+}
+
+#[test]
+fn surfaced_realized_volatility_quote_and_trade_sources_can_share_instrument() {
+    let mut engine_config = test_realized_volatility_engine_config();
+    engine_config.sources.push(
+        crate::bolt_v3_realized_volatility::RealizedVolSourceConfig {
+            source_id: TEST_TRADE_SOURCE_ID.to_string(),
+            data_client_id: "<DATA_CLIENT_ID>".to_string(),
+            instrument_id: TEST_RV_INSTRUMENT_ID.to_string(),
+            source_class: crate::bolt_v3_realized_volatility::RealizedVolSourceClass::Trade,
+            sample_kind: crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Trade,
+            enabled: true,
+            counts_toward_quorum: true,
+            canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
+        },
+    );
+    let mut strategy = test_strategy_with_realized_volatility_surface(engine_config);
+
+    strategy
+        .on_quote(&quote_tick(TEST_RV_INSTRUMENT_ID, 100.0, 102.0, 1_000))
+        .expect("configured RV quote source should process");
+    strategy
+        .on_trade(&trade_tick(TEST_RV_INSTRUMENT_ID, 101.0, 1_000))
+        .expect("configured RV trade source should process");
+
+    let snapshot = strategy
+        .pricing
+        .latest_realized_vol_snapshot
+        .as_ref()
+        .expect("RV forwarding should publish a pricing snapshot");
+    let quote_diagnostic = snapshot
+        .source_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source_id == TEST_SOURCE_ID)
+        .expect("quote source diagnostic should exist");
+    let trade_diagnostic = snapshot
+        .source_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source_id == TEST_TRADE_SOURCE_ID)
+        .expect("trade source diagnostic should exist");
+    assert_eq!(quote_diagnostic.raw_sample_count, 1);
+    assert_eq!(trade_diagnostic.raw_sample_count, 1);
+}
+
 #[test]
 fn source_owned_reference_identity_does_not_panic_nt_quote_filter() {
     let mut strategy = test_strategy();

@@ -1,0 +1,56 @@
+{
+  "schema_version": "artifact-index-commit-proof-status.v1",
+  "task_id": "BACKTESTING_ENGINE-006",
+  "status": "open_iam_scope_unproven",
+  "recorded_at": "2026-06-08",
+  "decision": "Do not rely on Artifact Index producer commits for broad backfill until per-kind producer IAM scope is proven, or an approved coordinator/table format is selected.",
+  "store_commit_mechanics": {
+    "status": "proven",
+    "direct_s3_commit_proven": true,
+    "real_s3_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-20260608-3d6b1529",
+    "report_path": "/private/tmp/bte-artifact-index-proof-20260608-3d6b1529/output/artifact-index-commit-proof-report.json",
+    "report_content_hash": "d6461cd67adb48250cd3a5a3642d74f6afa8b9617660fa16c54ab856d662e4a5",
+    "event_create_only_proven": true,
+    "snapshot_create_only_proven": true,
+    "audit_epoch_create_only_proven": true,
+    "latest_pointer_create_only_proven": true,
+    "latest_pointer_update_if_match_proven": true,
+    "stale_etag_update_rejected": true,
+    "latest_pointer_readback_proven": true,
+    "snapshot_readback_proven": true
+  },
+  "producer_iam_scope": {
+    "status": "blocked_by_broad_generic_credential",
+    "current_generic_ssm_binding": "/bolt/artifact-store/s3/*",
+    "real_s3_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca",
+    "report_path": "/private/tmp/bte-artifact-index-iam-proof-20260608-ca7445ca/output/artifact-index-commit-proof-report.json",
+    "report_content_hash": "5aabc1ab2280999f2c3dcac6e734308b06816e4bffd43057efd2a4d1d4339a82",
+    "denied_artifact_kinds": [
+      "research_analytics"
+    ],
+    "denied_write_attempts": 3,
+    "denied_write_rejections": 0,
+    "violation_count": 3,
+    "producer_iam_scope_proven": false
+  },
+  "repo_side_progress": {
+    "per_kind_policy_generator": "crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs",
+    "policy_test": "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_artifact_index_iam_policy.rs",
+    "policy_shape": "The generated policy allows S3 GetObject/PutObject only for the configured Artifact Index kind's events, snapshots, latest pointer, and audit epoch paths under the configured artifact_root and optional proof roots.",
+    "runtime_secret_source": "SSM parameter names only; no credential values are stored in repo artifacts."
+  },
+  "backfill_safety_impact": {
+    "prevents_recursive_discovery_dependency": true,
+    "prevents_unconditional_pointer_overwrite": true,
+    "prevents_silent_reuse_of_partial_outputs": true,
+    "remaining_risk": "A broad producer credential can still write another artifact kind's event/snapshot/pointer paths, so producer ownership is not enforced by AWS yet."
+  },
+  "next_required_evidence": [
+    "Explicit approval for AWS security mutation if per-kind IAM is the selected path.",
+    "Provision one producer identity and SSM parameter set per top-level Artifact Index kind using the generated policy.",
+    "Rerun artifact_index_commit_proof with denied_artifact_kinds configured so denied event, snapshot, and latest-pointer writes are rejected by permissions.",
+    "If per-kind IAM is not acceptable, select and prove an approved commit coordinator or table format before relying on Artifact Index commits."
+  ],
+  "no_aws_mutation_performed_by_this_record": true,
+  "bte_006_can_close": false
+}

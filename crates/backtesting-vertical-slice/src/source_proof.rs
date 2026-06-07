@@ -238,6 +238,16 @@ impl RequiredChecks {
     }
 }
 
+/// Machine-readable source-proof claim limitation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceProofClaimLimit {
+    pub id: String,
+    pub severity: String,
+    pub claim: String,
+    pub reason: String,
+    pub evidence_ref: String,
+}
+
 /// Inclusive-start, exclusive-end UTC time range (RFC 3339 strings).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeRange {
@@ -287,6 +297,9 @@ pub struct SourceProofReport {
     pub nt_mapping_status: NtMappingStatus,
     pub fidelity_class: SourceProofFidelityClass,
     pub forbidden_claims: Vec<String>,
+    /// Structured limitation records backing `forbidden_claims`.
+    #[serde(default)]
+    pub claim_limits: Vec<SourceProofClaimLimit>,
     /// Structured manifest/run summary proving acceptance is bounded by object
     /// counts, byte counts, failures, skips, and selector-scope checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -324,6 +337,11 @@ pub enum AcceptanceError {
     UnmetChecks(Vec<&'static str>),
     /// The lower-fidelity source cannot carry an execution-quality claim.
     ForbiddenClaimMissing,
+    /// A structured claim-limit row is missing or malformed.
+    InvalidClaimLimit {
+        field: &'static str,
+        reason: &'static str,
+    },
     /// The proof referenced by the dataset is not accepted.
     ProofNotAccepted(SourceProofStatus),
     /// A rejected proof cannot satisfy acceptance invariants.
@@ -390,6 +408,9 @@ impl std::fmt::Display for AcceptanceError {
             Self::UnmetChecks(checks) => write!(f, "unmet required checks: {}", checks.join(", ")),
             Self::ForbiddenClaimMissing => {
                 write!(f, "non-L2 fidelity requires explicit forbidden claims")
+            }
+            Self::InvalidClaimLimit { field, reason } => {
+                write!(f, "claim_limits.{field} {reason}")
             }
             Self::ProofNotAccepted(status) => {
                 write!(f, "source proof is not accepted (status: {status:?})")
@@ -562,6 +583,7 @@ impl SourceProofReport {
         {
             return Err(AcceptanceError::ForbiddenClaimMissing);
         }
+        validate_claim_limits(self)?;
         // When the proof claims to supersede a prior proof, that reference must be
         // a real, distinct id — not blank and not the proof's own id.
         if let Some(superseded) = &self.supersedes_source_proof_id {
@@ -961,6 +983,64 @@ fn validate_acceptance_scope(
     Ok(())
 }
 
+fn validate_claim_limits(proof: &SourceProofReport) -> Result<(), AcceptanceError> {
+    for limit in &proof.claim_limits {
+        if limit.id.trim().is_empty() {
+            return Err(AcceptanceError::InvalidClaimLimit {
+                field: "id",
+                reason: "must not be empty",
+            });
+        }
+        if limit.severity.trim().is_empty() {
+            return Err(AcceptanceError::InvalidClaimLimit {
+                field: "severity",
+                reason: "must not be empty",
+            });
+        }
+        if limit.claim.trim().is_empty() {
+            return Err(AcceptanceError::InvalidClaimLimit {
+                field: "claim",
+                reason: "must not be empty",
+            });
+        }
+        if limit.reason.trim().is_empty() {
+            return Err(AcceptanceError::InvalidClaimLimit {
+                field: "reason",
+                reason: "must not be empty",
+            });
+        }
+        if limit.evidence_ref.trim().is_empty() {
+            return Err(AcceptanceError::InvalidClaimLimit {
+                field: "evidence_ref",
+                reason: "must not be empty",
+            });
+        }
+    }
+
+    if proof.fidelity_class == SourceProofFidelityClass::L2Replay {
+        return Ok(());
+    }
+    if proof.claim_limits.is_empty() {
+        return Err(AcceptanceError::InvalidClaimLimit {
+            field: "claim_limits",
+            reason: "must not be empty for non-L2 fidelity",
+        });
+    }
+    for forbidden_claim in &proof.forbidden_claims {
+        if !proof
+            .claim_limits
+            .iter()
+            .any(|limit| limit.claim == *forbidden_claim)
+        {
+            return Err(AcceptanceError::InvalidClaimLimit {
+                field: "claim",
+                reason: "must cover every forbidden_claims entry",
+            });
+        }
+    }
+    Ok(())
+}
+
 fn ensure_source_binding_metadata_matches(
     proof: &SourceProofReport,
 ) -> Result<(), AcceptanceError> {
@@ -1104,7 +1184,24 @@ mod tests {
         }
     }
 
+    fn claim_limits_for(claims: &[String]) -> Vec<SourceProofClaimLimit> {
+        claims
+            .iter()
+            .enumerate()
+            .map(|(index, claim)| SourceProofClaimLimit {
+                id: format!("claim-limit-{}", index + 1),
+                severity: "blocking".to_string(),
+                claim: claim.clone(),
+                reason: "source fidelity does not prove this claim".to_string(),
+                evidence_ref: "source-proof://fidelity-class".to_string(),
+            })
+            .collect()
+    }
+
     fn candidate_proof() -> SourceProofReport {
+        let forbidden_claims = vec![
+            "No execution-quality, queue-position, or order-book-liquidity claims.".to_string(),
+        ];
         SourceProofReport {
             source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
             source_proof_version: 1,
@@ -1137,9 +1234,8 @@ mod tests {
             retention_ref: "https://public.bybit.com/ (archive retention reviewed)".to_string(),
             nt_mapping_status: NtMappingStatus::Accepted,
             fidelity_class: SourceProofFidelityClass::TradeReplay,
-            forbidden_claims: vec![
-                "No execution-quality, queue-position, or order-book-liquidity claims.".to_string(),
-            ],
+            forbidden_claims: forbidden_claims.clone(),
+            claim_limits: claim_limits_for(&forbidden_claims),
             acceptance_scope: Some(accepted_scope()),
             gap_policy_id: String::new(),
             required_checks: passing_checks(),
@@ -1581,6 +1677,22 @@ mod tests {
             proof.evaluate_acceptance().unwrap_err(),
             AcceptanceError::ForbiddenClaimMissing
         );
+    }
+
+    #[test]
+    fn non_l2_fidelity_requires_structured_claim_limits() {
+        let mut proof = candidate_proof();
+        proof.claim_limits.clear();
+        let err = proof.evaluate_acceptance().unwrap_err();
+        assert!(err.to_string().contains("claim_limits"), "{err}");
+    }
+
+    #[test]
+    fn structured_claim_limits_must_cover_forbidden_claims() {
+        let mut proof = candidate_proof();
+        proof.claim_limits[0].claim = "No unrelated claim.".to_string();
+        let err = proof.evaluate_acceptance().unwrap_err();
+        assert!(err.to_string().contains("forbidden_claims"), "{err}");
     }
 
     #[test]

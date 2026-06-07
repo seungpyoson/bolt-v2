@@ -1046,8 +1046,8 @@ mod tests {
     use super::*;
     use crate::source_proof::{
         AcceptanceMode, AcceptanceScope, EvidenceState, FixtureType, IngestManifestObjectRecord,
-        NtMappingStatus, RequiredCheck, RequiredChecks, SourceProofReport, SourceProofStatus,
-        TimeRange,
+        NtMappingStatus, RequiredCheck, RequiredChecks, SourceProofClaimLimit, SourceProofReport,
+        SourceProofStatus, TimeRange,
     };
 
     fn accepted_dataset() -> AcceptedDataset {
@@ -1075,6 +1075,7 @@ mod tests {
                 .map(ToString::to_string)
                 .collect(),
         };
+        let forbidden_claims = vec!["No execution-quality or queue-position claims.".to_string()];
         let proof = SourceProofReport {
             source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
             source_proof_version: 1,
@@ -1105,7 +1106,8 @@ mod tests {
             retention_ref: "https://public.bybit.com/".to_string(),
             nt_mapping_status: NtMappingStatus::Accepted,
             fidelity_class: SourceProofFidelityClass::TradeReplay,
-            forbidden_claims: vec!["No execution-quality or queue-position claims.".to_string()],
+            forbidden_claims: forbidden_claims.clone(),
+            claim_limits: claim_limits_for(&forbidden_claims),
             acceptance_scope: Some(AcceptanceScope {
                 planned_objects: 1,
                 completed_objects: 1,
@@ -1125,6 +1127,20 @@ mod tests {
         .expect("accept");
         crate::source_proof::select_accepted_dataset(&proof, &object, &object.sha256)
             .expect("select accepted dataset")
+    }
+
+    fn claim_limits_for(claims: &[String]) -> Vec<SourceProofClaimLimit> {
+        claims
+            .iter()
+            .enumerate()
+            .map(|(index, claim)| SourceProofClaimLimit {
+                id: format!("claim-limit-{}", index + 1),
+                severity: "blocking".to_string(),
+                claim: claim.clone(),
+                reason: "source fidelity does not prove this claim".to_string(),
+                evidence_ref: "source-proof://fidelity-class".to_string(),
+            })
+            .collect()
     }
 
     fn identity() -> CanonicalInstrumentIdentity {

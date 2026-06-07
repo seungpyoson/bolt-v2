@@ -1874,8 +1874,9 @@ mod tests {
     use super::*;
     use crate::source_proof::{
         AcceptanceMode, AcceptanceScope, EvidenceState, FixtureType, IngestManifestObjectRecord,
-        NtMappingStatus, RequiredCheck, RequiredChecks, SourceProofFidelityClass,
-        SourceProofReport, SourceProofStatus, TimeRange, select_accepted_dataset,
+        NtMappingStatus, RequiredCheck, RequiredChecks, SourceProofClaimLimit,
+        SourceProofFidelityClass, SourceProofReport, SourceProofStatus, TimeRange,
+        select_accepted_dataset,
     };
 
     fn accepted_dataset() -> AcceptedDataset {
@@ -1900,6 +1901,7 @@ mod tests {
             archive_date: "2026-03-01".to_string(),
             schema_columns: vec!["id".to_string()],
         };
+        let forbidden_claims = vec!["No execution-quality claims.".to_string()];
         let proof = SourceProofReport {
             source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
             source_proof_version: 1,
@@ -1930,7 +1932,8 @@ mod tests {
             retention_ref: "r".to_string(),
             nt_mapping_status: NtMappingStatus::Accepted,
             fidelity_class: SourceProofFidelityClass::TradeReplay,
-            forbidden_claims: vec!["No execution-quality claims.".to_string()],
+            forbidden_claims: forbidden_claims.clone(),
+            claim_limits: claim_limits_for(&forbidden_claims),
             acceptance_scope: Some(AcceptanceScope {
                 planned_objects: 1,
                 completed_objects: 1,
@@ -1949,6 +1952,20 @@ mod tests {
         .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
         .unwrap();
         select_accepted_dataset(&proof, &object, &object.sha256).unwrap()
+    }
+
+    fn claim_limits_for(claims: &[String]) -> Vec<SourceProofClaimLimit> {
+        claims
+            .iter()
+            .enumerate()
+            .map(|(index, claim)| SourceProofClaimLimit {
+                id: format!("claim-limit-{}", index + 1),
+                severity: "blocking".to_string(),
+                claim: claim.clone(),
+                reason: "source fidelity does not prove this claim".to_string(),
+                evidence_ref: "source-proof://fidelity-class".to_string(),
+            })
+            .collect()
     }
 
     fn valid_manifest() -> BacktestingRunManifest {

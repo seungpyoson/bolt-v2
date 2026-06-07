@@ -27,8 +27,8 @@ use backtesting_vertical_slice::{
     source_proof::{
         AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
         IngestManifestObjectRecord, NtMappingStatus, RequiredCheck, RequiredChecks,
-        SourceProofFidelityClass, SourceProofReport, SourceProofStatus, TimeRange,
-        select_accepted_dataset,
+        SourceProofClaimLimit, SourceProofFidelityClass, SourceProofReport, SourceProofStatus,
+        TimeRange, select_accepted_dataset,
     },
 };
 
@@ -84,6 +84,20 @@ fn passing_checks() -> RequiredChecks {
     }
 }
 
+fn claim_limits_for(claims: &[String]) -> Vec<SourceProofClaimLimit> {
+    claims
+        .iter()
+        .enumerate()
+        .map(|(index, claim)| SourceProofClaimLimit {
+            id: format!("claim-limit-{}", index + 1),
+            severity: "blocking".to_string(),
+            claim: claim.clone(),
+            reason: "source fidelity does not prove this claim".to_string(),
+            evidence_ref: "source-proof://fidelity-class".to_string(),
+        })
+        .collect()
+}
+
 fn accepted_dataset() -> AcceptedDataset {
     let object = IngestManifestObjectRecord {
         s3_uri: "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BNBUSDC/object=d6af93.csv.gz".to_string(),
@@ -96,6 +110,12 @@ fn accepted_dataset() -> AcceptedDataset {
             .map(ToString::to_string)
             .collect(),
     };
+    let forbidden_claims = vec![
+        "No execution-quality, queue-position, or order-book-liquidity claims.".to_string(),
+        "No L2/L3 order-book replay claims from trade prints.".to_string(),
+        "Coverage is limited to BNBUSDC spot 2026-03-01; no multi-day or multi-instrument claims."
+            .to_string(),
+    ];
     let proof = SourceProofReport {
         source_proof_id: SOURCE_PROOF_ID.to_string(),
         source_proof_version: 1,
@@ -129,12 +149,8 @@ fn accepted_dataset() -> AcceptedDataset {
         fidelity_class: SourceProofFidelityClass::TradeReplay,
         // Mirrors the committed reference source proof exactly so the fixture
         // carries the full set of fidelity constraints through to the contract.
-        forbidden_claims: vec![
-            "No execution-quality, queue-position, or order-book-liquidity claims.".to_string(),
-            "No L2/L3 order-book replay claims from trade prints.".to_string(),
-            "Coverage is limited to BNBUSDC spot 2026-03-01; no multi-day or multi-instrument claims."
-                .to_string(),
-        ],
+        forbidden_claims: forbidden_claims.clone(),
+        claim_limits: claim_limits_for(&forbidden_claims),
         acceptance_scope: Some(AcceptanceScope {
             planned_objects: 1,
             completed_objects: 1,

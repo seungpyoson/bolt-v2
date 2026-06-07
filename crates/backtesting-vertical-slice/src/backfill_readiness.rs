@@ -14,9 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    backfill_binding_coverage::{
-        BackfillBindingCoverageReport, BackfillBindingCoverageStatus,
-    },
+    backfill_binding_coverage::{BackfillBindingCoverageReport, BackfillBindingCoverageStatus},
     backfill_preflight::{
         BackfillPreflightReport, BackfillPreflightSelectedRecord, BackfillPreflightStatus,
     },
@@ -60,6 +58,8 @@ pub enum BackfillReadinessBlocker {
     MissingSelectedBackfillRecord,
     MissingSelectedSourceProofCandidate,
     SourceProofTableFamilyMismatch,
+    SelectedSourceBindingMismatch,
+    SelectedSourceBindingMissingFromCoverage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,6 +210,30 @@ pub fn evaluate_backfill_readiness(
         }
         Some(_) => {}
     }
+    let selected_backfill_binding = backfill_preflight
+        .selected_record
+        .as_ref()
+        .map(|record| record.source_binding.as_str());
+    let selected_source_proof_binding = source_proof_preflight
+        .selected_candidate
+        .as_ref()
+        .map(|candidate| candidate.source_binding.as_str());
+    if let (Some(backfill_binding), Some(source_proof_binding)) =
+        (selected_backfill_binding, selected_source_proof_binding)
+        && backfill_binding != source_proof_binding
+    {
+        blockers.push(BackfillReadinessBlocker::SelectedSourceBindingMismatch);
+    }
+    if let Some(source_binding) = selected_backfill_binding {
+        let coverage_has_selected_binding = binding_coverage.bindings.iter().any(|binding| {
+            binding.key == source_binding
+                && binding.required_table_family_match
+                && binding.ledger_record_count > 0
+        });
+        if !coverage_has_selected_binding {
+            blockers.push(BackfillReadinessBlocker::SelectedSourceBindingMissingFromCoverage);
+        }
+    }
 
     let status = if blockers.is_empty() {
         BackfillReadinessStatus::Ready
@@ -286,9 +310,8 @@ pub fn write_backfill_readiness_report_from_spec_file(
     let backfill_preflight = read_backfill_preflight(&spec.backfill_preflight_report_path)?;
     let source_proof_preflight =
         read_source_proof_preflight(&spec.source_proof_migration_preflight_report_path)?;
-    let binding_coverage = read_backfill_binding_coverage(
-        &spec.backfill_binding_coverage_report_path,
-    )?;
+    let binding_coverage =
+        read_backfill_binding_coverage(&spec.backfill_binding_coverage_report_path)?;
     let report = evaluate_backfill_readiness(
         spec.readiness_id,
         backfill_preflight,
@@ -336,10 +359,12 @@ fn read_backfill_binding_coverage(
 ) -> Result<BackfillBindingCoverageReport, BackfillReadinessError> {
     let path_display = path.display().to_string();
     let bytes =
-        fs::read(path).map_err(|error| BackfillReadinessError::ReadBackfillBindingCoverage {
-            path: path_display.clone(),
-            error: error.to_string(),
-        })?;
+        fs::read(path).map_err(
+            |error| BackfillReadinessError::ReadBackfillBindingCoverage {
+                path: path_display.clone(),
+                error: error.to_string(),
+            },
+        )?;
     serde_json::from_slice(&bytes).map_err(|error| {
         BackfillReadinessError::ParseBackfillBindingCoverageJson {
             path: path_display,

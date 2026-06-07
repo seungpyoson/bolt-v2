@@ -87,6 +87,44 @@ fn readiness_blocks_when_binding_coverage_blocks() {
 }
 
 #[test]
+fn readiness_blocks_when_selected_source_bindings_differ() {
+    let report = evaluate_backfill_readiness(
+        "synthetic-readiness",
+        ready_backfill_preflight_with_binding("synthetic-backfill-binding"),
+        candidate_source_proof_preflight_with_binding("trades", "synthetic-proof-binding"),
+        ready_binding_coverage_for_binding("synthetic-backfill-binding"),
+        "trades",
+        "TradeTick",
+    );
+
+    assert_eq!(report.status, BackfillReadinessStatus::Blocked);
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillReadinessBlocker::SelectedSourceBindingMismatch)
+    );
+}
+
+#[test]
+fn readiness_blocks_when_binding_coverage_lacks_selected_binding() {
+    let report = evaluate_backfill_readiness(
+        "synthetic-readiness",
+        ready_backfill_preflight_with_binding("synthetic-selected-binding"),
+        candidate_source_proof_preflight_with_binding("trades", "synthetic-selected-binding"),
+        ready_binding_coverage_for_binding("synthetic-other-binding"),
+        "trades",
+        "TradeTick",
+    );
+
+    assert_eq!(report.status, BackfillReadinessStatus::Blocked);
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillReadinessBlocker::SelectedSourceBindingMissingFromCoverage)
+    );
+}
+
+#[test]
 fn readiness_is_ready_when_backfill_and_source_proof_preflights_align() {
     let report = evaluate_backfill_readiness(
         "synthetic-readiness",
@@ -245,6 +283,12 @@ fn blocked_backfill_preflight()
 
 fn ready_backfill_preflight()
 -> backtesting_vertical_slice::backfill_preflight::BackfillPreflightReport {
+    ready_backfill_preflight_with_binding("synthetic-source-binding")
+}
+
+fn ready_backfill_preflight_with_binding(
+    source_binding: &str,
+) -> backtesting_vertical_slice::backfill_preflight::BackfillPreflightReport {
     backtesting_vertical_slice::backfill_preflight::BackfillPreflightReport {
         schema_version: "backfill-preflight-report.v1".to_string(),
         preflight_id: "synthetic-backfill-preflight".to_string(),
@@ -263,7 +307,7 @@ fn ready_backfill_preflight()
         eligible_record_count: 1,
         selected_record: Some(BackfillPreflightSelectedRecord {
             record_id: "synthetic-backfill-record".to_string(),
-            source_binding: "synthetic-source-binding".to_string(),
+            source_binding: source_binding.to_string(),
             source_proof_id: "source-proof-synthetic".to_string(),
             source_proof_version: 1,
             accepted_objects: 1,
@@ -295,6 +339,14 @@ fn candidate_source_proof_preflight(
     table_family: &str,
 ) -> backtesting_vertical_slice::source_proof_migration_preflight::SourceProofMigrationPreflightReport
 {
+    candidate_source_proof_preflight_with_binding(table_family, "synthetic-source-binding")
+}
+
+fn candidate_source_proof_preflight_with_binding(
+    table_family: &str,
+    source_binding: &str,
+) -> backtesting_vertical_slice::source_proof_migration_preflight::SourceProofMigrationPreflightReport
+{
     backtesting_vertical_slice::source_proof_migration_preflight::SourceProofMigrationPreflightReport {
         schema_version: "source-proof-migration-preflight-report.v1".to_string(),
         preflight_id: "synthetic-source-proof-preflight".to_string(),
@@ -307,7 +359,7 @@ fn candidate_source_proof_preflight(
             proof_uri: "proof://synthetic/source-proof.json".to_string(),
             source_proof_id: "source-proof-synthetic".to_string(),
             source_proof_version: 1,
-            source_binding: "synthetic-source-binding".to_string(),
+            source_binding: source_binding.to_string(),
             table_family: table_family.to_string(),
             raw_payload_records: 1,
             s3_bound_raw_payload_records: 1,
@@ -331,6 +383,12 @@ fn blocked_binding_coverage()
 
 fn ready_binding_coverage()
 -> backtesting_vertical_slice::backfill_binding_coverage::BackfillBindingCoverageReport {
+    ready_binding_coverage_for_binding("synthetic-source-binding")
+}
+
+fn ready_binding_coverage_for_binding(
+    source_binding: &str,
+) -> backtesting_vertical_slice::backfill_binding_coverage::BackfillBindingCoverageReport {
     BackfillBindingCoverageReport {
         schema_version: "backfill-binding-coverage-report.v1".to_string(),
         report_id: "synthetic-binding-coverage".to_string(),
@@ -341,7 +399,7 @@ fn ready_binding_coverage()
         empty_source_binding_record_count: 0,
         unconfigured_source_bindings: Vec::new(),
         bindings: vec![BackfillBindingCoverageBinding {
-            key: "synthetic-source-binding".to_string(),
+            key: source_binding.to_string(),
             table_families: vec!["trades".to_string()],
             required_table_family_match: true,
             ledger_record_count: 1,

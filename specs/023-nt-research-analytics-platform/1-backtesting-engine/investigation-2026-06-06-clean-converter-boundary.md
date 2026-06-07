@@ -58,6 +58,9 @@ No-go for broader production claims:
 
 ## Current Source Facts
 
+- Current worktree recheck on 2026-06-07: branch `codex/bte-clean-converter-nt-use-continue`, `HEAD = 2c4b72bdcfdfb5349aa74eb97eb6ee970ba6a4a1`, `main = origin/main = 5f5cc430a3fddda20823629ee3c8e271bc54edb5`, and `git status --short --branch` reported no dirty files.
+- Relevant local/remote BTE branches visible from this worktree include `codex/backtesting-engine-increment`, `codex/bte-clean-converter-nt-use`, `codex/bte-e037-trace-row`, `chore/bte-runtime-hardening`, `feat/439-nt-venue-converters`, `codex/backtesting-vertical-slice`, `feat/438-bte-gate4-run-proof`, `feat/438-bte-ingest-loader`, and `feat/438-bte-gate1-backtest-proof`; stale branches are forensic references only and are not implementation sources for this branch.
+- Open PR recheck with `gh pr list --search "BTE OR backtesting OR converter" --state open` returned draft PR `#592` (`codex/bte-e037-trace-row`), draft PR `#496` (`feat/438-bte-gate4-run-proof`), and open docs PR `#576` (`docs/438-normalization-catalog-plan`); none of these PRs proves this branch's clean production artifact path.
 - Accepted raw object exists: `s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BNBUSDC/object=d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598.csv.gz`
 - S3 listing result for that object: one object, `8505` bytes
 - Fresh read-only S3 `head-object` after the CLI preflight fix confirmed the accepted raw object still exists with `ContentLength = 8505` and ETag `"3959bd2c4ff9ac093c7692b812cea2f8"`; later, only this single approved 8505-byte object was downloaded to `/private/tmp/bte-bnbusdc-current-schema-object.csv.gz` for the current-schema local proof

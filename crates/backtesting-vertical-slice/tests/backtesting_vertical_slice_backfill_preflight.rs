@@ -100,6 +100,7 @@ fn backfill_preflight_selects_bounded_canonical_ready_record_without_source_cons
     assert_eq!(report.status, BackfillPreflightStatus::Go);
     let selected = report.selected_record.expect("selected record");
     assert_eq!(selected.record_id, "synthetic-small");
+    assert_eq!(selected.table_family, "trades");
     assert_eq!(selected.accepted_objects, 3);
     assert_eq!(selected.accepted_bytes, 300);
 }

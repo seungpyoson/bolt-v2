@@ -62,6 +62,7 @@ pub enum BackfillPreflightBlockingReason {
 pub struct BackfillPreflightSelectedRecord {
     pub record_id: String,
     pub source_binding: String,
+    pub table_family: String,
     pub source_proof_id: String,
     pub source_proof_version: u32,
     pub accepted_objects: u64,
@@ -326,6 +327,7 @@ fn selected_record(record: &BackfillCoverageRecord) -> BackfillPreflightSelected
     BackfillPreflightSelectedRecord {
         record_id: record.record_id.clone(),
         source_binding: record.source_binding.clone().unwrap_or_default(),
+        table_family: record.table_family.clone().unwrap_or_default(),
         source_proof_id: record.source_proof_id.clone().unwrap_or_default(),
         source_proof_version: record.source_proof_version.unwrap_or_default(),
         accepted_objects: record.accepted_objects,

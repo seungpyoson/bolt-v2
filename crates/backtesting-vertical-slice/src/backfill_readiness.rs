@@ -69,6 +69,7 @@ pub enum BackfillReadinessBlocker {
     MissingSelectedBackfillRecord,
     MissingSelectedSourceProofCandidate,
     SourceProofTableFamilyMismatch,
+    SelectedBackfillTableFamilyMismatch,
     SelectedSourceBindingMismatch,
     SelectedSourceBindingMissingFromCoverage,
     SelectedSourceProofMismatch,
@@ -239,6 +240,13 @@ pub fn evaluate_backfill_readiness(
         .is_some_and(|record| !record.canonical_ready)
     {
         blockers.push(BackfillReadinessBlocker::BackfillPreflightBlocked);
+    }
+    if backfill_preflight
+        .selected_record
+        .as_ref()
+        .is_some_and(|record| record.table_family != required_table_family_trimmed)
+    {
+        blockers.push(BackfillReadinessBlocker::SelectedBackfillTableFamilyMismatch);
     }
     match source_proof_preflight.selected_candidate.as_ref() {
         None => blockers.push(BackfillReadinessBlocker::MissingSelectedSourceProofCandidate),

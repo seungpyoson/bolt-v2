@@ -161,6 +161,33 @@ fn readiness_requires_selected_source_proof_table_family_to_match_requested_path
 }
 
 #[test]
+fn readiness_requires_selected_backfill_record_table_family_to_match_requested_path() {
+    let mut backfill_preflight = ready_backfill_preflight();
+    backfill_preflight
+        .selected_record
+        .as_mut()
+        .expect("selected record")
+        .table_family = "order_book_snapshots_fixed_depth".to_string();
+
+    let report = evaluate_backfill_readiness(
+        "synthetic-readiness",
+        backfill_preflight,
+        candidate_source_proof_preflight("trades"),
+        ready_binding_coverage(),
+        "trades",
+        "TradeTick",
+        supported_data_paths(),
+    );
+
+    assert_eq!(report.status, BackfillReadinessStatus::Blocked);
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillReadinessBlocker::SelectedBackfillTableFamilyMismatch)
+    );
+}
+
+#[test]
 fn readiness_blocks_when_binding_coverage_blocks() {
     let report = evaluate_backfill_readiness(
         "synthetic-readiness",
@@ -558,6 +585,7 @@ fn ready_backfill_preflight_with_proof(
         selected_record: Some(BackfillPreflightSelectedRecord {
             record_id: "synthetic-backfill-record".to_string(),
             source_binding: source_binding.to_string(),
+            table_family: "trades".to_string(),
             source_proof_id: source_proof_id.to_string(),
             source_proof_version,
             accepted_objects: 1,

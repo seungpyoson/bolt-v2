@@ -600,22 +600,21 @@ fn coverage_ledger_writer_reads_toml_spec_and_writes_artifact() {
         format!(
             r#"
 ledger_id = "ledger-synthetic-spec"
+output_dir = "{}"
 
 [[manifest]]
 manifest_uri = "manifest://synthetic/spec-a.json"
 path = "{}"
 source_proof_status = "accepted"
 "#,
+            dir.path().join("coverage-ledger").display(),
             manifest_path.display()
         ),
     )
     .expect("write spec");
 
-    let artifact = write_coverage_ledger_artifact_from_spec_file(
-        &dir.path().join("coverage-ledger"),
-        &spec_path,
-    )
-    .expect("write coverage ledger from spec file");
+    let artifact = write_coverage_ledger_artifact_from_spec_file(&spec_path)
+        .expect("write coverage ledger from spec file");
 
     let ledger: BackfillCoverageLedger =
         serde_json::from_slice(&fs::read(&artifact.path).expect("read ledger"))

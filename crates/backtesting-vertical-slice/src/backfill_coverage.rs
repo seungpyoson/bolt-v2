@@ -274,6 +274,7 @@ pub struct BackfillCoverageManifestFile {
 #[serde(deny_unknown_fields)]
 pub struct BackfillCoverageLedgerSpec {
     pub ledger_id: String,
+    pub output_dir: PathBuf,
     #[serde(rename = "manifest", default)]
     pub manifests: Vec<BackfillCoverageManifestFile>,
     #[serde(rename = "inventory", default)]
@@ -619,7 +620,6 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
 }
 
 pub fn write_coverage_ledger_artifact_from_spec_file(
-    output_dir: &Path,
     spec_path: &Path,
 ) -> Result<BackfillCoverageLedgerArtifact, BackfillCoverageManifestFileError> {
     let path_display = spec_path.display().to_string();
@@ -636,7 +636,7 @@ pub fn write_coverage_ledger_artifact_from_spec_file(
         }
     })?;
     write_coverage_ledger_artifact_from_manifest_files(
-        output_dir,
+        &spec.output_dir,
         spec.ledger_id,
         spec.manifests,
         spec.inventories,

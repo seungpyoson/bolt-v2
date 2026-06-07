@@ -2,7 +2,7 @@
 
 use crate::bolt_v3_numeric::{UNIT_F64, is_non_negative_finite, is_positive_finite};
 use crate::bolt_v3_submit_admission::{
-    base_quantity_admission_notional, fee_inclusive_admission_notional,
+    base_quantity_admission_notional, checked_fee_inclusive_admission_notional,
 };
 use rust_decimal::{Decimal, prelude::FromPrimitive};
 
@@ -45,7 +45,7 @@ pub enum ReservationDecision {
 pub fn worst_case_reservation(commitments: &[BuyCommitment], max_fee_bps: f64) -> Option<Decimal> {
     let base = base_reservation(commitments)?;
     let max_fee_bps = non_negative_decimal(max_fee_bps)?;
-    Some(fee_inclusive_admission_notional(base, max_fee_bps))
+    checked_fee_inclusive_admission_notional(base, max_fee_bps)
 }
 
 /// Decide whether adding `candidate` keeps total reservation within collateral.
@@ -66,7 +66,12 @@ pub fn evaluate_reservation(request: ReservationRequest<'_>) -> ReservationDecis
         return ReservationDecision::Reject;
     };
 
-    if fee_inclusive_admission_notional(combined_base, max_fee_bps) > available_collateral {
+    let Some(reservation) = checked_fee_inclusive_admission_notional(combined_base, max_fee_bps)
+    else {
+        return ReservationDecision::Reject;
+    };
+
+    if reservation > available_collateral {
         ReservationDecision::Reject
     } else {
         ReservationDecision::Admit
@@ -225,6 +230,23 @@ mod tests {
                 candidate: BuyCommitment::new(0.40, 5.0),
                 max_fee_bps: 0.0,
                 available_collateral: f64::MAX,
+            }),
+            ReservationDecision::Reject
+        );
+    }
+
+    #[test]
+    fn fee_multiplier_overflow_fails_closed() {
+        let commitment = BuyCommitment::new(1.0, 1.0e28);
+        let max_fee_bps = 800_000.0;
+
+        assert_eq!(worst_case_reservation(&[commitment], max_fee_bps), None);
+        assert_eq!(
+            evaluate_reservation(ReservationRequest {
+                open: &[],
+                candidate: commitment,
+                max_fee_bps,
+                available_collateral: 1.0,
             }),
             ReservationDecision::Reject
         );

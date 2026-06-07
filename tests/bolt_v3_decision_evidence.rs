@@ -44,6 +44,13 @@ fn latest_entry_decision_evidence_chain_binds_snapshot_order_intent_and_admissio
         .expect("complete entry decision evidence chain should parse");
 
     assert_eq!(chain.snapshot.client_order_id, "client-order-one");
+    let snapshot = &lines[0]["snapshot"];
+    assert_eq!(snapshot["reference_current_price"], "3100.5");
+    let forbidden_reference_price_key = ["reference", "fair", "value"].join("_");
+    assert!(
+        snapshot.get(&forbidden_reference_price_key).is_none(),
+        "strategy input evidence must not expose the old fair-value name"
+    );
     assert_eq!(chain.intent.client_order_id, chain.snapshot.client_order_id);
     assert_eq!(
         chain.admission.client_order_id,
@@ -250,7 +257,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         price_to_beat_value: "3100".to_string(),
         reference_quote_ts_event: 1200,
         spot_price: "3100.5".to_string(),
-        reference_fair_value: Some("3100.5".to_string()),
+        reference_current_price: Some("3100.5".to_string()),
         realized_volatility: "1.5".to_string(),
         seconds_to_market_end: 300,
         pricing_kurtosis: "0".to_string(),

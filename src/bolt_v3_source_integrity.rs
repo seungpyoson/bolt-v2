@@ -200,8 +200,12 @@ mod tests {
     // quote state on interval transition and using strategy clock time.
     // Re-derived again by #606 after removing the legacy strategy quote path
     // and making reference_current_price the single decision input.
+    // Re-derived again by #606 after renaming strategy input evidence from the
+    // retired fair-value field to reference_current_price.
+    // Re-derived again by #606 after final reference_current_price test-name
+    // cleanup in the canonical strategy source set.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "68531e2b00da968f487abec91096dce8d87622e732bdf861f9e388e3d0d164da";
+        "bf3f0207cb2b76dae08c5ec6e2e58d68092523d4f79f2f8c64b8c58bf898955d";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

@@ -27,7 +27,7 @@ fn interval_open_does_not_use_reference_price_without_source_bound_price_to_beat
     strategy.observe_reference_snapshot(&ReferenceSnapshot {
         ts_ms: 1_000,
         topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_107.0),
+        reference_current_price: Some(3_107.0),
         confidence: 1.0,
         venues: vec![
             oracle_venue("reference", 1.0, 3_100.0, 1_000),
@@ -53,7 +53,7 @@ fn interval_open_uses_source_bound_price_to_beat_over_reference() {
     strategy.observe_reference_snapshot(&ReferenceSnapshot {
         ts_ms: 1_000,
         topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_107.0),
+        reference_current_price: Some(3_107.0),
         confidence: 1.0,
         venues: vec![
             oracle_venue("reference", 1.0, 3_100.0, 1_000),
@@ -72,7 +72,7 @@ fn interval_open_does_not_use_fused_reference_without_source_bound_price_to_beat
     strategy.observe_reference_snapshot(&ReferenceSnapshot {
         ts_ms: 1_000,
         topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_107.0),
+        reference_current_price: Some(3_107.0),
         confidence: 1.0,
         venues: vec![],
     });

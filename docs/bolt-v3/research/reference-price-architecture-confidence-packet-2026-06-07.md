@@ -27,27 +27,33 @@ Verification run after implementation:
 
 - `cargo fmt --check`: passed.
 - `git diff --check`: passed.
-- `cargo test --locked --test bolt_v3_reference_price -- --nocapture`: 2 passed.
-- `cargo test --locked --test bolt_v3_strategy_registration binary_oracle_runtime_mapping -- --nocapture`: 26 passed.
-- `cargo test --locked --test bolt_v3_polyresearch_auth -- --nocapture`: 2 passed.
-- `cargo test --locked --test bolt_v3_chainlink_registration -- --nocapture`: 1 passed.
-- `cargo test --locked --test config_parsing -- --nocapture`: 191 passed.
+- `cargo test --locked --all-targets`: passed after re-deriving the source-integrity digest for the final strategy source set.
+- `cargo test --locked --test bolt_v3_decision_evidence -- --nocapture`: 11 passed.
+- `cargo test --locked strategies::binary_oracle_edge_taker::tests::pricing -- --nocapture`: 38 selected strategy pricing tests passed.
+- `cargo test --locked strategies::binary_oracle_edge_taker::tests::reference_price -- --nocapture`: 6 selected strategy reference-price tests passed.
+- `cargo test --locked --test bolt_v3_reference_price --test bolt_v3_reference_price_config --test bolt_v3_reference_price_runtime --test bolt_v3_reference_provider_registration -- --nocapture`: 2 + 13 + 11 + 2 passed.
+- `cargo test --locked --test bolt_v3_strategy_registration --test bolt_v3_polyresearch_auth --test bolt_v3_chainlink_registration --test config_parsing -- --nocapture`: 30 + 2 + 1 + 186 passed.
+- `cargo test --locked bolt_v3_source_integrity::tests -- --nocapture`: 10 selected source-integrity tests passed after the digest update.
 - `cargo clippy --locked --all-targets -- -D warnings`: passed.
 - `just source-fence`: passed.
-- Focused supplemental targets also passed during development: `bolt_v3_reference_price_config`, `bolt_v3_reference_price_runtime`, `bolt_v3_reference_provider_registration`, and `cargo test --locked reference_price -- --nocapture`.
 
 Source-proof interpretation:
 
 - Retired gate/readiness/canary search returned no matches in the requested production/docs surface.
+- Scoped retired quote-reference block search returned no matches in active runtime/config/current PR surfaces.
 - `price_to_beat` search returned no matches in `src/bolt_v3_providers/polyresearch.rs`, `src/bolt_v3_providers/chainlink_reference.rs`, `src/bolt_v3_reference_price.rs`, or `tests/bolt_v3_reference_price.rs`.
-- Focused reference-price/provider surface contains no fair-value/per-tick/fastest/fallback-price naming.
-- `apiKey` appears only in PolyResearch protocol query handling; `/bolt/polyresearch/api-key` appears only as an SSM parameter-name fixture and is intentionally not a testnet path.
+- Focused stale-name/source-selection search returns only unrelated first-initializer logger text, not reference-price selection code.
+- `apiKey` appears only in PolyResearch protocol query handling; `/bolt/polyresearch/api-key` appears only as an SSM parameter-name fixture and is intentionally not a testnet path. Secret-source search hits otherwise remain existing guard/tests/protocol strings, not new fallback paths.
+
+TDD ledger for the final review cleanup:
+
+- RED: added an integration assertion that strategy input evidence serializes `reference_current_price` and not the retired field name; `cargo test --locked --test bolt_v3_decision_evidence latest_entry_decision_evidence_chain_binds_snapshot_order_intent_and_admission -- --nocapture` failed with `left: Null` for `snapshot["reference_current_price"]`.
+- GREEN: renamed the evidence field and strategy/test references to `reference_current_price`; the focused evidence test, full `bolt_v3_decision_evidence` integration suite, strategy pricing tests, strategy reference-price tests, source-integrity tests, and all-targets gate passed.
 
 Remaining gates:
 
-- Live provider frame parsing/subscription is not implemented in this local slice; provider clients are registration-boundary data-only stubs until provider schema evidence and live verification are approved.
-- No live verification has been run. It remains blocked until the implementation PR head is green and the operator explicitly approves the live check.
-- PRR live provider implementation, Chainlink live provider implementation, PR creation/push, and CI confirmation are still pending.
+- No live verification has been run. It remains blocked until the exact implementation PR head is green and the operator explicitly approves the live check on a reconfirmed target host.
+- The PR remains implementation-only until that approval; live checks must restore the target service state, logging overrides, and debug overrides after the short run.
 
 ## Required Evidence
 

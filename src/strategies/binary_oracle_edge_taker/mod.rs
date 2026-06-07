@@ -255,7 +255,7 @@ struct EffectiveVenueState {
 struct ReferenceSnapshot {
     ts_ms: u64,
     topic: String,
-    fair_value: Option<f64>,
+    reference_current_price: Option<f64>,
     confidence: f64,
     venues: Vec<EffectiveVenueState>,
 }
@@ -460,18 +460,21 @@ impl PricingState {
         min_agreement_corr: f64,
         max_jitter_ms: u64,
     ) {
-        if let Some(fair_value) = snapshot
-            .fair_value
-            .filter(|fair_value| fair_value.is_finite() && *fair_value > 0.0)
+        if let Some(reference_current_price) =
+            snapshot
+                .reference_current_price
+                .filter(|reference_current_price| {
+                    reference_current_price.is_finite() && *reference_current_price > 0.0
+                })
             && self
                 .last_reference_current_price_ts_ms
                 .is_none_or(|last| snapshot.ts_ms > last)
         {
             self.last_reference_current_price_ts_ms = Some(snapshot.ts_ms);
-            self.last_reference_current_price = Some(fair_value);
+            self.last_reference_current_price = Some(reference_current_price);
             self.fast_spot = Some(FastSpotObservation {
                 venue: snapshot.topic.clone(),
-                price: fair_value,
+                price: reference_current_price,
                 observed_ts_ms: snapshot.ts_ms,
             });
         }
@@ -3753,7 +3756,7 @@ impl BinaryOracleEdgeTaker {
             price_to_beat_value: evidence_number(price_to_beat),
             reference_quote_ts_event,
             spot_price: evidence_number(spot_price),
-            reference_fair_value: self
+            reference_current_price: self
                 .pricing
                 .last_reference_current_price
                 .map(evidence_number),

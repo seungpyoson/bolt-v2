@@ -98,7 +98,7 @@ fn pricing_state_requires_fast_spot_for_pricing_and_keeps_reference_separate() {
     let snapshot = ReferenceSnapshot {
         ts_ms: 1_100,
         topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_101.0),
+        reference_current_price: Some(3_101.0),
         confidence: 1.0,
         venues: vec![
             oracle_venue("reference", 1.0, 3_101.0, 1_100),
@@ -114,7 +114,7 @@ fn pricing_state_requires_fast_spot_for_pricing_and_keeps_reference_separate() {
 }
 
 #[test]
-fn pricing_state_reference_snapshot_rejects_stale_fair_value() {
+fn pricing_state_reference_snapshot_rejects_stale_reference_current_price() {
     let config = test_strategy().config.clone();
     let mut pricing = PricingState::from_config(&taker_pricing_config(&config));
 
@@ -146,7 +146,7 @@ fn pricing_state_reference_snapshot_rejects_stale_fair_value() {
 }
 
 #[test]
-fn pricing_state_reference_snapshot_processes_signal_candidates_when_fair_value_is_stale() {
+fn stale_reference_current_price_still_processes_signal_candidates() {
     let config = test_strategy().config.clone();
     let mut pricing = PricingState::from_config(&taker_pricing_config(&config));
     let signal_venue = std::any::type_name::<PricingState>();
@@ -163,7 +163,7 @@ fn pricing_state_reference_snapshot_processes_signal_candidates_when_fair_value_
         &ReferenceSnapshot {
             ts_ms: TEST_PRICING_SNAPSHOT_STALE_REFERENCE_TS_MS,
             topic: std::any::type_name::<ReferenceSnapshot>().to_string(),
-            fair_value: Some(TEST_PRICING_SNAPSHOT_MISMATCHED_STALE_REFERENCE_PRICE),
+            reference_current_price: Some(TEST_PRICING_SNAPSHOT_MISMATCHED_STALE_REFERENCE_PRICE),
             confidence: 1.0,
             venues: vec![orderbook_venue(
                 signal_venue,
@@ -204,7 +204,7 @@ fn pricing_state_requires_reference_anchor_for_fast_spot_selection() {
         &ReferenceSnapshot {
             ts_ms: 1_000,
             topic: "platform.reference.test.spot".to_string(),
-            fair_value: None,
+            reference_current_price: None,
             confidence: 1.0,
             venues: vec![orderbook_venue("bybit", 0.9, 3_102.0, 1_000)],
         },
@@ -227,7 +227,7 @@ fn pricing_state_applies_lead_quality_thresholds() {
     let snapshot = ReferenceSnapshot {
         ts_ms: 1_000,
         topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_100.0),
+        reference_current_price: Some(3_100.0),
         confidence: 1.0,
         venues: vec![
             oracle_venue("reference", 1.0, 3_100.0, 1_000),
@@ -256,7 +256,7 @@ fn pricing_state_clears_fast_spot_when_no_fast_venue_remains() {
         &ReferenceSnapshot {
             ts_ms: 1_000,
             topic: "platform.reference.test.spot".to_string(),
-            fair_value: Some(3_100.0),
+            reference_current_price: Some(3_100.0),
             confidence: 1.0,
             venues: vec![
                 oracle_venue("reference", 1.0, 3_100.0, 1_000),
@@ -272,7 +272,7 @@ fn pricing_state_clears_fast_spot_when_no_fast_venue_remains() {
         &ReferenceSnapshot {
             ts_ms: 1_100,
             topic: "platform.reference.test.spot".to_string(),
-            fair_value: Some(3_101.0),
+            reference_current_price: Some(3_101.0),
             confidence: 1.0,
             venues: vec![oracle_venue("reference", 1.0, 3_101.0, 1_100)],
         },
@@ -303,7 +303,7 @@ fn realized_vol_warms_across_lead_venue_switches_when_each_venue_has_history() {
     strategy.config.vol_min_observations = 3;
     strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
-    for (ts_ms, venue_name, fair_value, fast_price) in [
+    for (ts_ms, venue_name, reference_current_price, fast_price) in [
         (1_000, "bybit", 3_100.0, 3_100.0),
         (1_100, "okx", 3_100.2, 3_100.2),
         (2_000, "bybit", 3_101.0, 3_101.0),
@@ -315,10 +315,10 @@ fn realized_vol_warms_across_lead_venue_switches_when_each_venue_has_history() {
         strategy.observe_reference_snapshot(&ReferenceSnapshot {
             ts_ms,
             topic: "platform.reference.test.spot".to_string(),
-            fair_value: Some(fair_value),
+            reference_current_price: Some(reference_current_price),
             confidence: 1.0,
             venues: vec![
-                oracle_venue("reference", 1.0, fair_value, ts_ms),
+                oracle_venue("reference", 1.0, reference_current_price, ts_ms),
                 orderbook_venue(venue_name, 0.9, fast_price, ts_ms),
             ],
         });
@@ -341,7 +341,7 @@ fn realized_vol_warms_for_eligible_nonlead_candidates_before_selection() {
     strategy.config.lead_agreement_min_corr = 0.999;
     strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
-    for (ts_ms, fair_value, bybit_price, okx_price) in [
+    for (ts_ms, reference_current_price, bybit_price, okx_price) in [
         (1_000, 3_100.0, 3_100.0, 3_100.3),
         (2_000, 3_101.0, 3_101.0, 3_101.3),
         (3_000, 3_102.0, 3_102.0, 3_102.3),
@@ -350,10 +350,10 @@ fn realized_vol_warms_for_eligible_nonlead_candidates_before_selection() {
         strategy.observe_reference_snapshot(&ReferenceSnapshot {
             ts_ms,
             topic: "platform.reference.test.spot".to_string(),
-            fair_value: Some(fair_value),
+            reference_current_price: Some(reference_current_price),
             confidence: 1.0,
             venues: vec![
-                oracle_venue("reference", 1.0, fair_value, ts_ms),
+                oracle_venue("reference", 1.0, reference_current_price, ts_ms),
                 orderbook_venue("bybit", 0.9, bybit_price, ts_ms),
                 orderbook_venue("okx", 0.8, okx_price, ts_ms),
             ],
@@ -376,7 +376,7 @@ fn realized_vol_warms_for_eligible_nonlead_candidates_before_selection() {
     strategy.observe_reference_snapshot(&ReferenceSnapshot {
         ts_ms: 5_000,
         topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_104.0),
+        reference_current_price: Some(3_104.0),
         confidence: 1.0,
         venues: vec![
             oracle_venue("reference", 1.0, 3_104.0, 5_000),
@@ -401,7 +401,7 @@ fn realized_vol_does_not_prewarm_ineligible_nonlead_candidates() {
     strategy.config.lead_agreement_min_corr = 0.999;
     strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
-    for (ts_ms, fair_value, bybit_price, okx_price) in [
+    for (ts_ms, reference_current_price, bybit_price, okx_price) in [
         (1_000, 3_100.0, 3_100.0, 3_000.0),
         (2_000, 3_101.0, 3_101.0, 3_001.0),
         (3_000, 3_102.0, 3_102.0, 3_002.0),
@@ -409,10 +409,10 @@ fn realized_vol_does_not_prewarm_ineligible_nonlead_candidates() {
         strategy.observe_reference_snapshot(&ReferenceSnapshot {
             ts_ms,
             topic: "platform.reference.test.spot".to_string(),
-            fair_value: Some(fair_value),
+            reference_current_price: Some(reference_current_price),
             confidence: 1.0,
             venues: vec![
-                oracle_venue("reference", 1.0, fair_value, ts_ms),
+                oracle_venue("reference", 1.0, reference_current_price, ts_ms),
                 orderbook_venue("bybit", 0.9, bybit_price, ts_ms),
                 orderbook_venue("okx", 0.8, okx_price, ts_ms),
             ],
@@ -427,7 +427,7 @@ fn realized_vol_does_not_prewarm_ineligible_nonlead_candidates() {
     strategy.observe_reference_snapshot(&ReferenceSnapshot {
         ts_ms: 4_000,
         topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_103.0),
+        reference_current_price: Some(3_103.0),
         confidence: 1.0,
         venues: vec![
             oracle_venue("reference", 1.0, 3_103.0, 4_000),
@@ -451,7 +451,7 @@ fn realized_vol_does_not_borrow_ready_state_from_a_different_venue() {
     strategy.config.vol_min_observations = 2;
     strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
-    for (ts_ms, fair_value, fast_price) in [
+    for (ts_ms, reference_current_price, fast_price) in [
         (1_000, 3_100.0, 3_100.0),
         (2_000, 3_101.0, 3_101.0),
         (3_000, 3_102.0, 3_102.0),
@@ -459,10 +459,10 @@ fn realized_vol_does_not_borrow_ready_state_from_a_different_venue() {
         strategy.observe_reference_snapshot(&ReferenceSnapshot {
             ts_ms,
             topic: "platform.reference.test.spot".to_string(),
-            fair_value: Some(fair_value),
+            reference_current_price: Some(reference_current_price),
             confidence: 1.0,
             venues: vec![
-                oracle_venue("reference", 1.0, fair_value, ts_ms),
+                oracle_venue("reference", 1.0, reference_current_price, ts_ms),
                 orderbook_venue("bybit", 0.9, fast_price, ts_ms),
             ],
         });
@@ -476,7 +476,7 @@ fn realized_vol_does_not_borrow_ready_state_from_a_different_venue() {
     strategy.observe_reference_snapshot(&ReferenceSnapshot {
         ts_ms: 3_100,
         topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_102.2),
+        reference_current_price: Some(3_102.2),
         confidence: 1.0,
         venues: vec![
             oracle_venue("reference", 1.0, 3_102.2, 3_100),
@@ -503,7 +503,7 @@ fn realized_vol_resets_per_venue_after_gap_even_if_other_venue_keeps_warming() {
     strategy.config.lead_jitter_max_ms = 10_000;
     strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
-    for (ts_ms, venue_name, fair_value, fast_price) in [
+    for (ts_ms, venue_name, reference_current_price, fast_price) in [
         (1_000, "bybit", 3_100.0, 3_100.0),
         (1_500, "bybit", 3_101.0, 3_101.0),
         (2_600, "okx", 3_101.5, 3_101.5),
@@ -512,10 +512,10 @@ fn realized_vol_resets_per_venue_after_gap_even_if_other_venue_keeps_warming() {
         strategy.observe_reference_snapshot(&ReferenceSnapshot {
             ts_ms,
             topic: "platform.reference.test.spot".to_string(),
-            fair_value: Some(fair_value),
+            reference_current_price: Some(reference_current_price),
             confidence: 1.0,
             venues: vec![
-                oracle_venue("reference", 1.0, fair_value, ts_ms),
+                oracle_venue("reference", 1.0, reference_current_price, ts_ms),
                 orderbook_venue(venue_name, 0.9, fast_price, ts_ms),
             ],
         });
@@ -533,7 +533,7 @@ fn realized_vol_resets_per_venue_after_gap_even_if_other_venue_keeps_warming() {
     strategy.observe_reference_snapshot(&ReferenceSnapshot {
         ts_ms: 4_201,
         topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_102.5),
+        reference_current_price: Some(3_102.5),
         confidence: 1.0,
         venues: vec![
             oracle_venue("reference", 1.0, 3_102.5, 4_201),
@@ -611,7 +611,7 @@ fn live_fair_probability_is_computed_from_strategy_state_once_vol_warms() {
     strategy.config.vol_min_observations = 3;
     strategy.pricing = PricingState::from_config(&taker_pricing_config(&strategy.config));
 
-    for (ts_ms, fair_value, fast_spot_price) in [
+    for (ts_ms, reference_current_price, fast_spot_price) in [
         (1_000, 3_100.0, 3_100.0),
         (2_000, 3_101.0, 3_101.5),
         (3_000, 3_102.0, 3_103.0),
@@ -620,7 +620,7 @@ fn live_fair_probability_is_computed_from_strategy_state_once_vol_warms() {
         strategy.observe_reference_snapshot(&ReferenceSnapshot {
             ts_ms,
             topic: "platform.reference.test.spot".to_string(),
-            fair_value: Some(fair_value),
+            reference_current_price: Some(reference_current_price),
             confidence: 1.0,
             venues: vec![orderbook_venue("bybit", 0.9, fast_spot_price, ts_ms)],
         });
@@ -1007,7 +1007,7 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
     strategy.observe_reference_snapshot(&ReferenceSnapshot {
         ts_ms: 1_200,
         topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(3_100.5),
+        reference_current_price: Some(3_100.5),
         confidence: 1.0,
         venues: vec![
             oracle_venue("reference", 1.0, 3_100.5, 1_200),

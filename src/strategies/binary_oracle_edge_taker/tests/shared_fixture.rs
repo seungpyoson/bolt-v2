@@ -1205,7 +1205,7 @@ pub(super) fn reference_tick(timestamp_ms: u64, price: f64) -> ReferenceSnapshot
     ReferenceSnapshot {
         ts_ms: timestamp_ms,
         topic: "platform.reference.test.spot".to_string(),
-        fair_value: Some(price),
+        reference_current_price: Some(price),
         confidence: 1.0,
         venues: Vec::new(),
     }

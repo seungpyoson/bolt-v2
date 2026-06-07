@@ -134,6 +134,57 @@ impl Error for BackfillCoverageLedgerError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackfillCoverageManifestFileError {
+    ReadManifest {
+        manifest_uri: String,
+        path: String,
+        error: String,
+    },
+    ParseManifestJson {
+        manifest_uri: String,
+        path: String,
+        error: String,
+    },
+    BuildLedger(BackfillCoverageLedgerError),
+    WriteArtifact(BackfillCoverageWriteError),
+}
+
+impl fmt::Display for BackfillCoverageManifestFileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ReadManifest {
+                manifest_uri,
+                path,
+                error,
+            } => write!(
+                f,
+                "read backfill coverage manifest {manifest_uri} from {path}: {error}"
+            ),
+            Self::ParseManifestJson {
+                manifest_uri,
+                path,
+                error,
+            } => write!(
+                f,
+                "parse backfill coverage manifest JSON {manifest_uri} from {path}: {error}"
+            ),
+            Self::BuildLedger(error) => write!(f, "build backfill coverage ledger: {error}"),
+            Self::WriteArtifact(error) => write!(f, "write backfill coverage ledger: {error}"),
+        }
+    }
+}
+
+impl Error for BackfillCoverageManifestFileError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::BuildLedger(error) => Some(error),
+            Self::WriteArtifact(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackfillCoverageWriteError {
     CreateDir { path: String, error: String },
     ReadExisting { path: String, error: String },
@@ -194,6 +245,13 @@ pub struct BackfillCoverageManifestEvidence {
 pub struct BackfillCoverageManifestJson {
     pub manifest_uri: String,
     pub summary: Value,
+    pub source_proof_status: Option<SourceProofStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackfillCoverageManifestFile {
+    pub manifest_uri: String,
+    pub path: PathBuf,
     pub source_proof_status: Option<SourceProofStatus>,
 }
 
@@ -487,6 +545,52 @@ pub fn write_coverage_ledger_artifact(
         bytes: bytes.len() as u64,
         record_count: ledger.records.len() as u64,
     })
+}
+
+pub fn write_coverage_ledger_artifact_from_manifest_files(
+    output_dir: &Path,
+    ledger_id: impl Into<String>,
+    manifest_files: Vec<BackfillCoverageManifestFile>,
+    inventories: Vec<BackfillPhysicalInventory>,
+) -> Result<BackfillCoverageLedgerArtifact, BackfillCoverageManifestFileError> {
+    let manifest_summaries = manifest_files
+        .into_iter()
+        .map(|input| {
+            let BackfillCoverageManifestFile {
+                manifest_uri,
+                path,
+                source_proof_status,
+            } = input;
+            let path_display = path.display().to_string();
+            let bytes = fs::read(&path).map_err(|error| {
+                BackfillCoverageManifestFileError::ReadManifest {
+                    manifest_uri: manifest_uri.clone(),
+                    path: path_display.clone(),
+                    error: error.to_string(),
+                }
+            })?;
+            let summary = serde_json::from_slice(&bytes).map_err(|error| {
+                BackfillCoverageManifestFileError::ParseManifestJson {
+                    manifest_uri: manifest_uri.clone(),
+                    path: path_display,
+                    error: error.to_string(),
+                }
+            })?;
+            Ok(BackfillCoverageManifestJson {
+                manifest_uri,
+                summary,
+                source_proof_status,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let ledger = BackfillCoverageLedger::from_manifest_json_summaries(
+        ledger_id,
+        manifest_summaries,
+        inventories,
+    )
+    .map_err(BackfillCoverageManifestFileError::BuildLedger)?;
+    write_coverage_ledger_artifact(output_dir, &ledger)
+        .map_err(BackfillCoverageManifestFileError::WriteArtifact)
 }
 
 impl BackfillCoverageSummary {

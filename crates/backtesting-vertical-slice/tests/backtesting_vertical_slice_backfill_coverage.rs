@@ -1,12 +1,14 @@
-use std::fs;
+use std::{fs, path::PathBuf};
 
 use backtesting_vertical_slice::{
     backfill_coverage::{
         BACKFILL_COVERAGE_LEDGER_FILE, BackfillCoverageIssue, BackfillCoverageLedger,
         BackfillCoverageLedgerError, BackfillCoverageManifestEvidence,
+        BackfillCoverageManifestFile, BackfillCoverageManifestFileError,
         BackfillCoverageManifestJson, BackfillCoverageParseError, BackfillCoverageStatus,
         BackfillCoverageWriteError, BackfillPhysicalInventory, BackfillWriteMode,
         classify_manifest_coverage, classify_physical_inventory, write_coverage_ledger_artifact,
+        write_coverage_ledger_artifact_from_manifest_files,
     },
     source_proof::SourceProofStatus,
 };
@@ -475,4 +477,106 @@ fn coverage_ledger_writer_rejects_existing_mismatched_artifact_without_overwrite
         fs::read_to_string(&path).expect("dirty artifact remains"),
         r#"{"schema_version":"wrong"}"#
     );
+}
+
+#[test]
+fn coverage_ledger_writer_reads_manifest_json_files_and_writes_artifact() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let manifest_dir = dir.path().join("manifests");
+    fs::create_dir_all(&manifest_dir).expect("manifest dir");
+    let first_path = manifest_dir.join("first.json");
+    let second_path = manifest_dir.join("second.json");
+    fs::write(
+        &first_path,
+        serde_json::to_vec(&serde_json::json!({
+            "run_id": "manifest-synthetic-file-a",
+            "source_binding": "synthetic-native-trades",
+            "source_proof_id": "source-proof-synthetic-native-trades",
+            "source_proof_version": 1,
+            "write_mode": "s3_staging",
+            "canonical_s3_write": false,
+            "completed_objects": 2,
+            "completed_bytes": 600,
+            "errors": []
+        }))
+        .expect("serialize manifest"),
+    )
+    .expect("write manifest");
+    fs::write(
+        &second_path,
+        serde_json::to_vec(&serde_json::json!({
+            "run_id": "manifest-synthetic-file-b",
+            "source_binding": "synthetic-native-trades",
+            "source_proof_id": "source-proof-synthetic-native-trades",
+            "source_proof_version": 1,
+            "write_mode": "s3_staging",
+            "canonical_s3_write": false,
+            "counts": {
+                "payload_object_count": 4,
+                "payload_bytes": 900,
+                "error_count": 0
+            }
+        }))
+        .expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let output_dir = dir.path().join("coverage-ledger");
+    let artifact = write_coverage_ledger_artifact_from_manifest_files(
+        &output_dir,
+        "ledger-synthetic-files",
+        vec![
+            manifest_file("manifest://synthetic/file-a.json", first_path),
+            manifest_file("manifest://synthetic/file-b.json", second_path),
+        ],
+        vec![],
+    )
+    .expect("write coverage ledger from manifest files");
+
+    assert_eq!(artifact.record_count, 2);
+    let ledger: BackfillCoverageLedger =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read ledger"))
+            .expect("parse ledger");
+    assert_eq!(ledger.summary.accepted_records, 2);
+    assert_eq!(ledger.summary.accepted_objects, 6);
+    assert_eq!(ledger.summary.accepted_bytes, 1_500);
+}
+
+#[test]
+fn coverage_ledger_writer_reports_manifest_uri_for_invalid_json_file() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let manifest_path = dir.path().join("bad.json");
+    fs::write(&manifest_path, b"{not-json").expect("write invalid manifest");
+
+    let err = write_coverage_ledger_artifact_from_manifest_files(
+        &dir.path().join("coverage-ledger"),
+        "ledger-synthetic-files",
+        vec![manifest_file(
+            "manifest://synthetic/bad.json",
+            manifest_path.clone(),
+        )],
+        vec![],
+    )
+    .unwrap_err();
+
+    match err {
+        BackfillCoverageManifestFileError::ParseManifestJson {
+            manifest_uri,
+            path,
+            error,
+        } => {
+            assert_eq!(manifest_uri, "manifest://synthetic/bad.json");
+            assert_eq!(path, manifest_path.display().to_string());
+            assert!(error.contains("key must be a string"), "{error}");
+        }
+        other => panic!("unexpected error {other:?}"),
+    }
+}
+
+fn manifest_file(manifest_uri: &str, path: PathBuf) -> BackfillCoverageManifestFile {
+    BackfillCoverageManifestFile {
+        manifest_uri: manifest_uri.to_string(),
+        path,
+        source_proof_status: Some(SourceProofStatus::Accepted),
+    }
 }

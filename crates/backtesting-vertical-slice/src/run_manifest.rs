@@ -1721,7 +1721,7 @@ mod tests {
             instrument_universe_id: "u".to_string(),
             raw_sample_uri: object.s3_uri.clone(),
             raw_sample_hash: object.sha256.clone(),
-            schema_sample_uri: "s".to_string(),
+            schema_sample_uri: "s3://bolt-parquet/.../schema-sample.json".to_string(),
             schema_sample_hash: "h".to_string(),
             license_ref: "l".to_string(),
             retention_ref: "r".to_string(),

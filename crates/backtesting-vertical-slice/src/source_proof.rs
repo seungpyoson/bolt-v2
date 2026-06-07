@@ -332,6 +332,11 @@ pub enum AcceptanceError {
     ManifestRecordIncomplete(&'static str),
     /// The verified object hash does not match the manifest record hash.
     ContentHashMismatch { expected: String, actual: String },
+    /// The selected manifest object is not the raw sample object named by the
+    /// accepted source proof.
+    RawSampleUriMismatch { expected: String, actual: String },
+    /// A raw/sample artifact URI does not point at staged S3 object storage.
+    InvalidStagedUri { field: &'static str, uri: String },
     /// The selected object lies outside the proof's proven coverage window.
     OutsideCoverage { object_date: String },
     /// The proof coverage window is not contained by the requested window.
@@ -398,6 +403,15 @@ impl std::fmt::Display for AcceptanceError {
                     f,
                     "content hash mismatch: expected {expected}, got {actual}"
                 )
+            }
+            Self::RawSampleUriMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "raw_sample_uri mismatch: expected proof raw_sample_uri {expected:?}, got manifest s3_uri {actual:?}"
+                )
+            }
+            Self::InvalidStagedUri { field, uri } => {
+                write!(f, "{field} must be a staged s3:// URI, got {uri:?}")
             }
             Self::OutsideCoverage { object_date } => {
                 write!(
@@ -524,6 +538,8 @@ impl SourceProofReport {
             return Err(AcceptanceError::ProofRejected);
         }
         self.check_required_identity()?;
+        ensure_staged_s3_uri("raw_sample_uri", &self.raw_sample_uri)?;
+        ensure_staged_s3_uri("schema_sample_uri", &self.schema_sample_uri)?;
         ensure_backfillable_evidence_state(self.evidence_state)?;
         ensure_source_binding_metadata_matches(self)?;
         let acceptance_scope = self
@@ -686,6 +702,14 @@ pub fn select_accepted_dataset(
     // through.
     proof.evaluate_acceptance()?;
     object.check_complete()?;
+    ensure_staged_s3_uri("raw_sample_uri", &proof.raw_sample_uri)?;
+    ensure_staged_s3_uri("s3_uri", &object.s3_uri)?;
+    if proof.raw_sample_uri.trim() != object.s3_uri.trim() {
+        return Err(AcceptanceError::RawSampleUriMismatch {
+            expected: proof.raw_sample_uri.clone(),
+            actual: object.s3_uri.clone(),
+        });
+    }
     let acceptance_scope = proof
         .acceptance_scope
         .as_ref()
@@ -762,6 +786,18 @@ pub fn select_accepted_dataset(
         object: object.clone(),
         _accepted_gate: AcceptedGate,
     })
+}
+
+fn ensure_staged_s3_uri(field: &'static str, uri: &str) -> Result<(), AcceptanceError> {
+    let uri = uri.trim();
+    if uri.starts_with("s3://") {
+        Ok(())
+    } else {
+        Err(AcceptanceError::InvalidStagedUri {
+            field,
+            uri: uri.to_string(),
+        })
+    }
 }
 
 fn source_url_matches_declared_source(source_url: &str, source_binding: &str, venue: &str) -> bool {
@@ -1719,6 +1755,33 @@ mod tests {
     }
 
     #[test]
+    fn acceptance_blocked_when_raw_sample_uri_is_not_staged_to_s3() {
+        let mut proof = candidate_proof();
+        proof.raw_sample_uri =
+            "https://public.bybit.com/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("raw_sample_uri") && err.to_string().contains("s3://"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn acceptance_blocked_when_schema_sample_uri_is_not_staged_to_s3() {
+        let mut proof = candidate_proof();
+        proof.schema_sample_uri = "https://public.bybit.com/schema-sample.json".to_string();
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("schema_sample_uri") && err.to_string().contains("s3://"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn acceptance_blocked_when_retention_ref_missing() {
         let mut proof = candidate_proof();
         proof.retention_ref = String::new();
@@ -1775,6 +1838,43 @@ mod tests {
         let object = manifest_object();
         let err = select_accepted_dataset(&proof, &object, &object.sha256).unwrap_err();
         assert!(matches!(err, AcceptanceError::ContentHashMismatch { .. }));
+    }
+
+    #[test]
+    fn ledger_rejects_manifest_object_from_different_staged_uri_than_raw_sample() {
+        let proof = candidate_proof()
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.s3_uri =
+            "s3://bolt-parquet/.../symbol=BNBUSDC/object=different-object.csv.gz".to_string();
+
+        let err = select_accepted_dataset(&proof, &object, &object.sha256).unwrap_err();
+
+        assert!(
+            err.to_string().contains("raw_sample_uri") && err.to_string().contains("s3_uri"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn ledger_rejects_raw_sample_that_was_not_staged_to_s3() {
+        let mut proof = candidate_proof();
+        proof.raw_sample_uri =
+            "https://public.bybit.com/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+        proof.status = SourceProofStatus::Accepted;
+        proof.acceptance_mode = Some(AcceptanceMode::Manual);
+        proof.accepted_by = Some("operator".to_string());
+        proof.accepted_at = Some("2026-06-02T00:00:00Z".to_string());
+        let mut object = manifest_object();
+        object.s3_uri = proof.raw_sample_uri.clone();
+
+        let err = select_accepted_dataset(&proof, &object, &object.sha256).unwrap_err();
+
+        assert!(
+            err.to_string().contains("raw_sample_uri") && err.to_string().contains("s3://"),
+            "{err}"
+        );
     }
 
     #[test]

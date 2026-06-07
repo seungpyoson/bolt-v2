@@ -24,6 +24,7 @@ pub mod artifact_store_secrets;
 pub mod backfill_accepted_tranche;
 pub mod backfill_binding_coverage;
 pub mod backfill_coverage;
+pub mod backfill_execution_plan;
 pub mod backfill_preflight;
 pub mod backfill_readiness;
 pub mod backfill_source_proof_scope;

@@ -95,7 +95,9 @@ There must be one runtime source of truth for RV policy and RV source identity.
 
 Each source must have a unique non-empty `source_id`. The engine stores source
 state by `source_id` only. Provider, venue, client, and instrument identifiers
-are provenance fields and must not drive engine branching.
+are provenance fields and must not drive engine branching. If multiple source IDs
+bind the same data stream, strategy forwarding must fan out each observation to
+all matching source IDs so no configured source stays shadowed.
 
 ### RV-005 Observation Validation
 

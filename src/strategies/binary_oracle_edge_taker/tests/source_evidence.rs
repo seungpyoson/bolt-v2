@@ -4,6 +4,7 @@ use super::*;
 
 const TEST_SURFACE_ID: &str = "<surface_id>";
 const TEST_SOURCE_ID: &str = "<SOURCE_ID_A>";
+const TEST_SOURCE_ID_B: &str = "<SOURCE_ID_B>";
 const TEST_TRADE_SOURCE_ID: &str = "<SOURCE_ID_TRADE>";
 const TEST_RV_INSTRUMENT_ID: &str = "<INSTRUMENT_ID_A>.<DATA_CLIENT_ID>";
 
@@ -81,6 +82,45 @@ fn surfaced_realized_volatility_quote_source_forwards_snapshot_to_pricing() {
     assert_eq!(snapshot.surface_id, TEST_SURFACE_ID);
     assert_eq!(snapshot.source_diagnostics[0].source_id, TEST_SOURCE_ID);
     assert_eq!(snapshot.source_diagnostics[0].raw_sample_count, 1);
+}
+
+#[test]
+fn surfaced_realized_volatility_forwards_duplicate_stream_bindings() {
+    let mut engine_config = test_realized_volatility_engine_config();
+    engine_config.sources.push(
+        crate::bolt_v3_realized_volatility::RealizedVolSourceConfig {
+            source_id: TEST_SOURCE_ID_B.to_string(),
+            data_client_id: "<DATA_CLIENT_ID>".to_string(),
+            instrument_id: TEST_RV_INSTRUMENT_ID.to_string(),
+            source_class: crate::bolt_v3_realized_volatility::RealizedVolSourceClass::SpotQuote,
+            sample_kind: crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Midpoint,
+            enabled: true,
+            counts_toward_quorum: true,
+            canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
+        },
+    );
+    let mut strategy = test_strategy_with_realized_volatility_surface(engine_config);
+
+    strategy
+        .on_quote(&quote_tick(TEST_RV_INSTRUMENT_ID, 100.0, 102.0, 1_000))
+        .expect("configured RV quote source should process");
+
+    let snapshot = strategy
+        .pricing
+        .latest_realized_vol_snapshot
+        .as_ref()
+        .expect("RV forwarding should publish a pricing snapshot");
+    for source_id in [TEST_SOURCE_ID, TEST_SOURCE_ID_B] {
+        let diagnostic = snapshot
+            .source_diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.source_id == source_id)
+            .expect("duplicate stream source diagnostic should exist");
+        assert_eq!(
+            diagnostic.raw_sample_count, 1,
+            "duplicate stream source {source_id} should receive the quote tick"
+        );
+    }
 }
 
 #[test]

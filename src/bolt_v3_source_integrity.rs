@@ -202,8 +202,10 @@ mod tests {
     // before entry/exit pricing so stale sources block instead of freezing RV.
     // Re-derived again after preserving signal-data bindings in surfaced RV
     // mode while keeping legacy strategy-owned RV knobs rejected.
+    // Re-derived again after forwarding duplicate stream bindings to every
+    // configured surfaced realized-volatility source ID.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "16d1cbf752ee54e0195112c546b3882348b42a2e4bfb662f560abe905939c7d7";
+        "2ae443249dda1e65cf622ba05814f91872988697b60fb31f28e18d275e9a011b";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

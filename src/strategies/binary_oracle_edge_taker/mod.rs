@@ -1125,86 +1125,93 @@ impl BinaryOracleEdgeTaker {
         })
     }
 
-    fn realized_vol_quote_observation(&self, quote: &QuoteTick) -> Option<RealizedVolObservation> {
-        let binding = self.realized_vol_source_binding_for(
-            &quote.instrument_id,
-            RealizedVolSourceClass::SpotQuote,
-            RealizedVolSampleKind::Midpoint,
-        )?;
+    fn realized_vol_quote_observations(&self, quote: &QuoteTick) -> Vec<RealizedVolObservation> {
+        let Some(bindings) = self.realized_vol_source_bindings.get(&quote.instrument_id) else {
+            return Vec::new();
+        };
         let bid = quote.bid_price.as_f64();
         let ask = quote.ask_price.as_f64();
         if !is_positive_finite(bid) || !is_positive_finite(ask) {
-            return None;
+            return Vec::new();
         }
         let midpoint = (bid + ask) / MIDPOINT_DIVISOR_F64;
         if !is_positive_finite(midpoint) {
-            return None;
+            return Vec::new();
         }
-        Some(RealizedVolObservation {
-            source_id: binding.source_id.clone(),
-            source_class: binding.source_class,
-            sample_kind: binding.sample_kind,
-            price: midpoint,
-            event_ts_ms: quote.ts_event.as_u64() / NANOS_PER_MILLI_U64,
-            recv_ts_ms: quote.ts_init.as_u64() / NANOS_PER_MILLI_U64,
-        })
+        let event_ts_ms = quote.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        let recv_ts_ms = quote.ts_init.as_u64() / NANOS_PER_MILLI_U64;
+        bindings
+            .iter()
+            .filter(|binding| {
+                binding.source_class == RealizedVolSourceClass::SpotQuote
+                    && binding.sample_kind == RealizedVolSampleKind::Midpoint
+            })
+            .map(|binding| RealizedVolObservation {
+                source_id: binding.source_id.clone(),
+                source_class: binding.source_class,
+                sample_kind: binding.sample_kind,
+                price: midpoint,
+                event_ts_ms,
+                recv_ts_ms,
+            })
+            .collect()
     }
 
-    fn realized_vol_trade_observation(&self, trade: &TradeTick) -> Option<RealizedVolObservation> {
-        let binding = self.realized_vol_source_binding_for(
-            &trade.instrument_id,
-            RealizedVolSourceClass::Trade,
-            RealizedVolSampleKind::Trade,
-        )?;
+    fn realized_vol_trade_observations(&self, trade: &TradeTick) -> Vec<RealizedVolObservation> {
+        let Some(bindings) = self.realized_vol_source_bindings.get(&trade.instrument_id) else {
+            return Vec::new();
+        };
         let price = trade.price.as_f64();
         if !is_positive_finite(price) {
-            return None;
+            return Vec::new();
         }
-        Some(RealizedVolObservation {
-            source_id: binding.source_id.clone(),
-            source_class: binding.source_class,
-            sample_kind: binding.sample_kind,
-            price,
-            event_ts_ms: trade.ts_event.as_u64() / NANOS_PER_MILLI_U64,
-            recv_ts_ms: trade.ts_init.as_u64() / NANOS_PER_MILLI_U64,
-        })
+        let event_ts_ms = trade.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        let recv_ts_ms = trade.ts_init.as_u64() / NANOS_PER_MILLI_U64;
+        bindings
+            .iter()
+            .filter(|binding| {
+                binding.source_class == RealizedVolSourceClass::Trade
+                    && binding.sample_kind == RealizedVolSampleKind::Trade
+            })
+            .map(|binding| RealizedVolObservation {
+                source_id: binding.source_id.clone(),
+                source_class: binding.source_class,
+                sample_kind: binding.sample_kind,
+                price,
+                event_ts_ms,
+                recv_ts_ms,
+            })
+            .collect()
     }
 
-    fn realized_vol_index_observation(
+    fn realized_vol_index_observations(
         &self,
         update: &IndexPriceUpdate,
-    ) -> Option<RealizedVolObservation> {
-        let binding = self.realized_vol_source_binding_for(
-            &update.instrument_id,
-            RealizedVolSourceClass::Index,
-            RealizedVolSampleKind::Index,
-        )?;
+    ) -> Vec<RealizedVolObservation> {
+        let Some(bindings) = self.realized_vol_source_bindings.get(&update.instrument_id) else {
+            return Vec::new();
+        };
         let price = update.value.as_f64();
         if !is_positive_finite(price) {
-            return None;
+            return Vec::new();
         }
-        Some(RealizedVolObservation {
-            source_id: binding.source_id.clone(),
-            source_class: binding.source_class,
-            sample_kind: binding.sample_kind,
-            price,
-            event_ts_ms: update.ts_event.as_u64() / NANOS_PER_MILLI_U64,
-            recv_ts_ms: update.ts_init.as_u64() / NANOS_PER_MILLI_U64,
-        })
-    }
-
-    fn realized_vol_source_binding_for(
-        &self,
-        instrument_id: &InstrumentId,
-        source_class: RealizedVolSourceClass,
-        sample_kind: RealizedVolSampleKind,
-    ) -> Option<&RealizedVolSourceBinding> {
-        self.realized_vol_source_bindings
-            .get(instrument_id)?
+        let event_ts_ms = update.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        let recv_ts_ms = update.ts_init.as_u64() / NANOS_PER_MILLI_U64;
+        bindings
             .iter()
-            .find(|binding| {
-                binding.source_class == source_class && binding.sample_kind == sample_kind
+            .filter(|binding| {
+                binding.source_class == RealizedVolSourceClass::Index
+                    && binding.sample_kind == RealizedVolSampleKind::Index
             })
+            .map(|binding| RealizedVolObservation {
+                source_id: binding.source_id.clone(),
+                source_class: binding.source_class,
+                sample_kind: binding.sample_kind,
+                price,
+                event_ts_ms,
+                recv_ts_ms,
+            })
+            .collect()
     }
 
     fn observe_realized_volatility(&mut self, observation: RealizedVolObservation) {
@@ -4481,7 +4488,7 @@ impl DataActor for BinaryOracleEdgeTaker {
         {
             self.observe_signal_quote(&signal_quote);
         }
-        if let Some(observation) = self.realized_vol_quote_observation(quote) {
+        for observation in self.realized_vol_quote_observations(quote) {
             self.observe_realized_volatility(observation);
         }
         Ok(())
@@ -4498,7 +4505,7 @@ impl DataActor for BinaryOracleEdgeTaker {
                 .observe_resolution_strike(update.value.as_f64(), window_open_ms, now_ms);
             self.sync_exposure_context_from_active();
         }
-        if let Some(observation) = self.realized_vol_index_observation(update) {
+        for observation in self.realized_vol_index_observations(update) {
             self.observe_realized_volatility(observation);
         }
         Ok(())
@@ -4563,7 +4570,7 @@ impl DataActor for BinaryOracleEdgeTaker {
     }
 
     fn on_trade(&mut self, trade: &TradeTick) -> anyhow::Result<()> {
-        if let Some(observation) = self.realized_vol_trade_observation(trade) {
+        for observation in self.realized_vol_trade_observations(trade) {
             self.observe_realized_volatility(observation);
         }
         if let Some(trade_flow) = self.active.trade_flow.get_mut(&trade.instrument_id) {

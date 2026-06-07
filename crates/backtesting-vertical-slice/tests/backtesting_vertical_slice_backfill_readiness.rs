@@ -71,6 +71,32 @@ fn readiness_blocks_when_backfill_preflight_did_not_require_canonical_ready() {
 }
 
 #[test]
+fn readiness_blocks_when_selected_backfill_record_is_not_canonical_ready() {
+    let mut backfill_preflight = ready_backfill_preflight();
+    backfill_preflight
+        .selected_record
+        .as_mut()
+        .expect("selected record")
+        .canonical_ready = false;
+
+    let report = evaluate_backfill_readiness(
+        "synthetic-readiness",
+        backfill_preflight,
+        candidate_source_proof_preflight("trades"),
+        ready_binding_coverage(),
+        "trades",
+        "TradeTick",
+    );
+
+    assert_eq!(report.status, BackfillReadinessStatus::Blocked);
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillReadinessBlocker::BackfillPreflightBlocked)
+    );
+}
+
+#[test]
 fn readiness_requires_selected_source_proof_table_family_to_match_requested_path() {
     let report = evaluate_backfill_readiness(
         "synthetic-readiness",

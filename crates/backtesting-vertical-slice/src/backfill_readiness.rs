@@ -205,6 +205,13 @@ pub fn evaluate_backfill_readiness(
     if backfill_preflight.selected_record.is_none() {
         blockers.push(BackfillReadinessBlocker::MissingSelectedBackfillRecord);
     }
+    if backfill_preflight
+        .selected_record
+        .as_ref()
+        .is_some_and(|record| !record.canonical_ready)
+    {
+        blockers.push(BackfillReadinessBlocker::BackfillPreflightBlocked);
+    }
     match source_proof_preflight.selected_candidate.as_ref() {
         None => blockers.push(BackfillReadinessBlocker::MissingSelectedSourceProofCandidate),
         Some(candidate) if candidate.table_family != required_table_family => {

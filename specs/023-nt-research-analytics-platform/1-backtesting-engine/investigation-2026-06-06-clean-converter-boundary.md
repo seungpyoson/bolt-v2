@@ -1143,6 +1143,18 @@ Midpoint table-family coverage audit:
   `627d528ee0dc9b30280c824ab08aa3580dfe1850c9bd1abc02f4f38275a5bb1c`.
   These reruns used existing manifest/report artifacts only, not raw payload
   downloads or conversion.
+- Current-head rerun on 2026-06-08 kept the same efficient no-go boundary:
+  `backfill_preflight` selected no record from 166 manifest-ledger records
+  (`no_accepted_records`, `no_canonical_ready_records`), `source_proof_migration_preflight`
+  selected no `trades` candidate from 21 legacy source-proof records
+  (`no_eligible_candidate`), current-branch binding coverage found zero ledger
+  records for required `trades` bindings, and joined `backfill_readiness`
+  remained blocked with `backfill_preflight_blocked`,
+  `source_proof_migration_preflight_blocked`,
+  `backfill_binding_coverage_blocked`, `missing_selected_backfill_record`,
+  and `missing_selected_source_proof_candidate`. The refreshed reports were
+  written under `/private/tmp/bte-current-head-preflight-20260608/` and did not
+  download, decode, convert, or publish raw payloads.
 - Follow-up fail-fast fix: unsupported run-manifest/catalog surfaces now reject
   before object reads and before canonical normalization writes. The RED test
   proved the previous CLI path invoked the object reader for an unsupported

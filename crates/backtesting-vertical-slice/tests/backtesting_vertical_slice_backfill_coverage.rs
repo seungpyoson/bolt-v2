@@ -3,10 +3,10 @@ use std::fs;
 use backtesting_vertical_slice::{
     backfill_coverage::{
         BACKFILL_COVERAGE_LEDGER_FILE, BackfillCoverageIssue, BackfillCoverageLedger,
-        BackfillCoverageLedgerError, BackfillCoverageManifestEvidence, BackfillCoverageParseError,
-        BackfillCoverageStatus, BackfillCoverageWriteError, BackfillPhysicalInventory,
-        BackfillWriteMode, classify_manifest_coverage, classify_physical_inventory,
-        write_coverage_ledger_artifact,
+        BackfillCoverageLedgerError, BackfillCoverageManifestEvidence,
+        BackfillCoverageManifestJson, BackfillCoverageParseError, BackfillCoverageStatus,
+        BackfillCoverageWriteError, BackfillPhysicalInventory, BackfillWriteMode,
+        classify_manifest_coverage, classify_physical_inventory, write_coverage_ledger_artifact,
     },
     source_proof::SourceProofStatus,
 };
@@ -244,6 +244,87 @@ fn coverage_manifest_evidence_parses_staging_only_and_manifest_exclusion_aliases
     assert_eq!(
         classify_manifest_coverage(&manifest, None).status,
         BackfillCoverageStatus::Accepted
+    );
+}
+
+#[test]
+fn coverage_ledger_builds_from_manifest_json_batch_without_payload_downloads() {
+    let first_summary = serde_json::json!({
+        "run_id": "manifest-synthetic-batch-a",
+        "source_binding": "synthetic-native-trades",
+        "source_proof_id": "source-proof-synthetic-native-trades",
+        "source_proof_version": 1,
+        "write_mode": "s3_staging",
+        "canonical_s3_write": false,
+        "planned_payload_object_count": 2,
+        "completed_payload_object_count": 2,
+        "completed_payload_bytes": 500,
+        "errors": []
+    });
+    let second_summary = serde_json::json!({
+        "run_id": "manifest-synthetic-batch-b",
+        "source_binding": "synthetic-native-trades",
+        "source_proof_id": "source-proof-synthetic-native-trades",
+        "source_proof_version": 1,
+        "write_mode": "s3_staging",
+        "canonical_s3_write": false,
+        "counts": {
+            "payload_object_count": 3,
+            "payload_bytes": 700,
+            "error_count": 0
+        }
+    });
+
+    let ledger = BackfillCoverageLedger::from_manifest_json_summaries(
+        "ledger-synthetic-batch",
+        vec![
+            BackfillCoverageManifestJson {
+                manifest_uri: "manifest://synthetic/batch-a.json".to_string(),
+                summary: first_summary,
+                source_proof_status: Some(SourceProofStatus::Accepted),
+            },
+            BackfillCoverageManifestJson {
+                manifest_uri: "manifest://synthetic/batch-b.json".to_string(),
+                summary: second_summary,
+                source_proof_status: Some(SourceProofStatus::Accepted),
+            },
+        ],
+        vec![],
+    )
+    .expect("batch ledger builds");
+
+    assert_eq!(ledger.records.len(), 2);
+    assert_eq!(ledger.summary.accepted_records, 2);
+    assert_eq!(ledger.summary.accepted_objects, 5);
+    assert_eq!(ledger.summary.accepted_bytes, 1_200);
+    assert_eq!(ledger.summary.blocking_issue_count, 0);
+}
+
+#[test]
+fn coverage_ledger_reports_manifest_uri_when_batch_parse_fails() {
+    let invalid_summary = serde_json::json!({
+        "run_id": "manifest-synthetic-batch-bad",
+        "completed_objects": 1,
+        "completed_bytes": 100
+    });
+
+    let err = BackfillCoverageLedger::from_manifest_json_summaries(
+        "ledger-synthetic-batch",
+        vec![BackfillCoverageManifestJson {
+            manifest_uri: "manifest://synthetic/batch-bad.json".to_string(),
+            summary: invalid_summary,
+            source_proof_status: Some(SourceProofStatus::Accepted),
+        }],
+        vec![],
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        err,
+        BackfillCoverageLedgerError::ParseManifest {
+            manifest_uri: "manifest://synthetic/batch-bad.json".to_string(),
+            source: BackfillCoverageParseError::MissingField("write_mode")
+        }
     );
 }
 

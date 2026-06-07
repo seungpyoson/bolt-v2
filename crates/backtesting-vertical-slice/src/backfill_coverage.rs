@@ -87,6 +87,10 @@ impl Error for BackfillCoverageParseError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackfillCoverageLedgerError {
     EmptyLedgerId,
+    ParseManifest {
+        manifest_uri: String,
+        source: BackfillCoverageParseError,
+    },
     DuplicateManifestId(String),
     DuplicateInventoryId(String),
     Serialize(String),
@@ -96,6 +100,13 @@ impl fmt::Display for BackfillCoverageLedgerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyLedgerId => write!(f, "backfill coverage ledger id must not be empty"),
+            Self::ParseManifest {
+                manifest_uri,
+                source,
+            } => write!(
+                f,
+                "parse backfill coverage manifest {manifest_uri}: {source}"
+            ),
             Self::DuplicateManifestId(manifest_id) => {
                 write!(
                     f,
@@ -113,7 +124,14 @@ impl fmt::Display for BackfillCoverageLedgerError {
     }
 }
 
-impl Error for BackfillCoverageLedgerError {}
+impl Error for BackfillCoverageLedgerError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::ParseManifest { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackfillCoverageWriteError {
@@ -170,6 +188,13 @@ pub struct BackfillCoverageManifestEvidence {
     pub completed_bytes: u64,
     pub selector_scope_violations: u64,
     pub gap_policy_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackfillCoverageManifestJson {
+    pub manifest_uri: String,
+    pub summary: Value,
+    pub source_proof_status: Option<SourceProofStatus>,
 }
 
 impl BackfillCoverageManifestEvidence {
@@ -341,6 +366,29 @@ pub struct BackfillCoverageLedgerArtifact {
 }
 
 impl BackfillCoverageLedger {
+    pub fn from_manifest_json_summaries(
+        ledger_id: impl Into<String>,
+        manifest_summaries: Vec<BackfillCoverageManifestJson>,
+        inventories: Vec<BackfillPhysicalInventory>,
+    ) -> Result<Self, BackfillCoverageLedgerError> {
+        let manifests = manifest_summaries
+            .into_iter()
+            .map(|input| {
+                let BackfillCoverageManifestJson {
+                    manifest_uri,
+                    summary,
+                    source_proof_status,
+                } = input;
+                BackfillCoverageManifestEvidence::from_manifest_json(&summary, source_proof_status)
+                    .map_err(|source| BackfillCoverageLedgerError::ParseManifest {
+                        manifest_uri,
+                        source,
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::from_evidence(ledger_id, manifests, inventories)
+    }
+
     pub fn from_evidence(
         ledger_id: impl Into<String>,
         manifests: Vec<BackfillCoverageManifestEvidence>,

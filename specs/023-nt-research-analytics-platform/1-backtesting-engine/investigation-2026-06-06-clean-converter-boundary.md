@@ -296,6 +296,7 @@ GREEN checks after implementation:
 - `just bte-test --test backtesting_vertical_slice_backfill_coverage`: RED failed with `E0432` because `BackfillCoverageLedger` and `BackfillCoverageLedgerError` did not exist; GREEN passed after adding a deterministic schema-versioned ledger aggregate from normalized manifest evidence plus physical inventory summaries, including duplicate manifest/inventory guards, source-proof id preservation, summary totals, and a JSON content hash
 - `just bte-test --test backtesting_vertical_slice_backfill_coverage`: RED failed with `E0432` because `BACKFILL_COVERAGE_LEDGER_FILE`, `BackfillCoverageWriteError`, and `write_coverage_ledger_artifact` did not exist; GREEN passed after adding a local `backfill-coverage-ledger.json` writer that creates the output directory, records the deterministic ledger hash/byte/record counts, admits same-content reruns, and rejects mismatched existing artifacts without overwrite
 - `just bte-test --test backtesting_vertical_slice_backfill_coverage`: RED failed with `UnknownWriteMode("s3_staging_only")` after adding observed real-manifest aliases; GREEN passed after accepting the generic staging-only write-mode alias plus `object_count_excluding_manifest` and `bytes_excluding_manifest` manifest-count aliases
+- `just bte-test --test backtesting_vertical_slice_backfill_coverage`: RED failed with missing `BackfillCoverageManifestJson`, missing `BackfillCoverageLedger::from_manifest_json_summaries`, and missing manifest-URI parse error reporting; GREEN passed after adding a batch manifest-summary ingestion boundary that converts many manifest JSON summaries into ledger evidence without reading raw payloads and reports the offending manifest URI on parse failure
 - static provider-literal scan for `src/backfill_coverage.rs` and `tests/backtesting_vertical_slice_backfill_coverage.rs`: no hits for current venue/provider/sample tokens, so the new coverage-ledger API and tests are not hardcoded to the accepted sample or a specific venue
 - `just bte-test research_analytics_artifacts_use_typed_subfamilies_and_one_kind_pointer research_analytics_records_require_matching_subfamily_prefix`: RED failed with missing `ResearchAnalyticsSubfamily` and RA-specific staged-record constructor; GREEN passed after adding typed RA subfamilies, enforcing `research-analytics/v1/<subfamily>/` manifest prefixes, and keeping every RA subfamily on the single `research_analytics` Artifact Index pointer
 - `just bte-test approved_for_config_requires_objective_evidence_and_non_live_boundary promotion_package_rejects_proof_strength_upgrade_and_forbidden_actions promotion_package_artifacts_must_live_under_ra_promotion_family promotion_package_rejects_notebook_to_production_direct_promotion approved_for_config_accepts_preserved_claim_limited_typed_config_only`: RED failed with missing `research_analytics` module; GREEN passed after adding a pure `PromotionPackage` validator with canonical status enum, accepted source-proof refs, objective BTE result refs, preserved claim limits, fidelity upgrade rejection, notebook/runtime boundary checks, typed config artifact checks, reviewer-policy refs, and RA-owned promotion-family URI validation
@@ -314,6 +315,7 @@ GREEN checks after implementation:
 - `just bte-test`: 261 passed after adding the deterministic backfill coverage ledger aggregate, including 11 provider-agnostic backfill coverage tests and 2 slow public API compile-fail tests
 - `just bte-test`: 263 passed after adding the idempotent local backfill coverage ledger artifact writer, including 13 provider-agnostic backfill coverage tests and 2 slow public API compile-fail tests
 - `just bte-test`: 264 passed after adding observed real-manifest alias support, including 14 provider-agnostic backfill coverage tests and 2 slow public API compile-fail tests
+- `just bte-test`: 266 passed after adding batch manifest-summary ingestion, including 16 provider-agnostic backfill coverage tests and 2 slow public API compile-fail tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed
@@ -555,9 +557,10 @@ Distance from the overall backtesting engine:
    `BacktestNode`.
 2. Backfill foundation: not complete. There is substantial staged raw data and
    a generic coverage-ledger/parser/aggregate plus local idempotent artifact
-   writer, but no generated accepted coverage ledger artifact from the S3
-   manifests/inventory, no accepted normalized row tables, no accepted
-   instrument/gap policy ledger, and no NT catalog export from that data.
+   writer, plus a batch manifest-summary ingestion boundary, but no generated
+   accepted coverage ledger artifact from the S3 manifests/inventory, no
+   accepted normalized row tables, no accepted instrument/gap policy ledger,
+   and no NT catalog export from that data.
 3. Production BTE: blocked by the backfill foundation. Running production BTE
    before the ledger/normalization/catalog gates would only prove the existing
    single-object sample path, not the overall research/backtesting platform.

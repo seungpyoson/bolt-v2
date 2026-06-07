@@ -1,0 +1,175 @@
+{
+  "schema_version": "source-proof-nt-mapping-instrument-join.v1",
+  "source_binding": "polymarket-parquet-archive-index",
+  "market_structure_fixture": "binary-option",
+  "observed_at_utc": "2026-06-07T20:48:42Z",
+  "purpose": "Bound one PMXT parquet sample token to official Polymarket CLOB and Gamma market metadata before accepting any NT BinaryOption mapping.",
+  "source_sample": {
+    "source_uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+    "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "sample_condition_id": "0x00000977017fa72fb6b1908ae694000d3b51f442c2552656b10bdbbfd16ff707",
+    "sample_asset_id": "44554681108074793313893626424278471150091658237406724818592366780413111952248",
+    "sample_event_type": "price_change",
+    "source_schema_size_type": "DECIMAL(18,6)",
+    "event_timestamp_axis": "timestamp",
+    "archive_hour_axis": "timestamp_received"
+  },
+  "official_docs": [
+    {
+      "url": "https://docs.polymarket.com/api-reference/markets/get-market-by-token.md",
+      "use": "Documents token-to-condition lookup through GET /markets-by-token/{token_id}."
+    },
+    {
+      "url": "https://docs.polymarket.com/api-reference/markets/get-clob-market-info.md",
+      "use": "Documents CLOB market metadata through GET /clob-markets/{condition_id}, including tokens, minimum order size, minimum tick size, and accepting-order timestamp."
+    }
+  ],
+  "official_api_probes": [
+    {
+      "name": "clob_markets_by_token",
+      "url": "https://clob.polymarket.com/markets-by-token/44554681108074793313893626424278471150091658237406724818592366780413111952248",
+      "sha256": "811982a221d27ccf7de2103eb738d04249090e90a72844b849ebefe898aa0270",
+      "extracted_fields": {
+        "condition_id": "0x00000977017fa72fb6b1908ae694000d3b51f442c2552656b10bdbbfd16ff707",
+        "primary_token_id": "44554681108074793313893626424278471150091658237406724818592366780413111952248",
+        "secondary_token_id": "56914066788195652124819518509742797268065105214859208750975274268335607133892"
+      }
+    },
+    {
+      "name": "clob_market_info",
+      "url": "https://clob.polymarket.com/clob-markets/0x00000977017fa72fb6b1908ae694000d3b51f442c2552656b10bdbbfd16ff707",
+      "sha256": "1e72b8f637411f1aee57d3a11f61c289204e3f10fea0ce8547c7b3f89683db48",
+      "extracted_fields": {
+        "condition_id": "0x00000977017fa72fb6b1908ae694000d3b51f442c2552656b10bdbbfd16ff707",
+        "tokens": [
+          {
+            "token_id": "44554681108074793313893626424278471150091658237406724818592366780413111952248",
+            "outcome": "Yes"
+          },
+          {
+            "token_id": "56914066788195652124819518509742797268065105214859208750975274268335607133892",
+            "outcome": "No"
+          }
+        ],
+        "minimum_order_size": "5",
+        "minimum_tick_size": "0.001",
+        "accepting_orders": true,
+        "accepting_orders_timestamp": "2025-11-06T15:54:33Z",
+        "fee_fields_present": false
+      }
+    },
+    {
+      "name": "gamma_market_by_condition",
+      "url": "https://gamma-api.polymarket.com/markets?condition_ids=0x00000977017fa72fb6b1908ae694000d3b51f442c2552656b10bdbbfd16ff707",
+      "sha256": "db728f77b8c4c91cdade00ffd0ca8a203698b12ee9b9af510806e92ceed834aa",
+      "extracted_fields": {
+        "market_id": "667082",
+        "condition_id": "0x00000977017fa72fb6b1908ae694000d3b51f442c2552656b10bdbbfd16ff707",
+        "question": "Will Zelenskyy and Putin meet next in Saudi Arabia before 2027?",
+        "start_date": "2025-11-06T15:54:55.032039Z",
+        "end_date": "2026-12-31T00:00:00Z",
+        "outcomes": [
+          "Yes",
+          "No"
+        ],
+        "clob_token_ids": [
+          "44554681108074793313893626424278471150091658237406724818592366780413111952248",
+          "56914066788195652124819518509742797268065105214859208750975274268335607133892"
+        ],
+        "order_price_min_tick_size": "0.001",
+        "order_min_size": "5",
+        "accepting_orders_timestamp": "2025-11-06T15:54:33Z",
+        "enable_order_book": true,
+        "accepting_orders": true,
+        "fees_enabled": false
+      }
+    }
+  ],
+  "source_backed_nt_binary_option_field_status": [
+    {
+      "nt_field": "instrument_id",
+      "status": "candidate",
+      "evidence": "Sample token id is source-backed; final InstrumentId formatting must be generic and derive venue from the source binding, not from hardcoded venue code."
+    },
+    {
+      "nt_field": "raw_symbol",
+      "status": "source_backed",
+      "evidence": "PMXT asset_id and official token_id match the sampled token."
+    },
+    {
+      "nt_field": "asset_class",
+      "status": "source_binding_backed",
+      "evidence": "Registry source binding declares product_family=prediction_market_outcome and market_structure_fixture=binary-option."
+    },
+    {
+      "nt_field": "currency",
+      "status": "pending",
+      "evidence": "The bounded official probes do not prove the exact NT settlement/collateral currency field."
+    },
+    {
+      "nt_field": "activation_ns",
+      "status": "candidate",
+      "evidence": "CLOB aot and Gamma acceptingOrdersTimestamp both give 2025-11-06T15:54:33Z; Gamma startDate differs and needs a documented mapping rule."
+    },
+    {
+      "nt_field": "expiration_ns",
+      "status": "candidate",
+      "evidence": "Gamma endDate gives 2026-12-31T00:00:00Z; expiration versus final settlement semantics still need a documented mapping rule."
+    },
+    {
+      "nt_field": "price_precision",
+      "status": "source_backed",
+      "evidence": "minimum_tick_size/orderPriceMinTickSize is 0.001, implying precision 3 for this sample."
+    },
+    {
+      "nt_field": "size_precision",
+      "status": "pending",
+      "evidence": "PMXT source schema reports size DECIMAL(18,6), but official order-size precision/increment has not been proven for NT instrument construction."
+    },
+    {
+      "nt_field": "price_increment",
+      "status": "source_backed",
+      "evidence": "CLOB minimum_tick_size and Gamma orderPriceMinTickSize are both 0.001."
+    },
+    {
+      "nt_field": "size_increment",
+      "status": "pending",
+      "evidence": "CLOB/Gamma minimum order size is 5, but that is not the same proof as order-size increment."
+    },
+    {
+      "nt_field": "min_quantity",
+      "status": "source_backed_candidate",
+      "evidence": "CLOB mos and Gamma orderMinSize are both 5; mapping to NT optional min_quantity still needs converter/readback proof."
+    },
+    {
+      "nt_field": "outcome",
+      "status": "source_backed",
+      "evidence": "CLOB token metadata maps the sampled token to Yes and the twin token to No; Gamma outcomes and clobTokenIds agree."
+    },
+    {
+      "nt_field": "maker_fee",
+      "status": "pending",
+      "evidence": "Gamma feesEnabled=false and CLOB fee fields are absent/null, but NT maker_fee semantics require an explicit mapping rule before acceptance."
+    },
+    {
+      "nt_field": "taker_fee",
+      "status": "pending",
+      "evidence": "Gamma feesEnabled=false and CLOB fee fields are absent/null, but NT taker_fee semantics require an explicit mapping rule before acceptance."
+    }
+  ],
+  "mapping_conclusion": {
+    "instrument_mapping_status": "partially_source_backed_not_accepted",
+    "replay_mapping_status": "candidate_not_accepted",
+    "reason": "The bounded official join removes the earlier missing-token-metadata blocker for outcome label, price increment, minimum order size, and candidate activation/expiration timestamps. It does not yet prove every checked NT BinaryOption field or a committed generic converter plus ParquetDataCatalog read-back.",
+    "required_next_evidence": [
+      "generic token-id to InstrumentId/raw_symbol rule deriving venue from TOML source binding metadata",
+      "source-backed settlement/collateral currency mapping for NT BinaryOption currency",
+      "documented activation_ns rule choosing accepting-order timestamp versus market startDate",
+      "documented expiration_ns rule for endDate versus settlement/finalization semantics",
+      "source-backed size_precision and size_increment rule",
+      "explicit maker_fee/taker_fee mapping rule when Gamma feesEnabled=false and CLOB fee fields are absent",
+      "committed generic PMXT order-book adapter that writes NT BinaryOption, OrderBookDelta, and TradeTick without venue constants",
+      "ParquetDataCatalog write plus query_typed_data read-back for the selected sample under artifact-root staging"
+    ]
+  }
+}

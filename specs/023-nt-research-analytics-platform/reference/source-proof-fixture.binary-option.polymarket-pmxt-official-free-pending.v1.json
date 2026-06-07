@@ -61,8 +61,8 @@
       "id": "binary-option-pmxt-source-proof-claim-limit-003",
       "severity": "blocking",
       "claim": "No accepted BinaryOption instrument mapping until activation, expiration, increments, precision, outcome label, and metadata are source-backed.",
-      "reason": "A local prototype NT catalog used placeholder BinaryOption activation/expiration and outcome fields; accepted mapping requires source-backed BinaryOption fields and generic ParquetDataCatalog read-back proof.",
-      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json sha256=8fffd3d416128db6e04b155c6af6d8f3083bb4279dc79c6b3b24e6fc8547b68a"
+      "reason": "Official CLOB/Gamma joins now source-back the sample token outcome, price increment, minimum order size, and candidate activation/expiration fields, but accepted BinaryOption mapping still requires source-backed currency, size increment/precision, fee semantics, generic converter output, and ParquetDataCatalog read-back.",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook-instrument-join.2026-06-08.json sha256=086934f12f2d4d638cf38ad8f45a1694b8784ce36d3b6fafa937c63171418318"
     },
     {
       "id": "binary-option-pmxt-source-proof-claim-limit-004",
@@ -92,7 +92,7 @@
     },
     "instrument_universe": {
       "outcome": "pending",
-      "evidence_ref": "pending source-backed token id to BinaryOption metadata mapping for activation, expiration, outcome label, precision, increment, fee, and size fields"
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook-instrument-join.2026-06-08.json sha256=086934f12f2d4d638cf38ad8f45a1694b8784ce36d3b6fafa937c63171418318 pending currency, size increment/precision, fee semantics, and activation/expiration rule decisions"
     },
     "coverage": {
       "outcome": "pending",
@@ -112,7 +112,7 @@
     },
     "nt_mapping": {
       "outcome": "pending",
-      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json sha256=8fffd3d416128db6e04b155c6af6d8f3083bb4279dc79c6b3b24e6fc8547b68a"
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook-instrument-join.2026-06-08.json sha256=086934f12f2d4d638cf38ad8f45a1694b8784ce36d3b6fafa937c63171418318; pending generic PMXT OrderBookDelta/TradeTick converter and ParquetDataCatalog read-back"
     },
     "cost": {
       "outcome": "pending",

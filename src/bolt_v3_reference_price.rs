@@ -592,7 +592,8 @@ impl ReferencePriceSelector {
         let mut max_drift_bps: Option<f64> = None;
         for (index, lhs) in quotes.iter().enumerate() {
             for rhs in quotes.iter().skip(index + 1) {
-                let drift_bps = ((lhs.price - rhs.price).abs() / lhs.price) * 10_000.0;
+                let denominator = lhs.price.min(rhs.price);
+                let drift_bps = ((lhs.price - rhs.price).abs() / denominator) * 10_000.0;
                 max_drift_bps = Some(max_drift_bps.map_or(drift_bps, |max| max.max(drift_bps)));
             }
         }

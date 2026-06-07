@@ -314,10 +314,10 @@ At runtime, the strategy subscribes to the strike like this:
    `price_to_beat`.
 
 This is a point-in-time resolution-strike path, not a continuous reference-price
-feed. Do not route `price_to_beat` through `[reference_data]`,
-`decision_reference`, PRR WebSocket quotes, or future normalized reference-quote
-providers. Those belong to live fair-value/reference pricing and must remain
-separate from the market boundary strike.
+feed. Do not route `price_to_beat` through current-price sources,
+decision-reference plumbing, PRR WebSocket quotes, or future normalized
+reference-quote providers. Those belong to live fair-value/reference pricing and
+must remain separate from the market boundary strike.
 
 Code landmarks for future sessions:
 

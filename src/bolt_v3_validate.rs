@@ -1938,6 +1938,7 @@ fn validate_reference_current_price(
     let mut valid_enabled_sources = enabled_source_count;
 
     for (source_id, source) in &reference_current_price.sources {
+        let provider_metadata = reference_price_provider_metadata(source.provider.as_str());
         if source.enabled {
             match root.clients.get(source.client_id.as_str()) {
                 None => errors.push(format!(
@@ -1945,6 +1946,17 @@ fn validate_reference_current_price(
                     source.client_id
                 )),
                 Some(client) => {
+                    if let Some(provider_metadata) = provider_metadata
+                        && client.venue.as_str() != provider_metadata.client_venue_key
+                    {
+                        errors.push(format!(
+                            "{context}: reference_current_price.source.{source_id}.client_id `{}` must reference a {} client for provider `{}`; got `{}`",
+                            source.client_id,
+                            provider_metadata.client_venue_key,
+                            provider_metadata.provider_key,
+                            client.venue.as_str()
+                        ));
+                    }
                     if client.data.is_none() {
                         errors.push(format!(
                             "{context}: reference_current_price.source.{source_id}.client_id `{}` must reference a data-capable client",
@@ -1960,8 +1972,7 @@ fn validate_reference_current_price(
             ));
         }
 
-        let Some(provider_metadata) = reference_price_provider_metadata(source.provider.as_str())
-        else {
+        let Some(provider_metadata) = provider_metadata else {
             errors.push(format!(
                 "{context}: reference_current_price.source.{source_id}.provider `{}` is unsupported",
                 source.provider.as_str()

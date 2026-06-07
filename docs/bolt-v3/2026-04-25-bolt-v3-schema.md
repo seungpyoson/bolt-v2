@@ -989,7 +989,21 @@ market_selection_rule = "active_or_next"
 retry_interval_secs = 5
 blocked_after_secs = 60
 
-[reference_data]
+[reference_current_price]
+asset = "BTC"
+sources = ["chainlink_primary"]
+min_valid_sources = 1
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.chainlink_primary]
+provider = "chainlink_ws"
+client_id = "chainlink_reference"
+instrument_id = "BTC-USD.CHAINLINK"
+required = true
 
 [parameters.entry_order]
 side = "buy"
@@ -1210,28 +1224,99 @@ The schema does not hardcode `BTC`, `ETH`, or `300` as the only supported `updow
 
 The runtime projection of the strategy-file `[target]` block plus the top-level `execution_client_id` field into `configured_updown_target` is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 6.1.
 
-### `[reference_data.<name>]`
+### `[reference_current_price]`
 
-This section is optional.
-
-If present:
-
-- each block references a root client that includes `[data]`
-- each block declares the exact NautilusTrader `instrument_id` the strategy subscribes to
-- the same `instrument_id` must not be declared under more than one `data_client_id`, because NautilusTrader `QuoteTick` carries the instrument but not the producing data-client identifier and readiness quote evidence must remain source-disambiguated
-- for the current `binary_oracle_edge_taker`, the required role name is `primary`
+This section declares the current-price inputs used by `binary_oracle_edge_taker`.
+Current live strategy files include it.
 
 Fields:
 
-#### `data_client_id`
+#### `asset`
 
-- type: keyed reference string (one of the keys under root `[clients.<id>]`)
+- type: normalized uppercase asset symbol
 - required
+
+#### `sources`
+
+- type: ordered array of source keys
+- required
+- must be non-empty
+- each key must have a matching `[reference_current_price.source.<source_id>]` block
+
+#### `min_valid_sources`
+
+- type: positive integer
+- optional; defaults to `1`
+- must not exceed the enabled source count
+
+#### `selection_policy`
+
+- type: enum
+- required
+- allowed values: `first_valid_per_interval`
+
+#### `max_source_age_ms`
+
+- type: positive integer
+- required
+
+#### `max_source_drift_bps`
+
+- type: positive integer
+- required
+
+#### `drift_policy`
+
+- type: enum
+- required
+- allowed values: `observe`, `block`
+
+#### `stale_policy`
+
+- type: enum
+- required
+- allowed values: `block`
+
+### `[reference_current_price.source.<source_id>]`
+
+Each source block references a root data client whose venue matches the configured provider.
+
+Fields:
+
+#### `provider`
+
+- type: provider key
+- required
+- allowed values for current live configs: `chainlink_ws`, `polyresearch_ws`
+
+#### `client_id`
+
+- type: keyed reference string under root `[clients.<id>]`
+- required
+- `chainlink_ws` sources must reference a `CHAINLINK_REFERENCE_PRICE` client
+- `polyresearch_ws` sources must reference a `POLYRESEARCH_REFERENCE_PRICE` client
 
 #### `instrument_id`
 
 - type: string
-- required
+- required for `chainlink_ws`
+- unsupported for `polyresearch_ws`
+
+#### `symbol`
+
+- type: string
+- required for `polyresearch_ws`
+- unsupported for `chainlink_ws`
+
+#### `enabled`
+
+- type: boolean
+- optional; defaults to `true`
+
+#### `required`
+
+- type: boolean
+- optional; defaults to `false`
 
 The TOML value is the literal NautilusTrader `InstrumentId` string.
 The field name maps one-to-one to `nautilus_model::identifiers::InstrumentId`; aliases are forbidden.
@@ -1496,7 +1581,7 @@ Must fail if:
 - `order_notional_target` or `maximum_position_notional` is not a positive decimal
 - `order_notional_target` exceeds `root risk.default_max_notional_per_order`
 - `order_notional_target` exceeds `maximum_position_notional`
-- `binary_oracle_edge_taker` is missing `[reference_data.primary]`
+- a shipped `binary_oracle_edge_taker` strategy file is missing `[reference_current_price]`
 
 ### Live validation
 
@@ -1705,7 +1790,21 @@ market_selection_rule = "active_or_next"
 retry_interval_secs = 5
 blocked_after_secs = 60
 
-[reference_data]
+[reference_current_price]
+asset = "BTC"
+sources = ["chainlink_primary"]
+min_valid_sources = 1
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.chainlink_primary]
+provider = "chainlink_ws"
+client_id = "chainlink_reference"
+instrument_id = "BTC-USD.CHAINLINK"
+required = true
 
 [parameters.entry_order]
 side = "buy"

@@ -541,6 +541,7 @@ pub enum ReferencePriceIdentifierKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReferencePriceProviderMetadata {
     pub provider_key: &'static str,
+    pub client_venue_key: &'static str,
     pub identifier_kind: ReferencePriceIdentifierKind,
     pub supported_assets: &'static [&'static str],
 }
@@ -551,6 +552,7 @@ pub fn reference_price_provider_metadata(
     if provider_key == chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY {
         return Some(ReferencePriceProviderMetadata {
             provider_key: chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY,
+            client_venue_key: chainlink_reference::KEY,
             identifier_kind: ReferencePriceIdentifierKind::InstrumentId,
             supported_assets: &[],
         });
@@ -558,6 +560,7 @@ pub fn reference_price_provider_metadata(
     if provider_key == polyresearch::REFERENCE_PRICE_PROVIDER_KEY {
         return Some(ReferencePriceProviderMetadata {
             provider_key: polyresearch::REFERENCE_PRICE_PROVIDER_KEY,
+            client_venue_key: polyresearch::KEY,
             identifier_kind: ReferencePriceIdentifierKind::Symbol,
             supported_assets: polyresearch::POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS,
         });

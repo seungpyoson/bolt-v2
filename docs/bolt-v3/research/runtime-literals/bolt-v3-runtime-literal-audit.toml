@@ -8962,7 +8962,7 @@ reason = "Pairwise comparison offset used to avoid comparing a quote to itself w
 path = "src/bolt_v3_reference_price.rs"
 kind = "number"
 literal = '''10_000.0'''
-context = '''let drift_bps = ((lhs.price - rhs.price).abs() / lhs.price) * 10_000.0;'''
+context = '''let drift_bps = ((lhs.price - rhs.price).abs() / denominator) * 10_000.0;'''
 classification = "bps_unit_scale"
 reason = "Basis-points conversion factor for cross-source reference-price drift calculation."
 

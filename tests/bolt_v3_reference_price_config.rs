@@ -23,18 +23,7 @@ fn strategy_with_reference_current_price(reference_current_price: &str) -> Strin
 
 fn root_fixture() -> BoltV3RootConfig {
     let fixture = support::repo_text("tests/fixtures/bolt_v3/root.toml");
-    let reference_clients = r#"
-[clients.chainlink_reference]
-venue = "CHAINLINK_REFERENCE_PRICE"
-
-[clients.chainlink_reference.data]
-websocket_endpoint = "wss://example.chain.link/reference"
-transport_backend = "sockudo"
-
-[clients.chainlink_reference.secrets]
-api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
-api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
-
+    let backup_reference_client = r#"
 [clients.polyresearch_reference]
 venue = "POLYRESEARCH_REFERENCE_PRICE"
 
@@ -45,7 +34,7 @@ transport_backend = "sockudo"
 [clients.polyresearch_reference.secrets]
 api_key_ssm_parameter = "/bolt/polyresearch/api-key"
 "#;
-    toml::from_str(&format!("{fixture}\n{reference_clients}"))
+    toml::from_str(&format!("{fixture}\n{backup_reference_client}"))
         .expect("root fixture with reference clients should parse")
 }
 
@@ -487,6 +476,39 @@ instrument_id = "ETH-USD.CHAINLINK"
                 && message.contains("ETH-USD.CHAINLINK")
         }),
         "wrong-asset provider identifier should fail validation, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn reference_current_price_validation_rejects_provider_client_venue_mismatch() {
+    let messages = validate_reference_current_price(
+        r#"
+[reference_current_price]
+asset = "BTC"
+sources = ["chainlink_primary"]
+min_valid_sources = 1
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.chainlink_primary]
+provider = "chainlink_ws"
+enabled = true
+required = true
+client_id = "chainlink_strike"
+instrument_id = "BTC-USD.CHAINLINK"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("reference_current_price.source.chainlink_primary.client_id")
+                && message.contains("chainlink_strike")
+                && message.contains("CHAINLINK_REFERENCE_PRICE")
+        }),
+        "reference_current_price source provider/client venue mismatch should fail validation, got: {messages:#?}"
     );
 }
 

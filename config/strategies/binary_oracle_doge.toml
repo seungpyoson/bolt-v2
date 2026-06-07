@@ -73,7 +73,7 @@ stale_policy = "block"
 
 [reference_current_price.source.chainlink_primary]
 provider = "chainlink_ws"
-client_id = "chainlink_strike"
+client_id = "chainlink_reference"
 instrument_id = "DOGE-USD.CHAINLINK"
 required = true
 

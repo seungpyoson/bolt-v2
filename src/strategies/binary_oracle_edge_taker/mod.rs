@@ -36,7 +36,7 @@ use crate::{
         OutcomeBookState, OutcomeBookSubscriptions, OutcomePreparedBooks,
         should_replace_book_subscriptions,
     },
-    bolt_v3_config::ReferencePriceBlock,
+    bolt_v3_config::{ReferencePriceBlock, ReferencePriceDriftPolicy},
     bolt_v3_decision_evidence::{
         BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot,
     },
@@ -1474,10 +1474,16 @@ impl BinaryOracleEdgeTaker {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        let Some(selection) = selector.select(interval_start_ms, interval_end_ms, now_ms, &quotes)
-        else {
+        let selection = selector.select(interval_start_ms, interval_end_ms, now_ms, &quotes);
+        if selection.is_none() {
+            self.mark_reference_price_selection_block_statuses(
+                interval_start_ms,
+                interval_end_ms,
+                now_ms,
+            );
             return;
         };
+        let selection = selection.expect("reference price selection was checked for absence above");
         if let Some(selected_quote) = self.reference_price_quotes.get(selection.source_id())
             && self.active.observe_reference_price_quote(selected_quote)
         {
@@ -1489,6 +1495,53 @@ impl BinaryOracleEdgeTaker {
                 });
             self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
             self.refresh_fee_readiness();
+        }
+    }
+
+    fn mark_reference_price_selection_block_statuses(
+        &mut self,
+        interval_start_ms: u64,
+        interval_end_ms: u64,
+        now_ms: u64,
+    ) {
+        let Some(reference_price) = &self.config.reference_current_price else {
+            return;
+        };
+        let drift_exceeded = reference_price.drift_policy == ReferencePriceDriftPolicy::Block
+            && self
+                .reference_price_selector
+                .as_ref()
+                .and_then(ReferencePriceSelector::last_cross_source_drift_bps)
+                .is_some_and(|drift_bps| {
+                    drift_bps > f64::from(reference_price.max_source_drift_bps)
+                });
+        let updates = reference_price
+            .source_order
+            .iter()
+            .filter_map(|source_id| {
+                let source = reference_price.sources.get(source_id)?;
+                if !reference_price_source_is_runtime_available(reference_price, source) {
+                    return None;
+                }
+                let status = match self.reference_price_quotes.get(source_id) {
+                    Some(quote)
+                        if quote.observed_ts_ms() < interval_start_ms
+                            || quote.observed_ts_ms() > interval_end_ms
+                            || quote.observed_ts_ms() > now_ms
+                            || now_ms.saturating_sub(quote.observed_ts_ms())
+                                > reference_price.max_source_age_ms =>
+                    {
+                        ReferencePriceSourceStatus::Stale
+                    }
+                    Some(_) if drift_exceeded => ReferencePriceSourceStatus::DriftExceeded,
+                    Some(_) => ReferencePriceSourceStatus::Available,
+                    None => ReferencePriceSourceStatus::Silent,
+                };
+                Some((source_id.clone(), status))
+            })
+            .collect::<Vec<_>>();
+        for (source_id, status) in updates {
+            self.mark_reference_price_source_status(&source_id, status, None, None);
         }
     }
 

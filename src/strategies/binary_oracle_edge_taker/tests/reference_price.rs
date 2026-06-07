@@ -341,6 +341,114 @@ fn reference_price_update_with_wrong_provider_does_not_satisfy_source() {
     );
 }
 
+#[test]
+fn stale_block_marks_reference_price_source_stale() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price
+        .sources
+        .get_mut("chainlink_primary")
+        .expect("chainlink source should exist")
+        .required = false;
+    reference_price.max_source_age_ms = 50;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let _cache = register_test_strategy(&mut strategy);
+
+    let stale_primary = ReferencePriceUpdate::try_new(
+        "BTC",
+        "chainlink_primary",
+        CHAINLINK_REFERENCE_PROVIDER,
+        100.0,
+        None,
+        None,
+        1_100,
+        1_110,
+    )
+    .expect("stale primary quote should construct")
+    .to_custom_data();
+    DataActor::on_data(&mut strategy, &stale_primary).expect("stale quote should be handled");
+
+    assert_eq!(strategy.active.reference_current_price, None);
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get("chainlink_primary")
+            .map(|health| health.status()),
+        Some(ReferencePriceSourceStatus::Stale)
+    );
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get("polyresearch_backup")
+            .map(|health| health.status()),
+        Some(ReferencePriceSourceStatus::Silent)
+    );
+}
+
+#[test]
+fn drift_block_marks_reference_price_sources_unavailable() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price
+        .sources
+        .get_mut("chainlink_primary")
+        .expect("chainlink source should exist")
+        .required = false;
+    reference_price.min_valid_sources = 2;
+    reference_price.max_source_drift_bps = 50;
+    reference_price.drift_policy = ReferencePriceDriftPolicy::Block;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let _cache = register_test_strategy(&mut strategy);
+
+    let primary = ReferencePriceUpdate::try_new(
+        "BTC",
+        "chainlink_primary",
+        CHAINLINK_REFERENCE_PROVIDER,
+        100.0,
+        None,
+        None,
+        1_100,
+        1_110,
+    )
+    .expect("primary quote should construct")
+    .to_custom_data();
+    DataActor::on_data(&mut strategy, &primary).expect("primary quote should be handled");
+
+    let backup = ReferencePriceUpdate::try_new(
+        "BTC",
+        "polyresearch_backup",
+        POLYRESEARCH_REFERENCE_PROVIDER,
+        101.0,
+        None,
+        None,
+        1_100,
+        1_110,
+    )
+    .expect("backup quote should construct")
+    .to_custom_data();
+    DataActor::on_data(&mut strategy, &backup).expect("backup quote should be handled");
+
+    assert_eq!(strategy.active.reference_current_price, None);
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get("chainlink_primary")
+            .map(|health| health.status()),
+        Some(ReferencePriceSourceStatus::DriftExceeded)
+    );
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get("polyresearch_backup")
+            .map(|health| health.status()),
+        Some(ReferencePriceSourceStatus::DriftExceeded)
+    );
+}
+
 fn reference_price_config() -> ReferencePriceBlock {
     let mut sources = BTreeMap::new();
     sources.insert(

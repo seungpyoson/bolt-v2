@@ -572,23 +572,23 @@ There is no bolt-owned reference actor.
 
 For the current `binary_oracle_edge_taker`:
 
-- the declared reference-data instrument is subscribed as quote ticks
-- the archetype derives spot-price input from that declared quote-tick stream
+- enabled `[reference_current_price.source.*]` inputs are subscribed as reference-price custom data
+- the archetype derives spot-price input from the selector's active `ReferencePriceUpdate`
 
-Reference-data resolution rule for validation:
+Reference-current-price resolution rule for validation:
 
-- `resolvable` means that after NautilusTrader venue/instrument loading completes, the declared `instrument_id` exists in the NautilusTrader instrument cache for the referenced keyed client
-- `resolvable` does not require receiving a live quote before `just check` completes
+- `resolvable` means the configured `client_id` references a root data client whose venue matches the source provider
+- Chainlink current-price sources use `CHAINLINK_REFERENCE_PRICE`; Chainlink resolution-strike sources remain separate under `[resolution_data]`
+- `resolvable` does not require receiving a live reference-price update before `just check` completes
 
 ### 7.1 Current `binary_oracle_edge_taker` pricing inputs
 
 For the current `binary_oracle_edge_taker`, the reference stream and pricing inputs are mechanical:
 
 - `spot_price`
-  - derived from the latest two-sided midpoint on `reference_data.primary`
-  - midpoint formula: `(best_bid_price + best_ask_price) / 2`
-  - if the latest quote tick does not contain both sides, midpoint is unavailable
-  - if the latest midpoint sample is older than `target.retry_interval_secs` seconds, the reference quote is stale
+  - derived from the selector's active `ReferencePriceUpdate.price`
+  - if no source is selected for the active interval, spot price is unavailable
+  - if the selected update is older than `reference_current_price.max_source_age_ms`, the reference price is stale
 - `price_to_beat_source`
   - must match `[parameters.runtime].price_to_beat_source`
 
@@ -599,13 +599,13 @@ There is no fallback from missing price-to-beat metadata to midpoint.
 The current realized-volatility estimator is defined as:
 
 - input samples:
-  - midpoint samples from `reference_data.primary`
+  - selected current-reference-price samples from `[reference_current_price]`
 - retention window:
-  - keep midpoint samples whose timestamps fall within the trailing `target.cadence_secs` seconds
+  - keep selected reference-price samples whose timestamps fall within the trailing `target.cadence_secs` seconds
 - reset rule:
-  - if the gap between consecutive midpoint samples exceeds `target.retry_interval_secs` seconds, reset the estimator state
+  - if the gap between consecutive selected samples exceeds `target.retry_interval_secs` seconds, reset the estimator state
 - readiness rule:
-  - at least two midpoint samples are required
+  - at least two selected samples are required
   - sample timestamps used for the estimator must be strictly increasing
   - `elapsed_secs`, measured from the first retained sample timestamp to the last retained sample timestamp, must be strictly positive
 - return formula:
@@ -982,7 +982,7 @@ For the current `binary_oracle_edge_taker`, `archetype_metrics` must contain:
 Definitions for the current `binary_oracle_edge_taker` metrics:
 
 - `spot_price`
-  - latest valid midpoint from `reference_data.primary`
+  - latest valid selected price from `[reference_current_price]`
 - `price_to_beat_value`
   - selected market reference price used for updown evaluation
 - `realized_volatility`

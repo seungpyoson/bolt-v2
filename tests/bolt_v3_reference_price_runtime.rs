@@ -364,6 +364,45 @@ fn selector_rejects_cross_source_drift_above_threshold_when_policy_blocks() {
 }
 
 #[test]
+fn selector_cross_source_drift_is_independent_of_source_order() {
+    let quotes = [
+        quote("chainlink_primary", 100.0, 1774672089200, 1774672089300),
+        quote("polyresearch_backup", 101.0, 1774672089200, 1774672089300),
+    ];
+    let mut primary_first = ReferencePriceSelector::new(
+        "BTC",
+        [
+            "chainlink_primary".to_string(),
+            "polyresearch_backup".to_string(),
+        ],
+        2,
+        2000,
+        25,
+    )
+    .expect("selector config should be valid");
+    let mut backup_first = ReferencePriceSelector::new(
+        "BTC",
+        [
+            "polyresearch_backup".to_string(),
+            "chainlink_primary".to_string(),
+        ],
+        2,
+        2000,
+        25,
+    )
+    .expect("selector config should be valid");
+
+    let _ = primary_first.select(1774672089000, 1774672389000, 1774672089500, &quotes);
+    let _ = backup_first.select(1774672089000, 1774672389000, 1774672089500, &quotes);
+
+    assert_eq!(
+        primary_first.last_cross_source_drift_bps(),
+        backup_first.last_cross_source_drift_bps(),
+        "cross-source drift must not change when TOML source order changes"
+    );
+}
+
+#[test]
 fn reference_price_update_data_type_includes_asset_source_and_provider() {
     let data_type = ReferencePriceUpdate::data_type_for("BTC", "chainlink_primary", "chainlink_ws")
         .expect("valid source identity should produce a custom data type");

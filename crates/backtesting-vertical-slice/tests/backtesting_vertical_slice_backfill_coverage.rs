@@ -9,6 +9,7 @@ use backtesting_vertical_slice::{
         BackfillCoverageWriteError, BackfillPhysicalInventory, BackfillWriteMode,
         classify_manifest_coverage, classify_physical_inventory, write_coverage_ledger_artifact,
         write_coverage_ledger_artifact_from_manifest_files,
+        write_coverage_ledger_artifact_from_spec_file,
     },
     source_proof::SourceProofStatus,
 };
@@ -571,6 +572,58 @@ fn coverage_ledger_writer_reports_manifest_uri_for_invalid_json_file() {
         }
         other => panic!("unexpected error {other:?}"),
     }
+}
+
+#[test]
+fn coverage_ledger_writer_reads_toml_spec_and_writes_artifact() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let manifest_path = dir.path().join("summary.json");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec(&serde_json::json!({
+            "run_id": "manifest-synthetic-spec-a",
+            "source_binding": "synthetic-native-trades",
+            "source_proof_id": "source-proof-synthetic-native-trades",
+            "source_proof_version": 1,
+            "write_mode": "s3_staging",
+            "canonical_s3_write": false,
+            "completed_objects": 8,
+            "completed_bytes": 2_400,
+            "errors": []
+        }))
+        .expect("serialize manifest"),
+    )
+    .expect("write manifest");
+    let spec_path = dir.path().join("coverage.toml");
+    fs::write(
+        &spec_path,
+        format!(
+            r#"
+ledger_id = "ledger-synthetic-spec"
+
+[[manifest]]
+manifest_uri = "manifest://synthetic/spec-a.json"
+path = "{}"
+source_proof_status = "accepted"
+"#,
+            manifest_path.display()
+        ),
+    )
+    .expect("write spec");
+
+    let artifact = write_coverage_ledger_artifact_from_spec_file(
+        &dir.path().join("coverage-ledger"),
+        &spec_path,
+    )
+    .expect("write coverage ledger from spec file");
+
+    let ledger: BackfillCoverageLedger =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read ledger"))
+            .expect("parse ledger");
+    assert_eq!(ledger.ledger_id, "ledger-synthetic-spec");
+    assert_eq!(ledger.summary.accepted_records, 1);
+    assert_eq!(ledger.summary.accepted_objects, 8);
+    assert_eq!(ledger.summary.accepted_bytes, 2_400);
 }
 
 fn manifest_file(manifest_uri: &str, path: PathBuf) -> BackfillCoverageManifestFile {

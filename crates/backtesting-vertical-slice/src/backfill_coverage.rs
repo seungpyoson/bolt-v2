@@ -135,6 +135,14 @@ impl Error for BackfillCoverageLedgerError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackfillCoverageManifestFileError {
+    ReadSpec {
+        path: String,
+        error: String,
+    },
+    ParseSpecToml {
+        path: String,
+        error: String,
+    },
     ReadManifest {
         manifest_uri: String,
         path: String,
@@ -152,6 +160,12 @@ pub enum BackfillCoverageManifestFileError {
 impl fmt::Display for BackfillCoverageManifestFileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ReadSpec { path, error } => {
+                write!(f, "read backfill coverage spec {path}: {error}")
+            }
+            Self::ParseSpecToml { path, error } => {
+                write!(f, "parse backfill coverage spec TOML {path}: {error}")
+            }
             Self::ReadManifest {
                 manifest_uri,
                 path,
@@ -248,11 +262,22 @@ pub struct BackfillCoverageManifestJson {
     pub source_proof_status: Option<SourceProofStatus>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BackfillCoverageManifestFile {
     pub manifest_uri: String,
     pub path: PathBuf,
     pub source_proof_status: Option<SourceProofStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackfillCoverageLedgerSpec {
+    pub ledger_id: String,
+    #[serde(rename = "manifest", default)]
+    pub manifests: Vec<BackfillCoverageManifestFile>,
+    #[serde(rename = "inventory", default)]
+    pub inventories: Vec<BackfillPhysicalInventory>,
 }
 
 impl BackfillCoverageManifestEvidence {
@@ -591,6 +616,31 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
     .map_err(BackfillCoverageManifestFileError::BuildLedger)?;
     write_coverage_ledger_artifact(output_dir, &ledger)
         .map_err(BackfillCoverageManifestFileError::WriteArtifact)
+}
+
+pub fn write_coverage_ledger_artifact_from_spec_file(
+    output_dir: &Path,
+    spec_path: &Path,
+) -> Result<BackfillCoverageLedgerArtifact, BackfillCoverageManifestFileError> {
+    let path_display = spec_path.display().to_string();
+    let spec_text = fs::read_to_string(spec_path).map_err(|error| {
+        BackfillCoverageManifestFileError::ReadSpec {
+            path: path_display.clone(),
+            error: error.to_string(),
+        }
+    })?;
+    let spec: BackfillCoverageLedgerSpec = toml::from_str(&spec_text).map_err(|error| {
+        BackfillCoverageManifestFileError::ParseSpecToml {
+            path: path_display,
+            error: error.to_string(),
+        }
+    })?;
+    write_coverage_ledger_artifact_from_manifest_files(
+        output_dir,
+        spec.ledger_id,
+        spec.manifests,
+        spec.inventories,
+    )
 }
 
 impl BackfillCoverageSummary {

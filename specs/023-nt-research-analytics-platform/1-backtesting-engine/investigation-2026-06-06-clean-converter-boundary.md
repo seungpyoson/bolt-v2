@@ -1403,6 +1403,22 @@ Midpoint table-family coverage audit:
   closes the planning estimate task only; fixture-level cost checks remain
   pending until the exact source binding, date window, instrument universe,
   coverage ledger, and throughput benchmark are accepted.
+- BTE-025 now has a highest-fidelity evaluation artifact:
+  `specs/023-nt-research-analytics-platform/reference/source-proof-fidelity-evaluation.backtesting-engine.2026-06-08.json`.
+  It closes only the planning evaluation task, not source selection or broad
+  backfill authorization. The result is: Binance official public archive remains
+  lower-fidelity trade replay while Tardis Binance L2 is a pending paid/vendor
+  candidate; PMXT Polymarket remains the highest current binary-option L2
+  candidate but still needs NT mapping and source selection proof; Kalshi
+  official bars/trades cannot be final while the newly recorded PMXT Kalshi L2
+  orderbook archive candidate is untested; and Hyperliquid HIP-4 historical
+  execution-quality replay remains unproven because current outcomeMeta/current
+  book probes and generic Hyperliquid L2 metadata do not bind exact historical
+  outcome replay coverage. The artifact also records slow-backfill controls:
+  source-proof and coverage-ledger gates before download, index/object byte
+  estimates before payload pulls, sample-first schema inspection, bounded
+  fixture/source/time/object/byte budgets, idempotent manifests, and no source
+  choice by venue name.
 
 ## Recommendation
 

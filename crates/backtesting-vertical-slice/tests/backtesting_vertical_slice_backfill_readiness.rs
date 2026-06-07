@@ -116,6 +116,25 @@ fn readiness_blocks_when_required_nt_data_type_is_not_supported() {
 }
 
 #[test]
+fn readiness_blocks_when_table_family_does_not_match_required_nt_data_type() {
+    let report = evaluate_backfill_readiness(
+        "synthetic-readiness",
+        ready_backfill_preflight_with_binding("synthetic-selected-binding"),
+        candidate_source_proof_preflight_with_binding("quotes", "synthetic-selected-binding"),
+        ready_binding_coverage_for_binding_and_table_family("synthetic-selected-binding", "quotes"),
+        "quotes",
+        "TradeTick",
+    );
+
+    assert_eq!(report.status, BackfillReadinessStatus::Blocked);
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillReadinessBlocker::UnsupportedRequiredTableFamilyDataType)
+    );
+}
+
+#[test]
 fn readiness_requires_selected_source_proof_table_family_to_match_requested_path() {
     let report = evaluate_backfill_readiness(
         "synthetic-readiness",

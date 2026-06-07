@@ -27,6 +27,7 @@ use crate::{
 
 pub const BACKFILL_READINESS_SCHEMA_VERSION: &str = "backfill-readiness-report.v1";
 pub const BACKFILL_READINESS_REPORT_FILE: &str = "backfill-readiness-report.json";
+const SUPPORTED_TABLE_FAMILY_TRADES: &str = "trades";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,6 +55,7 @@ pub enum BackfillReadinessBlocker {
     EmptyRequiredTableFamily,
     EmptyRequiredNtDataType,
     UnsupportedRequiredNtDataType,
+    UnsupportedRequiredTableFamilyDataType,
     BackfillPreflightBlocked,
     SourceProofMigrationPreflightBlocked,
     BackfillBindingCoverageBlocked,
@@ -185,10 +187,17 @@ pub fn evaluate_backfill_readiness(
     if required_table_family.trim().is_empty() {
         blockers.push(BackfillReadinessBlocker::EmptyRequiredTableFamily);
     }
-    if required_nt_data_type.trim().is_empty() {
+    let required_table_family_trimmed = required_table_family.trim();
+    let required_nt_data_type_trimmed = required_nt_data_type.trim();
+    if required_nt_data_type_trimmed.is_empty() {
         blockers.push(BackfillReadinessBlocker::EmptyRequiredNtDataType);
-    } else if required_nt_data_type.trim() != NT_DATA_TYPE_TRADE_TICK {
+    } else if required_nt_data_type_trimmed != NT_DATA_TYPE_TRADE_TICK {
         blockers.push(BackfillReadinessBlocker::UnsupportedRequiredNtDataType);
+    } else if !matches!(
+        (required_table_family_trimmed, required_nt_data_type_trimmed),
+        (SUPPORTED_TABLE_FAMILY_TRADES, NT_DATA_TYPE_TRADE_TICK)
+    ) {
+        blockers.push(BackfillReadinessBlocker::UnsupportedRequiredTableFamilyDataType);
     }
     if backfill_preflight.status != BackfillPreflightStatus::Go
         || !backfill_preflight.blocking_reasons.is_empty()

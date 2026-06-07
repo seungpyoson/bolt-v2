@@ -63,6 +63,22 @@ Go for the local BNBUSDC vertical-slice path after this fix:
   in identity/provenance, but BTE still needs an explicit source-contract
   decision and TDD proof for exact-duplicate dedupe versus sequencing before
   catalog acceptance.
+- PMXT Polymarket price-change grouping status is now recorded in
+  `reference/source-proof-pmxt-polymarket-price-change-grouping-status.2026-06-08.json`:
+  pinned NT's live data client iterates `quotes.price_changes` and wraps each
+  individual change into a single-change `PolymarketQuotes` payload before
+  calling `parse_book_deltas`, even though the parser itself can parse a
+  multi-change batch. Bounded PMXT sample evidence shows `timestamp_received`
+  must be part of the source boundary: the first 10 seconds contain `184,734`
+  price-change rows, `1,391` multi-row `(market, timestamp_received, timestamp,
+  asset_id)` groups, and `16` source timestamp/asset groups that cross distinct
+  receive batches. The preferred implementation policy is therefore
+  one-row-to-one-NT-delta emission for pinned live-client parity, preserving
+  timestamp_received as `ts_init`/coverage provenance; grouped parser output
+  requires a separate proving test before use. A full-object grouping aggregate
+  over the already-local 361 MB sample was intentionally stopped by evidence:
+  DuckDB spilled a 487 MB temp file and failed with no local disk space, so full
+  grouping scans are not acceptable as default source-proof workflow.
 - generated result contracts now preserve structured source-proof claim-limit evidence from the accepted proof instead of rebuilding source limits from plain `forbidden_claims` strings
 - non-latest source-proof pins now require structured manifest justification: `normal` runs still cannot pin them, non-normal pins require `proof_pin_reason_code`, and `audit_or_investigation` pins require `proof_pin_reason_detail`
 - the accepted `proof_pin_reason_code` vocabulary now matches the plan/reference contract, including published-result reproduction and regression-comparison pins

@@ -109,7 +109,7 @@
       "groups": 32066846,
       "max_rows_per_group": 12,
       "multi_row_groups": 31981978,
-      "implication": "PMXT price_change rows are flattened; one row must not be treated as one complete NT OrderBookDeltas batch."
+      "implication": "PMXT price_change rows are flattened; source message boundaries must not be inferred from source timestamp alone. One-row NT delta emission is acceptable only as an explicit pinned live-client parity policy."
     },
     {
       "check": "first_10_seconds_price_change_asset_grouping",
@@ -123,7 +123,7 @@
       "multi_row_instrument_groups": 1406,
       "max_distinct_timestamp_received_per_instrument_group": 2,
       "mixed_timestamp_received_instrument_groups": 16,
-      "implication": "A safe PMXT-to-NT contract must group at least by market, source timestamp, and asset_id, then define a deterministic ts_init policy when timestamp_received differs within the group."
+      "implication": "A safe PMXT-to-NT contract must include timestamp_received in the boundary/ts_init policy; grouping by market, source timestamp, and asset_id alone crosses received batches."
     }
   ],
   "nt_reuse_surfaces": [
@@ -144,7 +144,7 @@
     },
     {
       "surface": "parse_book_deltas",
-      "purpose": "Convert grouped price_change rows into incremental OrderBookDeltas with F_LAST on the final row in the group.",
+      "purpose": "Convert PMXT price_change rows into incremental OrderBookDeltas. Pinned NT parser supports grouped PolymarketQuotes, but pinned NT live data-client emission wraps each individual change into a single-change PolymarketQuotes payload.",
       "evidence": "nt://crates/adapters/polymarket/src/websocket/parse.rs:136"
     },
     {
@@ -167,7 +167,7 @@
     {
       "source_event_type": "price_change",
       "nt_output": "OrderBookDelta",
-      "mapping": "Regroup flattened rows by market, source timestamp, asset_id, and a resolved ts_init policy before producing NT deltas; preserve row order within the batch; set F_LAST only on the final delta in the grouped batch; map size zero to delete and positive size to update using NT parser semantics."
+      "mapping": "Use timestamp_received as part of the PMXT source message boundary and as ts_init/coverage provenance. Do not merge rows by market/source timestamp/asset_id without timestamp_received. Preferred mapping for pinned NT live-client parity is one PMXT price_change row to one single-change PolymarketQuotes parse call, preserving source order within message-like groups; grouped parser output is allowed only if tests prove desired F_LAST and book-state semantics."
     },
     {
       "source_event_type": "last_trade_price",
@@ -193,9 +193,14 @@
     "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-trade-id-policy-status.2026-06-08.json",
     "mapping_constraint": "PMXT last_trade_price exposes transaction_hash, so transaction_hash must remain in TradeTick identity/provenance. Pinned NT's HTTP data API path provides a hash+asset+sequence policy, but the PMXT sample has exact duplicate trade observations with different timestamp_received values; the implementation must decide and test dedupe versus sequence before catalog acceptance."
   },
+  "price_change_grouping_status": {
+    "status": "policy_narrowed_to_received_message_boundary_not_catalog_proven",
+    "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-price-change-grouping-status.2026-06-08.json",
+    "mapping_constraint": "timestamp_received is part of the price_change boundary and must not be dropped; one-row-to-one-OrderBookDeltas is the preferred pinned NT live-client parity policy, but implementation and catalog read-back remain pending."
+  },
   "unresolved_before_implementation": [
     "The isolated BTE crate must have an approved dependency or integration boundary for nautilus-polymarket before parser/provider reuse is machine-checked.",
-    "PMXT price_change grouping must be specified for market/source timestamp/asset_id batches and mixed timestamp_received groups.",
+    "PMXT price_change grouping policy must be implemented and verified against pinned NT live-client parity, including timestamp_received boundary handling.",
     "PMXT last_trade_price TradeId/provenance policy must choose and test transaction_hash+asset sequencing versus exact duplicate trade-observation dedupe before catalog acceptance.",
     "tick_size_change catalog representation must be proven with NT catalog read-back and BacktestNode consumption before an L2 replay claim.",
     "The resulting ParquetDataCatalog proof must write/read InstrumentAny::BinaryOption, OrderBookDelta, and TradeTick under artifact_root staging; local prototype directories are insufficient.",

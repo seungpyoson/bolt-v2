@@ -6,6 +6,8 @@
 
 **Architecture:** Bolt owns only the source-proof gate, PMXT row normalization, grouping policy, and provenance binding. NautilusTrader owns instrument construction, checked market-data constructors, catalog format, and backtest consumption. The implementation must first wire the isolated BTE crate to pinned `nautilus-polymarket`, then prove a small bounded sample path before manifest/backfill admission is widened.
 
+**Current caveat:** The price-change grouping tasks below predate `reference/source-proof-pmxt-polymarket-price-change-grouping-status.2026-06-08.json`. Before executing this plan, revise the price-change implementation steps to use timestamp_received as a boundary/ts_init input and prefer one PMXT `price_change` row to one single-change NT `PolymarketQuotes` parse call for pinned NT live-client parity. Grouped parser output requires its own proving test.
+
 **Tech Stack:** Rust, pinned NautilusTrader crates at `6e059dcbb59ac1e582132fc431a581936c216c3c`, `ParquetDataCatalog`, PMXT Parquet samples, Cargo tests.
 
 ---

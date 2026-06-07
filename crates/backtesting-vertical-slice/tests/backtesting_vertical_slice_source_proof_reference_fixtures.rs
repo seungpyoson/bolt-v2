@@ -1,7 +1,8 @@
 use std::{collections::BTreeSet, fs, path::PathBuf};
 
 use backtesting_vertical_slice::source_proof::{
-    FixtureType, SourceCandidateClass, SourceProofReport, SourceProofStatus, SourceSelectionStatus,
+    CheckOutcome, FixtureType, SourceCandidateClass, SourceProofReport, SourceProofStatus,
+    SourceSelectionStatus,
 };
 use serde_json::Value;
 
@@ -99,6 +100,31 @@ fn assert_unselected_official_free_candidate(path: &PathBuf, report: &SourceProo
     );
 }
 
+fn assert_sample_evidence_is_inspected(path: &PathBuf, report: &SourceProofReport) {
+    for (field_name, value) in [
+        ("raw_sample_uri", report.raw_sample_uri.as_str()),
+        ("raw_sample_hash", report.raw_sample_hash.as_str()),
+        ("schema_sample_uri", report.schema_sample_uri.as_str()),
+        ("schema_sample_hash", report.schema_sample_hash.as_str()),
+    ] {
+        let trimmed = value.trim();
+        assert!(
+            !trimmed.is_empty() && !trimmed.starts_with("pending"),
+            "fixture report {path:?} must bind inspected sample evidence in {field_name}"
+        );
+    }
+    assert_eq!(
+        report.required_checks.source_access.outcome,
+        CheckOutcome::Passed,
+        "fixture report {path:?} must pass source-access sample inspection before provider selection"
+    );
+    assert_eq!(
+        report.required_checks.schema.outcome,
+        CheckOutcome::Passed,
+        "fixture report {path:?} must pass schema sample inspection before provider selection"
+    );
+}
+
 fn assert_kimchi_premium_component_shape(path: &PathBuf, report: &SourceProofReport) {
     let roles = report
         .cross_market_components
@@ -149,6 +175,7 @@ fn reference_fixtures_include_unselected_binary_option_source_proof() {
 
     for (path, value, report) in binary_option_reports {
         assert_unselected_official_free_candidate(path, report);
+        assert_sample_evidence_is_inspected(path, report);
         assert_no_heavy_payloads(path, value);
     }
 }
@@ -167,6 +194,7 @@ fn reference_fixtures_include_unselected_perps_spot_source_proof() {
 
     for (path, value, report) in perps_spot_reports {
         assert_unselected_official_free_candidate(path, report);
+        assert_sample_evidence_is_inspected(path, report);
         assert_no_heavy_payloads(path, value);
         if report.product_category == "kimchi-premium" {
             assert_kimchi_premium_component_shape(path, report);

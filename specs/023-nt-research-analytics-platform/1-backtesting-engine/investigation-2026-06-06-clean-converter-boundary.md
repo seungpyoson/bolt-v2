@@ -1249,6 +1249,24 @@ Midpoint table-family coverage audit:
   `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_source_proof_reference_fixtures -- --nocapture`
   (2 tests), source-proof admissibility plus backfill source-proof scope tests
   (7 tests), and `operator::tests` (32 tests).
+- Representative sample inspection is now bound to the shortlisted source-proof
+  fixtures without starting broad backfill. The binary-option fixture records a
+  bounded current Hyperliquid `outcomeMeta` probe captured at
+  `2026-06-07T19:59:21Z`: 21,068 response bytes, response SHA256
+  `2a9884457e2a3118e7497a7d41dee840846526fcd50d43c0e8cfd262be67c846`, 62
+  outcome rows, and three question rows, summarized in
+  `specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.hyperliquid-hip4-outcome-meta.2026-06-08.json`.
+  The perps/spot fixture binds to the already accepted Binance BNBUSDC
+  2026-03-01 raw/schema sample hashes instead of a new broad download. Both
+  fixtures remain `status = pending` and continue blocking canonical NT
+  catalog/backtest input until license, retention, coverage, storage,
+  parser/mapping, fidelity, and cost checks pass. The reference-fixture test now
+  enforces this provider-agnostically: every committed `source-proof-fixture.*`
+  report must bind non-placeholder raw/schema sample URIs and hashes and must
+  mark source-access and schema sample checks as passed before provider
+  selection. Focused verification passed:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_source_proof_reference_fixtures -- --nocapture`
+  (2 tests).
 
 ## Recommendation
 

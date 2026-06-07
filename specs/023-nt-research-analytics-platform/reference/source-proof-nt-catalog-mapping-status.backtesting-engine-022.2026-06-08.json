@@ -111,14 +111,27 @@
       "status": "metadata_only_not_replay_input"
     }
   ],
+  "first_proof_policy_status": {
+    "status": "first_proof_exclusion_policy_selected_tdd_unproven",
+    "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json",
+    "summary": "A bounded first PMXT Polymarket L2 proof may select an unaffected instrument universe with tick_size_change_rows == 0, book_rows > 0, price_change_rows > 0, last_trade_price_rows > 0, and a configured row budget. This is a TOML/source-proof-owned selector, not a venue or asset constant. It can prove catalog/read-back/BacktestNode plumbing only for the selected unaffected universe.",
+    "claim_limits": [
+      "Does not prove dynamic tick-size replay.",
+      "Does not prove assets with tick_size_change rows.",
+      "Does not prove full PMXT Polymarket L2 source acceptance.",
+      "Does not authorize broad backfill."
+    ]
+  },
   "non_hardcoding_decision": "Bybit, Binance, Polymarket, Kalshi, and Hyperliquid remain source-binding examples. The next mapping work must be data-family driven: source schema plus registry binding plus NT data class, with no runtime venue or instrument constants in production code.",
   "next_required_evidence": [
     "TDD go/no-go decision before touching the isolated BTE crate dependency boundary.",
+    "TDD proof that the configured first-proof selector computes per-asset PMXT event counts, excludes tick_size_change assets, applies a row budget, and records claim limits without venue or asset constants.",
     "Machine-checked BTE crate proof that nautilus-polymarket parser/provider is reused for Polymarket instruments and token-id joins.",
-    "Generic PMXT order-book projection contract from source event types to NT OrderBookDelta/TradeTick, including snapshot flags, side/action rules, timestamps, trade ids, tick-size changes, and claim limits.",
+    "Generic PMXT order-book projection contract from source event types to NT OrderBookDelta/TradeTick, including snapshot flags, side/action rules, timestamps, trade ids, and first-proof tick-size claim limits.",
     "ParquetDataCatalog write/readback proof for a selected PMXT Polymarket sample staged under artifact_root.",
     "BacktestNode consumption proof for the same verified catalog path.",
-    "Coverage ledger using timestamp_received as the archive-hour coverage axis before broad backfill."
+    "Coverage ledger using timestamp_received as the archive-hour coverage axis before any expanded tranche.",
+    "Separate dynamic tick-size replay proof before full PMXT Polymarket L2 acceptance or broad backfill."
   ],
   "bte_022_can_close": false
 }

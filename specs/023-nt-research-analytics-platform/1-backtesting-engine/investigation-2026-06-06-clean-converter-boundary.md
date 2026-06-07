@@ -107,6 +107,14 @@ Go for the local BNBUSDC vertical-slice path after this fix:
   catalog/read-back/`BacktestNode` plumbing for the selected unaffected
   universe; it still cannot claim dynamic tick-size replay, full PMXT
   Polymarket L2 acceptance, or broad backfill.
+- Current BTE implementation audit after selecting that policy: the source-proof
+  and claim-limit governance pieces exist, but the isolated crate still lacks a
+  `nautilus-polymarket` dependency, `ManifestCatalogInput` still maps only
+  `"TradeTick"`, source-proof fidelity binding still accepts only
+  `TradeTick`/`TRADE_REPLAY`, and `catalog_projection.rs` still writes
+  `CurrencyPair` plus `TradeTick` only. The next implementation gate is
+  therefore a data-family extension for PMXT binary-option L2, not a
+  venue-specific branch.
 - generated result contracts now preserve structured source-proof claim-limit evidence from the accepted proof instead of rebuilding source limits from plain `forbidden_claims` strings
 - non-latest source-proof pins now require structured manifest justification: `normal` runs still cannot pin them, non-normal pins require `proof_pin_reason_code`, and `audit_or_investigation` pins require `proof_pin_reason_detail`
 - the accepted `proof_pin_reason_code` vocabulary now matches the plan/reference contract, including published-result reproduction and regression-comparison pins

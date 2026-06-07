@@ -26,6 +26,7 @@ fn accepted_tranche_manifest_contains_only_selected_scope_object() {
     assert_eq!(manifest.source_proof_id, scope.source_proof_id);
     assert_eq!(manifest.source_proof_version, scope.source_proof_version);
     assert_eq!(manifest.source_binding, scope.source_binding);
+    assert_eq!(manifest.table_family, scope.table_family);
     assert_eq!(manifest.parent_manifest_id, scope.manifest_id);
     assert_eq!(manifest.object_count, 1);
     assert_eq!(manifest.accepted_bytes, 11);
@@ -99,6 +100,7 @@ fn candidate_scope_report() -> BackfillSourceProofScopeReport {
         source_proof_id: "source-proof-synthetic".to_string(),
         source_proof_version: 1,
         source_binding: "synthetic-native-trades".to_string(),
+        table_family: "trades".to_string(),
         manifest_id: "synthetic-parent-manifest".to_string(),
         accepted_scope_completed_objects: 1,
         accepted_scope_accepted_bytes: 11,

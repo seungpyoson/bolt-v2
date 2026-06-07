@@ -43,6 +43,7 @@ fn source_proof_scope_selects_one_manifest_object_without_accepting_whole_run() 
     assert_eq!(selected.sha256, "selected-object");
     assert_eq!(selected.bytes, 11);
     assert_eq!(report.source_binding, binding.key);
+    assert_eq!(report.table_family, "trades");
 }
 
 #[test]
@@ -289,7 +290,7 @@ fn concrete_source_url(template: &str) -> String {
     let mut chars = template.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '{' {
-            while let Some(next) = chars.next() {
+            for next in chars.by_ref() {
                 if next == '}' {
                     break;
                 }

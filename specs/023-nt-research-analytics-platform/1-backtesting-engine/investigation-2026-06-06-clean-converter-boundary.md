@@ -966,6 +966,18 @@ Midpoint table-family coverage audit:
   status `ready`, `ledger_records_for_required_bindings = 1`, and
   `accepted_record_count = 0`, proving source-binding coverage is now
   table-family scoped while source-proof readiness remains a separate blocker.
+- Object-level reference trades scope and accepted tranche now preserve the
+  canonical table family from the accepted source proof. Fresh source-proof
+  scope proof
+  `/private/tmp/bte-coverage-ledger-20260607/backfill-source-proof-scope-reference-trades-table-family-output/backfill-source-proof-scope-report.json`
+  produced hash
+  `4c62c9d7cd2efa71e07ac83344989820e1c9b2dfc13a42f423c628777bdd18c3`,
+  status `candidate_found`, `matching_object_count = 1`,
+  `object_level_tranche_required = true`, and `table_family = "trades"`.
+  The accepted tranche generated from it produced hash
+  `81782b053ac9adbc9be156adabd8b40f9c602a5b05e940626afa4f0dced8251f`,
+  status `accepted`, `object_count = 1`, `accepted_bytes = 8505`, and
+  `table_family = "trades"`.
 
 ## Recommendation
 

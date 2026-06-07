@@ -94,6 +94,7 @@ fn accepted_tranche() -> BackfillAcceptedTrancheManifest {
         source_proof_id: "source-proof-synthetic-native-trades".to_string(),
         source_proof_version: 3,
         source_binding: "synthetic-native-trades".to_string(),
+        table_family: "trades".to_string(),
         parent_manifest_id: "synthetic-parent-manifest".to_string(),
         object_level_tranche_required: true,
         object_count: 1,

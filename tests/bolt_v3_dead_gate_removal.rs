@@ -196,6 +196,17 @@ fn shipped_config_has_no_retired_live_gate_blocks() {
 }
 
 #[test]
+fn nextest_config_has_no_deleted_evidence_gate_binaries() {
+    assert_absent(
+        ".config/nextest.toml",
+        &[
+            retired(&["bolt_v3", "_live", "_canary", "_gate"]),
+            retired(&["bolt_v3", "_tiny", "_canary", "_operator"]),
+        ],
+    );
+}
+
+#[test]
 fn repo_has_no_retired_evidence_gate_terms() {
     let forbidden = vec![
         ["canary", "_proof"].concat(),

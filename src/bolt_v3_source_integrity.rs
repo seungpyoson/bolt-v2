@@ -168,8 +168,9 @@ mod tests {
     // Re-derived again by #579 after deleting retired evidence-gate source.
     // Re-derived again after #579 clippy cleanup changed the CLI source.
     // Re-derived again after resolving #579 over A10's split test files.
+    // Re-derived again after #579's post-merge split-test admission fixes.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "8b4d8958a0e7eacfe9a9e0907c903f0c8ba6f03990f83eda6bcfc23c6fa78c63";
+        "851ea3e0399d89f650fe5d9021c45b5ec0161cbd001334a3822813cad152f629";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

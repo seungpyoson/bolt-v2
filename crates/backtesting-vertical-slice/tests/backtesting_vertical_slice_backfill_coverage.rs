@@ -625,10 +625,75 @@ source_proof_status = "accepted"
     assert_eq!(ledger.summary.accepted_bytes, 2_400);
 }
 
+#[test]
+fn coverage_ledger_spec_binds_source_proof_metadata_when_manifest_lacks_it() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let manifest_path = dir.path().join("summary.json");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec(&serde_json::json!({
+            "run_id": "manifest-synthetic-bound-proof",
+            "write_mode": "s3_staging",
+            "canonical_s3_write": false,
+            "completed_objects": 5,
+            "completed_bytes": 1_500,
+            "errors": []
+        }))
+        .expect("serialize manifest"),
+    )
+    .expect("write manifest");
+    let spec_path = dir.path().join("coverage.toml");
+    fs::write(
+        &spec_path,
+        format!(
+            r#"
+ledger_id = "ledger-synthetic-bound-proof"
+output_dir = "{}"
+
+[[manifest]]
+manifest_uri = "manifest://synthetic/bound-proof.json"
+path = "{}"
+source_binding = "synthetic-native-trades"
+source_proof_id = "source-proof-synthetic-native-trades"
+source_proof_version = 3
+source_proof_status = "pending"
+"#,
+            dir.path().join("coverage-ledger").display(),
+            manifest_path.display()
+        ),
+    )
+    .expect("write spec");
+
+    let artifact = write_coverage_ledger_artifact_from_spec_file(&spec_path)
+        .expect("write coverage ledger from spec file");
+
+    let ledger: BackfillCoverageLedger =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read ledger"))
+            .expect("parse ledger");
+    assert_eq!(ledger.summary.rejected_records, 1);
+    let record = ledger.records.first().expect("record");
+    assert_eq!(
+        record.source_binding.as_deref(),
+        Some("synthetic-native-trades")
+    );
+    assert_eq!(
+        record.source_proof_id.as_deref(),
+        Some("source-proof-synthetic-native-trades")
+    );
+    assert_eq!(record.source_proof_version, Some(3));
+    assert_eq!(
+        record.blocking_issues,
+        vec![BackfillCoverageIssue::SourceProofNotAccepted]
+    );
+}
+
 fn manifest_file(manifest_uri: &str, path: PathBuf) -> BackfillCoverageManifestFile {
     BackfillCoverageManifestFile {
         manifest_uri: manifest_uri.to_string(),
         path,
+        source_binding: None,
+        source_proof_id: None,
+        source_proof_version: None,
         source_proof_status: Some(SourceProofStatus::Accepted),
     }
 }

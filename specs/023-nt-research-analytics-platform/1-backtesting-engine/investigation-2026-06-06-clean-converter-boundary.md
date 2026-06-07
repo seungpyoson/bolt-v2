@@ -300,6 +300,7 @@ GREEN checks after implementation:
 - `just bte-test --test backtesting_vertical_slice_backfill_coverage`: RED failed with missing `BackfillCoverageManifestFile`, missing file-level JSON parse errors, and missing manifest-file artifact writer; GREEN passed after adding a local manifest-file reader that writes `backfill-coverage-ledger.json` from manifest JSON files without reading raw payload bytes and preserves manifest URI/path evidence on invalid JSON
 - `just bte-test --test backtesting_vertical_slice_backfill_coverage`: RED failed with missing `write_coverage_ledger_artifact_from_spec_file`; GREEN passed after adding a config-owned TOML coverage spec with `ledger_id`, `[[manifest]]`, and optional `[[inventory]]` rows so manifest-file ledger generation is driven by TOML rather than command-line runtime values
 - `just bte-test --test backtesting_vertical_slice_backfill_coverage_cli`: RED failed because no `backfill_coverage_ledger` binary target existed for the config-owned coverage spec; GREEN passed after adding a thin operator command that accepts only `--spec`, reads `output_dir` from TOML, writes the idempotent ledger artifact, and prints aggregate coverage counts without reading payload data
+- `just bte-test --test backtesting_vertical_slice_backfill_coverage`: RED failed because `[[manifest]]` TOML entries could not carry source-proof binding metadata when real manifest summaries lacked `source_binding`, `source_proof_id`, or `source_proof_version`; GREEN passed after adding generic optional TOML bindings for those fields before manifest parsing, without adding venue/data-family constants
 - static provider-literal scan for the coverage source, coverage CLI, and their tests: no hits for current venue/provider/sample tokens, so the new coverage-ledger API, operator command, and tests are not hardcoded to the accepted sample or a specific venue
 - `just bte-test research_analytics_artifacts_use_typed_subfamilies_and_one_kind_pointer research_analytics_records_require_matching_subfamily_prefix`: RED failed with missing `ResearchAnalyticsSubfamily` and RA-specific staged-record constructor; GREEN passed after adding typed RA subfamilies, enforcing `research-analytics/v1/<subfamily>/` manifest prefixes, and keeping every RA subfamily on the single `research_analytics` Artifact Index pointer
 - `just bte-test approved_for_config_requires_objective_evidence_and_non_live_boundary promotion_package_rejects_proof_strength_upgrade_and_forbidden_actions promotion_package_artifacts_must_live_under_ra_promotion_family promotion_package_rejects_notebook_to_production_direct_promotion approved_for_config_accepts_preserved_claim_limited_typed_config_only`: RED failed with missing `research_analytics` module; GREEN passed after adding a pure `PromotionPackage` validator with canonical status enum, accepted source-proof refs, objective BTE result refs, preserved claim limits, fidelity upgrade rejection, notebook/runtime boundary checks, typed config artifact checks, reviewer-policy refs, and RA-owned promotion-family URI validation
@@ -322,6 +323,7 @@ GREEN checks after implementation:
 - `just bte-test`: 268 passed after adding local manifest-file coverage-ledger artifact writing, including 18 provider-agnostic backfill coverage tests and 2 slow public API compile-fail tests
 - `just bte-test`: 269 passed after adding TOML coverage-spec driven ledger generation, including 19 provider-agnostic backfill coverage tests and 2 slow public API compile-fail tests
 - `just bte-test`: 270 passed after adding the config-owned backfill coverage CLI, including 19 provider-agnostic backfill coverage tests, 1 provider-agnostic coverage CLI integration test, and 2 slow public API compile-fail tests
+- `just bte-test`: 271 passed after adding generic TOML source-proof metadata binding, including 20 provider-agnostic backfill coverage tests, 1 provider-agnostic coverage CLI integration test, and 2 slow public API compile-fail tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed
@@ -533,6 +535,35 @@ Current evidence:
   `completed_object_count`/`completed_bytes`, and
   `object_count_excluding_manifest`/`bytes_excluding_manifest`. The current
   parser accepts these as generic aliases rather than provider-specific code.
+- Manifest-only S3 metadata copy for
+  `s3://bolt-parquet/backfill-staging/2026-06-01/` copied 190 local
+  `*manifest.json` files into `/private/tmp/bte-coverage-ledger-20260607/`;
+  no raw payload files were copied. Family counts were: Binance 3, Bybit 15,
+  Chainlink 1, Deribit 11, Hyperliquid core 10, Hyperliquid targeted core 1,
+  Hyperliquid HIP-3 6, Hyperliquid HIP-4 5, OKX 116, PMXT page1 2, PMXT
+  streaming 18, and source-proof-v3 2.
+- Current coverage parser supports 166 of those 190 manifest files. The 24
+  unsupported manifest schemas are metadata gaps, not payload gaps: Chainlink
+  and Deribit manifests have counts/bytes but no `write_mode`; Hyperliquid
+  HIP-3/HIP-4 and one source-proof-v3 manifest have `write_mode` but no
+  normalized completed-object/byte totals.
+- The supported-shape coverage ledger was generated at
+  `/private/tmp/bte-coverage-ledger-20260607/ledger-output-supported/backfill-coverage-ledger.json`
+  with content hash
+  `ebe6363148bf53e2012bb4d013b2a8086abfdb7addcc738641a96561bd867a41`.
+  It contains 166 records, all rejected: 166 `missing_source_proof`, 145
+  `empty_source_binding`, 5 zero-planned/completed object/byte records, and 3
+  failed-object records.
+- Canonical source-proof reports under
+  `source-proof-v3/source-proofs/v1/**/source-proof.json` total 21, and all 21
+  are currently `pending`. After TOML source-proof binding, the bound coverage
+  ledger at
+  `/private/tmp/bte-coverage-ledger-20260607/ledger-output-bound/backfill-coverage-ledger.json`
+  has content hash
+  `5f4f5e9bd991ce5508c5445d8db3e6056b7a3e91efa99fd1f19bd96c3c11708c` and
+  still has 0 accepted records: 20 records are now specifically blocked by
+  `source_proof_not_accepted`, while 146 records still have no source-proof
+  binding.
 - Binance run `binance-backfill-run-d928f6666827dd47` records 4,701 completed
   payload objects, 42,358,207,176 payload bytes, zero errors, and
   `payload_completion_ok = true`, but it is still raw staging and not a
@@ -564,10 +595,14 @@ Distance from the overall backtesting engine:
 2. Backfill foundation: not complete. There is substantial staged raw data and
    a generic coverage-ledger/parser/aggregate plus local idempotent artifact
    writer, batch/local-file manifest-summary ingestion boundaries, a TOML
-   coverage spec, and an operator CLI for that spec, but no generated accepted
-   coverage ledger artifact from the full S3 manifests/inventory, no accepted
-   normalized row tables, no accepted instrument/gap policy ledger, and no NT
-   catalog export from that data.
+   coverage spec, an operator CLI for that spec, and generic TOML source-proof
+   metadata binding. A real manifest-only ledger can now be generated, but the
+   current S3 evidence produces a rejected ledger, not an accepted coverage
+   ledger: all discovered canonical source-proof reports are pending, 24
+   manifest files still need schema normalization, and 146 supported manifest
+   records still lack source-proof binding. There are no accepted normalized row
+   tables, no accepted instrument/gap policy ledger, and no NT catalog export
+   from that data.
 3. Production BTE: blocked by the backfill foundation. Running production BTE
    before the ledger/normalization/catalog gates would only prove the existing
    single-object sample path, not the overall research/backtesting platform.
@@ -580,11 +615,16 @@ Backfill must therefore be the next deliverable. The efficient order is:
 
 1. Build a machine-readable coverage ledger from existing manifests and S3
    inventory only; no broad downloads.
-2. Reconcile physical-only S3 objects, starting with PMXT and Bybit orphan
+2. Accept or explicitly reject the pending source-proof reports that can bind
+   staged data; no raw staged data can become canonical BTE input while its
+   source proof is pending.
+3. Normalize the 24 unsupported manifest schemas into the generic coverage
+   ledger or record them as unsupported-schema rejected coverage records.
+4. Reconcile physical-only S3 objects, starting with PMXT and Bybit orphan
    acceptance manifests, into accepted or rejected coverage records.
-3. Normalize one bounded accepted tranche into the declared table contract with
+5. Normalize one bounded accepted tranche into the declared table contract with
    source-proof and gap-policy checks.
-4. Export an NT catalog from that normalized tranche and run BTE only after the
+6. Export an NT catalog from that normalized tranche and run BTE only after the
    catalog proof exists.
 
 ## Recommendation

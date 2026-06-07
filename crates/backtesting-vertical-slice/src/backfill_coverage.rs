@@ -267,6 +267,9 @@ pub struct BackfillCoverageManifestJson {
 pub struct BackfillCoverageManifestFile {
     pub manifest_uri: String,
     pub path: PathBuf,
+    pub source_binding: Option<String>,
+    pub source_proof_id: Option<String>,
+    pub source_proof_version: Option<u32>,
     pub source_proof_status: Option<SourceProofStatus>,
 }
 
@@ -585,6 +588,9 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
             let BackfillCoverageManifestFile {
                 manifest_uri,
                 path,
+                source_binding,
+                source_proof_id,
+                source_proof_version,
                 source_proof_status,
             } = input;
             let path_display = path.display().to_string();
@@ -595,13 +601,19 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
                     error: error.to_string(),
                 }
             })?;
-            let summary = serde_json::from_slice(&bytes).map_err(|error| {
+            let mut summary: Value = serde_json::from_slice(&bytes).map_err(|error| {
                 BackfillCoverageManifestFileError::ParseManifestJson {
                     manifest_uri: manifest_uri.clone(),
                     path: path_display,
                     error: error.to_string(),
                 }
             })?;
+            bind_manifest_file_metadata(
+                &mut summary,
+                source_binding,
+                source_proof_id,
+                source_proof_version,
+            );
             Ok(BackfillCoverageManifestJson {
                 manifest_uri,
                 summary,
@@ -641,6 +653,29 @@ pub fn write_coverage_ledger_artifact_from_spec_file(
         spec.manifests,
         spec.inventories,
     )
+}
+
+fn bind_manifest_file_metadata(
+    summary: &mut Value,
+    source_binding: Option<String>,
+    source_proof_id: Option<String>,
+    source_proof_version: Option<u32>,
+) {
+    let Some(object) = summary.as_object_mut() else {
+        return;
+    };
+    if let Some(value) = source_binding {
+        object.insert("source_binding".to_string(), Value::String(value));
+    }
+    if let Some(value) = source_proof_id {
+        object.insert("source_proof_id".to_string(), Value::String(value));
+    }
+    if let Some(value) = source_proof_version {
+        object.insert(
+            "source_proof_version".to_string(),
+            Value::Number(value.into()),
+        );
+    }
 }
 
 impl BackfillCoverageSummary {

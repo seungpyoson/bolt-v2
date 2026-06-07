@@ -3,7 +3,11 @@ mod support;
 use anyhow::Result;
 use bolt_v2::{
     bolt_v3_archetypes::binary_oracle_edge_taker,
-    bolt_v3_config::{DECISION_REFERENCE_GATE_ROLE, ReferenceDataBlock, load_bolt_v3_config},
+    bolt_v3_config::{
+        ClientBlock, DECISION_REFERENCE_GATE_ROLE, ReferenceDataBlock, ReferencePriceBlock,
+        ReferencePriceDriftPolicy, ReferencePriceProvider, ReferencePriceSelectionPolicy,
+        ReferencePriceSourceBlock, ReferencePriceStalePolicy, load_bolt_v3_config,
+    },
     bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     bolt_v3_submit_admission::{
@@ -22,9 +26,13 @@ use nautilus_model::{
     identifiers::{ClientId, InstrumentId, StrategyId},
 };
 use rust_decimal::Decimal;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 struct NoopFeeProvider;
+
+fn reference_price_client_from_toml(value: &str) -> ClientBlock {
+    toml::from_str(value).expect("reference price test client should parse")
+}
 
 impl FeeProvider for NoopFeeProvider {
     fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
@@ -1489,6 +1497,142 @@ fn binary_oracle_runtime_mapping_omits_resolution_data_when_absent() {
     assert!(
         !table.contains_key("resolution_instrument_id"),
         "resolution_instrument_id must be absent when [resolution_data] is omitted"
+    );
+}
+
+#[test]
+fn binary_oracle_runtime_mapping_emits_reference_price_when_present() {
+    let mut loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture v3 config should load");
+    loaded.root.clients.insert(
+        "chainlink_reference".to_string(),
+        reference_price_client_from_toml(
+            r#"
+venue = "CHAINLINK_REFERENCE_PRICE"
+
+[data]
+websocket_endpoint = "wss://streams.chain.link/reference"
+transport_backend = "sockudo"
+heartbeat_secs = 5
+heartbeat_message = "ping"
+reconnect_timeout_ms = 5000
+reconnect_delay_initial_ms = 250
+reconnect_delay_max_ms = 5000
+reconnect_backoff_factor = 1.5
+reconnect_jitter_ms = 100
+idle_timeout_ms = 10000
+
+[secrets]
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+"#,
+        ),
+    );
+    loaded.root.clients.insert(
+        "polyresearch_reference".to_string(),
+        reference_price_client_from_toml(
+            r#"
+venue = "POLYRESEARCH_REFERENCE_PRICE"
+
+[data]
+websocket_endpoint = "wss://stream.polyresearch.example/reference"
+transport_backend = "sockudo"
+heartbeat_secs = 5
+heartbeat_message = "ping"
+reconnect_timeout_ms = 5000
+reconnect_delay_initial_ms = 250
+reconnect_delay_max_ms = 5000
+reconnect_backoff_factor = 1.5
+reconnect_jitter_ms = 100
+idle_timeout_ms = 10000
+
+[secrets]
+api_key_ssm_parameter = "/bolt/polyresearch/api-key"
+"#,
+        ),
+    );
+
+    let strategy_index = 0;
+    loaded.strategies[strategy_index].config.reference_price = Some(ReferencePriceBlock {
+        asset: "BTC".to_string(),
+        source_order: vec![
+            "chainlink_primary".to_string(),
+            "polyresearch_backup".to_string(),
+        ],
+        min_valid_sources: 1,
+        selection_policy: ReferencePriceSelectionPolicy::FirstValidPerInterval,
+        max_source_age_ms: 1500,
+        max_source_drift_bps: 10,
+        drift_policy: ReferencePriceDriftPolicy::Observe,
+        stale_policy: ReferencePriceStalePolicy::Block,
+        sources: BTreeMap::from([
+            (
+                "chainlink_primary".to_string(),
+                ReferencePriceSourceBlock {
+                    provider: ReferencePriceProvider::new("chainlink_ws")
+                        .expect("test provider key should be valid"),
+                    enabled: true,
+                    required: false,
+                    client_id: ClientId::from("chainlink_reference"),
+                    instrument_id: Some("BTC-USD.CHAINLINK".to_string()),
+                    symbol: None,
+                },
+            ),
+            (
+                "polyresearch_backup".to_string(),
+                ReferencePriceSourceBlock {
+                    provider: ReferencePriceProvider::new("polyresearch_ws")
+                        .expect("test provider key should be valid"),
+                    enabled: true,
+                    required: false,
+                    client_id: ClientId::from("polyresearch_reference"),
+                    instrument_id: None,
+                    symbol: Some("BTC".to_string()),
+                },
+            ),
+        ]),
+    });
+
+    let strategy = &loaded.strategies[strategy_index];
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+        .expect("binary oracle strategy with reference_price should map into runtime config");
+    let mut errors: Vec<ValidationError> = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(
+        &raw,
+        "strategies.configured_updown_main.parameters.runtime",
+        &mut errors,
+    );
+    assert!(
+        errors.is_empty(),
+        "runtime config with reference_price should validate: {errors:?}"
+    );
+
+    let table = raw
+        .as_table()
+        .expect("binary oracle runtime config should be a table");
+    let reference_price = table
+        .get("reference_price")
+        .and_then(toml::Value::as_table)
+        .expect("runtime config should carry reference_price table");
+
+    assert_eq!(
+        reference_price.get("asset").and_then(toml::Value::as_str),
+        Some("BTC")
+    );
+    let source_order = reference_price
+        .get("sources")
+        .and_then(toml::Value::as_array)
+        .expect("reference_price.sources should remain an ordered array");
+    assert_eq!(
+        source_order
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .collect::<Vec<_>>(),
+        vec!["chainlink_primary", "polyresearch_backup"]
+    );
+    assert!(
+        table.get("resolution_client_id").is_none(),
+        "reference_price must not imply resolution_data"
     );
 }
 

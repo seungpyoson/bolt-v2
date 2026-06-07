@@ -8421,3 +8421,723 @@ literal = '''"{}"'''
 context = '''println!("{}", serde_json::to_string_pretty(&artifact_json(written))?);'''
 classification = "operator_artifact_cli_output_template"
 reason = "This prints the redacted operator artifact JSON object assembled from fixed output-field names and non-secret derived metadata."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"asset"'''
+context = '''insert_string(&mut reference_table, "asset", reference_price.asset.clone());'''
+classification = "reference_price_runtime_schema_field"
+reason = "Reference-price archetype projection TOML field name; the field carries operator-supplied asset data from config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"sources"'''
+context = '''"sources",'''
+classification = "reference_price_runtime_schema_field"
+reason = "Reference-price archetype projection TOML field name for the configured ordered source list."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"min_valid_sources"'''
+context = '''"min_valid_sources",'''
+classification = "reference_price_runtime_schema_field"
+reason = "Reference-price archetype projection TOML field name; the quorum value itself is supplied by config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_price.min_valid_sources"'''
+context = '''"reference_price.min_valid_sources",'''
+classification = "reference_price_runtime_validation_field"
+reason = "Validation label for the reference-price quorum field used in archetype projection errors."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"selection_policy"'''
+context = '''"selection_policy",'''
+classification = "reference_price_runtime_schema_field"
+reason = "Reference-price archetype projection TOML field name for the configured selector policy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"max_source_age_ms"'''
+context = '''"max_source_age_ms",'''
+classification = "reference_price_runtime_schema_field"
+reason = "Reference-price archetype projection TOML field name; the stale-age threshold is supplied by config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"max_source_drift_bps"'''
+context = '''"max_source_drift_bps",'''
+classification = "reference_price_runtime_schema_field"
+reason = "Reference-price archetype projection TOML field name; the drift threshold is supplied by config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"drift_policy"'''
+context = '''"drift_policy",'''
+classification = "reference_price_runtime_schema_field"
+reason = "Reference-price archetype projection TOML field name for configured drift handling."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"stale_policy"'''
+context = '''"stale_policy",'''
+classification = "reference_price_runtime_schema_field"
+reason = "Reference-price archetype projection TOML field name for configured stale-source handling."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"provider"'''
+context = '''"provider",'''
+classification = "reference_price_runtime_schema_field"
+reason = "Reference-price source schema field name; the provider key value is supplied by config and validated against provider metadata."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"enabled"'''
+context = '''insert_bool(&mut source_table, "enabled", source.enabled);'''
+classification = "reference_price_runtime_schema_field"
+reason = "Reference-price source schema field name for the configured enablement flag."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"client_id"'''
+context = '''insert_string(&mut source_table, "client_id", source.client_id.to_string());'''
+classification = "reference_price_runtime_schema_field"
+reason = "Reference-price source schema field name for the configured NT data-client id."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"instrument_id"'''
+context = '''insert_string(&mut source_table, "instrument_id", instrument_id.clone());'''
+classification = "reference_price_runtime_schema_field"
+reason = "Reference-price source schema field name for the configured provider instrument id."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"symbol"'''
+context = '''insert_string(&mut source_table, "symbol", symbol.clone());'''
+classification = "reference_price_runtime_schema_field"
+reason = "Reference-price source schema field name for the configured provider symbol."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"source"'''
+context = '''reference_table.insert("source".to_string(), Value::Table(source_tables));'''
+classification = "reference_price_runtime_schema_field"
+reason = "Reference-price source table name in projected TOML; individual source values remain config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_price"'''
+context = '''table.insert("reference_price".to_string(), Value::Table(reference_table));'''
+classification = "reference_price_runtime_schema_field"
+reason = "Strategy-scoped reference-price table name in projected TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"first_valid_per_interval"'''
+context = '''"first_valid_per_interval"'''
+classification = "reference_price_policy_wire_value"
+reason = "Stable config wire value for the implemented reference-price selection policy."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"observe"'''
+context = '''crate::bolt_v3_config::ReferencePriceDriftPolicy::Observe => "observe",'''
+classification = "reference_price_policy_wire_value"
+reason = "Stable config wire value for observing cross-source drift without blocking selection."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"block"'''
+context = '''crate::bolt_v3_config::ReferencePriceDriftPolicy::Block => "block",'''
+classification = "reference_price_policy_wire_value"
+reason = "Stable config wire value for blocking selection when cross-source drift exceeds the configured threshold."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"block"'''
+context = '''crate::bolt_v3_config::ReferencePriceStalePolicy::Block => "block",'''
+classification = "reference_price_policy_wire_value"
+reason = "Stable config wire value for blocking stale reference-price sources."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "number"
+literal = '''1'''
+context = '''const REFERENCE_PRICE_DEFAULT_MIN_VALID_SOURCES: usize = 1;'''
+classification = "reference_price_default_quorum"
+reason = "Prompt-required default quorum for omitted reference_price.min_valid_sources; explicit TOML may supply a stricter quorum."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"CHAINLINK_REFERENCE_PRICE"'''
+context = '''pub const KEY: &str = "CHAINLINK_REFERENCE_PRICE";'''
+classification = "provider_dispatch_key"
+reason = "Internal provider binding key for the Chainlink reference-price data provider."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"chainlink_ws"'''
+context = '''pub const REFERENCE_PRICE_PROVIDER_KEY: &str = "chainlink_ws";'''
+classification = "reference_price_provider_key"
+reason = "Stable reference-price provider key used for config validation and DataType metadata; concrete runtime selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"Chainlink reference-price source"'''
+context = '''consumer: "Chainlink reference-price source",'''
+classification = "provider_secret_requirement_label"
+reason = "Consumer label for SSM secret resolution diagnostics; credential values are resolved from SSM and never logged."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''pub const SECRET_FIELD_NAMES: &[&str] = &["api_key_ssm_parameter", "api_secret_ssm_parameter"];'''
+classification = "provider_secret_schema_field"
+reason = "Chainlink reference-price secret config field name; the secret value is resolved from SSM."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_secret_ssm_parameter"'''
+context = '''pub const SECRET_FIELD_NAMES: &[&str] = &["api_key_ssm_parameter", "api_secret_ssm_parameter"];'''
+classification = "provider_secret_schema_field"
+reason = "Chainlink reference-price secret config field name; the secret value is resolved from SSM."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"ChainlinkReferencePriceClientConfig"'''
+context = '''const CONFIG_TYPE: &str = "ChainlinkReferencePriceClientConfig";'''
+classification = "provider_config_type_tag"
+reason = "Diagnostic type tag for redacted Chainlink reference-price provider config."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"reconnect_delay_initial_ms"'''
+context = '''"reconnect_delay_initial_ms",'''
+classification = "validation_field_label"
+reason = "Validation label for Chainlink reference-price reconnect delay; the value is supplied by TOML."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''if !data.reconnect_backoff_factor.is_finite() || data.reconnect_backoff_factor <= 0.0 {'''
+classification = "positive_numeric_guard"
+reason = "Lower-bound check for the configured reconnect backoff factor; the value itself is supplied by TOML."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"wss"'''
+context = '''&& url.scheme() == "wss"'''
+classification = "provider_transport_scheme"
+reason = "Required secure WebSocket URL scheme for Chainlink reference-price connections."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"://"'''
+context = '''&& value[url.scheme().len()..].starts_with("://") => {}'''
+classification = "url_syntax_guard"
+reason = "URL syntax guard ensuring the Chainlink reference-price endpoint is an absolute WebSocket URL."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''("api_key_ssm_parameter", &secrets.api_key_ssm_parameter),'''
+classification = "provider_secret_schema_field"
+reason = "Chainlink reference-price secret config field name emitted only into validation metadata; secret values stay SSM-resolved."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_secret_ssm_parameter"'''
+context = '''"api_secret_ssm_parameter",'''
+classification = "provider_secret_schema_field"
+reason = "Chainlink reference-price secret config field name emitted only into validation metadata; secret values stay SSM-resolved."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''"api_key_ssm_parameter",'''
+classification = "provider_secret_schema_field"
+reason = "Chainlink reference-price secret config field name emitted only into validation metadata; secret values stay SSM-resolved."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_secret_ssm_parameter"'''
+context = '''"api_secret_ssm_parameter",'''
+classification = "provider_secret_schema_field"
+reason = "Chainlink reference-price secret config field name emitted only into validation metadata; secret values stay SSM-resolved."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''field_name: "api_key_ssm_parameter",'''
+classification = "provider_secret_schema_field"
+reason = "Chainlink reference-price secret config field name used in redacted secret-resolution requirements."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"api_secret_ssm_parameter"'''
+context = '''field_name: "api_secret_ssm_parameter",'''
+classification = "provider_secret_schema_field"
+reason = "Chainlink reference-price secret config field name used in redacted secret-resolution requirements."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"POLYRESEARCH_REFERENCE_PRICE"'''
+context = '''pub const KEY: &str = "POLYRESEARCH_REFERENCE_PRICE";'''
+classification = "provider_dispatch_key"
+reason = "Internal provider binding key for the PolyResearch reference-price data provider."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"polyresearch_ws"'''
+context = '''pub const REFERENCE_PRICE_PROVIDER_KEY: &str = "polyresearch_ws";'''
+classification = "reference_price_provider_key"
+reason = "Stable reference-price provider key used for config validation and DataType metadata; concrete runtime selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"BTC"'''
+context = '''pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];'''
+classification = "reference_price_provider_capability"
+reason = "Provider capability list for PolyResearch reference-price assets; it validates configured TOML sources and is not a selected runtime asset."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"ETH"'''
+context = '''pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];'''
+classification = "reference_price_provider_capability"
+reason = "Provider capability list for PolyResearch reference-price assets; it validates configured TOML sources and is not a selected runtime asset."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"SOL"'''
+context = '''pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];'''
+classification = "reference_price_provider_capability"
+reason = "Provider capability list for PolyResearch reference-price assets; it validates configured TOML sources and is not a selected runtime asset."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"XRP"'''
+context = '''pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];'''
+classification = "reference_price_provider_capability"
+reason = "Provider capability list for PolyResearch reference-price assets; it validates configured TOML sources and is not a selected runtime asset."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"PolyResearch reference-price source"'''
+context = '''consumer: "PolyResearch reference-price source",'''
+classification = "provider_secret_requirement_label"
+reason = "Consumer label for SSM secret resolution diagnostics; credential values are resolved from SSM and never logged."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''pub const SECRET_FIELD_NAMES: &[&str] = &["api_key_ssm_parameter"];'''
+classification = "provider_secret_schema_field"
+reason = "PolyResearch reference-price secret config field name; the secret value is resolved from SSM."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"PolyResearchReferencePriceClientConfig"'''
+context = '''const CONFIG_TYPE: &str = "PolyResearchReferencePriceClientConfig";'''
+classification = "provider_config_type_tag"
+reason = "Diagnostic type tag for redacted PolyResearch reference-price provider config."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"reconnect_delay_initial_ms"'''
+context = '''"reconnect_delay_initial_ms",'''
+classification = "validation_field_label"
+reason = "Validation label for PolyResearch reference-price reconnect delay; the value is supplied by TOML."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''if !data.reconnect_backoff_factor.is_finite() || data.reconnect_backoff_factor <= 0.0 {'''
+classification = "positive_numeric_guard"
+reason = "Lower-bound check for the configured reconnect backoff factor; the value itself is supplied by TOML."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''"api_key_ssm_parameter",'''
+classification = "provider_secret_schema_field"
+reason = "PolyResearch reference-price secret config field name emitted only into validation metadata; secret values stay SSM-resolved."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''field_name: "api_key_ssm_parameter",'''
+classification = "provider_secret_schema_field"
+reason = "PolyResearch reference-price secret config field name used in redacted secret-resolution requirements."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "number"
+literal = '''1_000_000'''
+context = '''const NANOS_PER_MILLI_U64: u64 = 1_000_000;'''
+classification = "time_unit_conversion"
+reason = "Nanoseconds-per-millisecond conversion constant used to build NT timestamps from provider millisecond observations."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"BoltV3ReferencePriceUpdate"'''
+context = '''const REFERENCE_PRICE_UPDATE_TYPE: &str = "BoltV3ReferencePriceUpdate";'''
+classification = "nt_custom_data_type_name"
+reason = "Stable NT custom-data type name for normalized reference-price updates."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"asset"'''
+context = '''const REFERENCE_PRICE_ASSET_METADATA_FIELD: &str = "asset";'''
+classification = "nt_custom_data_metadata_key"
+reason = "Stable NT custom-data metadata key for the configured reference-price asset."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"source_key"'''
+context = '''const REFERENCE_PRICE_SOURCE_KEY_METADATA_FIELD: &str = "source_key";'''
+classification = "nt_custom_data_metadata_key"
+reason = "Stable NT custom-data metadata key for the configured reference-price source key."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"provider"'''
+context = '''const REFERENCE_PRICE_PROVIDER_METADATA_FIELD: &str = "provider";'''
+classification = "nt_custom_data_metadata_key"
+reason = "Stable NT custom-data metadata key for the configured reference-price provider key."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"instrument_id"'''
+context = '''pub const REFERENCE_PRICE_INSTRUMENT_ID_PARAM: &str = "instrument_id";'''
+classification = "nt_custom_data_param_key"
+reason = "Stable NT custom-data subscription parameter key for provider instrument ids."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"symbol"'''
+context = '''pub const REFERENCE_PRICE_SYMBOL_PARAM: &str = "symbol";'''
+classification = "nt_custom_data_param_key"
+reason = "Stable NT custom-data subscription parameter key for provider symbols."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"normalized reference-price custom data carries explicit provider, price, and timing fields"'''
+context = '''reason = "normalized reference-price custom data carries explicit provider, price, and timing fields"'''
+classification = "deprecation_reason"
+reason = "Compile-time deprecation reason for a compatibility constructor; not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"normalized reference-price custom data carries explicit provider, price, timing, and provenance fields"'''
+context = '''reason = "normalized reference-price custom data carries explicit provider, price, timing, and provenance fields"'''
+classification = "deprecation_reason"
+reason = "Compile-time deprecation reason for a compatibility constructor; not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"asset"'''
+context = '''let asset = valid_reference_identity_field(asset.into(), "asset")?;'''
+classification = "reference_price_validation_field"
+reason = "Validation field label for normalized reference-price identity fields."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"source_id"'''
+context = '''let source_id = valid_reference_identity_field(source_id.into(), "source_id")?;'''
+classification = "reference_price_validation_field"
+reason = "Validation field label for normalized reference-price identity fields."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"provider"'''
+context = '''let provider = valid_reference_identity_field(provider, "provider")?;'''
+classification = "reference_price_validation_field"
+reason = "Validation field label for normalized reference-price identity fields."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"provider_instrument"'''
+context = '''valid_reference_identity_field(provider_instrument.into(), "provider_instrument")?;'''
+classification = "reference_price_validation_field"
+reason = "Validation field label for normalized reference-price provider identifiers."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"provider"'''
+context = '''let provider = valid_reference_identity_field(provider.into(), "provider")?;'''
+classification = "reference_price_validation_field"
+reason = "Validation field label for normalized reference-price identity fields."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"key"'''
+context = '''validate_provenance_component(key, "key")?;'''
+classification = "reference_price_validation_field"
+reason = "Validation field label for reference-price provenance map keys."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"value"'''
+context = '''validate_provenance_component(value, "value")?;'''
+classification = "reference_price_validation_field"
+reason = "Validation field label for reference-price provenance map values."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"secret"'''
+context = '''if key_lower.contains("secret")'''
+classification = "secret_bearing_field_guard"
+reason = "Forbidden provenance key substring used to prevent secret-bearing metadata from entering normalized reference-price updates."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"api_key"'''
+context = '''|| key_lower.contains("api_key")'''
+classification = "secret_bearing_field_guard"
+reason = "Forbidden provenance key substring used to prevent API-key metadata from entering normalized reference-price updates."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"apikey"'''
+context = '''|| key_lower.contains("apikey")'''
+classification = "secret_bearing_field_guard"
+reason = "Forbidden provenance key substring used to prevent API-key metadata from entering normalized reference-price updates."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"token"'''
+context = '''|| key_lower.contains("token")'''
+classification = "secret_bearing_field_guard"
+reason = "Forbidden provenance key substring used to prevent token metadata from entering normalized reference-price updates."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"password"'''
+context = '''|| key_lower.contains("password")'''
+classification = "secret_bearing_field_guard"
+reason = "Forbidden provenance key substring used to prevent password metadata from entering normalized reference-price updates."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"available"'''
+context = '''Self::Available => "available",'''
+classification = "reference_price_health_status_code"
+reason = "Stable health status code for an available reference-price source."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"disabled"'''
+context = '''Self::Disabled => "disabled",'''
+classification = "reference_price_health_status_code"
+reason = "Stable health status code for a disabled reference-price source."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"unsupported_symbol"'''
+context = '''Self::UnsupportedSymbol => "unsupported_symbol",'''
+classification = "reference_price_health_status_code"
+reason = "Stable health status code for a configured source whose provider does not support the asset."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"auth_rejected"'''
+context = '''Self::AuthRejected => "auth_rejected",'''
+classification = "reference_price_health_status_code"
+reason = "Stable health status code for reference-price provider authentication rejection."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"subscription_rejected"'''
+context = '''Self::SubscriptionRejected => "subscription_rejected",'''
+classification = "reference_price_health_status_code"
+reason = "Stable health status code for reference-price provider subscription rejection."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"silent"'''
+context = '''Self::Silent => "silent",'''
+classification = "reference_price_health_status_code"
+reason = "Stable health status code for a source that has not produced a usable tick."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"stale"'''
+context = '''Self::Stale => "stale",'''
+classification = "reference_price_health_status_code"
+reason = "Stable health status code for a stale reference-price source."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"malformed_frame"'''
+context = '''Self::MalformedFrame => "malformed_frame",'''
+classification = "reference_price_health_status_code"
+reason = "Stable health status code for malformed provider data frames."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"disconnected"'''
+context = '''Self::Disconnected => "disconnected",'''
+classification = "reference_price_health_status_code"
+reason = "Stable health status code for a disconnected reference-price provider."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"drift_exceeded"'''
+context = '''Self::DriftExceeded => "drift_exceeded",'''
+classification = "reference_price_health_status_code"
+reason = "Stable health status code for cross-source drift above the configured threshold."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "number"
+literal = '''1'''
+context = '''for rhs in quotes.iter().skip(index + 1) {'''
+classification = "pairwise_comparison_offset"
+reason = "Pairwise comparison offset used to avoid comparing a quote to itself when computing cross-source drift."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "number"
+literal = '''10_000.0'''
+context = '''let drift_bps = ((lhs.price - rhs.price).abs() / lhs.price) * 10_000.0;'''
+classification = "bps_unit_scale"
+reason = "Basis-points conversion factor for cross-source reference-price drift calculation."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"normalized reference quote constructor mirrors the provider contract fields"'''
+context = '''reason = "normalized reference quote constructor mirrors the provider contract fields"'''
+classification = "deprecation_reason"
+reason = "Compile-time deprecation reason for a compatibility quote constructor; not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"normalized reference quote constructor mirrors the provider contract fields including provenance"'''
+context = '''reason = "normalized reference quote constructor mirrors the provider contract fields including provenance"'''
+classification = "deprecation_reason"
+reason = "Compile-time deprecation reason for a compatibility quote constructor; not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''value.is_finite() && value > 0.0'''
+classification = "positive_numeric_guard"
+reason = "Lower-bound check for normalized reference-price values; provider prices are observed and must be positive."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"{context}: reference_price.min_valid_sources {} exceeds enabled source count {}"'''
+context = '''"{context}: reference_price.min_valid_sources {} exceeds enabled source count {}",'''
+classification = "reference_price_validation_diagnostic"
+reason = "Config validation diagnostic for impossible reference-price quorum settings."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''1'''
+context = '''valid_enabled_sources = valid_enabled_sources.saturating_sub(1);'''
+classification = "reference_price_quorum_adjustment"
+reason = "Decrement-by-one adjustment when an enabled reference-price source is invalid or unsupported."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"reference_price"'''
+context = '''| "reference_price"'''
+classification = "strategy_runtime_schema_field"
+reason = "Whitelisted strategy config table for reference-price settings while rejecting unknown runtime fields."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"reference_price"'''
+context = '''Self::validate_optional_table_field(table, field_prefix, "reference_price", errors);'''
+classification = "strategy_runtime_schema_field"
+reason = "Strategy config schema table name for optional reference-price settings."

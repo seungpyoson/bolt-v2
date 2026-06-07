@@ -1,9 +1,8 @@
-//! PolyResearch reference-price WebSocket authentication helpers and provider
-//! binding.
+//! Data-only Chainlink reference-price WebSocket provider binding.
 //!
-//! PRR auth is a query parameter named `apiKey`. Bolt keeps the endpoint and
-//! credential as separate SSM values, then constructs the credentialed URL once
-//! at the provider edge.
+//! This provider is intentionally distinct from `CHAINLINK_DATA_STREAMS`, which
+//! remains the point-in-time REST strike source that emits `IndexPriceUpdate`.
+//! The reference-price provider is a custom-data source only.
 
 use std::{any::Any, cell::RefCell, rc::Rc, sync::Arc};
 
@@ -33,25 +32,23 @@ use crate::{
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
 };
 
-const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "apiKey";
-pub const KEY: &str = "POLYRESEARCH_REFERENCE_PRICE";
-pub const REFERENCE_PRICE_PROVIDER_KEY: &str = "polyresearch_ws";
-pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];
+pub const KEY: &str = "CHAINLINK_REFERENCE_PRICE";
+pub const REFERENCE_PRICE_PROVIDER_KEY: &str = "chainlink_ws";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Data,
-    consumer: "PolyResearch reference-price source",
+    consumer: "Chainlink reference-price source",
 }];
-pub const SECRET_FIELD_NAMES: &[&str] = &["api_key_ssm_parameter"];
+pub const SECRET_FIELD_NAMES: &[&str] = &["api_key_ssm_parameter", "api_secret_ssm_parameter"];
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &[];
 pub const FORBIDDEN_ENV_VARS: &[&str] = &[];
 
 const FACTORY_NAME: &str = KEY;
-const CONFIG_TYPE: &str = "PolyResearchReferencePriceClientConfig";
+const CONFIG_TYPE: &str = "ChainlinkReferencePriceClientConfig";
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct PolyResearchReferencePriceDataConfig {
+pub struct ChainlinkReferencePriceDataConfig {
     pub websocket_endpoint: String,
     pub transport_backend: TransportBackend,
     pub heartbeat_secs: Option<u64>,
@@ -66,24 +63,27 @@ pub struct PolyResearchReferencePriceDataConfig {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct PolyResearchReferencePriceSecretsConfig {
+pub struct ChainlinkReferencePriceSecretsConfig {
     pub api_key_ssm_parameter: String,
+    pub api_secret_ssm_parameter: String,
 }
 
 #[derive(Clone)]
-pub struct ResolvedBoltV3PolyResearchSecrets {
+pub struct ResolvedBoltV3ChainlinkReferenceSecrets {
     pub api_key: Zeroizing<String>,
+    pub api_secret: Zeroizing<String>,
 }
 
-impl std::fmt::Debug for ResolvedBoltV3PolyResearchSecrets {
+impl std::fmt::Debug for ResolvedBoltV3ChainlinkReferenceSecrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ResolvedBoltV3PolyResearchSecrets")
+        f.debug_struct("ResolvedBoltV3ChainlinkReferenceSecrets")
             .field("api_key", &REDACTED)
+            .field("api_secret", &REDACTED)
             .finish()
     }
 }
 
-impl ProviderResolvedSecrets for ResolvedBoltV3PolyResearchSecrets {
+impl ProviderResolvedSecrets for ResolvedBoltV3ChainlinkReferenceSecrets {
     fn provider_key(&self) -> &'static str {
         KEY
     }
@@ -93,12 +93,12 @@ impl ProviderResolvedSecrets for ResolvedBoltV3PolyResearchSecrets {
     }
 
     fn redaction_values(&self) -> Vec<&str> {
-        vec![self.api_key.as_str()]
+        vec![self.api_key.as_str(), self.api_secret.as_str()]
     }
 }
 
 #[derive(Clone)]
-pub struct PolyResearchReferencePriceClientConfig {
+pub struct ChainlinkReferencePriceClientConfig {
     pub websocket_endpoint: String,
     pub transport_backend: TransportBackend,
     pub heartbeat_secs: Option<u64>,
@@ -110,11 +110,12 @@ pub struct PolyResearchReferencePriceClientConfig {
     pub reconnect_jitter_ms: u64,
     pub idle_timeout_ms: u64,
     pub api_key: Zeroizing<String>,
+    pub api_secret: Zeroizing<String>,
 }
 
-impl std::fmt::Debug for PolyResearchReferencePriceClientConfig {
+impl std::fmt::Debug for ChainlinkReferencePriceClientConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PolyResearchReferencePriceClientConfig")
+        f.debug_struct("ChainlinkReferencePriceClientConfig")
             .field("websocket_endpoint", &self.websocket_endpoint)
             .field("transport_backend", &self.transport_backend)
             .field("heartbeat_secs", &self.heartbeat_secs)
@@ -129,20 +130,21 @@ impl std::fmt::Debug for PolyResearchReferencePriceClientConfig {
             .field("reconnect_jitter_ms", &self.reconnect_jitter_ms)
             .field("idle_timeout_ms", &self.idle_timeout_ms)
             .field("api_key", &REDACTED)
+            .field("api_secret", &REDACTED)
             .finish()
     }
 }
 
-impl ClientConfig for PolyResearchReferencePriceClientConfig {
+impl ClientConfig for ChainlinkReferencePriceClientConfig {
     fn as_any(&self) -> &dyn Any {
         self
     }
 }
 
 #[derive(Debug)]
-pub struct PolyResearchReferencePriceClientFactory;
+pub struct ChainlinkReferencePriceClientFactory;
 
-impl DataClientFactory for PolyResearchReferencePriceClientFactory {
+impl DataClientFactory for ChainlinkReferencePriceClientFactory {
     fn create(
         &self,
         name: &str,
@@ -152,11 +154,9 @@ impl DataClientFactory for PolyResearchReferencePriceClientFactory {
     ) -> anyhow::Result<Box<dyn DataClient>> {
         let config = config
             .as_any()
-            .downcast_ref::<PolyResearchReferencePriceClientConfig>()
-            .ok_or_else(|| {
-                anyhow::anyhow!("PolyResearch reference factory received wrong config")
-            })?;
-        Ok(Box::new(PolyResearchReferencePriceClient {
+            .downcast_ref::<ChainlinkReferencePriceClientConfig>()
+            .ok_or_else(|| anyhow::anyhow!("Chainlink reference factory received wrong config"))?;
+        Ok(Box::new(ChainlinkReferencePriceClient {
             client_id: ClientId::from(name),
             _config: config.clone(),
             connected: false,
@@ -173,14 +173,14 @@ impl DataClientFactory for PolyResearchReferencePriceClientFactory {
 }
 
 #[derive(Debug)]
-struct PolyResearchReferencePriceClient {
+struct ChainlinkReferencePriceClient {
     client_id: ClientId,
-    _config: PolyResearchReferencePriceClientConfig,
+    _config: ChainlinkReferencePriceClientConfig,
     connected: bool,
 }
 
 #[async_trait::async_trait(?Send)]
-impl DataClient for PolyResearchReferencePriceClient {
+impl DataClient for ChainlinkReferencePriceClient {
     fn client_id(&self) -> ClientId {
         self.client_id
     }
@@ -218,27 +218,6 @@ impl DataClient for PolyResearchReferencePriceClient {
     }
 }
 
-pub struct PolyResearchAuthConfig {
-    pub websocket_endpoint: String,
-    pub api_key: String,
-}
-
-pub fn polyresearch_websocket_url(config: &PolyResearchAuthConfig) -> Result<Url, String> {
-    validate_secret_field("api_key", &config.api_key)?;
-    let mut url = validate_websocket_endpoint(&config.websocket_endpoint)?;
-    if url
-        .query_pairs()
-        .any(|(key, _)| key.eq_ignore_ascii_case(POLYRESEARCH_API_KEY_QUERY_FIELD))
-    {
-        return Err(format!(
-            "polyresearch websocket_endpoint must not contain `{POLYRESEARCH_API_KEY_QUERY_FIELD}`; configure api_key separately"
-        ));
-    }
-    url.query_pairs_mut()
-        .append_pair(POLYRESEARCH_API_KEY_QUERY_FIELD, &config.api_key);
-    Ok(url)
-}
-
 pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
     let mut errors = Vec::new();
     if client.execution.is_some() {
@@ -247,10 +226,7 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
         ));
     }
     if let Some(data) = &client.data {
-        match data
-            .clone()
-            .try_into::<PolyResearchReferencePriceDataConfig>()
-        {
+        match data.clone().try_into::<ChainlinkReferencePriceDataConfig>() {
             Ok(parsed) => errors.extend(validate_data_bounds(key, &parsed)),
             Err(message) => errors.push(format!("clients.{key}.data: {message}")),
         }
@@ -263,7 +239,7 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
         }
         match secrets
             .clone()
-            .try_into::<PolyResearchReferencePriceSecretsConfig>()
+            .try_into::<ChainlinkReferencePriceSecretsConfig>()
         {
             Ok(parsed) => errors.extend(validate_secret_paths(key, &parsed)),
             Err(message) => errors.push(format!("clients.{key}.secrets: {message}")),
@@ -272,20 +248,13 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
     errors
 }
 
-fn validate_data_bounds(key: &str, data: &PolyResearchReferencePriceDataConfig) -> Vec<String> {
+fn validate_data_bounds(key: &str, data: &ChainlinkReferencePriceDataConfig) -> Vec<String> {
     let mut errors = Vec::new();
-    if let Err(message) = validate_websocket_endpoint(&data.websocket_endpoint) {
-        errors.push(format!("clients.{key}.data.websocket_endpoint: {message}"));
-    }
-    if let Ok(url) = Url::parse(&data.websocket_endpoint)
-        && url
-            .query_pairs()
-            .any(|(field, _)| field.eq_ignore_ascii_case(POLYRESEARCH_API_KEY_QUERY_FIELD))
-    {
-        errors.push(format!(
-            "clients.{key}.data.websocket_endpoint must not contain `{POLYRESEARCH_API_KEY_QUERY_FIELD}`; configure api_key separately"
-        ));
-    }
+    validate_wss_endpoint(
+        &format!("clients.{key}.data.websocket_endpoint"),
+        &data.websocket_endpoint,
+        &mut errors,
+    );
     validate_positive_optional_u64(
         &format!("clients.{key}.data.heartbeat_secs"),
         data.heartbeat_secs,
@@ -324,6 +293,17 @@ fn validate_data_bounds(key: &str, data: &PolyResearchReferencePriceDataConfig) 
     errors
 }
 
+fn validate_wss_endpoint(field: &str, value: &str, errors: &mut Vec<String>) {
+    match Url::parse(value) {
+        Ok(url)
+            if value.trim() == value
+                && url.scheme() == "wss"
+                && url.has_host()
+                && value[url.scheme().len()..].starts_with("://") => {}
+        _ => errors.push(format!("{field} must be a valid wss URL")),
+    }
+}
+
 fn validate_positive_optional_u64(field: &str, value: Option<u64>, errors: &mut Vec<String>) {
     if value.is_some_and(|value| value == 0) {
         errors.push(format!("{field} must be positive when configured"));
@@ -336,15 +316,20 @@ fn validate_positive_u64(field: &str, value: u64, errors: &mut Vec<String>) {
     }
 }
 
-fn validate_secret_paths(
-    key: &str,
-    secrets: &PolyResearchReferencePriceSecretsConfig,
-) -> Vec<String> {
-    crate::bolt_v3_validate::validate_ssm_parameter_path(
-        key,
-        "api_key_ssm_parameter",
-        &secrets.api_key_ssm_parameter,
-    )
+fn validate_secret_paths(key: &str, secrets: &ChainlinkReferencePriceSecretsConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (field, value) in [
+        ("api_key_ssm_parameter", &secrets.api_key_ssm_parameter),
+        (
+            "api_secret_ssm_parameter",
+            &secrets.api_secret_ssm_parameter,
+        ),
+    ] {
+        errors.extend(crate::bolt_v3_validate::validate_ssm_parameter_path(
+            key, field, value,
+        ));
+    }
+    errors
 }
 
 pub fn resolve_secrets(
@@ -359,8 +344,16 @@ pub fn resolve_secrets(
         &secrets.api_key_ssm_parameter,
         resolver,
     )?;
-    Ok(Arc::new(ResolvedBoltV3PolyResearchSecrets {
+    let api_secret = resolve_field(
+        context.client_key,
+        "api_secret_ssm_parameter",
+        context.region,
+        &secrets.api_secret_ssm_parameter,
+        resolver,
+    )?;
+    Ok(Arc::new(ResolvedBoltV3ChainlinkReferenceSecrets {
         api_key: Zeroizing::new(api_key),
+        api_secret: Zeroizing::new(api_secret),
     }))
 }
 
@@ -368,15 +361,21 @@ pub fn configured_secret_paths(
     context: ProviderSecretResolveContext<'_>,
 ) -> Result<Vec<ProviderSsmPathReference>, BoltV3SecretError> {
     let secrets = parse_secrets_config(&context)?;
-    Ok(vec![ProviderSsmPathReference {
-        field_name: "api_key_ssm_parameter",
-        ssm_path: secrets.api_key_ssm_parameter,
-    }])
+    Ok(vec![
+        ProviderSsmPathReference {
+            field_name: "api_key_ssm_parameter",
+            ssm_path: secrets.api_key_ssm_parameter,
+        },
+        ProviderSsmPathReference {
+            field_name: "api_secret_ssm_parameter",
+            ssm_path: secrets.api_secret_ssm_parameter,
+        },
+    ])
 }
 
 fn parse_secrets_config(
     context: &ProviderSecretResolveContext<'_>,
-) -> Result<PolyResearchReferencePriceSecretsConfig, BoltV3SecretError> {
+) -> Result<ChainlinkReferencePriceSecretsConfig, BoltV3SecretError> {
     let secrets_value = context
         .client
         .secrets
@@ -392,7 +391,7 @@ fn parse_secrets_config(
         .map_err(|error: toml::de::Error| BoltV3SecretError {
             client_key: context.client_key.to_string(),
             field: KEY.to_string(),
-            source: format!("invalid polyresearch secrets schema: {error}"),
+            source: format!("invalid chainlink reference secrets schema: {error}"),
         })
 }
 
@@ -403,7 +402,7 @@ pub fn map_adapters(
         Some(value) => {
             let secrets = secrets_for(context.client_key, context.resolved)?;
             Some(BoltV3DataClientAdapterConfig {
-                factory: Box::new(PolyResearchReferencePriceClientFactory),
+                factory: Box::new(ChainlinkReferencePriceClientFactory),
                 config: Box::new(map_data(context.client_key, value, secrets)?),
             })
         }
@@ -418,9 +417,9 @@ pub fn map_adapters(
 fn map_data(
     client_key: &str,
     value: &toml::Value,
-    secrets: &ResolvedBoltV3PolyResearchSecrets,
-) -> Result<PolyResearchReferencePriceClientConfig, BoltV3AdapterMappingError> {
-    let cfg: PolyResearchReferencePriceDataConfig =
+    secrets: &ResolvedBoltV3ChainlinkReferenceSecrets,
+) -> Result<ChainlinkReferencePriceClientConfig, BoltV3AdapterMappingError> {
+    let cfg: ChainlinkReferencePriceDataConfig =
         value.clone().try_into().map_err(|error: toml::de::Error| {
             BoltV3AdapterMappingError::SchemaParse {
                 client_key: client_key.to_string(),
@@ -435,7 +434,7 @@ fn map_data(
             message,
         });
     }
-    Ok(PolyResearchReferencePriceClientConfig {
+    Ok(ChainlinkReferencePriceClientConfig {
         websocket_endpoint: cfg.websocket_endpoint,
         transport_backend: cfg.transport_backend,
         heartbeat_secs: cfg.heartbeat_secs,
@@ -447,13 +446,14 @@ fn map_data(
         reconnect_jitter_ms: cfg.reconnect_jitter_ms,
         idle_timeout_ms: cfg.idle_timeout_ms,
         api_key: secrets.api_key.clone(),
+        api_secret: secrets.api_secret.clone(),
     })
 }
 
 fn secrets_for<'a>(
     client_key: &str,
     resolved: &'a crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
-) -> Result<&'a ResolvedBoltV3PolyResearchSecrets, BoltV3AdapterMappingError> {
+) -> Result<&'a ResolvedBoltV3ChainlinkReferenceSecrets, BoltV3AdapterMappingError> {
     match resolved.clients.get(client_key) {
         Some(inner) => inner.as_any().downcast_ref().ok_or_else(|| {
             BoltV3AdapterMappingError::SecretProviderMismatch {
@@ -466,23 +466,4 @@ fn secrets_for<'a>(
             expected_provider_key: KEY,
         }),
     }
-}
-
-fn validate_secret_field(field: &'static str, value: &str) -> Result<(), String> {
-    if value.trim().is_empty() || value.trim() != value || value.chars().any(char::is_whitespace) {
-        return Err(format!("polyresearch {field} is invalid"));
-    }
-    Ok(())
-}
-
-fn validate_websocket_endpoint(value: &str) -> Result<Url, String> {
-    if value.trim().is_empty() || value.trim() != value || value.chars().any(char::is_whitespace) {
-        return Err("polyresearch websocket_endpoint must be a non-empty wss URL".to_string());
-    }
-    let url = Url::parse(value)
-        .map_err(|_| "polyresearch websocket_endpoint must be a valid wss URL".to_string())?;
-    if url.scheme() != "wss" || !url.has_host() || !value[url.scheme().len()..].starts_with("://") {
-        return Err("polyresearch websocket_endpoint must be a valid wss URL".to_string());
-    }
-    Ok(url)
 }

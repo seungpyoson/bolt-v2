@@ -169,6 +169,39 @@ def test_provider_key_constants_in_shared_market_data_module_are_findings() -> N
         assert "provider-key string literal in core production code" in messages
 
 
+def test_reference_provider_policy_rejects_resolution_strike_outputs() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_providers/chainlink_reference.rs": """
+                    use nautilus_model::data::IndexPriceUpdate;
+
+                    pub fn forbidden(update: IndexPriceUpdate) {
+                        let price_to_beat = update.value;
+                        let _ = price_to_beat;
+                    }
+                """,
+                "src/bolt_v3_providers/polyresearch.rs": """
+                    pub const KEY: &str = "POLYRESEARCH_REFERENCE_PRICE";
+                    pub fn allowed_reference_quote() {
+                        let reference_price = 1.0;
+                        let _ = reference_price;
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "reference provider must not use IndexPriceUpdate" in messages
+        assert "reference provider must not touch price_to_beat" in messages
+
+
 def test_shared_secret_module_provider_import_is_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -953,6 +986,7 @@ def main() -> int:
         test_cfg_not_any_test_is_scanned_as_production,
         test_shared_market_data_provider_module_name_is_not_concrete_provider,
         test_provider_key_constants_in_shared_market_data_module_are_findings,
+        test_reference_provider_policy_rejects_resolution_strike_outputs,
         test_cfg_any_test_feature_is_scanned_as_production,
         test_cfg_all_test_feature_is_stripped_as_test_only,
         test_cfg_not_not_test_is_stripped_as_test_only,

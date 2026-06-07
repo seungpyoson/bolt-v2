@@ -377,6 +377,7 @@ pub struct BoltV3StrategyConfig {
     /// singular `resolution_client_id` / `resolution_instrument_id` runtime
     /// fields. When absent, the live strike simply does not subscribe.
     pub resolution_data: Option<ReferenceDataBlock>,
+    pub reference_price: Option<ReferencePriceBlock>,
     pub parameters: toml::Value,
 }
 
@@ -395,6 +396,145 @@ impl StrategyArchetypeKey {
 pub struct ReferenceDataBlock {
     pub data_client_id: ClientId,
     pub instrument_id: InstrumentId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferencePriceBlock {
+    pub asset: String,
+    pub source_order: Vec<String>,
+    pub min_valid_sources: usize,
+    pub selection_policy: ReferencePriceSelectionPolicy,
+    pub max_source_age_ms: u64,
+    pub max_source_drift_bps: u32,
+    pub drift_policy: ReferencePriceDriftPolicy,
+    pub stale_policy: ReferencePriceStalePolicy,
+    pub sources: BTreeMap<String, ReferencePriceSourceBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReferencePriceBlockWire {
+    asset: String,
+    #[serde(rename = "sources")]
+    source_order: Vec<String>,
+    min_valid_sources: Option<usize>,
+    selection_policy: ReferencePriceSelectionPolicy,
+    max_source_age_ms: u64,
+    max_source_drift_bps: u32,
+    drift_policy: ReferencePriceDriftPolicy,
+    stale_policy: ReferencePriceStalePolicy,
+    #[serde(rename = "source")]
+    sources: Option<BTreeMap<String, ReferencePriceSourceBlock>>,
+}
+
+impl<'de> Deserialize<'de> for ReferencePriceBlock {
+    #[allow(clippy::manual_unwrap_or_default)]
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ReferencePriceBlockWire::deserialize(deserializer)?;
+        Ok(Self {
+            asset: wire.asset,
+            source_order: wire.source_order,
+            min_valid_sources: wire
+                .min_valid_sources
+                .unwrap_or(REFERENCE_PRICE_DEFAULT_MIN_VALID_SOURCES),
+            selection_policy: wire.selection_policy,
+            max_source_age_ms: wire.max_source_age_ms,
+            max_source_drift_bps: wire.max_source_drift_bps,
+            drift_policy: wire.drift_policy,
+            stale_policy: wire.stale_policy,
+            sources: match wire.sources {
+                Some(sources) => sources,
+                None => BTreeMap::new(),
+            },
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferencePriceSourceBlock {
+    pub provider: ReferencePriceProvider,
+    pub enabled: bool,
+    pub required: bool,
+    pub client_id: ClientId,
+    pub instrument_id: Option<String>,
+    pub symbol: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReferencePriceSourceBlockWire {
+    provider: ReferencePriceProvider,
+    enabled: Option<bool>,
+    required: Option<bool>,
+    client_id: ClientId,
+    instrument_id: Option<String>,
+    symbol: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ReferencePriceSourceBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ReferencePriceSourceBlockWire::deserialize(deserializer)?;
+        Ok(Self {
+            provider: wire.provider,
+            enabled: wire.enabled.unwrap_or(true),
+            required: wire.required.unwrap_or(false),
+            client_id: wire.client_id,
+            instrument_id: wire.instrument_id,
+            symbol: wire.symbol,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct ReferencePriceProvider(String);
+
+impl ReferencePriceProvider {
+    pub fn new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        if value.trim().is_empty()
+            || value.trim() != value
+            || value.chars().any(char::is_whitespace)
+        {
+            return Err("reference_price provider is invalid".to_string());
+        }
+        Ok(Self(value))
+    }
+
+    pub fn from_serialized(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+const REFERENCE_PRICE_DEFAULT_MIN_VALID_SOURCES: usize = 1;
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferencePriceDriftPolicy {
+    Observe,
+    Block,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferencePriceSelectionPolicy {
+    FirstValidPerInterval,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferencePriceStalePolicy {
+    Block,
 }
 
 #[derive(Debug, Clone)]

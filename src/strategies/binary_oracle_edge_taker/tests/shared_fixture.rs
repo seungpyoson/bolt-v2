@@ -511,6 +511,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             forced_flat_thin_book_min_liquidity: 100.0,
             lead_agreement_min_corr: 0.8,
             lead_jitter_max_ms: 250,
+            reference_price: None,
         },
         StrategyBuildContext::new(
             fee_provider,

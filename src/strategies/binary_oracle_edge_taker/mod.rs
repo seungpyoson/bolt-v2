@@ -11,7 +11,7 @@ use nautilus_core::{Params, UnixNanos};
 #[cfg(not(test))]
 use nautilus_model::enums::BookType;
 use nautilus_model::{
-    data::{IndexPriceUpdate, QuoteTick, TradeTick},
+    data::{CustomData, DataType, IndexPriceUpdate, QuoteTick, TradeTick},
     enums::PositionSide,
 };
 use nautilus_model::{
@@ -36,6 +36,7 @@ use crate::{
         OutcomeBookState, OutcomeBookSubscriptions, OutcomePreparedBooks,
         should_replace_book_subscriptions,
     },
+    bolt_v3_config::ReferencePriceBlock,
     bolt_v3_decision_evidence::{
         BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot,
     },
@@ -52,6 +53,12 @@ use crate::{
     bolt_v3_providers::{
         STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
         normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
+    },
+    bolt_v3_reference_price::{
+        REFERENCE_PRICE_ASSET_PARAM, REFERENCE_PRICE_INSTRUMENT_ID_PARAM,
+        REFERENCE_PRICE_PROVIDER_PARAM, REFERENCE_PRICE_SOURCE_KEY_PARAM,
+        REFERENCE_PRICE_SYMBOL_PARAM, ReferencePriceSelector, ReferencePriceSourceHealth,
+        ReferencePriceSourceSpec, ReferencePriceSourceStatus, ReferencePriceUpdate, ReferenceQuote,
     },
     bolt_v3_submit_admission::{
         BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionRequest,
@@ -274,6 +281,9 @@ struct ActiveMarketState {
     instrument_id: Option<InstrumentId>,
     outcome_fees: OutcomeFeeState,
     price_to_beat: Option<f64>,
+    reference_price: Option<f64>,
+    reference_price_source_id: Option<String>,
+    reference_price_ts_ms: Option<u64>,
     market_selection_outcome: MarketSelectionOutcome,
     interval_start_ms: Option<u64>,
     interval_end_ms: Option<u64>,
@@ -303,6 +313,93 @@ fn signed_trade_flow_config(config: &BinaryOracleEdgeTakerConfig) -> SignedTrade
         window_secs: config.trade_flow_window_secs,
         max_samples: config.trade_flow_max_samples,
     }
+}
+
+fn reference_price_selector_from_config(
+    config: &BinaryOracleEdgeTakerConfig,
+) -> Option<ReferencePriceSelector> {
+    let reference_price = config.reference_price.as_ref()?;
+    let source_specs = reference_price
+        .source_order
+        .iter()
+        .filter_map(|source_id| {
+            let source = reference_price.sources.get(source_id)?;
+            reference_price_source_is_runtime_available(reference_price, source).then(|| {
+                if source.required {
+                    ReferencePriceSourceSpec::required(source_id.clone())
+                } else {
+                    ReferencePriceSourceSpec::optional(source_id.clone())
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    if source_specs.is_empty() {
+        return None;
+    }
+    Some(
+        ReferencePriceSelector::new_with_source_specs_and_drift_policy(
+            reference_price.asset.clone(),
+            source_specs,
+            reference_price.min_valid_sources,
+            reference_price.max_source_age_ms,
+            reference_price.max_source_drift_bps,
+            reference_price.drift_policy,
+        )
+        .expect("validated reference_price selector config"),
+    )
+}
+
+fn reference_price_source_health_from_config(
+    config: &BinaryOracleEdgeTakerConfig,
+) -> BTreeMap<String, ReferencePriceSourceHealth> {
+    let Some(reference_price) = &config.reference_price else {
+        return BTreeMap::new();
+    };
+    reference_price
+        .sources
+        .iter()
+        .map(|(source_id, source)| {
+            let status = if !source.enabled {
+                ReferencePriceSourceStatus::Disabled
+            } else if reference_price_source_is_unsupported(reference_price, source) {
+                ReferencePriceSourceStatus::UnsupportedSymbol
+            } else {
+                ReferencePriceSourceStatus::Silent
+            };
+            (
+                source_id.clone(),
+                ReferencePriceSourceHealth::new(
+                    source_id.clone(),
+                    source.provider.clone(),
+                    status,
+                    None,
+                    None,
+                ),
+            )
+        })
+        .collect()
+}
+
+fn reference_price_source_is_runtime_available(
+    reference_price: &ReferencePriceBlock,
+    source: &crate::bolt_v3_config::ReferencePriceSourceBlock,
+) -> bool {
+    source.enabled && !reference_price_source_is_unsupported(reference_price, source)
+}
+
+fn reference_price_source_is_unsupported(
+    reference_price: &ReferencePriceBlock,
+    source: &crate::bolt_v3_config::ReferencePriceSourceBlock,
+) -> bool {
+    let Some(metadata) =
+        crate::bolt_v3_providers::reference_price_provider_metadata(source.provider.as_str())
+    else {
+        return true;
+    };
+    !metadata.supported_assets.is_empty()
+        && !metadata
+            .supported_assets
+            .contains(&reference_price.asset.as_str())
 }
 
 fn order_price_for_side(
@@ -597,6 +694,9 @@ impl ActiveMarketState {
             instrument_id: None,
             outcome_fees: OutcomeFeeState::empty(),
             price_to_beat: None,
+            reference_price: None,
+            reference_price_source_id: None,
+            reference_price_ts_ms: None,
             market_selection_outcome: MarketSelectionOutcome::Current,
             interval_start_ms: None,
             interval_end_ms: None,
@@ -645,6 +745,9 @@ impl ActiveMarketState {
             instrument_id: Some(InstrumentId::from(market.instrument_id.as_str())),
             outcome_fees: OutcomeFeeState::from_market(market),
             price_to_beat: market.price_to_beat,
+            reference_price: None,
+            reference_price_source_id: None,
+            reference_price_ts_ms: None,
             market_selection_outcome: market.selection_outcome,
             interval_start_ms: Some(market.start_ts_ms),
             interval_end_ms: Some(market.expiration_ts_ms),
@@ -776,6 +879,28 @@ impl ActiveMarketState {
         self.last_resolution_ts_ms = Some(observed_ts_ms);
     }
 
+    fn observe_reference_price_quote(&mut self, quote: &ReferenceQuote) {
+        if self.phase == SelectionPhase::Idle {
+            return;
+        }
+        let Some(interval_start_ms) = self.interval_start_ms else {
+            return;
+        };
+        if quote.observed_ts_ms() < interval_start_ms {
+            return;
+        }
+        if self
+            .reference_price_ts_ms
+            .is_some_and(|last_ts_ms| quote.observed_ts_ms() <= last_ts_ms)
+        {
+            return;
+        }
+
+        self.reference_price = Some(quote.price());
+        self.reference_price_source_id = Some(quote.source_id().to_string());
+        self.reference_price_ts_ms = Some(quote.observed_ts_ms());
+    }
+
     #[cfg(test)]
     fn observe_reference_snapshot(&mut self, snapshot: &ReferenceSnapshot) {
         if self.phase == SelectionPhase::Idle {
@@ -813,6 +938,9 @@ pub struct BinaryOracleEdgeTaker {
     config: BinaryOracleEdgeTakerConfig,
     context: StrategyBuildContext,
     active: ActiveMarketState,
+    reference_price_selector: Option<ReferencePriceSelector>,
+    reference_price_quotes: BTreeMap<String, ReferenceQuote>,
+    reference_price_source_health: BTreeMap<String, ReferencePriceSourceHealth>,
     book_subscriptions: OutcomeBookSubscriptions,
     market_lifecycle: BTreeMap<String, MarketLifecycleLedger>,
     exposure: ExposureState,
@@ -833,6 +961,8 @@ pub struct BinaryOracleEdgeTaker {
     /// windows/retries.
     #[cfg(test)]
     resolution_strike_subscribe_events: Vec<ResolutionStrikeSubscribeEvent>,
+    #[cfg(test)]
+    reference_price_subscribe_events: Vec<ReferencePriceSubscribeEvent>,
 }
 
 impl BinaryOracleEdgeTaker {
@@ -841,6 +971,8 @@ impl BinaryOracleEdgeTaker {
         let oms_type = parse_configured_oms_type(CONFIG_FIELD_OMS_TYPE, &config.oms_type)
             .expect("validated binary_oracle_edge_taker oms_type");
         let market_exit_time_in_force = config.forced_exit_order.time_in_force;
+        let reference_price_selector = reference_price_selector_from_config(&config);
+        let reference_price_source_health = reference_price_source_health_from_config(&config);
         let external_order_claims = config
             .external_order_claims
             .iter()
@@ -868,6 +1000,9 @@ impl BinaryOracleEdgeTaker {
             config,
             context,
             active: ActiveMarketState::idle(),
+            reference_price_selector,
+            reference_price_quotes: BTreeMap::new(),
+            reference_price_source_health,
             book_subscriptions: OutcomeBookSubscriptions::empty(),
             market_lifecycle: BTreeMap::new(),
             exposure: ExposureState::Flat,
@@ -878,6 +1013,8 @@ impl BinaryOracleEdgeTaker {
             book_subscription_events: Vec::new(),
             #[cfg(test)]
             resolution_strike_subscribe_events: Vec::new(),
+            #[cfg(test)]
+            reference_price_subscribe_events: Vec::new(),
         }
     }
 
@@ -1226,6 +1363,195 @@ impl BinaryOracleEdgeTaker {
             #[cfg(test)]
             let _ = instrument_id;
         }
+    }
+
+    fn subscribe_reference_prices(&mut self) {
+        for subscription in self.reference_price_subscription_requests() {
+            #[cfg(not(test))]
+            self.subscribe_data(
+                subscription.data_type.clone(),
+                Some(subscription.client_id),
+                Some(subscription.params.clone()),
+            );
+            self.record_reference_price_subscribe_event(ReferencePriceSubscribeEvent::subscribe(
+                &subscription,
+            ));
+        }
+    }
+
+    fn unsubscribe_reference_prices(&mut self) {
+        for subscription in self.reference_price_subscription_requests() {
+            #[cfg(not(test))]
+            self.unsubscribe_data(
+                subscription.data_type.clone(),
+                Some(subscription.client_id),
+                Some(subscription.params.clone()),
+            );
+            self.record_reference_price_subscribe_event(ReferencePriceSubscribeEvent::unsubscribe(
+                &subscription,
+            ));
+        }
+    }
+
+    fn reference_price_subscription_requests(&self) -> Vec<ReferencePriceSubscriptionRequest> {
+        let Some(reference_price) = &self.config.reference_price else {
+            return Vec::new();
+        };
+        let mut subscriptions = Vec::new();
+        for source_id in &reference_price.source_order {
+            let Some(source) = reference_price.sources.get(source_id) else {
+                continue;
+            };
+            if !source.enabled {
+                continue;
+            }
+            let provider = source.provider.as_str();
+            let data_type = match ReferencePriceUpdate::data_type_for(
+                &reference_price.asset,
+                source_id,
+                provider,
+            ) {
+                Ok(data_type) => data_type,
+                Err(error) => {
+                    log::error!(
+                        "binary_oracle_edge_taker invalid reference price data type: {error}; source_id={source_id} strategy_id={}",
+                        self.config.strategy_id,
+                    );
+                    continue;
+                }
+            };
+            let mut params = Params::new();
+            params.insert(
+                REFERENCE_PRICE_ASSET_PARAM.to_string(),
+                serde_json::json!(reference_price.asset),
+            );
+            params.insert(
+                REFERENCE_PRICE_SOURCE_KEY_PARAM.to_string(),
+                serde_json::json!(source_id),
+            );
+            params.insert(
+                REFERENCE_PRICE_PROVIDER_PARAM.to_string(),
+                serde_json::json!(provider),
+            );
+            if let Some(instrument_id) = &source.instrument_id {
+                params.insert(
+                    REFERENCE_PRICE_INSTRUMENT_ID_PARAM.to_string(),
+                    serde_json::json!(instrument_id),
+                );
+            }
+            if let Some(symbol) = &source.symbol {
+                params.insert(
+                    REFERENCE_PRICE_SYMBOL_PARAM.to_string(),
+                    serde_json::json!(symbol),
+                );
+            }
+            subscriptions.push(ReferencePriceSubscriptionRequest {
+                source_id: source_id.clone(),
+                provider: provider.to_string(),
+                client_id: source.client_id,
+                data_type,
+                params,
+            });
+        }
+        subscriptions
+    }
+
+    fn observe_reference_price_update(&mut self, update: &ReferencePriceUpdate) {
+        self.ensure_reference_price_runtime_state();
+        let quote = match update.to_reference_quote() {
+            Ok(quote) => quote,
+            Err(error) => {
+                self.mark_reference_price_source_status(
+                    update.source_id(),
+                    ReferencePriceSourceStatus::MalformedFrame,
+                    Some(update.observed_ts_ms()),
+                    Some(update.received_ts_ms()),
+                );
+                log::warn!(
+                    "binary_oracle_edge_taker malformed reference price update ignored: {error}; source_id={} strategy_id={}",
+                    update.source_id(),
+                    self.config.strategy_id,
+                );
+                return;
+            }
+        };
+        let Some(existing_health) = self.reference_price_source_health.get(quote.source_id())
+        else {
+            return;
+        };
+        if matches!(
+            existing_health.status(),
+            ReferencePriceSourceStatus::Disabled | ReferencePriceSourceStatus::UnsupportedSymbol
+        ) {
+            return;
+        }
+
+        self.reference_price_source_health.insert(
+            quote.source_id().to_string(),
+            ReferencePriceSourceHealth::available(&quote),
+        );
+        self.reference_price_quotes
+            .insert(quote.source_id().to_string(), quote.clone());
+
+        let (Some(interval_start_ms), Some(interval_end_ms), Some(selector)) = (
+            self.active.interval_start_ms,
+            self.active.interval_end_ms,
+            self.reference_price_selector.as_mut(),
+        ) else {
+            return;
+        };
+        let quotes = self
+            .reference_price_quotes
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let Some(selection) = selector.select(
+            interval_start_ms,
+            interval_end_ms,
+            quote.received_ts_ms(),
+            &quotes,
+        ) else {
+            return;
+        };
+        if let Some(selected_quote) = self.reference_price_quotes.get(selection.source_id()) {
+            self.active.observe_reference_price_quote(selected_quote);
+        }
+    }
+
+    fn ensure_reference_price_runtime_state(&mut self) {
+        if self.config.reference_price.is_none() {
+            return;
+        }
+        if self.reference_price_selector.is_none() {
+            self.reference_price_selector = reference_price_selector_from_config(&self.config);
+        }
+        if self.reference_price_source_health.is_empty() {
+            self.reference_price_source_health =
+                reference_price_source_health_from_config(&self.config);
+        }
+    }
+
+    fn mark_reference_price_source_status(
+        &mut self,
+        source_id: &str,
+        status: ReferencePriceSourceStatus,
+        observed_ts_ms: Option<u64>,
+        received_ts_ms: Option<u64>,
+    ) {
+        let Some(existing_health) = self.reference_price_source_health.get(source_id) else {
+            return;
+        };
+        let provider = existing_health.provider().clone();
+        self.reference_price_source_health.insert(
+            source_id.to_string(),
+            ReferencePriceSourceHealth::new(
+                source_id,
+                provider,
+                status,
+                observed_ts_ms,
+                received_ts_ms,
+            ),
+        );
     }
 
     /// Subscribes to the live resolution strike for the current market interval.
@@ -4115,6 +4441,7 @@ impl DataActor for BinaryOracleEdgeTaker {
         let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
         self.refresh_selection_from_cache(now_ms);
         self.register_selection_retry_timer();
+        self.subscribe_reference_prices();
         self.subscribe_reference_quotes();
         self.subscribe_signal_quotes();
         Ok(())
@@ -4123,6 +4450,7 @@ impl DataActor for BinaryOracleEdgeTaker {
     fn on_stop(&mut self) -> Result<()> {
         self.unsubscribe_signal_quotes();
         self.unsubscribe_reference_quotes();
+        self.unsubscribe_reference_prices();
         self.deregister_selection_retry_timer();
         Ok(())
     }
@@ -4161,6 +4489,14 @@ impl DataActor for BinaryOracleEdgeTaker {
             let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
             self.active
                 .observe_resolution_strike(update.value.as_f64(), window_open_ms, now_ms);
+            self.sync_exposure_context_from_active();
+        }
+        Ok(())
+    }
+
+    fn on_data(&mut self, data: &CustomData) -> anyhow::Result<()> {
+        if let Some(update) = ReferencePriceUpdate::from_custom_data(data) {
+            self.observe_reference_price_update(update);
             self.sync_exposure_context_from_active();
         }
         Ok(())
@@ -4629,6 +4965,61 @@ impl BinaryOracleEdgeTaker {
     fn record_book_subscription_event(&mut self, event: BookSubscriptionEvent) {
         #[cfg(test)]
         self.book_subscription_events.push(event);
+        #[cfg(not(test))]
+        let _ = event;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReferencePriceSubscriptionRequest {
+    source_id: String,
+    provider: String,
+    client_id: ClientId,
+    data_type: DataType,
+    params: Params,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReferencePriceSubscribeEvent {
+    action: &'static str,
+    source_id: String,
+    provider: String,
+    client_id: ClientId,
+    data_type: DataType,
+    params: Params,
+}
+
+const REFERENCE_PRICE_SUBSCRIBE_ACTION: &str = stringify!(subscribe);
+const REFERENCE_PRICE_UNSUBSCRIBE_ACTION: &str = stringify!(unsubscribe);
+
+impl ReferencePriceSubscribeEvent {
+    fn subscribe(subscription: &ReferencePriceSubscriptionRequest) -> Self {
+        Self::from_subscription(REFERENCE_PRICE_SUBSCRIBE_ACTION, subscription)
+    }
+
+    fn unsubscribe(subscription: &ReferencePriceSubscriptionRequest) -> Self {
+        Self::from_subscription(REFERENCE_PRICE_UNSUBSCRIBE_ACTION, subscription)
+    }
+
+    fn from_subscription(
+        action: &'static str,
+        subscription: &ReferencePriceSubscriptionRequest,
+    ) -> Self {
+        Self {
+            action,
+            source_id: subscription.source_id.clone(),
+            provider: subscription.provider.clone(),
+            client_id: subscription.client_id,
+            data_type: subscription.data_type.clone(),
+            params: subscription.params.clone(),
+        }
+    }
+}
+
+impl BinaryOracleEdgeTaker {
+    fn record_reference_price_subscribe_event(&mut self, event: ReferencePriceSubscribeEvent) {
+        #[cfg(test)]
+        self.reference_price_subscribe_events.push(event);
         #[cfg(not(test))]
         let _ = event;
     }

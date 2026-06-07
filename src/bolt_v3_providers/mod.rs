@@ -17,6 +17,7 @@
 
 pub mod binance;
 pub mod chainlink;
+pub mod chainlink_reference;
 pub mod hyperliquid;
 pub mod hyperliquid_artifacts;
 pub mod market_data;
@@ -531,6 +532,39 @@ pub struct ProviderBinding {
     pub build_fee_provider: Option<FeeProviderBuilder>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferencePriceIdentifierKind {
+    InstrumentId,
+    Symbol,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReferencePriceProviderMetadata {
+    pub provider_key: &'static str,
+    pub identifier_kind: ReferencePriceIdentifierKind,
+    pub supported_assets: &'static [&'static str],
+}
+
+pub fn reference_price_provider_metadata(
+    provider_key: &str,
+) -> Option<ReferencePriceProviderMetadata> {
+    if provider_key == chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY {
+        return Some(ReferencePriceProviderMetadata {
+            provider_key: chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY,
+            identifier_kind: ReferencePriceIdentifierKind::InstrumentId,
+            supported_assets: &[],
+        });
+    }
+    if provider_key == polyresearch::REFERENCE_PRICE_PROVIDER_KEY {
+        return Some(ReferencePriceProviderMetadata {
+            provider_key: polyresearch::REFERENCE_PRICE_PROVIDER_KEY,
+            identifier_kind: ReferencePriceIdentifierKind::Symbol,
+            supported_assets: polyresearch::POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS,
+        });
+    }
+    None
+}
+
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
@@ -698,6 +732,40 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: chainlink::resolve_secrets,
         configured_secret_paths: chainlink::configured_secret_paths,
         map_adapters: chainlink::map_adapters,
+        load_live_submit_approval: None,
+        preflight_live_submit_arming: None,
+        write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
+        build_fee_provider: None,
+    },
+    ProviderBinding {
+        key: chainlink_reference::KEY,
+        validate_client: chainlink_reference::validate_client,
+        supported_market_families: chainlink_reference::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: chainlink_reference::REQUIRED_SECRET_BLOCKS,
+        secret_field_names: chainlink_reference::SECRET_FIELD_NAMES,
+        credential_log_modules: chainlink_reference::CREDENTIAL_LOG_MODULES,
+        forbidden_env_vars: chainlink_reference::FORBIDDEN_ENV_VARS,
+        resolve_secrets: chainlink_reference::resolve_secrets,
+        configured_secret_paths: chainlink_reference::configured_secret_paths,
+        map_adapters: chainlink_reference::map_adapters,
+        load_live_submit_approval: None,
+        preflight_live_submit_arming: None,
+        write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
+        build_fee_provider: None,
+    },
+    ProviderBinding {
+        key: polyresearch::KEY,
+        validate_client: polyresearch::validate_client,
+        supported_market_families: polyresearch::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: polyresearch::REQUIRED_SECRET_BLOCKS,
+        secret_field_names: polyresearch::SECRET_FIELD_NAMES,
+        credential_log_modules: polyresearch::CREDENTIAL_LOG_MODULES,
+        forbidden_env_vars: polyresearch::FORBIDDEN_ENV_VARS,
+        resolve_secrets: polyresearch::resolve_secrets,
+        configured_secret_paths: polyresearch::configured_secret_paths,
+        map_adapters: polyresearch::map_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,

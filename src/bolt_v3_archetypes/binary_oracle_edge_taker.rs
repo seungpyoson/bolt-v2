@@ -668,6 +668,9 @@ pub fn raw_taker_config(
             resolution_data.instrument_id.to_string(),
         );
     }
+    if let Some(reference_price) = &strategy.config.reference_price {
+        insert_reference_price_config(&mut table, strategy_instance_id, reference_price)?;
+    }
     insert_order_config(
         &mut table,
         strategy_instance_id,
@@ -1074,6 +1077,18 @@ fn i64_to_u64(
     })
 }
 
+fn usize_to_u64(
+    strategy_instance_id: &str,
+    field: &'static str,
+    value: usize,
+) -> Result<u64, BinaryOracleEdgeTakerRuntimeConfigError> {
+    u64::try_from(value).map_err(|_| BinaryOracleEdgeTakerRuntimeConfigError::Numeric {
+        strategy_instance_id: strategy_instance_id.to_string(),
+        field,
+        value: value.to_string(),
+    })
+}
+
 fn insert_string(table: &mut Map<String, Value>, key: &'static str, value: String) {
     table.insert(key.to_string(), Value::String(value));
 }
@@ -1087,6 +1102,116 @@ fn insert_string_array(table: &mut Map<String, Value>, key: &'static str, values
         key.to_string(),
         Value::Array(values.iter().cloned().map(Value::String).collect()),
     );
+}
+
+fn insert_reference_price_config(
+    table: &mut Map<String, Value>,
+    strategy_instance_id: &str,
+    reference_price: &crate::bolt_v3_config::ReferencePriceBlock,
+) -> Result<(), BinaryOracleEdgeTakerRuntimeConfigError> {
+    let mut reference_table = Map::new();
+    insert_string(&mut reference_table, "asset", reference_price.asset.clone());
+    insert_string_array(
+        &mut reference_table,
+        "sources",
+        &reference_price.source_order,
+    );
+    insert_u64(
+        &mut reference_table,
+        strategy_instance_id,
+        "min_valid_sources",
+        usize_to_u64(
+            strategy_instance_id,
+            "reference_price.min_valid_sources",
+            reference_price.min_valid_sources,
+        )?,
+    )?;
+    insert_string(
+        &mut reference_table,
+        "selection_policy",
+        reference_price_selection_policy_value(reference_price.selection_policy),
+    );
+    insert_u64(
+        &mut reference_table,
+        strategy_instance_id,
+        "max_source_age_ms",
+        reference_price.max_source_age_ms,
+    )?;
+    insert_u64(
+        &mut reference_table,
+        strategy_instance_id,
+        "max_source_drift_bps",
+        u64::from(reference_price.max_source_drift_bps),
+    )?;
+    insert_string(
+        &mut reference_table,
+        "drift_policy",
+        reference_price_drift_policy_value(reference_price.drift_policy),
+    );
+    insert_string(
+        &mut reference_table,
+        "stale_policy",
+        reference_price_stale_policy_value(reference_price.stale_policy),
+    );
+
+    let mut source_tables = Map::new();
+    for (source_id, source) in &reference_price.sources {
+        let mut source_table = Map::new();
+        insert_string(
+            &mut source_table,
+            "provider",
+            reference_price_provider_value(&source.provider),
+        );
+        insert_bool(&mut source_table, "enabled", source.enabled);
+        insert_bool(&mut source_table, "required", source.required);
+        insert_string(&mut source_table, "client_id", source.client_id.to_string());
+        if let Some(instrument_id) = &source.instrument_id {
+            insert_string(&mut source_table, "instrument_id", instrument_id.clone());
+        }
+        if let Some(symbol) = &source.symbol {
+            insert_string(&mut source_table, "symbol", symbol.clone());
+        }
+        source_tables.insert(source_id.clone(), Value::Table(source_table));
+    }
+    reference_table.insert("source".to_string(), Value::Table(source_tables));
+    table.insert("reference_price".to_string(), Value::Table(reference_table));
+    Ok(())
+}
+
+fn reference_price_provider_value(
+    provider: &crate::bolt_v3_config::ReferencePriceProvider,
+) -> String {
+    provider.as_str().to_string()
+}
+
+fn reference_price_selection_policy_value(
+    policy: crate::bolt_v3_config::ReferencePriceSelectionPolicy,
+) -> String {
+    match policy {
+        crate::bolt_v3_config::ReferencePriceSelectionPolicy::FirstValidPerInterval => {
+            "first_valid_per_interval"
+        }
+    }
+    .to_string()
+}
+
+fn reference_price_drift_policy_value(
+    policy: crate::bolt_v3_config::ReferencePriceDriftPolicy,
+) -> String {
+    match policy {
+        crate::bolt_v3_config::ReferencePriceDriftPolicy::Observe => "observe",
+        crate::bolt_v3_config::ReferencePriceDriftPolicy::Block => "block",
+    }
+    .to_string()
+}
+
+fn reference_price_stale_policy_value(
+    policy: crate::bolt_v3_config::ReferencePriceStalePolicy,
+) -> String {
+    match policy {
+        crate::bolt_v3_config::ReferencePriceStalePolicy::Block => "block",
+    }
+    .to_string()
 }
 
 fn insert_order_config(

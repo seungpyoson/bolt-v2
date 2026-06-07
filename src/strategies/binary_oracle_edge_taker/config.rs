@@ -15,8 +15,8 @@ use serde::Deserialize;
 use toml::Value;
 
 use crate::{
-    bolt_v3_market_families, bolt_v3_numeric::is_positive_finite,
-    strategies::registry::ValidationError,
+    bolt_v3_config::ReferencePriceBlock, bolt_v3_market_families,
+    bolt_v3_numeric::is_positive_finite, strategies::registry::ValidationError,
 };
 
 trait TomlValueExt {
@@ -156,6 +156,7 @@ macro_rules! define_config_struct {
             pub(super) signal_instrument_id: Option<String>,
             pub(super) resolution_client_id: Option<String>,
             pub(super) resolution_instrument_id: Option<String>,
+            pub(super) reference_price: Option<ReferencePriceBlock>,
             pub(super) entry_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) exit_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
@@ -389,6 +390,7 @@ impl BinaryOracleEdgeTakerBuilder {
                     | "signal_instrument_id"
                     | "resolution_client_id"
                     | "resolution_instrument_id"
+                    | "reference_price"
                     | binary_oracle_edge_taker_config_fields!(match_config_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field_prefix}.{key}"), key);
@@ -416,6 +418,7 @@ impl BinaryOracleEdgeTakerBuilder {
             "resolution_instrument_id",
             errors,
         );
+        Self::validate_optional_table_field(table, field_prefix, "reference_price", errors);
         Self::validate_optional_instrument_id_field(
             table,
             field_prefix,
@@ -554,6 +557,24 @@ impl BinaryOracleEdgeTakerBuilder {
                 errors,
                 format!("{field_prefix}.{field_name}"),
                 BinaryOracleEdgeTakerFieldType::String,
+                value,
+            );
+        }
+    }
+
+    fn validate_optional_table_field(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        field_name: &'static str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        if let Some(value) = table.get(field_name)
+            && !BinaryOracleEdgeTakerFieldType::Table.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field_prefix}.{field_name}"),
+                BinaryOracleEdgeTakerFieldType::Table,
                 value,
             );
         }

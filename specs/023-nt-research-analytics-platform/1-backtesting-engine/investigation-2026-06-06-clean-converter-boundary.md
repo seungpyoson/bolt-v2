@@ -1419,6 +1419,23 @@ Midpoint table-family coverage audit:
   estimates before payload pulls, sample-first schema inspection, bounded
   fixture/source/time/object/byte budgets, idempotent manifests, and no source
   choice by venue name.
+- BTE-022 now has an explicit open mapping-status artifact:
+  `specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-evaluation.backtesting-engine.2026-06-08.json`.
+  It does not mark BTE-022 complete. It records that the only currently accepted
+  sample-to-NT path is the native-trades `TradeTick` path already proven through
+  `ParquetDataCatalog` write/read-back. NT itself supports `QuoteTick`,
+  `TradeTick`, `Bar`, `OrderBookDelta`, `OrderBookDepth10`,
+  `MarkPriceUpdate`, `IndexPriceUpdate`, `InstrumentStatus`, and
+  `InstrumentClose`, but the current BTE manifest admits only `TradeTick` and
+  must continue to reject other data classes until typed projection and
+  catalog read-back proof exist. PMXT Polymarket remains a candidate for
+  `OrderBookDelta` and `TradeTick`, but the artifact requires BTE to reuse the
+  pinned NT Polymarket parser/provider for instruments instead of inventing a
+  custom BinaryOption mapper. Kalshi official history remains lower-fidelity
+  `Bar` or `TradeTick` candidate only; PMXT Kalshi L2 needs a real sample
+  schema before any mapping claim; HIP-4 remains metadata-only until exact
+  historical outcome replay coverage and checked BinaryOption fields are
+  source-backed.
 
 ## Recommendation
 

@@ -1211,6 +1211,20 @@ Midpoint table-family coverage audit:
   `reference_price`, `fx_quote`, and `token_mapping` component source-proof
   roles; no kimchi-premium source family is selected in the current reference
   fixtures.
+- Source shortlisting is now current-report based, not prose, venue examples,
+  or legacy derivability selection. RED
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_source_proof_shortlist -- --nocapture`
+  first failed because `source_proof_shortlist` did not exist, then failed for
+  the missing TOML/file writer path. GREEN passed after adding
+  `crates/backtesting-vertical-slice/src/source_proof_shortlist.rs` and
+  `src/bin/source_proof_shortlist.rs`. The gate accepts only typed
+  `SourceProofReport` inputs, filters by fixture, table family, and candidate
+  class, excludes rejected reports, carries remaining required-check blockers
+  forward for pending candidates, writes an idempotent
+  `source-proof-shortlist-report.json`, and rejects legacy/prose JSON because
+  it cannot deserialize as `SourceProofReport`. Verification also reran the
+  BTE-016/017 reference fixture test and compiled the new bin; targeted clippy
+  passed for `--lib --bin source_proof_shortlist`.
 
 ## Recommendation
 

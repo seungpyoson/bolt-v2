@@ -46,3 +46,4 @@ pub mod source_proof_admissibility;
 pub mod source_proof_evidence_staging;
 pub mod source_proof_legacy_derivability;
 pub mod source_proof_migration_preflight;
+pub mod source_proof_shortlist;

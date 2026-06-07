@@ -188,6 +188,7 @@ pub fn evaluate_backfill_readiness(
     }
     if backfill_preflight.status != BackfillPreflightStatus::Go
         || !backfill_preflight.blocking_reasons.is_empty()
+        || !backfill_preflight.selection.require_canonical_ready
     {
         blockers.push(BackfillReadinessBlocker::BackfillPreflightBlocked);
     }

@@ -1025,6 +1025,15 @@ Midpoint table-family coverage audit:
   path. This closes the remaining indirect-inference gap where readiness could
   rely on source binding and separate binding coverage without proving the
   selected preflight record itself was for the requested data family.
+- Current-code real manifest-only rerun: `backfill_preflight` over
+  `/private/tmp/bte-coverage-ledger-20260607/backfill-preflight-bound.toml`
+  remained blocked with `eligible_record_count = 0`, content hash
+  `7e3869c002579370b8eac5e1c6b452a76ffe65e65bc53f0913afb934f61af912`;
+  joined `backfill_readiness` over the TradeTick supported path remained
+  blocked with five blockers, content hash
+  `627d528ee0dc9b30280c824ab08aa3580dfe1850c9bd1abc02f4f38275a5bb1c`.
+  These reruns used existing manifest/report artifacts only, not raw payload
+  downloads or conversion.
 - Follow-up fail-fast fix: unsupported run-manifest/catalog surfaces now reject
   before object reads and before canonical normalization writes. The RED test
   proved the previous CLI path invoked the object reader for an unsupported

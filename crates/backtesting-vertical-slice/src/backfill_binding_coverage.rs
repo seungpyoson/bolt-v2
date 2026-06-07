@@ -43,6 +43,8 @@ pub enum BackfillBindingCoverageIssue {
     EmptyRequiredTableFamilies,
     NoConfiguredBindingForRequiredTableFamily,
     NoLedgerRecordsForRequiredTableFamily,
+    EmptySourceBindingRecords,
+    UnconfiguredSourceBindingRecords,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -335,6 +337,12 @@ fn evaluate_backfill_binding_coverage_from_bindings(
             .push(BackfillBindingCoverageIssue::NoConfiguredBindingForRequiredTableFamily);
     } else if ledger_records_for_required_bindings == 0 {
         blocking_issues.push(BackfillBindingCoverageIssue::NoLedgerRecordsForRequiredTableFamily);
+    }
+    if empty_source_binding_record_count > 0 {
+        blocking_issues.push(BackfillBindingCoverageIssue::EmptySourceBindingRecords);
+    }
+    if !unconfigured_source_bindings.is_empty() {
+        blocking_issues.push(BackfillBindingCoverageIssue::UnconfiguredSourceBindingRecords);
     }
 
     let status = if blocking_issues.is_empty() {

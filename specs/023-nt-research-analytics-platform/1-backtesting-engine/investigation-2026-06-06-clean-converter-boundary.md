@@ -327,6 +327,7 @@ GREEN checks after implementation:
 - `just bte-test --test backtesting_vertical_slice_backfill_coverage`: RED failed because `[[manifest]]` TOML entries could not carry source-proof binding metadata when real manifest summaries lacked `source_binding`, `source_proof_id`, or `source_proof_version`; GREEN passed after adding generic optional TOML bindings for those fields before manifest parsing, without adding venue/data-family constants
 - `just bte-test coverage_ledger_records_unsupported_manifest_schema_instead_of_aborting_batch`: RED failed with `E0599` because `BackfillCoverageIssue::UnsupportedManifestSchema` did not exist; GREEN passed after batch manifest ingestion began recording unsupported manifest schemas as rejected coverage records instead of aborting the whole ledger
 - `just bte-test --test backtesting_vertical_slice_backfill_coverage`: 20 passed after unsupported manifest schemas became rejected coverage records
+- `cargo test --test backtesting_vertical_slice_backfill_binding_coverage binding_coverage_blocks`: RED failed with missing `BackfillBindingCoverageIssue::UnconfiguredSourceBindingRecords` and `BackfillBindingCoverageIssue::EmptySourceBindingRecords`; GREEN passed after source-binding coverage blocks any ledger records with empty or unconfigured source bindings, even when another record exists for the required table family.
 - static provider-literal scan for the coverage source, coverage CLI, and their tests: no hits for current venue/provider/sample tokens, so the new coverage-ledger API, operator command, and tests are not hardcoded to the accepted sample or a specific venue
 - `just bte-test research_analytics_artifacts_use_typed_subfamilies_and_one_kind_pointer research_analytics_records_require_matching_subfamily_prefix`: RED failed with missing `ResearchAnalyticsSubfamily` and RA-specific staged-record constructor; GREEN passed after adding typed RA subfamilies, enforcing `research-analytics/v1/<subfamily>/` manifest prefixes, and keeping every RA subfamily on the single `research_analytics` Artifact Index pointer
 - `just bte-test approved_for_config_requires_objective_evidence_and_non_live_boundary promotion_package_rejects_proof_strength_upgrade_and_forbidden_actions promotion_package_artifacts_must_live_under_ra_promotion_family promotion_package_rejects_notebook_to_production_direct_promotion approved_for_config_accepts_preserved_claim_limited_typed_config_only`: RED failed with missing `research_analytics` module; GREEN passed after adding a pure `PromotionPackage` validator with canonical status enum, accepted source-proof refs, objective BTE result refs, preserved claim limits, fidelity upgrade rejection, notebook/runtime boundary checks, typed config artifact checks, reviewer-policy refs, and RA-owned promotion-family URI validation
@@ -730,6 +731,18 @@ Current evidence:
   the next backfill unblocker is not converter execution: current manifests must
   be safely bound to configured source-binding keys and source proofs before any
   broad canonical conversion can be selected.
+- After the stricter binding-coverage gate, the same inputs were rerun into
+  `/private/tmp/bte-coverage-ledger-20260607/backfill-binding-coverage-trades-strict-output/backfill-binding-coverage-report.json`.
+  The report content hash is
+  `57a78ad13ab347f761878e4707a1ff2b8305bade490877b3a488d41f7cb46291`
+  and file SHA256 is
+  `d9957c998be25255c8974d28570e10e0ca5774e947c91dc2a44a5943db606c0d`.
+  It remains `blocked` with `configured_required_binding_count = 2`,
+  `ledger_records_for_required_bindings = 0`,
+  `empty_source_binding_record_count = 145`, unconfigured binding
+  `bybit:rest+public_archive:v5`, and blockers
+  `no_ledger_records_for_required_table_family`,
+  `empty_source_binding_records`, and `unconfigured_source_binding_records`.
 - The source-proof scope CLI was run against the accepted reference trades
   proof and the matching raw staging manifest:
   `/private/tmp/bte-coverage-ledger-20260607/backfill-source-proof-scope-reference-trades-output/backfill-source-proof-scope-report.json`

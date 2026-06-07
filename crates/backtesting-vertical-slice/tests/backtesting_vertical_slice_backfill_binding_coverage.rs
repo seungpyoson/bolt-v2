@@ -67,6 +67,59 @@ fn binding_coverage_reports_bound_records_without_source_constants() {
 }
 
 #[test]
+fn binding_coverage_blocks_unconfigured_source_bindings_even_with_required_records() {
+    let source_bindings = synthetic_source_bindings_toml();
+    let ledger = ledger(vec![
+        accepted_record("synthetic-native-trades"),
+        record("synthetic-unconfigured-trades"),
+    ]);
+
+    let report = evaluate_backfill_binding_coverage(
+        "synthetic-binding-coverage",
+        &source_bindings,
+        &ledger,
+        vec!["trades".to_string()],
+    )
+    .expect("report");
+
+    assert_eq!(report.status, BackfillBindingCoverageStatus::Blocked);
+    assert!(
+        report
+            .blocking_issues
+            .contains(&BackfillBindingCoverageIssue::UnconfiguredSourceBindingRecords)
+    );
+    assert_eq!(
+        report.unconfigured_source_bindings,
+        vec!["synthetic-unconfigured-trades".to_string()]
+    );
+}
+
+#[test]
+fn binding_coverage_blocks_empty_source_bindings_even_with_required_records() {
+    let source_bindings = synthetic_source_bindings_toml();
+    let ledger = ledger(vec![
+        accepted_record("synthetic-native-trades"),
+        empty_binding_record("synthetic-empty-binding-record"),
+    ]);
+
+    let report = evaluate_backfill_binding_coverage(
+        "synthetic-binding-coverage",
+        &source_bindings,
+        &ledger,
+        vec!["trades".to_string()],
+    )
+    .expect("report");
+
+    assert_eq!(report.status, BackfillBindingCoverageStatus::Blocked);
+    assert!(
+        report
+            .blocking_issues
+            .contains(&BackfillBindingCoverageIssue::EmptySourceBindingRecords)
+    );
+    assert_eq!(report.empty_source_binding_record_count, 1);
+}
+
+#[test]
 fn binding_coverage_reads_toml_spec_and_writes_report_idempotently() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let source_bindings_path = dir.path().join("source-bindings.toml");
@@ -237,4 +290,11 @@ fn accepted_record(source_binding: &str) -> BackfillCoverageRecord {
         physical_only_bytes: 0,
         blocking_issues: Vec::new(),
     }
+}
+
+fn empty_binding_record(record_id: &str) -> BackfillCoverageRecord {
+    let mut record = accepted_record("synthetic-placeholder");
+    record.record_id = record_id.to_string();
+    record.source_binding = None;
+    record
 }

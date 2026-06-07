@@ -1,4 +1,4 @@
-//! Shared maker inventory accumulator.
+//! Binary-market maker inventory accumulator.
 
 use crate::{
     bolt_v3_numeric::{ZERO_F64, is_positive_finite},
@@ -6,7 +6,7 @@ use crate::{
     bolt_v3_quoting::QuoteSide,
 };
 
-/// Net directional maker inventory accumulated from confirmed fills.
+/// Net directional binary maker inventory accumulated from confirmed fills.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MakerInventory {
     net_position: f64,

@@ -204,6 +204,10 @@ mod tests {
             (time_widening_factor(4.0 * REF_TAU, REF_TAU, WIDEN_CAP).unwrap() - UNIT_F64).abs()
                 < EPSILON
         );
+        assert!(
+            (time_widening_factor(2.0 * REF_TAU, REF_TAU, WIDEN_CAP).unwrap() - UNIT_F64).abs()
+                < EPSILON
+        );
 
         let quarter = time_widening_factor(REF_TAU / 4.0, REF_TAU, WIDEN_CAP).unwrap();
         assert!((quarter - 2.0).abs() < EPSILON);

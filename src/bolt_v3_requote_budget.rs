@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-const EMPTY_WINDOW_COST: u64 = u64::MIN;
+const INITIAL_WINDOW_COST: u64 = u64::MIN;
 
 /// Sliding-window maker requote throttle denominated in REST-call cost.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +25,7 @@ impl RequoteBudget {
             max_cost_per_window,
             min_interval_ms,
             emits: VecDeque::new(),
-            window_cost: EMPTY_WINDOW_COST,
+            window_cost: INITIAL_WINDOW_COST,
             last_emit_ms: None,
         }
     }
@@ -74,9 +74,12 @@ impl RequoteBudget {
     }
 
     fn evict(&mut self, now_ms: u64) {
-        let cutoff_ms = now_ms.saturating_sub(self.window_ms);
+        if now_ms <= self.window_ms {
+            return;
+        }
+        let cutoff_ms = now_ms - self.window_ms;
         while let Some(&(timestamp_ms, _)) = self.emits.front() {
-            if timestamp_ms > cutoff_ms {
+            if timestamp_ms >= cutoff_ms {
                 break;
             }
             if let Some((_, cost)) = self.emits.pop_front() {
@@ -125,6 +128,20 @@ mod tests {
     }
 
     #[test]
+    fn timestamp_at_exact_window_edge_remains_counted() {
+        let mut budget = RequoteBudget::new(1, ONE_MINUTE_MS, 0);
+
+        assert!(budget.try_acquire(0, 1));
+        assert!(!budget.try_acquire(ONE_MINUTE_MS, 1));
+        assert_eq!(budget.in_window(), 1);
+        assert_eq!(budget.cost_in_window(), 1);
+
+        assert!(budget.try_acquire(ONE_MINUTE_MS + 1, 1));
+        assert_eq!(budget.in_window(), 1);
+        assert_eq!(budget.cost_in_window(), 1);
+    }
+
+    #[test]
     fn disabled_or_zero_cost_inputs_fail_closed() {
         let mut disabled = RequoteBudget::new(0, ONE_MINUTE_MS, 0);
         assert!(!disabled.try_acquire(1_000, 1));
@@ -161,6 +178,17 @@ mod tests {
         assert!(!budget.try_acquire(1_000, 2));
         assert_eq!(budget.in_window(), 0);
         assert_eq!(budget.cost_in_window(), 0);
+    }
+
+    #[test]
+    fn checked_add_overflow_fails_closed_without_mutating_window() {
+        let mut budget = RequoteBudget::new(u64::MAX, ONE_MINUTE_MS, 0);
+        let initial_cost = u64::MAX - 1;
+
+        assert!(budget.try_acquire(1_000, initial_cost));
+        assert!(!budget.try_acquire(1_001, 2));
+        assert_eq!(budget.in_window(), 1);
+        assert_eq!(budget.cost_in_window(), initial_cost);
     }
 
     #[test]

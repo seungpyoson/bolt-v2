@@ -85,13 +85,13 @@ Intentionally skipped:
 
 - Requote RED: `cargo test --locked bolt_v3_requote_budget::tests --lib` failed with missing
   `RequoteBudget`.
-- Requote GREEN: same command passed, 7 tests.
+- Requote GREEN: same command passed, 9 tests.
 - Quoting/numeric RED: `cargo test --locked bolt_v3_quoting::tests --lib` and
   `cargo test --locked sanitize_open_probability --lib` failed with missing quoting/numeric symbols.
 - Quoting/numeric GREEN: quoting passed 8 tests; numeric open-probability passed 2 tests.
 - Inventory RED: `cargo test --locked bolt_v3_maker_inventory::tests --lib` failed with missing
   `MakerInventory`.
-- Inventory GREEN: same command passed, 5 tests.
+- Inventory GREEN: same command passed, 6 tests.
 - Family fold RED: `cargo test --locked maker_ --lib` failed with missing maker-family dispatchers.
 - Family fold GREEN: same command passed, including the new canonical binding tests.
 
@@ -102,7 +102,7 @@ Intentionally skipped:
 - `rg -n "trait MakerFamily|dyn MakerFamily|MakerFamily" src`: no matches.
 - `rg -n "crate::strategies|nautilus|NautilusTrader|OrderFactory|submit|admission"
   src/bolt_v3_requote_budget.rs src/bolt_v3_quoting.rs src/bolt_v3_maker_inventory.rs`: no matches.
-- `cargo test --locked --lib`: passed, 619 tests.
+- `cargo test --locked --lib`: passed, 621 tests.
 - `cargo clippy --locked --lib -- -D warnings`: passed.
 - `just source-fence`: passed.
 

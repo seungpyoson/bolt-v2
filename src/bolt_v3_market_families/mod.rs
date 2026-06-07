@@ -83,9 +83,9 @@ pub struct MarketFamilyValidationBinding {
     /// the family's inputs are degenerate (the strategy already treats
     /// `None` as "pricing unavailable").
     pub fair_probability_up: fn(&FairProbabilityInputs) -> Option<f64>,
-    pub(crate) maker_quote_targets: fn(FamilyQuoteInputs) -> Option<QuoteTargets>,
+    pub maker_quote_targets: fn(FamilyQuoteInputs) -> Option<QuoteTargets>,
     pub maker_settlement_payout: fn(OutcomeSide, Leg) -> Option<f64>,
-    pub(crate) maker_binary_fee_curve: fn(f64, f64) -> Option<f64>,
+    pub maker_binary_fee_curve: fn(f64, f64) -> Option<f64>,
 }
 
 /// Shared pricing contract handed to a family's fair-value model.
@@ -1278,10 +1278,20 @@ mod tests {
             maker_settlement_payout_for_family(updown::KEY, OutcomeSide::Up, Leg::No),
             Some(0.0)
         );
+        assert_eq!(
+            maker_settlement_payout_for_family(updown::KEY, OutcomeSide::Down, Leg::No),
+            Some(1.0)
+        );
+        assert_eq!(
+            maker_settlement_payout_for_family(updown::KEY, OutcomeSide::Down, Leg::Yes),
+            Some(0.0)
+        );
 
         let fee = maker_binary_fee_curve_for_family(updown::KEY, 0.02, 0.5)
             .expect("updown fee curve should accept an interior probability");
         assert!((fee - 0.005).abs() < 1e-12);
+        assert!(maker_binary_fee_curve_for_family(updown::KEY, -0.01, 0.5).is_none());
+        assert!(maker_binary_fee_curve_for_family(updown::KEY, 0.02, f64::NAN).is_none());
     }
 
     #[test]

@@ -177,7 +177,7 @@ mod tests {
     // Re-derived again by #579 after deleting retired evidence-gate source.
     // Re-derived again after removing a stale deleted-executor comment.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "cfed7fbb9d8ab9459977d668216b1c3b0ef15e1a6de772324107d571585630d9";
+        "09196eebd97402728f909442392cd0792d4a39de459772fec69c1ada7b9ac1e4";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

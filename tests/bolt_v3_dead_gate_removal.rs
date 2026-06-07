@@ -1,7 +1,22 @@
 use std::{
-    fs,
+    env, fs,
     path::{Path, PathBuf},
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
 };
+
+const SCAN_ROOTS: &[&str] = &[
+    ".config",
+    ".github",
+    "src",
+    "tests",
+    "config",
+    "Cargo.toml",
+    "justfile",
+    "scripts",
+    "docs/bolt-v3",
+    "specs/023-nt-order-intent-layer",
+];
 
 fn repo_text(relative_path: &str) -> String {
     fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(relative_path))
@@ -28,40 +43,30 @@ fn assert_absent(relative_path: &str, forbidden: &[String]) {
     );
 }
 
-fn collect_scan_files(path: &Path, out: &mut Vec<PathBuf>) {
-    if path.is_file() {
-        out.push(path.to_path_buf());
-        return;
-    }
-
-    let entries = fs::read_dir(path)
-        .unwrap_or_else(|error| panic!("{} should list: {error}", path.display()));
-    for entry in entries {
-        let entry =
-            entry.unwrap_or_else(|error| panic!("{} entry should read: {error}", path.display()));
-        let child = entry.path();
-        let file_name = child.file_name().and_then(|value| value.to_str());
-        if child.is_dir() && matches!(file_name, Some(".git" | "target")) {
-            continue;
-        }
-        collect_scan_files(&child, out);
-    }
+fn repo_scan_files(repo_root: &Path, relative_roots: &[&str]) -> Vec<PathBuf> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("ls-files")
+        .arg("--")
+        .args(relative_roots)
+        .output()
+        .unwrap_or_else(|error| panic!("git ls-files should run: {error}"));
+    assert!(
+        output.status.success(),
+        "git ls-files should succeed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|relative_path| repo_root.join(relative_path))
+        .collect()
 }
 
 fn assert_repo_absent(forbidden: &[String]) {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut files = Vec::new();
-    for relative_root in [
-        "src",
-        "tests",
-        "config",
-        "Cargo.toml",
-        "scripts",
-        "docs/bolt-v3",
-        "specs/023-nt-order-intent-layer",
-    ] {
-        collect_scan_files(&manifest_dir.join(relative_root), &mut files);
-    }
+    let files = repo_scan_files(manifest_dir, SCAN_ROOTS);
 
     let mut hits = Vec::new();
     for path in files {
@@ -84,6 +89,71 @@ fn assert_repo_absent(forbidden: &[String]) {
         hits.is_empty(),
         "repo still contains retired evidence-gate terms:\n{}",
         hits.join("\n")
+    );
+}
+
+fn run_git(repo_root: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(args)
+        .output()
+        .unwrap_or_else(|error| panic!("git {args:?} should run: {error}"));
+    assert!(
+        output.status.success(),
+        "git {args:?} should succeed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn retired_term_scan_covers_ci_surfaces() {
+    for expected_root in [".config", ".github", "justfile"] {
+        assert!(
+            SCAN_ROOTS.contains(&expected_root),
+            "retired-term scan must include {expected_root}"
+        );
+    }
+}
+
+#[test]
+fn repo_scan_files_respects_gitignored_operator_config() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after unix epoch")
+        .as_nanos();
+    let repo_root = env::temp_dir().join(format!(
+        "bolt-v3-dead-gate-removal-{}-{unique}",
+        std::process::id()
+    ));
+    fs::create_dir_all(repo_root.join("config"))
+        .unwrap_or_else(|error| panic!("{} should create: {error}", repo_root.display()));
+    fs::write(repo_root.join(".gitignore"), "config/live.local.toml\n")
+        .expect("gitignore fixture should write");
+    fs::write(repo_root.join("config/root.toml"), "# tracked root\n")
+        .expect("tracked config fixture should write");
+    run_git(&repo_root, &["init"]);
+    run_git(&repo_root, &["add", ".gitignore", "config/root.toml"]);
+    let ignored_operator_config = repo_root.join("config/live.local.toml");
+    fs::write(
+        &ignored_operator_config,
+        format!("[{}]\n", retired(&["live", "_canary"])),
+    )
+    .expect("ignored operator config fixture should write");
+
+    let scanned = repo_scan_files(&repo_root, &["config"]);
+    let tracked_config = repo_root.join("config/root.toml");
+
+    fs::remove_dir_all(&repo_root)
+        .unwrap_or_else(|error| panic!("{} should remove: {error}", repo_root.display()));
+    assert!(
+        scanned.iter().any(|path| path == &tracked_config),
+        "retired-term scan should inspect tracked config"
+    );
+    assert!(
+        !scanned.iter().any(|path| path == &ignored_operator_config),
+        "retired-term scan must not inspect gitignored operator config"
     );
 }
 
@@ -143,6 +213,7 @@ fn retired_evidence_gate_runtime_surface_is_deleted() {
             retired(&["bolt_v3", "_live", "_canary", "_gate"]),
             term("gate_report"),
             term("pub fn arm("),
+            retired(&["proof", " ", "executor"]),
             retired(&["canary", "_proof", "_claim"]),
             retired(&["Rejected", "Invalid", "Canary", "Proof", "Claim"]),
         ],
@@ -215,11 +286,16 @@ fn repo_has_no_retired_evidence_gate_terms() {
         ["no", "_submit"].concat(),
         ["No", "Submit", "Readiness"].concat(),
         ["No", "Submit"].concat(),
+        ["No", "-", "submit"].concat(),
+        ["No", "-", "Submit"].concat(),
         ["no", "-", "submit"].concat(),
         ["operator", "_evidence"].concat(),
         ["Operator", "Evidence"].concat(),
         ["proof", "_policy"].concat(),
         ["tiny", "_canary"].concat(),
+        ["tiny", "-", "canary"].concat(),
+        ["Tiny", "-", "canary"].concat(),
+        ["tiny", " ", "canary"].concat(),
         ["Rejected", "NotArmed"].concat(),
         ["gate", "_session_hash"].concat(),
         ["gate", "_evidence"].concat(),

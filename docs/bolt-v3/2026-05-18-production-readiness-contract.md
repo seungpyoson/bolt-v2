@@ -109,8 +109,8 @@ or explicitly waived:
 
 Rows 34-48 of `docs/bolt-v3/2026-04-28-source-grounded-status-map.md` remain the
 source-backed blocker list for order lifecycle, reconciliation, observability,
-execution gate, deploy trust, panic gate, CLOB V2 readiness, tiny canary, and
-production live trading.
+execution gate, deploy trust, panic gate, CLOB V2 readiness, first live-order
+readiness, and production live trading.
 
 ## Claim Block
 

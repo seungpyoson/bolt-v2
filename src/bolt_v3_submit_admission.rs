@@ -723,9 +723,9 @@ pub fn admission_base_notional_from_order(
     // [`conservative_quote_quantity_admission_notional`] yields a settlement-
     // currency notional the per-order cap can be checked against — both would
     // UNDERSTATE the real cash debit. This is the single, structural rejection
-    // point: returning `None` makes every caller (production strategy, canary
-    // proof executor) treat an inverse quote-quantity order as unvaluable and
-    // refuse it, rather than relying on a per-caller fallback to notice the
+    // point: returning `None` makes the production strategy path treat an
+    // inverse quote-quantity order as unvaluable and refuse it, rather than
+    // relying on a per-caller fallback to notice the
     // inverse case. This system trades only non-inverse binary options; carrying
     // currency-aware settlement notional would be the alternative, but the
     // fail-closed reject is the conservative default until such an instrument is

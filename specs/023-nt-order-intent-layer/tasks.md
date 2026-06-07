@@ -350,12 +350,12 @@
 
 **Goal**: Treat no-mistakes `b30f4044` as a live-submit proof hardening slice, not a source order-intent gap, by binding the Phase 8 financial envelope to every currently TOML-owned entry/exit order-shape field that can change the approved order intent.
 
-- [x] T155 [P] [US3] Record read-only local and multi-agent evidence that the current canary envelope binds only order type, TIF, and boolean flags
-- [x] T156 [US3] RED: Add a tiny-canary precondition regression proving side or position-side drift can still consume approval
+- [x] T155 [P] [US3] Record read-only local and multi-agent evidence that the current single-submit envelope binds only order type, TIF, and boolean flags
+- [x] T156 [US3] RED: Add a single-submit precondition regression proving side or position-side drift can still consume approval
 - [x] T157 [US3] GREEN: Bind required entry/exit side and position-side fields from loaded TOML into the financial envelope comparison
-- [x] T158 [US3] RED: Add a tiny-canary precondition regression proving optional expiry, trigger, activation, trigger-type, trailing-offset, or trailing-offset-type drift can still consume approval
+- [x] T158 [US3] RED: Add a single-submit precondition regression proving optional expiry, trigger, activation, trigger-type, trailing-offset, or trailing-offset-type drift can still consume approval
 - [x] T159 [US3] GREEN: Bind optional entry/exit order-shape fields without adding order-template or venue policy
-- [x] T160 [US3] Verify focused tiny-canary tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
+- [x] T160 [US3] Verify focused single-submit tests, schema/source fences as possible, branch cleanliness, exact-head CI, and reviewer/no-mistakes state
 
 ## Phase 37: TDD Slice 33 - Compiled Order Intent Evidence Binding
 
@@ -525,7 +525,7 @@
 - [x] T237 [P] [US3] Record exact-head no-mistakes evidence for the forced-exit approval-envelope gap and the live-submit boundary decision
 - [x] T238 [US3] RED: Add an approval-envelope regression proving `forced_exit_order` drift can consume approval
 - [x] T239 [US3] GREEN: Bind required and optional `forced_exit_order` order-shape fields in `Phase8FinancialEnvelopeEvidenceFile`
-- [x] T240 [US3] Verify focused tiny-canary tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
+- [x] T240 [US3] Verify focused single-submit tests, schema/source fences, formatting/diff checks, branch cleanliness, exact-head PR checks, and reviewer/no-mistakes state
 
 ## Phase 55: TDD Slice 51 - Active Speckit Context Pointer
 

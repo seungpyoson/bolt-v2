@@ -9,14 +9,14 @@ Exact pushed PR heads and verification runs are recorded in PR handoff comments
 and GitHub Actions. They are not embedded here because every metadata-only edit
 changes the document's containing commit SHA.
 
-Purpose: give reviewers and operators a concrete code-path map for live trade readiness. This is not a readiness claim. It separates source-code path evidence from approval-gated real SSM, venue, canary, and production-operation evidence.
+Purpose: give reviewers and operators a concrete code-path map for live trade readiness. This is not a readiness claim. It separates source-code path evidence from approval-gated real SSM, venue, first live-order, and production-operation evidence.
 
 Related tracking:
 
-- Tiny-canary historical gap tracker: issue #360 (closed). Closure is not proof
-  that T046 completed; only a redacted tiny-capital canary artifact on the exact
+- First live-order historical gap tracker: issue #360 (closed). Closure is not proof
+  that T046 completed; only a redacted tiny-capital live-order artifact on the exact
   reviewed head can satisfy T046.
-- Production-grade readiness beyond tiny canary: issue #369
+- Production-grade readiness beyond first live order: issue #369
 - Real no-order connectivity blocker: issue #385
 - PortfolioSnapshot observability tracker: issue #409 (open on 2026-05-20).
   This PR adds source-level capture, but the issue remains an issue-ledger item
@@ -202,7 +202,7 @@ Do not implement from guesses. Each fix needs one behavior test first, then the 
 
 Candidate slices, in order:
 
-1. No-submit stage correctness on current main
+1. Strategy-free stage correctness on current main
    - Behavior: failed NT client connect must produce failed `controlled_connect` and skipped `reference_readiness`.
    - Tracker: issue #385.
 

@@ -98,7 +98,7 @@ End-to-end review:
 - OMS/position and reduce-only behavior need concrete tests before support is claimed.
 - Admission must be computed from the compiled order view, not pre-build strings.
 - Forced exit needs its own task slice or explicit residual.
-- No-submit proof must be a gate for execution claims or an explicit residual.
+- Strategy-free proof must be required for execution claims or an explicit residual.
 
 ## TDD Slice 1 Evidence
 
@@ -144,8 +144,8 @@ End-to-end review:
 ## Adapter-Proof Boundaries
 
 - Adapter source evidence requirement: each venue/market support claim must name the exact NT adapter source path and the exact mapping for `OrderType`, `TimeInForce`, `post_only`, `reduce_only`, `position_id`, and submit params. Existing examples are Binance Futures at `crates/adapters/binance/src/futures/execution.rs`, Deribit at `crates/adapters/deribit/src/execution.rs`, Polymarket at `crates/adapters/polymarket/src/execution/mod.rs`, and OKX at `crates/adapters/okx/src/factories.rs`.
-- No-submit smoke boundary: a strategy-free proof may build the live node, load TOML, resolve SSM secrets, register NT clients, register strategies, warm reference data, build NT orders, record decision evidence, and stop before any exchange submit. It must not consume submit admission or call live exchange submit.
-- Live/canary boundary: live-submit proof remains blocked without explicit user approval, exact branch/head, exact config checksum, submit-admission arming evidence, and post-run decision/admission/order lifecycle artifacts.
+- Strategy-free smoke boundary: a strategy-free proof may build the live node, load TOML, resolve SSM secrets, register NT clients, register strategies, warm reference data, build NT orders, record decision evidence, and stop before any exchange submit. It must not consume submit admission or call live exchange submit.
+- Live-submit boundary: live-submit proof remains blocked without explicit user approval, exact branch/head, exact config checksum, submit-admission approval evidence, and post-run decision/admission/order lifecycle artifacts.
 - Residual: no strategy-free or live-submit artifact has been produced for this branch/head in this slice, so current claims remain source/unit-test claims only.
 
 ## Post-Implementation Review Findings

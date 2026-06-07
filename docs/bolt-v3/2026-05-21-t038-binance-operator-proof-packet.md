@@ -18,10 +18,10 @@ Evidence:
 - The local strategy-free rerun failed Binance SBE with `Invalid X-MBX-APIKEY header`.
 - The EC2 rerun from EIP `34.248.143.2`, using the same approved config hash and resolved SSM secrets, connected Binance SBE and satisfied every strategy-free readiness stage.
 
-This proves the local failure cause for T038. It does not prove tiny canary
+This proves the local failure cause for T038. It does not prove first live-order
 safety or production live trading readiness.
 
-## EC2 No-Submit Proof
+## EC2 Strategy-Free Proof
 
 Runner:
 
@@ -90,7 +90,7 @@ Evidence:
 Classification:
 
 - This was a pre-existing `bolt-v2` live service, not the current-head T038 strategy-free runner.
-- It is a production control-surface blocker before any T046 canary or production trading.
+- It is a production control-surface blocker before any T046 first live-order run or production trading.
 - The service was stopped and disabled during the EC2 session.
 - Follow-up process check showed no `bolt-v2` process.
 - Targeted journal review for the final auto-start window showed `Not starting trader: engine client(s) not connected` after a Binance SBE schema mismatch in the stale service.
@@ -98,9 +98,9 @@ Classification:
 ## Remaining Gate
 
 Do not run T046 until there is separate explicit operator approval for the
-tiny-capital canary and the live canary gate is evaluated against this fresh
-T038 report, current executable identity, config checksum, approval evidence,
-and report freshness.
+tiny-capital live-order attempt and the current live-submit admission path is
+checked against this fresh T038 report, current executable identity, config
+checksum, approval evidence, and report freshness.
 
 ## Binance References
 

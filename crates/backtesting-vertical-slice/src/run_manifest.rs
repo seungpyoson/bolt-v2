@@ -1498,73 +1498,13 @@ impl BacktestingRunManifest {
     where
         F: FnMut(&str, &str) -> Result<String, String>,
     {
-        let mut options = self
-            .artifact_store_base_storage_options()?
-            .unwrap_or_default();
-        if let Some(parameters) = &self.artifact_store.ssm_parameters {
-            validate_artifact_store_ssm_parameters(parameters)?;
-            options.insert(
-                "access_key_id".to_string(),
-                resolve_artifact_store_secret(
-                    resolver,
-                    &parameters.region,
-                    "access_key_id",
-                    &parameters.access_key_id,
-                )?,
-            );
-            options.insert(
-                "secret_access_key".to_string(),
-                resolve_artifact_store_secret(
-                    resolver,
-                    &parameters.region,
-                    "secret_access_key",
-                    &parameters.secret_access_key,
-                )?,
-            );
-            if let Some(session_token) = &parameters.session_token {
-                options.insert(
-                    "session_token".to_string(),
-                    resolve_artifact_store_secret(
-                        resolver,
-                        &parameters.region,
-                        "session_token",
-                        session_token,
-                    )?,
-                );
-            }
-        }
-        ensure_artifact_store_s3_credentials_resolved(
-            output_prefix_protocol(&self.output_prefix),
-            &options,
-        )?;
-        if options.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(options))
-        }
+        artifact_store_storage_options_for_uri(&self.output_prefix, &self.artifact_store, resolver)
     }
 
     fn artifact_store_base_storage_options(
         &self,
     ) -> Result<Option<BTreeMap<String, String>>, ManifestError> {
-        validate_catalog_storage_options(
-            output_prefix_protocol(&self.output_prefix),
-            &self.artifact_store.storage_options,
-            &self.artifact_store.rust_storage_options,
-        )?;
-        validate_artifact_store_secrets(&self.artifact_store)?;
-        ensure_artifact_store_conditional_put_enabled(
-            output_prefix_protocol(&self.output_prefix),
-            &self.artifact_store.storage_options,
-            &self.artifact_store.rust_storage_options,
-        )?;
-        if !self.artifact_store.rust_storage_options.is_empty() {
-            Ok(Some(self.artifact_store.rust_storage_options.clone()))
-        } else if !self.artifact_store.storage_options.is_empty() {
-            Ok(Some(self.artifact_store.storage_options.clone()))
-        } else {
-            Ok(None)
-        }
+        artifact_store_base_storage_options_for_uri(&self.output_prefix, &self.artifact_store)
     }
 
     /// Map the manifest into a NautilusTrader [`BacktestRunConfig`].
@@ -1595,6 +1535,80 @@ impl BacktestingRunManifest {
             .maybe_start(start)
             .maybe_end(end)
             .build())
+    }
+}
+
+fn artifact_store_base_storage_options_for_uri(
+    output_uri: &str,
+    artifact_store: &ManifestArtifactStore,
+) -> Result<Option<BTreeMap<String, String>>, ManifestError> {
+    validate_catalog_storage_options(
+        output_prefix_protocol(output_uri),
+        &artifact_store.storage_options,
+        &artifact_store.rust_storage_options,
+    )?;
+    validate_artifact_store_secrets(artifact_store)?;
+    ensure_artifact_store_conditional_put_enabled(
+        output_prefix_protocol(output_uri),
+        &artifact_store.storage_options,
+        &artifact_store.rust_storage_options,
+    )?;
+    if !artifact_store.rust_storage_options.is_empty() {
+        Ok(Some(artifact_store.rust_storage_options.clone()))
+    } else if !artifact_store.storage_options.is_empty() {
+        Ok(Some(artifact_store.storage_options.clone()))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn artifact_store_storage_options_for_uri<F>(
+    output_uri: &str,
+    artifact_store: &ManifestArtifactStore,
+    resolver: &mut F,
+) -> Result<Option<BTreeMap<String, String>>, ManifestError>
+where
+    F: FnMut(&str, &str) -> Result<String, String>,
+{
+    let mut options = artifact_store_base_storage_options_for_uri(output_uri, artifact_store)?
+        .unwrap_or_default();
+    if let Some(parameters) = &artifact_store.ssm_parameters {
+        validate_artifact_store_ssm_parameters(parameters)?;
+        options.insert(
+            "access_key_id".to_string(),
+            resolve_artifact_store_secret(
+                resolver,
+                &parameters.region,
+                "access_key_id",
+                &parameters.access_key_id,
+            )?,
+        );
+        options.insert(
+            "secret_access_key".to_string(),
+            resolve_artifact_store_secret(
+                resolver,
+                &parameters.region,
+                "secret_access_key",
+                &parameters.secret_access_key,
+            )?,
+        );
+        if let Some(session_token) = &parameters.session_token {
+            options.insert(
+                "session_token".to_string(),
+                resolve_artifact_store_secret(
+                    resolver,
+                    &parameters.region,
+                    "session_token",
+                    session_token,
+                )?,
+            );
+        }
+    }
+    ensure_artifact_store_s3_credentials_resolved(output_prefix_protocol(output_uri), &options)?;
+    if options.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(options))
     }
 }
 

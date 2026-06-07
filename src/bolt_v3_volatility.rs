@@ -138,7 +138,7 @@ impl RealizedVolEstimator {
 
     pub fn current_vol_at(&self, now_ms: u64) -> Option<f64> {
         let last_ready_ts_ms = self.last_ready_ts_ms?;
-        if now_ms.saturating_sub(last_ready_ts_ms) <= self.bridge_valid_ms {
+        if now_ms.checked_sub(last_ready_ts_ms)? <= self.bridge_valid_ms {
             self.last_ready_vol
         } else {
             None
@@ -205,6 +205,27 @@ impl RealizedVolEstimator {
 mod tests {
     use super::*;
 
+    const TEST_WINDOW_SECS: u64 = 60;
+    const TEST_GAP_RESET_SECS: u64 = 10;
+    const TEST_MIN_OBSERVATIONS_READY_AFTER_TWO_SAMPLES: u64 = 1;
+    const TEST_MIN_OBSERVATIONS_READY_AFTER_FOUR_SAMPLES: u64 = 3;
+    const TEST_BRIDGE_VALID_SECS: u64 = 10;
+    const TEST_INITIAL_PRICE: f64 = 3_100.0;
+    const TEST_SECOND_PRICE: f64 = 3_101.0;
+    const TEST_THIRD_PRICE: f64 = 3_099.5;
+    const TEST_FOURTH_PRICE: f64 = 3_102.0;
+    const TEST_AFTER_GAP_PRICE: f64 = 3_103.0;
+    const TEST_OUT_OF_ORDER_PRICE: f64 = 3_200.0;
+    const TEST_INITIAL_TS_MS: u64 = 0;
+    const TEST_FIRST_READY_INPUT_TS_MS: u64 = 1_000;
+    const TEST_BACKWARD_QUERY_TS_MS: u64 = TEST_FIRST_READY_INPUT_TS_MS;
+    const TEST_SECOND_READY_INPUT_TS_MS: u64 = 2_000;
+    const TEST_READY_TS_MS: u64 = 3_000;
+    const TEST_BRIDGED_QUERY_TS_MS: u64 = 12_000;
+    const TEST_EXPIRED_BRIDGE_QUERY_TS_MS: u64 = 13_001;
+    const TEST_AFTER_GAP_TS_MS: u64 = 20_000;
+    const TEST_OUT_OF_ORDER_TS_MS: u64 = 1_500;
+
     fn estimator(
         window_secs: u64,
         gap_reset_secs: u64,
@@ -219,41 +240,141 @@ mod tests {
         })
     }
 
+    fn fixture_venue() -> &'static str {
+        std::any::type_name::<RealizedVolEstimator>()
+    }
+
     #[test]
     fn realized_vol_estimator_warms_bridges_and_resets_after_gap() {
-        let mut estimator = estimator(60, 10, 3, 10);
+        let mut estimator = estimator(
+            TEST_WINDOW_SECS,
+            TEST_GAP_RESET_SECS,
+            TEST_MIN_OBSERVATIONS_READY_AFTER_FOUR_SAMPLES,
+            TEST_BRIDGE_VALID_SECS,
+        );
 
-        assert!(estimator.observe("bybit", 3_100.0, 0).is_none());
-        assert!(estimator.observe("bybit", 3_101.0, 1_000).is_none());
-        assert!(estimator.observe("bybit", 3_099.5, 2_000).is_none());
+        assert!(
+            estimator
+                .observe(fixture_venue(), TEST_INITIAL_PRICE, TEST_INITIAL_TS_MS)
+                .is_none()
+        );
+        assert!(
+            estimator
+                .observe(
+                    fixture_venue(),
+                    TEST_SECOND_PRICE,
+                    TEST_FIRST_READY_INPUT_TS_MS,
+                )
+                .is_none()
+        );
+        assert!(
+            estimator
+                .observe(
+                    fixture_venue(),
+                    TEST_THIRD_PRICE,
+                    TEST_SECOND_READY_INPUT_TS_MS,
+                )
+                .is_none()
+        );
         let ready_vol = estimator
-            .observe("bybit", 3_102.0, 3_000)
+            .observe(fixture_venue(), TEST_FOURTH_PRICE, TEST_READY_TS_MS)
             .expect("vol should be ready after min observations");
         assert!(ready_vol > 0.0);
-        assert_eq!(estimator.current_vol_at(12_000), Some(ready_vol));
-        assert!(estimator.current_vol_at(13_001).is_none());
+        assert_eq!(
+            estimator.current_vol_at(TEST_BRIDGED_QUERY_TS_MS),
+            Some(ready_vol)
+        );
+        assert!(
+            estimator
+                .current_vol_at(TEST_EXPIRED_BRIDGE_QUERY_TS_MS)
+                .is_none()
+        );
 
-        assert!(estimator.observe("bybit", 3_103.0, 20_000).is_none());
+        assert!(
+            estimator
+                .observe(fixture_venue(), TEST_AFTER_GAP_PRICE, TEST_AFTER_GAP_TS_MS)
+                .is_none()
+        );
         assert_eq!(estimator.samples.len(), 1);
         assert!(estimator.last_ready_vol.is_none());
     }
 
     #[test]
-    fn realized_vol_estimator_ignores_non_monotonic_samples_within_same_venue() {
-        let mut estimator = estimator(60, 10, 1, 10);
+    fn realized_vol_estimator_does_not_bridge_backwards_in_time() {
+        let mut estimator = estimator(
+            TEST_WINDOW_SECS,
+            TEST_GAP_RESET_SECS,
+            TEST_MIN_OBSERVATIONS_READY_AFTER_TWO_SAMPLES,
+            TEST_BRIDGE_VALID_SECS,
+        );
 
-        assert!(estimator.observe("bybit", 3_100.0, 1_000).is_none());
+        assert!(
+            estimator
+                .observe(
+                    fixture_venue(),
+                    TEST_INITIAL_PRICE,
+                    TEST_FIRST_READY_INPUT_TS_MS,
+                )
+                .is_none()
+        );
         let ready_vol = estimator
-            .observe("bybit", 3_101.0, 2_000)
+            .observe(
+                fixture_venue(),
+                TEST_SECOND_PRICE,
+                TEST_SECOND_READY_INPUT_TS_MS,
+            )
+            .expect("vol should be ready after min observations");
+
+        assert_eq!(
+            estimator.current_vol_at(TEST_SECOND_READY_INPUT_TS_MS),
+            Some(ready_vol)
+        );
+        assert_eq!(estimator.current_vol_at(TEST_BACKWARD_QUERY_TS_MS), None);
+    }
+
+    #[test]
+    fn realized_vol_estimator_ignores_non_monotonic_samples_within_same_venue() {
+        let mut estimator = estimator(
+            TEST_WINDOW_SECS,
+            TEST_GAP_RESET_SECS,
+            TEST_MIN_OBSERVATIONS_READY_AFTER_TWO_SAMPLES,
+            TEST_BRIDGE_VALID_SECS,
+        );
+
+        assert!(
+            estimator
+                .observe(
+                    fixture_venue(),
+                    TEST_INITIAL_PRICE,
+                    TEST_FIRST_READY_INPUT_TS_MS,
+                )
+                .is_none()
+        );
+        let _ready_vol = estimator
+            .observe(
+                fixture_venue(),
+                TEST_SECOND_PRICE,
+                TEST_SECOND_READY_INPUT_TS_MS,
+            )
             .expect("vol should be ready after min observations");
         let sample_count = estimator.samples.len();
 
-        assert_eq!(estimator.observe("bybit", 3_200.0, 1_500), Some(ready_vol));
+        assert_eq!(
+            estimator.observe(
+                fixture_venue(),
+                TEST_OUT_OF_ORDER_PRICE,
+                TEST_OUT_OF_ORDER_TS_MS,
+            ),
+            None
+        );
         assert_eq!(estimator.samples.len(), sample_count);
         assert_eq!(
             estimator.samples.back().map(|sample| sample.ts_ms),
-            Some(2_000)
+            Some(TEST_SECOND_READY_INPUT_TS_MS)
         );
-        assert_eq!(estimator.last_ready_ts_ms, Some(2_000));
+        assert_eq!(
+            estimator.last_ready_ts_ms,
+            Some(TEST_SECOND_READY_INPUT_TS_MS)
+        );
     }
 }

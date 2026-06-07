@@ -7525,14 +7525,6 @@ classification = "strategy_state_invariant"
 reason = "This is a named initial counter invariant for strategy state, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "number"
-literal = '''0'''
-context = '''config.trade_flow_max_samples > 0,'''
-classification = "config_validation_boundary"
-reason = "This is the positivity boundary of a fail-loud config-validation guard that rejects a zero trade-flow sample cap at load; the cap value itself is TOML-owned."
-
-[[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "number"
 literal = '''1'''

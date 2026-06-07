@@ -165,12 +165,28 @@ mod tests {
     //
     // Re-derived again after merging A9 with #581's configured-instrument
     // parser rejection in the same canonical strategy source set.
-    // Re-derived again by #579 after deleting retired evidence-gate source.
-    // Re-derived again after #579 clippy cleanup changed the CLI source.
-    // Re-derived again after resolving #579 over A10's split test files.
-    // Re-derived again after #579's post-merge split-test admission fixes.
+    //
+    // Re-derived again by A10 after moving the binary-oracle-edge-taker embedded
+    // test inventory into inner-cfg test-only split files under
+    // `src/strategies/binary_oracle_edge_taker/tests/`.
+    //
+    // Re-derived again by #574 after scoped taker config and trade-flow
+    // hardening changed the canonical strategy source set.
+    //
+    // Re-derived again by #574 review cleanup after replacing the remaining raw
+    // positive integer guard in taker config parsing.
+    //
+    // Re-derived again by #574 external-review cleanup after unifying the
+    // positive integer guard loop and aligning the test-only reference snapshot
+    // helper with the production reference timestamp watermark.
+    //
+    // Re-derived again by #574 follow-up review cleanup after decoupling stale
+    // snapshot fair-value rejection from test-only signal candidate processing.
+    //
+    // Re-derived again by #579 after rebasing the retired evidence-gate removal
+    // and review cleanup over #574's strategy source-set hardening.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "851ea3e0399d89f650fe5d9021c45b5ec0161cbd001334a3822813cad152f629";
+        "b9bd771b24ced29d1a5796f1486ce6fc905dff426feb9c905eb1a833118fbf31";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

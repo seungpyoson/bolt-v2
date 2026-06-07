@@ -2,6 +2,10 @@
 
 use super::*;
 
+pub(super) const TEST_TRADE_PRICE_PRECISION: u8 = 2;
+pub(super) const TEST_TRADE_SIZE_PRECISION: u8 = 0;
+const TEST_IDENTIFIER_TOKEN_LIMIT: usize = 8;
+
 pub(super) fn find_error<'a>(
     errors: &'a [ValidationError],
     field: &str,
@@ -551,16 +555,43 @@ pub(super) fn trade_tick_with_aggressor(
     aggressor: nautilus_model::enums::AggressorSide,
     ts_ms: u64,
 ) -> nautilus_model::data::TradeTick {
+    trade_tick_with_aggressor_ns(
+        instrument_id,
+        price,
+        size,
+        aggressor,
+        ts_ms.saturating_mul(NANOS_PER_MILLI_U64),
+    )
+}
+
+pub(super) fn trade_tick_with_aggressor_ns(
+    instrument_id: &str,
+    price: f64,
+    size: f64,
+    aggressor: nautilus_model::enums::AggressorSide,
+    ts_ns: u64,
+) -> nautilus_model::data::TradeTick {
+    let trade_id = format!(
+        "{}{ts_ns}",
+        test_identifier_token(std::any::type_name::<nautilus_model::data::TradeTick>())
+    );
     nautilus_model::data::TradeTick::new_checked(
         InstrumentId::from(instrument_id),
-        Price::new(price, 2),
-        Quantity::new(size, 0),
+        Price::new(price, TEST_TRADE_PRICE_PRECISION),
+        Quantity::new(size, TEST_TRADE_SIZE_PRECISION),
         aggressor,
-        nautilus_model::identifiers::TradeId::from("TRADE-TICK-001"),
-        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
-        nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        nautilus_model::identifiers::TradeId::from(trade_id.as_str()),
+        nautilus_core::UnixNanos::from(ts_ns),
+        nautilus_core::UnixNanos::from(ts_ns),
     )
     .expect("test trade tick should be valid")
+}
+
+pub(super) fn test_identifier_token(raw: &str) -> String {
+    raw.chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .take(TEST_IDENTIFIER_TOKEN_LIMIT)
+        .collect()
 }
 
 pub(super) fn submit_admission_with_provider_cap(

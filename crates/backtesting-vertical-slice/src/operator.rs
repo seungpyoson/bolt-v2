@@ -5,9 +5,10 @@
 //! runtime inputs are the raw bytes of the accepted object and an
 //! output directory. [`run_from_run_spec`] re-verifies the object SHA-256
 //! against the run-spec before any normalization, decodes the object,
-//! accepts the source proof and binds the object through the ledger, guarantees
-//! a clean catalog root, runs the backtest, and writes the accepted proof,
-//! artifact-local run manifest, and result contract as JSON artifacts.
+//! verifies the already accepted source proof and binds the object through the
+//! ledger, guarantees a clean catalog root, runs the backtest, and writes the
+//! accepted proof, artifact-local run manifest, and result contract as JSON
+//! artifacts.
 
 use std::{
     collections::BTreeMap,
@@ -47,8 +48,8 @@ use crate::{
         run_nt_backtest_node, run_purpose_label,
     },
     source_proof::{
-        AcceptanceMode, AcceptedDataset, IngestManifestObjectRecord, SourceBindingRegistry,
-        SourceProofReport, resolve_source_bindings_path, select_accepted_dataset_with_registry,
+        AcceptedDataset, IngestManifestObjectRecord, SourceBindingRegistry, SourceProofReport,
+        resolve_source_bindings_path, select_accepted_dataset_with_registry,
     },
 };
 
@@ -246,24 +247,27 @@ fn accepted_dataset_for_run_spec_hash(
     object_sha256: &str,
 ) -> Result<(SourceProofReport, AcceptedDataset)> {
     let registry = read_source_binding_registry(&spec.source_bindings_path)?;
-    let accepted_proof = spec
-        .source_proof
-        .clone()
-        .accept_with_registry(
-            &registry,
-            AcceptanceMode::Manual,
-            spec.accepted_by.clone(),
-            spec.accepted_at_utc.clone(),
-        )
-        .map_err(|error| anyhow::anyhow!("source-proof acceptance failed: {error}"))?;
+    ensure!(
+        spec.source_proof.is_accepted(),
+        "source proof is not accepted: status {:?}",
+        spec.source_proof.status
+    );
+    ensure!(
+        spec.source_proof.accepted_by.as_deref() == Some(spec.accepted_by.as_str()),
+        "source proof accepted_by does not match run-spec accepted_by"
+    );
+    ensure!(
+        spec.source_proof.accepted_at.as_deref() == Some(spec.accepted_at_utc.as_str()),
+        "source proof accepted_at does not match run-spec accepted_at_utc"
+    );
     let accepted = select_accepted_dataset_with_registry(
-        &accepted_proof,
+        &spec.source_proof,
         &spec.accepted_object,
         object_sha256,
         &registry,
     )
     .map_err(|error| anyhow::anyhow!("accepted-data ledger rejected object: {error}"))?;
-    Ok((accepted_proof, accepted))
+    Ok((spec.source_proof.clone(), accepted))
 }
 
 fn local_run_manifest_for_output(
@@ -1220,6 +1224,10 @@ mod tests {
     fn run_spec_for(gz_bytes: &[u8]) -> RunSpec {
         let mut spec: RunSpec =
             toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses");
+        assert!(
+            spec.source_proof.is_accepted(),
+            "committed run-spec must carry an accepted source proof"
+        );
         spec.source_bindings_path = PathBuf::from(
             "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml",
         );
@@ -1233,6 +1241,15 @@ mod tests {
             max_decoded_bytes: 4096,
             zip_member: None,
         };
+        spec
+    }
+
+    fn pending_run_spec_for(gz_bytes: &[u8]) -> RunSpec {
+        let mut spec = run_spec_for(gz_bytes);
+        spec.source_proof.status = crate::source_proof::SourceProofStatus::Pending;
+        spec.source_proof.acceptance_mode = None;
+        spec.source_proof.accepted_by = None;
+        spec.source_proof.accepted_at = None;
         spec
     }
 
@@ -1323,6 +1340,36 @@ mod tests {
         assert!(
             !dir.path().join(CONVERSION_CHECKPOINT_FILE).exists(),
             "byte-count rejection must happen before conversion checkpoint writes"
+        );
+    }
+
+    #[test]
+    fn run_from_run_spec_rejects_pending_source_proof_before_canonical_work() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = pending_run_spec_for(&gz);
+        assert!(
+            !spec.source_proof.is_accepted(),
+            "fixture must exercise a pending source proof"
+        );
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let err = match run_from_run_spec(&spec, &gz, dir.path()) {
+            Ok(_) => panic!("pending source proof must not reach canonical backtest input"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("source proof"), "{err}");
+        assert!(
+            !dir.path().join(CONVERSION_CHECKPOINT_FILE).exists(),
+            "pending proof rejection must happen before conversion checkpoint writes"
+        );
+        assert!(
+            !dir.path().join(CANONICAL_ARTIFACT_FILE).exists(),
+            "pending proof rejection must happen before canonical artifact writes"
+        );
+        assert!(
+            !dir.path().join(CATALOG_DIR).exists(),
+            "pending proof rejection must happen before NT catalog work"
         );
     }
 
@@ -1754,6 +1801,10 @@ mod tests {
     #[test]
     fn committed_run_spec_deserializes() {
         let spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
+        assert!(
+            spec.source_proof.is_accepted(),
+            "committed run-spec must carry an accepted source proof"
+        );
         assert_eq!(
             spec.source_proof.source_proof_id,
             "source-proof-bybit-spot-tick-trades"
@@ -2072,18 +2123,21 @@ mod tests {
         proof
             .evaluate_acceptance()
             .expect("binance reference proof still satisfies acceptance invariants");
-        let accepted_from_run_spec = spec
-            .source_proof
-            .clone()
-            .accept(
-                AcceptanceMode::Manual,
-                spec.accepted_by.clone(),
-                spec.accepted_at_utc.clone(),
-            )
-            .expect("run-spec candidate proof accepts with run-spec provenance");
+        assert!(
+            spec.source_proof.is_accepted(),
+            "binance run-spec must carry the committed accepted source proof"
+        );
         assert_eq!(
-            accepted_from_run_spec, proof,
-            "run-spec candidate proof must stamp into committed accepted proof"
+            spec.source_proof.accepted_by.as_deref(),
+            Some(spec.accepted_by.as_str())
+        );
+        assert_eq!(
+            spec.source_proof.accepted_at.as_deref(),
+            Some(spec.accepted_at_utc.as_str())
+        );
+        assert_eq!(
+            spec.source_proof, proof,
+            "run-spec source proof must be the committed accepted proof"
         );
 
         let accepted = crate::source_proof::select_accepted_dataset(

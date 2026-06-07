@@ -1225,6 +1225,18 @@ Midpoint table-family coverage audit:
   it cannot deserialize as `SourceProofReport`. Verification also reran the
   BTE-016/017 reference fixture test and compiled the new bin; targeted clippy
   passed for `--lib --bin source_proof_shortlist`.
+- Canonical and backtest input now require an already accepted
+  `SourceProofReport`; the operator no longer accepts a pending proof as part
+  of a run. RED
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --lib run_from_run_spec_rejects_pending_source_proof_before_canonical_work -- --nocapture`
+  first failed because the pending run-spec reached NT work. GREEN moved
+  acceptance to committed run-spec/proof artifacts, verifies proof provenance
+  matches the run-spec, and rejects pending proofs before conversion
+  checkpoint, canonical Parquet, or NT catalog writes. Both committed
+  reference run-specs now carry the same accepted source-proof provenance as
+  their accepted proof JSON artifacts, and the targeted operator suite
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --lib operator::tests -- --nocapture`
+  passed with 32 tests.
 
 ## Recommendation
 

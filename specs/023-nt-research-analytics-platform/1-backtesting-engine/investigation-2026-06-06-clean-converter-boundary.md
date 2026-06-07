@@ -87,8 +87,11 @@ Go for the local BNBUSDC vertical-slice path after this fix:
   tick-size-change rows across `343` assets, all `0.0100 -> 0.0010`, with `76`
   assets carrying duplicate same-transition rows. NT catalog can store multiple
   `InstrumentAny` snapshots, but `BacktestNode` loads instruments up front and
-  standard `BacktestDataConfig` streams do not include `InstrumentAny`, so
-  dynamic instrument-epoch replay is unproven. A first one-object proof may
+  standard `BacktestDataConfig` catalog replay feeds `Vec<Data>` through
+  `BacktestEngine::add_data`; NT's `Data` enum has no `InstrumentAny` variant.
+  NT live-style `DataEngine::process(&InstrumentAny)` exists, but that is a
+  separate path from catalog-backed replay, so dynamic instrument-epoch replay is
+  unproven. A first one-object proof may
   exclude tick-changing assets only with explicit claim limits; full L2
   acceptance must prove tick-size epochs.
 - generated result contracts now preserve structured source-proof claim-limit evidence from the accepted proof instead of rebuilding source limits from plain `forbidden_claims` strings

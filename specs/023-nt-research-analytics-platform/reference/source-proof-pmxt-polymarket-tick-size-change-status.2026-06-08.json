@@ -6,7 +6,7 @@
   "recorded_at_utc": "2026-06-08T00:00:00Z",
   "scope": {
     "question": "Can PMXT tick_size_change rows be represented in NT catalog/backtest without custom simulation behavior?",
-    "answer": "Pinned NT has live Polymarket tick-size-change handling and catalog support for multiple InstrumentAny snapshots, but BacktestNode loads instruments up front and standard BacktestDataConfig data streams do not include InstrumentAny. Dynamic in-run instrument-definition replay is therefore unproven for this BTE path.",
+    "answer": "Pinned NT has live Polymarket tick-size-change handling and catalog support for multiple InstrumentAny snapshots, but BacktestNode loads instruments up front and standard BacktestDataConfig data streams flow through BacktestEngine::add_data as Data enum items. Data does not include InstrumentAny. Dynamic in-run instrument-definition replay is therefore unproven for this BTE path.",
     "not_implementation": true,
     "not_catalog_readback_proof": true,
     "not_source_selection": true
@@ -56,6 +56,22 @@
       "finding": "BacktestDataConfig dispatches market data classes including InstrumentStatus and InstrumentClose, but not InstrumentAny."
     },
     {
+      "source": "nt://crates/backtest/src/node.rs:381",
+      "finding": "BacktestNode loads catalog query results into BacktestEngine::add_data; this path accepts Vec<Data>, not InstrumentAny snapshots."
+    },
+    {
+      "source": "nt://crates/backtest/src/engine.rs:374",
+      "finding": "BacktestEngine::add_data stores replay data as Data enum items in the data iterator."
+    },
+    {
+      "source": "nt://crates/data/src/engine/mod.rs:1616",
+      "finding": "NT DataEngine::process can handle dynamically typed InstrumentAny for live-style instrument events, but that is a separate path from BacktestDataConfig catalog replay."
+    },
+    {
+      "source": "nt://crates/backtest/src/engine.rs:326",
+      "finding": "BacktestEngine::add_instrument applies InstrumentAny to the exchange and data engine when called directly, but BacktestDataConfig does not schedule this call at a timestamp."
+    },
+    {
       "source": "nt://crates/backtest/src/exchange.rs:346",
       "finding": "SimulatedExchange::add_instrument inserts by instrument id; multiple up-front snapshots for one id can overwrite rather than replaying a timed epoch unless proven otherwise."
     }
@@ -91,7 +107,7 @@
     {
       "policy": "do_not_claim_dynamic_tick_size_replay_from_static_instrument_load",
       "decision": "accepted",
-      "reason": "BacktestNode loads InstrumentAny snapshots before market data; no standard data stream replays InstrumentAny updates during the run."
+      "reason": "BacktestNode loads InstrumentAny snapshots before market data, then streams Vec<Data> through BacktestEngine::add_data. The standard Data enum has no InstrumentAny variant."
     },
     {
       "policy": "write_multiple_instrument_snapshots",

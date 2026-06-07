@@ -173,6 +173,38 @@ fn unknown_source_rejections_are_audited_without_mutating_configured_sources() {
 }
 
 #[test]
+fn disabled_configured_source_rejections_remain_auditable_without_quorum_participation() {
+    let mut config = config(&[SOURCE_A, SOURCE_B]);
+    config.min_ready_sources = 1;
+    config.sources[1].enabled = false;
+    let mut engine = RealizedVolEngine::from_config(config).unwrap();
+    observe_path(&mut engine, SOURCE_A, &[100.0, 101.0, 102.0, 103.0]);
+    assert!(!engine.observe(observation(SOURCE_B, 200.0, 1_000)));
+
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    assert_eq!(snapshot.sources_used, vec![SOURCE_A.to_string()]);
+    let disabled = snapshot
+        .source_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source_id == SOURCE_B)
+        .expect("disabled configured source should remain visible in diagnostics");
+    assert_eq!(disabled.status, RealizedVolSourceStatus::Rejected);
+    assert_eq!(
+        disabled.last_rejected_reason,
+        Some(RealizedVolSourceRejectReason::DisabledSource)
+    );
+    assert_eq!(
+        disabled
+            .rejection_counters
+            .get(&RealizedVolSourceRejectReason::DisabledSource)
+            .copied(),
+        Some(1)
+    );
+}
+
+#[test]
 fn observation_validation_rejects_timestamp_and_lag_violations() {
     let mut engine = RealizedVolEngine::from_config(config(&[SOURCE_A])).unwrap();
     assert!(engine.observe(observation(SOURCE_A, 100.0, 1_000)));

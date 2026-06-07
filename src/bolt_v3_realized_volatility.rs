@@ -263,15 +263,16 @@ impl RealizedVolEngine {
         if !is_positive_finite(self.config.seconds_per_annum) {
             blockers.insert(RealizedVolBlockReason::AnnualizationBasisInvalid);
         }
-        for state in self.sources.values().filter(|state| state.config.enabled) {
+        for state in self.sources.values() {
             let diagnostic = source_diagnostic(&self.config, state, as_of_ms);
             match (
+                state.config.enabled,
                 diagnostic.status,
                 state.config.counts_toward_quorum,
                 diagnostic.annualized_realized_vol_decimal,
                 diagnostic.block_reason,
             ) {
-                (RealizedVolSourceStatus::Ready, true, Some(value), _) => {
+                (true, RealizedVolSourceStatus::Ready, true, Some(value), _) => {
                     ready_values.push((
                         diagnostic.source_id.clone(),
                         diagnostic.source_class,
@@ -279,7 +280,7 @@ impl RealizedVolEngine {
                         value,
                     ));
                 }
-                (_, true, _, Some(reason)) => {
+                (true, _, true, _, Some(reason)) => {
                     blockers.insert(reason);
                 }
                 _ => {}

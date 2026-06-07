@@ -722,7 +722,7 @@ kind = "number"
 literal = '''7'''
 context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 7;'''
 classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v6 adds execution_client_id to submit-admission decisions so approval-limit evidence is auditable by execution client; it is part of the audit-record contract, not an operator runtime value."
+reason = "This is the decision-evidence JSONL envelope schema version. v7 adds realized_volatility_unknown_source_rejections to strategy input snapshots so surfaced-RV source routing anomalies are auditable; it is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"

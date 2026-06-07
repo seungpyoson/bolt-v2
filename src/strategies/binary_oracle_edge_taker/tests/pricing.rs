@@ -1177,3 +1177,60 @@ fn task6_exit_decision_requires_live_uncertainty_components() {
     );
     assert_eq!(decision.blocked_reason, None);
 }
+
+#[test]
+fn position_probability_and_hold_ev_accept_ready_surfaced_zero_realized_volatility() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let open_position = OpenPositionState {
+        market_id: Some("MKT-1".to_string()),
+        instrument_id: strategy.active.books.up.instrument_id.unwrap(),
+        position_id: PositionId::from("P-UP-ZERO-RV"),
+        outcome_side: Some(OutcomeSide::Up),
+        outcome_fees: strategy.active.outcome_fees.clone(),
+        historical_entry_fee_bps: Some(0.0),
+        entry_order_side: OrderSide::Buy,
+        side: PositionSide::Long,
+        quantity: Quantity::new(10.0, 2),
+        avg_px_open: 0.450,
+        interval_open: Some(3_100.0),
+        selection_published_at_ms: Some(1_000),
+        seconds_to_expiry_at_selection: Some(300),
+        book: strategy.active.books.up.clone(),
+    };
+    set_managed_position(
+        &mut strategy,
+        open_position,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    strategy.config.realized_volatility_surface_id = Some("<surface_id>".to_string());
+    strategy.pricing.realized_volatility_surface_id = Some("<surface_id>".to_string());
+    strategy.pricing.observe_realized_vol_snapshot(
+        crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
+            surface_id: "<surface_id>".to_string(),
+            as_of_ms: 1_200,
+            annualized_realized_vol_decimal: Some(0.0),
+            ready: true,
+            sources_used: vec!["<SOURCE_ID_A>".to_string()],
+            source_diagnostics: Vec::new(),
+            unknown_source_rejections: std::collections::BTreeMap::new(),
+            blocked_reasons: Vec::new(),
+            aggregate_method:
+                crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
+                    quantile: 1.0,
+                },
+            seconds_per_annum: 31_536_000.0,
+            config_fingerprint: "<config_fingerprint>".to_string(),
+        },
+    );
+
+    assert_eq!(
+        strategy.current_position_fair_probability_up_at(1_200),
+        Some(1.0)
+    );
+    assert!(
+        strategy
+            .exit_evaluation_at(1_200)
+            .hold_ev_bps
+            .is_some_and(f64::is_finite)
+    );
+}

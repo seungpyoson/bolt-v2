@@ -206,8 +206,10 @@ mod tests {
     // configured surfaced realized-volatility source ID.
     // Re-derived again after accepting zero-RV surfaced snapshots and exporting
     // unknown-source surfaced RV rejection counters in strategy input evidence.
+    // Re-derived again after allowing zero-RV strategy evidence/position paths
+    // and adding disabled-source surfaced RV diagnostics coverage.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "cc5979978b069c8ee5e7e161ace18b2a05f337b91da33e11278a05ae8109bdfa";
+        "2cd8af0b2c414db3bfdfe5561d73270f53fcb5cded22d0aed8d0b0b40a0fa2bf";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

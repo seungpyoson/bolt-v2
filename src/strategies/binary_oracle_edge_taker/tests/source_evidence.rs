@@ -718,6 +718,52 @@ fn strategy_input_evidence_records_realized_volatility_unknown_source_rejections
 }
 
 #[test]
+fn strategy_input_evidence_accepts_ready_surfaced_zero_realized_volatility() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.realized_volatility_surface_id = Some(TEST_SURFACE_ID.to_string());
+    strategy.pricing.realized_volatility_surface_id = Some(TEST_SURFACE_ID.to_string());
+    strategy.pricing.observe_realized_vol_snapshot(
+        crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
+            surface_id: TEST_SURFACE_ID.to_string(),
+            as_of_ms: 1_200,
+            annualized_realized_vol_decimal: Some(0.0),
+            ready: true,
+            sources_used: vec![TEST_SOURCE_ID.to_string()],
+            source_diagnostics: Vec::new(),
+            unknown_source_rejections: std::collections::BTreeMap::new(),
+            blocked_reasons: Vec::new(),
+            aggregate_method:
+                crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
+                    quantile: 1.0,
+                },
+            seconds_per_annum: 31_536_000.0,
+            config_fingerprint: "<config_fingerprint>".to_string(),
+        },
+    );
+
+    let error = strategy
+        .try_submit_entry_order(1_200)
+        .expect_err("submit admission should reject after evidence capture");
+    assert!(
+        error.to_string().contains("notional cap is exceeded"),
+        "{error:#}"
+    );
+
+    let events = evidence.events();
+    let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
+        panic!("expected first evidence event to be strategy input; got {events:#?}");
+    };
+    assert_eq!(snapshot.realized_volatility, "0");
+    assert_eq!(snapshot.realized_volatility_annualized_decimal, "0");
+}
+
+#[test]
 fn strategy_input_evidence_market_end_uses_selection_expiry_not_remaining_seconds() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());

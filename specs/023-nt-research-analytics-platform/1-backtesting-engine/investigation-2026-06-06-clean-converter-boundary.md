@@ -1327,7 +1327,7 @@ Midpoint table-family coverage audit:
   option mapping blocker without accepting it. The committed inspection
   `specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook-instrument-join.2026-06-08.json`
   hash
-  `086934f12f2d4d638cf38ad8f45a1694b8784ce36d3b6fafa937c63171418318`
+  `f4c5353a8f19ccdc2c0a86feefa0f74bdc929bea82e3abd384f0bf73aea1f8f8`
   binds the sampled PMXT token
   `44554681108074793313893626424278471150091658237406724818592366780413111952248`
   to official CLOB/Gamma metadata for condition
@@ -1335,10 +1335,20 @@ Midpoint table-family coverage audit:
   The official probes source-back the sampled token outcome (`Yes`), twin token
   (`No`), price increment/minimum tick (`0.001`), minimum order size (`5`),
   accepting-orders timestamp (`2025-11-06T15:54:33Z`), and Gamma end date
-  (`2026-12-31T00:00:00Z`). The fixture remains pending because NT
-  `BinaryOption` acceptance still needs source-backed currency, size
-  increment/precision, fee semantics, documented activation/expiration rules,
-  a generic PMXT order-book adapter, and `ParquetDataCatalog` write/read-back.
+  (`2026-12-31T00:00:00Z`). Pinned NT source inspection then shows the
+  non-custom mapping path already exists in
+  `nautilus-polymarket`: `PolymarketInstrumentProvider` indexes Gamma-loaded
+  instruments by token id, `parse_gamma_market` derives the instrument
+  definition from Gamma fields, `create_instrument_from_def` constructs
+  `InstrumentAny::BinaryOption` via `BinaryOption::new_checked`, and
+  `rebuild_instrument_with_tick_size` handles tick-size changes while
+  preserving instrument fields. That NT path resolves currency (`pUSD`),
+  `size_precision = 6`, `size_increment = 0.000001`, activation from Gamma
+  `startDate`, expiration from Gamma `endDate`, and fee defaults/schedule
+  semantics. The fixture remains pending because the isolated BTE crate does
+  not yet have an approved `nautilus-polymarket` dependency/lock entry and
+  still needs a generic PMXT order-book adapter plus `ParquetDataCatalog`
+  write/read-back.
 - Kalshi official historical endpoints are now verified and downgraded for BTE
   source selection. The committed endpoint inspection
   `specs/023-nt-research-analytics-platform/reference/source-proof-endpoint-inspection.kalshi-official-historical-api.2026-06-08.json`

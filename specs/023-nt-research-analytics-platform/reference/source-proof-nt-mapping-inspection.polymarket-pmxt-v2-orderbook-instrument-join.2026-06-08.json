@@ -103,18 +103,18 @@
     },
     {
       "nt_field": "currency",
-      "status": "pending",
-      "evidence": "The bounded official probes do not prove the exact NT settlement/collateral currency field."
+      "status": "resolved_by_pinned_nt_adapter_pending_bte_integration",
+      "evidence": "Pinned NT Polymarket parser constructs BinaryOption currency with get_currency(PUSD); BTE still needs an approved dependency path to reuse that parser rather than duplicating it."
     },
     {
       "nt_field": "activation_ns",
-      "status": "candidate",
-      "evidence": "CLOB aot and Gamma acceptingOrdersTimestamp both give 2025-11-06T15:54:33Z; Gamma startDate differs and needs a documented mapping rule."
+      "status": "resolved_by_pinned_nt_adapter_pending_bte_integration",
+      "evidence": "Pinned NT Polymarket parser maps Gamma startDate to activation_ns; CLOB aot/acceptingOrdersTimestamp remains source evidence for order acceptance, not the NT activation field."
     },
     {
       "nt_field": "expiration_ns",
-      "status": "candidate",
-      "evidence": "Gamma endDate gives 2026-12-31T00:00:00Z; expiration versus final settlement semantics still need a documented mapping rule."
+      "status": "resolved_by_pinned_nt_adapter_pending_bte_integration",
+      "evidence": "Pinned NT Polymarket parser maps Gamma endDate to expiration_ns."
     },
     {
       "nt_field": "price_precision",
@@ -123,8 +123,8 @@
     },
     {
       "nt_field": "size_precision",
-      "status": "pending",
-      "evidence": "PMXT source schema reports size DECIMAL(18,6), but official order-size precision/increment has not been proven for NT instrument construction."
+      "status": "resolved_by_pinned_nt_adapter_pending_bte_integration",
+      "evidence": "Pinned NT Polymarket parser uses size_precision 6 for 6-decimal collateral increments; PMXT source schema reports size DECIMAL(18,6)."
     },
     {
       "nt_field": "price_increment",
@@ -133,8 +133,8 @@
     },
     {
       "nt_field": "size_increment",
-      "status": "pending",
-      "evidence": "CLOB/Gamma minimum order size is 5, but that is not the same proof as order-size increment."
+      "status": "resolved_by_pinned_nt_adapter_pending_bte_integration",
+      "evidence": "Pinned NT Polymarket parser uses size_increment 0.000001. CLOB/Gamma minimum order size is 5 and NT deliberately does not map that into min_quantity."
     },
     {
       "nt_field": "min_quantity",
@@ -148,27 +148,61 @@
     },
     {
       "nt_field": "maker_fee",
-      "status": "pending",
-      "evidence": "Gamma feesEnabled=false and CLOB fee fields are absent/null, but NT maker_fee semantics require an explicit mapping rule before acceptance."
+      "status": "resolved_by_pinned_nt_adapter_pending_bte_integration",
+      "evidence": "Pinned NT Polymarket parser maps feeSchedule-backed maker fee to zero and otherwise leaves the optional maker fee unset so BinaryOption defaults it to zero."
     },
     {
       "nt_field": "taker_fee",
-      "status": "pending",
-      "evidence": "Gamma feesEnabled=false and CLOB fee fields are absent/null, but NT taker_fee semantics require an explicit mapping rule before acceptance."
+      "status": "resolved_by_pinned_nt_adapter_pending_bte_integration",
+      "evidence": "Pinned NT Polymarket parser maps feeSchedule.rate to taker_fee and otherwise leaves the optional taker fee unset so BinaryOption defaults it to zero."
     }
   ],
+  "pinned_nt_polymarket_adapter_observation": {
+    "status": "available_in_pinned_nt_not_integrated_in_bte_crate",
+    "nt_revision": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+    "source_files": [
+      "crates/adapters/polymarket/src/providers.rs",
+      "crates/adapters/polymarket/src/http/parse.rs",
+      "crates/model/src/instruments/binary_option.rs"
+    ],
+    "provider_surface": [
+      "PolymarketInstrumentProvider stores instruments from Gamma API and indexes them by token id",
+      "get_by_token_id resolves WebSocket/PMXT asset ids to InstrumentAny",
+      "build_token_map exposes a frozen token-id to instrument map",
+      "load_ids and load fetch markets by condition id extracted from the NT Polymarket instrument symbol"
+    ],
+    "parser_surface": [
+      "parse_gamma_market parses Gamma clobTokenIds/outcomes/orderPriceMinTickSize/orderMinSize/startDate/endDate/feeSchedule",
+      "create_instrument_from_def constructs InstrumentAny::BinaryOption through BinaryOption::new_checked",
+      "rebuild_instrument_with_tick_size updates price precision/increment for tick_size_change while preserving BinaryOption fields"
+    ],
+    "resolved_binary_option_fields": {
+      "instrument_id": "{condition_id}-{token_id}.POLYMARKET from NT Polymarket parser",
+      "raw_symbol": "token_id",
+      "asset_class": "Alternative",
+      "currency": "pUSD",
+      "activation_ns": "Gamma startDate",
+      "expiration_ns": "Gamma endDate",
+      "price_precision": "scale(orderPriceMinTickSize)",
+      "size_precision": 6,
+      "price_increment": "orderPriceMinTickSize",
+      "size_increment": "0.000001",
+      "outcome": "Gamma outcome label",
+      "description": "Gamma question",
+      "min_quantity": "None by NT design; orderMinSize is venue validation, not BinaryOption min_quantity",
+      "maker_fee": "zero when feeSchedule-backed, otherwise BinaryOption default zero",
+      "taker_fee": "feeSchedule.rate when present, otherwise BinaryOption default zero"
+    },
+    "bte_integration_blocker": "backtesting-vertical-slice does not currently depend on nautilus-polymarket. Adding that dependency and lock entry was not performed because prior user-scoped file-change instructions listed this crate's Cargo.toml and Cargo.lock as not-to-touch without fresh explicit approval."
+  },
   "mapping_conclusion": {
-    "instrument_mapping_status": "partially_source_backed_not_accepted",
+    "instrument_mapping_status": "pinned_nt_adapter_surface_found_not_integrated",
     "replay_mapping_status": "candidate_not_accepted",
-    "reason": "The bounded official join removes the earlier missing-token-metadata blocker for outcome label, price increment, minimum order size, and candidate activation/expiration timestamps. It does not yet prove every checked NT BinaryOption field or a committed generic converter plus ParquetDataCatalog read-back.",
+    "reason": "The bounded official join plus pinned NT source inspection removes the need to invent a BinaryOption mapping: the correct path is to reuse NT's Polymarket parser/provider for instruments and token-id lookup. The mapping is still not accepted because BTE has not integrated that dependency and has not committed generic PMXT OrderBookDelta/TradeTick conversion plus ParquetDataCatalog read-back.",
     "required_next_evidence": [
-      "generic token-id to InstrumentId/raw_symbol rule deriving venue from TOML source binding metadata",
-      "source-backed settlement/collateral currency mapping for NT BinaryOption currency",
-      "documented activation_ns rule choosing accepting-order timestamp versus market startDate",
-      "documented expiration_ns rule for endDate versus settlement/finalization semantics",
-      "source-backed size_precision and size_increment rule",
-      "explicit maker_fee/taker_fee mapping rule when Gamma feesEnabled=false and CLOB fee fields are absent",
-      "committed generic PMXT order-book adapter that writes NT BinaryOption, OrderBookDelta, and TradeTick without venue constants",
+      "approved BTE dependency path to nautilus-polymarket at the pinned NT revision",
+      "machine-checked proof that BTE uses NT Polymarket parse_gamma_market/create_instrument_from_def or PolymarketInstrumentProvider rather than a custom BinaryOption mapper",
+      "committed generic PMXT order-book adapter that joins PMXT asset_id to NT Polymarket token-id instruments and writes OrderBookDelta and TradeTick without venue constants",
       "ParquetDataCatalog write plus query_typed_data read-back for the selected sample under artifact-root staging"
     ]
   }

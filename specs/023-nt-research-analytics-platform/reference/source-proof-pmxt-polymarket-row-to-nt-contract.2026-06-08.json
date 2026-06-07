@@ -198,11 +198,16 @@
     "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-price-change-grouping-status.2026-06-08.json",
     "mapping_constraint": "timestamp_received is part of the price_change boundary and must not be dropped; one-row-to-one-OrderBookDeltas is the preferred pinned NT live-client parity policy, but implementation and catalog read-back remain pending."
   },
+  "tick_size_change_status": {
+    "status": "open_dynamic_instrument_epoch_replay_unproven",
+    "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json",
+    "mapping_constraint": "Pinned NT live handling rebuilds BinaryOption instruments and starts a book epoch on tick_size_change, but BacktestNode dynamic InstrumentAny replay is unproven. A first proof may exclude tick-changing assets only with explicit claim limits; full L2 acceptance must prove tick-size epochs."
+  },
   "unresolved_before_implementation": [
     "The isolated BTE crate must have an approved dependency or integration boundary for nautilus-polymarket before parser/provider reuse is machine-checked.",
     "PMXT price_change grouping policy must be implemented and verified against pinned NT live-client parity, including timestamp_received boundary handling.",
     "PMXT last_trade_price TradeId/provenance policy must choose and test transaction_hash+asset sequencing versus exact duplicate trade-observation dedupe before catalog acceptance.",
-    "tick_size_change catalog representation must be proven with NT catalog read-back and BacktestNode consumption before an L2 replay claim.",
+    "tick_size_change dynamic instrument-epoch representation must be proven with NT catalog read-back and BacktestNode consumption, or explicitly excluded with claim limits for a bounded first proof.",
     "The resulting ParquetDataCatalog proof must write/read InstrumentAny::BinaryOption, OrderBookDelta, and TradeTick under artifact_root staging; local prototype directories are insufficient.",
     "The coverage ledger must use timestamp_received as the archive-hour coverage axis because source timestamp can be older than the archive object hour."
   ],

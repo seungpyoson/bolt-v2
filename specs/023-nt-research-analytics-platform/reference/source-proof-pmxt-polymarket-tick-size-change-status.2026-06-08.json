@@ -1,0 +1,124 @@
+{
+  "schema_version": "source-proof-pmxt-polymarket-tick-size-change-status.v1",
+  "task_id": "BACKTESTING_ENGINE-022",
+  "source_binding": "polymarket-parquet-archive-index",
+  "status": "open_dynamic_instrument_epoch_replay_unproven",
+  "recorded_at_utc": "2026-06-08T00:00:00Z",
+  "scope": {
+    "question": "Can PMXT tick_size_change rows be represented in NT catalog/backtest without custom simulation behavior?",
+    "answer": "Pinned NT has live Polymarket tick-size-change handling and catalog support for multiple InstrumentAny snapshots, but BacktestNode loads instruments up front and standard BacktestDataConfig data streams do not include InstrumentAny. Dynamic in-run instrument-definition replay is therefore unproven for this BTE path.",
+    "not_implementation": true,
+    "not_catalog_readback_proof": true,
+    "not_source_selection": true
+  },
+  "pinned_nt_revision": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+  "nt_live_semantics_evidence": [
+    {
+      "source": "nt://crates/adapters/polymarket/src/data.rs:877",
+      "finding": "Pinned NT live PolymarketDataClient handles MarketWsMessage::TickSizeChange as a distinct message."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/data.rs:902",
+      "finding": "No-op tick_size_change messages are ignored when the existing instrument already has the new price increment."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/data.rs:933",
+      "finding": "Pinned NT live handling calls rebuild_instrument_with_tick_size and emits DataEvent::Instrument for the rebuilt instrument."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/data.rs:951",
+      "finding": "For book subscriptions, a tick-size change starts a book epoch transition and requires a fresh snapshot before book deltas resume."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/http/parse.rs:261",
+      "finding": "rebuild_instrument_with_tick_size preserves BinaryOption fields and changes price_precision and price_increment from the new tick size."
+    }
+  ],
+  "nt_catalog_backtest_evidence": [
+    {
+      "source": "nt://crates/persistence/src/backend/catalog.rs:701",
+      "finding": "ParquetDataCatalog::write_instruments can write InstrumentAny snapshots grouped by instrument id and timestamp interval."
+    },
+    {
+      "source": "nt://crates/persistence/src/backend/catalog.rs:844",
+      "finding": "query_instruments_filtered reads matching instrument parquet files, optionally filters by ts_init, and sorts returned instruments by ts_init."
+    },
+    {
+      "source": "nt://crates/backtest/src/node.rs:165",
+      "finding": "BacktestNode queries catalog instruments before loading market data and adds them to the engine up front."
+    },
+    {
+      "source": "nt://crates/model/src/data/mod.rs:100",
+      "finding": "The standard Data enum includes InstrumentStatus and InstrumentClose but not InstrumentAny instrument-definition updates."
+    },
+    {
+      "source": "nt://crates/backtest/src/node.rs:539",
+      "finding": "BacktestDataConfig dispatches market data classes including InstrumentStatus and InstrumentClose, but not InstrumentAny."
+    },
+    {
+      "source": "nt://crates/backtest/src/exchange.rs:346",
+      "finding": "SimulatedExchange::add_instrument inserts by instrument id; multiple up-front snapshots for one id can overwrite rather than replaying a timed epoch unless proven otherwise."
+    }
+  ],
+  "pmxt_sample_evidence": {
+    "source_uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+    "local_path": "/private/tmp/polymarket-may20-one.parquet",
+    "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "event_type": "tick_size_change",
+    "row_count": 419,
+    "distinct_assets": 343,
+    "distinct_markets": 173,
+    "min_timestamp_received": "2026-05-21T07:00:52.345+09:00",
+    "max_timestamp_received": "2026-05-21T07:59:00.525+09:00",
+    "transition_counts": [
+      {
+        "old_tick_size": "0.0100",
+        "new_tick_size": "0.0010",
+        "row_count": 419,
+        "distinct_assets": 343
+      }
+    ],
+    "assets_with_multiple_changes": 76,
+    "max_changes_per_asset": 2,
+    "max_distinct_transitions_per_asset": 1
+  },
+  "policy_implications": [
+    {
+      "policy": "do_not_ignore_tick_size_change_for_l2_replay",
+      "decision": "accepted",
+      "reason": "Pinned NT live handling treats real tick-size changes as instrument epoch transitions and waits for a fresh snapshot before resuming book deltas."
+    },
+    {
+      "policy": "do_not_claim_dynamic_tick_size_replay_from_static_instrument_load",
+      "decision": "accepted",
+      "reason": "BacktestNode loads InstrumentAny snapshots before market data; no standard data stream replays InstrumentAny updates during the run."
+    },
+    {
+      "policy": "write_multiple_instrument_snapshots",
+      "decision": "candidate_storage_only_not_replay_proven",
+      "reason": "ParquetDataCatalog can store multiple InstrumentAny snapshots, but dynamic in-run application by BacktestNode is unproven."
+    },
+    {
+      "policy": "exclude_tick_changing_assets_from_first_one_object_l2_proof",
+      "decision": "allowed_only_with_explicit_claim_limit",
+      "reason": "A bounded proof can choose an unaffected instrument universe to prove OrderBookDelta/TradeTick catalog plumbing, but this cannot close full PMXT Polymarket L2 source acceptance."
+    },
+    {
+      "policy": "use_final_tick_size_for_entire_window",
+      "decision": "rejected_for_windows_crossing_tick_change",
+      "reason": "It would apply post-change price precision and price increment before the source event that changed them."
+    }
+  ],
+  "required_green_tests_when_implementation_starts": [
+    "Write and query multiple BinaryOption snapshots for one instrument id through ParquetDataCatalog and prove returned order/ts_init.",
+    "Prove BacktestNode either cannot replay dynamic InstrumentAny updates or prove a supported NT-native mechanism for applying tick-size epochs during the run.",
+    "If first proof excludes tick-changing assets, assert the exclusion is source-proof-bound and appears as a result-contract claim limit.",
+    "If tick-size changes are included, prove post-change book deltas are not consumed until a source snapshot rebuilds the book epoch."
+  ],
+  "current_decision": {
+    "tick_size_change_policy_can_close": false,
+    "bte_022_can_close": false,
+    "broad_backfill_allowed": false,
+    "next_required_evidence": "A focused NT catalog/backtest proof for multiple BinaryOption snapshots and dynamic tick-size epochs, or an explicit first-proof instrument-universe exclusion with claim limits."
+  }
+}

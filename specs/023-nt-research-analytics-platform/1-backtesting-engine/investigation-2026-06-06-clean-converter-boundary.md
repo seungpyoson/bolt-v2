@@ -79,6 +79,18 @@ Go for the local BNBUSDC vertical-slice path after this fix:
   over the already-local 361 MB sample was intentionally stopped by evidence:
   DuckDB spilled a 487 MB temp file and failed with no local disk space, so full
   grouping scans are not acceptable as default source-proof workflow.
+- PMXT Polymarket tick-size-change status is now recorded in
+  `reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json`:
+  pinned NT live handling rebuilds `BinaryOption` instruments on
+  `tick_size_change`, emits `DataEvent::Instrument`, and starts a book epoch
+  transition before deltas resume. The PMXT one-hour sample has `419`
+  tick-size-change rows across `343` assets, all `0.0100 -> 0.0010`, with `76`
+  assets carrying duplicate same-transition rows. NT catalog can store multiple
+  `InstrumentAny` snapshots, but `BacktestNode` loads instruments up front and
+  standard `BacktestDataConfig` streams do not include `InstrumentAny`, so
+  dynamic instrument-epoch replay is unproven. A first one-object proof may
+  exclude tick-changing assets only with explicit claim limits; full L2
+  acceptance must prove tick-size epochs.
 - generated result contracts now preserve structured source-proof claim-limit evidence from the accepted proof instead of rebuilding source limits from plain `forbidden_claims` strings
 - non-latest source-proof pins now require structured manifest justification: `normal` runs still cannot pin them, non-normal pins require `proof_pin_reason_code`, and `audit_or_investigation` pins require `proof_pin_reason_detail`
 - the accepted `proof_pin_reason_code` vocabulary now matches the plan/reference contract, including published-result reproduction and regression-comparison pins

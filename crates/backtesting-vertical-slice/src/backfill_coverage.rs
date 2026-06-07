@@ -4,7 +4,10 @@
 //! normalized manifest facts and optional physical S3 inventory summaries before
 //! any payload download, canonical write, NT catalog projection, or backtest.
 
+use std::{error::Error, fmt};
+
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::source_proof::SourceProofStatus;
 
@@ -43,6 +46,35 @@ pub enum BackfillCoverageIssue {
     SkippedObjectsWithoutGapPolicy,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackfillCoverageParseError {
+    MissingField(&'static str),
+    InvalidField { field: &'static str, value: String },
+    UnknownWriteMode(String),
+}
+
+impl fmt::Display for BackfillCoverageParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingField(field) => {
+                write!(f, "backfill coverage manifest missing field {field}")
+            }
+            Self::InvalidField { field, value } => write!(
+                f,
+                "backfill coverage manifest field {field} has invalid value {value:?}"
+            ),
+            Self::UnknownWriteMode(value) => {
+                write!(
+                    f,
+                    "backfill coverage manifest write_mode is unsupported: {value:?}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for BackfillCoverageParseError {}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BackfillCoverageManifestEvidence {
@@ -60,6 +92,113 @@ pub struct BackfillCoverageManifestEvidence {
     pub completed_bytes: u64,
     pub selector_scope_violations: u64,
     pub gap_policy_id: Option<String>,
+}
+
+impl BackfillCoverageManifestEvidence {
+    pub fn from_manifest_json(
+        summary: &Value,
+        source_proof_status: Option<SourceProofStatus>,
+    ) -> Result<Self, BackfillCoverageParseError> {
+        let manifest_id =
+            required_string(summary, "manifest_id", &[&["manifest_id"], &["run_id"]])?;
+        let source_binding = optional_string(summary, &[&["source_binding"]]).unwrap_or_default();
+        let source_proof_id = optional_string(summary, &[&["source_proof_id"]]);
+        let source_proof_version = optional_u32(
+            summary,
+            "source_proof_version",
+            &[&["source_proof_version"]],
+        )?;
+        let write_mode =
+            parse_write_mode(&required_string(summary, "write_mode", &[&["write_mode"]])?)?;
+        let canonical_s3_write =
+            optional_bool(summary, "canonical_s3_write", &[&["canonical_s3_write"]])?
+                .unwrap_or(false);
+        let completed_objects = required_u64(
+            summary,
+            "completed_objects",
+            &[
+                &["completed_objects"],
+                &["completed_payload_object_count"],
+                &["completed_object_count"],
+                &["counts", "payload_object_count"],
+            ],
+        )?;
+        let failed_objects = optional_u64(
+            summary,
+            "failed_objects",
+            &[
+                &["failed_objects"],
+                &["failed_payload_object_count"],
+                &["counts", "error_count"],
+            ],
+        )?
+        .or_else(|| array_len(summary, &["errors"]))
+        .unwrap_or(0);
+        let skipped_objects = optional_u64(
+            summary,
+            "skipped_objects",
+            &[&["skipped_objects"], &["skipped_payload_object_count"]],
+        )?
+        .unwrap_or(0);
+        let planned_objects = optional_u64(
+            summary,
+            "planned_objects",
+            &[
+                &["planned_objects"],
+                &["planned_payload_object_count"],
+                &["planned_object_count"],
+                &["counts", "planned_payload_object_count"],
+            ],
+        )?
+        .unwrap_or_else(|| {
+            completed_objects
+                .saturating_add(failed_objects)
+                .saturating_add(skipped_objects)
+        });
+        let completed_bytes = required_u64(
+            summary,
+            "completed_bytes",
+            &[
+                &["accepted_bytes"],
+                &["completed_bytes"],
+                &["completed_payload_bytes"],
+                &["counts", "payload_bytes"],
+            ],
+        )?;
+        let selector_scope_violations = optional_u64(
+            summary,
+            "selector_scope_violations",
+            &[
+                &["selector_scope_violations"],
+                &["selector_scope", "selector_scope_violations"],
+            ],
+        )?
+        .or_else(|| {
+            array_len(
+                summary,
+                &["selector_scope", "payload_selector_scope_violations"],
+            )
+        })
+        .unwrap_or(0);
+        let gap_policy_id = optional_string(summary, &[&["gap_policy_id"]]);
+
+        Ok(Self {
+            manifest_id,
+            source_binding,
+            source_proof_id,
+            source_proof_version,
+            source_proof_status,
+            write_mode,
+            canonical_s3_write,
+            planned_objects,
+            completed_objects,
+            failed_objects,
+            skipped_objects,
+            completed_bytes,
+            selector_scope_violations,
+            gap_policy_id,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,4 +364,124 @@ fn physical_only_delta(
             .byte_count
             .saturating_sub(manifest.completed_bytes),
     )
+}
+
+fn parse_write_mode(value: &str) -> Result<BackfillWriteMode, BackfillCoverageParseError> {
+    match value {
+        "dry_run" => Ok(BackfillWriteMode::DryRun),
+        "local_staging" => Ok(BackfillWriteMode::LocalStaging),
+        "s3_staging" => Ok(BackfillWriteMode::S3Staging),
+        "canonical_s3" => Ok(BackfillWriteMode::CanonicalS3),
+        other => Err(BackfillCoverageParseError::UnknownWriteMode(
+            other.to_string(),
+        )),
+    }
+}
+
+fn required_string(
+    root: &Value,
+    field: &'static str,
+    paths: &[&[&str]],
+) -> Result<String, BackfillCoverageParseError> {
+    optional_string(root, paths).ok_or(BackfillCoverageParseError::MissingField(field))
+}
+
+fn optional_string(root: &Value, paths: &[&[&str]]) -> Option<String> {
+    paths
+        .iter()
+        .find_map(|path| match value_at_path(root, path) {
+            Some(Value::String(value)) => Some(value.clone()),
+            _ => None,
+        })
+}
+
+fn required_u64(
+    root: &Value,
+    field: &'static str,
+    paths: &[&[&str]],
+) -> Result<u64, BackfillCoverageParseError> {
+    optional_u64(root, field, paths)?.ok_or(BackfillCoverageParseError::MissingField(field))
+}
+
+fn optional_u32(
+    root: &Value,
+    field: &'static str,
+    paths: &[&[&str]],
+) -> Result<Option<u32>, BackfillCoverageParseError> {
+    optional_u64(root, field, paths)?
+        .map(|value| {
+            u32::try_from(value).map_err(|_| BackfillCoverageParseError::InvalidField {
+                field,
+                value: value.to_string(),
+            })
+        })
+        .transpose()
+}
+
+fn optional_u64(
+    root: &Value,
+    field: &'static str,
+    paths: &[&[&str]],
+) -> Result<Option<u64>, BackfillCoverageParseError> {
+    paths
+        .iter()
+        .find_map(|path| value_at_path(root, path))
+        .map_or(Ok(None), |value| parse_u64_field(field, value).map(Some))
+}
+
+fn optional_bool(
+    root: &Value,
+    field: &'static str,
+    paths: &[&[&str]],
+) -> Result<Option<bool>, BackfillCoverageParseError> {
+    paths
+        .iter()
+        .find_map(|path| value_at_path(root, path))
+        .map_or(Ok(None), |value| {
+            value
+                .as_bool()
+                .ok_or_else(|| BackfillCoverageParseError::InvalidField {
+                    field,
+                    value: value.to_string(),
+                })
+                .map(Some)
+        })
+}
+
+fn parse_u64_field(field: &'static str, value: &Value) -> Result<u64, BackfillCoverageParseError> {
+    match value {
+        Value::Number(number) => {
+            number
+                .as_u64()
+                .ok_or_else(|| BackfillCoverageParseError::InvalidField {
+                    field,
+                    value: value.to_string(),
+                })
+        }
+        Value::String(raw) => {
+            raw.parse::<u64>()
+                .map_err(|_| BackfillCoverageParseError::InvalidField {
+                    field,
+                    value: raw.clone(),
+                })
+        }
+        _ => Err(BackfillCoverageParseError::InvalidField {
+            field,
+            value: value.to_string(),
+        }),
+    }
+}
+
+fn array_len(root: &Value, path: &[&str]) -> Option<u64> {
+    value_at_path(root, path)
+        .and_then(Value::as_array)
+        .map(|values| values.len() as u64)
+}
+
+fn value_at_path<'a>(root: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = root;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    Some(current)
 }

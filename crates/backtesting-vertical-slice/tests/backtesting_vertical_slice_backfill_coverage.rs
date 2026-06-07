@@ -1,8 +1,8 @@
 use backtesting_vertical_slice::{
     backfill_coverage::{
-        BackfillCoverageIssue, BackfillCoverageManifestEvidence, BackfillCoverageStatus,
-        BackfillPhysicalInventory, BackfillWriteMode, classify_manifest_coverage,
-        classify_physical_inventory,
+        BackfillCoverageIssue, BackfillCoverageManifestEvidence, BackfillCoverageParseError,
+        BackfillCoverageStatus, BackfillPhysicalInventory, BackfillWriteMode,
+        classify_manifest_coverage, classify_physical_inventory,
     },
     source_proof::SourceProofStatus,
 };
@@ -119,4 +119,96 @@ fn coverage_ledger_reports_unmanifested_inventory_delta_without_rejecting_manife
     assert_eq!(record.physical_only_objects, 2);
     assert_eq!(record.physical_only_bytes, 600);
     assert!(record.blocking_issues.is_empty(), "{record:?}");
+}
+
+#[test]
+fn coverage_manifest_evidence_parses_payload_count_aliases_from_json_summary() {
+    let summary = serde_json::json!({
+        "run_id": "manifest-synthetic-json",
+        "source_binding": "synthetic-native-trades",
+        "source_proof_id": "source-proof-synthetic-native-trades",
+        "source_proof_version": 1,
+        "write_mode": "s3_staging",
+        "canonical_s3_write": false,
+        "planned_payload_object_count": 4,
+        "completed_payload_object_count": 4,
+        "completed_payload_bytes": 1_200,
+        "errors": [],
+        "selector_scope": {
+            "payload_selector_scope_violations": []
+        }
+    });
+
+    let manifest = BackfillCoverageManifestEvidence::from_manifest_json(
+        &summary,
+        Some(SourceProofStatus::Accepted),
+    )
+    .expect("generic payload aliases parse");
+
+    assert_eq!(manifest.manifest_id, "manifest-synthetic-json");
+    assert_eq!(manifest.write_mode, BackfillWriteMode::S3Staging);
+    assert_eq!(manifest.planned_objects, 4);
+    assert_eq!(manifest.completed_objects, 4);
+    assert_eq!(manifest.failed_objects, 0);
+    assert_eq!(manifest.selector_scope_violations, 0);
+    assert_eq!(
+        classify_manifest_coverage(&manifest, None).status,
+        BackfillCoverageStatus::Accepted
+    );
+}
+
+#[test]
+fn coverage_manifest_evidence_parses_nested_count_aliases_from_json_summary() {
+    let summary = serde_json::json!({
+        "run_id": "manifest-synthetic-nested",
+        "source_binding": "synthetic-native-trades",
+        "source_proof_id": "source-proof-synthetic-native-trades",
+        "source_proof_version": 1,
+        "write_mode": "s3_staging",
+        "canonical_s3_write": false,
+        "counts": {
+            "payload_object_count": 7,
+            "payload_bytes": 1_700,
+            "error_count": 0
+        },
+        "selector_scope": {
+            "payload_selector_scope_violations": []
+        }
+    });
+
+    let manifest = BackfillCoverageManifestEvidence::from_manifest_json(
+        &summary,
+        Some(SourceProofStatus::Accepted),
+    )
+    .expect("nested count aliases parse");
+
+    assert_eq!(manifest.planned_objects, 7);
+    assert_eq!(manifest.completed_objects, 7);
+    assert_eq!(manifest.completed_bytes, 1_700);
+    assert_eq!(
+        classify_manifest_coverage(&manifest, None).status,
+        BackfillCoverageStatus::Accepted
+    );
+}
+
+#[test]
+fn coverage_manifest_evidence_rejects_unknown_write_mode() {
+    let summary = serde_json::json!({
+        "run_id": "manifest-synthetic-bad-mode",
+        "write_mode": "download_then_guess",
+        "planned_objects": 1,
+        "completed_objects": 1,
+        "completed_bytes": 1
+    });
+
+    let err = BackfillCoverageManifestEvidence::from_manifest_json(
+        &summary,
+        Some(SourceProofStatus::Accepted),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        err,
+        BackfillCoverageParseError::UnknownWriteMode("download_then_guess".to_string())
+    );
 }

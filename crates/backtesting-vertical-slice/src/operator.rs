@@ -1616,8 +1616,7 @@ mod tests {
         fs::write(&existing, b"existing-result").unwrap();
 
         let err = publish_output_artifacts(output_dir.path(), &output_prefix)
-            .err()
-            .expect("publish must reject pre-existing artifact");
+            .expect_err("publish must reject pre-existing artifact");
 
         assert!(err.to_string().contains("already exists"), "{err}");
         assert_eq!(

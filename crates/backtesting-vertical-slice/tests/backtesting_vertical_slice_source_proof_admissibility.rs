@@ -301,6 +301,7 @@ fn source_proof_admissibility_reads_toml_spec_and_writes_report() {
             r#"
 report_id = "source-proof-admissibility-spec"
 output_dir = "{}"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 
 [[source_proof]]
 proof_uri = "proof://synthetic/source-proof.json"

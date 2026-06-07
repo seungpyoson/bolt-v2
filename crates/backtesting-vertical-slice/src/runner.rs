@@ -416,6 +416,175 @@ fn direct_s3_catalog_access_proven(manifest: &BacktestingRunManifest) -> bool {
         && execution_catalog_uri(manifest).starts_with("s3://")
 }
 
+/// Prove the catalog read-back is value-faithful, not just count-equal: every
+/// read-back tick must carry the projected instrument id, and the set of trade
+/// ids must equal the canonical table's, so a projection that silently dropped,
+/// duplicated, or relabelled ticks cannot pass the gate.
+fn assert_read_back_matches(
+    read_back: &[TradeTick],
+    canonical_rows: &[CanonicalTradeRow],
+    expected_instrument_id: &str,
+) -> Result<()> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let rows_by_id: BTreeMap<&str, &CanonicalTradeRow> = canonical_rows
+        .iter()
+        .map(|row| (row.trade_id.as_str(), row))
+        .collect();
+    ensure!(
+        rows_by_id.len() == canonical_rows.len(),
+        "canonical rows contain duplicate trade ids"
+    );
+    let expected_ids: BTreeSet<&str> = rows_by_id.keys().copied().collect();
+    let mut actual_ids: BTreeSet<String> = BTreeSet::new();
+    for tick in read_back {
+        ensure!(
+            tick.instrument_id.to_string() == expected_instrument_id,
+            "catalog read-back tick instrument {} does not match projected {expected_instrument_id}",
+            tick.instrument_id
+        );
+        let trade_id = tick.trade_id.to_string();
+        let row = rows_by_id.get(trade_id.as_str()).with_context(|| {
+            format!("catalog read-back trade id {trade_id} is absent from the canonical rows")
+        })?;
+        // Value faithfulness, not just identity: a projection that silently
+        // corrupted a price, size, side, or timestamp must not pass the gate.
+        let expected_price = Decimal::from_str(&row.price)
+            .with_context(|| format!("canonical price {:?}", row.price))?;
+        ensure!(
+            tick.price.as_decimal() == expected_price,
+            "catalog read-back price {} for trade {trade_id} does not match canonical {}",
+            tick.price,
+            row.price
+        );
+        let expected_size = Decimal::from_str(&row.size)
+            .with_context(|| format!("canonical size {:?}", row.size))?;
+        ensure!(
+            tick.size.as_decimal() == expected_size,
+            "catalog read-back size {} for trade {trade_id} does not match canonical {}",
+            tick.size,
+            row.size
+        );
+        ensure!(
+            aggressor_label(tick.aggressor_side) == row.aggressor_side,
+            "catalog read-back side {:?} for trade {trade_id} does not match canonical {}",
+            tick.aggressor_side,
+            row.aggressor_side
+        );
+        let expected_ts = u64::try_from(row.event_time)
+            .with_context(|| format!("canonical event_time {}", row.event_time))?;
+        ensure!(
+            tick.ts_event.as_u64() == expected_ts,
+            "catalog read-back ts_event {} for trade {trade_id} does not match canonical {expected_ts}",
+            tick.ts_event.as_u64()
+        );
+        actual_ids.insert(trade_id);
+    }
+    let actual_set: BTreeSet<&str> = actual_ids.iter().map(String::as_str).collect();
+    ensure!(
+        expected_ids == actual_set,
+        "catalog read-back trade ids do not match the canonical rows"
+    );
+    Ok(())
+}
+
+/// Canonical aggressor-side label for a NautilusTrader [`AggressorSide`], so a
+/// read-back tick's side can be compared to the canonical row's string.
+fn aggressor_label(side: AggressorSide) -> &'static str {
+    match side {
+        AggressorSide::Buyer => TradeAggressorSide::Buyer.as_str(),
+        AggressorSide::Seller => TradeAggressorSide::Seller.as_str(),
+        AggressorSide::NoAggressor => "NO_AGGRESSOR",
+    }
+}
+
+/// Reason the NautilusTrader engine did not process exactly the accepted data, or
+/// `None` when its iteration count equals the accepted-trade count. NautilusTrader
+/// increments `iterations` once per data point delivered to the engine loop.
+pub(crate) fn iterations_mismatch(iterations: usize, expected: usize) -> Option<String> {
+    if iterations == 0 {
+        return Some(format!(
+            "NautilusTrader engine iterated zero times; it processed none of the {expected} \
+             accepted trades"
+        ));
+    }
+    if iterations != expected {
+        return Some(format!(
+            "NautilusTrader engine processed {iterations} data points, expected {expected} \
+             accepted trades"
+        ));
+    }
+    None
+}
+
+/// Number of accepted trades the NautilusTrader engine will deliver under the
+/// manifest's optional `[start, end]` window. NautilusTrader includes a data
+/// point when `ts_init >= start_ns` (the skip-before-start loop breaks at the
+/// first such point) and `ts_init <= end_ns` (the run loop breaks only once
+/// `ts_init > end_ns`), so both bounds are inclusive. Each projected tick's
+/// `ts_init` equals its canonical `event_time`, so the windowed row count is
+/// exactly the engine's expected iteration count; with no bounds it is the whole
+/// accepted set, matching the read-back proof.
+pub(crate) fn expected_iterations(
+    rows: &[CanonicalTradeRow],
+    start: Option<i64>,
+    end: Option<i64>,
+) -> usize {
+    rows.iter()
+        .filter(|row| start.is_none_or(|start| row.event_time >= start))
+        .filter(|row| end.is_none_or(|end| row.event_time <= end))
+        .count()
+}
+
+/// Reject a manifest time window that excludes every accepted trade. The
+/// canonical rows are validated monotonic by `event_time`, so the first and last
+/// rows bound the accepted data's event range; a `start_time` after the last
+/// trade (or an `end_time` at/ before the first) would leave the engine with no
+/// data while the run still reports the accepted source/catalog hash.
+pub(crate) fn assert_time_window_overlaps_data(
+    manifest: &BacktestingRunManifest,
+    canonical_table: &CanonicalTradesTable,
+) -> Result<()> {
+    let (Some(first), Some(last)) = (
+        canonical_table.rows.first().map(|row| row.event_time),
+        canonical_table.rows.last().map(|row| row.event_time),
+    ) else {
+        return Ok(());
+    };
+    match time_window_excludes_all_data(manifest.start_time, manifest.end_time, first, last) {
+        None => Ok(()),
+        Some("start_time") => bail!(
+            "manifest start_time {:?} excludes all accepted data after event_time {last}",
+            manifest.start_time
+        ),
+        Some(_) => bail!(
+            "manifest end_time {:?} excludes all accepted data before event_time {first}",
+            manifest.end_time
+        ),
+    }
+}
+
+/// Pure overlap test for a manifest `[start, end]` window against the accepted
+/// data's `[first, last]` event range. Returns the name of the bound that
+/// excludes all data, or `None` when the window admits at least one trade.
+fn time_window_excludes_all_data(
+    start: Option<i64>,
+    end: Option<i64>,
+    first: i64,
+    last: i64,
+) -> Option<&'static str> {
+    if let Some(start) = start
+        && start > last
+    {
+        return Some("start_time");
+    }
+    if let Some(end) = end
+        && end < first
+    {
+        return Some("end_time");
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -647,173 +816,4 @@ mod tests {
             Some("end_time")
         );
     }
-}
-
-/// Prove the catalog read-back is value-faithful, not just count-equal: every
-/// read-back tick must carry the projected instrument id, and the set of trade
-/// ids must equal the canonical table's, so a projection that silently dropped,
-/// duplicated, or relabelled ticks cannot pass the gate.
-fn assert_read_back_matches(
-    read_back: &[TradeTick],
-    canonical_rows: &[CanonicalTradeRow],
-    expected_instrument_id: &str,
-) -> Result<()> {
-    use std::collections::{BTreeMap, BTreeSet};
-    let rows_by_id: BTreeMap<&str, &CanonicalTradeRow> = canonical_rows
-        .iter()
-        .map(|row| (row.trade_id.as_str(), row))
-        .collect();
-    ensure!(
-        rows_by_id.len() == canonical_rows.len(),
-        "canonical rows contain duplicate trade ids"
-    );
-    let expected_ids: BTreeSet<&str> = rows_by_id.keys().copied().collect();
-    let mut actual_ids: BTreeSet<String> = BTreeSet::new();
-    for tick in read_back {
-        ensure!(
-            tick.instrument_id.to_string() == expected_instrument_id,
-            "catalog read-back tick instrument {} does not match projected {expected_instrument_id}",
-            tick.instrument_id
-        );
-        let trade_id = tick.trade_id.to_string();
-        let row = rows_by_id.get(trade_id.as_str()).with_context(|| {
-            format!("catalog read-back trade id {trade_id} is absent from the canonical rows")
-        })?;
-        // Value faithfulness, not just identity: a projection that silently
-        // corrupted a price, size, side, or timestamp must not pass the gate.
-        let expected_price = Decimal::from_str(&row.price)
-            .with_context(|| format!("canonical price {:?}", row.price))?;
-        ensure!(
-            tick.price.as_decimal() == expected_price,
-            "catalog read-back price {} for trade {trade_id} does not match canonical {}",
-            tick.price,
-            row.price
-        );
-        let expected_size = Decimal::from_str(&row.size)
-            .with_context(|| format!("canonical size {:?}", row.size))?;
-        ensure!(
-            tick.size.as_decimal() == expected_size,
-            "catalog read-back size {} for trade {trade_id} does not match canonical {}",
-            tick.size,
-            row.size
-        );
-        ensure!(
-            aggressor_label(tick.aggressor_side) == row.aggressor_side,
-            "catalog read-back side {:?} for trade {trade_id} does not match canonical {}",
-            tick.aggressor_side,
-            row.aggressor_side
-        );
-        let expected_ts = u64::try_from(row.event_time)
-            .with_context(|| format!("canonical event_time {}", row.event_time))?;
-        ensure!(
-            tick.ts_event.as_u64() == expected_ts,
-            "catalog read-back ts_event {} for trade {trade_id} does not match canonical {expected_ts}",
-            tick.ts_event.as_u64()
-        );
-        actual_ids.insert(trade_id);
-    }
-    let actual_set: BTreeSet<&str> = actual_ids.iter().map(String::as_str).collect();
-    ensure!(
-        expected_ids == actual_set,
-        "catalog read-back trade ids do not match the canonical rows"
-    );
-    Ok(())
-}
-
-/// Canonical aggressor-side label for a NautilusTrader [`AggressorSide`], so a
-/// read-back tick's side can be compared to the canonical row's string.
-fn aggressor_label(side: AggressorSide) -> &'static str {
-    match side {
-        AggressorSide::Buyer => TradeAggressorSide::Buyer.as_str(),
-        AggressorSide::Seller => TradeAggressorSide::Seller.as_str(),
-        AggressorSide::NoAggressor => "NO_AGGRESSOR",
-    }
-}
-
-/// Reason the NautilusTrader engine did not process exactly the accepted data, or
-/// `None` when its iteration count equals the accepted-trade count. NautilusTrader
-/// increments `iterations` once per data point delivered to the engine loop.
-pub(crate) fn iterations_mismatch(iterations: usize, expected: usize) -> Option<String> {
-    if iterations == 0 {
-        return Some(format!(
-            "NautilusTrader engine iterated zero times; it processed none of the {expected} \
-             accepted trades"
-        ));
-    }
-    if iterations != expected {
-        return Some(format!(
-            "NautilusTrader engine processed {iterations} data points, expected {expected} \
-             accepted trades"
-        ));
-    }
-    None
-}
-
-/// Number of accepted trades the NautilusTrader engine will deliver under the
-/// manifest's optional `[start, end]` window. NautilusTrader includes a data
-/// point when `ts_init >= start_ns` (the skip-before-start loop breaks at the
-/// first such point) and `ts_init <= end_ns` (the run loop breaks only once
-/// `ts_init > end_ns`), so both bounds are inclusive. Each projected tick's
-/// `ts_init` equals its canonical `event_time`, so the windowed row count is
-/// exactly the engine's expected iteration count; with no bounds it is the whole
-/// accepted set, matching the read-back proof.
-pub(crate) fn expected_iterations(
-    rows: &[CanonicalTradeRow],
-    start: Option<i64>,
-    end: Option<i64>,
-) -> usize {
-    rows.iter()
-        .filter(|row| start.is_none_or(|start| row.event_time >= start))
-        .filter(|row| end.is_none_or(|end| row.event_time <= end))
-        .count()
-}
-
-/// Reject a manifest time window that excludes every accepted trade. The
-/// canonical rows are validated monotonic by `event_time`, so the first and last
-/// rows bound the accepted data's event range; a `start_time` after the last
-/// trade (or an `end_time` at/ before the first) would leave the engine with no
-/// data while the run still reports the accepted source/catalog hash.
-pub(crate) fn assert_time_window_overlaps_data(
-    manifest: &BacktestingRunManifest,
-    canonical_table: &CanonicalTradesTable,
-) -> Result<()> {
-    let (Some(first), Some(last)) = (
-        canonical_table.rows.first().map(|row| row.event_time),
-        canonical_table.rows.last().map(|row| row.event_time),
-    ) else {
-        return Ok(());
-    };
-    match time_window_excludes_all_data(manifest.start_time, manifest.end_time, first, last) {
-        None => Ok(()),
-        Some("start_time") => bail!(
-            "manifest start_time {:?} excludes all accepted data after event_time {last}",
-            manifest.start_time
-        ),
-        Some(_) => bail!(
-            "manifest end_time {:?} excludes all accepted data before event_time {first}",
-            manifest.end_time
-        ),
-    }
-}
-
-/// Pure overlap test for a manifest `[start, end]` window against the accepted
-/// data's `[first, last]` event range. Returns the name of the bound that
-/// excludes all data, or `None` when the window admits at least one trade.
-fn time_window_excludes_all_data(
-    start: Option<i64>,
-    end: Option<i64>,
-    first: i64,
-    last: i64,
-) -> Option<&'static str> {
-    if let Some(start) = start
-        && start > last
-    {
-        return Some("start_time");
-    }
-    if let Some(end) = end
-        && end < first
-    {
-        return Some("end_time");
-    }
-    None
 }

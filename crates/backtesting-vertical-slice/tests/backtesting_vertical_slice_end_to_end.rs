@@ -2,8 +2,8 @@
 //!
 //! Drives gates 1 through 6 through [`run_backtest`] with a small deterministic
 //! accepted dataset: source-proof acceptance, the accepted-data ledger,
-//! canonical normalization + Parquet artifact, NautilusTrader catalog projection
-//! + read-back, manifest validation + NautilusTrader config mapping, a
+//! canonical normalization and Parquet artifact, NautilusTrader catalog projection
+//! and read-back, manifest validation and NautilusTrader config mapping, a
 //! `BacktestNode` run of a compiled Rust strategy, and the objective result
 //! contract. CI-safe (no network): this test exercises the pipeline with
 //! committed synthetic data only. Real-object verification is operator-run-only

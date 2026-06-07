@@ -841,11 +841,7 @@ mod tests {
         );
         expected_hash_field(hasher, "instrument.type", "currency_pair");
         expected_hash_field(hasher, "instrument.id", &instrument.id.to_string());
-        expected_hash_field(
-            hasher,
-            "instrument.raw_symbol",
-            &instrument.raw_symbol.to_string(),
-        );
+        expected_hash_field(hasher, "instrument.raw_symbol", instrument.raw_symbol.as_ref());
         expected_hash_field(
             hasher,
             "instrument.base_currency",

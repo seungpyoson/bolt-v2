@@ -18,7 +18,6 @@ use crate::{
     backfill_preflight::{
         BackfillPreflightReport, BackfillPreflightSelectedRecord, BackfillPreflightStatus,
     },
-    catalog_projection::NT_DATA_TYPE_TRADE_TICK,
     source_proof_migration_preflight::{
         SourceProofMigrationPreflightCandidate, SourceProofMigrationPreflightReport,
         SourceProofMigrationPreflightStatus,
@@ -27,7 +26,6 @@ use crate::{
 
 pub const BACKFILL_READINESS_SCHEMA_VERSION: &str = "backfill-readiness-report.v1";
 pub const BACKFILL_READINESS_REPORT_FILE: &str = "backfill-readiness-report.json";
-const SUPPORTED_TABLE_FAMILY_TRADES: &str = "trades";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,6 +37,14 @@ pub struct BackfillReadinessSpec {
     pub output_dir: PathBuf,
     pub required_table_family: String,
     pub required_nt_data_type: String,
+    pub supported_data_paths: Vec<BackfillReadinessSupportedDataPath>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackfillReadinessSupportedDataPath {
+    pub table_family: String,
+    pub nt_data_type: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +60,7 @@ pub enum BackfillReadinessBlocker {
     EmptyReadinessId,
     EmptyRequiredTableFamily,
     EmptyRequiredNtDataType,
+    EmptySupportedDataPaths,
     UnsupportedRequiredNtDataType,
     UnsupportedRequiredTableFamilyDataType,
     BackfillPreflightBlocked,
@@ -75,6 +82,7 @@ pub struct BackfillReadinessReport {
     pub status: BackfillReadinessStatus,
     pub required_table_family: String,
     pub required_nt_data_type: String,
+    pub supported_data_paths: Vec<BackfillReadinessSupportedDataPath>,
     pub backfill_preflight_id: String,
     pub backfill_preflight_status: BackfillPreflightStatus,
     pub source_proof_migration_preflight_id: String,
@@ -175,6 +183,7 @@ pub fn evaluate_backfill_readiness(
     binding_coverage: BackfillBindingCoverageReport,
     required_table_family: impl Into<String>,
     required_nt_data_type: impl Into<String>,
+    supported_data_paths: Vec<BackfillReadinessSupportedDataPath>,
 ) -> BackfillReadinessReport {
     let readiness_id = readiness_id.into();
     let required_table_family = required_table_family.into();
@@ -189,14 +198,20 @@ pub fn evaluate_backfill_readiness(
     }
     let required_table_family_trimmed = required_table_family.trim();
     let required_nt_data_type_trimmed = required_nt_data_type.trim();
+    if supported_data_paths.is_empty() {
+        blockers.push(BackfillReadinessBlocker::EmptySupportedDataPaths);
+    }
     if required_nt_data_type_trimmed.is_empty() {
         blockers.push(BackfillReadinessBlocker::EmptyRequiredNtDataType);
-    } else if required_nt_data_type_trimmed != NT_DATA_TYPE_TRADE_TICK {
+    } else if !supported_data_paths
+        .iter()
+        .any(|path| path.nt_data_type.trim() == required_nt_data_type_trimmed)
+    {
         blockers.push(BackfillReadinessBlocker::UnsupportedRequiredNtDataType);
-    } else if !matches!(
-        (required_table_family_trimmed, required_nt_data_type_trimmed),
-        (SUPPORTED_TABLE_FAMILY_TRADES, NT_DATA_TYPE_TRADE_TICK)
-    ) {
+    } else if !supported_data_paths.iter().any(|path| {
+        path.table_family.trim() == required_table_family_trimmed
+            && path.nt_data_type.trim() == required_nt_data_type_trimmed
+    }) {
         blockers.push(BackfillReadinessBlocker::UnsupportedRequiredTableFamilyDataType);
     }
     if backfill_preflight.status != BackfillPreflightStatus::Go
@@ -285,6 +300,7 @@ pub fn evaluate_backfill_readiness(
         status,
         required_table_family,
         required_nt_data_type,
+        supported_data_paths,
         backfill_preflight_id: backfill_preflight.preflight_id.clone(),
         backfill_preflight_status: backfill_preflight.status,
         source_proof_migration_preflight_id: source_proof_preflight.preflight_id.clone(),
@@ -357,6 +373,7 @@ pub fn write_backfill_readiness_report_from_spec_file(
         binding_coverage,
         spec.required_table_family,
         spec.required_nt_data_type,
+        spec.supported_data_paths,
     );
     write_backfill_readiness_report(&spec.output_dir, &report)
 }

@@ -336,8 +336,9 @@ GREEN checks after implementation:
 - `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_blocks_when_selected_source_proof_candidate_has_acceptance_blockers`: RED failed because readiness could report `ready` when the selected source-proof migration candidate still carried `remaining_acceptance_blockers` such as a missing license check; GREEN passed after combined readiness treated any remaining source-proof acceptance blocker as a source-proof preflight blocker.
 - `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_blocks_when_backfill_preflight_did_not_require_canonical_ready`: RED failed because readiness could report `ready` when the joined backfill-preflight artifact was generated without `require_canonical_ready = true`; GREEN passed after combined readiness required that preflight selection flag before considering the canonical tranche side ready.
 - `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_blocks_when_selected_backfill_record_is_not_canonical_ready`: RED failed because readiness could report `ready` when the joined backfill-preflight artifact had an inconsistent selected record with `canonical_ready = false`; GREEN passed after combined readiness directly checked the selected record's canonical-ready flag.
-- `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_blocks_when_required_nt_data_type_is_not_supported`: RED failed because readiness could report `ready` for `required_nt_data_type = "QuoteTick"` even though this slice only has a proven `TradeTick` catalog projection path; GREEN passed after combined readiness rejected unsupported required NT data types using the existing `NT_DATA_TYPE_TRADE_TICK` projection constant.
-- `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_blocks_when_table_family_does_not_match_required_nt_data_type`: RED failed because readiness could report `ready` for `required_table_family = "quotes"` with `required_nt_data_type = "TradeTick"`; GREEN passed after combined readiness required the table-family/data-type pair to match the currently supported `trades` + `TradeTick` projection path.
+- `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_reads_toml_spec_and_writes_report_idempotently`: RED failed because readiness TOML rejected `[[supported_data_paths]]`; GREEN passed after the readiness spec and report began carrying TOML-owned supported table-family/NT-data-type pairs.
+- `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_blocks_when_required_nt_data_type_is_not_supported`: RED failed because readiness could report `ready` for `required_nt_data_type = "QuoteTick"` even though the configured supported path list only contained the proven `TradeTick` catalog projection path; GREEN passed after combined readiness rejected required NT data types absent from `supported_data_paths`.
+- `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_blocks_when_table_family_does_not_match_required_nt_data_type`: RED failed because readiness could report `ready` for `required_table_family = "quotes"` with `required_nt_data_type = "TradeTick"`; GREEN passed after combined readiness required the requested table-family/data-type pair to be present in TOML-owned `supported_data_paths`.
 - static provider-literal scan for the coverage source, coverage CLI, and their tests: no hits for current venue/provider/sample tokens, so the new coverage-ledger API, operator command, and tests are not hardcoded to the accepted sample or a specific venue
 - `just bte-test research_analytics_artifacts_use_typed_subfamilies_and_one_kind_pointer research_analytics_records_require_matching_subfamily_prefix`: RED failed with missing `ResearchAnalyticsSubfamily` and RA-specific staged-record constructor; GREEN passed after adding typed RA subfamilies, enforcing `research-analytics/v1/<subfamily>/` manifest prefixes, and keeping every RA subfamily on the single `research_analytics` Artifact Index pointer
 - `just bte-test approved_for_config_requires_objective_evidence_and_non_live_boundary promotion_package_rejects_proof_strength_upgrade_and_forbidden_actions promotion_package_artifacts_must_live_under_ra_promotion_family promotion_package_rejects_notebook_to_production_direct_promotion approved_for_config_accepts_preserved_claim_limited_typed_config_only`: RED failed with missing `research_analytics` module; GREEN passed after adding a pure `PromotionPackage` validator with canonical status enum, accepted source-proof refs, objective BTE result refs, preserved claim limits, fidelity upgrade rejection, notebook/runtime boundary checks, typed config artifact checks, reviewer-policy refs, and RA-owned promotion-family URI validation
@@ -779,16 +780,16 @@ Current evidence:
   spec again preserved content hash
   `659901841f7e95d6740e6c3ec1d928ea91a42151a595848ffe9842cc0ce1aab2`,
   byte count `911`, status `blocked`, and five blockers.
-- After combined readiness was tightened to block unsupported required NT data
-  types before any backfill path can be considered ready, rerunning the same
-  integrated readiness spec for `TradeTick` again preserved content hash
-  `659901841f7e95d6740e6c3ec1d928ea91a42151a595848ffe9842cc0ce1aab2`,
-  byte count `911`, status `blocked`, and five blockers.
-- After combined readiness was tightened to require a supported
-  table-family/data-type pair, rerunning the same integrated readiness spec for
-  `trades` + `TradeTick` again preserved content hash
-  `659901841f7e95d6740e6c3ec1d928ea91a42151a595848ffe9842cc0ce1aab2`,
-  byte count `911`, status `blocked`, and five blockers.
+- After combined readiness was tightened to require TOML-owned
+  `supported_data_paths`, the integrated readiness spec was rerun with
+  `supported_data_paths = [{ table_family = "trades", nt_data_type =
+  "TradeTick" }]` into
+  `/private/tmp/bte-coverage-ledger-20260607/backfill-readiness-tradetick-with-binding-supported-path-output/backfill-readiness-report.json`.
+  The report content hash is
+  `627d528ee0dc9b30280c824ab08aa3580dfe1850c9bd1abc02f4f38275a5bb1c`,
+  byte count `1037`, status `blocked`, and five blockers. The report records
+  `supported_data_paths`, so the supported data path is now an artifact fact,
+  not a production-code table-family literal.
 - The source-binding coverage CLI was run against the committed
   `backfill-source-bindings.v1.toml` registry and the current source-proof-bound
   coverage ledger for `required_table_families = ["trades"]`:

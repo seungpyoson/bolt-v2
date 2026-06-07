@@ -11,7 +11,8 @@ use backtesting_vertical_slice::{
     },
     backfill_readiness::{
         BACKFILL_READINESS_REPORT_FILE, BackfillReadinessBlocker, BackfillReadinessStatus,
-        evaluate_backfill_readiness, write_backfill_readiness_report_from_spec_file,
+        BackfillReadinessSupportedDataPath, evaluate_backfill_readiness,
+        write_backfill_readiness_report_from_spec_file,
     },
     source_proof_legacy_derivability::{
         SourceProofLegacyDerivabilityIssue, SourceProofLegacyDerivableField,
@@ -31,6 +32,7 @@ fn readiness_blocks_when_backfill_and_source_proof_preflights_block() {
         ready_binding_coverage(),
         "trades",
         "TradeTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Blocked);
@@ -60,6 +62,7 @@ fn readiness_blocks_when_backfill_preflight_did_not_require_canonical_ready() {
         ready_binding_coverage(),
         "trades",
         "TradeTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Blocked);
@@ -86,6 +89,7 @@ fn readiness_blocks_when_selected_backfill_record_is_not_canonical_ready() {
         ready_binding_coverage(),
         "trades",
         "TradeTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Blocked);
@@ -105,6 +109,7 @@ fn readiness_blocks_when_required_nt_data_type_is_not_supported() {
         ready_binding_coverage(),
         "trades",
         "QuoteTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Blocked);
@@ -124,6 +129,7 @@ fn readiness_blocks_when_table_family_does_not_match_required_nt_data_type() {
         ready_binding_coverage_for_binding_and_table_family("synthetic-selected-binding", "quotes"),
         "quotes",
         "TradeTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Blocked);
@@ -143,6 +149,7 @@ fn readiness_requires_selected_source_proof_table_family_to_match_requested_path
         ready_binding_coverage(),
         "trades",
         "TradeTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Blocked);
@@ -162,6 +169,7 @@ fn readiness_blocks_when_binding_coverage_blocks() {
         blocked_binding_coverage(),
         "trades",
         "TradeTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Blocked);
@@ -181,6 +189,7 @@ fn readiness_blocks_when_selected_source_bindings_differ() {
         ready_binding_coverage_for_binding("synthetic-backfill-binding"),
         "trades",
         "TradeTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Blocked);
@@ -200,6 +209,7 @@ fn readiness_blocks_when_binding_coverage_lacks_selected_binding() {
         ready_binding_coverage_for_binding("synthetic-other-binding"),
         "trades",
         "TradeTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Blocked);
@@ -222,6 +232,7 @@ fn readiness_blocks_when_binding_coverage_is_for_a_different_table_family() {
         ),
         "trades",
         "TradeTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Blocked);
@@ -241,6 +252,7 @@ fn readiness_blocks_when_selected_binding_has_no_canonical_ready_coverage() {
         ready_binding_coverage_with_counts("synthetic-source-binding", 1, 0, 1),
         "trades",
         "TradeTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Blocked);
@@ -260,6 +272,7 @@ fn readiness_blocks_when_selected_binding_has_no_accepted_coverage() {
         ready_binding_coverage_with_counts("synthetic-source-binding", 1, 1, 0),
         "trades",
         "TradeTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Blocked);
@@ -284,6 +297,7 @@ fn readiness_blocks_when_selected_source_proof_id_differs() {
         ready_binding_coverage(),
         "trades",
         "TradeTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Blocked);
@@ -312,6 +326,7 @@ fn readiness_blocks_when_selected_source_proof_version_differs() {
         ready_binding_coverage(),
         "trades",
         "TradeTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Blocked);
@@ -331,6 +346,7 @@ fn readiness_blocks_when_selected_source_proof_candidate_has_acceptance_blockers
         ready_binding_coverage(),
         "trades",
         "TradeTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Blocked);
@@ -350,6 +366,7 @@ fn readiness_is_ready_when_backfill_and_source_proof_preflights_align() {
         ready_binding_coverage(),
         "trades",
         "TradeTick",
+        supported_data_paths(),
     );
 
     assert_eq!(report.status, BackfillReadinessStatus::Ready);
@@ -397,6 +414,10 @@ backfill_binding_coverage_report_path = "{}"
 output_dir = "{}"
 required_table_family = "trades"
 required_nt_data_type = "TradeTick"
+
+[[supported_data_paths]]
+table_family = "trades"
+nt_data_type = "TradeTick"
 "#,
             backfill_path.display(),
             source_proof_path.display(),
@@ -446,6 +467,10 @@ backfill_binding_coverage_report_path = "{}"
 output_dir = "{}"
 required_table_family = "trades"
 required_nt_data_type = "TradeTick"
+
+[[supported_data_paths]]
+table_family = "trades"
+nt_data_type = "TradeTick"
 "#,
             backfill_path.display(),
             source_proof_path.display(),
@@ -719,4 +744,11 @@ fn source_proof_selection() -> SourceProofMigrationPreflightSelection {
         require_single_table_family: true,
         require_s3_bound_payloads: true,
     }
+}
+
+fn supported_data_paths() -> Vec<BackfillReadinessSupportedDataPath> {
+    vec![BackfillReadinessSupportedDataPath {
+        table_family: "trades".to_string(),
+        nt_data_type: "TradeTick".to_string(),
+    }]
 }

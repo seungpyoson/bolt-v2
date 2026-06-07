@@ -658,6 +658,7 @@ output_dir = "{}"
 manifest_uri = "manifest://synthetic/bound-proof.json"
 path = "{}"
 source_binding = "synthetic-native-trades"
+table_family = "trades"
 source_proof_id = "source-proof-synthetic-native-trades"
 source_proof_version = 3
 source_proof_status = "pending"
@@ -680,6 +681,7 @@ source_proof_status = "pending"
         record.source_binding.as_deref(),
         Some("synthetic-native-trades")
     );
+    assert_eq!(record.table_family.as_deref(), Some("trades"));
     assert_eq!(
         record.source_proof_id.as_deref(),
         Some("source-proof-synthetic-native-trades")
@@ -696,6 +698,7 @@ fn manifest_file(manifest_uri: &str, path: PathBuf) -> BackfillCoverageManifestF
         manifest_uri: manifest_uri.to_string(),
         path,
         source_binding: None,
+        table_family: None,
         source_proof_id: None,
         source_proof_version: None,
         source_proof_status: Some(SourceProofStatus::Accepted),

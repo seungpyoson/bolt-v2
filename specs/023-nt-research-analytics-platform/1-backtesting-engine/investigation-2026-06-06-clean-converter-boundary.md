@@ -951,6 +951,21 @@ Midpoint table-family coverage audit:
   `missing_table_family_record_count = 21`,
   `empty_source_binding_record_count = 145`, and unconfigured source binding
   `bybit:rest+public_archive:v5`.
+- Follow-up root cause: raw object path segment `family=<value>` is not
+  consistently the canonical table family (`tick_trades` versus `trades`,
+  `instrument_universe` versus `instruments`), so deriving table family from S3
+  paths would recreate venue/data-family assumptions.
+- Generic fix applied: the manifest TOML override path that already binds
+  `source_binding` and `source_proof_id` now also binds `table_family`. One
+  PMXT single-manifest proof produced ledger hash
+  `3bce9e338a1976afc2ebd3ae1958a2678320ed2b1358a1aa1a6dee2473f578b9`
+  with `table_family = "order_book_snapshots_fixed_depth"` and source proof
+  still rejected as pending. Binding coverage over that one-manifest ledger
+  produced hash
+  `f3a8197f8bc6ba573662791e7bd3428a4188500cce00be86af8abcbda59b5d5a`,
+  status `ready`, `ledger_records_for_required_bindings = 1`, and
+  `accepted_record_count = 0`, proving source-binding coverage is now
+  table-family scoped while source-proof readiness remains a separate blocker.
 
 ## Recommendation
 

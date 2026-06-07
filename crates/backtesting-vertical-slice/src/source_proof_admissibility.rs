@@ -21,7 +21,7 @@ use crate::source_proof::{SourceBindingRegistry, SourceProofReport, resolve_sour
 pub const SOURCE_PROOF_ADMISSIBILITY_SCHEMA_VERSION: &str = "source-proof-admissibility-report.v1";
 pub const SOURCE_PROOF_ADMISSIBILITY_REPORT_FILE: &str = "source-proof-admissibility-report.json";
 
-const CURRENT_CONTRACT_TOP_LEVEL_FIELDS: [&str; 28] = [
+const CURRENT_CONTRACT_TOP_LEVEL_FIELDS: [&str; 30] = [
     "source_proof_id",
     "source_proof_version",
     "contract_version",
@@ -42,7 +42,9 @@ const CURRENT_CONTRACT_TOP_LEVEL_FIELDS: [&str; 28] = [
     "schema_sample_uri",
     "schema_sample_hash",
     "license_ref",
+    "license_scope",
     "retention_ref",
+    "cost_ref",
     "nt_mapping_status",
     "fidelity_class",
     "forbidden_claims",

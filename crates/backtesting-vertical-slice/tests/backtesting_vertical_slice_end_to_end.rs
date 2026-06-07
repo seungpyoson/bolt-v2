@@ -26,9 +26,10 @@ use backtesting_vertical_slice::{
     runner::{BacktestRunInputs, run_backtest},
     source_proof::{
         AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
-        IngestManifestObjectRecord, L2ReplayEvidence, NtMappingStatus, RequiredCheck,
-        RequiredChecks, SourceCandidateClass, SourceProofClaimLimit, SourceProofFidelityClass,
-        SourceProofReport, SourceProofStatus, SourceSelectionStatus, TimeRange,
+        IngestManifestObjectRecord, L2ReplayEvidence, LicenseScope, NtMappingStatus,
+        RequiredCheck, RequiredChecks, SourceCandidateClass, SourceProofClaimLimit,
+        SourceProofFidelityClass, SourceProofReport, SourceProofStatus, SourceSelectionStatus,
+        TimeRange,
         select_accepted_dataset,
     },
 };
@@ -151,6 +152,7 @@ fn accepted_dataset() -> AcceptedDataset {
         schema_sample_hash: "bf26db0b8fb8b62746b5724dccfb26a408d581f5598cb6be95c9173c8b1b5eed"
             .to_string(),
         license_ref: "https://public.bybit.com/ (attestation 2026-06-02)".to_string(),
+        license_scope: LicenseScope::Public,
         retention_ref: "https://public.bybit.com/ (retention reviewed 2026-06-02)".to_string(),
         cost_ref: "cost://free-public-archive".to_string(),
         nt_mapping_status: NtMappingStatus::Accepted,

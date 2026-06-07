@@ -1237,6 +1237,18 @@ Midpoint table-family coverage audit:
   their accepted proof JSON artifacts, and the targeted operator suite
   `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --lib operator::tests -- --nocapture`
   passed with 32 tests.
+- License/commercial-use boundaries are now machine-readable in
+  `SourceProofReport` through `license_scope`. Accepted BTE catalog/backtest
+  input rejects `unknown` and personal-use-only scopes; public, commercial,
+  enterprise, or waived scopes are allowed when the existing license required
+  check also passes with evidence. Current accepted Bybit and Binance reference
+  proofs/run-specs are explicitly `license_scope = public`; pending fixture
+  reports stay `unknown`. Focused verification passed:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --lib source_proof::tests -- --nocapture`
+  (74 tests),
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_source_proof_reference_fixtures -- --nocapture`
+  (2 tests), source-proof admissibility plus backfill source-proof scope tests
+  (7 tests), and `operator::tests` (32 tests).
 
 ## Recommendation
 

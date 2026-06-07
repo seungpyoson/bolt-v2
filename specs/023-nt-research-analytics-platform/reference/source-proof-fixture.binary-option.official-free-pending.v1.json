@@ -27,6 +27,7 @@
   "schema_sample_uri": "pending://source-proofs/v1/source_binding=hyperliquid-hip4-outcome-meta/proof=source-proof-hyperliquid-hip4-outcome-meta-binary-option-pending-2026-06-08/version=1/schema-sample.json",
   "schema_sample_hash": "pending-schema-sample",
   "license_ref": "pending://source-proofs/v1/source_binding=hyperliquid-hip4-outcome-meta/proof=source-proof-hyperliquid-hip4-outcome-meta-binary-option-pending-2026-06-08/version=1/license-or-terms-evidence",
+  "license_scope": "unknown",
   "retention_ref": "pending://source-proofs/v1/source_binding=hyperliquid-hip4-outcome-meta/proof=source-proof-hyperliquid-hip4-outcome-meta-binary-option-pending-2026-06-08/version=1/retention-freshness-evidence",
   "cost_ref": "pending://source-proofs/v1/source_binding=hyperliquid-hip4-outcome-meta/proof=source-proof-hyperliquid-hip4-outcome-meta-binary-option-pending-2026-06-08/version=1/cost-evidence",
   "nt_mapping_status": "not_applicable",

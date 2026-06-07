@@ -47,6 +47,9 @@ Required fields:
 - `schema_sample_uri`: parser/schema sample pointer under `artifact_root`.
 - `schema_sample_hash`: lowercase SHA-256 hex.
 - `license_ref`: license or terms evidence pointer and timestamp.
+- `license_scope`: `public`, `commercial`, `enterprise`, `waived`,
+  `personal`, or `unknown`. Accepted BTE canonical/backtest input rejects
+  `unknown` and personal-use-only scopes.
 - `retention_ref`: source retention/freshness evidence pointer and timestamp.
 - `cost_ref`: cost, free/public, subscription, vendor quote, storage, or
   compute-cost evidence pointer and timestamp.
@@ -106,6 +109,8 @@ Every source proof has explicit pass/fail/pending checks:
   public license/terms page, vendor or commercial agreement pointer, or recorded
   operator attestation to written approval; it must be durable enough to audit
   after the proof is accepted.
+  `license_scope` records the resulting use boundary separately so personal-only
+  or unknown rights cannot silently authorize BTE catalog/backtest input.
 - `schema`: sample parser identifies every required field and type.
 - `time_semantics`: event, capture, and availability timestamps are mapped.
 - `instrument_universe`: instruments active during the requested window are

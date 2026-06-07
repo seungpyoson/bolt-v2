@@ -183,6 +183,8 @@ fn proof_json(
         "product_category": binding.product_family,
         "table_family": "trades",
         "evidence_state": binding.evidence_state,
+        "source_candidate_class": "official_free",
+        "source_selection_status": "ACCEPTED_LOWER_FIDELITY",
         "fixture_type": "perps-spot",
         "requested_time_range": {
             "start_utc": "2026-03-01T00:00:00Z",
@@ -198,9 +200,12 @@ fn proof_json(
         "schema_sample_uri": raw_sample_uri,
         "schema_sample_hash": raw_sample_hash,
         "license_ref": "license://synthetic",
+        "license_scope": "public",
         "retention_ref": "retention://synthetic",
+        "cost_ref": "cost://synthetic",
         "nt_mapping_status": "accepted",
         "fidelity_class": "TRADE_REPLAY",
+        "l2_replay_evidence": {},
         "forbidden_claims": ["No execution-quality claims."],
         "claim_limits": [{
             "id": "source-proof-claim-limit-synthetic",
@@ -237,9 +242,11 @@ fn passed_checks() -> serde_json::Value {
         "time_semantics": passed,
         "instrument_universe": passed,
         "coverage": passed,
+        "retention_freshness": passed,
         "granularity": passed,
         "completeness": passed,
         "nt_mapping": passed,
+        "cost": passed,
         "storage": passed
     })
 }

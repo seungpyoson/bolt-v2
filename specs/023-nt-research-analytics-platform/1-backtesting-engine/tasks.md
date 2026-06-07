@@ -19,7 +19,7 @@
 - [x] BACKTESTING_ENGINE-017 Populate `SourceProofReport` for the `perps/spot` fixture before selecting any provider, including kimchi-premium Korean spot/reference/FX source proof when that signal family is selected.
 - [x] BACKTESTING_ENGINE-018 Shortlist candidate sources from completed source-proof reports only; do not select a provider from prose or venue examples.
 - [x] BACKTESTING_ENGINE-019 Reject canonical NT catalog input and backtest input unless an accepted `SourceProofReport` exists for the source binding, fixture, fidelity class, claim limits, Backtesting Engine/source-proof acceptance authority, and passing required-check results; default `normal` runs to latest accepted proof and allow non-latest pins only for non-normal `run_purpose` with allowed `proof_pin_reason_code` and required detail for `audit_or_investigation`.
-- [ ] BACKTESTING_ENGINE-020 Prove license and commercial/personal-use boundary for each shortlisted source.
+- [x] BACKTESTING_ENGINE-020 Prove license and commercial/personal-use boundary for each shortlisted source.
 - [ ] BACKTESTING_ENGINE-021 Fetch or inspect representative sample data for each shortlisted source.
 - [ ] BACKTESTING_ENGINE-022 Prove shortlisted source samples map to NT-compatible catalog classes and `ParquetDataCatalog` input path.
 - [ ] BACKTESTING_ENGINE-023 Verify Kalshi historical endpoints and confirm whether archived orderbook snapshots/deltas exist or downgrade to `TRADE_BAR_REPLAY`/`SIGNAL_ONLY`.

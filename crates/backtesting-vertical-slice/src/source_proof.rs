@@ -254,6 +254,19 @@ pub enum AcceptanceMode {
     Manual,
 }
 
+/// Machine-readable license/use boundary for a source proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LicenseScope {
+    Personal,
+    Commercial,
+    Enterprise,
+    Public,
+    #[default]
+    Unknown,
+    Waived,
+}
+
 /// A single required check result with its supporting evidence pointer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequiredCheck {
@@ -504,6 +517,8 @@ pub struct SourceProofReport {
     pub schema_sample_uri: String,
     pub schema_sample_hash: String,
     pub license_ref: String,
+    #[serde(default)]
+    pub license_scope: LicenseScope,
     pub retention_ref: String,
     pub cost_ref: String,
     pub nt_mapping_status: NtMappingStatus,
@@ -554,6 +569,8 @@ pub enum AcceptanceError {
     },
     /// The proof's NautilusTrader catalog-mapping status is not `Accepted`.
     NtMappingNotAccepted(NtMappingStatus),
+    /// The license scope cannot authorize BTE canonical/backtest input.
+    LicenseScopeNotPermitted(LicenseScope),
     /// One or more required checks did not pass.
     UnmetChecks(Vec<&'static str>),
     /// The lower-fidelity source cannot carry an execution-quality claim.
@@ -640,6 +657,12 @@ impl std::fmt::Display for AcceptanceError {
             ),
             Self::NtMappingNotAccepted(status) => {
                 write!(f, "nt_mapping_status is not accepted (status: {status:?})")
+            }
+            Self::LicenseScopeNotPermitted(scope) => {
+                write!(
+                    f,
+                    "license_scope {scope:?} is not permitted for BTE canonical/backtest input"
+                )
             }
             Self::UnmetChecks(checks) => write!(f, "unmet required checks: {}", checks.join(", ")),
             Self::ForbiddenClaimMissing => {
@@ -824,6 +847,7 @@ impl SourceProofReport {
             return Err(AcceptanceError::ProofRejected);
         }
         self.check_required_identity()?;
+        ensure_license_scope_permits_bte_use(self.license_scope)?;
         validate_acceptance_provenance_shape(self)?;
         ensure_staged_s3_uri("raw_sample_uri", &self.raw_sample_uri)?;
         ensure_staged_s3_uri("schema_sample_uri", &self.schema_sample_uri)?;
@@ -1266,6 +1290,18 @@ fn template_remainder_matches(mut template: &str, mut actual: &str) -> bool {
         actual = &actual[match_end..];
     }
     actual == template
+}
+
+fn ensure_license_scope_permits_bte_use(scope: LicenseScope) -> Result<(), AcceptanceError> {
+    match scope {
+        LicenseScope::Commercial
+        | LicenseScope::Enterprise
+        | LicenseScope::Public
+        | LicenseScope::Waived => Ok(()),
+        LicenseScope::Personal | LicenseScope::Unknown => {
+            Err(AcceptanceError::LicenseScopeNotPermitted(scope))
+        }
+    }
 }
 
 fn ensure_backfillable_evidence_state(
@@ -1839,6 +1875,7 @@ mod tests {
             schema_sample_hash: "bf26db0b8fb8b62746b5724dccfb26a408d581f5598cb6be95c9173c8b1b5eed"
                 .to_string(),
             license_ref: "https://public.bybit.com/ (attestation 2026-06-02)".to_string(),
+            license_scope: LicenseScope::Public,
             retention_ref: "https://public.bybit.com/ (archive retention reviewed)".to_string(),
             cost_ref: "cost://free-public-archive".to_string(),
             nt_mapping_status: NtMappingStatus::Accepted,
@@ -2006,6 +2043,32 @@ table_families = ["signals"]
                 expires_at_utc: "2026-03-01T23:59:59Z".to_string(),
                 required_through_utc: "2026-03-02T00:00:00Z".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn acceptance_rejects_unknown_license_scope() {
+        let mut proof = candidate_proof();
+        proof.license_scope = LicenseScope::Unknown;
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert_eq!(
+            err,
+            AcceptanceError::LicenseScopeNotPermitted(LicenseScope::Unknown)
+        );
+    }
+
+    #[test]
+    fn acceptance_rejects_personal_license_scope_for_bte_input() {
+        let mut proof = candidate_proof();
+        proof.license_scope = LicenseScope::Personal;
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert_eq!(
+            err,
+            AcceptanceError::LicenseScopeNotPermitted(LicenseScope::Personal)
         );
     }
 

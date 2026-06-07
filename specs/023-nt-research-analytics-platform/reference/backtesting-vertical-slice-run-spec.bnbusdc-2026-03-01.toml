@@ -48,6 +48,7 @@ raw_sample_hash = "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04
 schema_sample_uri = "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/ingest-manifests/v1/run=bybit-backfill-run-fdcc0758bbd03113/bybit-backfill-manifest.json"
 schema_sample_hash = "bf26db0b8fb8b62746b5724dccfb26a408d581f5598cb6be95c9173c8b1b5eed"
 license_ref = "https://public.bybit.com/ (public archive terms reviewed 2026-06-02)"
+license_scope = "public"
 retention_ref = "https://public.bybit.com/ (daily archive files retained; reviewed 2026-06-02)"
 cost_ref = "cost://free-public-archive"
 nt_mapping_status = "accepted"

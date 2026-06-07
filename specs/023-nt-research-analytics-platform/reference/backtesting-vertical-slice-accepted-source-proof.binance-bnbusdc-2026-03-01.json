@@ -27,6 +27,7 @@
   "schema_sample_uri": "s3://bolt-parquet/nt-research-analytics/source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-bnbusdc-2026-03-01/version=1/schema-sample.json",
   "schema_sample_hash": "22ec3fcfde7a72347dd059a88da31d0fb8fe2c585216190e5c2df2ca01ea1265",
   "license_ref": "s3://bolt-parquet/nt-research-analytics/source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-bnbusdc-2026-03-01/version=1/binance-public-data-README.md",
+  "license_scope": "public",
   "retention_ref": "https://github.com/binance/binance-public-data README: daily/monthly public archive, checksum sidecars, update log, Licence MIT; observed 2026-06-07",
   "cost_ref": "cost://free-public-archive",
   "nt_mapping_status": "accepted",

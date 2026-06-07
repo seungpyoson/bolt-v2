@@ -1046,9 +1046,9 @@ mod tests {
     use super::*;
     use crate::source_proof::{
         AcceptanceMode, AcceptanceScope, EvidenceState, FixtureType, IngestManifestObjectRecord,
-        L2ReplayEvidence, NtMappingStatus, RequiredCheck, RequiredChecks, SourceCandidateClass,
-        SourceProofClaimLimit, SourceProofReport, SourceProofStatus, SourceSelectionStatus,
-        TimeRange,
+        L2ReplayEvidence, LicenseScope, NtMappingStatus, RequiredCheck, RequiredChecks,
+        SourceCandidateClass, SourceProofClaimLimit, SourceProofReport, SourceProofStatus,
+        SourceSelectionStatus, TimeRange,
     };
 
     fn accepted_dataset() -> AcceptedDataset {
@@ -1110,6 +1110,7 @@ mod tests {
             schema_sample_uri: "s3://bolt-parquet/.../schema.json".to_string(),
             schema_sample_hash: "bf26db".to_string(),
             license_ref: "https://public.bybit.com/ (attestation)".to_string(),
+            license_scope: LicenseScope::Public,
             retention_ref: "https://public.bybit.com/".to_string(),
             cost_ref: "cost://free-public-archive".to_string(),
             nt_mapping_status: NtMappingStatus::Accepted,

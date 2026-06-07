@@ -68,6 +68,7 @@ fn current_rejected_source_proof_json() -> serde_json::Value {
         "schema_sample_uri": "s3://synthetic-staging/schema/object.json",
         "schema_sample_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "license_ref": "proof://synthetic/license",
+        "license_scope": "unknown",
         "retention_ref": "proof://synthetic/retention",
         "cost_ref": "proof://synthetic/cost",
         "nt_mapping_status": "pending",

@@ -500,9 +500,10 @@ mod tests {
         canonical_trades::{CanonicalInstrumentIdentity, normalize_sample_spot_tick_trades},
         source_proof::{
             AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
-            IngestManifestObjectRecord, L2ReplayEvidence, NtMappingStatus, RequiredCheck,
-            RequiredChecks, SourceCandidateClass, SourceProofClaimLimit, SourceProofReport,
-            SourceProofStatus, SourceSelectionStatus, TimeRange, select_accepted_dataset,
+            IngestManifestObjectRecord, L2ReplayEvidence, LicenseScope, NtMappingStatus,
+            RequiredCheck, RequiredChecks, SourceCandidateClass, SourceProofClaimLimit,
+            SourceProofReport, SourceProofStatus, SourceSelectionStatus, TimeRange,
+            select_accepted_dataset,
         },
     };
 
@@ -584,6 +585,7 @@ mod tests {
             schema_sample_uri: "s3://.../schema.json".to_string(),
             schema_sample_hash: "bf26db".to_string(),
             license_ref: "https://public.bybit.com/ (attestation)".to_string(),
+            license_scope: LicenseScope::Public,
             retention_ref: "https://public.bybit.com/".to_string(),
             cost_ref: "cost://free-public-archive".to_string(),
             nt_mapping_status: NtMappingStatus::Accepted,

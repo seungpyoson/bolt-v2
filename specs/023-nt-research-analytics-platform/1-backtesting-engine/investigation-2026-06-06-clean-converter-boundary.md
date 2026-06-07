@@ -1194,6 +1194,23 @@ Midpoint table-family coverage audit:
   forbidding NT catalog/backtest input, historical replay claims, L2/L3
   execution-quality claims, and quote-token/NT BinaryOption mapping claims
   until those proofs pass.
+- Perps/spot source-proof population is now also machine-readable before
+  provider selection. RED on the same focused integration test failed with
+  `perps/spot fixture needs a SourceProofReport before provider selection`.
+  GREEN passed after adding
+  `specs/023-nt-research-analytics-platform/reference/source-proof-fixture.perps-spot.official-free-pending.v1.json`.
+  The report records the TOML-selected official/free native-trades candidate as
+  `status = pending`, `source_selection_status = PENDING_MORE_PROOF`,
+  `fidelity_class = TRADE_REPLAY`, and no accepted object scope or acceptance
+  provenance. It blocks NT catalog/backtest input, provider-selected production
+  source claims, L2/L3/execution-quality claims from trade-print replay, and
+  broad one-year/multi-instrument coverage claims until the source proof,
+  license, sample, NT mapping, fidelity, and cost checks pass. The reference
+  fixture test also enforces that any future `product_category =
+  kimchi-premium` fixture carries point-in-time `korean_spot`,
+  `reference_price`, `fx_quote`, and `token_mapping` component source-proof
+  roles; no kimchi-premium source family is selected in the current reference
+  fixtures.
 
 ## Recommendation
 

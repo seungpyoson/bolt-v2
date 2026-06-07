@@ -1,0 +1,122 @@
+{
+  "source_proof_id": "source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08",
+  "source_proof_version": 1,
+  "contract_version": "backfill-table-contract.v1",
+  "schema_version": "backfill-source-proof.v1",
+  "status": "pending",
+  "source_binding": "binance-spot-native-trades",
+  "venue": "binance",
+  "product_family": "spot",
+  "product_category": "spot",
+  "table_family": "trades",
+  "evidence_state": "directly_backfillable",
+  "source_candidate_class": "official_free",
+  "source_selection_status": "PENDING_MORE_PROOF",
+  "fixture_type": "perps-spot",
+  "requested_time_range": {
+    "start_utc": "2025-06-01T00:00:00Z",
+    "end_utc": "2026-06-01T00:00:00Z"
+  },
+  "coverage_time_range": {
+    "start_utc": "2026-06-08T00:00:00Z",
+    "end_utc": "2026-06-08T00:00:00Z"
+  },
+  "instrument_universe_id": "binance-spot-native-trades-perps-spot-candidate-pending-2026-06-08",
+  "raw_sample_uri": "pending://source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/version=1/raw-sample.zip",
+  "raw_sample_hash": "pending-source-access-sample",
+  "schema_sample_uri": "pending://source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/version=1/schema-sample.json",
+  "schema_sample_hash": "pending-schema-sample",
+  "license_ref": "pending://source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/version=1/license-or-terms-evidence",
+  "retention_ref": "pending://source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/version=1/retention-freshness-evidence",
+  "cost_ref": "pending://source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/version=1/cost-evidence",
+  "nt_mapping_status": "pending",
+  "fidelity_class": "TRADE_REPLAY",
+  "l2_replay_evidence": {},
+  "forbidden_claims": [
+    "No NT catalog or backtest input from this pending perps/spot candidate proof.",
+    "No provider-selected production source claim until source proof, license, sample, NT mapping, fidelity, and cost checks pass.",
+    "No L2/L3 order-book replay, execution-quality, queue-position, liquidity, fillability, or sizing claims from trade-print replay.",
+    "No broad one-year or multi-instrument coverage claim until object scope, hashes, and gap policy are proven."
+  ],
+  "claim_limits": [
+    {
+      "id": "perps-spot-source-proof-claim-limit-001",
+      "severity": "blocking",
+      "claim": "No NT catalog or backtest input from this pending perps/spot candidate proof.",
+      "reason": "The report records an official/free candidate before sample, license, retention, full coverage, storage, and NT mapping checks have passed for the fixture-level selection path.",
+      "evidence_ref": "source-proof://source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/status"
+    },
+    {
+      "id": "perps-spot-source-proof-claim-limit-002",
+      "severity": "blocking",
+      "claim": "No provider-selected production source claim until source proof, license, sample, NT mapping, fidelity, and cost checks pass.",
+      "reason": "This fixture report exists to make candidate evaluation explicit before provider selection; it is not an accepted source proof.",
+      "evidence_ref": "source-proof://source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/source_selection_status"
+    },
+    {
+      "id": "perps-spot-source-proof-claim-limit-003",
+      "severity": "blocking",
+      "claim": "No L2/L3 order-book replay, execution-quality, queue-position, liquidity, fillability, or sizing claims from trade-print replay.",
+      "reason": "The candidate fidelity is TRADE_REPLAY and carries no historical source-order-preserving order-book deltas or sufficient-cadence snapshots.",
+      "evidence_ref": "source-proof://source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/fidelity"
+    },
+    {
+      "id": "perps-spot-source-proof-claim-limit-004",
+      "severity": "blocking",
+      "claim": "No broad one-year or multi-instrument coverage claim until object scope, hashes, and gap policy are proven.",
+      "reason": "No accepted object scope is attached to this pending fixture report.",
+      "evidence_ref": "source-proof://source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/coverage"
+    }
+  ],
+  "gap_policy_id": "",
+  "required_checks": {
+    "source_access": {
+      "outcome": "pending",
+      "evidence_ref": "pending bounded source-access probe for the configured official/free native-trades archive object"
+    },
+    "license": {
+      "outcome": "pending",
+      "evidence_ref": "pending durable license or terms evidence for storage and derived-table use"
+    },
+    "schema": {
+      "outcome": "pending",
+      "evidence_ref": "pending schema sample and parser proof for native trade records"
+    },
+    "time_semantics": {
+      "outcome": "pending",
+      "evidence_ref": "pending event, capture, and availability timestamp mapping for native trade records"
+    },
+    "instrument_universe": {
+      "outcome": "pending",
+      "evidence_ref": "pending proof of instruments active during the requested window, including expired or delisted instruments where required"
+    },
+    "coverage": {
+      "outcome": "pending",
+      "evidence_ref": "pending historical coverage proof for requested one-year perps/spot replay window"
+    },
+    "retention_freshness": {
+      "outcome": "pending",
+      "evidence_ref": "pending retention, archive freshness, or update-lag evidence for the requested proof window"
+    },
+    "granularity": {
+      "outcome": "pending",
+      "evidence_ref": "pending proof that native trade records are not substituted by aggregate trades or bars"
+    },
+    "completeness": {
+      "outcome": "pending",
+      "evidence_ref": "pending row counts, object counts, checksum sidecars, and gap threshold evidence"
+    },
+    "nt_mapping": {
+      "outcome": "pending",
+      "evidence_ref": "pending NautilusTrader TradeTick/CurrencyPair mapping and ParquetDataCatalog readback proof"
+    },
+    "cost": {
+      "outcome": "pending",
+      "evidence_ref": "pending free/public, storage, transfer, query, logging, and reserve-cost evidence"
+    },
+    "storage": {
+      "outcome": "pending",
+      "evidence_ref": "pending artifact-root staging proof for raw sample, schema sample, manifest, and source proof evidence"
+    }
+  }
+}

@@ -110,9 +110,7 @@ fn non_negative_decimal(value: f64) -> Option<Decimal> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bolt_v3_submit_admission::{
-        base_quantity_admission_notional, fee_inclusive_admission_notional,
-    };
+    use crate::bolt_v3_submit_admission::base_quantity_admission_notional;
     use rust_decimal::{Decimal, prelude::FromPrimitive};
     use std::str::FromStr;
 
@@ -154,7 +152,9 @@ mod tests {
 
         let expected_base = base_quantity_admission_notional(dec("0.40"), dec("5.0"))
             + base_quantity_admission_notional(dec("0.25"), dec("4.0"));
-        let expected = fee_inclusive_admission_notional(expected_base, dec("25.0"));
+        assert_eq!(expected_base, dec("3.000"));
+
+        let expected = dec("3.007500");
         assert_eq!(reservation, expected);
     }
 
@@ -182,6 +182,7 @@ mod tests {
             BuyCommitment::new(-0.10, 5.0),
             BuyCommitment::new(0.0, 5.0),
             BuyCommitment::new(1.01, 5.0),
+            BuyCommitment::new(1.0e20, 1.0e20),
             BuyCommitment::new(0.40, f64::NAN),
             BuyCommitment::new(0.40, -5.0),
             BuyCommitment::new(0.40, 0.0),
@@ -246,6 +247,40 @@ mod tests {
                 open: &[],
                 candidate: commitment,
                 max_fee_bps,
+                available_collateral: 1.0,
+            }),
+            ReservationDecision::Reject
+        );
+    }
+
+    #[test]
+    fn invalid_open_commitment_fails_closed() {
+        let invalid_open = BuyCommitment::new(1.0e20, 1.0e20);
+        let valid_candidate = BuyCommitment::new(0.25, 4.0);
+
+        let decision = evaluate_reservation(ReservationRequest {
+            open: &[invalid_open],
+            candidate: valid_candidate,
+            max_fee_bps: 0.0,
+            available_collateral: 10.0,
+        });
+
+        assert_eq!(decision, ReservationDecision::Reject);
+    }
+
+    #[test]
+    fn cumulative_reservation_overflow_fails_closed() {
+        let large_commitment = BuyCommitment::new(1.0, 5.0e28);
+
+        assert_eq!(
+            worst_case_reservation(&[large_commitment, large_commitment], 0.0),
+            None
+        );
+        assert_eq!(
+            evaluate_reservation(ReservationRequest {
+                open: &[large_commitment],
+                candidate: large_commitment,
+                max_fee_bps: 0.0,
                 available_collateral: 1.0,
             }),
             ReservationDecision::Reject

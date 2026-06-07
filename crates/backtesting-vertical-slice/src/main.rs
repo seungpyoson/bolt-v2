@@ -26,6 +26,7 @@ use backtesting_vertical_slice::{
     operator::{
         PublishOptions, PublishedArtifact, PublishedCatalogProof, RunSpec, run_from_run_spec,
         run_from_run_spec_and_publish_with_resolved_storage_options,
+        validate_run_spec_manifest_for_object_hash,
     },
 };
 
@@ -119,6 +120,12 @@ where
     } else {
         None
     };
+    validate_run_spec_manifest_for_object_hash(
+        &spec,
+        &cli.output_dir,
+        &spec.accepted_object.sha256,
+    )
+    .with_context(|| format!("run-manifest {}", cli.run_spec.display()))?;
     ensure_object_read_within_raw_payload_limit(&spec)?;
     let object_bytes = object_reader(&cli.object_path, spec.accepted_object.bytes)?;
 
@@ -375,6 +382,21 @@ mod tests {
         path
     }
 
+    fn run_spec_text_with_catalog_data_type(data_type: String) -> String {
+        let mut value: toml::Value =
+            toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec TOML parses as value");
+        let manifest = value
+            .get_mut("manifest")
+            .and_then(toml::Value::as_table_mut)
+            .expect("run-spec has manifest table");
+        let catalog_input = manifest
+            .get_mut("catalog_input")
+            .and_then(toml::Value::as_table_mut)
+            .expect("run-spec has manifest catalog_input table");
+        catalog_input.insert("data_type".to_string(), toml::Value::String(data_type));
+        toml::to_string_pretty(&value).expect("mutated run-spec serializes")
+    }
+
     #[test]
     fn cli_publish_output_flag_is_explicit_opt_in() {
         let base_args = [
@@ -494,6 +516,51 @@ mod tests {
         assert!(
             !object_reader_called,
             "execution plan byte budget must reject before local object read"
+        );
+    }
+
+    #[test]
+    fn cli_rejects_unsupported_catalog_data_type_before_reading_object() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let run_spec_path = dir.path().join("run.toml");
+        let base_spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
+        let unsupported_data_type =
+            format!("{}-unsupported", base_spec.manifest.catalog_input.data_type);
+        let run_spec_text = run_spec_text_with_catalog_data_type(unsupported_data_type);
+        fs::write(&run_spec_path, &run_spec_text).unwrap();
+        let spec: RunSpec = toml::from_str(&run_spec_text).expect("mutated run-spec parses");
+        let run_spec_hash = sha256_hex(run_spec_text.as_bytes());
+        let execution_plan = write_matching_execution_plan(dir.path(), &spec, &run_spec_hash);
+        let cli = Cli {
+            run_spec: run_spec_path,
+            execution_plan,
+            object_path: dir.path().join("object.csv.gz"),
+            output_dir: dir.path().join("out"),
+            publish_output: false,
+            prove_published_catalog: false,
+        };
+        let mut object_reader_called = false;
+        let mut object_reader = |_path: &Path, _expected_bytes: u64| {
+            object_reader_called = true;
+            anyhow::bail!("object reader must not run after manifest rejection")
+        };
+        let mut resolver = |_region: &str, _path: &str| Ok::<String, String>("unused".to_string());
+
+        let err = run_cli_with_object_reader_and_resolver(&cli, &mut object_reader, &mut resolver)
+            .expect_err("unsupported catalog data type must reject before object read");
+
+        let error_chain = err
+            .chain()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            error_chain.contains("unsupported catalog data type"),
+            "{error_chain}"
+        );
+        assert!(
+            !object_reader_called,
+            "run-manifest validation must reject before local object read"
         );
     }
 

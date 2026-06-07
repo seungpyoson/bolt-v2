@@ -99,6 +99,17 @@ No-go for broader production claims:
 - Backfill execution-plan CLI then bound that accepted tranche to the committed operator run-spec before payload fetch. It wrote `/private/tmp/bte-coverage-ledger-20260607/backfill-execution-plan-reference-trades-output-v2/backfill-execution-plan.json`, content hash `ae4e65626fff25ef3fcd07d60fe4305802d3451814111c62e2f8e42e9e128b9f`, file SHA256 `3681f44ec40bb32f755c91986e7cb18fb814f274b12d94d30ba8d80f4a106ee8`, accepted-tranche manifest hash `996ee9c05aecfcb9a37ce4af82e4242e60f99db2ff98e0f15f0467bfce4fa90f`, run-spec hash `edaa6fcabc782775b610e10699b940c98acfd7c2ef9d659f627a86607392bb2a`, status `ready`, `object_count = 1`, `accepted_bytes = 8505`, `max_object_bytes = 8505`, `max_decoded_bytes = 1048576`, and zero blocking issues.
 - Static sample-token scan across the new execution-plan source, CLI, and tests found no current sample provider/venue/instrument/proof tokens, so the gate is source-proof/run-spec driven rather than sample-driven.
 - Main operator CLI execution-plan validation was added test-first: `cli_execution_plan_mismatch_rejects_before_reading_object` RED failed with `struct Cli has no field named execution_plan`; GREEN passed after the CLI read the execution-plan JSON, compared its run-spec hash and bound object fields against the submitted run-spec, and rejected mismatches before invoking the object reader. A later mandatory-plan RED, `cli_requires_execution_plan_before_reading_object`, failed because the object reader was still called when no plan was supplied; GREEN passed after `--execution-plan` became a required CLI argument and the plan byte-budget gate became the first object-size boundary. The focused CLI bin test target reported 7 passed, covering explicit publish opt-in, published-catalog proof flag gating, size-mismatch stat-before-read, required execution-plan parsing, plan byte-budget pre-read rejection, S3 publish preflight before object read, and execution-plan mismatch before object read.
+- Run-manifest unsupported-surface validation is now also pre-object-read and
+  pre-derived-artifact. `cli_rejects_unsupported_catalog_data_type_before_reading_object`
+  RED failed because a run spec with a structurally valid but unsupported
+  `catalog_input.data_type` still invoked the object reader. GREEN passed after
+  the CLI began validating the local run manifest from the run spec's accepted
+  object hash before object read, while `run_from_run_spec` still recomputes
+  the object hash from bytes before conversion/backtest. The operator now
+  shares the same accepted-dataset/local-manifest helper, and `run_backtest`
+  performs manifest validation before canonical normalization writes. Focused
+  verification covered 9 CLI tests, `run_from_run_spec_produces_artifacts`, and
+  `run_from_run_spec_reuses_completed_output_without_rebuilding_catalog`.
 - A real CLI smoke check with the ready execution plan and a deliberately missing object path failed at `stat object /private/tmp/bte-coverage-ledger-20260607/does-not-exist.csv.gz`, which proves the valid plan was accepted and the command stopped at the object stat boundary before conversion, catalog projection, or backtest work.
 - After the mandatory `--execution-plan` change, the same cheap CLI smoke shape was rerun with the ready execution plan and a deliberately missing object path, and failed at `stat object /private/tmp/bte-coverage-ledger-20260607/does-not-exist-after-mandatory-plan.csv.gz`; this proves the required-plan CLI path still validates the ready plan and stops at the object stat boundary before conversion, catalog projection, or backtest work.
 - A real plan-bound full CLI run then used the ready execution plan and accepted raw object to write `/private/tmp/bte-plan-bound-cli-e2e-20260607/output`. It produced `937` canonical rows, `937` NT catalog read-back `TradeTick` rows, NT `BacktestNode` iterations `937`, catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`, accepted object hash `d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598`, NT revision `6e059dcbb59ac1e582132fc431a581936c216c3c`, and fidelity class `TRADE_REPLAY`.
@@ -550,6 +561,9 @@ No-repeat controls before any future broad backfill or BTE conversion:
     checkpoint/manifest/catalog metadata, canonical Parquet source-proof
     binding, logical NT catalog hash, NT read-back count, and BacktestNode
     iteration checks.
+22. Unsupported NT/run-manifest surfaces must fail before object reads and
+    before derived canonical/catalog artifacts are written; otherwise a broad
+    backfill can still spend time on data that was invalid from TOML alone.
 
 ## Backfill-First Status
 
@@ -996,6 +1010,11 @@ Midpoint table-family coverage audit:
   focused tests now cover both evaluator-level
   `RunSpecTableFamilyMismatch` and CLI rejection before object-reader
   invocation.
+- Follow-up fail-fast fix: unsupported run-manifest/catalog surfaces now reject
+  before object reads and before canonical normalization writes. The RED test
+  proved the previous CLI path invoked the object reader for an unsupported
+  catalog data type; GREEN verification now covers the CLI preflight plus
+  fresh and completed-output operator paths.
 
 ## Recommendation
 

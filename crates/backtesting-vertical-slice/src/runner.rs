@@ -202,21 +202,8 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         "contract_manifest_hash must not be empty"
     );
 
-    // Gate 2: canonical normalization + canonical artifact.
-    let canonical_table = normalize_registered_trade_converter(
-        inputs.converter,
-        inputs.accepted,
-        inputs.identity,
-        inputs.csv_text,
-        inputs.capture_time_nanos,
-        &inputs.manifest.run_id,
-    )
-    .context("canonical normalization failed")?;
-    canonical_table
-        .write_parquet(inputs.canonical_artifact_path)
-        .context("write canonical artifact failed")?;
-
-    // Gate 4: manifest validation, bound to the accepted dataset.
+    // Gate 4 preflight: reject unsupported NT/config surfaces before producing
+    // derived canonical or catalog artifacts.
     inputs
         .manifest
         .validate(inputs.accepted)
@@ -230,6 +217,20 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         "manifest catalog_path {:?} does not match projection root {catalog_root_str:?}",
         inputs.manifest.catalog_input.catalog_path
     );
+
+    // Gate 2: canonical normalization + canonical artifact.
+    let canonical_table = normalize_registered_trade_converter(
+        inputs.converter,
+        inputs.accepted,
+        inputs.identity,
+        inputs.csv_text,
+        inputs.capture_time_nanos,
+        &inputs.manifest.run_id,
+    )
+    .context("canonical normalization failed")?;
+    canonical_table
+        .write_parquet(inputs.canonical_artifact_path)
+        .context("write canonical artifact failed")?;
 
     // Gate 3: NautilusTrader catalog projection + read-back proof.
     let projection = project_canonical_trades_to_catalog(

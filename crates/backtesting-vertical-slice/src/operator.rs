@@ -231,6 +231,70 @@ fn ensure_object_within_raw_payload_limit(
     Ok(())
 }
 
+fn accepted_dataset_for_run_spec_hash(
+    spec: &RunSpec,
+    object_sha256: &str,
+) -> Result<(SourceProofReport, AcceptedDataset)> {
+    let accepted_proof = spec
+        .source_proof
+        .clone()
+        .accept(
+            AcceptanceMode::Manual,
+            spec.accepted_by.clone(),
+            spec.accepted_at_utc.clone(),
+        )
+        .map_err(|error| anyhow::anyhow!("source-proof acceptance failed: {error}"))?;
+    let accepted =
+        select_accepted_dataset(&accepted_proof, &spec.accepted_object, object_sha256)
+            .map_err(|error| anyhow::anyhow!("accepted-data ledger rejected object: {error}"))?;
+    Ok((accepted_proof, accepted))
+}
+
+fn local_run_manifest_for_output(
+    spec: &RunSpec,
+    output_dir: &Path,
+) -> Result<BacktestingRunManifest> {
+    let catalog_path = output_dir
+        .join(CATALOG_DIR)
+        .to_str()
+        .context("catalog path is not valid UTF-8")?
+        .to_string();
+    let mut manifest = spec.manifest.clone();
+    manifest.catalog_input.catalog_path = catalog_path;
+    manifest.catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
+    manifest.catalog_input.catalog_fs_storage_options.clear();
+    manifest
+        .catalog_input
+        .catalog_fs_rust_storage_options
+        .clear();
+    Ok(manifest)
+}
+
+fn validate_local_run_manifest(
+    manifest: &BacktestingRunManifest,
+    accepted: &AcceptedDataset,
+) -> Result<()> {
+    manifest
+        .validate(accepted)
+        .map_err(|error| anyhow::anyhow!("manifest validation failed: {error}"))
+}
+
+/// Validate every run-spec surface that does not require reading object bytes.
+///
+/// The caller may pass the accepted object hash from the run-spec for preflight
+/// validation. [`run_from_run_spec`] still recomputes the hash from object bytes
+/// before conversion or backtest execution.
+pub fn validate_run_spec_manifest_for_object_hash(
+    spec: &RunSpec,
+    output_dir: &Path,
+    object_sha256: &str,
+) -> Result<()> {
+    validate_converter_config(&spec.converter)?;
+    let (_, accepted) = accepted_dataset_for_run_spec_hash(spec, object_sha256)?;
+    let manifest = local_run_manifest_for_output(spec, output_dir)?;
+    validate_local_run_manifest(&manifest, &accepted)
+}
+
 fn read_limited_csv_text<R: Read>(
     reader: R,
     max_decoded_bytes: u64,
@@ -519,18 +583,7 @@ pub fn run_from_run_spec(
     );
 
     // Gate 1: accept the source proof and bind the object via the ledger.
-    let accepted_proof = spec
-        .source_proof
-        .clone()
-        .accept(
-            AcceptanceMode::Manual,
-            spec.accepted_by.clone(),
-            spec.accepted_at_utc.clone(),
-        )
-        .map_err(|error| anyhow::anyhow!("source-proof acceptance failed: {error}"))?;
-    let accepted =
-        select_accepted_dataset(&accepted_proof, &spec.accepted_object, &verified_sha256)
-            .map_err(|error| anyhow::anyhow!("accepted-data ledger rejected object: {error}"))?;
+    let (accepted_proof, accepted) = accepted_dataset_for_run_spec_hash(spec, &verified_sha256)?;
 
     let conversion_fingerprint = ConversionFingerprint {
         source_proof_id: accepted.source_proof_id.clone(),
@@ -553,21 +606,10 @@ pub fn run_from_run_spec(
     let conversion_checkpoint_path =
         output_dir.join(crate::conversion_boundary::CONVERSION_CHECKPOINT_FILE);
     let catalog_metadata_path = output_dir.join(crate::conversion_boundary::CATALOG_METADATA_FILE);
-    let catalog_path = catalog_root
-        .to_str()
-        .context("catalog path is not valid UTF-8")?
-        .to_string();
-
     // Bind the manifest catalog input to the local projection root.
     let contract_manifest_hash = spec.manifest.manifest_hash();
-    let mut manifest = spec.manifest.clone();
-    manifest.catalog_input.catalog_path = catalog_path;
-    manifest.catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
-    manifest.catalog_input.catalog_fs_storage_options.clear();
-    manifest
-        .catalog_input
-        .catalog_fs_rust_storage_options
-        .clear();
+    let manifest = local_run_manifest_for_output(spec, output_dir)?;
+    validate_local_run_manifest(&manifest, &accepted)?;
     let artifact_uris = portable_artifact_uris(&manifest);
 
     match inspect_conversion_output(output_dir, &conversion_fingerprint)? {

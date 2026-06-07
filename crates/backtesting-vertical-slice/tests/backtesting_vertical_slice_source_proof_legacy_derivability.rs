@@ -6,12 +6,16 @@ use backtesting_vertical_slice::source_proof_legacy_derivability::{
     SourceProofLegacyDerivableField, write_source_proof_legacy_derivability_report_from_spec_file,
 };
 
+const SYNTHETIC_SOURCE_BINDING: &str = "synthetic-source-binding";
+const SYNTHETIC_TABLE_FAMILY: &str = "synthetic-table-family";
+const SYNTHETIC_SECOND_TABLE_FAMILY: &str = "synthetic-second-table-family";
+
 fn legacy_source_proof() -> serde_json::Value {
     serde_json::json!({
         "source_proof_id": "source-proof-synthetic-legacy",
         "source_proof_version": 1,
         "status": "pending",
-        "source_binding_key": "synthetic-native-trades",
+        "source_binding_key": SYNTHETIC_SOURCE_BINDING,
         "venue": "synthetic",
         "product_family": "spot",
         "evidence_state": "directly_backfillable",
@@ -27,7 +31,7 @@ fn legacy_source_proof() -> serde_json::Value {
             {
                 "bytes": 123,
                 "payload_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "source_binding": "synthetic-native-trades",
+                "source_binding": SYNTHETIC_SOURCE_BINDING,
                 "uri": "/tmp/synthetic/raw/object.json"
             }
         ],
@@ -40,7 +44,7 @@ fn legacy_source_proof() -> serde_json::Value {
             "schema_sample": "captured",
             "time_range": "declared"
         },
-        "table_families": ["trades"]
+        "table_families": [SYNTHETIC_TABLE_FAMILY]
     })
 }
 
@@ -56,7 +60,7 @@ fn legacy_acceptance_manifest() -> serde_json::Value {
                 "s3_uri": "s3://synthetic-staging/raw/object.json",
                 "payload_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "bytes": 123,
-                "source_binding": "synthetic-native-trades"
+                "source_binding": SYNTHETIC_SOURCE_BINDING
             }
         ]
     })
@@ -78,11 +82,35 @@ fn legacy_derivability_reports_structural_fields_without_accepting_source_proof(
     assert_eq!(report.summary.s3_bound_records, 1);
     assert_eq!(report.summary.single_table_family_records, 1);
     assert_eq!(report.summary.acceptance_blocked_records, 1);
+    assert_eq!(report.summary.table_family_counts.len(), 1);
+    assert_eq!(
+        report.summary.table_family_counts[0].table_family,
+        SYNTHETIC_TABLE_FAMILY
+    );
+    assert_eq!(report.summary.table_family_counts[0].count, 1);
+    assert_eq!(
+        report
+            .summary
+            .blocking_issue_counts
+            .iter()
+            .map(|entry| (entry.issue, entry.count))
+            .collect::<Vec<_>>(),
+        vec![
+            (SourceProofLegacyDerivabilityIssue::LicenseNotPassed, 1),
+            (SourceProofLegacyDerivabilityIssue::NtMappingNotPassed, 1),
+            (SourceProofLegacyDerivabilityIssue::FidelityNotPassed, 1),
+            (
+                SourceProofLegacyDerivabilityIssue::ForbiddenClaimsNotPassed,
+                1
+            ),
+            (SourceProofLegacyDerivabilityIssue::SchemaSampleNotPassed, 1),
+        ]
+    );
 
     let record = report.records.first().expect("record");
     assert_eq!(
         record.source_binding.as_deref(),
-        Some("synthetic-native-trades")
+        Some(SYNTHETIC_SOURCE_BINDING)
     );
     assert_eq!(
         record.source_proof_id.as_deref(),
@@ -151,7 +179,8 @@ fn legacy_derivability_reports_structural_fields_without_accepting_source_proof(
 #[test]
 fn legacy_derivability_reports_multitable_and_unbound_payloads() {
     let mut proof = legacy_source_proof();
-    proof["table_families"] = serde_json::json!(["trades", "bars"]);
+    proof["table_families"] =
+        serde_json::json!([SYNTHETIC_TABLE_FAMILY, SYNTHETIC_SECOND_TABLE_FAMILY]);
     proof["raw_payload_records"][0]["payload_hash"] =
         serde_json::json!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
 

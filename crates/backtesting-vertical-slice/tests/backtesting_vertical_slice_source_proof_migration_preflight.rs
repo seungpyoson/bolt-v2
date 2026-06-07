@@ -229,6 +229,8 @@ fn derivability_report(
                 .iter()
                 .map(|record| record.blocking_issues.len() as u64)
                 .sum(),
+            blocking_issue_counts: Vec::new(),
+            table_family_counts: Vec::new(),
         },
         records,
     }

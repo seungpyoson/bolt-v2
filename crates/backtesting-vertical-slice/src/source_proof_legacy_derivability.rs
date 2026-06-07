@@ -35,7 +35,7 @@ pub enum SourceProofLegacyDerivableField {
     ClaimLimits,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceProofLegacyDerivabilityIssue {
     MissingSourceBindingKey,
@@ -73,6 +73,24 @@ pub struct SourceProofLegacyDerivabilitySummary {
     pub single_table_family_records: u64,
     pub acceptance_blocked_records: u64,
     pub blocking_issue_count: u64,
+    #[serde(default)]
+    pub blocking_issue_counts: Vec<SourceProofLegacyDerivabilityIssueCount>,
+    #[serde(default)]
+    pub table_family_counts: Vec<SourceProofLegacyDerivabilityTableFamilyCount>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceProofLegacyDerivabilityIssueCount {
+    pub issue: SourceProofLegacyDerivabilityIssue,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceProofLegacyDerivabilityTableFamilyCount {
+    pub table_family: String,
+    pub count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,7 +348,11 @@ impl SourceProofLegacyDerivabilitySummary {
             single_table_family_records: 0,
             acceptance_blocked_records: 0,
             blocking_issue_count: 0,
+            blocking_issue_counts: Vec::new(),
+            table_family_counts: Vec::new(),
         };
+        let mut blocking_issue_counts = BTreeMap::new();
+        let mut table_family_counts = BTreeMap::new();
         for record in records {
             if record.raw_payload_records == record.s3_bound_raw_payload_records {
                 summary.s3_bound_records += 1;
@@ -338,13 +360,34 @@ impl SourceProofLegacyDerivabilitySummary {
             if record.table_families.len() == 1 {
                 summary.single_table_family_records += 1;
             }
+            for table_family in &record.table_families {
+                *table_family_counts
+                    .entry(table_family.clone())
+                    .or_insert(0_u64) += 1;
+            }
             if !record.blocking_issues.is_empty() {
                 summary.acceptance_blocked_records += 1;
+            }
+            for issue in &record.blocking_issues {
+                *blocking_issue_counts.entry(*issue).or_insert(0_u64) += 1;
             }
             summary.blocking_issue_count = summary
                 .blocking_issue_count
                 .saturating_add(record.blocking_issues.len() as u64);
         }
+        summary.blocking_issue_counts = blocking_issue_counts
+            .into_iter()
+            .map(|(issue, count)| SourceProofLegacyDerivabilityIssueCount { issue, count })
+            .collect();
+        summary.table_family_counts = table_family_counts
+            .into_iter()
+            .map(
+                |(table_family, count)| SourceProofLegacyDerivabilityTableFamilyCount {
+                    table_family,
+                    count,
+                },
+            )
+            .collect();
         summary
     }
 }

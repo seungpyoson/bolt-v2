@@ -358,6 +358,9 @@ GREEN checks after implementation:
 - `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --test backtesting_vertical_slice_backfill_preflight --test backtesting_vertical_slice_backfill_readiness -- --nocapture`: 23 passed after preflight selected records began carrying `table_family` and combined readiness began rejecting selected-backfill table-family mismatches.
 - `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_reads_toml_spec_and_writes_report_idempotently`: RED failed because readiness TOML rejected `[[supported_data_paths]]`; GREEN passed after the readiness spec and report began carrying TOML-owned supported table-family/NT-data-type pairs.
 - `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_blocks_when_required_nt_data_type_is_not_supported`: RED failed because readiness could report `ready` for `required_nt_data_type = "QuoteTick"` even though the configured supported path list only contained the proven `TradeTick` catalog projection path; GREEN passed after combined readiness rejected required NT data types absent from `supported_data_paths`.
+- `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --test backtesting_vertical_slice_source_proof_legacy_derivability legacy_derivability_reports_structural_fields_without_accepting_source_proof -- --nocapture`: RED failed with missing `table_family_counts` and `blocking_issue_counts` fields on `SourceProofLegacyDerivabilitySummary`, proving the report forced manual record-level scans to explain why legacy proofs were blocked.
+- `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --test backtesting_vertical_slice_source_proof_legacy_derivability -- --nocapture`: 3 passed after the legacy derivability summary began carrying deterministic aggregate table-family and blocker counts without accepting or mutating source proofs.
+- `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --test backtesting_vertical_slice_source_proof_migration_preflight -- --nocapture`: 4 passed after the migration-preflight test fixture was updated for the expanded derivability summary contract.
 - `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_blocks_when_table_family_does_not_match_required_nt_data_type`: RED failed because readiness could report `ready` for `required_table_family = "quotes"` with `required_nt_data_type = "TradeTick"`; GREEN passed after combined readiness required the requested table-family/data-type pair to be present in TOML-owned `supported_data_paths`.
 - static provider-literal scan for the coverage source, coverage CLI, and their tests: no hits for current venue/provider/sample tokens, so the new coverage-ledger API, operator command, and tests are not hardcoded to the accepted sample or a specific venue
 - `just bte-test research_analytics_artifacts_use_typed_subfamilies_and_one_kind_pointer research_analytics_records_require_matching_subfamily_prefix`: RED failed with missing `ResearchAnalyticsSubfamily` and RA-specific staged-record constructor; GREEN passed after adding typed RA subfamilies, enforcing `research-analytics/v1/<subfamily>/` manifest prefixes, and keeping every RA subfamily on the single `research_analytics` Artifact Index pointer
@@ -676,6 +679,22 @@ Current evidence:
   Therefore source-proof migration should start with a single-table proof whose
   license, schema, fidelity, forbidden-claim, and NT mapping evidence can be
   made explicit; it should not start by broad payload conversion.
+- A current-code rerun after adding aggregate summary fields generated
+  `/private/tmp/bte-coverage-ledger-20260607/source-proof-legacy-derivability-current-summary-output/source-proof-legacy-derivability-report.json`
+  with content hash
+  `3e53e47f00259faed548d240d70a855858567556ace893c07deda5bafca39bc6`,
+  size 22,653 bytes, and the same 21 source-proof records. The summary now
+  materializes blocker counts directly in the artifact:
+  `license_not_passed = 21`, `nt_mapping_not_passed = 21`,
+  `fidelity_not_passed = 21`, `forbidden_claims_not_passed = 21`,
+  `schema_sample_not_passed = 21`, and `not_exactly_one_table_family = 2`.
+  It also materializes table-family counts:
+  `instruments = 19`, `bars = 1`, `order_book_snapshot_deltas = 1`,
+  `order_book_snapshots_fixed_depth = 1`,
+  `prediction_market_events = 1`, and `prediction_market_outcomes = 1`.
+  This rerun used existing source-proof and manifest artifacts only; it did
+  not download raw payloads, convert rows, write an NT catalog, or accept a
+  proof.
 - Repo search found no checked-in source-proof-v3 generator. The new
   `source_proof_admissibility` CLI is report-only: it deserializes staged JSON
   against the current contract and calls `SourceProofReport::evaluate_acceptance`

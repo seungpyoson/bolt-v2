@@ -112,17 +112,18 @@
       "source_binding": "pmxt-kalshi-orderbook-archive",
       "fixture_type": "binary-option",
       "table_family": "order_book_snapshot_deltas",
-      "source_sample_status": "archive_index_only_no_sample_schema_yet",
+      "source_sample_status": "sample_schema_available",
       "candidate_nt_data_classes": [
         "OrderBookDelta",
-        "TradeTick"
+        "OrderBookDepth10"
       ],
       "current_bte_status": "candidate_not_registered_as_accepted_source_proof",
       "parquet_catalog_status": "not_proven",
       "evidence_refs": [
-        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fidelity-evaluation.backtesting-engine.2026-06-08.json"
+        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fidelity-evaluation.backtesting-engine.2026-06-08.json",
+        "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.pmxt-kalshi-orderbook.2026-06-08.json"
       ],
-      "decision": "Treat as a higher-fidelity Kalshi candidate discovered by BTE-025, not as selected input. It needs a committed source-binding candidate record, representative sample schema inspection, instrument join proof, and NT catalog read-back before it can displace lower-fidelity Kalshi bars."
+      "decision": "Treat as a higher-fidelity Kalshi candidate discovered by BTE-025, not as selected input. The bounded sample proves orderbook_snapshot/orderbook_delta schema, but it has no trades, no accepted BinaryOption instrument mapping, null source timestamps on snapshot rows, and no NT catalog read-back."
     },
     {
       "source_binding": "hyperliquid-hip4-outcome-meta",
@@ -153,7 +154,7 @@
       "approved dependency path to pinned NT Polymarket parser/provider before PMXT Polymarket instrument mapping",
       "generic PMXT order-book source-schema to NT OrderBookDelta/TradeTick projection contract",
       "ParquetDataCatalog write plus query_typed_data read-back for a selected PMXT Polymarket sample under artifact-root staging",
-      "PMXT Kalshi representative sample schema inspection before any Kalshi L2 claim",
+      "PMXT Kalshi source-backed BinaryOption instrument mapping, timestamp policy, and OrderBookDelta/OrderBookDepth10 catalog proof before any Kalshi L2 claim",
       "Kalshi lower-fidelity Bar or TradeTick staged catalog proof only if lower-fidelity acceptance is explicitly allowed",
       "HIP-4 exact historical outcome replay coverage and checked BinaryOption field proof before any replay mapping"
     ]

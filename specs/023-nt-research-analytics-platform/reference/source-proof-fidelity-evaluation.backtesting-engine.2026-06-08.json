@@ -192,11 +192,11 @@
           "source_family": "official_or_free_public_archive",
           "candidate_fidelity": "L2_REPLAY",
           "classification": "PENDING_MORE_PROOF",
-          "reason": "The current PMXT root and Kalshi index evidence proves a free hourly Kalshi orderbook Parquet archive candidate with CC BY 4.0 attribution terms and bounded byte-scale evidence, but it still needs sample schema inspection, coverage, NT mapping, storage, and source-proof acceptance."
+          "reason": "The current PMXT root and Kalshi index evidence proves a free hourly Kalshi orderbook Parquet archive candidate with CC BY 4.0 attribution terms and bounded byte-scale evidence. A bounded sample schema is now recorded separately, but source-backed BinaryOption instrument fields, timestamp policy, NT catalog mapping, coverage, storage, and source-proof acceptance remain pending."
         }
       ],
       "paid_or_vendor_candidates": [],
-      "selection_guard": "Do not select Kalshi official bars/trades as final while PMXT Kalshi L2 remains untested; accept lower-fidelity Kalshi only through explicit claim limits after the L2 candidate is accepted, rejected, or scoped out."
+      "selection_guard": "Do not select Kalshi official bars/trades as final while PMXT Kalshi L2 remains unaccepted; accept lower-fidelity Kalshi only through explicit claim limits after the L2 candidate is accepted, rejected, or scoped out."
     },
     {
       "fixture_type": "binary-option",

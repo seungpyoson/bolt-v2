@@ -1410,8 +1410,8 @@ Midpoint table-family coverage audit:
   lower-fidelity trade replay while Tardis Binance L2 is a pending paid/vendor
   candidate; PMXT Polymarket remains the highest current binary-option L2
   candidate but still needs NT mapping and source selection proof; Kalshi
-  official bars/trades cannot be final while the newly recorded PMXT Kalshi L2
-  orderbook archive candidate is untested; and Hyperliquid HIP-4 historical
+  official bars/trades cannot be final while the PMXT Kalshi L2 orderbook
+  archive candidate is unaccepted; and Hyperliquid HIP-4 historical
   execution-quality replay remains unproven because current outcomeMeta/current
   book probes and generic Hyperliquid L2 metadata do not bind exact historical
   outcome replay coverage. The artifact also records slow-backfill controls:
@@ -1432,8 +1432,10 @@ Midpoint table-family coverage audit:
   `OrderBookDelta` and `TradeTick`, but the artifact requires BTE to reuse the
   pinned NT Polymarket parser/provider for instruments instead of inventing a
   custom BinaryOption mapper. Kalshi official history remains lower-fidelity
-  `Bar` or `TradeTick` candidate only; PMXT Kalshi L2 needs a real sample
-  schema before any mapping claim; HIP-4 remains metadata-only until exact
+  `Bar` or `TradeTick` candidate only; PMXT Kalshi L2 now has a bounded sample
+  schema proving `orderbook_snapshot` and `orderbook_delta` rows, but still
+  needs source-backed BinaryOption fields, timestamp policy, and NT catalog
+  read-back before any mapping claim; HIP-4 remains metadata-only until exact
   historical outcome replay coverage and checked BinaryOption fields are
   source-backed.
 

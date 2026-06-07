@@ -1,8 +1,8 @@
 # IV Engine Open PR/Issue Overlap Ledger
 
 **Feature**: `specs/026-nt-backed-iv-engine/`
-**Search-time branch head**: `50b4ca3b7e3099572b65cc66a2f299b1214896bc`
-**Refresh note**: Open PR and open issue overlap searches were refreshed against this head after the docs-only review; no additional open overlap item was found beyond the entries below.
+**Search-time branch head**: `f994ae15198502aee9227aea5e813d12b8d5bf92`
+**Refresh note**: Open PR and open issue overlap searches were refreshed against this head before Phase 1 implementation edits; no additional open overlap item was found beyond the entries below.
 **Purpose**: Record the open PR/open issue overlap review required before treating the IV design packet as complete.
 
 ## Search Scope

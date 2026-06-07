@@ -9,15 +9,15 @@
 
 **Purpose**: Establish exact repository evidence and IV module scaffolding without implementing behavior.
 
-- [ ] T001 Record repository truth from `practice.md` in `specs/026-nt-backed-iv-engine/reference/repository-truth.md`
-- [ ] T002 Record open PR and open issue overlap review in `specs/026-nt-backed-iv-engine/reference/overlap-ledger.md`
-- [ ] T003 Record current-main requirement evidence in `specs/026-nt-backed-iv-engine/reference/evidence-ledger.md`
-- [ ] T004 Record pinned NT dependency evidence from `Cargo.toml` and `Cargo.lock` in `specs/026-nt-backed-iv-engine/reference/nt-evidence.md`
-- [ ] T005 Create IV module directory skeleton in `src/bolt_v3_iv/mod.rs`
-- [ ] T006 [P] Add IV module export placeholder in `src/lib.rs`
-- [ ] T007 [P] Add empty IV fixture directory in `tests/fixtures/bolt_v3_iv/README.md`
-- [ ] T008 [P] Add IV evidence fixture inventory in `tests/fixtures/bolt_v3_iv/evidence.md`
-- [ ] T009 Add IV implementation progress ledger in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T001 Record repository truth from `practice.md` in `specs/026-nt-backed-iv-engine/reference/repository-truth.md`
+- [X] T002 Record open PR and open issue overlap review in `specs/026-nt-backed-iv-engine/reference/overlap-ledger.md`
+- [X] T003 Record current-main requirement evidence in `specs/026-nt-backed-iv-engine/reference/evidence-ledger.md`
+- [X] T004 Record pinned NT dependency evidence from `Cargo.toml` and `Cargo.lock` in `specs/026-nt-backed-iv-engine/reference/nt-evidence.md`
+- [X] T005 Create IV module directory skeleton in `src/bolt_v3_iv/mod.rs`
+- [X] T006 [P] Add IV module export placeholder in `src/lib.rs`
+- [X] T007 [P] Add empty IV fixture directory in `tests/fixtures/bolt_v3_iv/README.md`
+- [X] T008 [P] Add IV evidence fixture inventory in `tests/fixtures/bolt_v3_iv/evidence.md`
+- [X] T009 Add IV implementation progress ledger in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
 ---
 

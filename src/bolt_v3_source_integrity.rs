@@ -204,8 +204,10 @@ mod tests {
     // retired fair-value field to reference_current_price.
     // Re-derived again by #606 after final reference_current_price test-name
     // cleanup in the canonical strategy source set.
+    // Re-derived again by #606 after adding chainlink_reference fixture coverage
+    // in the canonical strategy source set.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "bf3f0207cb2b76dae08c5ec6e2e58d68092523d4f79f2f8c64b8c58bf898955d";
+        "b8901769c852ce9840845f67005850dc9668950177e18bd675e3fe4d62499155";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

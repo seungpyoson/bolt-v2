@@ -665,6 +665,20 @@ Current evidence:
   single-table market-data `trades` proof candidate for the existing converter
   path; an instrument-universe proof can be current-contract-shaped next, but it
   still cannot be accepted until those five evidence checks are explicit.
+- The committed reference `trades` source proof was separately checked through
+  the config-driven source-proof admissibility CLI, using
+  `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.bnbusdc-2026-03-01.json`
+  as the only input. The report at
+  `/private/tmp/bte-coverage-ledger-20260607/source-proof-admissibility-reference-trades-output/source-proof-admissibility-report.json`
+  has content hash
+  `7709e381304c1113ef9feeeecd09824a389b3526d29d05d9b15422c1fc033107`,
+  size 833 bytes, one current-contract record, one accept-ready record, zero
+  rejected/non-current records, and zero blocking issues. The record is
+  `source-proof-bybit-spot-tick-trades` version 1 for
+  `bybit-spot-tick-trades`. This proves the existing single-object sample proof
+  is valid; it does not unblock broad backfill because the current coverage
+  ledger still has no accepted canonical-ready record and the staged
+  source-proof-v3 set still has no eligible `trades` migration candidate.
 - The combined backfill readiness CLI was run for the current NT `TradeTick`
   path using the real backfill preflight report plus the real `trades`
   source-proof migration preflight report:

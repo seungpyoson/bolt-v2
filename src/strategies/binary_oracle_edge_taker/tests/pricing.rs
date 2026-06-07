@@ -4,12 +4,19 @@ use super::*;
 
 const TEST_PRICING_SNAPSHOT_REFERENCE_STEP_MS: u64 = 100;
 const TEST_PRICING_SNAPSHOT_REFERENCE_PRICE_STEP: f64 = 2.0;
+const TEST_PRICING_SNAPSHOT_FAST_WEIGHT: f64 = 0.9;
 const TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS: u64 = 1_100;
 const TEST_PRICING_SNAPSHOT_STALE_REFERENCE_TS_MS: u64 =
     TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS - TEST_PRICING_SNAPSHOT_REFERENCE_STEP_MS;
+const TEST_PRICING_SNAPSHOT_FRESH_SIGNAL_TS_MS: u64 =
+    TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS + TEST_PRICING_SNAPSHOT_REFERENCE_STEP_MS;
 const TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE: f64 = 3_101.0;
 const TEST_PRICING_SNAPSHOT_STALE_REFERENCE_PRICE: f64 =
     TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE - TEST_PRICING_SNAPSHOT_REFERENCE_PRICE_STEP;
+const TEST_PRICING_SNAPSHOT_FRESH_SIGNAL_PRICE: f64 =
+    TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE;
+const TEST_PRICING_SNAPSHOT_MISMATCHED_STALE_REFERENCE_PRICE: f64 =
+    TEST_PRICING_SNAPSHOT_REFERENCE_PRICE_STEP;
 
 #[test]
 fn reference_quote_tick_updates_fair_value_without_becoming_signal() {
@@ -137,6 +144,56 @@ fn pricing_state_reference_snapshot_rejects_stale_fair_value() {
         pricing.last_reference_observed_ts_ms,
         Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS)
     );
+}
+
+#[test]
+fn pricing_state_reference_snapshot_processes_signal_candidates_when_fair_value_is_stale() {
+    let config = test_strategy().config.clone();
+    let mut pricing = PricingState::from_config(&taker_pricing_config(&config));
+    let signal_venue = std::any::type_name::<PricingState>();
+
+    pricing.observe_reference_snapshot(
+        &reference_tick(
+            TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS,
+            TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE,
+        ),
+        config.lead_agreement_min_corr,
+        config.lead_jitter_max_ms,
+    );
+    pricing.observe_reference_snapshot(
+        &ReferenceSnapshot {
+            ts_ms: TEST_PRICING_SNAPSHOT_STALE_REFERENCE_TS_MS,
+            topic: std::any::type_name::<ReferenceSnapshot>().to_string(),
+            fair_value: Some(TEST_PRICING_SNAPSHOT_MISMATCHED_STALE_REFERENCE_PRICE),
+            confidence: 1.0,
+            venues: vec![orderbook_venue(
+                signal_venue,
+                TEST_PRICING_SNAPSHOT_FAST_WEIGHT,
+                TEST_PRICING_SNAPSHOT_FRESH_SIGNAL_PRICE,
+                TEST_PRICING_SNAPSHOT_FRESH_SIGNAL_TS_MS,
+            )],
+        },
+        config.lead_agreement_min_corr,
+        config.lead_jitter_max_ms,
+    );
+
+    assert_eq!(
+        pricing.last_reference_fair_value,
+        Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE)
+    );
+    assert_eq!(
+        pricing.last_reference_observed_ts_ms,
+        Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS)
+    );
+    assert_eq!(
+        pricing.fast_spot,
+        Some(fast_spot(
+            signal_venue,
+            TEST_PRICING_SNAPSHOT_FRESH_SIGNAL_PRICE,
+            TEST_PRICING_SNAPSHOT_FRESH_SIGNAL_TS_MS,
+        ))
+    );
+    assert!(!pricing.fast_venue_incoherent);
 }
 
 #[test]

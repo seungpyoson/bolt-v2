@@ -189,8 +189,11 @@ mod tests {
     // Re-derived again by #574 external-review cleanup after unifying the
     // positive integer guard loop and aligning the test-only reference snapshot
     // helper with the production reference timestamp watermark.
+    //
+    // Re-derived again by #574 follow-up review cleanup after decoupling stale
+    // snapshot fair-value rejection from test-only signal candidate processing.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "fc3a3e9dec66463c80e24c979d23d7c728c010ebe5f10ba09d73ff597864c46e";
+        "a7794d95c06d693ad3e65535751827da7ace5f8c2f3bff154d53d626e3ab722f";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

@@ -500,14 +500,13 @@ impl PricingState {
             .fair_value
             .filter(|fair_value| fair_value.is_finite() && *fair_value > 0.0)
         {
-            if self
+            if !self
                 .last_reference_observed_ts_ms
                 .is_some_and(|last| snapshot.ts_ms <= last)
             {
-                return;
+                self.last_reference_observed_ts_ms = Some(snapshot.ts_ms);
+                self.last_reference_fair_value = Some(fair_value);
             }
-            self.last_reference_observed_ts_ms = Some(snapshot.ts_ms);
-            self.last_reference_fair_value = Some(fair_value);
         }
 
         let candidates = self.build_lead_venue_signals(snapshot);
@@ -594,8 +593,8 @@ impl PricingState {
 
     #[cfg(test)]
     fn build_lead_venue_signals(&mut self, snapshot: &ReferenceSnapshot) -> Vec<LeadVenueSignal> {
-        let agreement_anchor = best_healthy_oracle_price(snapshot).or(snapshot.fair_value);
-        let reference_anchor = snapshot.fair_value;
+        let reference_anchor = self.last_reference_fair_value;
+        let agreement_anchor = best_healthy_oracle_price(snapshot).or(reference_anchor);
 
         snapshot
             .venues

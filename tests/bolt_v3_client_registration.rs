@@ -191,13 +191,11 @@ transport_backend = "sockudo"
 fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
     // The trade build path (`build_bolt_v3_live_node_with_summary`) registers
     // ONLY strategy-bound clients: the strategy `execution_client_id`, its
-    // `[reference_data].*.data_client_id`, its `[signal_data].*.data_client_id`,
-    // and the proof-policy `execution_client_id`. The fixture strategy
+    // `[signal_data].*.data_client_id`, and the proof-policy
+    // `execution_client_id`. The fixture strategy
     // (tests/fixtures/bolt_v3/strategies/binary_oracle.toml) sets
-    // `execution_client_id = "polymarket_main"`, an EMPTY `[reference_data]`
-    // block, and a strategy-bound signal feed at `okx_data`. Because
-    // `[reference_data]` is empty, this fixture registers no live reference
-    // quote client. `decision_reference` is a logical readiness/proof id and is
+    // `execution_client_id = "polymarket_main"` and a strategy-bound signal
+    // feed at `okx_data`. `decision_reference` is a logical readiness/proof id and is
     // deliberately not treated as NT reference data. So `binance_reference` is a
     // broad-readiness PROBE client that is configured but unbound, and the
     // scoped trade runner correctly EXCLUDES it from both the registration
@@ -212,7 +210,7 @@ fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
     //     `live_node_registration_can_load_all_requested_data_clients_without_extra_execution_clients`,
     //     which exercises
     //     `build_bolt_v3_all_configured_client_mapping_live_node_with_summary`;
-    //   - positive `[reference_data]` scoping (a strategy-bound reference data
+    //   - positive signal-data scoping (a strategy-bound signal data
     //     client IS registered) is covered by the
     //     `trade_transport_config_keeps_only_strategy_bound_clients` unit test.
     let mut loaded = fixture_loaded_config_with_binance_reference();
@@ -251,7 +249,7 @@ fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
     assert!(!okx.execution, "fixture okx_data has no [execution] block");
     assert!(
         !summary.clients.contains_key("binance_reference"),
-        "binance_reference is unbound (no strategy reference_data binding) and must be excluded from the scoped summary; got {:?}",
+        "binance_reference is unbound (no strategy signal_data binding) and must be excluded from the scoped summary; got {:?}",
         summary.clients.keys().collect::<Vec<_>>()
     );
 

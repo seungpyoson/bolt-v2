@@ -150,13 +150,11 @@ macro_rules! define_config_struct {
         #[serde(deny_unknown_fields)]
         pub(super) struct BinaryOracleEdgeTakerConfig {
             $( pub(super) $field: $ty, )+
-            pub(super) reference_venue: Option<String>,
-            pub(super) reference_instrument_id: Option<String>,
             pub(super) signal_venue: Option<String>,
             pub(super) signal_instrument_id: Option<String>,
             pub(super) resolution_client_id: Option<String>,
             pub(super) resolution_instrument_id: Option<String>,
-            pub(super) reference_price: Option<ReferencePriceBlock>,
+            pub(super) reference_current_price: Option<ReferencePriceBlock>,
             pub(super) entry_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) exit_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
@@ -311,10 +309,6 @@ impl BinaryOracleEdgeTakerBuilder {
     ) -> Result<()> {
         for (field_name, instrument_id) in [
             (
-                "reference_instrument_id",
-                config.reference_instrument_id.as_deref(),
-            ),
-            (
                 "signal_instrument_id",
                 config.signal_instrument_id.as_deref(),
             ),
@@ -384,13 +378,11 @@ impl BinaryOracleEdgeTakerBuilder {
                 ENTRY_ORDER_FIELD
                     | EXIT_ORDER_FIELD
                     | FORCED_EXIT_ORDER_FIELD
-                    | "reference_venue"
-                    | "reference_instrument_id"
                     | "signal_venue"
                     | "signal_instrument_id"
                     | "resolution_client_id"
                     | "resolution_instrument_id"
-                    | "reference_price"
+                    | "reference_current_price"
                     | binary_oracle_edge_taker_config_fields!(match_config_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field_prefix}.{key}"), key);
@@ -402,13 +394,6 @@ impl BinaryOracleEdgeTakerBuilder {
             field_prefix,
             errors,
         );
-        Self::validate_optional_string_field(table, field_prefix, "reference_venue", errors);
-        Self::validate_optional_string_field(
-            table,
-            field_prefix,
-            "reference_instrument_id",
-            errors,
-        );
         Self::validate_optional_string_field(table, field_prefix, "signal_venue", errors);
         Self::validate_optional_string_field(table, field_prefix, "signal_instrument_id", errors);
         Self::validate_optional_string_field(table, field_prefix, "resolution_client_id", errors);
@@ -418,13 +403,7 @@ impl BinaryOracleEdgeTakerBuilder {
             "resolution_instrument_id",
             errors,
         );
-        Self::validate_optional_table_field(table, field_prefix, "reference_price", errors);
-        Self::validate_optional_instrument_id_field(
-            table,
-            field_prefix,
-            "reference_instrument_id",
-            errors,
-        );
+        Self::validate_optional_table_field(table, field_prefix, "reference_current_price", errors);
         Self::validate_optional_instrument_id_field(
             table,
             field_prefix,
@@ -437,19 +416,6 @@ impl BinaryOracleEdgeTakerBuilder {
             "resolution_instrument_id",
             errors,
         );
-        if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {
-            let missing = if table.contains_key("reference_venue") {
-                "reference_instrument_id"
-            } else {
-                "reference_venue"
-            };
-            Self::push_missing(
-                errors,
-                format!("{field_prefix}.{missing}"),
-                "missing_reference_data_pair",
-                BinaryOracleEdgeTakerFieldType::String,
-            );
-        }
         match (
             table.contains_key("signal_venue"),
             table.contains_key("signal_instrument_id"),
@@ -470,8 +436,7 @@ impl BinaryOracleEdgeTakerBuilder {
         }
         // Resolution-strike binding is optional, but both-or-neither: a strategy
         // either declares the live Chainlink strike (resolution_client_id +
-        // resolution_instrument_id) or neither (entry stays fail-closed). Mirrors
-        // the reference_data pair rule.
+        // resolution_instrument_id) or neither (entry stays fail-closed).
         if table.contains_key("resolution_client_id")
             != table.contains_key("resolution_instrument_id")
         {

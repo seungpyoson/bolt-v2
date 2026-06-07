@@ -144,11 +144,9 @@ log_commands = true
 log_rejected_due_post_only_as_warning = true
 execution_client_id = "fixture-venue"
 
-[reference_data.reference]
-data_client_id = "fixture-reference"
-instrument_id = "FIXTURE.REFERENCE"
-
-[signal_data]
+[signal_data.reference]
+data_client_id = "fixture-signal"
+instrument_id = "FIXTURE.SIGNAL"
 
 [target]
 configured_target_id = "fixture-target"

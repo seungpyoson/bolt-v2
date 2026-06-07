@@ -15,21 +15,21 @@
 //!    and lives here so a future archetype can introduce its own
 //!    parameter row without reaching back into core config.
 //! 2. The archetype's bolt-v3 startup-validation policy:
-//!    - the required reference-data role
-//!      (`[reference_data.<role>]`, when the strategy enables an NT quote feed),
+//!    - the required signal-data role
+//!      (`[signal_data.<role>]`, when the strategy enables an NT quote feed),
 //!    - the enabled `[parameters.entry_order]` and
 //!      `[parameters.exit_order]` and `[parameters.forced_exit_order]`
 //!      NT order-template invariants, including required GTD expiry,
 //!      triggered-order trigger fields, and trailing-stop fields.
 //!
 //! Core startup validation in `crate::bolt_v3_validate` keeps target-
-//! shape and per-role reference-data structural checks structural and
+//! shape and per-role market-data structural checks structural and
 //! dispatches archetype-specific rules through
 //! `crate::bolt_v3_archetypes::validate_strategy_archetype` based on
 //! `strategy.strategy_archetype`. Archetype-specific error-message
 //! policy (the headline "is not allowed for `binary_oracle_edge_taker`"
 //! phrase, the per-field rule listing, and the
-//! reference-data structural wording) lives here so that a
+//! signal-data structural wording) lives here so that a
 //! future archetype can introduce its own message contract without
 //! reaching back into core validation.
 
@@ -260,7 +260,7 @@ pub fn validate_strategy(
     strategy: &BoltV3StrategyConfig,
     default_max_notional: Option<&Decimal>,
 ) -> Vec<String> {
-    let mut errors = validate_required_reference_data(context, strategy);
+    let mut errors = validate_required_market_data(context, strategy);
 
     let parameters = match strategy.parameters.clone().try_into::<ParametersBlock>() {
         Ok(value) => value,
@@ -301,7 +301,7 @@ pub enum BinaryOracleEdgeTakerRuntimeConfigError {
         strategy_instance_id: String,
         message: String,
     },
-    ReferenceData {
+    ExecutionClient {
         strategy_instance_id: String,
         message: String,
     },
@@ -348,12 +348,12 @@ impl std::fmt::Display for BinaryOracleEdgeTakerRuntimeConfigError {
                 f,
                 "strategies.{strategy_instance_id} target is invalid: {message}"
             ),
-            Self::ReferenceData {
+            Self::ExecutionClient {
                 strategy_instance_id,
                 message,
             } => write!(
                 f,
-                "strategies.{strategy_instance_id} reference_data is invalid: {message}"
+                "strategies.{strategy_instance_id} execution_client_id is invalid: {message}"
             ),
             Self::SignalData {
                 strategy_instance_id,
@@ -458,30 +458,18 @@ pub fn raw_taker_config(
         .root
         .clients
         .get(strategy.config.execution_client_id.as_str())
-        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
-            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-            message: format!(
-                "execution_client_id `{}` is not present in loaded clients",
-                strategy.config.execution_client_id
-            ),
-        })?;
-    let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
-    let reference_data = configured_reference_data(strategy)?;
-    let signal_data = configured_signal_data(strategy)?;
-    validate_configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
-    if let Some(reference_data) = reference_data {
-        loaded
-            .root
-            .clients
-            .get(reference_data.data_client_id.as_str())
-            .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
+        .ok_or_else(
+            || BinaryOracleEdgeTakerRuntimeConfigError::ExecutionClient {
                 strategy_instance_id: strategy.config.strategy_instance_id.clone(),
                 message: format!(
-                    "reference_data data_client_id `{}` is not present in loaded clients",
-                    reference_data.data_client_id
+                    "execution_client_id `{}` is not present in loaded clients",
+                    strategy.config.execution_client_id
                 ),
-            })?;
-    }
+            },
+        )?;
+    let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
+    let signal_data = configured_signal_data(strategy)?;
+    validate_configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
     loaded
         .root
         .clients
@@ -634,18 +622,6 @@ pub fn raw_taker_config(
         target.blocked_after_seconds,
     )?;
     insert_string(&mut table, "price_to_beat_source", price_to_beat_source);
-    if let Some(reference_data) = reference_data {
-        insert_string(
-            &mut table,
-            "reference_venue",
-            reference_data.data_client_id.to_string(),
-        );
-        insert_string(
-            &mut table,
-            "reference_instrument_id",
-            reference_data.instrument_id.to_string(),
-        );
-    }
     insert_string(
         &mut table,
         "signal_venue",
@@ -668,8 +644,12 @@ pub fn raw_taker_config(
             resolution_data.instrument_id.to_string(),
         );
     }
-    if let Some(reference_price) = &strategy.config.reference_price {
-        insert_reference_price_config(&mut table, strategy_instance_id, reference_price)?;
+    if let Some(reference_current_price) = &strategy.config.reference_current_price {
+        insert_reference_current_price_config(
+            &mut table,
+            strategy_instance_id,
+            reference_current_price,
+        )?;
     }
     insert_order_config(
         &mut table,
@@ -1104,17 +1084,21 @@ fn insert_string_array(table: &mut Map<String, Value>, key: &'static str, values
     );
 }
 
-fn insert_reference_price_config(
+fn insert_reference_current_price_config(
     table: &mut Map<String, Value>,
     strategy_instance_id: &str,
-    reference_price: &crate::bolt_v3_config::ReferencePriceBlock,
+    reference_current_price: &crate::bolt_v3_config::ReferencePriceBlock,
 ) -> Result<(), BinaryOracleEdgeTakerRuntimeConfigError> {
     let mut reference_table = Map::new();
-    insert_string(&mut reference_table, "asset", reference_price.asset.clone());
+    insert_string(
+        &mut reference_table,
+        "asset",
+        reference_current_price.asset.clone(),
+    );
     insert_string_array(
         &mut reference_table,
         "sources",
-        &reference_price.source_order,
+        &reference_current_price.source_order,
     );
     insert_u64(
         &mut reference_table,
@@ -1122,40 +1106,40 @@ fn insert_reference_price_config(
         "min_valid_sources",
         usize_to_u64(
             strategy_instance_id,
-            "reference_price.min_valid_sources",
-            reference_price.min_valid_sources,
+            "reference_current_price.min_valid_sources",
+            reference_current_price.min_valid_sources,
         )?,
     )?;
     insert_string(
         &mut reference_table,
         "selection_policy",
-        reference_price_selection_policy_value(reference_price.selection_policy),
+        reference_price_selection_policy_value(reference_current_price.selection_policy),
     );
     insert_u64(
         &mut reference_table,
         strategy_instance_id,
         "max_source_age_ms",
-        reference_price.max_source_age_ms,
+        reference_current_price.max_source_age_ms,
     )?;
     insert_u64(
         &mut reference_table,
         strategy_instance_id,
         "max_source_drift_bps",
-        u64::from(reference_price.max_source_drift_bps),
+        u64::from(reference_current_price.max_source_drift_bps),
     )?;
     insert_string(
         &mut reference_table,
         "drift_policy",
-        reference_price_drift_policy_value(reference_price.drift_policy),
+        reference_price_drift_policy_value(reference_current_price.drift_policy),
     );
     insert_string(
         &mut reference_table,
         "stale_policy",
-        reference_price_stale_policy_value(reference_price.stale_policy),
+        reference_price_stale_policy_value(reference_current_price.stale_policy),
     );
 
     let mut source_tables = Map::new();
-    for (source_id, source) in &reference_price.sources {
+    for (source_id, source) in &reference_current_price.sources {
         let mut source_table = Map::new();
         insert_string(
             &mut source_table,
@@ -1174,7 +1158,10 @@ fn insert_reference_price_config(
         source_tables.insert(source_id.clone(), Value::Table(source_table));
     }
     reference_table.insert("source".to_string(), Value::Table(source_tables));
-    table.insert("reference_price".to_string(), Value::Table(reference_table));
+    table.insert(
+        "reference_current_price".to_string(),
+        Value::Table(reference_table),
+    );
     Ok(())
 }
 
@@ -1339,29 +1326,9 @@ fn oms_type_value(strategy: &LoadedStrategy) -> String {
     enum_variant_lowercase(strategy.config.oms_type)
 }
 
-fn configured_reference_data(
-    strategy: &LoadedStrategy,
-) -> Result<
-    Option<&crate::bolt_v3_config::ReferenceDataBlock>,
-    BinaryOracleEdgeTakerRuntimeConfigError,
-> {
-    let mut entries = strategy.config.reference_data.iter();
-    match (entries.next(), entries.next()) {
-        (Some((_role, block)), None) => Ok(Some(block)),
-        (None, _) => Ok(None),
-        (Some(_), Some(_)) => Err(BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
-            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-            message: format!(
-                "allows at most one [reference_data.<role>] block; got roles [{}]",
-                reference_data_role_names(&strategy.config)
-            ),
-        }),
-    }
-}
-
 fn configured_signal_data(
     strategy: &LoadedStrategy,
-) -> Result<&crate::bolt_v3_config::ReferenceDataBlock, BinaryOracleEdgeTakerRuntimeConfigError> {
+) -> Result<&crate::bolt_v3_config::DataInstrumentBlock, BinaryOracleEdgeTakerRuntimeConfigError> {
     let mut entries = strategy.config.signal_data.iter();
     match (entries.next(), entries.next()) {
         (Some((_role, block)), None) => Ok(block),
@@ -1381,7 +1348,7 @@ fn configured_signal_data(
 
 fn configured_resolution_data(
     strategy: &LoadedStrategy,
-) -> Option<&crate::bolt_v3_config::ReferenceDataBlock> {
+) -> Option<&crate::bolt_v3_config::DataInstrumentBlock> {
     strategy.config.resolution_data.as_ref()
 }
 
@@ -1396,7 +1363,7 @@ fn configured_resolution_data(
 /// is rejected here at config load.
 fn validate_resolution_data_binding(
     strategy: &LoadedStrategy,
-    resolution_data: &crate::bolt_v3_config::ReferenceDataBlock,
+    resolution_data: &crate::bolt_v3_config::DataInstrumentBlock,
     resolution_client: &crate::bolt_v3_config::ClientBlock,
     underlying_asset: &str,
 ) -> Result<(), BinaryOracleEdgeTakerRuntimeConfigError> {
@@ -1451,15 +1418,6 @@ fn validate_resolution_data_binding(
     Ok(())
 }
 
-fn reference_data_role_names(strategy: &BoltV3StrategyConfig) -> String {
-    strategy
-        .reference_data
-        .keys()
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 fn signal_data_role_names(strategy: &BoltV3StrategyConfig) -> String {
     strategy
         .signal_data
@@ -1469,13 +1427,8 @@ fn signal_data_role_names(strategy: &BoltV3StrategyConfig) -> String {
         .join(", ")
 }
 
-fn validate_required_reference_data(context: &str, strategy: &BoltV3StrategyConfig) -> Vec<String> {
+fn validate_required_market_data(context: &str, strategy: &BoltV3StrategyConfig) -> Vec<String> {
     let mut errors = Vec::new();
-    if strategy.reference_data.len() > 1 {
-        errors.push(format!(
-            "{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [reference_data.<role>] block"
-        ));
-    }
     if strategy.signal_data.len() > 1 {
         errors.push(format!(
             "{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [signal_data.<role>] block"

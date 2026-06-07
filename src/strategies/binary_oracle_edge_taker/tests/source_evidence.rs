@@ -3,20 +3,6 @@
 use super::*;
 
 #[test]
-fn source_owned_reference_identity_does_not_panic_nt_quote_filter() {
-    let mut strategy = test_strategy();
-    strategy.config.reference_venue = Some("resolution_oracle_primary".to_string());
-    strategy.config.reference_instrument_id = Some("configured-reference-price".to_string());
-
-    strategy
-        .on_quote(&quote_tick("REFERENCE.SOURCE", 100.0, 102.0, 1_200))
-        .expect("source-owned reference identity should not be parsed as an NT instrument");
-
-    assert_eq!(strategy.pricing.last_reference_fair_value, None);
-    assert_eq!(strategy.pricing.fast_spot, None);
-}
-
-#[test]
 fn interval_open_captures_source_bound_price_to_beat_at_or_after_market_start() {
     let mut strategy = test_strategy();
     let mut snapshot = active_snapshot_with_start("MKT-1", 1_000);

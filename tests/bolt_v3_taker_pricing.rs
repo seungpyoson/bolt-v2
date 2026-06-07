@@ -34,7 +34,7 @@ fn observe_pair(
     ts_ms: u64,
     price: f64,
 ) {
-    pricing.observe_reference_quote(&FastSpotObservation {
+    pricing.observe_reference_current_price(&FastSpotObservation {
         venue: "reference".to_string(),
         price,
         observed_ts_ms: ts_ms,

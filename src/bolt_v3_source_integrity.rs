@@ -198,8 +198,10 @@ mod tests {
     // and subscription handling to the canonical strategy source set.
     // Re-derived again by #606 review cleanup after resetting stale reference
     // quote state on interval transition and using strategy clock time.
+    // Re-derived again by #606 after removing the legacy strategy quote path
+    // and making reference_current_price the single decision input.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "87d051cb5147b8d148d7a5d91655c63ad53ccebccdb8edd799a22aa26384c431";
+        "68531e2b00da968f487abec91096dce8d87622e732bdf861f9e388e3d0d164da";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

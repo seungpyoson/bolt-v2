@@ -18,14 +18,14 @@ const TEST_PRICING_SNAPSHOT_MISMATCHED_STALE_REFERENCE_PRICE: f64 =
     TEST_PRICING_SNAPSHOT_REFERENCE_PRICE_STEP;
 
 #[test]
-fn reference_quote_tick_updates_fair_value_without_becoming_signal() {
+fn non_signal_quote_tick_does_not_update_reference_current_price_or_signal() {
     let mut strategy = test_strategy();
 
     strategy
         .on_quote(&quote_tick("REFERENCE.SOURCE", 100.0, 102.0, 1_200))
-        .expect("reference quote should process");
+        .expect("non-signal quote should process without mutating pricing");
 
-    assert_eq!(strategy.pricing.last_reference_fair_value, Some(101.0));
+    assert_eq!(strategy.pricing.last_reference_current_price, None);
     assert_eq!(strategy.pricing.fast_spot, None);
     assert!(!strategy.pricing.lead_quality_policy_applied);
 }
@@ -35,13 +35,13 @@ fn signal_quote_tick_updates_pricing_from_configured_signal_data() {
     let mut strategy = test_strategy();
 
     strategy
-        .on_quote(&quote_tick("REFERENCE.SOURCE", 100.0, 102.0, 1_100))
-        .expect("reference quote should process");
+        .pricing
+        .observe_reference_current_price(&fast_spot("chainlink_primary", 101.0, 1_100));
     strategy
         .on_quote(&quote_tick("SIGNAL.SOURCE", 100.5, 102.5, 1_200))
         .expect("signal quote should process");
 
-    assert_eq!(strategy.pricing.last_reference_fair_value, Some(101.0));
+    assert_eq!(strategy.pricing.last_reference_current_price, Some(101.0));
     assert_eq!(
         strategy.pricing.fast_spot,
         Some(fast_spot("signal_data_client", 101.5, 1_200))
@@ -55,7 +55,7 @@ fn signal_quote_tick_does_not_warm_active_reference_state() {
     let mut market = candidate_market("market-1", 1_000);
     market.price_to_beat = Some(3_100.0);
     strategy.apply_selection_snapshot(selection_snapshot(1_000, SelectionState::Active { market }));
-    strategy.pricing.last_reference_fair_value = Some(3_101.0);
+    strategy.pricing.last_reference_current_price = Some(3_101.0);
 
     strategy
         .on_quote(&quote_tick("SIGNAL.SOURCE", 3_102.0, 3_104.0, 1_200))
@@ -78,7 +78,7 @@ fn non_reference_quote_tick_does_not_update_pricing() {
         .on_quote(&quote_tick("OTHER.SOURCE", 100.0, 102.0, 1_200))
         .expect("non-reference quote should be ignored");
 
-    assert_eq!(strategy.pricing.last_reference_fair_value, None);
+    assert_eq!(strategy.pricing.last_reference_current_price, None);
     assert_eq!(strategy.pricing.fast_spot, None);
 }
 
@@ -93,7 +93,7 @@ fn pricing_state_requires_fast_spot_for_pricing_and_keeps_reference_separate() {
         config.lead_jitter_max_ms,
     );
     assert_eq!(pricing.spot_price(), None);
-    assert_eq!(pricing.last_reference_fair_value, Some(3_100.0));
+    assert_eq!(pricing.last_reference_current_price, Some(3_100.0));
 
     let snapshot = ReferenceSnapshot {
         ts_ms: 1_100,
@@ -136,11 +136,11 @@ fn pricing_state_reference_snapshot_rejects_stale_fair_value() {
     );
 
     assert_eq!(
-        pricing.last_reference_fair_value,
+        pricing.last_reference_current_price,
         Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE)
     );
     assert_eq!(
-        pricing.last_reference_observed_ts_ms,
+        pricing.last_reference_current_price_ts_ms,
         Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS)
     );
 }
@@ -177,11 +177,11 @@ fn pricing_state_reference_snapshot_processes_signal_candidates_when_fair_value_
     );
 
     assert_eq!(
-        pricing.last_reference_fair_value,
+        pricing.last_reference_current_price,
         Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE)
     );
     assert_eq!(
-        pricing.last_reference_observed_ts_ms,
+        pricing.last_reference_current_price_ts_ms,
         Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS)
     );
     assert_eq!(
@@ -244,7 +244,7 @@ fn pricing_state_applies_lead_quality_thresholds() {
     assert!(pricing.fast_spot.is_none());
     assert!(pricing.fast_venue_incoherent);
     assert_eq!(pricing.spot_price(), None);
-    assert_eq!(pricing.last_reference_fair_value, Some(3_100.0));
+    assert_eq!(pricing.last_reference_current_price, Some(3_100.0));
 }
 
 #[test]
@@ -282,7 +282,7 @@ fn pricing_state_clears_fast_spot_when_no_fast_venue_remains() {
 
     assert!(pricing.fast_spot.is_none());
     assert_eq!(pricing.spot_price(), None);
-    assert_eq!(pricing.last_reference_fair_value, Some(3_101.0));
+    assert_eq!(pricing.last_reference_current_price, Some(3_101.0));
 }
 
 #[test]
@@ -570,7 +570,7 @@ fn pricing_state_reports_realized_vol_source_during_bridge_without_fast_spot() {
 fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.pricing.fast_spot = None;
-    strategy.pricing.last_reference_fair_value = Some(3_101.0);
+    strategy.pricing.last_reference_current_price = Some(3_101.0);
     strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
     strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
     strategy.pricing.realized_vol_source_venue = Some("bybit".to_string());
@@ -653,14 +653,27 @@ fn live_scaled_min_edge_uses_theta_scaler_near_expiry() {
 }
 
 #[test]
-fn interval_open_requires_source_bound_price_to_beat_before_reference_quote_warms_market() {
+fn reference_current_price_does_not_open_interval_without_source_bound_price_to_beat() {
     let mut strategy = test_strategy();
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
 
-    strategy.observe_reference_quote(&fast_spot("reference", 3_101.0, 1_000));
+    let quote = ReferenceQuote::try_new(
+        "BTC",
+        "reference",
+        crate::bolt_v3_config::ReferencePriceProvider::new("chainlink_ws")
+            .expect("test provider should be valid"),
+        3_101.0,
+        None,
+        None,
+        1_000,
+        1_000,
+    )
+    .expect("reference current price quote should construct");
+    assert!(strategy.active.observe_reference_price_quote(&quote));
 
     assert_eq!(strategy.active.interval_open, None);
-    assert_eq!(strategy.active.last_reference_ts_ms, None);
+    assert_eq!(strategy.active.reference_current_price, Some(3_101.0));
+    assert_eq!(strategy.active.last_reference_ts_ms, Some(1_000));
     assert_eq!(strategy.active.warmup_count, INITIAL_COUNTER_U64);
 }
 
@@ -1012,7 +1025,7 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
     assert_eq!(fields.phase, SelectionPhase::Active);
     assert_eq!(fields.spot_venue_name.as_deref(), Some("bybit"));
     assert_eq!(fields.spot_price, Some(3_101.0));
-    assert_eq!(fields.reference_fair_value, Some(3_100.5));
+    assert_eq!(fields.reference_current_price, Some(3_100.5));
     assert_eq!(fields.interval_open, Some(3_100.0));
     assert_eq!(fields.realized_vol, Some(2.5));
     assert_eq!(fields.realized_vol_source_venue.as_deref(), Some("bybit"));

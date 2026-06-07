@@ -1,7 +1,7 @@
 //! Shared taker pricing state extracted from `binary_oracle_edge_taker`.
 //!
-//! This module mirrors the current RV-based taker pricing path: reference and
-//! lead-venue observations warm realized volatility, then current spot/strike/
+//! This module mirrors the current RV-based taker pricing path: reference current
+//! price and lead-venue observations warm realized volatility, then current spot/strike/
 //! expiry/config are assembled into the existing market-family fair probability.
 //! It deliberately does not introduce IV, maker spread logic, or submit policy.
 
@@ -98,8 +98,8 @@ impl VenueTimingState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TakerPricingState {
-    pub(crate) last_reference_fair_value: Option<f64>,
-    pub(crate) last_reference_observed_ts_ms: Option<u64>,
+    pub(crate) last_reference_current_price: Option<f64>,
+    pub(crate) last_reference_current_price_ts_ms: Option<u64>,
     pub(crate) fast_spot: Option<FastSpotObservation>,
     pub(crate) realized_vol: RealizedVolEstimator,
     pub(crate) realized_vol_source_venue: Option<String>,
@@ -120,8 +120,8 @@ pub struct TakerPricingState {
 impl TakerPricingState {
     pub fn from_config(config: &TakerPricingConfig<'_>) -> Self {
         Self {
-            last_reference_fair_value: None,
-            last_reference_observed_ts_ms: None,
+            last_reference_current_price: None,
+            last_reference_current_price_ts_ms: None,
             fast_spot: None,
             realized_vol: RealizedVolEstimator::from_config(&config.realized_vol),
             realized_vol_source_venue: None,
@@ -138,19 +138,20 @@ impl TakerPricingState {
         }
     }
 
-    pub fn observe_reference_quote(&mut self, quote: &FastSpotObservation) {
+    pub fn observe_reference_current_price(&mut self, quote: &FastSpotObservation) {
         if !is_positive_finite(quote.price) {
             return;
         }
         if self
-            .last_reference_observed_ts_ms
+            .last_reference_current_price_ts_ms
             .is_some_and(|last_ts_ms| quote.observed_ts_ms <= last_ts_ms)
         {
             return;
         }
 
-        self.last_reference_observed_ts_ms = Some(quote.observed_ts_ms);
-        self.last_reference_fair_value = Some(quote.price);
+        self.last_reference_current_price_ts_ms = Some(quote.observed_ts_ms);
+        self.last_reference_current_price = Some(quote.price);
+        self.fast_spot = Some(quote.clone());
     }
 
     pub fn observe_signal_quote(
@@ -171,8 +172,8 @@ impl TakerPricingState {
         self.lead_quality_policy_applied = true;
 
         let jitter_ms = self.record_signal_quote_timing(&quote.venue, quote.observed_ts_ms);
-        let Some(reference_fair_value) = self
-            .last_reference_fair_value
+        let Some(reference_current_price) = self
+            .last_reference_current_price
             .filter(|value| is_positive_finite(*value))
         else {
             self.fast_spot = None;
@@ -184,10 +185,10 @@ impl TakerPricingState {
             self.fast_venue_incoherent = true;
             return;
         };
-        let agreement_corr = price_agreement_corr(quote.price, reference_fair_value)
-            .expect("validated signal/reference prices should yield agreement");
-        let lead_gap_probability = price_gap_probability(quote.price, reference_fair_value)
-            .expect("validated signal/reference prices should yield a gap");
+        let agreement_corr = price_agreement_corr(quote.price, reference_current_price)
+            .expect("validated signal/reference current prices should yield agreement");
+        let lead_gap_probability = price_gap_probability(quote.price, reference_current_price)
+            .expect("validated signal/reference current prices should yield a gap");
         let eligible = agreement_corr >= config.lead_agreement_min_corr
             && jitter_ms <= config.lead_jitter_max_ms
             && sanitize_probability(lead_gap_probability).is_some();
@@ -441,12 +442,13 @@ mod tests {
     const TEST_MIN_OBSERVATIONS_READY_AFTER_TWO_SAMPLES: u64 = 1;
     const TEST_GAP_RESET_SECS: u64 = 30;
     const TEST_BRIDGE_VALID_SECS: u64 = 10;
-    const TEST_REFERENCE_PRICE_STEP: f64 = 100.0;
+    const TEST_REFERENCE_CURRENT_PRICE_STEP: f64 = 100.0;
     const TEST_REFERENCE_TS_STEP_MS: u64 = 100;
-    const TEST_NEWER_REFERENCE_PRICE: f64 = 100.0;
-    const TEST_STALE_REFERENCE_PRICE: f64 = TEST_NEWER_REFERENCE_PRICE + TEST_REFERENCE_PRICE_STEP;
-    const TEST_REPLACEMENT_REFERENCE_PRICE: f64 =
-        TEST_STALE_REFERENCE_PRICE + TEST_REFERENCE_PRICE_STEP;
+    const TEST_NEWER_REFERENCE_CURRENT_PRICE: f64 = 100.0;
+    const TEST_STALE_REFERENCE_CURRENT_PRICE: f64 =
+        TEST_NEWER_REFERENCE_CURRENT_PRICE + TEST_REFERENCE_CURRENT_PRICE_STEP;
+    const TEST_REPLACEMENT_REFERENCE_CURRENT_PRICE: f64 =
+        TEST_STALE_REFERENCE_CURRENT_PRICE + TEST_REFERENCE_CURRENT_PRICE_STEP;
     const TEST_NEWER_REFERENCE_TS_MS: u64 = 1_000;
     const TEST_STALE_REFERENCE_TS_MS: u64 = TEST_NEWER_REFERENCE_TS_MS - TEST_REFERENCE_TS_STEP_MS;
     const TEST_REPLACEMENT_REFERENCE_TS_MS: u64 =
@@ -479,7 +481,7 @@ mod tests {
         }
     }
 
-    fn reference_venue() -> &'static str {
+    fn reference_current_price_source() -> &'static str {
         std::any::type_name::<FastSpotObservation>()
     }
 
@@ -502,7 +504,8 @@ mod tests {
         price: f64,
         observed_ts_ms: u64,
     ) {
-        pricing.observe_reference_quote(&quote(reference_venue(), price, observed_ts_ms));
+        pricing.last_reference_current_price = Some(price);
+        pricing.last_reference_current_price_ts_ms = Some(observed_ts_ms);
         pricing.observe_signal_quote(&quote(venue, price, observed_ts_ms), config);
     }
 
@@ -524,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn out_of_order_reference_quote_does_not_overwrite_newer_fair_value() {
+    fn out_of_order_reference_current_price_does_not_overwrite_newer_value() {
         let config = config(
             TEST_MIN_OBSERVATIONS_READY_AFTER_TWO_SAMPLES,
             TEST_GAP_RESET_SECS,
@@ -532,42 +535,42 @@ mod tests {
         );
         let mut pricing = TakerPricingState::from_config(&config);
 
-        pricing.observe_reference_quote(&quote(
-            reference_venue(),
-            TEST_NEWER_REFERENCE_PRICE,
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            TEST_NEWER_REFERENCE_CURRENT_PRICE,
             TEST_NEWER_REFERENCE_TS_MS,
         ));
-        pricing.observe_reference_quote(&quote(
-            reference_venue(),
-            TEST_STALE_REFERENCE_PRICE,
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            TEST_STALE_REFERENCE_CURRENT_PRICE,
             TEST_STALE_REFERENCE_TS_MS,
         ));
         pricing.observe_signal_quote(
             &quote(
                 signal_venue(),
-                TEST_NEWER_REFERENCE_PRICE,
+                TEST_NEWER_REFERENCE_CURRENT_PRICE,
                 TEST_SIGNAL_AFTER_REFERENCE_TS_MS,
             ),
             &config,
         );
 
         assert_eq!(
-            pricing.last_reference_fair_value,
-            Some(TEST_NEWER_REFERENCE_PRICE)
+            pricing.last_reference_current_price,
+            Some(TEST_NEWER_REFERENCE_CURRENT_PRICE)
         );
         assert_eq!(
-            pricing.last_reference_observed_ts_ms,
+            pricing.last_reference_current_price_ts_ms,
             Some(TEST_NEWER_REFERENCE_TS_MS)
         );
         assert_eq!(
             pricing.fast_spot.as_ref().map(|spot| spot.price),
-            Some(TEST_NEWER_REFERENCE_PRICE)
+            Some(TEST_NEWER_REFERENCE_CURRENT_PRICE)
         );
         assert!(!pricing.fast_venue_incoherent);
     }
 
     #[test]
-    fn newer_reference_quote_overwrites_previous_fair_value() {
+    fn newer_reference_current_price_overwrites_previous_value() {
         let config = config(
             TEST_MIN_OBSERVATIONS_READY_AFTER_TWO_SAMPLES,
             TEST_GAP_RESET_SECS,
@@ -575,36 +578,36 @@ mod tests {
         );
         let mut pricing = TakerPricingState::from_config(&config);
 
-        pricing.observe_reference_quote(&quote(
-            reference_venue(),
-            TEST_NEWER_REFERENCE_PRICE,
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            TEST_NEWER_REFERENCE_CURRENT_PRICE,
             TEST_NEWER_REFERENCE_TS_MS,
         ));
-        pricing.observe_reference_quote(&quote(
-            reference_venue(),
-            TEST_REPLACEMENT_REFERENCE_PRICE,
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            TEST_REPLACEMENT_REFERENCE_CURRENT_PRICE,
             TEST_REPLACEMENT_REFERENCE_TS_MS,
         ));
         pricing.observe_signal_quote(
             &quote(
                 signal_venue(),
-                TEST_REPLACEMENT_REFERENCE_PRICE,
+                TEST_REPLACEMENT_REFERENCE_CURRENT_PRICE,
                 TEST_SIGNAL_AFTER_REPLACEMENT_REFERENCE_TS_MS,
             ),
             &config,
         );
 
         assert_eq!(
-            pricing.last_reference_fair_value,
-            Some(TEST_REPLACEMENT_REFERENCE_PRICE)
+            pricing.last_reference_current_price,
+            Some(TEST_REPLACEMENT_REFERENCE_CURRENT_PRICE)
         );
         assert_eq!(
-            pricing.last_reference_observed_ts_ms,
+            pricing.last_reference_current_price_ts_ms,
             Some(TEST_REPLACEMENT_REFERENCE_TS_MS)
         );
         assert_eq!(
             pricing.fast_spot.as_ref().map(|spot| spot.price),
-            Some(TEST_REPLACEMENT_REFERENCE_PRICE)
+            Some(TEST_REPLACEMENT_REFERENCE_CURRENT_PRICE)
         );
         assert!(!pricing.fast_venue_incoherent);
     }

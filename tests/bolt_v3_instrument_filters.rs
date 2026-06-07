@@ -907,15 +907,15 @@ fn validate_module_must_not_own_binary_oracle_edge_taker_policy() {
         "order_type=market",
         "time_in_force=fok",
         "time_in_force=ioc",
-        // Concrete archetype-required reference-data error-message phrase.
-        "[reference_data.primary]",
+        // Concrete archetype-required signal-data error-message phrase.
+        "[signal_data.primary]",
     ];
     for symbol in forbidden {
         assert!(
             !src.contains(symbol),
             "src/bolt_v3_validate.rs must not own binary_oracle_edge_taker policy; \
              source unexpectedly references `{symbol}`. \
-             Move the archetype's required reference-data role, its \
+             Move the archetype's required signal-data role, its \
              entry/exit order-combination rules, and the matching error \
              messages to src/bolt_v3_archetypes/binary_oracle_edge_taker.rs; \
              have validate.rs dispatch into the archetype validator via \

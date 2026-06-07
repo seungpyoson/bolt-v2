@@ -8,6 +8,7 @@ pub mod bolt_v3_instrument_filters;
 pub mod bolt_v3_kill_switch;
 pub mod bolt_v3_kill_switch_store;
 pub mod bolt_v3_live_node;
+pub mod bolt_v3_maker_event_fence;
 pub mod bolt_v3_maker_inventory;
 pub mod bolt_v3_maker_microprice;
 pub mod bolt_v3_maker_model;

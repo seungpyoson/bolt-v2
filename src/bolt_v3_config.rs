@@ -369,15 +369,14 @@ pub struct BoltV3StrategyConfig {
     /// matching family validator and inside the family planner; the
     /// strategy envelope itself is target-shape-neutral.
     pub target: toml::Value,
-    pub reference_data: BTreeMap<String, ReferenceDataBlock>,
-    pub signal_data: BTreeMap<String, ReferenceDataBlock>,
+    pub signal_data: BTreeMap<String, DataInstrumentBlock>,
     /// Optional live resolution-strike (price-to-beat) data source. Mirrors the
-    /// `[reference_data]` block shape (`data_client_id` + `instrument_id`) but is
-    /// a single block rather than a role-keyed map, matching the strategy's
+    /// data-client block shape (`data_client_id` + `instrument_id`) but is a
+    /// single block rather than a role-keyed map, matching the strategy's
     /// singular `resolution_client_id` / `resolution_instrument_id` runtime
     /// fields. When absent, the live strike simply does not subscribe.
-    pub resolution_data: Option<ReferenceDataBlock>,
-    pub reference_price: Option<ReferencePriceBlock>,
+    pub resolution_data: Option<DataInstrumentBlock>,
+    pub reference_current_price: Option<ReferencePriceBlock>,
     pub parameters: toml::Value,
 }
 
@@ -393,7 +392,7 @@ impl StrategyArchetypeKey {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct ReferenceDataBlock {
+pub struct DataInstrumentBlock {
     pub data_client_id: ClientId,
     pub instrument_id: InstrumentId,
 }
@@ -734,7 +733,8 @@ mod tests {
             .as_table()
             .expect("[target] should parse into a table");
         assert!(!target_table.is_empty());
-        assert!(strategy.reference_data.is_empty());
+        assert!(strategy.signal_data.contains_key("primary"));
+        assert!(strategy.reference_current_price.is_some());
     }
 
     #[test]

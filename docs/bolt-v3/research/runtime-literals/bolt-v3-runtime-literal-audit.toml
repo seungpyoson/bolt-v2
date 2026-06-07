@@ -34,7 +34,7 @@ kind = "string"
 literal = '''", "'''
 context = '''.join(", ")'''
 classification = "strategy_archetype_diagnostic_separator"
-reason = "This joins configured reference_data role names in a validation diagnostic; it is not a runtime operator value."
+reason = "This joins configured signal_data role names in a validation diagnostic; it is not a runtime operator value."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -439,22 +439,6 @@ reason = "This is an existing taker strategy config schema field name; the value
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"reference_instrument_id"'''
-context = '''"reference_instrument_id",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is an existing taker strategy config schema field name, populated from the configured bolt-v3 TOML reference_data role instrument_id."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"reference_venue"'''
-context = '''"reference_venue",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is the existing taker StrategyConfig field name populated from the configured reference_data data_client_id role."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
 literal = '''"signal_instrument_id"'''
 context = '''"signal_instrument_id",'''
 classification = "strategy_runtime_schema_field"
@@ -511,26 +495,10 @@ reason = "This diagnostic reports a config-to-existing-strategy numeric conversi
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"allows at most one [reference_data.<role>] block; got roles [{}]"'''
-context = '''"allows at most one [reference_data.<role>] block; got roles [{}]",'''
-classification = "strategy_archetype_diagnostic_template"
-reason = "This diagnostic rejects ambiguous legacy reference_data role wiring before deriving runtime config; it is not a runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
 literal = '''"allows at most one [signal_data.<role>] block; got roles [{}]"'''
 context = '''"allows at most one [signal_data.<role>] block; got roles [{}]",'''
 classification = "strategy_archetype_diagnostic_template"
 reason = "This diagnostic rejects ambiguous signal_data role wiring before deriving runtime config; it is not a runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [reference_data.<role>] block"'''
-context = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [reference_data.<role>] block"'''
-classification = "strategy_archetype_diagnostic_template"
-reason = "This validation diagnostic rejects ambiguous legacy reference_data role wiring; it is not a runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -7383,86 +7351,6 @@ reason = "Config-load validation diagnostic for resolution-oracle feed-binding c
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
-literal = '''"reference_venue"'''
-context = '''"reference_venue"'''
-classification = "strategy_runtime_schema_field"
-reason = "This is the existing taker StrategyConfig field name for the configured reference data client id."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_venue"'''
-context = '''Self::validate_optional_string_field(table, field_prefix, "reference_venue", errors);'''
-classification = "strategy_runtime_schema_field"
-reason = "This validates the existing taker StrategyConfig field name for the configured reference data client id."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_venue"'''
-context = '''if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {'''
-classification = "strategy_runtime_schema_field"
-reason = "This enforces paired configured reference data fields in the existing taker config schema."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_venue"'''
-context = '''let missing = if table.contains_key("reference_venue") {'''
-classification = "strategy_runtime_schema_field"
-reason = "This builds a diagnostic for the paired configured reference data fields in the existing taker config schema."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_venue"'''
-context = '''| "reference_venue"'''
-classification = "strategy_runtime_schema_field"
-reason = "This whitelists the existing taker StrategyConfig field name while rejecting unknown runtime config fields."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_instrument_id"'''
-context = '''"reference_instrument_id"'''
-classification = "strategy_runtime_schema_field"
-reason = "This is the existing taker StrategyConfig field name for the configured reference instrument id."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_instrument_id"'''
-context = '''"reference_instrument_id",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is the existing taker StrategyConfig field name for the configured reference instrument id."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_instrument_id"'''
-context = '''if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {'''
-classification = "strategy_runtime_schema_field"
-reason = "This enforces paired configured reference data fields in the existing taker config schema."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"reference_instrument_id"'''
-context = '''| "reference_instrument_id"'''
-classification = "strategy_runtime_schema_field"
-reason = "This whitelists the existing taker StrategyConfig field name while rejecting unknown runtime config fields."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"missing_reference_data_pair"'''
-context = '''"missing_reference_data_pair",'''
-classification = "strategy_runtime_validation_code"
-reason = "This validation code labels a missing paired reference data field; it is not a runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
 literal = '''"signal_venue"'''
 context = '''Self::validate_optional_string_field(table, field_prefix, "signal_venue", errors);'''
 classification = "strategy_runtime_schema_field"
@@ -7523,14 +7411,6 @@ literal = '''0'''
 context = '''const INITIAL_COUNTER_U64: u64 = 0;'''
 classification = "strategy_state_invariant"
 reason = "This is a named initial counter invariant for strategy state, not an operator runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
-kind = "number"
-literal = '''1'''
-context = '''const COUNTER_INCREMENT: usize = 1;'''
-classification = "strategy_state_invariant"
-reason = "This is a named counter increment invariant for strategy state, not an operator runtime value."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
@@ -8426,7 +8306,7 @@ reason = "This prints the redacted operator artifact JSON object assembled from 
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"asset"'''
-context = '''insert_string(&mut reference_table, "asset", reference_price.asset.clone());'''
+context = '''"asset",'''
 classification = "reference_price_runtime_schema_field"
 reason = "Reference-price archetype projection TOML field name; the field carries operator-supplied asset data from config."
 
@@ -8449,8 +8329,8 @@ reason = "Reference-price archetype projection TOML field name; the quorum value
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"reference_price.min_valid_sources"'''
-context = '''"reference_price.min_valid_sources",'''
+literal = '''"reference_current_price.min_valid_sources"'''
+context = '''"reference_current_price.min_valid_sources",'''
 classification = "reference_price_runtime_validation_field"
 reason = "Validation label for the reference-price quorum field used in archetype projection errors."
 
@@ -8545,10 +8425,10 @@ reason = "Reference-price source table name in projected TOML; individual source
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"reference_price"'''
-context = '''table.insert("reference_price".to_string(), Value::Table(reference_table));'''
+literal = '''"reference_current_price"'''
+context = '''"reference_current_price".to_string(),'''
 classification = "reference_price_runtime_schema_field"
-reason = "Strategy-scoped reference-price table name in projected TOML."
+reason = "Strategy-scoped reference-current-price table name in projected TOML."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -8588,7 +8468,7 @@ kind = "number"
 literal = '''1'''
 context = '''const REFERENCE_PRICE_DEFAULT_MIN_VALID_SOURCES: usize = 1;'''
 classification = "reference_price_default_quorum"
-reason = "Prompt-required default quorum for omitted reference_price.min_valid_sources; explicit TOML may supply a stricter quorum."
+reason = "Prompt-required default quorum for omitted reference_current_price.min_valid_sources; explicit TOML may supply a stricter quorum."
 
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink_reference.rs"
@@ -9113,8 +8993,8 @@ reason = "Lower-bound check for normalized reference-price values; provider pric
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
 kind = "string"
-literal = '''"{context}: reference_price.min_valid_sources {} exceeds enabled source count {}"'''
-context = '''"{context}: reference_price.min_valid_sources {} exceeds enabled source count {}",'''
+literal = '''"{context}: reference_current_price.min_valid_sources {} exceeds enabled source count {}"'''
+context = '''"{context}: reference_current_price.min_valid_sources {} exceeds enabled source count {}",'''
 classification = "reference_price_validation_diagnostic"
 reason = "Config validation diagnostic for impossible reference-price quorum settings."
 
@@ -9129,15 +9009,15 @@ reason = "Decrement-by-one adjustment when an enabled reference-price source is 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
-literal = '''"reference_price"'''
-context = '''| "reference_price"'''
+literal = '''"reference_current_price"'''
+context = '''| "reference_current_price"'''
 classification = "strategy_runtime_schema_field"
-reason = "Whitelisted strategy config table for reference-price settings while rejecting unknown runtime fields."
+reason = "Whitelisted strategy config table for reference-current-price settings while rejecting unknown runtime fields."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
-literal = '''"reference_price"'''
-context = '''Self::validate_optional_table_field(table, field_prefix, "reference_price", errors);'''
+literal = '''"reference_current_price"'''
+context = '''Self::validate_optional_table_field(table, field_prefix, "reference_current_price", errors);'''
 classification = "strategy_runtime_schema_field"
-reason = "Strategy config schema table name for optional reference-price settings."
+reason = "Strategy config schema table name for optional reference-current-price settings."

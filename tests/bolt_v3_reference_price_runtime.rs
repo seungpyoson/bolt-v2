@@ -279,6 +279,27 @@ fn selector_optional_source_unavailable_does_not_block_when_quorum_remains() {
 }
 
 #[test]
+fn selector_rejects_quote_observed_after_interval_end() {
+    let mut selector =
+        ReferencePriceSelector::new("BTC", ["chainlink_primary".to_string()], 1, 2000, 25)
+            .expect("selector config should be valid");
+
+    let selected = selector.select(
+        1774672089000,
+        1774672389000,
+        1774672389100,
+        &[quote(
+            "chainlink_primary",
+            66300.25,
+            1774672389001,
+            1774672389050,
+        )],
+    );
+
+    assert_eq!(selected, None);
+}
+
+#[test]
 fn selector_observes_cross_source_drift_without_blocking_by_default() {
     let mut selector = ReferencePriceSelector::new(
         "BTC",

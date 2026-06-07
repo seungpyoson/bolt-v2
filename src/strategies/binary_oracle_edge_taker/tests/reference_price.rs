@@ -25,7 +25,7 @@ fn reference_provider(key: &str) -> ReferencePriceProvider {
 #[test]
 fn custom_reference_price_update_does_not_mutate_price_to_beat() {
     let mut strategy = test_strategy();
-    strategy.config.reference_price = Some(reference_price_config());
+    strategy.config.reference_current_price = Some(reference_price_config());
     strategy.active =
         ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
     let _cache = register_test_strategy(&mut strategy);
@@ -46,19 +46,54 @@ fn custom_reference_price_update_does_not_mutate_price_to_beat() {
 
     DataActor::on_data(&mut strategy, &update).expect("custom reference price should be handled");
 
-    assert_eq!(strategy.active.reference_price, Some(66_300.25));
+    assert_eq!(strategy.active.reference_current_price, Some(66_300.25));
     assert_eq!(
-        strategy.active.reference_price_source_id.as_deref(),
+        strategy.active.reference_current_price_source_id.as_deref(),
         Some("chainlink_primary")
     );
-    assert_eq!(strategy.active.reference_price_ts_ms, Some(1_200));
+    assert_eq!(strategy.active.reference_current_price_ts_ms, Some(1_200));
     assert_eq!(strategy.active.price_to_beat, None);
+}
+
+#[test]
+fn selected_reference_current_price_feeds_entry_pricing_spot() {
+    let mut strategy = ready_to_trade_strategy();
+    strategy.config.reference_current_price = Some(reference_price_config());
+    strategy.active.last_reference_ts_ms = None;
+    strategy.pricing.fast_spot = None;
+    strategy.pricing.last_reference_current_price = None;
+    let _cache = register_test_strategy(&mut strategy);
+
+    let update = ReferencePriceUpdate::try_new(
+        "BTC",
+        "chainlink_primary",
+        CHAINLINK_REFERENCE_PROVIDER,
+        66_300.25,
+        None,
+        None,
+        1_200,
+        1_250,
+    )
+    .expect("reference current price update should construct")
+    .to_custom_data();
+
+    DataActor::on_data(&mut strategy, &update)
+        .expect("custom reference current price should be handled");
+
+    let inputs = strategy
+        .current_entry_pricing_inputs_at(1_200)
+        .expect("selected reference current price should supply entry spot");
+    assert_eq!(inputs.spot_price, 66_300.25);
+    assert_eq!(
+        strategy.pricing.fast_spot,
+        Some(fast_spot("chainlink_primary", 66_300.25, 1_200))
+    );
 }
 
 #[test]
 fn reference_price_sources_subscribe_as_custom_data_on_start_and_unsubscribe_on_stop() {
     let mut strategy = test_strategy();
-    strategy.config.reference_price = Some(reference_price_config());
+    strategy.config.reference_current_price = Some(reference_price_config());
     register_test_strategy(&mut strategy);
 
     DataActor::on_start(&mut strategy).expect("strategy should start");
@@ -115,7 +150,7 @@ fn non_winning_reference_price_source_updates_health_without_trading_state() {
         .get_mut("chainlink_primary")
         .expect("chainlink source should exist")
         .required = false;
-    strategy.config.reference_price = Some(reference_price);
+    strategy.config.reference_current_price = Some(reference_price);
     strategy.active =
         ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
     let _cache = register_test_strategy(&mut strategy);
@@ -134,9 +169,9 @@ fn non_winning_reference_price_source_updates_health_without_trading_state() {
     .to_custom_data();
     DataActor::on_data(&mut strategy, &backup).expect("backup quote should be handled");
 
-    assert_eq!(strategy.active.reference_price, Some(66_300.25));
+    assert_eq!(strategy.active.reference_current_price, Some(66_300.25));
     assert_eq!(
-        strategy.active.reference_price_source_id.as_deref(),
+        strategy.active.reference_current_price_source_id.as_deref(),
         Some("polyresearch_backup")
     );
 
@@ -154,9 +189,9 @@ fn non_winning_reference_price_source_updates_health_without_trading_state() {
     .to_custom_data();
     DataActor::on_data(&mut strategy, &later_primary).expect("primary quote should be handled");
 
-    assert_eq!(strategy.active.reference_price, Some(66_300.25));
+    assert_eq!(strategy.active.reference_current_price, Some(66_300.25));
     assert_eq!(
-        strategy.active.reference_price_source_id.as_deref(),
+        strategy.active.reference_current_price_source_id.as_deref(),
         Some("polyresearch_backup")
     );
     assert_eq!(
@@ -182,9 +217,9 @@ fn non_winning_reference_price_source_updates_health_without_trading_state() {
     DataActor::on_data(&mut strategy, &backup_update)
         .expect("winning backup quote should be handled");
 
-    assert_eq!(strategy.active.reference_price, Some(66_301.25));
+    assert_eq!(strategy.active.reference_current_price, Some(66_301.25));
     assert_eq!(
-        strategy.active.reference_price_source_id.as_deref(),
+        strategy.active.reference_current_price_source_id.as_deref(),
         Some("polyresearch_backup")
     );
 }
@@ -198,7 +233,7 @@ fn reference_price_interval_transition_clears_stale_quotes_and_health() {
         .get_mut("chainlink_primary")
         .expect("chainlink source should exist")
         .required = false;
-    strategy.config.reference_price = Some(reference_price);
+    strategy.config.reference_current_price = Some(reference_price);
     strategy.active =
         ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
     let _cache = register_test_strategy(&mut strategy);
@@ -261,8 +296,48 @@ fn reference_price_interval_transition_clears_stale_quotes_and_health() {
         Some(ReferencePriceSourceStatus::Silent)
     );
     assert_eq!(
-        strategy.active.reference_price_source_id.as_deref(),
+        strategy.active.reference_current_price_source_id.as_deref(),
         Some("polyresearch_backup")
+    );
+}
+
+#[test]
+fn reference_price_update_with_wrong_provider_does_not_satisfy_source() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price
+        .sources
+        .get_mut("chainlink_primary")
+        .expect("chainlink source should exist")
+        .required = false;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let _cache = register_test_strategy(&mut strategy);
+
+    let wrong_provider = ReferencePriceUpdate::try_new(
+        "BTC",
+        "chainlink_primary",
+        POLYRESEARCH_REFERENCE_PROVIDER,
+        66_300.25,
+        None,
+        None,
+        1_100,
+        1_110,
+    )
+    .expect("wrong-provider update should construct")
+    .to_custom_data();
+
+    DataActor::on_data(&mut strategy, &wrong_provider)
+        .expect("wrong-provider custom data should be handled fail-closed");
+
+    assert_eq!(strategy.active.reference_current_price, None);
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get("chainlink_primary")
+            .map(|health| health.status()),
+        Some(ReferencePriceSourceStatus::MalformedFrame)
     );
 }
 

@@ -1487,15 +1487,13 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
         }
         errors.extend(target_errors.into_iter().map(|error| error.to_string()));
 
-        errors.extend(validate_reference_data(&context, root, strategy));
-        errors.extend(validate_reference_price(&context, root, strategy));
+        errors.extend(validate_reference_current_price(&context, root, strategy));
         errors.extend(crate::bolt_v3_archetypes::validate_strategy_archetype(
             &context,
             strategy,
             default_max_notional_decimal.as_ref(),
         ));
     }
-    errors.extend(validate_reference_quote_probe_sources(strategies));
     errors.extend(validate_target_gate_provider_references(root, strategies));
     errors.extend(validate_chainlink_feed_binding_coverage(root, strategies));
 
@@ -1843,179 +1841,129 @@ fn single_string_array_value(
         .map(str::to_string)
 }
 
-fn validate_reference_quote_probe_sources(strategies: &[LoadedStrategy]) -> Vec<String> {
-    let mut errors = Vec::new();
-    let mut by_instrument: BTreeMap<String, (&str, String, String)> = BTreeMap::new();
-
-    for loaded in strategies {
-        let context = format!("strategy `{}`", loaded.relative_path);
-        for (role, block) in &loaded.config.reference_data {
-            let instrument_id = block.instrument_id.to_string();
-            let data_client_id = block.data_client_id.as_str();
-            match by_instrument.get(&instrument_id) {
-                Some((existing_data_client_id, existing_context, existing_role))
-                    if *existing_data_client_id != data_client_id =>
-                {
-                    errors.push(format!(
-                        "{context}: reference_data.{role}.instrument_id `{instrument_id}` with data_client_id `{data_client_id}` is also used by {existing_context}: reference_data.{existing_role}.instrument_id with data_client_id `{existing_data_client_id}`; QuoteTick does not carry data_client_id, so strategy-free reference quote evidence cannot distinguish data clients for the same instrument"
-                    ));
-                }
-                None => {
-                    by_instrument.insert(
-                        instrument_id,
-                        (data_client_id, context.clone(), role.clone()),
-                    );
-                }
-                _ => {}
-            }
-        }
-    }
-
-    errors
-}
-
-fn validate_reference_data(
+fn validate_reference_current_price(
     context: &str,
     root: &BoltV3RootConfig,
     strategy: &BoltV3StrategyConfig,
 ) -> Vec<String> {
-    let mut errors = Vec::new();
-
-    for (role, block) in &strategy.reference_data {
-        match root.clients.get(block.data_client_id.as_str()) {
-            None => errors.push(format!(
-                "{context}: reference_data.{role}.data_client_id `{}` does not match any [clients.<id>] block",
-                block.data_client_id
-            )),
-            Some(client) => {
-                if client.data.is_none() {
-                    errors.push(format!(
-                        "{context}: reference_data.{role}.data_client_id `{}` must reference a data-capable client \
-                         (the referenced client has no [data] block)",
-                        block.data_client_id
-                    ));
-                }
-            }
-        }
-    }
-
-    errors
-}
-
-fn validate_reference_price(
-    context: &str,
-    root: &BoltV3RootConfig,
-    strategy: &BoltV3StrategyConfig,
-) -> Vec<String> {
-    let Some(reference_price) = &strategy.reference_price else {
+    let Some(reference_current_price) = &strategy.reference_current_price else {
         return Vec::new();
     };
 
     let mut errors = Vec::new();
-    let configured: BTreeSet<&str> = reference_price
+    let configured: BTreeSet<&str> = reference_current_price
         .source_order
         .iter()
         .map(String::as_str)
         .collect();
-    let declared: BTreeSet<&str> = reference_price.sources.keys().map(String::as_str).collect();
+    let declared: BTreeSet<&str> = reference_current_price
+        .sources
+        .keys()
+        .map(String::as_str)
+        .collect();
 
-    if reference_price.asset.is_empty()
-        || !reference_price
+    if reference_current_price.asset.is_empty()
+        || !reference_current_price
             .asset
             .chars()
             .all(|char| char.is_ascii_uppercase() || char.is_ascii_digit())
     {
         errors.push(format!(
-            "{context}: reference_price.asset must be a normalized non-empty symbol without surrounding or embedded whitespace"
+            "{context}: reference_current_price.asset must be a normalized non-empty symbol without surrounding or embedded whitespace"
         ));
     }
 
-    if reference_price.source_order.is_empty() {
+    if reference_current_price.source_order.is_empty() {
         errors.push(format!(
-            "{context}: reference_price.sources must be non-empty"
+            "{context}: reference_current_price.sources must be non-empty"
         ));
     }
 
     let mut seen_sources = HashSet::new();
-    for source_id in &reference_price.source_order {
+    for source_id in &reference_current_price.source_order {
         if !seen_sources.insert(source_id.as_str()) {
             errors.push(format!(
-                "{context}: reference_price.sources contains duplicate source key `{source_id}`"
+                "{context}: reference_current_price.sources contains duplicate source key `{source_id}`"
             ));
         }
     }
 
-    if reference_price.min_valid_sources == 0 {
+    if reference_current_price.min_valid_sources == 0 {
         errors.push(format!(
-            "{context}: reference_price.min_valid_sources must be at least 1"
+            "{context}: reference_current_price.min_valid_sources must be at least 1"
         ));
     }
 
-    let enabled_source_count = reference_price
+    let enabled_source_count = reference_current_price
         .source_order
         .iter()
         .filter(|source_id| {
-            reference_price
+            reference_current_price
                 .sources
                 .get(source_id.as_str())
                 .is_some_and(|source| source.enabled)
         })
         .count();
-    if reference_price.min_valid_sources > enabled_source_count {
+    if reference_current_price.min_valid_sources > enabled_source_count {
         errors.push(format!(
-            "{context}: reference_price.min_valid_sources {} exceeds enabled source count {}",
-            reference_price.min_valid_sources, enabled_source_count
+            "{context}: reference_current_price.min_valid_sources {} exceeds enabled source count {}",
+            reference_current_price.min_valid_sources, enabled_source_count
         ));
     }
 
-    if reference_price.max_source_age_ms == 0 {
+    if reference_current_price.max_source_age_ms == 0 {
         errors.push(format!(
-            "{context}: reference_price.max_source_age_ms must be positive"
+            "{context}: reference_current_price.max_source_age_ms must be positive"
         ));
     }
 
-    if reference_price.max_source_drift_bps == 0 {
+    if reference_current_price.max_source_drift_bps == 0 {
         errors.push(format!(
-            "{context}: reference_price.max_source_drift_bps must be positive"
+            "{context}: reference_current_price.max_source_drift_bps must be positive"
         ));
     }
 
     for source_id in configured.difference(&declared) {
         errors.push(format!(
-            "{context}: reference_price.sources contains `{source_id}` but missing [reference_price.source.{source_id}]"
+            "{context}: reference_current_price.sources contains `{source_id}` but missing [reference_current_price.source.{source_id}]"
         ));
     }
 
     for source_id in declared.difference(&configured) {
         errors.push(format!(
-            "{context}: [reference_price.source.{source_id}] is declared but not listed in reference_price.sources"
+            "{context}: [reference_current_price.source.{source_id}] is declared but not listed in reference_current_price.sources"
         ));
     }
 
     let mut valid_enabled_sources = enabled_source_count;
 
-    for (source_id, source) in &reference_price.sources {
+    for (source_id, source) in &reference_current_price.sources {
         if source.enabled {
             match root.clients.get(source.client_id.as_str()) {
                 None => errors.push(format!(
-                    "{context}: reference_price.source.{source_id}.client_id `{}` does not match any [clients.<id>] block",
+                    "{context}: reference_current_price.source.{source_id}.client_id `{}` does not match any [clients.<id>] block",
                     source.client_id
                 )),
                 Some(client) => {
                     if client.data.is_none() {
                         errors.push(format!(
-                            "{context}: reference_price.source.{source_id}.client_id `{}` must reference a data-capable client",
+                            "{context}: reference_current_price.source.{source_id}.client_id `{}` must reference a data-capable client",
                             source.client_id
                         ));
                     }
                 }
             }
         }
+        if source.required && !source.enabled {
+            errors.push(format!(
+                "{context}: reference_current_price.source.{source_id} is required but disabled"
+            ));
+        }
 
         let Some(provider_metadata) = reference_price_provider_metadata(source.provider.as_str())
         else {
             errors.push(format!(
-                "{context}: reference_price.source.{source_id}.provider `{}` is unsupported",
+                "{context}: reference_current_price.source.{source_id}.provider `{}` is unsupported",
                 source.provider.as_str()
             ));
             continue;
@@ -2030,24 +1978,24 @@ fn validate_reference_price(
                         .is_none_or(reference_price_field_is_blank)
                 {
                     errors.push(format!(
-                        "{context}: reference_price.source.{source_id}.instrument_id is required for chainlink_ws"
+                        "{context}: reference_current_price.source.{source_id}.instrument_id is required for chainlink_ws"
                     ));
                 }
                 if source.symbol.is_some() {
                     errors.push(format!(
-                        "{context}: reference_price.source.{source_id}.symbol is unsupported for chainlink_ws"
+                        "{context}: reference_current_price.source.{source_id}.symbol is unsupported for chainlink_ws"
                     ));
                 }
                 if source.enabled
                     && let Some(instrument_id) = source.instrument_id.as_deref()
                     && !reference_price_identifier_matches_asset(
                         instrument_id,
-                        &reference_price.asset,
+                        &reference_current_price.asset,
                     )
                 {
                     errors.push(format!(
-                        "{context}: reference_price.source.{source_id}.instrument_id `{instrument_id}` must map to reference_price.asset `{}`",
-                        reference_price.asset
+                        "{context}: reference_current_price.source.{source_id}.instrument_id `{instrument_id}` must map to reference_current_price.asset `{}`",
+                        reference_current_price.asset
                     ));
                 }
             }
@@ -2059,21 +2007,21 @@ fn validate_reference_price(
                         .is_none_or(reference_price_field_is_blank)
                 {
                     errors.push(format!(
-                        "{context}: reference_price.source.{source_id}.symbol is required for polyresearch_ws"
+                        "{context}: reference_current_price.source.{source_id}.symbol is required for polyresearch_ws"
                     ));
                 }
                 if source.instrument_id.is_some() {
                     errors.push(format!(
-                        "{context}: reference_price.source.{source_id}.instrument_id is unsupported for polyresearch_ws"
+                        "{context}: reference_current_price.source.{source_id}.instrument_id is unsupported for polyresearch_ws"
                     ));
                 }
                 if source.enabled
                     && let Some(symbol) = source.symbol.as_deref()
-                    && symbol != reference_price.asset
+                    && symbol != reference_current_price.asset
                 {
                     errors.push(format!(
-                        "{context}: reference_price.source.{source_id}.symbol `{symbol}` must equal reference_price.asset `{}`",
-                        reference_price.asset
+                        "{context}: reference_current_price.source.{source_id}.symbol `{symbol}` must equal reference_current_price.asset `{}`",
+                        reference_current_price.asset
                     ));
                 }
             }
@@ -2083,23 +2031,23 @@ fn validate_reference_price(
             && !provider_metadata.supported_assets.is_empty()
             && !provider_metadata
                 .supported_assets
-                .contains(&reference_price.asset.as_str());
+                .contains(&reference_current_price.asset.as_str());
         if unsupported_asset {
             valid_enabled_sources = valid_enabled_sources.saturating_sub(1);
         }
         if unsupported_asset && source.required {
             errors.push(format!(
-                "{context}: reference_price.source.{source_id} {} asset `{}` is unsupported for a required source",
+                "{context}: reference_current_price.source.{source_id} {} asset `{}` is unsupported for a required source",
                 source.provider.as_str(),
-                reference_price.asset
+                reference_current_price.asset
             ));
         }
     }
 
-    if reference_price.min_valid_sources > valid_enabled_sources {
+    if reference_current_price.min_valid_sources > valid_enabled_sources {
         errors.push(format!(
-            "{context}: reference_price.min_valid_sources {} cannot be met by {} enabled supported source(s)",
-            reference_price.min_valid_sources, valid_enabled_sources
+            "{context}: reference_current_price.min_valid_sources {} cannot be met by {} enabled supported source(s)",
+            reference_current_price.min_valid_sources, valid_enabled_sources
         ));
     }
 

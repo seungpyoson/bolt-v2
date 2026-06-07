@@ -33,7 +33,7 @@
 //! readiness path builds a strategy-free node before using NT's supported
 //! runner loop with handle-driven stop; its dedicated quote probes call
 //! only NT quote subscribe/unsubscribe APIs for configured strategy
-//! `[reference_data]` or client-owned readiness-probe instruments. This
+//! client-owned readiness-probe instruments. This
 //! module still never constructs an order or enables any submit path
 //! from its own boundary code.
 
@@ -59,10 +59,7 @@ use nautilus_live::{
     node::{LiveNode, LiveNodeHandle, NodeState},
 };
 #[cfg(test)]
-use nautilus_model::{
-    data::{OrderBookDeltas, QuoteTick},
-    identifiers::InstrumentId,
-};
+use nautilus_model::{data::OrderBookDeltas, identifiers::InstrumentId};
 use nautilus_model::{
     enums::BarIntervalType,
     identifiers::{ClientId, StrategyId},
@@ -149,11 +146,6 @@ mod strategy_free_probe {
         pub captured_at_unix_nanos: u64,
     }
 
-    #[derive(Debug, Clone, PartialEq)]
-    pub struct BoltV3StrategyFreeReferenceQuoteEvidence {
-        pub quotes: Vec<BoltV3StrategyFreeReferenceQuote>,
-    }
-
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct BoltV3StrategyFreeBookDeltas {
         pub data_client_id: String,
@@ -222,17 +214,6 @@ mod strategy_free_probe {
     }
 
     impl BoltV3StrategyFreeReferenceQuoteProbeHandle {
-        pub(super) fn new(loaded: &LoadedBoltV3Config) -> Self {
-            let (required, ambiguous_instrument_ids) =
-                strategy_free_reference_quote_subscription_plan(loaded);
-            Self::from_plan(
-                required,
-                ambiguous_instrument_ids,
-                DataClientReadinessProbeMarketDataKind::Quote,
-                None,
-            )
-        }
-
         pub(super) fn from_plan(
             required: Vec<StrategyFreeReferenceQuoteSubscription>,
             ambiguous_instrument_ids: BTreeSet<String>,
@@ -448,16 +429,6 @@ mod strategy_free_probe {
             }
         }
 
-        pub(super) fn ambiguity_error(&self) -> Option<String> {
-            if self.ambiguous_instrument_ids.borrow().is_empty() {
-                return None;
-            }
-            Some(
-            "reference quote probe cannot distinguish multiple data clients for the same instrument_id; QuoteTick does not carry data_client_id"
-                .to_string(),
-        )
-        }
-
         pub(super) fn failure_error(&self) -> Option<String> {
             self.failure_reason.borrow().clone()
         }
@@ -470,12 +441,6 @@ mod strategy_free_probe {
             self.ambiguous_instrument_ids.borrow_mut().clear();
             self.quote_targets_initialized.set(true);
             self.quote_notify.notify_one();
-        }
-
-        pub(super) fn evidence(&self) -> BoltV3StrategyFreeReferenceQuoteEvidence {
-            BoltV3StrategyFreeReferenceQuoteEvidence {
-                quotes: self.quotes.borrow().clone(),
-            }
         }
 
         pub(super) fn book_evidence(&self) -> BoltV3StrategyFreeBookDeltasEvidence {
@@ -539,38 +504,6 @@ mod strategy_free_probe {
             required
         }
 
-        pub(super) fn record_quote(&self, quote: &QuoteTick, captured_at_unix_nanos: u64) {
-            let quote_instrument_id = quote.instrument_id.to_string();
-            if self
-                .ambiguous_instrument_ids
-                .borrow()
-                .contains(&quote_instrument_id)
-            {
-                return;
-            }
-            let required = self.required.borrow().clone();
-            let mut matched_required = false;
-            let mut quotes = self.quotes.borrow_mut();
-            for required in &required {
-                if quote.instrument_id == required.instrument_id {
-                    matched_required = true;
-                    quotes.push(BoltV3StrategyFreeReferenceQuote {
-                        data_client_id: required.data_client_id.to_string(),
-                        instrument_id: required.instrument_id.to_string(),
-                        bid_price: quote.bid_price.as_f64(),
-                        ask_price: quote.ask_price.as_f64(),
-                        ts_event_unix_nanos: quote.ts_event.as_u64(),
-                        ts_init_unix_nanos: quote.ts_init.as_u64(),
-                        captured_at_unix_nanos,
-                    });
-                }
-            }
-            drop(quotes);
-            if matched_required && self.has_all_required_market_data() {
-                self.quote_notify.notify_one();
-            }
-        }
-
         pub(super) fn record_book_deltas(
             &self,
             deltas: &OrderBookDeltas,
@@ -603,18 +536,6 @@ mod strategy_free_probe {
             drop(book_deltas);
             if matched_required && self.has_all_required_market_data() {
                 self.quote_notify.notify_one();
-            }
-        }
-
-        pub(super) async fn wait_for_all_required_quotes(&self) -> Result<(), String> {
-            loop {
-                if let Some(reason) = self.failure_error() {
-                    return Err(reason);
-                }
-                if self.has_all_required_market_data() {
-                    return Ok(());
-                }
-                self.quote_notify.notified().await;
             }
         }
     }
@@ -702,24 +623,6 @@ mod strategy_free_probe {
             }
         }
         observed.len()
-    }
-
-    fn strategy_free_reference_quote_subscription_plan(
-        loaded: &LoadedBoltV3Config,
-    ) -> (
-        Vec<StrategyFreeReferenceQuoteSubscription>,
-        BTreeSet<String>,
-    ) {
-        let mut subscriptions = Vec::new();
-        for strategy in &loaded.strategies {
-            for reference in strategy.config.reference_data.values() {
-                subscriptions.push(StrategyFreeReferenceQuoteSubscription {
-                    data_client_id: reference.data_client_id,
-                    instrument_id: reference.instrument_id,
-                });
-            }
-        }
-        dedupe_strategy_free_reference_quote_subscriptions(subscriptions)
     }
 
     pub(super) fn strategy_free_data_client_readiness_quote_subscription_plan(
@@ -1632,9 +1535,6 @@ fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> 
     let mut client_keys = BTreeSet::new();
     for strategy in &loaded.strategies {
         client_keys.insert(strategy.config.execution_client_id.to_string());
-        for reference in strategy.config.reference_data.values() {
-            client_keys.insert(reference.data_client_id.to_string());
-        }
         for signal in strategy.config.signal_data.values() {
             client_keys.insert(signal.data_client_id.to_string());
         }
@@ -2244,7 +2144,7 @@ mod tests {
     use crate::bolt_v3_config::{
         BoltV3RootConfig, DataClientReadinessProbeBlock, DataClientReadinessProbeMarketDataKind,
         DataClientReadinessProbeQuoteTargetBlock, DataClientReadinessProbeQuoteTargetSource,
-        ReferenceDataBlock,
+        DataInstrumentBlock,
     };
     use crate::bolt_v3_providers::hyperliquid::{
         ResolvedBoltV3HyperliquidSecrets, hyperliquid_live_submit_signer_fingerprint,
@@ -3131,25 +3031,6 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         }
     }
 
-    fn loaded_config_with_primary_reference_data() -> LoadedBoltV3Config {
-        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
-            "tests/fixtures/bolt_v3/root.toml",
-        ))
-        .expect("fixture config should load");
-        let strategy = loaded
-            .strategies
-            .first_mut()
-            .expect("fixture should include one strategy");
-        strategy.config.reference_data.insert(
-            "primary".to_string(),
-            ReferenceDataBlock {
-                data_client_id: ClientId::from("polymarket_main"),
-                instrument_id: InstrumentId::from("REFERENCE.SOURCE"),
-            },
-        );
-        loaded
-    }
-
     #[test]
     fn data_client_readiness_quote_plan_uses_client_owned_probe_targets() {
         let mut loaded = fixture_loaded_config();
@@ -3671,19 +3552,15 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             "tests/fixtures/bolt_v3/root.toml",
         ))
         .expect("fixture config should load");
-        let mut reference_client = loaded
+        let mut extra_data_client = loaded
             .root
             .clients
             .get("polymarket_main")
             .expect("fixture client should exist")
             .clone();
-        reference_client.execution = None;
-        reference_client.secrets = None;
-        let unrelated_client = reference_client.clone();
-        loaded
-            .root
-            .clients
-            .insert("reference_data".to_string(), reference_client);
+        extra_data_client.execution = None;
+        extra_data_client.secrets = None;
+        let unrelated_client = extra_data_client.clone();
         let mut signal_client = loaded
             .root
             .clients
@@ -3704,16 +3581,9 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             .strategies
             .first_mut()
             .expect("fixture should include one strategy");
-        strategy.config.reference_data.insert(
-            "primary".to_string(),
-            ReferenceDataBlock {
-                data_client_id: ClientId::from("reference_data"),
-                instrument_id: InstrumentId::from("REFERENCE.SOURCE"),
-            },
-        );
         strategy.config.signal_data.insert(
             "primary".to_string(),
-            ReferenceDataBlock {
+            DataInstrumentBlock {
                 data_client_id: ClientId::from("signal_data"),
                 instrument_id: InstrumentId::from("SIGNAL.SOURCE"),
             },
@@ -3722,9 +3592,8 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         let scoped = trade_transport_loaded_config(&loaded)
             .expect("strategy-bound transport scope should be derived from config");
 
-        assert_eq!(scoped.root.clients.len(), 3);
+        assert_eq!(scoped.root.clients.len(), 2);
         assert!(scoped.root.clients.contains_key("polymarket_main"));
-        assert!(scoped.root.clients.contains_key("reference_data"));
         assert!(scoped.root.clients.contains_key("signal_data"));
         assert!(
             !scoped.root.clients.contains_key("unrelated_data"),
@@ -3901,118 +3770,6 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
                 .len(),
             2
         );
-    }
-
-    #[test]
-    fn reference_quote_probe_does_not_satisfy_distinct_clients_with_one_quote() {
-        let mut loaded = loaded_config_with_primary_reference_data();
-        let strategy = loaded
-            .strategies
-            .first_mut()
-            .expect("fixture should include one strategy");
-        let primary = strategy
-            .config
-            .reference_data
-            .get("primary")
-            .expect("fixture should include primary reference data")
-            .clone();
-        strategy.config.reference_data.insert(
-            "secondary".to_string(),
-            ReferenceDataBlock {
-                data_client_id: ClientId::from("secondary_reference"),
-                instrument_id: primary.instrument_id,
-            },
-        );
-        let handle = BoltV3StrategyFreeReferenceQuoteProbeHandle::new(&loaded);
-        let ambiguity = handle
-            .ambiguity_error()
-            .expect("probe setup should reject ambiguous reference quote sources");
-        assert!(ambiguity.contains("QuoteTick does not carry data_client_id"));
-        let quote = QuoteTick::new(
-            primary.instrument_id,
-            Price::from("100.00"),
-            Price::from("100.01"),
-            Quantity::from("1"),
-            Quantity::from("1"),
-            1_u64.into(),
-            1_u64.into(),
-        );
-
-        handle.record_quote(&quote, 2);
-
-        assert!(
-            !handle.has_all_required_quotes(),
-            "one source-unattributed QuoteTick must not satisfy distinct data clients"
-        );
-        assert_eq!(
-            handle.evidence().quotes.len(),
-            0,
-            "probe must not label a source-unattributed QuoteTick with any ambiguous data client"
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn reference_quote_probe_wait_wakes_when_required_quote_records() {
-        let loaded = loaded_config_with_primary_reference_data();
-        let handle = BoltV3StrategyFreeReferenceQuoteProbeHandle::new(&loaded);
-        let required = handle
-            .required
-            .borrow()
-            .first()
-            .expect("fixture should require reference quote evidence")
-            .clone();
-        let quote = QuoteTick::new(
-            required.instrument_id,
-            Price::from("100.00"),
-            Price::from("100.01"),
-            Quantity::from("1"),
-            Quantity::from("1"),
-            1_u64.into(),
-            1_u64.into(),
-        );
-        let wait = handle.wait_for_all_required_quotes();
-        tokio::pin!(wait);
-
-        tokio::select! {
-            result = &mut wait => panic!("wait should not complete before required quote evidence: {result:?}"),
-            () = tokio::time::sleep(Duration::from_millis(5)) => {}
-        }
-
-        handle.record_quote(&quote, 2);
-        tokio::time::timeout(Duration::from_millis(100), &mut wait)
-            .await
-            .expect("notify must wake required-quote wait")
-            .expect("required quote wait should succeed");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn reference_quote_probe_wait_accepts_quote_recorded_before_wait_starts() {
-        let loaded = loaded_config_with_primary_reference_data();
-        let handle = BoltV3StrategyFreeReferenceQuoteProbeHandle::new(&loaded);
-        let required = handle
-            .required
-            .borrow()
-            .first()
-            .expect("fixture should require reference quote evidence")
-            .clone();
-        let quote = QuoteTick::new(
-            required.instrument_id,
-            Price::from("100.00"),
-            Price::from("100.01"),
-            Quantity::from("1"),
-            Quantity::from("1"),
-            1_u64.into(),
-            1_u64.into(),
-        );
-
-        handle.record_quote(&quote, 2);
-        tokio::time::timeout(
-            Duration::from_millis(100),
-            handle.wait_for_all_required_quotes(),
-        )
-        .await
-        .expect("pre-observed quote must not be lost before wait starts")
-        .expect("required quote wait should succeed");
     }
 
     #[test]

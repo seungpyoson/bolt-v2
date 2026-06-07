@@ -494,7 +494,8 @@ impl ReferencePriceSelector {
             self.failover_used = false;
         }
 
-        let valid_quotes = self.valid_quotes_by_order(interval_start_ms, now_ms, quotes);
+        let valid_quotes =
+            self.valid_quotes_by_order(interval_start_ms, interval_end_ms, now_ms, quotes);
         self.last_cross_source_drift_bps = Self::max_cross_source_drift_bps(&valid_quotes);
         if valid_quotes.len() < self.min_valid_sources {
             return None;
@@ -547,13 +548,20 @@ impl ReferencePriceSelector {
     fn valid_quotes_by_order<'a>(
         &self,
         interval_start_ms: u64,
+        interval_end_ms: u64,
         now_ms: u64,
         quotes: &'a [ReferenceQuote],
     ) -> Vec<&'a ReferenceQuote> {
         self.sources
             .iter()
             .filter_map(|source_id| {
-                self.valid_quote_for_source(source_id, interval_start_ms, now_ms, quotes)
+                self.valid_quote_for_source(
+                    source_id,
+                    interval_start_ms,
+                    interval_end_ms,
+                    now_ms,
+                    quotes,
+                )
             })
             .collect()
     }
@@ -562,6 +570,7 @@ impl ReferencePriceSelector {
         &self,
         source_id: &str,
         interval_start_ms: u64,
+        interval_end_ms: u64,
         now_ms: u64,
         quotes: &'a [ReferenceQuote],
     ) -> Option<&'a ReferenceQuote> {
@@ -569,6 +578,7 @@ impl ReferencePriceSelector {
             quote.asset == self.asset
                 && quote.source_id == source_id
                 && quote.observed_ts_ms >= interval_start_ms
+                && quote.observed_ts_ms <= interval_end_ms
                 && quote.observed_ts_ms <= now_ms
                 && now_ms.saturating_sub(quote.observed_ts_ms) <= self.max_source_staleness_ms
         })

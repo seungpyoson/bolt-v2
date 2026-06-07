@@ -32,8 +32,6 @@ pub(super) fn valid_raw_config() -> Value {
         market_selection_rule = "active_or_next"
         retry_interval_seconds = 5
         blocked_after_seconds = 60
-        reference_venue = "reference_data_client"
-        reference_instrument_id = "REFERENCE.SOURCE"
         signal_venue = "signal_data_client"
         signal_instrument_id = "SIGNAL.SOURCE"
         use_uuid_client_order_ids = true
@@ -423,8 +421,6 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             market_selection_rule: "active_or_next".to_string(),
             retry_interval_seconds: 5,
             blocked_after_seconds: 60,
-            reference_venue: Some("reference_data_client".to_string()),
-            reference_instrument_id: Some("REFERENCE.SOURCE".to_string()),
             signal_venue: Some("signal_data_client".to_string()),
             signal_instrument_id: Some("SIGNAL.SOURCE".to_string()),
             resolution_client_id: Some("CHAINLINK_DATA_STREAMS".to_string()),
@@ -511,7 +507,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             forced_flat_thin_book_min_liquidity: 100.0,
             lead_agreement_min_corr: 0.8,
             lead_jitter_max_ms: 250,
-            reference_price: None,
+            reference_current_price: None,
         },
         StrategyBuildContext::new(
             fee_provider,

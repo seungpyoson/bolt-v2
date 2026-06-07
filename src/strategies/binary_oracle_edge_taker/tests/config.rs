@@ -94,7 +94,6 @@ fn parse_config_rejects_zero_positive_required_integer_fields() {
 #[test]
 fn parse_config_rejects_malformed_configured_instrument_ids() {
     for (field, bad_value) in [
-        ("reference_instrument_id", "configured-reference-price"),
         ("signal_instrument_id", "configured-signal-price"),
         ("resolution_instrument_id", "configured-resolution-price"),
     ] {
@@ -233,7 +232,6 @@ fn validate_config_rejects_resolution_data_with_only_one_field_set() {
 #[test]
 fn validate_config_rejects_malformed_configured_instrument_ids() {
     for (field, bad_value) in [
-        ("reference_instrument_id", "configured-reference-price"),
         ("signal_instrument_id", "configured-signal-price"),
         ("resolution_instrument_id", "configured-resolution-price"),
     ] {

@@ -1,0 +1,215 @@
+use bolt_v2::bolt_v3_iv::{
+    health::IvSourceHealthState,
+    ingest::{
+        IvAggregateGreeksPayload, IvBasisValue, IvCustomIvPayload, IvGreekValues, IvIngestEvent,
+        IvOptionChainPoint, IvOptionChainSlicePayload, IvOptionGreeksPayload, IvRawPayload,
+    },
+    provenance::validate_iv_provenance,
+    store::IvStore,
+    time::UnixNanos,
+    types::{IvBasis, IvConvention, IvSourceKind},
+};
+
+fn base_event(source_kind: IvSourceKind, payload: IvRawPayload) -> IvIngestEvent {
+    IvIngestEvent {
+        profile_id: "configured-profile".to_string(),
+        source_id: "configured-source".to_string(),
+        source_kind,
+        selector_fingerprint: "configured-selector-fingerprint".to_string(),
+        nt_revision: "configured-nt-revision".to_string(),
+        nt_evidence_path: "configured/nt/evidence/path.rs".to_string(),
+        nt_symbol: "ConfiguredNtSymbol".to_string(),
+        ts_event_ns: UnixNanos::new(1_000),
+        ts_init_ns: Some(UnixNanos::new(900)),
+        received_ts_ns: UnixNanos::new(1_100),
+        subscription_generation: 12,
+        source_health_state: IvSourceHealthState::Active,
+        payload,
+    }
+}
+
+fn greeks_payload() -> IvOptionGreeksPayload {
+    IvOptionGreeksPayload {
+        instrument_id: "configured-option-instrument".to_string(),
+        convention: IvConvention::Named("configured-convention".to_string()),
+        basis_values: vec![
+            IvBasisValue {
+                basis: IvBasis::Mark,
+                iv: 0.42,
+            },
+            IvBasisValue {
+                basis: IvBasis::Bid,
+                iv: 0.41,
+            },
+            IvBasisValue {
+                basis: IvBasis::Ask,
+                iv: 0.43,
+            },
+        ],
+        greeks: IvGreekValues {
+            delta: Some(0.51),
+            gamma: Some(0.02),
+            vega: Some(0.13),
+            theta: Some(-0.04),
+            rho: Some(0.01),
+        },
+        underlying_price: Some(101.25),
+        open_interest: Some(1200.0),
+    }
+}
+
+#[test]
+fn option_greeks_raw_payload_is_preserved_and_indexed_by_basis() {
+    let payload = IvRawPayload::OptionGreeks(greeks_payload());
+    let mut store = IvStore::default();
+
+    let raw = store
+        .ingest_event(base_event(IvSourceKind::OptionGreeks, payload.clone()))
+        .unwrap();
+
+    assert_eq!(store.raw_events()[0].payload, payload);
+    assert_eq!(raw.payload, payload);
+    assert_eq!(store.iv_points().len(), 3);
+    assert_eq!(store.greeks_points().len(), 3);
+
+    let mark = store
+        .iv_points()
+        .iter()
+        .find(|point| point.basis == IvBasis::Mark)
+        .unwrap();
+    assert_eq!(mark.iv, 0.42);
+    assert_eq!(mark.instrument_id, "configured-option-instrument");
+    assert_eq!(
+        mark.convention,
+        IvConvention::Named("configured-convention".to_string())
+    );
+    assert_eq!(
+        mark.provenance.raw_event_id.as_deref(),
+        Some(raw.raw_event_id.as_str())
+    );
+    validate_iv_provenance(&mark.provenance).unwrap();
+
+    let greeks = store
+        .greeks_points()
+        .iter()
+        .find(|point| point.point.basis == IvBasis::Ask)
+        .unwrap();
+    assert_eq!(greeks.point.iv, 0.43);
+    assert_eq!(greeks.greeks.delta, Some(0.51));
+    assert_eq!(greeks.underlying_price, Some(101.25));
+    assert_eq!(greeks.open_interest, Some(1200.0));
+}
+
+#[test]
+fn option_chain_slices_build_smiles_and_surface_views_without_interpolation() {
+    let mut store = IvStore::default();
+
+    for series_id in ["configured-series-a", "configured-series-b"] {
+        store
+            .ingest_event(base_event(
+                IvSourceKind::OptionChain,
+                IvRawPayload::OptionChainSlice(IvOptionChainSlicePayload {
+                    series_id: series_id.to_string(),
+                    surface_selector: "configured-surface-selector".to_string(),
+                    side: "configured-side".to_string(),
+                    basis: IvBasis::Mark,
+                    points: vec![
+                        IvOptionChainPoint {
+                            strike: 90.0,
+                            iv: 0.32,
+                        },
+                        IvOptionChainPoint {
+                            strike: 100.0,
+                            iv: 0.35,
+                        },
+                    ],
+                }),
+            ))
+            .unwrap();
+    }
+
+    assert_eq!(store.raw_events().len(), 2);
+    assert_eq!(store.smiles().len(), 2);
+
+    let first_smile = store
+        .smiles()
+        .iter()
+        .find(|smile| smile.series_id == "configured-series-a")
+        .unwrap();
+    assert_eq!(first_smile.points_by_strike.len(), 2);
+    assert_eq!(first_smile.points_by_strike[0].strike, 90.0);
+    assert_eq!(first_smile.points_by_strike[0].iv, 0.32);
+    validate_iv_provenance(&first_smile.provenance).unwrap();
+
+    let surface = store
+        .surface(
+            "configured-surface-selector",
+            "configured-source",
+            IvBasis::Mark,
+            UnixNanos::new(1_000),
+        )
+        .unwrap();
+    assert_eq!(surface.smiles.len(), 2);
+    assert!(
+        surface
+            .smiles
+            .iter()
+            .all(|smile| smile.surface_selector == "configured-surface-selector")
+    );
+    validate_iv_provenance(&surface.provenance).unwrap();
+}
+
+#[test]
+fn aggregate_greeks_events_are_preserved_and_indexed_as_products() {
+    let mut store = IvStore::default();
+
+    store
+        .ingest_event(base_event(
+            IvSourceKind::AggregateGreeks,
+            IvRawPayload::AggregateGreeks(IvAggregateGreeksPayload {
+                aggregate_key: "configured-aggregate-key".to_string(),
+                underlying_selectors: vec!["configured-underlying-selector".to_string()],
+                greeks: IvGreekValues {
+                    delta: Some(1.25),
+                    gamma: Some(0.15),
+                    vega: Some(2.5),
+                    theta: None,
+                    rho: None,
+                },
+            }),
+        ))
+        .unwrap();
+
+    assert_eq!(store.raw_events().len(), 1);
+    assert_eq!(store.aggregate_greeks().len(), 1);
+    assert_eq!(
+        store.aggregate_greeks()[0].aggregate_key,
+        "configured-aggregate-key"
+    );
+    assert_eq!(store.aggregate_greeks()[0].greeks.vega, Some(2.5));
+    validate_iv_provenance(&store.aggregate_greeks()[0].provenance).unwrap();
+}
+
+#[test]
+fn custom_implied_volatility_events_are_preserved_as_custom_iv_evidence() {
+    let mut store = IvStore::default();
+
+    store
+        .ingest_event(base_event(
+            IvSourceKind::CustomImpliedVolatility,
+            IvRawPayload::CustomImpliedVolatility(IvCustomIvPayload {
+                iv_evidence_kind: "configured-custom-evidence-kind".to_string(),
+                value: 0.37,
+            }),
+        ))
+        .unwrap();
+
+    assert_eq!(store.raw_events().len(), 1);
+    assert_eq!(store.iv_evidence().len(), 1);
+    assert_eq!(
+        store.iv_evidence()[0].iv_evidence_kind,
+        "configured-custom-evidence-kind"
+    );
+    assert_eq!(store.iv_evidence()[0].value, 0.37);
+    validate_iv_provenance(&store.iv_evidence()[0].provenance).unwrap();
+}

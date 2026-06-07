@@ -1,0 +1,334 @@
+use serde::{Deserialize, Serialize};
+
+use super::{
+    error::IvRejectReason,
+    ingest::{
+        IvAggregateGreeksPayload, IvCustomIvPayload, IvIngestEvent, IvOptionChainSlicePayload,
+        IvOptionGreeksPayload, IvRawEvent, IvRawPayload, preserve_raw_event,
+    },
+    provenance::{IvProvenance, validate_iv_provenance},
+    time::UnixNanos,
+    types::{IvBasis, IvConvention},
+};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IvPoint {
+    pub profile_id: String,
+    pub source_id: String,
+    pub instrument_id: String,
+    pub basis: IvBasis,
+    pub iv: f64,
+    pub convention: IvConvention,
+    pub ts_event_ns: UnixNanos,
+    pub ts_init_ns: Option<UnixNanos>,
+    pub provenance: IvProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IvGreeksPoint {
+    pub point: IvPoint,
+    pub greeks: super::ingest::IvGreekValues,
+    pub underlying_price: Option<f64>,
+    pub open_interest: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct IvSmilePoint {
+    pub strike: f64,
+    pub iv: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IvSmile {
+    pub profile_id: String,
+    pub source_id: String,
+    pub surface_selector: String,
+    pub series_id: String,
+    pub side: String,
+    pub basis: IvBasis,
+    pub points_by_strike: Vec<IvSmilePoint>,
+    pub atm_strike: Option<f64>,
+    pub ts_event_ns: UnixNanos,
+    pub provenance: IvProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IvSurface {
+    pub profile_id: String,
+    pub surface_selector: String,
+    pub source_id: String,
+    pub basis: IvBasis,
+    pub smiles: Vec<IvSmile>,
+    pub as_of_ns: UnixNanos,
+    pub provenance: IvProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IvAggregateGreeks {
+    pub profile_id: String,
+    pub source_id: String,
+    pub aggregate_key: String,
+    pub underlying_selectors: Vec<String>,
+    pub greeks: super::ingest::IvGreekValues,
+    pub ts_event_ns: UnixNanos,
+    pub ts_init_ns: Option<UnixNanos>,
+    pub provenance: IvProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IvEvidence {
+    pub profile_id: String,
+    pub source_id: String,
+    pub iv_evidence_kind: String,
+    pub value: f64,
+    pub ts_event_ns: UnixNanos,
+    pub ts_init_ns: Option<UnixNanos>,
+    pub provenance: IvProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IvStoreError {
+    PayloadKindMismatch,
+    InvalidIvValue,
+    ProvenanceIncomplete,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct IvStore {
+    raw_events: Vec<IvRawEvent>,
+    iv_points: Vec<IvPoint>,
+    greeks_points: Vec<IvGreeksPoint>,
+    smiles: Vec<IvSmile>,
+    aggregate_greeks: Vec<IvAggregateGreeks>,
+    iv_evidence: Vec<IvEvidence>,
+    next_ingest_sequence: u64,
+}
+
+impl IvStore {
+    pub fn ingest_event(&mut self, event: IvIngestEvent) -> Result<IvRawEvent, IvStoreError> {
+        if !event.payload.matches_source_kind(event.source_kind) {
+            return Err(IvStoreError::PayloadKindMismatch);
+        }
+
+        self.next_ingest_sequence += 1;
+        let raw_event = preserve_raw_event(event, self.next_ingest_sequence);
+        self.index_raw_event(&raw_event)?;
+        self.raw_events.push(raw_event.clone());
+        Ok(raw_event)
+    }
+
+    pub fn raw_events(&self) -> &[IvRawEvent] {
+        &self.raw_events
+    }
+
+    pub fn raw_event(&self, raw_event_id: &str) -> Option<&IvRawEvent> {
+        self.raw_events
+            .iter()
+            .find(|event| event.raw_event_id == raw_event_id)
+    }
+
+    pub fn iv_points(&self) -> &[IvPoint] {
+        &self.iv_points
+    }
+
+    pub fn greeks_points(&self) -> &[IvGreeksPoint] {
+        &self.greeks_points
+    }
+
+    pub fn smiles(&self) -> &[IvSmile] {
+        &self.smiles
+    }
+
+    pub fn aggregate_greeks(&self) -> &[IvAggregateGreeks] {
+        &self.aggregate_greeks
+    }
+
+    pub fn iv_evidence(&self) -> &[IvEvidence] {
+        &self.iv_evidence
+    }
+
+    pub fn surface(
+        &self,
+        surface_selector: &str,
+        source_id: &str,
+        basis: IvBasis,
+        as_of_ns: UnixNanos,
+    ) -> Option<IvSurface> {
+        let smiles = self
+            .smiles
+            .iter()
+            .filter(|smile| {
+                smile.surface_selector == surface_selector
+                    && smile.source_id == source_id
+                    && smile.basis == basis
+                    && smile.ts_event_ns == as_of_ns
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let provenance = smiles.first().map(|smile| smile.provenance.clone())?;
+
+        Some(IvSurface {
+            profile_id: provenance.profile_id.clone(),
+            surface_selector: surface_selector.to_string(),
+            source_id: source_id.to_string(),
+            basis,
+            smiles,
+            as_of_ns,
+            provenance,
+        })
+    }
+
+    pub fn all_product_provenance(&self) -> Vec<&IvProvenance> {
+        let mut provenance = Vec::new();
+        provenance.extend(self.iv_points.iter().map(|point| &point.provenance));
+        provenance.extend(
+            self.greeks_points
+                .iter()
+                .map(|point| &point.point.provenance),
+        );
+        provenance.extend(self.smiles.iter().map(|smile| &smile.provenance));
+        provenance.extend(
+            self.aggregate_greeks
+                .iter()
+                .map(|aggregate| &aggregate.provenance),
+        );
+        provenance.extend(self.iv_evidence.iter().map(|evidence| &evidence.provenance));
+        provenance
+    }
+
+    fn index_raw_event(&mut self, raw_event: &IvRawEvent) -> Result<(), IvStoreError> {
+        validate_iv_provenance(&raw_event.provenance)
+            .map_err(|_| IvStoreError::ProvenanceIncomplete)?;
+
+        match &raw_event.payload {
+            IvRawPayload::OptionGreeks(payload) => self.index_option_greeks(raw_event, payload),
+            IvRawPayload::OptionChainSlice(payload) => {
+                self.index_option_chain_slice(raw_event, payload)
+            }
+            IvRawPayload::AggregateGreeks(payload) => {
+                self.index_aggregate_greeks(raw_event, payload);
+                Ok(())
+            }
+            IvRawPayload::CustomImpliedVolatility(payload) => {
+                self.index_custom_iv(raw_event, payload)
+            }
+        }
+    }
+
+    fn index_option_greeks(
+        &mut self,
+        raw_event: &IvRawEvent,
+        payload: &IvOptionGreeksPayload,
+    ) -> Result<(), IvStoreError> {
+        for basis_value in &payload.basis_values {
+            if !valid_iv(basis_value.iv) {
+                return Err(IvStoreError::InvalidIvValue);
+            }
+
+            let point = IvPoint {
+                profile_id: raw_event.profile_id.clone(),
+                source_id: raw_event.source_id.clone(),
+                instrument_id: payload.instrument_id.clone(),
+                basis: basis_value.basis,
+                iv: basis_value.iv,
+                convention: payload.convention.clone(),
+                ts_event_ns: raw_event.provenance.ts_event_ns,
+                ts_init_ns: raw_event.provenance.ts_init_ns,
+                provenance: raw_event.provenance.clone(),
+            };
+            self.iv_points.push(point.clone());
+            self.greeks_points.push(IvGreeksPoint {
+                point,
+                greeks: payload.greeks,
+                underlying_price: payload.underlying_price,
+                open_interest: payload.open_interest,
+            });
+        }
+
+        Ok(())
+    }
+
+    fn index_option_chain_slice(
+        &mut self,
+        raw_event: &IvRawEvent,
+        payload: &IvOptionChainSlicePayload,
+    ) -> Result<(), IvStoreError> {
+        if payload.points.iter().any(|point| !valid_iv(point.iv)) {
+            return Err(IvStoreError::InvalidIvValue);
+        }
+
+        self.smiles.push(IvSmile {
+            profile_id: raw_event.profile_id.clone(),
+            source_id: raw_event.source_id.clone(),
+            surface_selector: payload.surface_selector.clone(),
+            series_id: payload.series_id.clone(),
+            side: payload.side.clone(),
+            basis: payload.basis,
+            points_by_strike: payload
+                .points
+                .iter()
+                .map(|point| IvSmilePoint {
+                    strike: point.strike,
+                    iv: point.iv,
+                })
+                .collect(),
+            atm_strike: payload.points.first().map(|point| point.strike),
+            ts_event_ns: raw_event.provenance.ts_event_ns,
+            provenance: raw_event.provenance.clone(),
+        });
+
+        Ok(())
+    }
+
+    fn index_aggregate_greeks(
+        &mut self,
+        raw_event: &IvRawEvent,
+        payload: &IvAggregateGreeksPayload,
+    ) {
+        self.aggregate_greeks.push(IvAggregateGreeks {
+            profile_id: raw_event.profile_id.clone(),
+            source_id: raw_event.source_id.clone(),
+            aggregate_key: payload.aggregate_key.clone(),
+            underlying_selectors: payload.underlying_selectors.clone(),
+            greeks: payload.greeks,
+            ts_event_ns: raw_event.provenance.ts_event_ns,
+            ts_init_ns: raw_event.provenance.ts_init_ns,
+            provenance: raw_event.provenance.clone(),
+        });
+    }
+
+    fn index_custom_iv(
+        &mut self,
+        raw_event: &IvRawEvent,
+        payload: &IvCustomIvPayload,
+    ) -> Result<(), IvStoreError> {
+        if !valid_iv(payload.value) {
+            return Err(IvStoreError::InvalidIvValue);
+        }
+
+        self.iv_evidence.push(IvEvidence {
+            profile_id: raw_event.profile_id.clone(),
+            source_id: raw_event.source_id.clone(),
+            iv_evidence_kind: payload.iv_evidence_kind.clone(),
+            value: payload.value,
+            ts_event_ns: raw_event.provenance.ts_event_ns,
+            ts_init_ns: raw_event.provenance.ts_init_ns,
+            provenance: raw_event.provenance.clone(),
+        });
+
+        Ok(())
+    }
+}
+
+fn valid_iv(value: f64) -> bool {
+    value.is_finite() && value.is_sign_positive()
+}
+
+impl From<IvRejectReason> for IvStoreError {
+    fn from(reason: IvRejectReason) -> Self {
+        match reason {
+            IvRejectReason::ProvenanceIncomplete => Self::ProvenanceIncomplete,
+            _ => Self::InvalidIvValue,
+        }
+    }
+}

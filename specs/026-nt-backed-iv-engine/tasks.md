@@ -111,25 +111,25 @@
 
 ### Tests for User Story 3
 
-- [ ] T051 [P] [US3] Add failing option-greeks raw preservation and indexing test in `tests/bolt_v3_iv_ingest.rs`
-- [ ] T052 [P] [US3] Add failing option-chain smile and surface indexing test in `tests/bolt_v3_iv_ingest.rs`
-- [ ] T053 [P] [US3] Add failing aggregate-greeks product indexing test in `tests/bolt_v3_iv_ingest.rs`
-- [ ] T054 [P] [US3] Add failing custom-IV-evidence indexing test in `tests/bolt_v3_iv_ingest.rs`
-- [ ] T055 [P] [US3] Add failing audit-only raw access test in `tests/bolt_v3_iv_store.rs`
-- [ ] T056 [P] [US3] Add failing provenance completeness test in `tests/bolt_v3_iv_store.rs`
-- [ ] T057 [US3] Record US3 RED evidence in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T051 [P] [US3] Add failing option-greeks raw preservation and indexing test in `tests/bolt_v3_iv_ingest.rs`
+- [X] T052 [P] [US3] Add failing option-chain smile and surface indexing test in `tests/bolt_v3_iv_ingest.rs`
+- [X] T053 [P] [US3] Add failing aggregate-greeks product indexing test in `tests/bolt_v3_iv_ingest.rs`
+- [X] T054 [P] [US3] Add failing custom-IV-evidence indexing test in `tests/bolt_v3_iv_ingest.rs`
+- [X] T055 [P] [US3] Add failing audit-only raw access test in `tests/bolt_v3_iv_store.rs`
+- [X] T056 [P] [US3] Add failing provenance completeness test in `tests/bolt_v3_iv_store.rs`
+- [X] T057 [US3] Record US3 RED evidence in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
 ### Implementation for User Story 3
 
-- [ ] T058 [P] [US3] Implement `IvRawEvent` preservation in `src/bolt_v3_iv/ingest.rs`
-- [ ] T059 [P] [US3] Implement `IvPoint` and `IvGreeksPoint` indexing in `src/bolt_v3_iv/store.rs`
-- [ ] T060 [P] [US3] Implement `IvSmile` construction in `src/bolt_v3_iv/store.rs`
-- [ ] T061 [P] [US3] Implement `IvSurface` construction in `src/bolt_v3_iv/store.rs`
-- [ ] T062 [P] [US3] Implement `IvAggregateGreeks` indexing in `src/bolt_v3_iv/store.rs`
-- [ ] T063 [P] [US3] Implement `IvEvidence` indexing in `src/bolt_v3_iv/store.rs`
-- [ ] T064 [US3] Implement audit/replay raw reader enforcement in `src/bolt_v3_iv/raw_access.rs`
-- [ ] T065 [US3] Implement provenance construction for raw and indexed products in `src/bolt_v3_iv/provenance.rs`
-- [ ] T066 [US3] Record US3 GREEN evidence and raw-boundary decisions in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T058 [P] [US3] Implement `IvRawEvent` preservation in `src/bolt_v3_iv/ingest.rs`
+- [X] T059 [P] [US3] Implement `IvPoint` and `IvGreeksPoint` indexing in `src/bolt_v3_iv/store.rs`
+- [X] T060 [P] [US3] Implement `IvSmile` construction in `src/bolt_v3_iv/store.rs`
+- [X] T061 [P] [US3] Implement `IvSurface` construction in `src/bolt_v3_iv/store.rs`
+- [X] T062 [P] [US3] Implement `IvAggregateGreeks` indexing in `src/bolt_v3_iv/store.rs`
+- [X] T063 [P] [US3] Implement `IvEvidence` indexing in `src/bolt_v3_iv/store.rs`
+- [X] T064 [US3] Implement audit/replay raw reader enforcement in `src/bolt_v3_iv/raw_access.rs`
+- [X] T065 [US3] Implement provenance construction for raw and indexed products in `src/bolt_v3_iv/provenance.rs`
+- [X] T066 [US3] Record US3 GREEN evidence and raw-boundary decisions in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
 **Checkpoint**: Raw NT evidence is preserved internally and strategy-safe IV products are queryable.
 

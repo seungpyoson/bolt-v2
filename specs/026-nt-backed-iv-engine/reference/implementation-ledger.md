@@ -116,3 +116,33 @@ NT-first decisions for US1: the Cargo resolver derives NT evidence from `cargo m
 | `cargo test --locked --test bolt_v3_iv_subscription` | GREEN | 5 tests passed after adding typed subscription planning, reload/source-removal planning, and runtime binding adapter outcomes. |
 
 NT runtime mapping decisions for US2: subscription plans carry only configured profile/source/client/selector/params/generation values; source kind to NT operation mapping is explicit and typed; no strategy, venue, market, asset, instrument, cadence, source ID, timeout, or policy runtime value is introduced in core logic.
+
+## Phase 5 User Story 3 Raw Preservation And Indexed Products
+
+| Task | Evidence | Status |
+|---|---|---|
+| `T051` | `tests/bolt_v3_iv_ingest.rs` asserts option-greeks raw payload preservation and mark/bid/ask IV plus greeks indexing. | Complete |
+| `T052` | `tests/bolt_v3_iv_ingest.rs` asserts option-chain slices build retained smiles and surface views without interpolation. | Complete |
+| `T053` | `tests/bolt_v3_iv_ingest.rs` asserts aggregate-greeks raw events index to aggregate-greeks products. | Complete |
+| `T054` | `tests/bolt_v3_iv_ingest.rs` asserts custom implied-volatility events index as custom IV evidence. | Complete |
+| `T055` | `tests/bolt_v3_iv_store.rs` asserts raw payload access is audit/replay/test-only and strategy role access is denied. | Complete |
+| `T056` | `tests/bolt_v3_iv_store.rs` asserts indexed product provenance is complete and incomplete provenance rejects. | Complete |
+| `T057` | RED evidence below records the missing ingest/store/raw-access/provenance validation failure. | Complete |
+| `T058` | `src/bolt_v3_iv/ingest.rs` implements `IvRawEvent` preservation and raw provenance creation. | Complete |
+| `T059` | `src/bolt_v3_iv/store.rs` indexes `IvPoint` and `IvGreeksPoint` from option-greeks payloads. | Complete |
+| `T060` | `src/bolt_v3_iv/store.rs` constructs retained `IvSmile` views from option-chain slices. | Complete |
+| `T061` | `src/bolt_v3_iv/store.rs` constructs `IvSurface` views from retained smiles. | Complete |
+| `T062` | `src/bolt_v3_iv/store.rs` indexes `IvAggregateGreeks` products. | Complete |
+| `T063` | `src/bolt_v3_iv/store.rs` indexes custom `IvEvidence` products. | Complete |
+| `T064` | `src/bolt_v3_iv/raw_access.rs` enforces audit/replay/test-only raw event access. | Complete |
+| `T065` | `src/bolt_v3_iv/provenance.rs` builds raw-event provenance and validates required provenance fields. | Complete |
+| `T066` | GREEN evidence below records the passing focused US3 test targets. | Complete |
+
+## Phase 5 RED/GREEN Evidence
+
+| Command | Outcome | Notes |
+|---|---|---|
+| `cargo test --locked --test bolt_v3_iv_ingest --test bolt_v3_iv_store` | RED | Failed with unresolved imports because `ingest`, `store`, `raw_access`, and `validate_iv_provenance` did not exist. |
+| `cargo test --locked --test bolt_v3_iv_ingest --test bolt_v3_iv_store` | GREEN | 6 tests passed after adding raw preservation, indexed products, audit-only raw reads, and provenance validation. |
+
+Raw-boundary decisions for US3: raw payloads stay in `IvRawEvent` and are reachable only through `raw_access`; strategy-role raw access rejects; strategy-safe products carry provenance references to raw event IDs but do not expose raw payload values.

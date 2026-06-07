@@ -1,0 +1,90 @@
+{
+  "schema_version": "source-proof-pmxt-polymarket-trade-id-policy-status.v1",
+  "task_id": "BACKTESTING_ENGINE-022",
+  "source_binding": "polymarket-parquet-archive-index",
+  "status": "open_dedupe_vs_sequence_policy_unresolved",
+  "recorded_at_utc": "2026-06-08T00:00:00Z",
+  "scope": {
+    "question": "How should PMXT last_trade_price transaction_hash map to NT TradeTick.trade_id?",
+    "answer": "Pinned NT has a transaction_hash-based Polymarket HTTP data API TradeId policy, but the PMXT sample contains exact duplicate trade observations with different timestamp_received values, so the BTE mapping must explicitly choose and test dedupe versus sequence before catalog acceptance.",
+    "not_implementation": true,
+    "not_catalog_readback_proof": true,
+    "not_source_selection": true
+  },
+  "pinned_nt_revision": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+  "nt_trade_id_evidence": [
+    {
+      "source": "nt://crates/adapters/polymarket/src/common/parse.rs:70",
+      "finding": "The websocket last_trade_price parser uses determine_trade_id(asset_id, side, price, size, timestamp) because live Polymarket last_trade_price events do not publish a trade id."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/websocket/parse.rs:200",
+      "finding": "parse_trade_tick calls determine_trade_id and does not use transaction_hash."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/http/data_api.rs:55",
+      "finding": "The HTTP data API path builds a composite TradeId from transaction_hash suffix, asset suffix, and a per-(transaction_hash, asset) sequence."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/http/data_api.rs:279",
+      "finding": "The HTTP data API path sorts trades by a composite key before assigning same-second timestamp tiebreakers and transaction-hash sequence ids."
+    },
+    {
+      "source": "nt://crates/adapters/polymarket/src/http/data_api.rs:654",
+      "finding": "Pinned NT tests require two fills sharing the same transaction_hash and asset to produce distinct TradeIds ending in sequence suffixes."
+    }
+  ],
+  "pmxt_sample_evidence": {
+    "source_uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+    "local_path": "/private/tmp/polymarket-may20-one.parquet",
+    "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "event_type": "last_trade_price",
+    "row_count": 80052,
+    "blank_hash_rows": 0,
+    "distinct_transaction_hashes": 80010,
+    "distinct_tx_asset_pairs": 80010,
+    "duplicate_tx_asset_pairs": 42,
+    "max_rows_per_tx_asset": 2,
+    "duplicate_exact_field_groups": 42,
+    "duplicate_exact_rows": 84,
+    "max_duplicate_exact_group_rows": 2,
+    "duplicate_groups_with_distinct_timestamp_received": 42,
+    "timestamp_groups": 78246,
+    "multi_row_timestamp_groups": 1747,
+    "max_rows_same_timestamp": 5
+  },
+  "policy_implications": [
+    {
+      "policy": "do_not_drop_transaction_hash",
+      "decision": "accepted",
+      "reason": "PMXT exposes transaction_hash and pinned NT's historical Polymarket data API path uses transaction_hash for TradeId disambiguation."
+    },
+    {
+      "policy": "do_not_use_websocket_determine_trade_id_unmodified_for_pmxt_history",
+      "decision": "accepted",
+      "reason": "The websocket policy is explicitly for live last_trade_price events that lack a trade id; PMXT historical rows carry transaction_hash."
+    },
+    {
+      "policy": "nt_http_hash_asset_sequence_policy",
+      "decision": "candidate",
+      "reason": "Pinned NT already uses transaction_hash, asset, and a sequence to disambiguate multi-fill collisions."
+    },
+    {
+      "policy": "exact_duplicate_trade_observation_dedupe",
+      "decision": "open",
+      "reason": "The one-hour PMXT sample has 42 exact duplicate trade groups with different timestamp_received values. Treating them as distinct sequence ids may overcount volume; deduping them may drop legitimate repeated fills if the source contract defines them as separate observations."
+    }
+  ],
+  "required_green_tests_when_implementation_starts": [
+    "PMXT last_trade_price rows with transaction_hash produce deterministic TradeIds that include transaction_hash-derived provenance.",
+    "Rows sharing transaction_hash and asset but differing in side, price, size, or timestamp remain distinct.",
+    "Exact duplicate rows with different timestamp_received follow the chosen source-contract policy, either dedupe with recorded duplicate_count or sequence as distinct TradeTicks with explicit claim-limit evidence.",
+    "TradeTick ts_event and ts_init policy is deterministic and preserves source timestamp versus timestamp_received provenance."
+  ],
+  "current_decision": {
+    "trade_id_policy_can_close": false,
+    "bte_022_can_close": false,
+    "broad_backfill_allowed": false,
+    "next_required_evidence": "Source-contract decision on PMXT exact duplicate last_trade_price rows, then a focused TDD test proving the chosen TradeId and timestamp policy against the one-object sample."
+  }
+}

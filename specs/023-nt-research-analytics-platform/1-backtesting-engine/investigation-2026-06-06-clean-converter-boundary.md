@@ -52,6 +52,17 @@ Go for the local BNBUSDC vertical-slice path after this fix:
   sub-blocker for the pinned NT revision only; dependency wiring, grouping,
   trade-id provenance, tick-size-change representation, catalog read-back, and
   `BacktestNode` consumption remain open.
+- PMXT Polymarket trade-id policy status is now recorded in
+  `reference/source-proof-pmxt-polymarket-trade-id-policy-status.2026-06-08.json`:
+  pinned NT's websocket parser derives IDs because live `last_trade_price`
+  events lack trade ids, while pinned NT's HTTP data API path already uses
+  `transaction_hash` plus asset and sequence to disambiguate multi-fill
+  collisions. The PMXT one-hour sample has `80,052` `last_trade_price` rows,
+  zero blank transaction hashes, and `42` exact duplicate trade groups with
+  different `timestamp_received` values. Therefore transaction hash must remain
+  in identity/provenance, but BTE still needs an explicit source-contract
+  decision and TDD proof for exact-duplicate dedupe versus sequencing before
+  catalog acceptance.
 - generated result contracts now preserve structured source-proof claim-limit evidence from the accepted proof instead of rebuilding source limits from plain `forbidden_claims` strings
 - non-latest source-proof pins now require structured manifest justification: `normal` runs still cannot pin them, non-normal pins require `proof_pin_reason_code`, and `audit_or_investigation` pins require `proof_pin_reason_detail`
 - the accepted `proof_pin_reason_code` vocabulary now matches the plan/reference contract, including published-result reproduction and regression-comparison pins

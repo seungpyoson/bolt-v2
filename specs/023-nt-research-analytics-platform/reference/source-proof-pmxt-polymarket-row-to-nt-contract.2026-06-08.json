@@ -188,10 +188,15 @@
       "mapping_policy": "For PMXT price_change rows, the converter may populate the NT PolymarketQuote hash field with an empty string for parse_book_deltas and parse_quote_from_price_change reuse, because pinned NT does not read this field in those parse paths and its own tests use String::new()."
     }
   ],
+  "trade_id_policy_status": {
+    "status": "open_dedupe_vs_sequence_policy_unresolved",
+    "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-trade-id-policy-status.2026-06-08.json",
+    "mapping_constraint": "PMXT last_trade_price exposes transaction_hash, so transaction_hash must remain in TradeTick identity/provenance. Pinned NT's HTTP data API path provides a hash+asset+sequence policy, but the PMXT sample has exact duplicate trade observations with different timestamp_received values; the implementation must decide and test dedupe versus sequence before catalog acceptance."
+  },
   "unresolved_before_implementation": [
     "The isolated BTE crate must have an approved dependency or integration boundary for nautilus-polymarket before parser/provider reuse is machine-checked.",
     "PMXT price_change grouping must be specified for market/source timestamp/asset_id batches and mixed timestamp_received groups.",
-    "PMXT last_trade_price includes transaction_hash while NT's Polymarket parser derives TradeId without it; the chosen TradeId/provenance policy must be explicit.",
+    "PMXT last_trade_price TradeId/provenance policy must choose and test transaction_hash+asset sequencing versus exact duplicate trade-observation dedupe before catalog acceptance.",
     "tick_size_change catalog representation must be proven with NT catalog read-back and BacktestNode consumption before an L2 replay claim.",
     "The resulting ParquetDataCatalog proof must write/read InstrumentAny::BinaryOption, OrderBookDelta, and TradeTick under artifact_root staging; local prototype directories are insufficient.",
     "The coverage ledger must use timestamp_received as the archive-hour coverage axis because source timestamp can be older than the archive object hour."

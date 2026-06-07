@@ -204,8 +204,10 @@ mod tests {
     // mode while keeping legacy strategy-owned RV knobs rejected.
     // Re-derived again after forwarding duplicate stream bindings to every
     // configured surfaced realized-volatility source ID.
+    // Re-derived again after accepting zero-RV surfaced snapshots and exporting
+    // unknown-source surfaced RV rejection counters in strategy input evidence.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "2ae443249dda1e65cf622ba05814f91872988697b60fb31f28e18d275e9a011b";
+        "cc5979978b069c8ee5e7e161ace18b2a05f337b91da33e11278a05ae8109bdfa";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

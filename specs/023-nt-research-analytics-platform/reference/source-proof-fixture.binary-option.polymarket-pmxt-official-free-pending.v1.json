@@ -1,0 +1,126 @@
+{
+  "source_proof_id": "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
+  "source_proof_version": 1,
+  "contract_version": "backfill-table-contract.v1",
+  "schema_version": "backfill-source-proof.v1",
+  "status": "pending",
+  "source_binding": "polymarket-parquet-archive-index",
+  "venue": "polymarket",
+  "product_family": "prediction_market_outcome",
+  "product_category": "binary-option",
+  "table_family": "order_book_snapshot_deltas",
+  "evidence_state": "pending_source_proof",
+  "source_candidate_class": "official_free",
+  "source_selection_status": "PENDING_MORE_PROOF",
+  "fixture_type": "binary-option",
+  "requested_time_range": {
+    "start_utc": "2025-06-01T00:00:00Z",
+    "end_utc": "2026-06-01T00:00:00Z"
+  },
+  "coverage_time_range": {
+    "start_utc": "2026-05-20T22:00:00.118Z",
+    "end_utc": "2026-05-20T22:59:59.807Z"
+  },
+  "instrument_universe_id": "polymarket-pmxt-v2-orderbook-hourly-current-candidate-pending-2026-06-08",
+  "raw_sample_uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+  "raw_sample_hash": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+  "schema_sample_uri": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json",
+  "schema_sample_hash": "109db55890bc17a06963cf415b9f9dc6c14982a5e624cd6e7fc8f93e97817965",
+  "license_ref": "https://archive.pmxt.dev/docs/v2-data-overview#license",
+  "license_scope": "public",
+  "retention_ref": "pending://source-proofs/v1/source_binding=polymarket-parquet-archive-index/proof=source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08/version=1/retention-freshness-evidence",
+  "cost_ref": "pending://source-proofs/v1/source_binding=polymarket-parquet-archive-index/proof=source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08/version=1/cost-evidence",
+  "nt_mapping_status": "pending",
+  "fidelity_class": "L2_REPLAY",
+  "l2_replay_evidence": {
+    "order_book_delta_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json sha256=8fffd3d416128db6e04b155c6af6d8f3083bb4279dc79c6b3b24e6fc8547b68a",
+    "sufficient_snapshot_cadence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json sha256=109db55890bc17a06963cf415b9f9dc6c14982a5e624cd6e7fc8f93e97817965"
+  },
+  "forbidden_claims": [
+    "No NT catalog or backtest input from this pending binary-option L2 candidate proof.",
+    "No provider-selected production source claim until source proof, retention, coverage, NT mapping, storage, fidelity, and cost checks pass.",
+    "No accepted BinaryOption instrument mapping until activation, expiration, increments, precision, outcome label, and metadata are source-backed.",
+    "No execution-quality, queue-position, fillability, or sizing claims until gap policy, sequencing, and completeness are accepted."
+  ],
+  "claim_limits": [
+    {
+      "id": "binary-option-pmxt-source-proof-claim-limit-001",
+      "severity": "blocking",
+      "claim": "No NT catalog or backtest input from this pending binary-option L2 candidate proof.",
+      "reason": "The report records an official/free replay candidate before accepted NT mapping, artifact-root staging, coverage, and source selection checks have passed.",
+      "evidence_ref": "source-proof://source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08/status"
+    },
+    {
+      "id": "binary-option-pmxt-source-proof-claim-limit-002",
+      "severity": "blocking",
+      "claim": "No provider-selected production source claim until source proof, retention, coverage, NT mapping, storage, fidelity, and cost checks pass.",
+      "reason": "PMXT has public hourly replay data and license evidence, but the source proof is still pending coverage, storage, cost, and accepted mapping evidence.",
+      "evidence_ref": "source-proof://source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08/source_selection_status"
+    },
+    {
+      "id": "binary-option-pmxt-source-proof-claim-limit-003",
+      "severity": "blocking",
+      "claim": "No accepted BinaryOption instrument mapping until activation, expiration, increments, precision, outcome label, and metadata are source-backed.",
+      "reason": "A local prototype NT catalog used placeholder BinaryOption activation/expiration and outcome fields; accepted mapping requires source-backed BinaryOption fields and generic ParquetDataCatalog read-back proof.",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json sha256=8fffd3d416128db6e04b155c6af6d8f3083bb4279dc79c6b3b24e6fc8547b68a"
+    },
+    {
+      "id": "binary-option-pmxt-source-proof-claim-limit-004",
+      "severity": "blocking",
+      "claim": "No execution-quality, queue-position, fillability, or sizing claims until gap policy, sequencing, and completeness are accepted.",
+      "reason": "The sample proves event schema and hourly replay shape only; one-year coverage, gap thresholds, sequencing semantics, and replay completeness are not accepted.",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json sha256=109db55890bc17a06963cf415b9f9dc6c14982a5e624cd6e7fc8f93e97817965"
+    }
+  ],
+  "gap_policy_id": "",
+  "required_checks": {
+    "source_access": {
+      "outcome": "passed",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json source_uri=https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet sha256=0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567"
+    },
+    "license": {
+      "outcome": "passed",
+      "evidence_ref": "https://archive.pmxt.dev/docs/v2-data-overview#license CC-BY-4.0 commercial use allowed with attribution"
+    },
+    "schema": {
+      "outcome": "passed",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json schema=timestamp_received,timestamp,market,event_type,asset_id,bids,asks,price,size,side,best_bid,best_ask,fee_rate_bps,transaction_hash,old_tick_size,new_tick_size"
+    },
+    "time_semantics": {
+      "outcome": "passed",
+      "evidence_ref": "timestamp_received is exporter ingest/archive-hour axis; timestamp is upstream event timestamp per PMXT v2 docs and sample inspection"
+    },
+    "instrument_universe": {
+      "outcome": "pending",
+      "evidence_ref": "pending source-backed token id to BinaryOption metadata mapping for activation, expiration, outcome label, precision, increment, fee, and size fields"
+    },
+    "coverage": {
+      "outcome": "pending",
+      "evidence_ref": "pending historical coverage proof for requested one-year binary-option replay window using timestamp_received"
+    },
+    "retention_freshness": {
+      "outcome": "pending",
+      "evidence_ref": "pending durable archive retention and update-lag proof for the requested proof window"
+    },
+    "granularity": {
+      "outcome": "passed",
+      "evidence_ref": "sample includes book, price_change, last_trade_price, and tick_size_change events for L2 replay candidate evaluation"
+    },
+    "completeness": {
+      "outcome": "pending",
+      "evidence_ref": "pending object counts, hourly coverage ledger, checksums, and accepted gap threshold evidence"
+    },
+    "nt_mapping": {
+      "outcome": "pending",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json sha256=8fffd3d416128db6e04b155c6af6d8f3083bb4279dc79c6b3b24e6fc8547b68a"
+    },
+    "cost": {
+      "outcome": "pending",
+      "evidence_ref": "pending free/public source, storage, transfer, query, logging, and reserve-cost evidence for the requested window"
+    },
+    "storage": {
+      "outcome": "pending",
+      "evidence_ref": "pending artifact-root staging proof for raw sample, schema sample, manifest, and source proof evidence"
+    }
+  }
+}

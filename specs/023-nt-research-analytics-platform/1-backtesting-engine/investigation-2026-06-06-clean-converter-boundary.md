@@ -1293,6 +1293,36 @@ Midpoint table-family coverage audit:
   binding both facts. BTE-022 remains open overall until the binary-option
   fixture either proves replay data into an NT data class or is explicitly
   routed through an approved non-replay signal/input contract.
+- PMXT/Polymarket is now recorded as the binary-option replay candidate without
+  making it selected or accepted. The committed sample inspection
+  `specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json`
+  binds the public PMXT v2 hourly parquet source
+  `https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet`,
+  HEAD metadata, local bounded SHA256
+  `0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567`,
+  and schema/event counts: `price_change`, `book`, `last_trade_price`, and
+  `tick_size_change` over the `2026-05-20T22:00Z` archive hour. Public source
+  docs identify the archive as hourly Polymarket CLOB market-channel parquet,
+  public HTTPS with no credentials, and CC BY 4.0 including commercial use with
+  attribution. The pending source-proof fixture
+  `source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json`
+  therefore marks source access, license, schema, time semantics, and
+  granularity as passed, but leaves instrument universe, coverage,
+  retention/freshness, completeness, NT mapping, storage, and cost pending.
+- The PMXT NT mapping inspection
+  `specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json`
+  records the exact blocker: PMXT fields can feed NT `OrderBookDelta` and
+  `TradeTick`, and a bounded local prototype catalog physically wrote
+  `InstrumentAny::BinaryOption`, `OrderBookDelta`, and `TradeTick` parquet, but
+  that prototype is not acceptable evidence because the instrument rows used
+  placeholder `activation_ns`, `expiration_ns`, and outcome metadata. The
+  generic reference-fixture test now enforces that any `L2_REPLAY` fixture must
+  bind replay evidence and either carry accepted `OrderBookDelta` or
+  `OrderBookDepth10` plus `ParquetDataCatalog` readback, or remain pending with
+  a committed mapping inspection and a source-backed `BinaryOption` blocker.
+  Focused verification passed:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_source_proof_reference_fixtures -- --nocapture`
+  (2 tests).
 
 ## Recommendation
 

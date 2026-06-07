@@ -127,6 +127,56 @@ fn assert_sample_evidence_is_inspected(path: &PathBuf, report: &SourceProofRepor
 
 fn assert_nt_mapping_evidence_is_bounded(path: &PathBuf, report: &SourceProofReport) {
     match (report.table_family.as_str(), report.fidelity_class) {
+        (_, SourceProofFidelityClass::L2Replay) => {
+            assert!(
+                report.l2_replay_evidence.order_book_delta_ref.is_some()
+                    || report
+                        .l2_replay_evidence
+                        .sufficient_snapshot_cadence_ref
+                        .is_some(),
+                "L2 fixture report {path:?} must bind source replay evidence before provider selection"
+            );
+            let evidence = report.required_checks.nt_mapping.evidence_ref.as_str();
+            match report.nt_mapping_status {
+                NtMappingStatus::Accepted => {
+                    assert_eq!(
+                        report.required_checks.nt_mapping.outcome,
+                        CheckOutcome::Passed,
+                        "accepted L2 fixture report {path:?} must pass NT mapping"
+                    );
+                    assert!(
+                        evidence.contains("OrderBookDelta")
+                            || evidence.contains("OrderBookDepth10"),
+                        "accepted L2 fixture report {path:?} must bind NT order-book replay mapping evidence"
+                    );
+                    assert!(
+                        evidence.contains("ParquetDataCatalog"),
+                        "accepted L2 fixture report {path:?} must bind NT catalog readback evidence"
+                    );
+                }
+                NtMappingStatus::Pending => {
+                    assert_eq!(
+                        report.required_checks.nt_mapping.outcome,
+                        CheckOutcome::Pending,
+                        "pending L2 fixture report {path:?} must keep NT mapping pending"
+                    );
+                    assert!(
+                        evidence.starts_with("repo://"),
+                        "pending L2 fixture report {path:?} must bind a committed NT mapping inspection"
+                    );
+                    assert!(
+                        report.claim_limits.iter().any(|limit| {
+                            limit.reason.contains("source-backed")
+                                && limit.reason.contains("BinaryOption")
+                        }),
+                        "pending L2 fixture report {path:?} must block placeholder instrument mappings"
+                    );
+                }
+                other => panic!(
+                    "L2 fixture report {path:?} must have accepted or pending NT mapping status, got {other:?}"
+                ),
+            }
+        }
         ("trades", SourceProofFidelityClass::TradeReplay) => {
             assert_eq!(
                 report.nt_mapping_status,

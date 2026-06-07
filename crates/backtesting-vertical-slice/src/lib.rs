@@ -32,6 +32,7 @@ pub mod backfill_source_proof_scope;
 pub mod canonical_trades;
 pub mod catalog_projection;
 pub mod conversion_boundary;
+pub mod nt_catalog_proof;
 pub mod operator;
 pub mod research_analytics;
 pub mod result_contract;

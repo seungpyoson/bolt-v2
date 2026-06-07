@@ -856,6 +856,7 @@ dependencies = [
  "clap",
  "csv",
  "flate2",
+ "futures",
  "hex",
  "nautilus-backtest",
  "nautilus-core",

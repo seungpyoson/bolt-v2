@@ -362,6 +362,8 @@ GREEN checks after implementation:
 - `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --test backtesting_vertical_slice_source_proof_legacy_derivability -- --nocapture`: 3 passed after the legacy derivability summary began carrying deterministic aggregate table-family and blocker counts without accepting or mutating source proofs.
 - `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --test backtesting_vertical_slice_source_proof_migration_preflight -- --nocapture`: 4 passed after the migration-preflight test fixture was updated for the expanded derivability summary contract.
 - `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --test backtesting_vertical_slice_source_proof_migration_preflight migration_preflight_reports_source_binding_product_family_mismatch -- --nocapture`: RED failed with missing registry-aware preflight API, missing legacy metadata fields, and missing source-binding product-family mismatch blocker; GREEN passed after derivability preserved legacy `venue`/`product_family`/`evidence_state` fields and migration preflight loaded spec-owned source bindings before reporting remaining candidate acceptance blockers.
+- `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --test backtesting_vertical_slice_source_proof_migration_preflight migration_preflight_prefers_candidate_with_fewer_remaining_blockers -- --nocapture`: RED failed because migration preflight selected the smaller synthetic candidate even though registry metadata made it less acceptable; GREEN passed after eligible candidates were ranked by remaining acceptance blocker count before payload size, record count, and proof URI.
+- `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --test backtesting_vertical_slice_source_proof_migration_preflight migration_preflight_treats_non_backfillable_evidence_state_as_blocker -- --nocapture`: RED failed because migration preflight selected a smaller `bounded_or_current_only` synthetic candidate; GREEN passed after preflight mirrored source-proof acceptance by treating only `directly_backfillable` and `owner_archive_backfillable` evidence as backfillable.
 - `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_blocks_when_table_family_does_not_match_required_nt_data_type`: RED failed because readiness could report `ready` for `required_table_family = "quotes"` with `required_nt_data_type = "TradeTick"`; GREEN passed after combined readiness required the requested table-family/data-type pair to be present in TOML-owned `supported_data_paths`.
 - static provider-literal scan for the coverage source, coverage CLI, and their tests: no hits for current venue/provider/sample tokens, so the new coverage-ledger API, operator command, and tests are not hardcoded to the accepted sample or a specific venue
 - `just bte-test research_analytics_artifacts_use_typed_subfamilies_and_one_kind_pointer research_analytics_records_require_matching_subfamily_prefix`: RED failed with missing `ResearchAnalyticsSubfamily` and RA-specific staged-record constructor; GREEN passed after adding typed RA subfamilies, enforcing `research-analytics/v1/<subfamily>/` manifest prefixes, and keeping every RA subfamily on the single `research_analytics` Artifact Index pointer
@@ -766,6 +768,26 @@ Current evidence:
   size 908 bytes, `status = blocked`, and `eligible_candidate_count = 0`.
   Therefore the next accepted source proof is still blocked by evidence and
   registry metadata, not by NT execution or catalog mechanics.
+- After migration preflight candidate selection was changed to rank fewer
+  remaining acceptance blockers before payload size, the real instruments
+  preflight was rerun as an append-only scratch artifact. The acceptance-ranked
+  report at
+  `/private/tmp/bte-coverage-ledger-20260607/source-proof-migration-preflight-instruments-acceptance-ranked-output/source-proof-migration-preflight-report.json`
+  has content hash
+  `e2a2cb95004fc8edada403ea38d4a880baca8bc8cb0ebde4d61b7332af020993`,
+  file SHA256
+  `1df3fed20897fe45e7b52b6d83b1e281f0d0aaaa45c057cacb4eef08e838c671`,
+  size 1,793 bytes, `status = candidate_found`, and
+  `eligible_candidate_count = 19`. The selected candidate moved to
+  `source-proof-32d52c7aa5a3910b` /
+  `hyperliquid-hip3-perp-dexs`, table family `instruments`, one S3-bound raw
+  payload, 14,659 accepted bytes from S3, and exactly the five unresolved
+  evidence blockers: license, NT mapping, fidelity, forbidden-claim, and
+  schema-sample checks. This avoids choosing either the tiny
+  `okx-option-underlyings` proof with a product-family mismatch or the
+  `deribit-spot-active-instruments` proof whose `bounded_or_current_only`
+  evidence is not acceptable for backfill. It still does not make backfill
+  ready; it only makes the no-go gate choose the most viable current candidate.
 - The committed reference `trades` source proof was separately checked through
   the config-driven source-proof admissibility CLI, using
   `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.bnbusdc-2026-03-01.json`
@@ -954,9 +976,11 @@ Distance from the overall backtesting engine:
    derivability CLI plus a preflight selector that refuses broad conversion
    unless the ledger has one bounded canonical-ready accepted tranche, and a
    source-proof migration preflight selector that proves whether the staged
-   legacy proofs contain a candidate for a requested table family, and a
-   combined readiness report that joins both gates for the selected NT data
-   path, source-binding coverage over the registry and ledger, and object-level
+   legacy proofs contain a candidate for a requested table family, ranks
+   candidates by remaining acceptance blockers before payload size, and treats
+   non-backfillable evidence states as blockers, and a combined readiness report
+   that joins both gates for the selected NT data path, source-binding coverage
+   over the registry and ledger, and object-level
    source-proof scope coverage proving the accepted sample is inside a broader
    raw staging manifest, plus an accepted object-level raw tranche manifest for
    that sample. A real

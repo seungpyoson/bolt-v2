@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    source_proof::{SourceBindingRegistry, resolve_source_bindings_path},
+    source_proof::{EvidenceState, SourceBindingRegistry, resolve_source_bindings_path},
     source_proof_legacy_derivability::{
         SourceProofLegacyDerivabilityIssue, SourceProofLegacyDerivabilityRecord,
         SourceProofLegacyDerivabilityReport, SourceProofLegacyDerivableField,
@@ -200,10 +200,16 @@ pub fn evaluate_source_proof_migration_preflight_with_registry(
         .records
         .iter()
         .filter(|record| is_eligible(record, selection))
+        .map(|record| selected_candidate(record, source_bindings_registry))
         .collect::<Vec<_>>();
     eligible.sort_by(|left, right| {
-        left.accepted_bytes_from_s3
-            .cmp(&right.accepted_bytes_from_s3)
+        left.remaining_acceptance_blockers
+            .len()
+            .cmp(&right.remaining_acceptance_blockers.len())
+            .then(
+                left.accepted_bytes_from_s3
+                    .cmp(&right.accepted_bytes_from_s3),
+            )
             .then(left.raw_payload_records.cmp(&right.raw_payload_records))
             .then(left.proof_uri.cmp(&right.proof_uri))
     });
@@ -213,9 +219,7 @@ pub fn evaluate_source_proof_migration_preflight_with_registry(
     }
 
     let selected_candidate = if blocking_reasons.is_empty() {
-        eligible
-            .first()
-            .map(|record| selected_candidate(record, source_bindings_registry))
+        eligible.first().cloned()
     } else {
         None
     };
@@ -432,9 +436,14 @@ fn source_binding_metadata_blockers(
         None => blockers.push(SourceProofLegacyDerivabilityIssue::MissingProductFamily),
     }
     match record.evidence_state {
-        Some(evidence_state) if evidence_state == metadata.evidence_state => {}
-        Some(_) => {
-            blockers.push(SourceProofLegacyDerivabilityIssue::SourceBindingEvidenceStateMismatch)
+        Some(evidence_state) => {
+            if evidence_state != metadata.evidence_state {
+                blockers
+                    .push(SourceProofLegacyDerivabilityIssue::SourceBindingEvidenceStateMismatch);
+            }
+            if !is_backfillable_evidence_state(evidence_state) {
+                blockers.push(SourceProofLegacyDerivabilityIssue::EvidenceStateNotBackfillable);
+            }
         }
         None => blockers.push(SourceProofLegacyDerivabilityIssue::MissingEvidenceState),
     }
@@ -448,6 +457,13 @@ fn source_binding_metadata_blockers(
         blockers.push(SourceProofLegacyDerivabilityIssue::SourceBindingTableFamilyMismatch);
     }
     blockers
+}
+
+fn is_backfillable_evidence_state(evidence_state: EvidenceState) -> bool {
+    matches!(
+        evidence_state,
+        EvidenceState::DirectlyBackfillable | EvidenceState::OwnerArchiveBackfillable
+    )
 }
 
 fn content_hash(

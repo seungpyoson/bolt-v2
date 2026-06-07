@@ -52,6 +52,7 @@ pub enum SourceProofLegacyDerivabilityIssue {
     MissingVenue,
     MissingProductFamily,
     MissingEvidenceState,
+    EvidenceStateNotBackfillable,
     UnknownSourceBinding,
     SourceBindingProductFamilyMismatch,
     SourceBindingEvidenceStateMismatch,

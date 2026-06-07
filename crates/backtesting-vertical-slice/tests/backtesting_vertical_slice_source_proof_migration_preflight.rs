@@ -32,7 +32,7 @@ fn migration_preflight_blocks_when_required_table_family_has_no_candidate() {
         100,
     )]);
 
-    let registry = source_binding_registry(&[(
+    let registry = source_binding_registry(&[binding(
         "synthetic-instruments",
         SYNTHETIC_PRODUCT_FAMILY,
         SYNTHETIC_OTHER_TABLE_FAMILY,
@@ -76,12 +76,12 @@ fn migration_preflight_selects_smallest_matching_candidate_without_source_consta
     ]);
 
     let registry = source_binding_registry(&[
-        (
+        binding(
             "synthetic-large",
             SYNTHETIC_PRODUCT_FAMILY,
             SYNTHETIC_TABLE_FAMILY,
         ),
-        (
+        binding(
             "synthetic-small",
             SYNTHETIC_PRODUCT_FAMILY,
             SYNTHETIC_TABLE_FAMILY,
@@ -120,7 +120,7 @@ fn migration_preflight_reports_source_binding_product_family_mismatch() {
         )
         .with_product_family(SYNTHETIC_OTHER_PRODUCT_FAMILY),
     ]);
-    let registry = source_binding_registry(&[(
+    let registry = source_binding_registry(&[binding(
         "synthetic-metadata-mismatch",
         SYNTHETIC_PRODUCT_FAMILY,
         SYNTHETIC_TABLE_FAMILY,
@@ -146,6 +146,113 @@ fn migration_preflight_reports_source_binding_product_family_mismatch() {
 }
 
 #[test]
+fn migration_preflight_prefers_candidate_with_fewer_remaining_blockers() {
+    let report = derivability_report(vec![
+        record(
+            "proof://synthetic/smaller-metadata-mismatch.json",
+            "synthetic-smaller-metadata-mismatch",
+            SYNTHETIC_TABLE_FAMILY,
+            1,
+            50,
+        )
+        .with_product_family(SYNTHETIC_OTHER_PRODUCT_FAMILY),
+        record(
+            "proof://synthetic/larger-clean-metadata.json",
+            "synthetic-larger-clean-metadata",
+            SYNTHETIC_TABLE_FAMILY,
+            1,
+            100,
+        ),
+    ]);
+    let registry = source_binding_registry(&[
+        binding(
+            "synthetic-smaller-metadata-mismatch",
+            SYNTHETIC_PRODUCT_FAMILY,
+            SYNTHETIC_TABLE_FAMILY,
+        ),
+        binding(
+            "synthetic-larger-clean-metadata",
+            SYNTHETIC_PRODUCT_FAMILY,
+            SYNTHETIC_TABLE_FAMILY,
+        ),
+    ]);
+
+    let preflight = evaluate_source_proof_migration_preflight_with_registry(
+        "synthetic-migration-preflight",
+        &report,
+        &selection(vec![SYNTHETIC_TABLE_FAMILY]),
+        &registry,
+    );
+
+    assert_eq!(
+        preflight.status,
+        SourceProofMigrationPreflightStatus::CandidateFound
+    );
+    let candidate = preflight.selected_candidate.expect("candidate");
+    assert_eq!(candidate.source_binding, "synthetic-larger-clean-metadata");
+    assert_eq!(candidate.accepted_bytes_from_s3, 100);
+    assert_eq!(
+        candidate.remaining_acceptance_blockers,
+        vec![SourceProofLegacyDerivabilityIssue::LicenseNotPassed]
+    );
+}
+
+#[test]
+fn migration_preflight_treats_non_backfillable_evidence_state_as_blocker() {
+    let report = derivability_report(vec![
+        record(
+            "proof://synthetic/smaller-bounded-current-only.json",
+            "synthetic-smaller-bounded-current-only",
+            SYNTHETIC_TABLE_FAMILY,
+            1,
+            50,
+        )
+        .with_evidence_state(EvidenceState::BoundedOrCurrentOnly),
+        record(
+            "proof://synthetic/larger-directly-backfillable.json",
+            "synthetic-larger-directly-backfillable",
+            SYNTHETIC_TABLE_FAMILY,
+            1,
+            100,
+        ),
+    ]);
+    let registry = source_binding_registry(&[
+        binding_with_evidence_state(
+            "synthetic-smaller-bounded-current-only",
+            SYNTHETIC_PRODUCT_FAMILY,
+            SYNTHETIC_TABLE_FAMILY,
+            "bounded_or_current_only",
+        ),
+        binding(
+            "synthetic-larger-directly-backfillable",
+            SYNTHETIC_PRODUCT_FAMILY,
+            SYNTHETIC_TABLE_FAMILY,
+        ),
+    ]);
+
+    let preflight = evaluate_source_proof_migration_preflight_with_registry(
+        "synthetic-migration-preflight",
+        &report,
+        &selection(vec![SYNTHETIC_TABLE_FAMILY]),
+        &registry,
+    );
+
+    assert_eq!(
+        preflight.status,
+        SourceProofMigrationPreflightStatus::CandidateFound
+    );
+    let candidate = preflight.selected_candidate.expect("candidate");
+    assert_eq!(
+        candidate.source_binding,
+        "synthetic-larger-directly-backfillable"
+    );
+    assert_eq!(
+        candidate.remaining_acceptance_blockers,
+        vec![SourceProofLegacyDerivabilityIssue::LicenseNotPassed]
+    );
+}
+
+#[test]
 fn migration_preflight_reads_toml_spec_and_writes_report_idempotently() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let report_path = dir.path().join("derivability.json");
@@ -166,7 +273,7 @@ fn migration_preflight_reads_toml_spec_and_writes_report_idempotently() {
     .expect("write report");
     std::fs::write(
         &source_bindings_path,
-        source_binding_registry_toml(&[(
+        source_binding_registry_toml(&[binding(
             "synthetic-ready",
             SYNTHETIC_PRODUCT_FAMILY,
             SYNTHETIC_TABLE_FAMILY,
@@ -239,7 +346,7 @@ fn migration_preflight_cli_writes_blocked_report_for_missing_table_family() {
     .expect("write report");
     std::fs::write(
         &source_bindings_path,
-        source_binding_registry_toml(&[(
+        source_binding_registry_toml(&[binding(
             "synthetic-instruments",
             SYNTHETIC_PRODUCT_FAMILY,
             SYNTHETIC_OTHER_TABLE_FAMILY,
@@ -361,6 +468,7 @@ fn record(
 
 trait RecordFixtureExt {
     fn with_product_family(self, product_family: &str) -> Self;
+    fn with_evidence_state(self, evidence_state: EvidenceState) -> Self;
 }
 
 impl RecordFixtureExt for SourceProofLegacyDerivabilityRecord {
@@ -368,24 +476,68 @@ impl RecordFixtureExt for SourceProofLegacyDerivabilityRecord {
         self.product_family = Some(product_family.to_string());
         self
     }
+
+    fn with_evidence_state(mut self, evidence_state: EvidenceState) -> Self {
+        self.evidence_state = Some(evidence_state);
+        self
+    }
 }
 
-fn source_binding_registry(entries: &[(&str, &str, &str)]) -> SourceBindingRegistry {
+#[derive(Debug, Clone, Copy)]
+struct SyntheticBinding<'a> {
+    source_binding: &'a str,
+    product_family: &'a str,
+    table_family: &'a str,
+    evidence_state: &'a str,
+}
+
+fn binding<'a>(
+    source_binding: &'a str,
+    product_family: &'a str,
+    table_family: &'a str,
+) -> SyntheticBinding<'a> {
+    binding_with_evidence_state(
+        source_binding,
+        product_family,
+        table_family,
+        SYNTHETIC_EVIDENCE_STATE,
+    )
+}
+
+fn binding_with_evidence_state<'a>(
+    source_binding: &'a str,
+    product_family: &'a str,
+    table_family: &'a str,
+    evidence_state: &'a str,
+) -> SyntheticBinding<'a> {
+    SyntheticBinding {
+        source_binding,
+        product_family,
+        table_family,
+        evidence_state,
+    }
+}
+
+fn source_binding_registry(entries: &[SyntheticBinding<'_>]) -> SourceBindingRegistry {
     SourceBindingRegistry::from_toml_str(&source_binding_registry_toml(entries))
         .expect("source binding registry")
 }
 
-fn source_binding_registry_toml(entries: &[(&str, &str, &str)]) -> String {
+fn source_binding_registry_toml(entries: &[SyntheticBinding<'_>]) -> String {
     entries
         .iter()
-        .map(|(source_binding, product_family, table_family)| {
+        .map(|entry| {
+            let source_binding = entry.source_binding;
+            let product_family = entry.product_family;
+            let table_family = entry.table_family;
+            let evidence_state = entry.evidence_state;
             format!(
                 r#"[[source_binding]]
 key = "{source_binding}"
 venue = "{SYNTHETIC_VENUE}"
 product_family = "{product_family}"
 source_uri = "https://synthetic.invalid/data"
-evidence_state = "{SYNTHETIC_EVIDENCE_STATE}"
+evidence_state = "{evidence_state}"
 table_families = ["{table_family}"]
 "#
             )

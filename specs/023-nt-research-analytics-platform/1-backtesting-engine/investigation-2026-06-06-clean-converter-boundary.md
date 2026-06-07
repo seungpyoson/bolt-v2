@@ -2,7 +2,7 @@
 
 ## Status
 
-This is not a completed production backtesting-engine rollout. It is a completed fix for the converter/output-boundary slice plus explicit primitive NT venue-control, catalog cloud-config mapping, typed unsupported NT data-query surface gating, TOML-owned raw-payload bounds, TOML-owned artifact-store config, SSM-backed artifact-store credential resolution, and source-proof claim-limit propagation into generated result contracts.
+This is not a completed production backtesting-engine rollout. It is a completed fix for the converter/output-boundary slice plus explicit primitive NT venue-control, catalog cloud-config mapping, typed unsupported NT data-query surface gating, TOML-owned raw-payload bounds, TOML-owned artifact-store config, SSM-backed artifact-store credential resolution, source-proof claim-limit propagation into generated result contracts, and report-only source-proof admissibility gating.
 
 Go for the local BNBUSDC vertical-slice path after this fix:
 
@@ -569,13 +569,19 @@ Current evidence:
   `completed_objects_not_positive`, 5 `completed_bytes_not_positive`, and 3
   `failed_objects_present`.
 - Canonical source-proof reports under
-  `source-proof-v3/source-proofs/v1/**/source-proof.json` total 21, and all 21
-  are currently `pending`. Read-only schema comparison against the current BTE
-  `SourceProofReport` contract found that all 21 staged proof files use the old
-  source-proof-v3 evidence shape (`source_binding_key`, `table_families`,
-  `raw_payload_records`, scalar pending checks) and all 21 are missing 18
-  required current-contract fields, including `source_binding`,
-  `product_category`, `table_family`, `fixture_type`, `requested_time_range`,
+  `source-proof-v3/source-proofs/v1/**/source-proof.json` total 21. The
+  config-driven source-proof admissibility verifier generated
+  `/private/tmp/bte-coverage-ledger-20260607/source-proof-admissibility-output/source-proof-admissibility-report.json`
+  with content hash
+  `2916adfc0b23a802cc01d027eebc87026debbf95c34a06a70685cdf5334ff191`.
+  It contains 21 records, 0 current-contract records, 0 accept-ready records,
+  and 21 non-current-contract records. Every staged proof has the same blocking
+  issue classes: `missing_current_contract_field`,
+  `legacy_source_binding_key_field`, `legacy_table_families_field`,
+  `legacy_raw_payload_records_field`, `legacy_scalar_required_checks`, and
+  `current_contract_deserialize_failed`. Every staged proof is missing these 18
+  current-contract fields: `source_binding`, `product_category`,
+  `table_family`, `fixture_type`, `requested_time_range`,
   `coverage_time_range`, `instrument_universe_id`, staged `raw_sample_uri` and
   `schema_sample_uri`, hashes, license/retention refs, `nt_mapping_status`,
   `fidelity_class`, `claim_limits`, `acceptance_scope`, and `gap_policy_id`.
@@ -590,12 +596,15 @@ Current evidence:
   still has 0 accepted records: 20 records are now specifically blocked by
   `source_proof_not_accepted`, while 146 records still have no source-proof
   binding.
-- Repo search found no checked-in source-proof-v3 generator or standalone
-  current-contract source-proof acceptance CLI. The existing promotion route is
-  the BTE operator run-spec path: `RunSpec.source_proof` must already deserialize
-  as the current `SourceProofReport`, then `SourceProofReport::accept` stamps it
-  and `select_accepted_dataset` binds exactly one hash-verified staged object.
-  A manifest metadata census found only 22 of 190 manifests with top-level
+- Repo search found no checked-in source-proof-v3 generator. The new
+  `source_proof_admissibility` CLI is report-only: it deserializes staged JSON
+  against the current contract and calls `SourceProofReport::evaluate_acceptance`
+  when deserialization succeeds, but it does not accept, migrate, or mutate
+  source proofs. The existing promotion route remains the BTE operator run-spec
+  path: `RunSpec.source_proof` must already deserialize as the current
+  `SourceProofReport`, then `SourceProofReport::accept` stamps it and
+  `select_accepted_dataset` binds exactly one hash-verified staged object. A
+  manifest metadata census found only 22 of 190 manifests with top-level
   source-binding/source-proof fields; the other 168 cannot be safely bound by
   prefix or venue inference without violating the source-proof contract.
 - Binance run `binance-backfill-run-d928f6666827dd47` records 4,701 completed
@@ -630,14 +639,16 @@ Distance from the overall backtesting engine:
    a generic coverage-ledger/parser/aggregate plus local idempotent artifact
    writer, batch/local-file manifest-summary ingestion boundaries, a TOML
    coverage spec, an operator CLI for that spec, generic TOML source-proof
-   metadata binding, and unsupported-schema rejected records. A real
-   manifest-only ledger can now be generated across all 190 observed manifests,
-   but the current S3 evidence produces a rejected ledger, not an accepted
-   coverage ledger: all discovered source-proof reports are pending and do not
-   conform to the current `SourceProofReport` acceptance contract, 24 manifest
-   files still need count/byte normalization if they are to carry detailed
-   coverage evidence, and 146 supported manifest records still lack source-proof
-   binding. There are no accepted normalized row tables, no accepted
+   metadata binding, unsupported-schema rejected records, and a report-only
+   source-proof admissibility CLI. A real manifest-only ledger can now be
+   generated across all 190 observed manifests, and a real source-proof
+   admissibility report can now be generated across all 21 observed staged
+   proofs. The current S3 evidence still produces rejected gates, not accepted
+   backfill: all discovered source-proof reports are non-current-contract
+   source-proof-v3 records, 24 manifest files still need count/byte
+   normalization if they are to carry detailed coverage evidence, and 146
+   supported manifest records still lack source-proof binding. There are no
+   accepted normalized row tables, no accepted
    instrument/gap policy ledger, and no NT catalog export from that data.
 3. Production BTE: blocked by the backfill foundation. Running production BTE
    before the ledger/normalization/catalog gates would only prove the existing
@@ -673,8 +684,9 @@ broad historical backfill or custom simulator work:
    without venue-specific code branches, records rejected unsupported schemas
    instead of aborting, and runs before any download/conversion work.
 2. Bring source-proof evidence into the current acceptance contract before
-   choosing a tranche: the staged source-proof-v3 files are pending and
-   structurally incomplete for `SourceProofReport::accept`.
+   choosing a tranche: the staged source-proof-v3 files are non-current-contract
+   records under the admissibility verifier and structurally incomplete for
+   `SourceProofReport::accept`.
 3. Use the ledger to choose one bounded accepted tranche for normalization. Do
    not choose by venue name; choose by source-binding evidence state, completed
    manifest status, object count/byte budget, data family, and gap policy.

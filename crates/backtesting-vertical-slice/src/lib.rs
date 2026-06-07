@@ -31,3 +31,4 @@ pub mod result_contract;
 pub mod run_manifest;
 pub mod runner;
 pub mod source_proof;
+pub mod source_proof_admissibility;

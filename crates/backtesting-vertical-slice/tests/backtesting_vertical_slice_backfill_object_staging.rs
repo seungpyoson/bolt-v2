@@ -1,5 +1,8 @@
 use std::{collections::BTreeMap, fs};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use backtesting_vertical_slice::{
     backfill_object_staging::{
         BackfillObjectStagingError, BackfillObjectStagingSpec, stage_backfill_object_with_resolver,
@@ -105,6 +108,49 @@ fn staging_rejects_hash_mismatch_before_write() {
     assert!(matches!(
         error,
         BackfillObjectStagingError::Sha256Mismatch { .. }
+    ));
+    assert!(!output_object.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn staging_rejects_byte_mismatch_from_metadata_before_reading_payload() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let local_object = dir.path().join("source.zip");
+    let object_bytes = b"payload";
+    let actual_bytes = object_bytes.len() as u64;
+    let expected_bytes = actual_bytes + 1;
+    fs::write(&local_object, object_bytes).expect("write local object");
+    fs::set_permissions(&local_object, fs::Permissions::from_mode(0o000))
+        .expect("make local object unreadable");
+    let artifact_root = dir.path().join("artifact-root");
+    let output_object = artifact_root.join("raw").join("object.zip");
+    let spec = BackfillObjectStagingSpec {
+        staging_id: "byte-mismatch".to_string(),
+        artifact_root: format!("file://{}", artifact_root.display()),
+        artifact_store: empty_artifact_store(),
+        local_object_path: local_object,
+        output_object_uri: format!("file://{}", output_object.display()),
+        source_url: "https://data.example.test/object.zip".to_string(),
+        expected_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+            .to_string(),
+        expected_bytes,
+        archive_date: "2026-03-01".to_string(),
+        schema_columns: vec!["id".to_string()],
+        output_dir: dir.path().join("manifest"),
+    };
+
+    let mut resolver = |_region: &str, _path: &str| {
+        Err::<String, String>("no SSM resolution expected".to_string())
+    };
+    let error = stage_backfill_object_with_resolver(&spec, &mut resolver).unwrap_err();
+
+    assert!(matches!(
+        error,
+        BackfillObjectStagingError::BytesMismatch {
+            expected,
+            actual
+        } if expected == expected_bytes && actual == actual_bytes
     ));
     assert!(!output_object.exists());
 }

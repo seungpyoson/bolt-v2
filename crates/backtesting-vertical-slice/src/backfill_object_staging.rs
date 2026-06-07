@@ -248,17 +248,29 @@ where
     F: FnMut(&str, &str) -> Result<String, String>,
 {
     validate_spec(spec)?;
+    let actual_bytes = fs::metadata(&spec.local_object_path)
+        .map_err(|error| BackfillObjectStagingError::ReadLocalObject {
+            path: spec.local_object_path.display().to_string(),
+            error: error.to_string(),
+        })?
+        .len();
+    if actual_bytes != spec.expected_bytes {
+        return Err(BackfillObjectStagingError::BytesMismatch {
+            expected: spec.expected_bytes,
+            actual: actual_bytes,
+        });
+    }
     let object_bytes = fs::read(&spec.local_object_path).map_err(|error| {
         BackfillObjectStagingError::ReadLocalObject {
             path: spec.local_object_path.display().to_string(),
             error: error.to_string(),
         }
     })?;
-    let actual_bytes = object_bytes.len() as u64;
-    if actual_bytes != spec.expected_bytes {
+    let read_bytes = object_bytes.len() as u64;
+    if read_bytes != spec.expected_bytes {
         return Err(BackfillObjectStagingError::BytesMismatch {
             expected: spec.expected_bytes,
-            actual: actual_bytes,
+            actual: read_bytes,
         });
     }
     let actual_sha256 = hex::encode(Sha256::digest(&object_bytes));

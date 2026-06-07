@@ -228,7 +228,10 @@ pub fn evaluate_backfill_readiness(
     if let Some(source_binding) = selected_backfill_binding {
         let coverage_has_selected_binding = binding_coverage.bindings.iter().any(|binding| {
             binding.key == source_binding
-                && binding.required_table_family_match
+                && binding
+                    .table_families
+                    .iter()
+                    .any(|family| family == &required_table_family)
                 && binding.ledger_record_count > 0
                 && binding.canonical_ready_record_count > 0
                 && binding.accepted_record_count > 0

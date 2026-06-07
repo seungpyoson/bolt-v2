@@ -378,6 +378,19 @@ fn accepted_data_flows_through_to_objective_result_contract() {
     );
     assert!(
         contract.claim_limits.iter().any(|limit| {
+            limit.contains("source_proof_claim_limit id=claim-limit-1")
+                && limit.contains("severity=blocking")
+                && limit.contains(
+                    "claim=No execution-quality, queue-position, or order-book-liquidity claims.",
+                )
+                && limit.contains("reason=source fidelity does not prove this claim")
+                && limit.contains("evidence_ref=source-proof://fidelity-class")
+        }),
+        "contract must preserve structured source-proof claim-limit evidence: {:?}",
+        contract.claim_limits
+    );
+    assert!(
+        contract.claim_limits.iter().any(|limit| {
             limit.contains("NT pass_through surface run.id")
                 && limit.contains("backtesting-vertical-slice-end-to-end")
         }),

@@ -392,7 +392,7 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         anyhow::bail!("backtest did not consume the accepted data: {reason}");
     }
 
-    let mut claim_limits = canonical_table.forbidden_claims.clone();
+    let mut claim_limits = inputs.accepted.result_contract_claim_limits();
     claim_limits.extend(nt_extension_surface_claim_limits(&inputs.manifest)?);
     let contract = build_result_contract(ResultContractInputs {
         run_id: &inputs.manifest.run_id,

@@ -248,6 +248,16 @@ pub struct SourceProofClaimLimit {
     pub evidence_ref: String,
 }
 
+impl SourceProofClaimLimit {
+    #[must_use]
+    pub(crate) fn to_result_contract_claim_limit(&self) -> String {
+        format!(
+            "source_proof_claim_limit id={} severity={} claim={} reason={} evidence_ref={}",
+            self.id, self.severity, self.claim, self.reason, self.evidence_ref
+        )
+    }
+}
+
 /// Inclusive-start, exclusive-end UTC time range (RFC 3339 strings).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeRange {
@@ -687,6 +697,7 @@ pub struct AcceptedDataset {
     pub(crate) instrument_universe_id: String,
     pub(crate) fidelity_class: SourceProofFidelityClass,
     pub(crate) forbidden_claims: Vec<String>,
+    pub(crate) claim_limits: Vec<SourceProofClaimLimit>,
     pub(crate) acceptance_mode: AcceptanceMode,
     pub(crate) accepted_by: String,
     pub(crate) accepted_at: String,
@@ -697,6 +708,16 @@ pub struct AcceptedDataset {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AcceptedGate;
+
+impl AcceptedDataset {
+    #[must_use]
+    pub(crate) fn result_contract_claim_limits(&self) -> Vec<String> {
+        self.claim_limits
+            .iter()
+            .map(SourceProofClaimLimit::to_result_contract_claim_limit)
+            .collect()
+    }
+}
 
 /// Select an accepted dataset for backtest input.
 ///
@@ -801,6 +822,7 @@ pub fn select_accepted_dataset(
         instrument_universe_id: proof.instrument_universe_id.clone(),
         fidelity_class: proof.fidelity_class,
         forbidden_claims: proof.forbidden_claims.clone(),
+        claim_limits: proof.claim_limits.clone(),
         acceptance_mode,
         accepted_by: accepted_by.clone(),
         accepted_at: accepted_at.clone(),

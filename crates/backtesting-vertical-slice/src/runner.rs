@@ -337,7 +337,7 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
 
     // Gate 6: objective result contract.
     let warnings = result_contract_warnings(&nt_result);
-    let mut claim_limits = canonical_table.forbidden_claims.clone();
+    let mut claim_limits = inputs.accepted.result_contract_claim_limits();
     claim_limits.extend(nt_extension_surface_claim_limits(inputs.manifest)?);
     let contract = build_result_contract(ResultContractInputs {
         run_id: &inputs.manifest.run_id,

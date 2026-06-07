@@ -1,0 +1,193 @@
+{
+  "schema_version": "source-proof-pmxt-polymarket-row-to-nt-contract.v1",
+  "source_binding": "polymarket-parquet-archive-index",
+  "task_id": "BACKTESTING_ENGINE-022",
+  "status": "draft_contract_not_implemented",
+  "recorded_at": "2026-06-08",
+  "source_sample": {
+    "uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+    "local_path": "/private/tmp/polymarket-may20-one.parquet",
+    "bytes": 361365244,
+    "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "artifact_root_staging_status": "pending"
+  },
+  "representative_row_shapes": [
+    {
+      "event_type": "book",
+      "present_fields": [
+        "timestamp_received",
+        "timestamp",
+        "market",
+        "asset_id",
+        "bids",
+        "asks"
+      ],
+      "absent_fields": [
+        "price",
+        "size",
+        "side",
+        "best_bid",
+        "best_ask",
+        "fee_rate_bps",
+        "transaction_hash",
+        "old_tick_size",
+        "new_tick_size"
+      ]
+    },
+    {
+      "event_type": "price_change",
+      "present_fields": [
+        "timestamp_received",
+        "timestamp",
+        "market",
+        "asset_id",
+        "price",
+        "size",
+        "side",
+        "best_bid",
+        "best_ask"
+      ],
+      "absent_fields": [
+        "bids",
+        "asks",
+        "fee_rate_bps",
+        "transaction_hash",
+        "old_tick_size",
+        "new_tick_size"
+      ]
+    },
+    {
+      "event_type": "last_trade_price",
+      "present_fields": [
+        "timestamp_received",
+        "timestamp",
+        "market",
+        "asset_id",
+        "price",
+        "size",
+        "side",
+        "fee_rate_bps",
+        "transaction_hash"
+      ],
+      "absent_fields": [
+        "bids",
+        "asks",
+        "best_bid",
+        "best_ask",
+        "old_tick_size",
+        "new_tick_size"
+      ]
+    },
+    {
+      "event_type": "tick_size_change",
+      "present_fields": [
+        "timestamp_received",
+        "timestamp",
+        "market",
+        "asset_id",
+        "old_tick_size",
+        "new_tick_size"
+      ],
+      "absent_fields": [
+        "bids",
+        "asks",
+        "price",
+        "size",
+        "side",
+        "best_bid",
+        "best_ask",
+        "fee_rate_bps",
+        "transaction_hash"
+      ]
+    }
+  ],
+  "bounded_shape_checks": [
+    {
+      "check": "full_object_price_change_grouping_by_market_timestamp",
+      "method": "DuckDB grouping on local one-hour sample, grouping by hex(market), timestamp",
+      "rows": 64768138,
+      "groups": 32066846,
+      "max_rows_per_group": 12,
+      "multi_row_groups": 31981978,
+      "implication": "PMXT price_change rows are flattened; one row must not be treated as one complete NT OrderBookDeltas batch."
+    },
+    {
+      "check": "first_10_seconds_price_change_asset_grouping",
+      "method": "DuckDB grouping where timestamp_received < 2026-05-21T07:00:10+09",
+      "rows": 184734,
+      "market_timestamp_groups": 92076,
+      "max_asset_ids_per_market_timestamp": 2,
+      "multi_asset_market_timestamp_groups": 91230,
+      "instrument_groups": 183306,
+      "max_rows_per_market_timestamp_asset": 3,
+      "multi_row_instrument_groups": 1406,
+      "max_distinct_timestamp_received_per_instrument_group": 2,
+      "mixed_timestamp_received_instrument_groups": 16,
+      "implication": "A safe PMXT-to-NT contract must group at least by market, source timestamp, and asset_id, then define a deterministic ts_init policy when timestamp_received differs within the group."
+    }
+  ],
+  "nt_reuse_surfaces": [
+    {
+      "surface": "PolymarketInstrumentProvider::get_by_token_id/build_token_map",
+      "purpose": "Resolve PMXT asset_id token ids to NT InstrumentAny::BinaryOption without custom instrument mapping.",
+      "evidence": "nt://crates/adapters/polymarket/src/providers.rs:110"
+    },
+    {
+      "surface": "parse_gamma_market/create_instrument_from_def",
+      "purpose": "Derive checked BinaryOption fields from source-backed Gamma market metadata.",
+      "evidence": "nt://crates/adapters/polymarket/src/http/parse.rs:88"
+    },
+    {
+      "surface": "parse_book_snapshot",
+      "purpose": "Convert full-depth book snapshots into CLEAR plus ADD OrderBookDeltas with snapshot flags.",
+      "evidence": "nt://crates/adapters/polymarket/src/websocket/parse.rs:61"
+    },
+    {
+      "surface": "parse_book_deltas",
+      "purpose": "Convert grouped price_change rows into incremental OrderBookDeltas with F_LAST on the final row in the group.",
+      "evidence": "nt://crates/adapters/polymarket/src/websocket/parse.rs:136"
+    },
+    {
+      "surface": "parse_trade_tick",
+      "purpose": "Convert last_trade_price rows into TradeTick using NT's deterministic Polymarket TradeId policy.",
+      "evidence": "nt://crates/adapters/polymarket/src/websocket/parse.rs:184"
+    },
+    {
+      "surface": "rebuild_instrument_with_tick_size",
+      "purpose": "Handle tick_size_change rows by producing a rebuilt BinaryOption instrument with updated price precision and price increment.",
+      "evidence": "nt://crates/adapters/polymarket/src/http/parse.rs:261"
+    }
+  ],
+  "draft_mapping_contract": [
+    {
+      "source_event_type": "book",
+      "nt_output": "OrderBookDelta",
+      "mapping": "Decode market BLOB as the source condition id string, use asset_id as token-id lookup key, decode bids/asks JSON arrays into price/size levels, convert PMXT timestamp to NT source event time, use timestamp_received as ts_init/coverage evidence, call NT snapshot parsing or implement an equivalent wrapper that preserves NT CLEAR/ADD/F_SNAPSHOT/F_LAST semantics, then write flattened OrderBookDelta rows to ParquetDataCatalog."
+    },
+    {
+      "source_event_type": "price_change",
+      "nt_output": "OrderBookDelta",
+      "mapping": "Regroup flattened rows by market, source timestamp, asset_id, and a resolved ts_init policy before producing NT deltas; preserve row order within the batch; set F_LAST only on the final delta in the grouped batch; map size zero to delete and positive size to update using NT parser semantics."
+    },
+    {
+      "source_event_type": "last_trade_price",
+      "nt_output": "TradeTick",
+      "mapping": "Use asset_id token lookup for instrument id, price/size/side/timestamp for TradeTick fields, and either NT's deterministic Polymarket TradeId derivation or an explicitly approved transaction_hash-based policy; transaction_hash cannot silently disappear from provenance if it is not used as TradeId."
+    },
+    {
+      "source_event_type": "tick_size_change",
+      "nt_output": "InstrumentAny::BinaryOption update",
+      "mapping": "Apply NT rebuild_instrument_with_tick_size semantics before subsequent affected book/trade rows; prove whether the catalog should persist multiple instrument snapshots, an instrument event, or a single resolved instrument plus claim limit."
+    }
+  ],
+  "unresolved_before_implementation": [
+    "The isolated BTE crate must have an approved dependency or integration boundary for nautilus-polymarket before parser/provider reuse is machine-checked.",
+    "PMXT price_change grouping must be specified for market/source timestamp/asset_id batches and mixed timestamp_received groups.",
+    "PMXT does not expose the PolymarketQuote hash field required by the NT websocket message struct; parser reuse must either prove that a neutral value is unobserved by NT semantics or use a lower-level NT data constructor with the same checked semantics.",
+    "PMXT last_trade_price includes transaction_hash while NT's Polymarket parser derives TradeId without it; the chosen TradeId/provenance policy must be explicit.",
+    "tick_size_change catalog representation must be proven with NT catalog read-back and BacktestNode consumption before an L2 replay claim.",
+    "The resulting ParquetDataCatalog proof must write/read InstrumentAny::BinaryOption, OrderBookDelta, and TradeTick under artifact_root staging; local prototype directories are insufficient.",
+    "The coverage ledger must use timestamp_received as the archive-hour coverage axis because source timestamp can be older than the archive object hour."
+  ],
+  "broad_backfill_allowed": false
+}

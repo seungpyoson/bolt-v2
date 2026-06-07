@@ -2,7 +2,7 @@
 
 ## Status
 
-This is not a completed production backtesting-engine rollout. It is a completed fix for the converter/output-boundary slice plus explicit primitive NT venue-control, catalog cloud-config mapping, TOML-owned raw-payload bounds, TOML-owned artifact-store config, and SSM-backed artifact-store credential resolution.
+This is not a completed production backtesting-engine rollout. It is a completed fix for the converter/output-boundary slice plus explicit primitive NT venue-control, catalog cloud-config mapping, TOML-owned raw-payload bounds, TOML-owned artifact-store config, SSM-backed artifact-store credential resolution, and source-proof claim-limit propagation into generated result contracts.
 
 Go for the local BNBUSDC vertical-slice path after this fix:
 
@@ -33,6 +33,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - accepted dataset selection now validates the staged object's `source_url` against the registered source-binding URI template path/query, not just the HTTPS host; a same-host monthly, aggTrades, or other data-family path cannot satisfy a daily trades binding
 - source-proof acceptance now requires structured `acceptance_scope` facts (`planned_objects`, `completed_objects`, `failed_objects`, `skipped_objects`, `accepted_bytes`, and `selector_scope_violations`) instead of accepting prose-only completeness evidence; failed objects, selector-scope violations, inconsistent object accounting, skipped objects without a gap policy, and selected objects whose bytes exceed accepted bytes fail before canonical conversion
 - non-L2 source-proof acceptance now requires structured `claim_limits` rows backing every `forbidden_claims` entry, so trade-replay or weaker data cannot rely on unstructured prose to block execution-quality, order-book, coverage, or fidelity claims
+- generated result contracts now preserve structured source-proof claim-limit evidence from the accepted proof instead of rebuilding source limits from plain `forbidden_claims` strings
 - non-latest source-proof pins now require structured manifest justification: `normal` runs still cannot pin them, non-normal pins require `proof_pin_reason_code`, and `audit_or_investigation` pins require `proof_pin_reason_detail`
 - the accepted `proof_pin_reason_code` vocabulary now matches the plan/reference contract, including published-result reproduction and regression-comparison pins
 - the CLI has an explicit `--publish-output` opt-in that copies the verified local artifact tree to `manifest.output_prefix` through NT/object-store plumbing after the local run succeeds
@@ -275,6 +276,7 @@ GREEN checks after implementation:
 - `just bte-test acceptance_blocked_when_structured_scope_summary_has_failures_or_scope_violations`: RED failed because `evaluate_acceptance()` returned `Ok(())` with `failed_objects = 1`; GREEN passed after rejecting failed objects and selector-scope violations in the structured scope summary
 - `just bte-test ledger_rejects_object_bytes_exceeding_structured_acceptance_scope`: RED failed because `select_accepted_dataset()` admitted an object whose bytes exceeded `acceptance_scope.accepted_bytes`; GREEN passed after object selection compares selected object bytes against the structured accepted byte count
 - `just bte-test non_l2_fidelity_requires_structured_claim_limits structured_claim_limits_must_cover_forbidden_claims`: RED failed with `E0609` because `SourceProofReport` had no `claim_limits` field; GREEN passed after adding structured source-proof claim-limit rows and requiring every non-L2 `forbidden_claims` entry to be covered by a machine-readable limit
+- `just bte-test accepted_data_flows_through_to_objective_result_contract`: RED failed because generated result contracts dropped structured source-proof claim-limit rows after acceptance and retained only plain canonical-table `forbidden_claims`; GREEN passed after `AcceptedDataset` began carrying `claim_limits` and runner/operator result-contract assembly consumed those structured rows
 - `just bte-test --test backtesting_vertical_slice_end_to_end accepted_data_flows_through_to_objective_result_contract`: RED failed because the result contract claim limits carried only source-fidelity limits and no NT surface/default records; GREEN passed after generated result contracts appended resolved NT default, pass-through, and unsupported-surface claim-limit entries derived from `BacktestRunConfig`
 - `just bte-test committed_result_contract_records_nt_extension_surface_claim_limits`: RED failed because the checked-in reference result contract lacked NT extension-surface claim limits; GREEN passed after updating the reference fixture
 - `just bte-test run_from_run_spec_writes_resolved_run_manifest_artifact`: RED failed with missing `BacktestRunManifestArtifact`, `NtSurfaceClassification`, and `RunArtifacts.run_manifest_path`; GREEN passed after adding the portable `backtest-run-manifest.json` artifact with submitted manifest hash, submitted manifest, and structured resolved NT surface records
@@ -289,6 +291,7 @@ GREEN checks after implementation:
 - `just bte-test run_from_run_spec_reuses_completed_output_without_rebuilding_catalog`: RED failed because a second run into a completed output deleted the existing NT catalog root; GREEN passed after `ConversionOutputState::Complete` began loading the proven canonical Parquet artifact, recomputing the logical NT catalog hash, running NT read-back/BacktestNode checks, and preserving the completed conversion checkpoint/manifest/catalog metadata plus catalog root
 - `just bte-test run_from_run_spec_reuses_completed_output_without_rebuilding_catalog run_from_run_spec_accepts_completed_output_on_second_run`: 2 passed after the completed-output reuse path was added
 - `just bte-test`: 238 passed, including 2 slow public API tests
+- `just bte-test`: 247 passed after structured source-proof claim-limit propagation into generated result contracts
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed

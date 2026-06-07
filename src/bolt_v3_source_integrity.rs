@@ -185,8 +185,10 @@ mod tests {
     //
     // Re-derived again by #579 after rebasing the retired evidence-gate removal
     // and review cleanup over #574's strategy source-set hardening.
+    // Re-derived once more after the exact PR merge-head source-integrity check
+    // exposed the stale intermediate digest from conflict resolution.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "b9bd771b24ced29d1a5796f1486ce6fc905dff426feb9c905eb1a833118fbf31";
+        "6d313e872e55caa5828907e3ab486bb211400892bb3e699bc76b98892c4431a8";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

@@ -2,7 +2,7 @@
 
 ## Status
 
-This is not a completed production backtesting-engine rollout. It is a completed fix for the converter/output-boundary slice plus explicit primitive NT venue-control, catalog cloud-config mapping, typed unsupported NT data-query surface gating, TOML-owned raw-payload bounds, TOML-owned artifact-store config, SSM-backed artifact-store credential resolution, source-proof claim-limit propagation into generated result contracts, and report-only source-proof admissibility gating.
+This is not a completed production backtesting-engine rollout. It is a completed fix for the converter/output-boundary slice plus explicit primitive NT venue-control, catalog cloud-config mapping, typed unsupported NT data-query surface gating, TOML-owned raw-payload bounds, TOML-owned artifact-store config, SSM-backed artifact-store credential resolution, source-proof claim-limit propagation into generated result contracts, report-only source-proof admissibility gating, and report-only legacy source-proof derivability gating.
 
 Go for the local BNBUSDC vertical-slice path after this fix:
 
@@ -596,6 +596,27 @@ Current evidence:
   still has 0 accepted records: 20 records are now specifically blocked by
   `source_proof_not_accepted`, while 146 records still have no source-proof
   binding.
+- The config-driven legacy derivability verifier then compared those same 21
+  staged source proofs against the source-proof-v3 S3 acceptance manifest and
+  generated
+  `/private/tmp/bte-coverage-ledger-20260607/source-proof-legacy-derivability-output/source-proof-legacy-derivability-report.json`
+  with content hash
+  `ce7e80b20b3290c80e7d8e434af29283ed6eef380493c01879c822be42c52e1d`.
+  It contains 21 records: all 21 raw payload sets are S3/hash-bound, 19 have
+  exactly one table family, and all 21 remain acceptance-blocked. Derivable
+  current-contract field counts are: `source_binding` 21, `fixture_type` 21,
+  `requested_time_range` 21, `coverage_time_range` 21, `acceptance_scope` 21,
+  `claim_limits` 21, `table_family` 19, and single-object `raw_sample_uri` /
+  `raw_sample_hash` 20. Blocking issue counts are: `license_not_passed` 21,
+  `nt_mapping_not_passed` 21, `fidelity_not_passed` 21,
+  `forbidden_claims_not_passed` 21, `schema_sample_not_passed` 21, and
+  `not_exactly_one_table_family` 2. The two multi-table exceptions are
+  `hyperliquid-hip4-outcome-meta` (`prediction_market_events`,
+  `prediction_market_outcomes`) and `polymarket-parquet-archive-index`
+  (`order_book_snapshots_fixed_depth`, `order_book_snapshot_deltas`, `bars`).
+  Therefore source-proof migration should start with a single-table proof whose
+  license, schema, fidelity, forbidden-claim, and NT mapping evidence can be
+  made explicit; it should not start by broad payload conversion.
 - Repo search found no checked-in source-proof-v3 generator. The new
   `source_proof_admissibility` CLI is report-only: it deserializes staged JSON
   against the current contract and calls `SourceProofReport::evaluate_acceptance`
@@ -640,15 +661,17 @@ Distance from the overall backtesting engine:
    writer, batch/local-file manifest-summary ingestion boundaries, a TOML
    coverage spec, an operator CLI for that spec, generic TOML source-proof
    metadata binding, unsupported-schema rejected records, and a report-only
-   source-proof admissibility CLI. A real manifest-only ledger can now be
-   generated across all 190 observed manifests, and a real source-proof
-   admissibility report can now be generated across all 21 observed staged
-   proofs. The current S3 evidence still produces rejected gates, not accepted
-   backfill: all discovered source-proof reports are non-current-contract
-   source-proof-v3 records, 24 manifest files still need count/byte
-   normalization if they are to carry detailed coverage evidence, and 146
-   supported manifest records still lack source-proof binding. There are no
-   accepted normalized row tables, no accepted
+   source-proof admissibility CLI plus a report-only legacy source-proof
+   derivability CLI. A real manifest-only ledger can now be generated across all
+   190 observed manifests, and real source-proof admissibility/derivability
+   reports can now be generated across all 21 observed staged proofs. The
+   current S3 evidence still produces rejected gates, not accepted backfill: all
+   discovered source-proof reports are non-current-contract source-proof-v3
+   records, all 21 still lack passed license/schema/fidelity/forbidden-claim/NT
+   mapping checks, 24 manifest files still need count/byte normalization if they
+   are to carry detailed coverage evidence, and 146 supported manifest records
+   still lack source-proof binding. There are no accepted normalized row tables,
+   no accepted
    instrument/gap policy ledger, and no NT catalog export from that data.
 3. Production BTE: blocked by the backfill foundation. Running production BTE
    before the ledger/normalization/catalog gates would only prove the existing
@@ -685,7 +708,9 @@ broad historical backfill or custom simulator work:
    instead of aborting, and runs before any download/conversion work.
 2. Bring source-proof evidence into the current acceptance contract before
    choosing a tranche: the staged source-proof-v3 files are non-current-contract
-   records under the admissibility verifier and structurally incomplete for
+   records under the admissibility verifier. The derivability verifier shows
+   their raw payloads are S3/hash-bound, but every proof still needs explicit
+   license, schema, fidelity, forbidden-claim, and NT mapping evidence before
    `SourceProofReport::accept`.
 3. Use the ledger to choose one bounded accepted tranche for normalization. Do
    not choose by venue name; choose by source-binding evidence state, completed

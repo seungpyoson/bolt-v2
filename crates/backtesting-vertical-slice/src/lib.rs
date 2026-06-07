@@ -32,3 +32,4 @@ pub mod run_manifest;
 pub mod runner;
 pub mod source_proof;
 pub mod source_proof_admissibility;
+pub mod source_proof_legacy_derivability;

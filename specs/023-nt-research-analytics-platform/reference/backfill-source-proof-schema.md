@@ -24,6 +24,16 @@ Required fields:
 - `product_category`: cross-venue category.
 - `table_family`: canonical table family.
 - `evidence_state`: one of the states in `backfill-table-contract.v1`.
+- `source_candidate_class`: `official_free`, `paid_vendor`, or
+  `forward_capture`.
+- `source_selection_status`: `ACCEPTED_FOR_REQUIRED_FIDELITY`,
+  `ACCEPTED_LOWER_FIDELITY`, `REJECTED`, `PENDING_MORE_PROOF`, or
+  `FORWARD_CAPTURE_PENDING`.
+- `official_free_gap_ref`: required for `paid_vendor` or `forward_capture`
+  candidates; records the official/free source gap that allows paid/vendor or
+  capture paths to be considered.
+- `paid_vendor_gap_ref`: required for `forward_capture` candidates; records
+  that no usable paid/vendor historical source met the required fidelity.
 - `fixture_type`: `binary-option` or `perps-spot` for accepted BTE source
   proofs. Legacy/non-current evidence rows may be reported under older fixture
   labels, but they cannot be accepted as canonical BTE input.
@@ -38,10 +48,16 @@ Required fields:
 - `schema_sample_hash`: lowercase SHA-256 hex.
 - `license_ref`: license or terms evidence pointer and timestamp.
 - `retention_ref`: source retention/freshness evidence pointer and timestamp.
+- `cost_ref`: cost, free/public, subscription, vendor quote, storage, or
+  compute-cost evidence pointer and timestamp.
 - `nt_mapping_status`: `accepted`, `pending`, `rejected`, or `not_applicable`.
 - `fidelity_class`: `L2_REPLAY`, `SNAPSHOT_REPLAY`, `TRADE_REPLAY`,
   `TRADE_BAR_REPLAY`, `METADATA_ONLY`, `SIGNAL_ONLY`, or
   `FORWARD_CAPTURE_PENDING`.
+- `l2_replay_evidence`: thin object with optional `order_book_delta_ref` and
+  `sufficient_snapshot_cadence_ref`. `L2_REPLAY` requires at least one non-empty
+  reference; non-L2 proofs keep the object empty to make the unsupported claim
+  explicit.
 - `forbidden_claims`: claims this source must not support.
 - `acceptance_scope`: structured manifest/run summary with `planned_objects`,
   `completed_objects`, `failed_objects`, `skipped_objects`, `accepted_bytes`,
@@ -73,6 +89,13 @@ matching `market_structure_fixture = "binary-option"` or
 registry data; the `fixture` field in source-binding rows is a data-family label,
 not the market-structure proof fixture.
 
+Accepted proofs require `source_selection_status =
+ACCEPTED_FOR_REQUIRED_FIDELITY` or `ACCEPTED_LOWER_FIDELITY`. Paid/vendor
+candidates cannot be accepted unless `official_free_gap_ref` names the recorded
+official/free gap that made paid evaluation necessary. Forward-capture records
+must also name `paid_vendor_gap_ref` and remain non-accepted until historical
+data exists and passes the ordinary proof gates.
+
 ## Required Checks
 
 Every source proof has explicit pass/fail/pending checks:
@@ -89,12 +112,17 @@ Every source proof has explicit pass/fail/pending checks:
   discoverable, including expired or delisted instruments where required.
 - `coverage`: source coverage includes the requested time range or is marked
   bounded/current only.
+- `retention_freshness`: source retention, archive freshness, or update-lag
+  evidence covers the proof window.
 - `granularity`: source fidelity matches the requested table family; no weaker
   aggregate is substituted.
 - `completeness`: row counts, page counts, checksums, and gap thresholds are
   documented.
 - `nt_mapping`: normalized rows can map to NautilusTrader types or are declared
   signal/metadata only.
+- `cost`: free/public status, subscription, vendor quote, AWS storage/compute,
+  transfer, query, logging, or reserve-cost evidence is recorded. Paid/vendor
+  candidates must pass this before selection.
 - `storage`: raw payload, schema sample, and manifest pointers are under the
   configured `artifact_root`.
 

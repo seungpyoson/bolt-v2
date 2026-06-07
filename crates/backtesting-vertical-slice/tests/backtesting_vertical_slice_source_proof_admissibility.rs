@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use std::fs;
 
 use backtesting_vertical_slice::{
@@ -49,6 +51,8 @@ fn current_rejected_source_proof_json() -> serde_json::Value {
         "product_category": "spot",
         "table_family": "trades",
         "evidence_state": "directly_backfillable",
+        "source_candidate_class": "official_free",
+        "source_selection_status": "REJECTED",
         "fixture_type": "mixed",
         "requested_time_range": {
             "start_utc": "2026-01-01T00:00:00Z",
@@ -65,8 +69,10 @@ fn current_rejected_source_proof_json() -> serde_json::Value {
         "schema_sample_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "license_ref": "proof://synthetic/license",
         "retention_ref": "proof://synthetic/retention",
+        "cost_ref": "proof://synthetic/cost",
         "nt_mapping_status": "pending",
         "fidelity_class": "TRADE_REPLAY",
+        "l2_replay_evidence": {},
         "forbidden_claims": [],
         "claim_limits": [],
         "acceptance_scope": {
@@ -103,6 +109,10 @@ fn current_rejected_source_proof_json() -> serde_json::Value {
                 "outcome": "pending",
                 "evidence_ref": "proof://synthetic/coverage"
             },
+            "retention_freshness": {
+                "outcome": "pending",
+                "evidence_ref": "proof://synthetic/retention"
+            },
             "granularity": {
                 "outcome": "pending",
                 "evidence_ref": "proof://synthetic/granularity"
@@ -114,6 +124,10 @@ fn current_rejected_source_proof_json() -> serde_json::Value {
             "nt_mapping": {
                 "outcome": "pending",
                 "evidence_ref": "proof://synthetic/nt-mapping"
+            },
+            "cost": {
+                "outcome": "pending",
+                "evidence_ref": "proof://synthetic/cost"
             },
             "storage": {
                 "outcome": "pending",

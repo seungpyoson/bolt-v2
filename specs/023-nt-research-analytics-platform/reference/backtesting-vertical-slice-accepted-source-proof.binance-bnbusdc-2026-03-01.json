@@ -10,6 +10,8 @@
   "product_category": "spot",
   "table_family": "trades",
   "evidence_state": "directly_backfillable",
+  "source_candidate_class": "official_free",
+  "source_selection_status": "ACCEPTED_LOWER_FIDELITY",
   "fixture_type": "perps-spot",
   "requested_time_range": {
     "start_utc": "2025-06-01T00:00:00Z",
@@ -26,8 +28,10 @@
   "schema_sample_hash": "22ec3fcfde7a72347dd059a88da31d0fb8fe2c585216190e5c2df2ca01ea1265",
   "license_ref": "s3://bolt-parquet/nt-research-analytics/source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-bnbusdc-2026-03-01/version=1/binance-public-data-README.md",
   "retention_ref": "https://github.com/binance/binance-public-data README: daily/monthly public archive, checksum sidecars, update log, Licence MIT; observed 2026-06-07",
+  "cost_ref": "cost://free-public-archive",
   "nt_mapping_status": "accepted",
   "fidelity_class": "TRADE_REPLAY",
+  "l2_replay_evidence": {},
   "forbidden_claims": [
     "No execution-quality, queue-position, or order-book-liquidity claims.",
     "No L2/L3 order-book replay claims from trade prints.",
@@ -98,6 +102,10 @@
       "outcome": "passed",
       "evidence_ref": "object dt=2026-03-01 within coverage window [2026-03-01, 2026-03-02)"
     },
+    "retention_freshness": {
+      "outcome": "passed",
+      "evidence_ref": "Binance public-data README documents daily/monthly public archive retention/update-log evidence; observed 2026-06-07"
+    },
     "granularity": {
       "outcome": "passed",
       "evidence_ref": "native Binance trades endpoint schema; not aggTrades"
@@ -109,6 +117,10 @@
     "nt_mapping": {
       "outcome": "passed",
       "evidence_ref": "nautilus_model::data::TradeTick; proven by ParquetDataCatalog projection + query_typed_data read-back"
+    },
+    "cost": {
+      "outcome": "passed",
+      "evidence_ref": "official public-data archive sample; no paid vendor or subscription required for this accepted proof"
     },
     "storage": {
       "outcome": "passed",

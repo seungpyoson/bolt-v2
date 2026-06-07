@@ -26,9 +26,10 @@ use backtesting_vertical_slice::{
     runner::{BacktestRunInputs, run_backtest},
     source_proof::{
         AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
-        IngestManifestObjectRecord, NtMappingStatus, RequiredCheck, RequiredChecks,
-        SourceProofClaimLimit, SourceProofFidelityClass, SourceProofReport, SourceProofStatus,
-        TimeRange, select_accepted_dataset,
+        IngestManifestObjectRecord, L2ReplayEvidence, NtMappingStatus, RequiredCheck,
+        RequiredChecks, SourceCandidateClass, SourceProofClaimLimit, SourceProofFidelityClass,
+        SourceProofReport, SourceProofStatus, SourceSelectionStatus, TimeRange,
+        select_accepted_dataset,
     },
 };
 
@@ -77,9 +78,11 @@ fn passing_checks() -> RequiredChecks {
         time_semantics: RequiredCheck::passed("unix_ms_to_unix_nanos"),
         instrument_universe: RequiredCheck::passed("universe://bybit-spot-2026-03-01"),
         coverage: RequiredCheck::passed(evidence),
+        retention_freshness: RequiredCheck::passed("retention://bybit-public-archive-reviewed"),
         granularity: RequiredCheck::passed("native_trade_prints"),
         completeness: RequiredCheck::passed(evidence),
         nt_mapping: RequiredCheck::passed("nt://TradeTick"),
+        cost: RequiredCheck::passed("cost://free-public-archive"),
         storage: RequiredCheck::passed("s3://bolt-parquet/.../source-proofs/"),
     }
 }
@@ -128,6 +131,10 @@ fn accepted_dataset() -> AcceptedDataset {
         product_category: "spot".to_string(),
         table_family: "trades".to_string(),
         evidence_state: EvidenceState::OwnerArchiveBackfillable,
+        source_candidate_class: SourceCandidateClass::OfficialFree,
+        source_selection_status: SourceSelectionStatus::AcceptedLowerFidelity,
+        official_free_gap_ref: None,
+        paid_vendor_gap_ref: None,
         fixture_type: FixtureType::PerpsSpot,
         requested_time_range: TimeRange {
             start_utc: "2025-06-01T00:00:00Z".to_string(),
@@ -145,8 +152,13 @@ fn accepted_dataset() -> AcceptedDataset {
             .to_string(),
         license_ref: "https://public.bybit.com/ (attestation 2026-06-02)".to_string(),
         retention_ref: "https://public.bybit.com/ (retention reviewed 2026-06-02)".to_string(),
+        cost_ref: "cost://free-public-archive".to_string(),
         nt_mapping_status: NtMappingStatus::Accepted,
         fidelity_class: SourceProofFidelityClass::TradeReplay,
+        l2_replay_evidence: L2ReplayEvidence {
+            order_book_delta_ref: None,
+            sufficient_snapshot_cadence_ref: None,
+        },
         // Mirrors the committed reference source proof exactly so the fixture
         // carries the full set of fidelity constraints through to the contract.
         forbidden_claims: forbidden_claims.clone(),

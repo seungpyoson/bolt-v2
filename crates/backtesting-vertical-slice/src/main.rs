@@ -629,6 +629,7 @@ contract_version = "backfill-table-contract.v1"
 key = "runtime-synthetic-native-trades"
 venue = "runtime-synthetic"
 product_family = "spot"
+market_structure_fixture = "perps-spot"
 source_uri = "https://runtime-source.example/trades/{symbol}/{dt}.csv.gz"
 evidence_state = "owner_archive_backfillable"
 table_families = ["trades"]

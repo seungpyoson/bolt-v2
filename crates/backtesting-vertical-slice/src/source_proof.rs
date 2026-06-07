@@ -156,6 +156,26 @@ pub enum EvidenceState {
     ExcludedFromCurrentScope,
 }
 
+/// Candidate class used by source selection before any provider is promoted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceCandidateClass {
+    OfficialFree,
+    PaidVendor,
+    ForwardCapture,
+}
+
+/// Selection outcome for a source-proof candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SourceSelectionStatus {
+    AcceptedForRequiredFidelity,
+    AcceptedLowerFidelity,
+    Rejected,
+    PendingMoreProof,
+    ForwardCapturePending,
+}
+
 /// Market-structure fixture family the proof belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -280,27 +300,31 @@ pub struct RequiredChecks {
     pub time_semantics: RequiredCheck,
     pub instrument_universe: RequiredCheck,
     pub coverage: RequiredCheck,
+    pub retention_freshness: RequiredCheck,
     pub granularity: RequiredCheck,
     pub completeness: RequiredCheck,
     pub nt_mapping: RequiredCheck,
+    pub cost: RequiredCheck,
     pub storage: RequiredCheck,
 }
 
 impl RequiredChecks {
-    const NAMES: [&'static str; 10] = [
+    const NAMES: [&'static str; 12] = [
         "source_access",
         "license",
         "schema",
         "time_semantics",
         "instrument_universe",
         "coverage",
+        "retention_freshness",
         "granularity",
         "completeness",
         "nt_mapping",
+        "cost",
         "storage",
     ];
 
-    fn as_slice(&self) -> [&RequiredCheck; 10] {
+    fn as_slice(&self) -> [&RequiredCheck; 12] {
         [
             &self.source_access,
             &self.license,
@@ -308,15 +332,17 @@ impl RequiredChecks {
             &self.time_semantics,
             &self.instrument_universe,
             &self.coverage,
+            &self.retention_freshness,
             &self.granularity,
             &self.completeness,
             &self.nt_mapping,
+            &self.cost,
             &self.storage,
         ]
     }
 
     #[cfg(test)]
-    fn as_mut_slice(&mut self) -> [&mut RequiredCheck; 10] {
+    fn as_mut_slice(&mut self) -> [&mut RequiredCheck; 12] {
         [
             &mut self.source_access,
             &mut self.license,
@@ -324,9 +350,11 @@ impl RequiredChecks {
             &mut self.time_semantics,
             &mut self.instrument_universe,
             &mut self.coverage,
+            &mut self.retention_freshness,
             &mut self.granularity,
             &mut self.completeness,
             &mut self.nt_mapping,
+            &mut self.cost,
             &mut self.storage,
         ]
     }
@@ -399,6 +427,32 @@ pub struct CrossMarketJoinComponent {
     pub join_time_utc: String,
 }
 
+/// Thin L2 replay evidence pointers.
+///
+/// `L2_REPLAY` requires at least one of these fields to identify historical
+/// source-order-preserving deltas or snapshots with cadence sufficient for the
+/// strategy decision interval. Non-L2 proofs still carry this object with both
+/// fields empty so the schema surface is explicit and stable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct L2ReplayEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order_book_delta_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sufficient_snapshot_cadence_ref: Option<String>,
+}
+
+impl L2ReplayEvidence {
+    fn has_replay_evidence(&self) -> bool {
+        self.order_book_delta_ref
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
+            || self
+                .sufficient_snapshot_cadence_ref
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty())
+    }
+}
+
 /// Inclusive-start, exclusive-end UTC time range (RFC 3339 strings).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeRange {
@@ -435,6 +489,12 @@ pub struct SourceProofReport {
     pub product_category: String,
     pub table_family: String,
     pub evidence_state: EvidenceState,
+    pub source_candidate_class: SourceCandidateClass,
+    pub source_selection_status: SourceSelectionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub official_free_gap_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paid_vendor_gap_ref: Option<String>,
     pub fixture_type: FixtureType,
     pub requested_time_range: TimeRange,
     pub coverage_time_range: TimeRange,
@@ -445,8 +505,10 @@ pub struct SourceProofReport {
     pub schema_sample_hash: String,
     pub license_ref: String,
     pub retention_ref: String,
+    pub cost_ref: String,
     pub nt_mapping_status: NtMappingStatus,
     pub fidelity_class: SourceProofFidelityClass,
+    pub l2_replay_evidence: L2ReplayEvidence,
     pub forbidden_claims: Vec<String>,
     /// Structured limitation records backing `forbidden_claims`.
     #[serde(default)]
@@ -478,6 +540,11 @@ pub struct SourceProofReport {
 pub enum AcceptanceError {
     /// A required identity/evidence field was empty.
     MissingField(&'static str),
+    /// A field was present where this proof status must not carry it.
+    UnexpectedField {
+        field: &'static str,
+        reason: &'static str,
+    },
     /// A version field does not equal the contract/schema version this module
     /// implements, so the proof was written against a different contract.
     UnexpectedVersion {
@@ -535,6 +602,8 @@ pub enum AcceptanceError {
     SourceVenueMismatch { venue: String, source_url: String },
     /// The evidence state is not allowed for accepted canonical backfill input.
     EvidenceStateNotBackfillable(EvidenceState),
+    /// Source selection status is not eligible for acceptance.
+    SourceSelectionNotAccepted(SourceSelectionStatus),
     /// The source proof disagrees with the configured source-binding metadata.
     SourceBindingMismatch {
         field: &'static str,
@@ -558,6 +627,9 @@ impl std::fmt::Display for AcceptanceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingField(field) => write!(f, "missing required field: {field}"),
+            Self::UnexpectedField { field, reason } => {
+                write!(f, "unexpected field {field}: {reason}")
+            }
             Self::UnexpectedVersion {
                 field,
                 expected,
@@ -649,6 +721,12 @@ impl std::fmt::Display for AcceptanceError {
                     "evidence_state {evidence_state:?} is not backfillable for accepted source proof"
                 )
             }
+            Self::SourceSelectionNotAccepted(status) => {
+                write!(
+                    f,
+                    "source_selection_status {status:?} is not accepted for canonical source proof"
+                )
+            }
             Self::SourceBindingMismatch {
                 field,
                 expected,
@@ -679,7 +757,7 @@ impl std::error::Error for AcceptanceError {}
 
 impl SourceProofReport {
     fn check_required_identity(&self) -> Result<(), AcceptanceError> {
-        let required: [(&'static str, &str); 15] = [
+        let required: [(&'static str, &str); 16] = [
             ("source_proof_id", &self.source_proof_id),
             ("contract_version", &self.contract_version),
             ("schema_version", &self.schema_version),
@@ -695,6 +773,7 @@ impl SourceProofReport {
             ("schema_sample_hash", &self.schema_sample_hash),
             ("license_ref", &self.license_ref),
             ("retention_ref", &self.retention_ref),
+            ("cost_ref", &self.cost_ref),
         ];
         for (name, value) in required {
             if value.trim().is_empty() {
@@ -745,10 +824,13 @@ impl SourceProofReport {
             return Err(AcceptanceError::ProofRejected);
         }
         self.check_required_identity()?;
+        validate_acceptance_provenance_shape(self)?;
         ensure_staged_s3_uri("raw_sample_uri", &self.raw_sample_uri)?;
         ensure_staged_s3_uri("schema_sample_uri", &self.schema_sample_uri)?;
         ensure_backfillable_evidence_state(self.evidence_state)?;
         ensure_source_binding_metadata_matches(self, registry)?;
+        validate_source_selection(self)?;
+        validate_l2_replay_evidence(self)?;
         let acceptance_scope = self
             .acceptance_scope
             .as_ref()
@@ -1252,6 +1334,76 @@ fn validate_acceptance_scope(
     Ok(())
 }
 
+fn validate_acceptance_provenance_shape(proof: &SourceProofReport) -> Result<(), AcceptanceError> {
+    let has_acceptance_provenance = proof.acceptance_mode.is_some()
+        || proof.accepted_by.is_some()
+        || proof.accepted_at.is_some();
+    if proof.status == SourceProofStatus::Accepted {
+        if proof.acceptance_mode.is_none() {
+            return Err(AcceptanceError::MissingField("acceptance_mode"));
+        }
+        if proof
+            .accepted_by
+            .as_ref()
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            return Err(AcceptanceError::MissingField("accepted_by"));
+        }
+        if proof
+            .accepted_at
+            .as_ref()
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            return Err(AcceptanceError::MissingField("accepted_at"));
+        }
+    } else if has_acceptance_provenance {
+        return Err(AcceptanceError::UnexpectedField {
+            field: "acceptance_mode",
+            reason: "acceptance provenance is only valid on accepted reports",
+        });
+    }
+    Ok(())
+}
+
+fn validate_source_selection(proof: &SourceProofReport) -> Result<(), AcceptanceError> {
+    match proof.source_selection_status {
+        SourceSelectionStatus::AcceptedForRequiredFidelity
+        | SourceSelectionStatus::AcceptedLowerFidelity => {}
+        status => return Err(AcceptanceError::SourceSelectionNotAccepted(status)),
+    }
+
+    if matches!(
+        proof.source_candidate_class,
+        SourceCandidateClass::PaidVendor | SourceCandidateClass::ForwardCapture
+    ) && proof
+        .official_free_gap_ref
+        .as_ref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err(AcceptanceError::MissingField("official_free_gap_ref"));
+    }
+    if proof.source_candidate_class == SourceCandidateClass::ForwardCapture
+        && proof
+            .paid_vendor_gap_ref
+            .as_ref()
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err(AcceptanceError::MissingField("paid_vendor_gap_ref"));
+    }
+    Ok(())
+}
+
+fn validate_l2_replay_evidence(proof: &SourceProofReport) -> Result<(), AcceptanceError> {
+    if proof.fidelity_class != SourceProofFidelityClass::L2Replay {
+        return Ok(());
+    }
+    if proof.l2_replay_evidence.has_replay_evidence() {
+        Ok(())
+    } else {
+        Err(AcceptanceError::MissingField("l2_replay_evidence"))
+    }
+}
+
 fn validate_claim_limits(proof: &SourceProofReport) -> Result<(), AcceptanceError> {
     for limit in &proof.claim_limits {
         if limit.id.trim().is_empty() {
@@ -1616,9 +1768,11 @@ mod tests {
             time_semantics: RequiredCheck::passed("ms_to_unix_nanos"),
             instrument_universe: RequiredCheck::passed("universe://bybit-spot"),
             coverage: RequiredCheck::passed(evidence),
+            retention_freshness: RequiredCheck::passed("retention://bybit-public-archive-reviewed"),
             granularity: RequiredCheck::passed("native_trade_prints"),
             nt_mapping: RequiredCheck::passed("nt://TradeTick"),
             completeness: RequiredCheck::passed(evidence),
+            cost: RequiredCheck::passed("cost://free-public-archive"),
             storage: RequiredCheck::passed("s3://bolt-parquet/.../source-proofs/"),
         }
     }
@@ -1664,6 +1818,10 @@ mod tests {
             product_category: "spot".to_string(),
             table_family: "trades".to_string(),
             evidence_state: EvidenceState::OwnerArchiveBackfillable,
+            source_candidate_class: SourceCandidateClass::OfficialFree,
+            source_selection_status: SourceSelectionStatus::AcceptedLowerFidelity,
+            official_free_gap_ref: None,
+            paid_vendor_gap_ref: None,
             fixture_type: FixtureType::PerpsSpot,
             requested_time_range: TimeRange {
                 start_utc: "2025-06-01T00:00:00Z".to_string(),
@@ -1682,8 +1840,13 @@ mod tests {
                 .to_string(),
             license_ref: "https://public.bybit.com/ (attestation 2026-06-02)".to_string(),
             retention_ref: "https://public.bybit.com/ (archive retention reviewed)".to_string(),
+            cost_ref: "cost://free-public-archive".to_string(),
             nt_mapping_status: NtMappingStatus::Accepted,
             fidelity_class: SourceProofFidelityClass::TradeReplay,
+            l2_replay_evidence: L2ReplayEvidence {
+                order_book_delta_ref: None,
+                sufficient_snapshot_cadence_ref: None,
+            },
             forbidden_claims: forbidden_claims.clone(),
             claim_limits: claim_limits_for(&forbidden_claims),
             cross_market_components: Vec::new(),
@@ -1902,6 +2065,116 @@ table_families = ["signals"]
         checks.license = RequiredCheck::pending("manual review outstanding");
         assert!(!checks.all_acceptable());
         assert_eq!(checks.unmet(), vec!["license"]);
+    }
+
+    #[test]
+    fn source_proof_schema_requires_candidate_selection_cost_and_l2_evidence_fields() {
+        let proof_json = serde_json::to_value(candidate_proof()).expect("serialize proof");
+        for field in [
+            "source_candidate_class",
+            "source_selection_status",
+            "cost_ref",
+            "l2_replay_evidence",
+        ] {
+            let mut missing = proof_json.clone();
+            missing
+                .as_object_mut()
+                .expect("source proof is an object")
+                .remove(field);
+
+            let err = serde_json::from_value::<SourceProofReport>(missing)
+                .expect_err("missing schema field must not deserialize");
+
+            assert!(
+                err.to_string().contains(field),
+                "missing field {field:?} should be named in error: {err}"
+            );
+        }
+
+        for check in ["retention_freshness", "cost"] {
+            let mut missing = proof_json.clone();
+            missing
+                .get_mut("required_checks")
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("required_checks is an object")
+                .remove(check);
+
+            let err = serde_json::from_value::<SourceProofReport>(missing)
+                .expect_err("missing required check must not deserialize");
+
+            assert!(
+                err.to_string().contains(check),
+                "missing check {check:?} should be named in error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn paid_vendor_candidates_require_recorded_official_free_gap() {
+        let mut proof = candidate_proof();
+        proof.source_candidate_class = SourceCandidateClass::PaidVendor;
+        proof.official_free_gap_ref = None;
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert_eq!(err, AcceptanceError::MissingField("official_free_gap_ref"));
+    }
+
+    #[test]
+    fn non_selected_candidates_cannot_be_accepted_for_backfill_input() {
+        let mut proof = candidate_proof();
+        proof.source_selection_status = SourceSelectionStatus::PendingMoreProof;
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert_eq!(
+            err,
+            AcceptanceError::SourceSelectionNotAccepted(SourceSelectionStatus::PendingMoreProof)
+        );
+    }
+
+    #[test]
+    fn forward_capture_candidates_require_paid_vendor_gap_evidence() {
+        let mut proof = candidate_proof();
+        proof.source_candidate_class = SourceCandidateClass::ForwardCapture;
+        proof.official_free_gap_ref = Some("source-proof-gap://official-free-l2".to_string());
+        proof.paid_vendor_gap_ref = None;
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert_eq!(err, AcceptanceError::MissingField("paid_vendor_gap_ref"));
+    }
+
+    #[test]
+    fn l2_replay_requires_order_book_delta_or_sufficient_snapshot_cadence_evidence() {
+        let mut proof = candidate_proof();
+        proof.fidelity_class = SourceProofFidelityClass::L2Replay;
+        proof.forbidden_claims.clear();
+        proof.claim_limits.clear();
+        proof.l2_replay_evidence = L2ReplayEvidence {
+            order_book_delta_ref: None,
+            sufficient_snapshot_cadence_ref: None,
+        };
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert_eq!(err, AcceptanceError::MissingField("l2_replay_evidence"));
+    }
+
+    #[test]
+    fn pending_reports_must_not_carry_acceptance_provenance() {
+        let mut proof = candidate_proof();
+        proof.acceptance_mode = Some(AcceptanceMode::Manual);
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert_eq!(
+            err,
+            AcceptanceError::UnexpectedField {
+                field: "acceptance_mode",
+                reason: "acceptance provenance is only valid on accepted reports",
+            }
+        );
     }
 
     #[test]

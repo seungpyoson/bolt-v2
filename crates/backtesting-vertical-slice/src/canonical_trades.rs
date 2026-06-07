@@ -1046,8 +1046,9 @@ mod tests {
     use super::*;
     use crate::source_proof::{
         AcceptanceMode, AcceptanceScope, EvidenceState, FixtureType, IngestManifestObjectRecord,
-        NtMappingStatus, RequiredCheck, RequiredChecks, SourceProofClaimLimit, SourceProofReport,
-        SourceProofStatus, TimeRange,
+        L2ReplayEvidence, NtMappingStatus, RequiredCheck, RequiredChecks, SourceCandidateClass,
+        SourceProofClaimLimit, SourceProofReport, SourceProofStatus, SourceSelectionStatus,
+        TimeRange,
     };
 
     fn accepted_dataset() -> AcceptedDataset {
@@ -1058,9 +1059,11 @@ mod tests {
             time_semantics: RequiredCheck::passed("ms_to_nanos"),
             instrument_universe: RequiredCheck::passed("universe"),
             coverage: RequiredCheck::passed(evidence),
+            retention_freshness: RequiredCheck::passed("retention"),
             granularity: RequiredCheck::passed("native"),
             completeness: RequiredCheck::passed(evidence),
             nt_mapping: RequiredCheck::passed("TradeTick"),
+            cost: RequiredCheck::passed("free"),
             storage: RequiredCheck::passed("artifact_root"),
         };
         let object = IngestManifestObjectRecord {
@@ -1088,6 +1091,10 @@ mod tests {
             product_category: "spot".to_string(),
             table_family: "trades".to_string(),
             evidence_state: EvidenceState::OwnerArchiveBackfillable,
+            source_candidate_class: SourceCandidateClass::OfficialFree,
+            source_selection_status: SourceSelectionStatus::AcceptedLowerFidelity,
+            official_free_gap_ref: None,
+            paid_vendor_gap_ref: None,
             fixture_type: FixtureType::PerpsSpot,
             requested_time_range: TimeRange {
                 start_utc: "2025-06-01T00:00:00Z".to_string(),
@@ -1104,8 +1111,13 @@ mod tests {
             schema_sample_hash: "bf26db".to_string(),
             license_ref: "https://public.bybit.com/ (attestation)".to_string(),
             retention_ref: "https://public.bybit.com/".to_string(),
+            cost_ref: "cost://free-public-archive".to_string(),
             nt_mapping_status: NtMappingStatus::Accepted,
             fidelity_class: SourceProofFidelityClass::TradeReplay,
+            l2_replay_evidence: L2ReplayEvidence {
+                order_book_delta_ref: None,
+                sufficient_snapshot_cadence_ref: None,
+            },
             forbidden_claims: forbidden_claims.clone(),
             claim_limits: claim_limits_for(&forbidden_claims),
             cross_market_components: Vec::new(),

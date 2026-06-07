@@ -36,6 +36,8 @@ product_family = "spot"
 product_category = "spot"
 table_family = "trades"
 evidence_state = "owner_archive_backfillable"
+source_candidate_class = "official_free"
+source_selection_status = "ACCEPTED_LOWER_FIDELITY"
 fixture_type = "perps-spot"
 instrument_universe_id = "bybit-spot-instruments-2026-03-01-object-c18e9076"
 raw_sample_uri = "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BNBUSDC/object=d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598.csv.gz"
@@ -44,6 +46,7 @@ schema_sample_uri = "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/ingest-
 schema_sample_hash = "bf26db0b8fb8b62746b5724dccfb26a408d581f5598cb6be95c9173c8b1b5eed"
 license_ref = "https://public.bybit.com/ (public archive terms reviewed 2026-06-02)"
 retention_ref = "https://public.bybit.com/ (daily archive files retained; reviewed 2026-06-02)"
+cost_ref = "cost://free-public-archive"
 nt_mapping_status = "accepted"
 fidelity_class = "TRADE_REPLAY"
 gap_policy_id = ""
@@ -52,6 +55,8 @@ forbidden_claims = [
   "No L2/L3 order-book replay claims from trade prints.",
   "Coverage is limited to BNBUSDC spot 2026-03-01; no multi-day or multi-instrument claims.",
 ]
+
+[source_proof.l2_replay_evidence]
 
 [[source_proof.claim_limits]]
 id = "source-proof-claim-limit-001"
@@ -114,6 +119,10 @@ evidence_ref = "bybit-spot instruments-info object=c18e9076866309c3e6d6a0fd86043
 outcome = "passed"
 evidence_ref = "object dt=2026-03-01 within coverage window [2026-03-01, 2026-03-02)"
 
+[source_proof.required_checks.retention_freshness]
+outcome = "passed"
+evidence_ref = "https://public.bybit.com/ daily archive retention reviewed 2026-06-02"
+
 [source_proof.required_checks.granularity]
 outcome = "passed"
 evidence_ref = "native trade prints (id,timestamp,price,volume,side,rpi); not aggregated/aggTrades"
@@ -125,6 +134,10 @@ evidence_ref = "manifest fdcc0758bbd03113 errors=0; object bytes=8505 sha256=d6a
 [source_proof.required_checks.nt_mapping]
 outcome = "passed"
 evidence_ref = "nautilus_model::data::TradeTick; proven by ParquetDataCatalog projection + query_typed_data read-back"
+
+[source_proof.required_checks.cost]
+outcome = "passed"
+evidence_ref = "public archive sample; no paid vendor or subscription required for this accepted proof"
 
 [source_proof.required_checks.storage]
 outcome = "passed"

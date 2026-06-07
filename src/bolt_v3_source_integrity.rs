@@ -203,8 +203,9 @@ mod tests {
     // Re-derived again after removing a stale deleted-executor comment.
     // Re-derived again after removing vestigial retired gate arming constructor
     // terminology from submit-admission construction.
+    // Re-derived again after adding checked fee-inclusive admission arithmetic.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "4a2c6952ac4765dfef711859599e8ffa74d92a4a4d6a7f2a63e7cb2513d3b408";
+        "986e4e99c865a9b742cdaa8d0a34cc8cadfcb6633012b4915042a0ac5c9d506a";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

@@ -500,6 +500,13 @@ impl PricingState {
             .fair_value
             .filter(|fair_value| fair_value.is_finite() && *fair_value > 0.0)
         {
+            if self
+                .last_reference_observed_ts_ms
+                .is_some_and(|last| snapshot.ts_ms <= last)
+            {
+                return;
+            }
+            self.last_reference_observed_ts_ms = Some(snapshot.ts_ms);
             self.last_reference_fair_value = Some(fair_value);
         }
 

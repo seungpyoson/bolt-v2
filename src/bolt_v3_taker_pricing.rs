@@ -441,11 +441,21 @@ mod tests {
     const TEST_MIN_OBSERVATIONS_READY_AFTER_TWO_SAMPLES: u64 = 1;
     const TEST_GAP_RESET_SECS: u64 = 30;
     const TEST_BRIDGE_VALID_SECS: u64 = 10;
+    const TEST_REFERENCE_PRICE_STEP: f64 = 100.0;
+    const TEST_REFERENCE_TS_STEP_MS: u64 = 100;
     const TEST_NEWER_REFERENCE_PRICE: f64 = 100.0;
-    const TEST_STALE_REFERENCE_PRICE: f64 = 200.0;
+    const TEST_STALE_REFERENCE_PRICE: f64 =
+        TEST_NEWER_REFERENCE_PRICE + TEST_REFERENCE_PRICE_STEP;
+    const TEST_REPLACEMENT_REFERENCE_PRICE: f64 =
+        TEST_STALE_REFERENCE_PRICE + TEST_REFERENCE_PRICE_STEP;
     const TEST_NEWER_REFERENCE_TS_MS: u64 = 1_000;
-    const TEST_STALE_REFERENCE_TS_MS: u64 = 900;
-    const TEST_SIGNAL_AFTER_REFERENCE_TS_MS: u64 = 1_100;
+    const TEST_STALE_REFERENCE_TS_MS: u64 =
+        TEST_NEWER_REFERENCE_TS_MS - TEST_REFERENCE_TS_STEP_MS;
+    const TEST_REPLACEMENT_REFERENCE_TS_MS: u64 =
+        TEST_NEWER_REFERENCE_TS_MS + TEST_REFERENCE_TS_STEP_MS;
+    const TEST_SIGNAL_AFTER_REFERENCE_TS_MS: u64 = TEST_REPLACEMENT_REFERENCE_TS_MS;
+    const TEST_SIGNAL_AFTER_REPLACEMENT_REFERENCE_TS_MS: u64 =
+        TEST_REPLACEMENT_REFERENCE_TS_MS + TEST_REFERENCE_TS_STEP_MS;
 
     fn config(
         min_observations: u64,
@@ -554,6 +564,49 @@ mod tests {
         assert_eq!(
             pricing.fast_spot.as_ref().map(|spot| spot.price),
             Some(TEST_NEWER_REFERENCE_PRICE)
+        );
+        assert!(!pricing.fast_venue_incoherent);
+    }
+
+    #[test]
+    fn newer_reference_quote_overwrites_previous_fair_value() {
+        let config = config(
+            TEST_MIN_OBSERVATIONS_READY_AFTER_TWO_SAMPLES,
+            TEST_GAP_RESET_SECS,
+            TEST_BRIDGE_VALID_SECS,
+        );
+        let mut pricing = TakerPricingState::from_config(&config);
+
+        pricing.observe_reference_quote(&quote(
+            reference_venue(),
+            TEST_NEWER_REFERENCE_PRICE,
+            TEST_NEWER_REFERENCE_TS_MS,
+        ));
+        pricing.observe_reference_quote(&quote(
+            reference_venue(),
+            TEST_REPLACEMENT_REFERENCE_PRICE,
+            TEST_REPLACEMENT_REFERENCE_TS_MS,
+        ));
+        pricing.observe_signal_quote(
+            &quote(
+                signal_venue(),
+                TEST_REPLACEMENT_REFERENCE_PRICE,
+                TEST_SIGNAL_AFTER_REPLACEMENT_REFERENCE_TS_MS,
+            ),
+            &config,
+        );
+
+        assert_eq!(
+            pricing.last_reference_fair_value,
+            Some(TEST_REPLACEMENT_REFERENCE_PRICE)
+        );
+        assert_eq!(
+            pricing.last_reference_observed_ts_ms,
+            Some(TEST_REPLACEMENT_REFERENCE_TS_MS)
+        );
+        assert_eq!(
+            pricing.fast_spot.as_ref().map(|spot| spot.price),
+            Some(TEST_REPLACEMENT_REFERENCE_PRICE)
         );
         assert!(!pricing.fast_venue_incoherent);
     }

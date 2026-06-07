@@ -185,8 +185,12 @@ mod tests {
     //
     // Re-derived again by #574 review cleanup after replacing the remaining raw
     // positive integer guard in taker config parsing.
+    //
+    // Re-derived again by #574 external-review cleanup after unifying the
+    // positive integer guard loop and aligning the test-only reference snapshot
+    // helper with the production reference timestamp watermark.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "a1ed1246e7feba5dabfee2cb6327a0a52517365ecf28ca9e41cd7118fc3830bc";
+        "fc3a3e9dec66463c80e24c979d23d7c728c010ebe5f10ba09d73ff597864c46e";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

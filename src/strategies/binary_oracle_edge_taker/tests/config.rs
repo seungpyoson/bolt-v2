@@ -4,6 +4,7 @@ use super::*;
 
 const ZERO_INTEGER_CONFIG_VALUE: i64 = 0;
 const POSITIVE_REQUIRED_INTEGER_FIELDS: &[&str] = &[
+    stringify!(trade_flow_max_samples),
     stringify!(trade_flow_window_secs),
     stringify!(spike_guard_cooldown_secs),
     stringify!(vol_window_secs),
@@ -72,25 +73,7 @@ fn parse_config_rejects_non_positive_spike_guard_return_threshold() {
 }
 
 #[test]
-fn parse_config_rejects_zero_trade_flow_max_samples() {
-    // A zero sample cap makes the count-cap evict every observation, leaving
-    // the buffer permanently empty. 0 is a valid TOML integer so the type
-    // check cannot catch it; it must be rejected fail-loud at config load.
-    let mut raw = valid_raw_config();
-    raw.as_table_mut()
-        .expect("raw config should be a TOML table")
-        .insert("trade_flow_max_samples".to_string(), Value::Integer(0));
-    let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
-        .expect_err("zero trade_flow_max_samples must be rejected");
-    assert!(
-        err.to_string()
-            .contains("trade_flow_max_samples must be positive"),
-        "expected positivity rejection, got: {err}"
-    );
-}
-
-#[test]
-fn parse_config_rejects_zero_positive_required_window_knobs() {
+fn parse_config_rejects_zero_positive_required_integer_fields() {
     for field in POSITIVE_REQUIRED_INTEGER_FIELDS {
         let mut raw = valid_raw_config();
         raw.as_table_mut()

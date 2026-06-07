@@ -2,6 +2,15 @@
 
 use super::*;
 
+const TEST_PRICING_SNAPSHOT_REFERENCE_STEP_MS: u64 = 100;
+const TEST_PRICING_SNAPSHOT_REFERENCE_PRICE_STEP: f64 = 2.0;
+const TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS: u64 = 1_100;
+const TEST_PRICING_SNAPSHOT_STALE_REFERENCE_TS_MS: u64 =
+    TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS - TEST_PRICING_SNAPSHOT_REFERENCE_STEP_MS;
+const TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE: f64 = 3_101.0;
+const TEST_PRICING_SNAPSHOT_STALE_REFERENCE_PRICE: f64 =
+    TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE - TEST_PRICING_SNAPSHOT_REFERENCE_PRICE_STEP;
+
 #[test]
 fn reference_quote_tick_updates_fair_value_without_becoming_signal() {
     let mut strategy = test_strategy();
@@ -96,6 +105,38 @@ fn pricing_state_requires_fast_spot_for_pricing_and_keeps_reference_separate() {
         config.lead_jitter_max_ms,
     );
     assert_eq!(pricing.spot_price(), Some(3_102.0));
+}
+
+#[test]
+fn pricing_state_reference_snapshot_rejects_stale_fair_value() {
+    let config = test_strategy().config.clone();
+    let mut pricing = PricingState::from_config(&taker_pricing_config(&config));
+
+    pricing.observe_reference_snapshot(
+        &reference_tick(
+            TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS,
+            TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE,
+        ),
+        config.lead_agreement_min_corr,
+        config.lead_jitter_max_ms,
+    );
+    pricing.observe_reference_snapshot(
+        &reference_tick(
+            TEST_PRICING_SNAPSHOT_STALE_REFERENCE_TS_MS,
+            TEST_PRICING_SNAPSHOT_STALE_REFERENCE_PRICE,
+        ),
+        config.lead_agreement_min_corr,
+        config.lead_jitter_max_ms,
+    );
+
+    assert_eq!(
+        pricing.last_reference_fair_value,
+        Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_PRICE)
+    );
+    assert_eq!(
+        pricing.last_reference_observed_ts_ms,
+        Some(TEST_PRICING_SNAPSHOT_NEWER_REFERENCE_TS_MS)
+    );
 }
 
 #[test]

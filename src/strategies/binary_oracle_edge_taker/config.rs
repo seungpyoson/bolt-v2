@@ -272,15 +272,14 @@ impl BinaryOracleEdgeTakerBuilder {
             is_positive_finite(config.spike_guard_return_threshold),
             "spike_guard_return_threshold must be positive and finite"
         );
-        // Fail loud at load: a zero trade-flow sample cap makes the count-cap
-        // evict every observation, permanently emptying the buffer and starving
-        // the W3 read seam. The TOML type check accepts 0, so the bound is checked
-        // here.
-        anyhow::ensure!(
-            config.trade_flow_max_samples > u64::MIN,
-            "trade_flow_max_samples must be positive"
-        );
+        // Fail loud at load for positive-required integer knobs. A zero
+        // trade-flow sample cap makes the count-cap evict every observation,
+        // permanently emptying the buffer and starving the W3 read seam.
         for (field, value) in [
+            (
+                stringify!(trade_flow_max_samples),
+                config.trade_flow_max_samples,
+            ),
             (
                 stringify!(trade_flow_window_secs),
                 config.trade_flow_window_secs,

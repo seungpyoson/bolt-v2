@@ -41,6 +41,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - published artifacts are create-only: the operator preflights the bounded target artifact set and writes through object-store `PutMode::Create`, so an existing published artifact rejects the run instead of being overwritten
 - publish flows resolve and validate artifact-store options before reading the accepted object, so missing S3/SSM setup cannot waste local object I/O on large accepted objects
 - backfill preflight selection is now a cheap TOML-driven gate over the coverage ledger: it selects at most one bounded canonical-ready accepted tranche before any payload download, conversion, catalog projection, or backtest work can start
+- source-proof migration preflight is now a cheap TOML-driven gate over the legacy derivability report: requested table families, required derivable fields, raw-payload count, S3-bound status, and byte budget are config-owned, so candidate selection does not depend on venue names or provider-specific branches
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
 - the current `BacktestExtensionSurface` classification is recorded in `backtest-extension-surface-matrix.md`; supported primitive NT controls are TOML pass-throughs, Bolt-owned pieces are provenance/governance boundaries, unmodeled NT model/system surfaces fail before NT config construction, and each successful run now writes `backtest-run-manifest.json` plus result-contract claim-limit entries for resolved NT defaults, supported run/venue/catalog pass-through fields, and unsupported NT surfaces
 
@@ -640,6 +641,29 @@ Current evidence:
   reasons `no_accepted_records` plus `no_canonical_ready_records`. This is the
   intended fail-fast point that prevents repeating the previous slow path while
   source-proof acceptance and canonical-ready evidence are still absent.
+- The source-proof migration preflight CLI was run against the legacy
+  derivability report with TOML-owned table-family selection. Requiring
+  `allowed_table_families = ["trades"]` for the current NT `TradeTick` path
+  generated
+  `/private/tmp/bte-coverage-ledger-20260607/source-proof-migration-preflight-trades-output/source-proof-migration-preflight-report.json`
+  with content hash
+  `20f4c1a807089c1e14f171c18f993296b6d3859dce66947916364647725981ad`,
+  size 871 bytes, `status = blocked`, `total_records = 21`,
+  `eligible_candidate_count = 0`, no selected candidate, and blocking reason
+  `no_eligible_candidate`. Allowing `allowed_table_families = ["instruments"]`
+  generated
+  `/private/tmp/bte-coverage-ledger-20260607/source-proof-migration-preflight-instruments-output/source-proof-migration-preflight-report.json`
+  with content hash
+  `d6698ad78cf0c5c858f7d5e7d69f6b85fb5e98c1ec3802415ca0b2b8a10ca18c`,
+  size 1750 bytes, `status = candidate_found`, and
+  `eligible_candidate_count = 19`; the selected structural candidate is
+  `source-proof-f6f955810b3a6b42` / `okx-option-underlyings`, table family
+  `instruments`, one S3-bound raw payload, 52 accepted bytes from S3, and the
+  same remaining acceptance blockers: license, NT mapping, fidelity,
+  forbidden-claim, and schema-sample checks. Therefore there is no staged
+  single-table market-data `trades` proof candidate for the existing converter
+  path; an instrument-universe proof can be current-contract-shaped next, but it
+  still cannot be accepted until those five evidence checks are explicit.
 - Binance run `binance-backfill-run-d928f6666827dd47` records 4,701 completed
   payload objects, 42,358,207,176 payload bytes, zero errors, and
   `payload_completion_ok = true`, but it is still raw staging and not a
@@ -675,7 +699,9 @@ Distance from the overall backtesting engine:
    metadata binding, unsupported-schema rejected records, and a report-only
    source-proof admissibility CLI plus a report-only legacy source-proof
    derivability CLI plus a preflight selector that refuses broad conversion
-   unless the ledger has one bounded canonical-ready accepted tranche. A real
+   unless the ledger has one bounded canonical-ready accepted tranche, and a
+   source-proof migration preflight selector that proves whether the staged
+   legacy proofs contain a candidate for a requested table family. A real
    manifest-only ledger can now be generated across all 190 observed manifests,
    and real source-proof admissibility/derivability/preflight reports can now
    be generated across the current staged evidence. The

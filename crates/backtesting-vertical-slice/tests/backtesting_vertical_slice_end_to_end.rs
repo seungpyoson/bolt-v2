@@ -39,6 +39,7 @@ const SAMPLE_CSV: &str = "id,timestamp,price,volume,side,rpi\n\
 
 fn csv_mapping() -> CsvTradeMappingConfig {
     CsvTradeMappingConfig {
+        has_headers: true,
         trade_id_column: "id".to_string(),
         timestamp_column: "timestamp".to_string(),
         timestamp_unit: CsvTimestampUnit::Milliseconds,

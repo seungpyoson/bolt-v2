@@ -1087,7 +1087,7 @@ mod tests {
     use flate2::{Compression, write::GzEncoder};
 
     use super::*;
-    use crate::canonical_trades::{RawPayloadConfig, RawPayloadContainer};
+    use crate::canonical_trades::{CsvTimestampUnit, RawPayloadConfig, RawPayloadContainer};
     use crate::conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionManifest,
@@ -1119,6 +1119,8 @@ mod tests {
     const ALT_SCHEMA_CSV: &str = "trade_id,ts_ms,px,qty,taker_side,ignored\n\
         a1,1772323201665,617.2,0.3,B,0\n\
         a2,1772323312219,617.9,0.1456,S,0\n";
+    const BINANCE_HEADERLESS_CSV: &str = "101735393,617.34000000,1.61900000,999.47346000,1772323201711256,True,True\n\
+        101735394,617.34000000,0.07200000,44.44848000,1772323201815330,False,True\n";
 
     fn gzip(text: &str) -> Vec<u8> {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
@@ -1798,18 +1800,25 @@ mod tests {
 
     #[test]
     fn run_from_run_spec_uses_configured_single_csv_zip_payload() {
-        let zip_bytes = zip_single_csv("BNBUSDC-trades-2026-03-01.csv", ALT_SCHEMA_CSV);
+        let zip_bytes = zip_single_csv("BNBUSDC-trades-2026-03-01.csv", BINANCE_HEADERLESS_CSV);
         let mut spec = run_spec_for(&zip_bytes);
         spec.accepted_object.s3_uri =
             "s3://bolt-parquet/backfill-staging/binance/BNBUSDC-trades-2026-03-01.zip".to_string();
         spec.accepted_object.source_url =
             "https://data.binance.vision/data/spot/daily/trades/BNBUSDC/BNBUSDC-trades-2026-03-01.zip"
                 .to_string();
-        spec.accepted_object.schema_columns =
-            ["trade_id", "ts_ms", "px", "qty", "taker_side", "ignored"]
-                .into_iter()
-                .map(ToString::to_string)
-                .collect();
+        spec.accepted_object.schema_columns = [
+            "trade_id",
+            "price",
+            "qty",
+            "quote_qty",
+            "time",
+            "is_buyer_maker",
+            "is_best_match",
+        ]
+        .into_iter()
+        .map(ToString::to_string)
+        .collect();
         spec.source_proof.source_binding = "binance-spot-native-trades".to_string();
         spec.source_proof.venue = "binance".to_string();
         spec.source_proof.evidence_state = EvidenceState::DirectlyBackfillable;
@@ -1820,6 +1829,8 @@ mod tests {
         spec.manifest.venue.nt_venue = "BINANCE".to_string();
         spec.manifest.catalog_input.nt_instrument_id = "BNBUSDC.BINANCE".to_string();
         spec.instrument_spec.nt_instrument_id = "BNBUSDC.BINANCE".to_string();
+        spec.instrument_spec.price_increment = "0.00000001".to_string();
+        spec.instrument_spec.size_increment = "0.000001".to_string();
         spec.identity.nt_instrument_id = "BNBUSDC.BINANCE".to_string();
         spec.manifest.strategy.parameters.insert(
             "bar_type".to_string(),
@@ -1828,25 +1839,30 @@ mod tests {
         spec.converter.raw_payload = RawPayloadConfig {
             container: RawPayloadContainer::SingleCsvZip,
             max_object_bytes: zip_bytes.len() as u64,
-            max_decoded_bytes: ALT_SCHEMA_CSV.len() as u64,
+            max_decoded_bytes: BINANCE_HEADERLESS_CSV.len() as u64,
             zip_member: Some("BNBUSDC-trades-2026-03-01.csv".to_string()),
         };
+        spec.converter.csv.has_headers = false;
         spec.converter.csv.trade_id_column = "trade_id".to_string();
-        spec.converter.csv.timestamp_column = "ts_ms".to_string();
-        spec.converter.csv.price_column = "px".to_string();
+        spec.converter.csv.timestamp_column = "time".to_string();
+        spec.converter.csv.timestamp_unit = CsvTimestampUnit::Microseconds;
+        spec.converter.csv.price_column = "price".to_string();
         spec.converter.csv.size_column = "qty".to_string();
-        spec.converter.csv.side_column = "taker_side".to_string();
-        spec.converter.csv.buyer_side_values = vec!["B".to_string()];
-        spec.converter.csv.seller_side_values = vec!["S".to_string()];
+        spec.converter.csv.side_column = "is_buyer_maker".to_string();
+        spec.converter.csv.buyer_side_values = vec!["False".to_string()];
+        spec.converter.csv.seller_side_values = vec!["True".to_string()];
         let dir = tempfile::TempDir::new().unwrap();
 
         let artifacts = run_from_run_spec(&spec, &zip_bytes, dir.path()).expect("operator run");
 
         assert_eq!(artifacts.output.canonical_table.rows.len(), 2);
-        assert_eq!(artifacts.output.canonical_table.rows[0].trade_id, "a1");
+        assert_eq!(
+            artifacts.output.canonical_table.rows[0].trade_id,
+            "101735393"
+        );
         assert_eq!(
             artifacts.output.canonical_table.rows[1].aggressor_side,
-            "SELLER"
+            "BUYER"
         );
     }
 

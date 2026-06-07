@@ -107,6 +107,7 @@ pub enum RawPayloadContainer {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CsvTradeMappingConfig {
+    pub has_headers: bool,
     pub trade_id_column: String,
     pub timestamp_column: String,
     pub timestamp_unit: CsvTimestampUnit,
@@ -483,20 +484,29 @@ pub fn normalize_csv_native_trades(
     );
 
     let mut reader = csv::ReaderBuilder::new()
-        .has_headers(true)
+        .has_headers(mapping.has_headers)
         .trim(csv::Trim::All)
         .from_reader(csv_text.as_bytes());
-    let header_columns: Vec<String> = reader
-        .headers()
-        .context("empty csv: missing header")?
-        .iter()
-        .map(str::to_string)
-        .collect();
-    ensure!(
-        accepted.object.schema_columns == header_columns,
-        "csv header {header_columns:?} does not match accepted object schema {:?}",
-        accepted.object.schema_columns
-    );
+    let header_columns: Vec<String> = if mapping.has_headers {
+        let header_columns = reader
+            .headers()
+            .context("empty csv: missing header")?
+            .iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        ensure!(
+            accepted.object.schema_columns == header_columns,
+            "csv header {header_columns:?} does not match accepted object schema {:?}",
+            accepted.object.schema_columns
+        );
+        header_columns
+    } else {
+        ensure!(
+            !accepted.object.schema_columns.is_empty(),
+            "accepted object schema columns must not be empty for headerless csv"
+        );
+        accepted.object.schema_columns.clone()
+    };
 
     let trade_id_index = column_index(&header_columns, &mapping.trade_id_column)?;
     let timestamp_index = column_index(&header_columns, &mapping.timestamp_column)?;
@@ -1182,6 +1192,54 @@ mod tests {
             "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598"
         );
         assert_eq!(first.transform_hash, transform_hash());
+    }
+
+    #[test]
+    fn normalizes_headerless_native_trades_using_configured_schema_columns() {
+        let mut accepted = accepted_dataset();
+        accepted.object.schema_columns = [
+            "trade_id",
+            "price",
+            "qty",
+            "quote_qty",
+            "time",
+            "is_buyer_maker",
+            "is_best_match",
+        ]
+        .into_iter()
+        .map(ToString::to_string)
+        .collect();
+        let mapping = CsvTradeMappingConfig {
+            has_headers: false,
+            trade_id_column: "trade_id".to_string(),
+            timestamp_column: "time".to_string(),
+            timestamp_unit: CsvTimestampUnit::Microseconds,
+            price_column: "price".to_string(),
+            size_column: "qty".to_string(),
+            side_column: "is_buyer_maker".to_string(),
+            buyer_side_values: vec!["False".to_string()],
+            seller_side_values: vec!["True".to_string()],
+        };
+        let csv = "101735393,617.34000000,1.61900000,999.47346000,1772323201711256,True,True\n\
+            101735394,617.34000000,0.07200000,44.44848000,1772323201815330,False,True\n";
+
+        let table = normalize_csv_native_trades(
+            &accepted,
+            &identity(),
+            &mapping,
+            csv,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize headerless csv");
+
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(table.rows[0].trade_id, "101735393");
+        assert_eq!(table.rows[0].event_time, 1_772_323_201_711_256_000);
+        assert_eq!(table.rows[0].aggressor_side, "SELLER");
+        assert_eq!(table.rows[0].price, "617.34000000");
+        assert_eq!(table.rows[0].size, "1.61900000");
+        assert_eq!(table.rows[1].aggressor_side, "BUYER");
     }
 
     #[test]

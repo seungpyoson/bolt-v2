@@ -135,6 +135,7 @@ max_object_bytes = 8505
 max_decoded_bytes = 1048576
 
 [converter.csv]
+has_headers = true
 trade_id_column = "id"
 timestamp_column = "timestamp"
 timestamp_unit = "milliseconds"

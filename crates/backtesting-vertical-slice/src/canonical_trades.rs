@@ -50,9 +50,11 @@ const NANOS_PER_MILLISECOND: i64 = 1_000_000;
 
 /// Registered raw-source converter adapter.
 ///
-/// Adding a new raw venue/data-family adapter should register one definition
-/// here and route it in [`normalize_registered_trade_converter`], leaving the
-/// operator, runner, result contract, and NT catalog/backtest wiring unchanged.
+/// A new venue that can emit the same CSV native-trades shape selects this
+/// converter from TOML and supplies its column/side mapping in `[converter.csv]`.
+/// Rust registration is only for a genuinely new raw format or NT data family,
+/// leaving operator, runner, result contract, and NT catalog/backtest wiring
+/// unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TradeConverterDefinition {
     pub identity: &'static str,

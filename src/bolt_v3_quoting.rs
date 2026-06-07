@@ -71,9 +71,6 @@ pub fn resolve_band(
     }
 
     let half_spread = (reservation_ask - reservation_bid) * HALF_F64;
-    if half_spread < ZERO_F64 {
-        return None;
-    }
     let half_spread = half_spread.max(half_spread_floor);
     if half_spread > max_half_spread {
         return None;

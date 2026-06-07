@@ -70,7 +70,7 @@ Landed:
   `time_widening_factor`, and `reward_shaping_offset`; no strategy imports and no family trait seam.
 - `src/bolt_v3_numeric.rs`: `HALF_F64` and strict `sanitize_open_probability`, introduced with quoting as
   first consumer.
-- `src/bolt_v3_maker_inventory.rs`: pure fill accumulator over shared `Leg` and `QuoteSide`.
+- `src/bolt_v3_maker_inventory.rs`: pure binary-market fill accumulator over shared `Leg` and `QuoteSide`.
 - `src/bolt_v3_market_families/{mod.rs,updown.rs}`: maker quote targets, 0/1 settlement payout, and binary
   fee curve folded into the canonical `MarketFamilyValidationBinding` fn-pointer table.
 
@@ -80,6 +80,8 @@ Intentionally skipped:
   reservation, forced exit, and market-exit behavior.
 - The rejected `MakerFamily` / `&dyn MakerFamily` stale seam.
 - Broader W5/W7 reward accrual and reservation modules.
+- `reward_shaping_offset` intentionally ships as a neutral zero seam in this slice; non-zero reward
+  shaping remains W5/W7 scope.
 
 ## TDD Evidence
 

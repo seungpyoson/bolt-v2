@@ -2007,112 +2007,26 @@ pub fn parse_manifest_toml(text: &str) -> Result<BacktestingRunManifest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source_proof::{
-        AcceptanceMode, AcceptanceScope, EvidenceState, FixtureType, IngestManifestObjectRecord,
-        NtMappingStatus, RequiredCheck, RequiredChecks, SourceProofClaimLimit,
-        SourceProofFidelityClass, SourceProofReport, SourceProofStatus, TimeRange,
-        select_accepted_dataset,
-    };
+    use crate::source_proof::{SourceProofFidelityClass, synthetic_accepted_dataset_for_tests};
 
     const TEST_INSTRUMENT_ID: &str = "TESTPAIR.TESTVENUE";
     const TEST_BAR_TYPE: &str = "TESTPAIR.TESTVENUE-1-MINUTE-LAST-EXTERNAL";
+    const TEST_RUN_ID: &str = "backtesting-vertical-slice-testpair-2026-03-01";
+    const TEST_SOURCE_PROOF_ID: &str = "source-proof-synthetic-native-trades";
+    const TEST_SOURCE_BINDING: &str = "synthetic-native-trades";
+    const TEST_NT_VENUE: &str = "TESTVENUE";
 
     fn accepted_dataset() -> AcceptedDataset {
-        let checks = RequiredChecks {
-            source_access: RequiredCheck::passed("m"),
-            license: RequiredCheck::passed("m"),
-            schema: RequiredCheck::passed("m"),
-            time_semantics: RequiredCheck::passed("m"),
-            instrument_universe: RequiredCheck::passed("m"),
-            coverage: RequiredCheck::passed("m"),
-            granularity: RequiredCheck::passed("m"),
-            completeness: RequiredCheck::passed("m"),
-            nt_mapping: RequiredCheck::passed("m"),
-            storage: RequiredCheck::passed("m"),
-        };
-        let object = IngestManifestObjectRecord {
-            s3_uri: "s3://bolt-parquet/.../object=d6af93.csv.gz".to_string(),
-            source_url: "https://public.bybit.com/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz"
-                .to_string(),
-            sha256: "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598".to_string(),
-            bytes: 8505,
-            archive_date: "2026-03-01".to_string(),
-            schema_columns: vec!["id".to_string()],
-        };
-        let forbidden_claims = vec!["No execution-quality claims.".to_string()];
-        let proof = SourceProofReport {
-            source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
-            source_proof_version: 1,
-            contract_version: "backfill-table-contract.v1".to_string(),
-            schema_version: "backfill-source-proof.v1".to_string(),
-            status: SourceProofStatus::Pending,
-            source_binding: "bybit-spot-tick-trades".to_string(),
-            venue: "bybit".to_string(),
-            product_family: "spot".to_string(),
-            product_category: "spot".to_string(),
-            table_family: "trades".to_string(),
-            evidence_state: EvidenceState::OwnerArchiveBackfillable,
-            fixture_type: FixtureType::PerpsSpot,
-            requested_time_range: TimeRange {
-                start_utc: "2025-06-01T00:00:00Z".to_string(),
-                end_utc: "2026-06-01T00:00:00Z".to_string(),
-            },
-            coverage_time_range: TimeRange {
-                start_utc: "2026-03-01T00:00:00Z".to_string(),
-                end_utc: "2026-03-02T00:00:00Z".to_string(),
-            },
-            instrument_universe_id: "u".to_string(),
-            raw_sample_uri: object.s3_uri.clone(),
-            raw_sample_hash: object.sha256.clone(),
-            schema_sample_uri: "s3://bolt-parquet/.../schema-sample.json".to_string(),
-            schema_sample_hash: "h".to_string(),
-            license_ref: "l".to_string(),
-            retention_ref: "r".to_string(),
-            nt_mapping_status: NtMappingStatus::Accepted,
-            fidelity_class: SourceProofFidelityClass::TradeReplay,
-            forbidden_claims: forbidden_claims.clone(),
-            claim_limits: claim_limits_for(&forbidden_claims),
-            acceptance_scope: Some(AcceptanceScope {
-                planned_objects: 1,
-                completed_objects: 1,
-                failed_objects: 0,
-                skipped_objects: 0,
-                accepted_bytes: object.bytes,
-                selector_scope_violations: 0,
-            }),
-            gap_policy_id: String::new(),
-            required_checks: checks,
-            acceptance_mode: None,
-            accepted_by: None,
-            accepted_at: None,
-            supersedes_source_proof_id: None,
-        }
-        .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
-        .unwrap();
-        select_accepted_dataset(&proof, &object, &object.sha256).unwrap()
-    }
-
-    fn claim_limits_for(claims: &[String]) -> Vec<SourceProofClaimLimit> {
-        claims
-            .iter()
-            .enumerate()
-            .map(|(index, claim)| SourceProofClaimLimit {
-                id: format!("claim-limit-{}", index + 1),
-                severity: "blocking".to_string(),
-                claim: claim.clone(),
-                reason: "source fidelity does not prove this claim".to_string(),
-                evidence_ref: "source-proof://fidelity-class".to_string(),
-            })
-            .collect()
+        synthetic_accepted_dataset_for_tests()
     }
 
     fn valid_manifest() -> BacktestingRunManifest {
         BacktestingRunManifest {
-            run_id: "backtesting-vertical-slice-bnbusdc-2026-03-01".to_string(),
+            run_id: TEST_RUN_ID.to_string(),
             market_structure_fixture: MarketStructureFixture::PerpsSpot,
-            venue_binding_key: "bybit-spot-tick-trades".to_string(),
+            venue_binding_key: TEST_SOURCE_BINDING.to_string(),
             run_purpose: RunPurpose::Normal,
-            source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
+            source_proof_id: TEST_SOURCE_PROOF_ID.to_string(),
             source_proof_version: 1,
             pins_non_latest_proof: false,
             proof_pin_reason_code: None,
@@ -2122,10 +2036,7 @@ mod tests {
                 registry_key: STRATEGY_HURST_VPIN_DIRECTIONAL.to_string(),
                 parameters: BTreeMap::from([
                     ("trade_size".to_string(), "0.01".to_string()),
-                    (
-                        "bar_type".to_string(),
-                        "BNBUSDC.BYBIT-1-MINUTE-LAST-INTERNAL".to_string(),
-                    ),
+                    ("bar_type".to_string(), TEST_BAR_TYPE.to_string()),
                 ]),
                 typed_config_uri: None,
                 typed_config_hash: None,
@@ -2133,7 +2044,7 @@ mod tests {
                 promotion_package_hash: None,
             },
             venue: ManifestVenueConfig {
-                nt_venue: "BYBIT".to_string(),
+                nt_venue: TEST_NT_VENUE.to_string(),
                 oms_type: "NETTING".to_string(),
                 account_type: "CASH".to_string(),
                 book_type: "L1_MBP".to_string(),
@@ -2171,7 +2082,7 @@ mod tests {
                 catalog_fs_storage_options: BTreeMap::new(),
                 catalog_fs_rust_storage_options: BTreeMap::new(),
                 data_type: "TradeTick".to_string(),
-                nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
+                nt_instrument_id: TEST_INSTRUMENT_ID.to_string(),
                 instrument_ids: None,
                 start_time: None,
                 end_time: None,
@@ -2183,7 +2094,7 @@ mod tests {
                 optimize_file_loading: None,
             },
             artifact_root: "s3://bolt-parquet/nt-research-analytics".to_string(),
-            output_prefix: "s3://bolt-parquet/nt-research-analytics/backtests/bnbusdc".to_string(),
+            output_prefix: "s3://bolt-parquet/nt-research-analytics/backtests/testpair".to_string(),
             artifact_store: ManifestArtifactStore {
                 storage_options: BTreeMap::new(),
                 rust_storage_options: BTreeMap::new(),
@@ -2199,7 +2110,7 @@ mod tests {
         let manifest = valid_manifest();
         manifest.validate(&accepted_dataset()).expect("valid");
         let run = manifest.to_nt_run_config().expect("run config");
-        assert_eq!(run.id(), "backtesting-vertical-slice-bnbusdc-2026-03-01");
+        assert_eq!(run.id(), TEST_RUN_ID);
         assert_eq!(run.venues().len(), 1);
         assert_eq!(run.data().len(), 1);
     }
@@ -2341,7 +2252,7 @@ mod tests {
     fn artifact_store_options_are_toml_owned_for_publish_and_catalog_proof() {
         let mut manifest = valid_manifest();
         manifest.artifact_root = "file:///bolt-artifacts".to_string();
-        manifest.output_prefix = "file:///bolt-artifacts/backtests/bnbusdc".to_string();
+        manifest.output_prefix = "file:///bolt-artifacts/backtests/testpair".to_string();
         manifest.artifact_store.rust_storage_options = BTreeMap::from([
             ("region".to_string(), "us-east-1".to_string()),
             ("allow_http".to_string(), "false".to_string()),

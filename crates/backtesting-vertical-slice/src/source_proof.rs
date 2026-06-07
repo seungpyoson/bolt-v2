@@ -709,6 +709,50 @@ pub struct AcceptedDataset {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AcceptedGate;
 
+#[cfg(test)]
+pub(crate) fn synthetic_accepted_dataset_for_tests() -> AcceptedDataset {
+    let object = IngestManifestObjectRecord {
+        s3_uri: "s3://synthetic-artifacts/source-proofs/raw/object.csv.gz".to_string(),
+        source_url: "https://source.example.test/spot/TESTPAIR/TESTPAIR_2026-03-01.csv.gz"
+            .to_string(),
+        sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        bytes: 1,
+        archive_date: "2026-03-01".to_string(),
+        schema_columns: vec!["id".to_string()],
+    };
+    let forbidden_claims = vec!["No execution-quality claims.".to_string()];
+    let claim_limits = forbidden_claims
+        .iter()
+        .enumerate()
+        .map(|(index, claim)| SourceProofClaimLimit {
+            id: format!("claim-limit-{}", index + 1),
+            severity: "blocking".to_string(),
+            claim: claim.clone(),
+            reason: "source fidelity does not prove this claim".to_string(),
+            evidence_ref: "source-proof://synthetic/fidelity-class".to_string(),
+        })
+        .collect();
+
+    AcceptedDataset {
+        source_proof_id: "source-proof-synthetic-native-trades".to_string(),
+        source_proof_version: 1,
+        source_binding: "synthetic-native-trades".to_string(),
+        venue: "synthetic-venue".to_string(),
+        product_family: "spot".to_string(),
+        product_category: "spot".to_string(),
+        instrument_universe_id: "synthetic-instrument-universe".to_string(),
+        fidelity_class: SourceProofFidelityClass::TradeReplay,
+        forbidden_claims,
+        claim_limits,
+        acceptance_mode: AcceptanceMode::Manual,
+        accepted_by: "operator".to_string(),
+        accepted_at: "2026-06-02T00:00:00Z".to_string(),
+        accepted_object_sha256: object.sha256.clone(),
+        object,
+        _accepted_gate: AcceptedGate,
+    }
+}
+
 impl AcceptedDataset {
     #[must_use]
     pub(crate) fn result_contract_claim_limits(&self) -> Vec<String> {

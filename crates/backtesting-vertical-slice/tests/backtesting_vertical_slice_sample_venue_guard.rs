@@ -22,6 +22,29 @@ fn production_rust_does_not_hardcode_sample_venue_or_instrument() {
     );
 }
 
+#[test]
+fn run_manifest_unit_tests_do_not_embed_accepted_sample_fixture_values() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/run_manifest.rs");
+    let content = fs::read_to_string(&path).expect("read run manifest source");
+    let unit_tests = content
+        .split("\n#[cfg(test)]\nmod tests")
+        .nth(1)
+        .expect("run_manifest unit tests");
+    let lower = unit_tests.to_ascii_lowercase();
+    let mut failures = Vec::new();
+    for needle in ["bybit", "bnbusdc", "public_archive"] {
+        if lower.contains(needle) {
+            failures.push(needle);
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "generic run_manifest unit fixtures must use synthetic values, not the accepted sample proof values: {}",
+        failures.join(", ")
+    );
+}
+
 fn production_region(content: &str) -> &str {
     content
         .split("\n#[cfg(test)]\nmod tests")

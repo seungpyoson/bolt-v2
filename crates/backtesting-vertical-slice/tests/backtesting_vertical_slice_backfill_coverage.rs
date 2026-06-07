@@ -304,30 +304,33 @@ fn coverage_ledger_builds_from_manifest_json_batch_without_payload_downloads() {
 }
 
 #[test]
-fn coverage_ledger_reports_manifest_uri_when_batch_parse_fails() {
-    let invalid_summary = serde_json::json!({
+fn coverage_ledger_records_unsupported_manifest_schema_instead_of_aborting_batch() {
+    let unsupported_summary = serde_json::json!({
         "run_id": "manifest-synthetic-batch-bad",
         "completed_objects": 1,
         "completed_bytes": 100
     });
 
-    let err = BackfillCoverageLedger::from_manifest_json_summaries(
+    let ledger = BackfillCoverageLedger::from_manifest_json_summaries(
         "ledger-synthetic-batch",
         vec![BackfillCoverageManifestJson {
             manifest_uri: "manifest://synthetic/batch-bad.json".to_string(),
-            summary: invalid_summary,
+            summary: unsupported_summary,
             source_proof_status: Some(SourceProofStatus::Accepted),
         }],
         vec![],
     )
-    .unwrap_err();
+    .expect("ledger records unsupported manifest");
 
+    assert_eq!(ledger.records.len(), 1);
+    assert_eq!(ledger.summary.rejected_records, 1);
+    assert_eq!(ledger.summary.blocking_issue_count, 1);
+    let record = ledger.records.first().expect("unsupported record");
+    assert_eq!(record.record_id, "manifest://synthetic/batch-bad.json");
+    assert_eq!(record.status, BackfillCoverageStatus::Rejected);
     assert_eq!(
-        err,
-        BackfillCoverageLedgerError::ParseManifest {
-            manifest_uri: "manifest://synthetic/batch-bad.json".to_string(),
-            source: BackfillCoverageParseError::MissingField("write_mode")
-        }
+        record.blocking_issues,
+        vec![BackfillCoverageIssue::UnsupportedManifestSchema]
     );
 }
 

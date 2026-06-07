@@ -5,7 +5,7 @@
 //! any payload download, canonical write, NT catalog projection, or backtest.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt, fs,
     path::{Path, PathBuf},
@@ -53,6 +53,7 @@ pub enum BackfillCoverageIssue {
     SelectorScopeViolationsPresent,
     PlannedObjectsAccountingMismatch,
     SkippedObjectsWithoutGapPolicy,
+    UnsupportedManifestSchema,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -458,22 +459,41 @@ impl BackfillCoverageLedger {
         manifest_summaries: Vec<BackfillCoverageManifestJson>,
         inventories: Vec<BackfillPhysicalInventory>,
     ) -> Result<Self, BackfillCoverageLedgerError> {
-        let manifests = manifest_summaries
-            .into_iter()
-            .map(|input| {
-                let BackfillCoverageManifestJson {
-                    manifest_uri,
-                    summary,
-                    source_proof_status,
-                } = input;
-                BackfillCoverageManifestEvidence::from_manifest_json(&summary, source_proof_status)
-                    .map_err(|source| BackfillCoverageLedgerError::ParseManifest {
-                        manifest_uri,
-                        source,
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Self::from_evidence(ledger_id, manifests, inventories)
+        let mut manifests = Vec::new();
+        let mut unsupported_records = Vec::new();
+        for input in manifest_summaries {
+            let BackfillCoverageManifestJson {
+                manifest_uri,
+                summary,
+                source_proof_status,
+            } = input;
+            match BackfillCoverageManifestEvidence::from_manifest_json(
+                &summary,
+                source_proof_status,
+            ) {
+                Ok(manifest) => manifests.push(manifest),
+                Err(_) => {
+                    unsupported_records.push(classify_unsupported_manifest_schema(manifest_uri));
+                }
+            }
+        }
+
+        let mut ledger = Self::from_evidence(ledger_id, manifests, inventories)?;
+        let mut record_ids = ledger
+            .records
+            .iter()
+            .map(|record| record.record_id.clone())
+            .collect::<BTreeSet<_>>();
+        for record in unsupported_records {
+            if !record_ids.insert(record.record_id.clone()) {
+                return Err(BackfillCoverageLedgerError::DuplicateManifestId(
+                    record.record_id,
+                ));
+            }
+            ledger.records.push(record);
+        }
+        ledger.summary = BackfillCoverageSummary::from_records(&ledger.records);
+        Ok(ledger)
     }
 
     pub fn from_evidence(
@@ -745,6 +765,23 @@ pub fn classify_physical_inventory(
         physical_only_objects: inventory.object_count,
         physical_only_bytes: inventory.byte_count,
         blocking_issues: vec![BackfillCoverageIssue::MissingManifest],
+    }
+}
+
+fn classify_unsupported_manifest_schema(manifest_uri: String) -> BackfillCoverageRecord {
+    BackfillCoverageRecord {
+        record_id: manifest_uri,
+        status: BackfillCoverageStatus::Rejected,
+        source_binding: None,
+        source_proof_id: None,
+        source_proof_version: None,
+        canonical_ready: false,
+        accepted_objects: 0,
+        accepted_bytes: 0,
+        skipped_objects: 0,
+        physical_only_objects: 0,
+        physical_only_bytes: 0,
+        blocking_issues: vec![BackfillCoverageIssue::UnsupportedManifestSchema],
     }
 }
 

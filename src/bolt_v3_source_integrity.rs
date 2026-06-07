@@ -198,8 +198,10 @@ mod tests {
     // source forwarding into the strategy source set.
     // Re-derived again after spelling the realized-volatility binding insertion
     // as an explicit entry match to satisfy both clippy and source-fence.
+    // Re-derived again after refreshing surfaced realized-volatility snapshots
+    // before entry/exit pricing so stale sources block instead of freezing RV.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "a980d29ae379fee7736723ebfc161cf63f027eea3ab561d6d336cb6666a01d4a";
+        "bc99eb94e21ac7bb328e372777feaba46de12a72d9e24c7cefa7fac232d9f830";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

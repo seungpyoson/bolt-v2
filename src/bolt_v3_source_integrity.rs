@@ -192,8 +192,12 @@ mod tests {
     //
     // Re-derived again by #574 follow-up review cleanup after decoupling stale
     // snapshot fair-value rejection from test-only signal candidate processing.
+    //
+    // Re-derived again by #520 fresh post-#574 replacement after extracting the
+    // signed trade-flow buffer into `src/bolt_v3_trade_flow.rs` while keeping
+    // the strategy-local config projection in the canonical strategy source set.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "d9c4519be1f40601e40da47b42d074f43590833b817be2aacf8e4c30f1eb0344";
+        "a4f8cb59c36ad34623bfcd66d24a7c0fe6e578e5d57bd4059d10a4669f0547dd";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

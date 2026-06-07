@@ -46,6 +46,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - source-binding coverage is now a cheap TOML-driven gate over the configured source-binding registry and coverage ledger; it reports whether required table-family bindings have ledger records without inferring from prefixes or venue names
 - source-proof scope coverage is now a cheap object-level gate over one accepted proof and one manifest; it proves whether the proof's raw sample object exists inside a manifest and whether the enclosing manifest is broader than the accepted proof scope
 - accepted-tranche manifests are now a cheap TOML-driven artifact boundary over source-proof scope reports; the first accepted reference trades tranche is exactly one object and is hash-bound to the source-proof scope report that selected it
+- the first accepted reference trades tranche has been driven through the existing operator path, not a new converter path: verified raw object -> existing native-trades converter -> canonical Parquet -> NT `ParquetDataCatalog` projection -> NT catalog read-back -> NT `BacktestNode` run -> result contract
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
 - the current `BacktestExtensionSurface` classification is recorded in `backtest-extension-surface-matrix.md`; supported primitive NT controls are TOML pass-throughs, Bolt-owned pieces are provenance/governance boundaries, unmodeled NT model/system surfaces fail before NT config construction, and each successful run now writes `backtest-run-manifest.json` plus result-contract claim-limit entries for resolved NT defaults, supported run/venue/catalog pass-through fields, and unsupported NT surfaces
 
@@ -56,6 +57,7 @@ No-go for broader production claims:
 - no real S3 write has been performed through `--publish-output` in this branch without explicit operator approval and configured SSM artifact-store credential parameter paths
 - non-secret SSM parameter-name searches for `artifact`, `s3`, and `backtest` returned no candidate parameter names, so the required `[manifest.artifact_store.ssm_parameters]` paths are not known in the current AWS account
 - current operator runs still stamp `direct_s3_catalog_access_proven = false` because `BacktestNode` consumes the verified local projection root before optional publish
+- the accepted-tranche operator proof is local-only: it proves deterministic local conversion/catalog/backtest behavior for the accepted object, but it does not prove direct production S3 catalog consumption or broad historical backfill
 - the direct S3 publish/proof command with only `region` configured now fails fast with `artifact_store.ssm_parameters must resolve access_key_id and secret_access_key before publishing to an s3 output_prefix`, and leaves no output directory
 - only the BNBUSDC 2026-03-01 trade-replay object is proven in this slice; Bybit is a sample source/proof, not a production converter special case
 - generic `run_manifest` unit fixtures now use synthetic accepted dataset values rather than duplicating the accepted Bybit/BNBUSDC sample proof; the committed sample proof/run-spec and end-to-end sample fixtures remain the authoritative BNBUSDC evidence
@@ -91,6 +93,13 @@ No-go for broader production claims:
 - Fresh current-branch local CLI run after SSM artifact-store changes wrote `/private/tmp/bte-s3-proof/out-local-after-ssm-artifact-store-3` and produced `937` canonical rows, `937` NT catalog read-back trade ticks, NT `BacktestNode` iterations `937`, and catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`
 - Fresh current-branch S3 publish/proof command with only `region` configured failed before the backtest with `artifact_store.ssm_parameters must resolve access_key_id and secret_access_key before publishing to an s3 output_prefix`; `/private/tmp/bte-s3-proof/out-s3-missing-ssm-fail-fast` was not created
 - Non-secret SSM parameter-name searches for `artifact`, `backtest`, `s3`, `parquet`, `research`, `nt`, and `credential` returned no names; a broad `bolt` name search returned only unrelated Chainlink/testnet and one-off backfill entries, so direct real S3 proof cannot be completed until valid SSM parameter paths are provided or created outside this branch's code path
+- Accepted-tranche manifest CLI selected the first reference trades tranche from the source-proof scope report without payload download or venue-specific branching. It wrote `/private/tmp/bte-coverage-ledger-20260607/backfill-accepted-tranche-reference-trades-output/backfill-accepted-tranche-manifest.json`, content hash `90078dfb15f2056b122ced643a8072d088ea9d69b3b0e0afaf73d7b941b95c26`, status `accepted`, `object_count = 1`, `accepted_bytes = 8505`, and bound scope-report hash `db110e9baf7a6bf710cbb35387424b3867404f79a4afd022cf85917c8b910e3b`.
+- Accepted raw object was then downloaded as the single bounded proof object to `/private/tmp/bte-accepted-tranche-reference-trades-20260607/raw/d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598.csv.gz`; `wc -c` returned `8505`, and SHA256 matched `d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598`.
+- The rust-verification Cargo wrapper refused a fresh `cargo run` because free disk was below its 10 GB threshold, so verification reused the already-built operator binary rather than producing more Cargo build output.
+- Already-built operator run against the accepted object wrote `/private/tmp/bte-accepted-tranche-reference-trades-20260607/output` and produced `937` canonical rows, NT catalog root `/private/tmp/bte-accepted-tranche-reference-trades-20260607/output/nt-catalog`, catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`, NT catalog read-back `937` `TradeTick` rows, NT revision `6e059dcbb59ac1e582132fc431a581936c216c3c`, NT `BacktestNode` iterations `937`, `total_events = 0`, `total_orders = 0`, `total_positions = 0`, and result-contract fidelity class `TRADE_REPLAY`.
+- Accepted-tranche rerun with the same already-built operator reused the same accepted object/output directory and again processed `937` NT iterations. Deterministic artifacts stayed stable: `canonical-trades.parquet` hash `007fd929557b08e314481fbf456736fb045a46e4a30761bbcab2f02dd687f1c4`, `catalog-metadata.json` hash `e89119627f9256a62416bb06a009f0fd371fc33ba2919c1b4b7eb4c3d9900451`, `conversion-manifest.json` hash `886cd87aa3ec691780266d9a409f4218edd9114afaa63884b589102cbe7103a1`, `conversion-checkpoint.json` hash `d607c511e875b8110d381707228e3a66419411f912ae7e1f849d3656d0e61c4a`, and `backtest-run-manifest.json` hash `770618e30b0cc5fbc33388fd4ff692cab708bd5e6c69b01b6c2f3d7444c7cf3a`. The result-contract file hash changed because the contract carries run-instance fields, but its bound source proof, converter fingerprint, catalog hash, conversion hashes, NT revision, and NT result fields remained tied to the accepted object.
+- The accepted-tranche output catalog contains NT-owned typed Parquet files at `nt-catalog/data/trades/BNBUSDC.BYBIT/2026-03-01T00-00-01-665000000Z_2026-03-01T23-50-46-022000000Z.parquet` and `nt-catalog/data/instruments/BNBUSDC.BYBIT/1970-01-01T00-00-00-000000000Z_1970-01-01T00-00-00-000000000Z.parquet`; Bolt did not write a custom catalog format.
+- Verification strategy for this report update intentionally avoided broad Cargo tests. Because no code changed after the accepted-tranche commit, the relevant checks were object byte/hash verification, artifact key inspection, direct existing-binary operator execution, NT catalog read-back evidence, rerun artifact hashes, and `git diff --check`.
 
 ## NT Use Matrix
 
@@ -767,9 +776,10 @@ Current evidence:
 
 Distance from the overall backtesting engine:
 
-1. Local single-object vertical slice: close. It has a tested accepted sample
-   proof, generic run/proof/result boundaries, and NT execution through
-   `BacktestNode`.
+1. Local single-object vertical slice: proven for the accepted reference
+   tranche. It has a tested accepted sample proof, generic run/proof/result
+   boundaries, NT catalog projection/read-back, and NT execution through
+   `BacktestNode` against the accepted object.
 2. Backfill foundation: not complete. There is substantial staged raw data and
    a generic coverage-ledger/parser/aggregate plus local idempotent artifact
    writer, batch/local-file manifest-summary ingestion boundaries, a TOML
@@ -816,10 +826,12 @@ Backfill must therefore be the next deliverable. The efficient order is:
    as `unsupported_manifest_schema` rejected coverage records.
 4. Reconcile physical-only S3 objects, starting with PMXT and Bybit orphan
    acceptance manifests, into accepted or rejected coverage records.
-5. Normalize one bounded accepted tranche into the declared table contract with
-   source-proof and gap-policy checks.
-6. Export an NT catalog from that normalized tranche and run BTE only after the
-   catalog proof exists.
+5. The accepted reference trades tranche has now been normalized into the
+   declared trade table contract and exported to an NT catalog locally; repeat
+   this only from ledger-selected, source-proof-bound tranches, not from venue
+   names or raw prefixes.
+6. Production BTE should run only after the next tranche has the same source
+   proof, normalized-row, gap-policy, NT catalog, and result-contract proof.
 
 ## Recommendation
 

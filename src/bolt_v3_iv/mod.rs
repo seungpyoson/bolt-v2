@@ -1,4 +1,14 @@
 //! NT-backed implied-volatility engine boundary.
 //!
-//! Phase 1 establishes the crate module boundary. Behavior is introduced by
-//! the subsequent TDD tasks in `specs/026-nt-backed-iv-engine/tasks.md`.
+//! Foundational types are intentionally strategy-, venue-, market-, asset-,
+//! instrument-, source-, and cadence-agnostic.
+
+pub mod audit;
+pub mod authz;
+pub mod bounds;
+pub mod error;
+pub mod health;
+pub mod provenance;
+pub mod selector;
+pub mod time;
+pub mod types;

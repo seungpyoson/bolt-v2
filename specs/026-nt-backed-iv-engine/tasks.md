@@ -25,21 +25,21 @@
 
 **Purpose**: Shared types, boundaries, and source-fence infrastructure required before story implementation.
 
-- [ ] T010 Add shared IV type module declarations in `src/bolt_v3_iv/mod.rs`
-- [ ] T011 [P] Define IV source/product enums in `src/bolt_v3_iv/types.rs`
-- [ ] T012 [P] Define `IvRejectReason` in `src/bolt_v3_iv/error.rs`
-- [ ] T013 [P] Define nanosecond timestamp wrapper types in `src/bolt_v3_iv/time.rs`
-- [ ] T014 [P] Define `IvNumericBounds` and convention bounds in `src/bolt_v3_iv/bounds.rs`
-- [ ] T015 [P] Define `IvPolicyDecision` variants in `src/bolt_v3_iv/provenance.rs`
-- [ ] T016 [P] Define `IvProvenance` in `src/bolt_v3_iv/provenance.rs`
-- [ ] T017 [P] Define `IvSelector` source/query union in `src/bolt_v3_iv/selector.rs`
-- [ ] T018 [P] Define `IvSelectorAuthorization` in `src/bolt_v3_iv/authz.rs`
-- [ ] T019 [P] Define `IvAuditPolicy` and audit handle marker types in `src/bolt_v3_iv/audit.rs`
-- [ ] T020 [P] Define `IvSourceHealth` states and transitions in `src/bolt_v3_iv/health.rs`
-- [ ] T021 Add shared IV fixture builders for tests in `tests/bolt_v3_iv_support.rs`
-- [ ] T022 Add IV source-fence verifier entrypoint placeholder in `tests/bolt_v3_iv_source_fence.rs`
-- [ ] T023 Wire IV source-fence target into `justfile`
-- [ ] T024 Record foundational RED/GREEN evidence requirements in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T010 Add shared IV type module declarations in `src/bolt_v3_iv/mod.rs`
+- [X] T011 [P] Define IV source/product enums in `src/bolt_v3_iv/types.rs`
+- [X] T012 [P] Define `IvRejectReason` in `src/bolt_v3_iv/error.rs`
+- [X] T013 [P] Define nanosecond timestamp wrapper types in `src/bolt_v3_iv/time.rs`
+- [X] T014 [P] Define `IvNumericBounds` and convention bounds in `src/bolt_v3_iv/bounds.rs`
+- [X] T015 [P] Define `IvPolicyDecision` variants in `src/bolt_v3_iv/provenance.rs`
+- [X] T016 [P] Define `IvProvenance` in `src/bolt_v3_iv/provenance.rs`
+- [X] T017 [P] Define `IvSelector` source/query union in `src/bolt_v3_iv/selector.rs`
+- [X] T018 [P] Define `IvSelectorAuthorization` in `src/bolt_v3_iv/authz.rs`
+- [X] T019 [P] Define `IvAuditPolicy` and audit handle marker types in `src/bolt_v3_iv/audit.rs`
+- [X] T020 [P] Define `IvSourceHealth` states and transitions in `src/bolt_v3_iv/health.rs`
+- [X] T021 Add shared IV fixture builders for tests in `tests/bolt_v3_iv_support.rs`
+- [X] T022 Add IV source-fence verifier entrypoint placeholder in `tests/bolt_v3_iv_source_fence.rs`
+- [X] T023 Wire IV source-fence target into `justfile`
+- [X] T024 Record foundational RED/GREEN evidence requirements in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
 **Checkpoint**: Shared IV type boundary is ready; user story work can start.
 

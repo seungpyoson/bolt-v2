@@ -30,3 +30,35 @@
 ## TDD Boundary
 
 Phase 1 adds documentation, module boundaries, and fixture inventory only. Runtime behavior starts in Phase 2 and later user-story tasks, where each production behavior must have RED/GREEN evidence before being marked complete.
+
+## Phase 2 Foundational Types
+
+| Task | Evidence | Status |
+|---|---|---|
+| `T010` | `src/bolt_v3_iv/mod.rs` declares `audit`, `authz`, `bounds`, `error`, `health`, `provenance`, `selector`, `time`, and `types`. | Complete |
+| `T011` | `src/bolt_v3_iv/types.rs` defines source/product/basis/convention enums. | Complete |
+| `T012` | `src/bolt_v3_iv/error.rs` defines `IvRejectReason` and the required-reason list. | Complete |
+| `T013` | `src/bolt_v3_iv/time.rs` defines `UnixNanos`. | Complete |
+| `T014` | `src/bolt_v3_iv/bounds.rs` defines `IvNumericBounds`, `IvBoundUnit`, and `IvConventionBounds`. | Complete |
+| `T015` | `src/bolt_v3_iv/provenance.rs` defines `IvPolicyDecision`. | Complete |
+| `T016` | `src/bolt_v3_iv/provenance.rs` defines `IvProvenance` and typed helper identity. | Complete |
+| `T017` | `src/bolt_v3_iv/selector.rs` defines the source/query selector union and product mapping. | Complete |
+| `T018` | `src/bolt_v3_iv/authz.rs` defines `IvSelectorAuthorization`. | Complete |
+| `T019` | `src/bolt_v3_iv/audit.rs` defines `IvAuditPolicy`, `IvAuditHandleId`, raw product kinds, and retention marker. | Complete |
+| `T020` | `src/bolt_v3_iv/health.rs` defines source-health states, transitions, and current-query eligibility. | Complete |
+| `T021` | `tests/bolt_v3_iv_support.rs` provides shared IV fixture builders. | Complete |
+| `T022` | `tests/bolt_v3_iv_source_fence.rs` provides the IV source-fence entrypoint placeholder. | Complete |
+| `T023` | `justfile` wires `--test bolt_v3_iv_source_fence` into the managed `source-fence` cargo test invocation. | Complete |
+| `T024` | This section records the foundational RED/GREEN evidence. | Complete |
+
+## Phase 2 RED/GREEN Evidence
+
+| Command | Outcome | Notes |
+|---|---|---|
+| `cargo test --locked --test bolt_v3_iv_foundation` | RED | Initial run was blocked by the Rust verification disk-pressure guard. After removing the generated managed target cache, the RED run failed with `E0432` unresolved imports for missing `bolt_v3_iv` modules. |
+| `cargo test --locked --test bolt_v3_iv_foundation` | GREEN | 4 tests passed after adding foundational modules. |
+| `cargo test --locked --test bolt_v3_iv_source_fence` | GREEN | 1 test passed for the IV source-fence entrypoint placeholder. |
+| `cargo fmt --check` | GREEN | Final formatter check exited 0 after applying `cargo fmt`. |
+| `git diff --check` | GREEN | No whitespace errors after Phase 2 edits. |
+
+`just source-fence`, clippy, full IV user-story targets, and CI remain open for the broader feature and are still tracked by `T123` and `T124`.

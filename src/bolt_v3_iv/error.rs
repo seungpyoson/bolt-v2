@@ -1,0 +1,73 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IvRejectReason {
+    SourceNotConfigured,
+    SelectorNotAuthorized,
+    UnsupportedSourceKind,
+    UnsupportedBasis,
+    UnsupportedConvention,
+    MissingIvBasis,
+    InvalidIvValue,
+    MissingDerivedInput,
+    InvalidDerivedInput,
+    HelperFailed,
+    StaleData,
+    ClockSkew,
+    RetentionMiss,
+    SourceRemoved,
+    SubscriptionFailed,
+    PayloadKindMismatch,
+    MissingProjectionPolicy,
+    ProjectionRejected,
+    InterpolationRejected,
+    ExtrapolationRejected,
+    FallbackRejected,
+    QuorumNotMet,
+    CapabilityUnclassified,
+    ProvenanceIncomplete,
+    UnknownSchemaVersion,
+    UnknownPolicy,
+    SelectorProductMismatch,
+    UnauthorizedProduct,
+    HelperNotConfigured,
+    OperatorInputExpired,
+}
+
+impl IvRejectReason {
+    pub fn required_reasons() -> &'static [Self] {
+        &[
+            Self::SourceNotConfigured,
+            Self::SelectorNotAuthorized,
+            Self::UnsupportedSourceKind,
+            Self::UnsupportedBasis,
+            Self::UnsupportedConvention,
+            Self::MissingIvBasis,
+            Self::InvalidIvValue,
+            Self::MissingDerivedInput,
+            Self::InvalidDerivedInput,
+            Self::HelperFailed,
+            Self::StaleData,
+            Self::ClockSkew,
+            Self::RetentionMiss,
+            Self::SourceRemoved,
+            Self::SubscriptionFailed,
+            Self::PayloadKindMismatch,
+            Self::MissingProjectionPolicy,
+            Self::ProjectionRejected,
+            Self::InterpolationRejected,
+            Self::ExtrapolationRejected,
+            Self::FallbackRejected,
+            Self::QuorumNotMet,
+            Self::CapabilityUnclassified,
+            Self::ProvenanceIncomplete,
+            Self::UnknownSchemaVersion,
+            Self::UnknownPolicy,
+            Self::SelectorProductMismatch,
+            Self::UnauthorizedProduct,
+            Self::HelperNotConfigured,
+            Self::OperatorInputExpired,
+        ]
+    }
+}

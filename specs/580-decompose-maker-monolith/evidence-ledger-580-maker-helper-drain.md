@@ -64,7 +64,8 @@ subscription`); the worktree was fast-forwarded before final verification.
 Landed:
 
 - `src/bolt_v3_requote_budget.rs`: cost-weighted sliding-window requote budget with explicit constructor,
-  min-interval enforcement, fail-closed zero/oversize cost behavior, and focused tests.
+  min-interval enforcement, monotonic timestamp enforcement, fail-closed zero/oversize cost behavior, and
+  focused tests.
 - `src/bolt_v3_quoting.rs`: shared quote value types, `resolve_band`, `compose_binary_legs`,
   `time_widening_factor`, and `reward_shaping_offset`; no strategy imports and no family trait seam.
 - `src/bolt_v3_numeric.rs`: `HALF_F64` and strict `sanitize_open_probability`, introduced with quoting as
@@ -84,7 +85,7 @@ Intentionally skipped:
 
 - Requote RED: `cargo test --locked bolt_v3_requote_budget::tests --lib` failed with missing
   `RequoteBudget`.
-- Requote GREEN: same command passed, 6 tests.
+- Requote GREEN: same command passed, 7 tests.
 - Quoting/numeric RED: `cargo test --locked bolt_v3_quoting::tests --lib` and
   `cargo test --locked sanitize_open_probability --lib` failed with missing quoting/numeric symbols.
 - Quoting/numeric GREEN: quoting passed 8 tests; numeric open-probability passed 2 tests.
@@ -101,7 +102,7 @@ Intentionally skipped:
 - `rg -n "trait MakerFamily|dyn MakerFamily|MakerFamily" src`: no matches.
 - `rg -n "crate::strategies|nautilus|NautilusTrader|OrderFactory|submit|admission"
   src/bolt_v3_requote_budget.rs src/bolt_v3_quoting.rs src/bolt_v3_maker_inventory.rs`: no matches.
-- `cargo test --locked --lib`: passed, 617 tests.
+- `cargo test --locked --lib`: passed, 619 tests.
 - `cargo clippy --locked --lib -- -D warnings`: passed.
 - `just source-fence`: passed.
 

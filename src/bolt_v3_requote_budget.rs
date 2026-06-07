@@ -2,6 +2,8 @@
 
 use std::collections::VecDeque;
 
+const EMPTY_WINDOW_COST: u64 = u64::MIN;
+
 /// Sliding-window maker requote throttle denominated in REST-call cost.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequoteBudget {
@@ -23,7 +25,7 @@ impl RequoteBudget {
             max_cost_per_window,
             min_interval_ms,
             emits: VecDeque::new(),
-            window_cost: u64::MIN,
+            window_cost: EMPTY_WINDOW_COST,
             last_emit_ms: None,
         }
     }
@@ -33,6 +35,11 @@ impl RequoteBudget {
     /// and sliding-window budget allow it.
     pub fn try_acquire(&mut self, now_ms: u64, cost: u64) -> bool {
         if cost == 0 || self.window_ms == 0 {
+            return false;
+        }
+        if let Some(last_ms) = self.last_emit_ms
+            && now_ms < last_ms
+        {
             return false;
         }
         self.evict(now_ms);
@@ -154,5 +161,19 @@ mod tests {
         assert!(!budget.try_acquire(1_000, 2));
         assert_eq!(budget.in_window(), 0);
         assert_eq!(budget.cost_in_window(), 0);
+    }
+
+    #[test]
+    fn out_of_order_timestamps_are_rejected_without_poisoning_the_window() {
+        let mut budget = RequoteBudget::new(2, ONE_MINUTE_MS, 0);
+
+        assert!(budget.try_acquire(10_000, 1));
+        assert!(!budget.try_acquire(9_000, 1));
+        assert_eq!(budget.in_window(), 1);
+        assert_eq!(budget.cost_in_window(), 1);
+
+        assert!(budget.try_acquire(10_001 + ONE_MINUTE_MS, 1));
+        assert_eq!(budget.in_window(), 1);
+        assert_eq!(budget.cost_in_window(), 1);
     }
 }

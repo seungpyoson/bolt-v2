@@ -4,7 +4,7 @@ This quickstart is a TOML shape, not a runtime fixture. Placeholder names and nu
 
 ## Configure One IV Profile
 
-An IV profile is the lifecycle boundary. Sources, strategy authorization, enabled products, freshness, retention, memory bounds, and query policies live together so changing a source does not require a second edit elsewhere.
+An IV profile is the lifecycle boundary. Sources, strategy authorization, strategy-enabled products, audit-enabled raw products, freshness, retention, memory bounds, and query policies live together so changing a source does not require a second edit elsewhere.
 
 ```text
 [iv]
@@ -14,10 +14,6 @@ schema_version = operator_schema_version
 profile_id = "operator_iv_profile"
 strategy_ids = ["operator_strategy"]
 enabled_products = [
-  "raw_option_greeks",
-  "raw_option_chain",
-  "raw_aggregate_greeks",
-  "raw_custom_implied_volatility",
   "iv_point",
   "iv_greeks_point",
   "aggregate_greeks",
@@ -33,6 +29,15 @@ accepted_conventions = ["operator_convention"]
 max_age_ns = operator_positive_integer_ns
 retention_events = operator_positive_integer
 
+[iv.profiles.audit]
+enabled_raw_products = [
+  "raw_option_greeks",
+  "raw_option_chain",
+  "raw_aggregate_greeks",
+  "raw_custom_implied_volatility",
+]
+access_purpose = "operator_audit_or_replay_purpose"
+
 [iv.profiles.memory_bounds]
 max_raw_events = operator_positive_integer
 max_indexed_points = operator_positive_integer
@@ -47,6 +52,7 @@ basis_selection = "operator_basis_selection"
 strike_selection = "operator_strike_selection"
 tenor_selection = "operator_tenor_selection"
 evidence_mapping = "operator_evidence_mapping"
+max_projection_input_skew_ns = operator_nonnegative_integer_ns
 
 [iv.profiles.interpolation]
 method = "operator_interpolation_method"
@@ -107,13 +113,15 @@ selector = { custom_implied_volatility = { custom_iv_data_type = "operator_custo
 4. Engine ingests NT events, preserves raw payloads, indexes IV products, and records provenance.
 5. Strategy registration gives authorized strategies an IV query handle for their configured profile.
 6. Strategy queries IV products through the engine API with typed selectors.
-7. Engine returns either a product with provenance or a typed rejection.
+7. Audit or replay modules can request raw payloads through the audit handle.
+8. Engine returns either a product with provenance or a typed rejection.
 
 ## Operator Checks
 
 - Every runtime value is in TOML.
 - One IV profile owns the source lifecycle and strategy authorization.
 - Projection and derived-input policies are explicit before scalar IV or derived IV can be returned.
+- Raw payload retrieval is audit/replay-only and not available through strategy query handles.
 - No strategy owns IV subscription mechanics or NT helper-backed IV derivation.
 - No concrete asset, venue, market, cadence, source ID, or instrument value is embedded in IV code.
 - `Cargo.toml` remains the only source of truth for NT revision.

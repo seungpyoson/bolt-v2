@@ -28,6 +28,10 @@
 - [x] Projection and derived-input policies are explicit
 - [x] Selector types are modeled as a Rust-validated union
 - [x] Provenance schema is defined for raw, indexed, derived, projected, and rejected outputs
+- [x] Raw payload access is audit/replay-only and source-fenced away from strategy handles
+- [x] Capability ledger discovery includes a whole-checkout IV/options candidate sweep
+- [x] Projection temporal skew is configured and testable
+- [x] Unknown IV schema versions reject at startup
 - [x] Live-node/config/strategy-registration integration is explicitly planned
 
 ## External Review Blockers
@@ -40,6 +44,8 @@
 - [x] Derived IV query inputs are specified
 - [x] Projection policy entity is specified
 - [x] Derived-input policy entity is specified
+- [x] Raw payload strategy-bypass enforcement is specified
+- [x] Capability ledger discovery is not limited to a curated seed list
 
 ## Feature Readiness
 
@@ -51,6 +57,6 @@
 ## Notes
 
 - The spec intentionally requires a pinned NT capability ledger because "use all NT offers" is otherwise unverifiable.
-- The spec intentionally exposes raw NT payloads through the IV engine so strategies can use the full NT capability set without owning subscription mechanics.
+- The spec intentionally preserves raw NT payloads inside the IV engine and exposes them through audit/replay handles only, so strategies use IV products without owning subscription or derivation mechanics.
 - The spec intentionally groups IV sources and strategy authorization inside one IV profile to avoid multi-section source swaps.
 - Active Speckit pointers remain pinned to the existing source-fence-owned order-intent packet; this IV packet is addressed by explicit path.

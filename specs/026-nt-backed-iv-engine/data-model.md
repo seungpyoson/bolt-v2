@@ -10,6 +10,7 @@ Fields:
 - `nt_lock_source`: `Cargo.lock` package source URL and revision for each NT crate
 - `resolved_checkout_path`: Cargo git checkout path for the locked NT revision
 - `surfaces`: discovered NT IV/options surfaces
+- `candidate_sweep_terms`: source-wide IV/options discovery terms
 - `classification`: supported, unreachable from the Rust binary, or explicitly excluded by approved rationale
 - `evidence_path`: NT source path and symbol name
 - `engine_mapping`: IV source kind, product kind, helper, runtime operation, or API surface that owns the capability
@@ -19,6 +20,8 @@ Validation:
 - Every discovered surface must have exactly one classification.
 - Supported surfaces must map to an engine source kind, product kind, helper, runtime operation, or API.
 - The ledger must fail if it cannot resolve the checkout from Cargo metadata and lockfile evidence.
+- The ledger must sweep the full resolved NT checkout for Rust public symbols and modules whose path, symbol, doc comment, or enclosing module matches IV/options discovery terms, not only a curated seed list.
+- Every sweep candidate must be classified as supported, unreachable from the Rust binary, not IV/options related after inspection, or explicitly excluded with approved rationale.
 - No handwritten NT revision or local checkout path is accepted as capability evidence.
 
 ## IvProfile
@@ -28,6 +31,7 @@ TOML lifecycle boundary for one configured IV access domain.
 Fields:
 
 - `profile_id`
+- `schema_version`
 - `strategy_ids`
 - `sources`
 - `enabled_products`
@@ -45,6 +49,7 @@ Fields:
 Validation:
 
 - Profile IDs are unique and non-empty.
+- Unknown or unsupported schema versions reject at startup.
 - Strategy authorization, sources, source lifecycle, enabled products, memory bounds, and query policies live in this profile boundary.
 - Swapping, renaming, adding, or removing a source requires editing only this profile.
 - A profile with no source and no derived-input policy rejects at startup.
@@ -74,24 +79,42 @@ Validation:
 
 ## IvSelector
 
-Typed union for all source and query selectors. The selector is not an untyped map.
+Typed union for source and query selectors. The selector is not an untyped map, and source-scope selectors are distinct from query-scope selectors.
 
 Variants:
 
-- `OptionGreeksSelector`: `instrument_ids`, `nt_params`
-- `OptionChainSelector`: `series_ids`, `strike_range_policy`, `nt_params`
-- `AggregateGreeksSelector`: `aggregate_key`, `underlying_selectors`, `nt_params`
-- `CustomImpliedVolatilitySelector`: `custom_iv_data_type`, `custom_iv_data_fields`, `nt_params`
-- `SmileSelector`: `series_id`, `side`, `basis`, `as_of`
-- `SurfaceSelector`: `series_selectors`, `basis`, `as_of`
-- `IvEvidenceSelector`: `iv_evidence_kind`, `source_filter`, `as_of`
+- `SourceOptionGreeksSelector`: `instrument_ids`, `nt_params`
+- `SourceOptionChainSelector`: `series_ids`, `strike_range_policy`, `nt_params`
+- `SourceAggregateGreeksSelector`: `aggregate_key`, `underlying_selectors`, `nt_params`
+- `SourceCustomImpliedVolatilitySelector`: `custom_iv_data_type`, `custom_iv_data_fields`, `nt_params`
+- `PointQuerySelector`: `instrument_ids`, `basis`, `as_of_ns`, `source_filter`
+- `SmileQuerySelector`: `series_id`, `side`, `basis`, `as_of_ns`
+- `SurfaceQuerySelector`: `series_selectors`, `basis`, `as_of_ns`
+- `AggregateGreeksQuerySelector`: `aggregate_key`, `underlying_selectors`, `as_of_ns`
+- `IvEvidenceQuerySelector`: `iv_evidence_kind`, `source_filter`, `as_of_ns`
+- `ProjectedScalarIvQuerySelector`: `input_selector`, `projection_policy_id`, `as_of_ns`
+- `DerivedIvQuerySelector`: `instrument_id`, `helper_policy_id`, `as_of_ns`
+- `SourceHealthQuerySelector`: `source_filter`, `state_filter`
+
+Product-kind mapping:
+
+- `iv_point`: `PointQuerySelector`
+- `iv_greeks_point`: `PointQuerySelector`
+- `smile`: `SmileQuerySelector`
+- `surface`: `SurfaceQuerySelector`
+- `aggregate_greeks`: `AggregateGreeksQuerySelector`
+- `custom_iv_evidence`: `IvEvidenceQuerySelector`
+- `projected_scalar_iv`: `ProjectedScalarIvQuerySelector`
+- `derived_iv`: `DerivedIvQuerySelector`
+- `source_health`: `SourceHealthQuerySelector`
 
 Validation:
 
 - Exactly one selector variant is present.
-- A source selector variant must match its `source_kind`.
-- A query selector variant must match its requested `product_kind`.
+- A source selector variant must match its `source_kind` and may only drive subscription planning.
+- A query selector variant must match its requested `product_kind` and may only filter engine products.
 - Empty selector collections reject.
+- Source-scope selector fields are not reused as query filters without conversion into the matching query selector variant.
 - Selector fingerprints are recorded in provenance so policy decisions can be audited.
 
 ## IvSubscriptionPlan
@@ -158,6 +181,27 @@ Validation:
 - Raw payload is retained within configured bounds.
 - Removed or stale sources cannot satisfy current queries.
 
+## IvRawAuditAccess
+
+Audit, replay, and test-only raw payload reader for preserved NT payloads.
+
+Fields:
+
+- `raw_event_id`
+- `profile_id`
+- `source_id`
+- `payload_kind`
+- `payload`
+- `provenance`
+- `access_purpose`
+
+Validation:
+
+- Strategy query handles cannot request or receive `IvRawAuditAccess`.
+- `src/strategies/**` source-fence rejects imports or calls of the raw audit reader and raw payload DTOs.
+- Raw access is allowed for audit, replay, and tests only when provenance and access purpose are recorded.
+- Strategy-facing products may expose `raw_event_id` through provenance but not the raw payload value.
+
 ## IvProvenance
 
 Required audit schema attached to every raw event, indexed product, derived product, projection, policy output, and rejection.
@@ -188,6 +232,11 @@ Fields:
 Validation:
 
 - Every returned or rejected product has provenance.
+- Always required: `profile_id`, `source_id`, `source_kind`, `selector_fingerprint`, `nt_revision`, `nt_evidence_path`, `nt_symbol`, `ts_event_ns`, `received_ts_ns`, `ingest_sequence`, `subscription_generation`, and `source_health_state`.
+- Required when backed by raw input: `raw_event_id`, `payload_kind`.
+- Required when derived: `input_event_ids`, `helper_identity`.
+- Required when policy-produced or projected: `policy_decisions`, `transformation_steps`.
+- Required when rejected: `reject_reason`.
 - Derived products include all input references and helper identity.
 - Policy outputs include candidate lists, rejected candidates, accepted candidates, and policy names.
 - Timestamp fields are typed nanoseconds.
@@ -394,6 +443,7 @@ Fields:
 - `strike_selection`
 - `tenor_selection`
 - `evidence_mapping`
+- `max_projection_input_skew_ns`
 - `fallback_policy_ref`
 - `interpolation_policy_ref`
 - `quorum_policy_ref`
@@ -402,6 +452,7 @@ Validation:
 
 - Scalar IV from a smile, surface, or evidence product requires explicit projection policy.
 - Projection cannot silently change basis, convention, source eligibility, timestamp, product kind, or evidence semantics.
+- Projection rejects when input products exceed `max_projection_input_skew_ns`.
 - Unknown projection kinds reject at startup.
 - Every projection records input products and policy decisions in provenance.
 
@@ -505,6 +556,20 @@ States:
 - `subscription_failed`
 - `rejected`
 
+Allowed transitions:
+
+- `configured` -> `subscribing`
+- `subscribing` -> `active`
+- `subscribing` -> `subscription_failed`
+- `active` -> `stale`
+- `active` -> `unsubscribing`
+- `stale` -> `active`
+- `stale` -> `unsubscribing`
+- `unsubscribing` -> `removed`
+- `subscription_failed` -> `subscribing`
+- any non-removed state -> `rejected` when config validation or runtime mapping fails
+- `removed` is terminal for the subscription generation
+
 Validation:
 
 - Removed, failed, or unsubscribed sources cannot satisfy current queries.
@@ -532,6 +597,7 @@ Validation:
 
 - Strategy must be authorized for the profile and selector.
 - Unknown product kinds reject.
+- Raw-payload product kinds reject on strategy-facing query handles.
 - Current queries reject stale or retained-only data.
 - Derived-product queries include `derived_inputs` or resolve them through the profile's `IvDerivedInputPolicy`.
 - Query-time policy overrides are allowed only when the owning profile permits them.

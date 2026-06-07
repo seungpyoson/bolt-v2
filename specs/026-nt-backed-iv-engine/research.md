@@ -13,7 +13,7 @@ Bolt-owned entities, config keys, source kinds, and product names use `IV` or `i
 
 ## Decision: Cargo-pinned NT capability ledger defines "all"
 
-The IV engine scope is defined by scanning the NautilusTrader checkout pinned in `Cargo.toml`. The ledger resolves the locked dependency graph with `cargo metadata --locked`, cross-checks NT package source revisions in `Cargo.lock`, locates the Cargo git checkout for that revision, and classifies every IV/options surface reachable from the Rust binary: model types, greeks helpers, msgbus APIs, data actor methods, data-engine publish paths, option-chain manager, adapter option-greeks support, and custom implied-volatility data reachable through NT custom data.
+The IV engine scope is defined by scanning the NautilusTrader checkout pinned in `Cargo.toml`. The ledger resolves the locked dependency graph with `cargo metadata --locked`, cross-checks NT package source revisions in `Cargo.lock`, locates the Cargo git checkout for that revision, scans known seed families, and performs a whole-checkout public-symbol candidate sweep for IV/options terms. Every candidate is classified as supported, unreachable from the Rust binary, not IV/options related after inspection, or explicitly excluded with approved rationale.
 
 **Rationale**: The user requires all relevant NT IV/options capabilities. A source-backed ledger makes this requirement testable and prevents drift.
 
@@ -22,6 +22,7 @@ The IV engine scope is defined by scanning the NautilusTrader checkout pinned in
 - Manual list in prose: rejected because it can miss capabilities.
 - Strategy-driven subset: rejected because it narrows NT usage.
 - Handwritten NT revision or local checkout path: rejected because `Cargo.toml` and `Cargo.lock` are the source of truth.
+- Seed-family scan only: rejected because new NT IV/options families could appear outside the current model, data actor, data engine, msgbus, option-chain, greeks-helper, adapter, or custom-data paths.
 
 ## Decision: Runtime subscriptions are config-selected, not globally exhaustive
 
@@ -67,17 +68,17 @@ The plan includes root TOML loading, crate export, live-node startup/shutdown, N
 - Build only a reusable IV library first: rejected because it can pass tests without owning the live NT subscription boundary.
 - Let strategies instantiate the engine: rejected because strategy modules would own runtime mechanics.
 
-## Decision: Preserve raw NT payloads and build indexed IV products
+## Decision: Preserve raw NT payloads but expose strategy-safe IV products
 
-The IV store keeps raw NT payloads and indexed IV products. Strategies may query both through the IV engine API, but IV-shaped strategy decisions must use engine products, projections, or derived products.
+The IV store keeps raw NT payloads and indexed IV products. Strategies query IV products through `IvQueryHandle`. Raw payload retrieval is limited to audit, replay, and test handles outside strategy modules. Strategy-facing provenance can include raw event IDs but not raw NT payload structs or bytes.
 
-**Rationale**: Raw preservation satisfies full NT capability access; indexed products give strategies usable IV views without reimplementing state.
+**Rationale**: Raw preservation satisfies full NT capability access inside the engine; indexed products give strategies usable IV views without reimplementing state or bypassing provenance.
 
 **Alternatives considered**:
 
 - Raw-only pass-through: rejected because every strategy would own IV state.
 - Indexed-only normalized model: rejected because it discards NT data.
-- Let strategies derive IV-shaped values from raw payloads: rejected because it bypasses source authorization, policy, freshness, and provenance.
+- Let strategies dereference raw payloads directly: rejected because it bypasses source authorization, policy, freshness, and provenance.
 
 ## Decision: Provenance is a required schema
 
@@ -114,9 +115,9 @@ Derived IV is available when the request supplies or resolves an `IvDerivedInput
 
 ## Decision: Projection is explicit
 
-Scalar IV from smiles, surfaces, aggregate products, or IV evidence requires `IvProjectionPolicy`.
+Scalar IV from smiles, surfaces, aggregate products, or IV evidence requires `IvProjectionPolicy`, including `max_projection_input_skew_ns`.
 
-**Rationale**: Projection can change the answer. It must name the basis, source eligibility, strike/tenor selection, evidence mapping, and any interpolation/fallback/quorum dependency.
+**Rationale**: Projection can change the answer. It must name the basis, source eligibility, strike/tenor selection, evidence mapping, temporal skew bound, and any interpolation/fallback/quorum dependency.
 
 **Alternatives considered**:
 
@@ -169,7 +170,7 @@ The engine tracks subscription state, unsubscribe, reload, source removal, stale
 
 ## Decision: Strategy IV source-fence is global and CI-wired
 
-Strategy modules cannot import NT IV/options subscription APIs, call NT IV/greeks math helpers for strategy-local IV derivation, or derive IV-shaped products from raw IV payload access. The IV source-fence is wired into `just source-fence` through a checked verifier or test target.
+Strategy modules cannot import NT IV/options subscription APIs, call NT IV/greeks math helpers for strategy-local IV derivation, import raw payload audit readers, import raw IV payload DTOs, request raw-payload product kinds through strategy handles, or derive IV-shaped products from raw IV payload values. The IV source-fence is wired into `just source-fence` through a checked verifier or test target.
 
 **Rationale**: Conditional source-fence based on runtime config is difficult to enforce statically and can recreate dual IV paths.
 
@@ -177,6 +178,17 @@ Strategy modules cannot import NT IV/options subscription APIs, call NT IV/greek
 
 - Reject only for strategies configured to use IV: rejected because static source-fence cannot reliably know runtime profile bindings.
 - Allow strategy-local helper derivation for edge cases: rejected because the IV engine is the single owner of derived IV provenance.
+- Allow strategy raw payload dereference with a policy rule not to derive IV: rejected because it is not enforceable enough and recreates a bypass path.
+
+## Decision: IV schema versions fail closed
+
+The IV TOML schema version is explicit, and unknown or unsupported versions reject at startup before source planning.
+
+**Rationale**: IV profiles own runtime behavior. Loading an unknown schema version could silently reinterpret selectors, policies, source kinds, or derived-input rules.
+
+**Alternatives considered**:
+
+- Best-effort schema compatibility: rejected because it can silently change strategy-visible IV outputs.
 
 ## Decision: This IV packet is explicit-path, not the active Speckit pointer
 

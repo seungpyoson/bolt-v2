@@ -1,15 +1,11 @@
 # IV Engine API Contract
 
-The IV engine exposes all strategy-facing IV access through one generic API. Strategy code must not subscribe directly to NT IV/options topics or derive IV through NT math helpers; those capabilities live behind the IV engine.
+The IV engine exposes all strategy-facing IV access through one generic product API. Strategy code must not subscribe directly to NT IV/options topics, dereference raw NT IV payloads, or derive IV through NT math helpers; those capabilities live behind the IV engine.
 
 ## Query Products
 
-Strategies can request:
+Strategy query handles can request:
 
-- raw NT option-greeks payloads
-- raw NT option-chain payloads
-- raw NT aggregate greeks payloads
-- raw NT custom implied-volatility payloads
 - custom IV evidence
 - IV points
 - IV plus greeks points
@@ -19,6 +15,15 @@ Strategies can request:
 - projected scalar IV
 - derived IV points
 - source health
+
+Audit, replay, and test handles can request:
+
+- raw NT option-greeks payloads
+- raw NT option-chain payloads
+- raw NT aggregate greeks payloads
+- raw NT custom implied-volatility payloads
+
+Raw payload handles are not injected into strategy registration. Strategies can receive product provenance and raw event IDs, but cannot dereference raw NT payload DTOs from the strategy-facing handle.
 
 ## Required Query Fields
 
@@ -60,9 +65,11 @@ No query may silently fall back to another basis, convention, source, timestamp,
 
 ## Raw Payload Access
 
-Raw payload access returns preserved NT payloads through the engine store. It does not grant the strategy direct ownership of NT subscription mechanics.
+Raw payload access returns preserved NT payloads through an audit/replay API. It does not grant strategy code direct ownership of NT subscription mechanics or raw IV-bearing DTOs.
 
-Raw payloads are evidence and observability outputs. IV-shaped strategy decisions must use IV engine products, projections, or derived products so provenance, policy, freshness, retention, and source authorization are enforced in one place.
+Raw payloads are evidence, observability, replay, and test outputs. IV-shaped strategy decisions must use IV engine products, projections, or derived products so provenance, policy, freshness, retention, and source authorization are enforced in one place.
+
+The strategy-facing `IvQueryHandle` rejects raw-payload product kinds. Full raw payload retrieval is limited to `IvRawAuditReader` or equivalent audit/test modules outside `src/strategies/**`. Strategy-facing products may include `raw_event_id` references in provenance, but the raw NT payload bytes or typed NT payload structs remain engine-owned.
 
 ## Projection Contract
 
@@ -73,6 +80,7 @@ Projection:
 - must name the configured projection kind
 - must identify input products and selector fingerprints
 - must record basis, convention, timestamp, source eligibility, and evidence mapping
+- must enforce the configured `max_projection_input_skew_ns` across all input points, smiles, surfaces, aggregate products, or IV evidence
 - must reject if required interpolation, fallback, or quorum policies are absent or fail
 
 ## Derived Input Contract
@@ -127,7 +135,9 @@ Ledger generation:
 - runs against the locked dependency graph from `cargo metadata --locked`
 - cross-checks NT package source revisions in `Cargo.lock`
 - resolves the Cargo git checkout for the locked NT revision
-- scans model, data actor, data engine, msgbus, option-chain, greeks-helper, adapter, and custom-data surfaces
+- scans model, data actor, data engine, msgbus, option-chain, greeks-helper, adapter, and custom-data surfaces as minimum seed families
+- performs a whole-checkout Rust source sweep for public modules, types, functions, methods, topics, and data definitions whose path, symbol, doc comment, or enclosing module contains IV/options indicators such as option, options, greeks, implied, iv, volatility, smile, surface, chain, or custom data
+- requires every candidate from the seed scan or whole-checkout sweep to be classified as supported, unreachable from the Rust binary, not IV/options related after inspection, or explicitly excluded with approved rationale
 - fails if a discovered IV/options surface is unclassified
 
 ## Source-Fence Contract
@@ -141,9 +151,13 @@ The IV source-fence must reject:
 - strategy module imports of NT greeks subscription APIs
 - strategy module imports of NT IV or greeks math helpers for strategy-local IV derivation
 - concrete venue, asset, market, cadence, source, or instrument constants in IV core logic
-- strategy-local derivation of IV-shaped products from raw payload access
+- strategy imports or calls of raw payload audit/replay readers
+- strategy imports of raw NT IV/options payload DTOs through the IV engine
+- strategy configs or tests that request raw-payload product kinds through the strategy query handle
+- strategy-local derivation of IV-shaped products from copied raw payload values
 
 The IV source-fence must allow:
 
 - strategy imports of the public IV query API
-- IV engine imports of NT model, msgbus, data actor, data engine, option-chain, custom data, and greeks helper surfaces
+- strategy access to IV product provenance containing raw event IDs
+- IV engine and audit/test module imports of NT model, msgbus, data actor, data engine, option-chain, custom data, raw payload DTOs, and greeks helper surfaces

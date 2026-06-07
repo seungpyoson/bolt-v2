@@ -63,6 +63,7 @@ src/bolt_v3_iv/
 ├── subscription.rs        # NT subscribe/unsubscribe planning
 ├── ingest.rs              # raw NT/custom event ingestion
 ├── store.rs               # bounded raw and indexed IV store
+├── raw_access.rs          # audit/replay-only raw payload access
 ├── query.rs               # strategy-facing IV query API
 ├── derive.rs              # NT helper-backed derived IV/greeks
 ├── policy.rs              # interpolation, fallback, quorum, projection, input policy
@@ -95,10 +96,11 @@ tests/
 | Blocking finding | Plan response |
 |---|---|
 | "Use all NT offers" is unbounded | Add `capability.rs` and `tests/bolt_v3_iv_capability.rs`; the ledger resolves the NT checkout through `cargo metadata --locked` and `Cargo.lock`, then every discovered IV/options surface must be classified. |
+| Capability discovery was too curated | Add a whole-checkout public-symbol candidate sweep for IV/options terms in addition to seed-family scans; unclassified candidates fail tests. |
 | Subscribing to everything can explode cardinality | Support every NT source type, but subscribe only to TOML-configured clients, instruments, series, ranges, and selectors. |
 | Derived IV needs complete inputs | `derive.rs` consumes `IvDerivedInputSet`; `policy.rs` resolves price, underlying, strike, side, time-to-expiry, rate, carry, source timestamps, and convention through `IvDerivedInputPolicy`. Missing/invalid inputs reject. |
 | Venue/convention data must not be normalized away | Store raw NT payloads and index convention, basis, source, and provenance with every IV product. |
-| Strategies need IV access but should not own mechanics | Expose raw and indexed IV products through `query.rs`; source-fence rejects strategy-local NT IV subscriptions and helper-backed IV derivation globally in strategy modules. |
+| Strategies need IV access but should not own mechanics | Expose indexed IV products through strategy-facing `query.rs`; expose raw payloads only through audit/replay `raw_access.rs`; source-fence rejects strategy-local NT IV subscriptions, raw payload audit readers, raw payload DTO imports, raw product queries, and helper-backed IV derivation globally in strategy modules. |
 | Custom implied-volatility data is separate IV evidence | Model custom implied-volatility data as `IvEvidence`, not `IvPoint`, unless a configured projection explicitly derives an IV point. |
 | NT timestamps are nanoseconds | Introduce typed timestamp handling and tests for freshness/retention/query conversion. |
 | Option-chain lifecycle can leak stale surfaces | Add subscription lifecycle, unsubscribe, stale marking, and retention eviction tests. |
@@ -114,24 +116,25 @@ tests/
 | Runtime integration surface was hand-wavy | Add `runtime.rs` binding to NT data actor/msgbus subscription operations and event handlers; source health records subscription failures and stale generations. |
 | Derived query inputs were missing | Add `IvDerivedInputPolicy` and `IvDerivedInputSet` to config, query, policy, and derive tests. |
 | Projection policy entities were missing | Add `IvProjectionPolicy`; scalar IV from smile, surface, aggregate, or evidence products rejects without explicit projection. |
+| Projection temporal skew was implicit | Add `max_projection_input_skew_ns`; projection tests reject cross-input timestamp skew violations. |
 
 ## Workstreams
 
-**W1 - NT capability ledger.** Build the source-backed inventory of NT IV/options surfaces at the Cargo-pinned revision. The test resolves the locked dependency graph with `cargo metadata --locked`, cross-checks NT package source revisions in `Cargo.lock`, locates the Cargo git checkout for that revision, scans model types, greeks helpers, msgbus APIs, data actor methods, data engine publish paths, option-chain manager, adapter support reachable through Rust, and custom implied-volatility data reachable through NT custom data. Gate: unclassified NT IV/options surfaces or unresolved Cargo evidence fail tests.
+**W1 - NT capability ledger.** Build the source-backed inventory of NT IV/options surfaces at the Cargo-pinned revision. The test resolves the locked dependency graph with `cargo metadata --locked`, cross-checks NT package source revisions in `Cargo.lock`, locates the Cargo git checkout for that revision, scans model types, greeks helpers, msgbus APIs, data actor methods, data engine publish paths, option-chain manager, adapter support reachable through Rust, and custom implied-volatility data reachable through NT custom data as seed families. It also sweeps the full resolved NT checkout for public Rust symbols, modules, topics, and data definitions whose path, symbol, doc comment, or enclosing module matches IV/options terms. Gate: unclassified NT IV/options surfaces, unclassified whole-checkout sweep candidates, or unresolved Cargo evidence fail tests.
 
-**W2 - Typed IV profile config.** Add TOML schema and validation for IV profiles that own strategy authorization, source IDs, data clients, source kinds, typed selectors, params, accepted conventions, IV bases, freshness, memory bounds, retention, projection, fallback, interpolation, extrapolation, quorum, and derived-input policies. Gate: invalid TOML fails closed with exact field diagnostics, selector/source mismatches reject, and source rename fixtures prove group-by-change.
+**W2 - Typed IV profile config.** Add TOML schema and validation for IV profiles that own schema version, strategy authorization, source IDs, data clients, source kinds, typed source selectors, typed query selector mappings, params, accepted conventions, IV bases, freshness, memory bounds, retention, projection, fallback, interpolation, extrapolation, quorum, and derived-input policies. Gate: unknown schema versions and invalid TOML fail closed with exact field diagnostics, selector/source/product mismatches reject, and source rename fixtures prove group-by-change.
 
 **W3 - Root config and live runtime wiring.** Export the IV module, load IV profiles from root TOML, start/stop the IV engine from live-node startup/shutdown, bind configured sources to NT data actor/msgbus subscription operations, route incoming events through raw preservation, and pass authorized IV query handles through strategy registration. Gate: live integration tests prove configured profiles produce live subscription plans, runtime bindings update source health, and strategies receive only authorized query handles.
 
 **W4 - Subscription planner.** Convert typed profiles into NT subscribe/unsubscribe requests for option greeks, option chains, aggregate greeks, and custom implied-volatility data. Gate: a test data actor records the exact source kinds requested by each TOML fixture, including reload and source removal, and rejects unsupported runtime mappings.
 
-**W5 - Raw ingestion and indexed products.** Ingest NT `OptionGreeks`, `OptionChainSlice`, aggregate greeks, and custom implied-volatility events. Preserve raw payloads and build `IvPoint`, `IvGreeksPoint`, `IvAggregateGreeks`, `IvSmile`, `IvSurface`, `IvEvidence`, and `IvSourceHealth`. Gate: tests prove mark/bid/ask, greeks, convention, underlying price, open interest, timestamps, calls, puts, quotes, aggregate greeks, IV evidence values, and source provenance are preserved.
+**W5 - Raw ingestion and indexed products.** Ingest NT `OptionGreeks`, `OptionChainSlice`, aggregate greeks, and custom implied-volatility events. Preserve raw payloads for audit/replay access and build `IvPoint`, `IvGreeksPoint`, `IvAggregateGreeks`, `IvSmile`, `IvSurface`, `IvEvidence`, and `IvSourceHealth`. Gate: tests prove mark/bid/ask, greeks, convention, underlying price, open interest, timestamps, calls, puts, quotes, aggregate greeks, IV evidence values, source provenance, and audit raw retrieval are preserved without exposing raw payload DTOs to strategy handles.
 
-**W6 - Strategy-facing query API and policies.** Expose raw payload, IV point, greeks, aggregate greeks, smile, surface, evidence, source-health, scalar projection, interpolation, fallback, and quorum queries. Gate: multiple strategy harnesses use the same API with different profiles/selectors, unauthorized selectors reject, scalar projection without `IvProjectionPolicy` rejects, and every policy decision records provenance or rejects.
+**W6 - Strategy-facing query API and policies.** Expose IV point, greeks, aggregate greeks, smile, surface, evidence, source-health, scalar projection, interpolation, fallback, and quorum product queries to strategies. Keep raw payload retrieval on audit/replay handles only. Gate: multiple strategy harnesses use the same API with different profiles/selectors, unauthorized selectors reject, raw-payload product kinds reject on strategy handles, scalar projection without `IvProjectionPolicy` rejects, projection input skew rejects, and every policy decision records provenance or rejects.
 
 **W7 - NT helper-backed derived IV.** Implement derived IV and derived greeks through NT math helpers only when `IvDerivedInputSet` is complete and valid under `IvDerivedInputPolicy`. Gate: complete fixtures produce finite outputs; every missing/invalid input class, unresolved rate/carry/time field, and stale/skewed input produces a typed rejection.
 
-**W8 - Lifecycle, retention, and source-fence hardening.** Add unsubscribe, reload, stale, eviction, source removal, source-generation, raw-payload boundary, and direct-subscription/source-helper source-fence tests. Wire `tests/bolt_v3_iv_source_fence.rs` into `just source-fence`. Gate: stale or removed data cannot satisfy current queries, and strategy-local IV subscription mechanics, helper-backed derivation, IV-shaped derivation from raw payloads, or IV core hardcodes fail source-fence.
+**W8 - Lifecycle, retention, and source-fence hardening.** Add unsubscribe, reload, stale, eviction, source removal, source-generation, raw-payload boundary, and direct-subscription/source-helper source-fence tests. Wire `tests/bolt_v3_iv_source_fence.rs` into `just source-fence`. Gate: stale or removed data cannot satisfy current queries, and strategy-local IV subscription mechanics, raw audit reader imports, raw IV DTO imports, raw payload product requests, helper-backed derivation, IV-shaped derivation from raw payload values, or IV core hardcodes fail source-fence.
 
 ## Phase Plan
 
@@ -140,9 +143,10 @@ tests/
 Produce `research.md` with decisions for:
 
 - Cargo-pinned NT capability inventory method.
+- Whole-checkout NT IV/options candidate sweep method.
 - Supported NT IV/options source kinds.
 - Typed selector union.
-- Strategy API exposure rule for raw and indexed data.
+- Strategy API exposure rule for product data and audit/replay-only raw data.
 - IV profile config grouping and group-by-change validation.
 - Root config, live-node, NT data actor/msgbus, and strategy-registration integration points.
 - Timestamp representation and conversion policy.
@@ -173,6 +177,7 @@ Generate `tasks.md` only after this plan is approved. Tasks must be TDD and inde
 | Decision | Why needed | Simpler alternative rejected because |
 |---|---|---|
 | Full NT capability ledger | "All NT offers" must be testable | A hand-authored list will miss surfaces or drift after NT updates |
+| Whole-checkout capability sweep | New NT IV/options families may appear outside seed paths | Seed-family scans alone could miss new public surfaces |
 | Raw plus indexed store | Strategies need all NT data and generic products | Raw-only forces strategies to rebuild IV state; indexed-only loses NT data |
 | Module directory | Capability, config, subscription, ingestion, store, query, derivation, and health are separate responsibilities | A single file would obscure boundaries and make review harder |
 | Strategy source-fence | Strategies may consume IV but must not own mechanics | Relying on convention would recreate dual IV paths |
@@ -183,6 +188,7 @@ Generate `tasks.md` only after this plan is approved. Tasks must be TDD and inde
 | Typed selector union | Different NT sources need different selector fields | Untyped maps make invalid source/query combinations runtime surprises |
 | Required provenance schema | Raw, indexed, derived, and projected values are not interchangeable | Free-form provenance would leave audit gaps and source ambiguity |
 | Explicit derived-input policy | NT helper outputs depend on rate, carry, time, and convention assumptions | Defaults would violate no-hardcodes and silently change IV |
+| Audit-only raw payload access | Raw NT data must be preserved without creating strategy-local IV derivation | Strategy-dereferenceable raw payloads would bypass product provenance and source-fence |
 
 ## Verification
 

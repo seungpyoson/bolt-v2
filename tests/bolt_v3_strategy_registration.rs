@@ -170,6 +170,31 @@ fn realized_volatility_validation_rejects_sampling_interval_larger_than_window()
 }
 
 #[test]
+fn realized_volatility_validation_rejects_mark_sources_for_taker_surface() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources[0].source_class = RealizedVolatilitySourceClassBlock::Mark;
+            surface.sources[0].sample_kind = RealizedVolatilitySampleKindBlock::Mark;
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "source_class",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_mismatched_source_sample_pair() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources[0].sample_kind = RealizedVolatilitySampleKindBlock::Trade;
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "sample_kind",
+    );
+}
+
+#[test]
 fn realized_volatility_validation_rejects_strategy_missing_surface_reference() {
     assert_realized_volatility_validation_error(
         |loaded| {

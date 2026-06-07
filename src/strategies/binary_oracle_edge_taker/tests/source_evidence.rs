@@ -86,6 +86,44 @@ fn surfaced_realized_volatility_quote_source_forwards_snapshot_to_pricing() {
 }
 
 #[test]
+fn surfaced_realized_volatility_refresh_blocks_when_source_goes_stale() {
+    let mut strategy =
+        test_strategy_with_realized_volatility_surface(test_realized_volatility_engine_config());
+
+    for (ts_ms, bid, ask) in [
+        (1_000, 100.0, 102.0),
+        (2_000, 101.0, 103.0),
+        (3_000, 102.0, 104.0),
+        (4_000, 103.0, 105.0),
+    ] {
+        strategy
+            .on_quote(&quote_tick(TEST_RV_INSTRUMENT_ID, bid, ask, ts_ms))
+            .expect("configured RV quote source should process");
+    }
+    assert!(strategy.current_realized_vol_at(4_000).is_some());
+
+    strategy.refresh_realized_volatility_snapshot_at(4_501);
+
+    assert_eq!(strategy.current_realized_vol_at(4_501), None);
+    let snapshot = strategy
+        .pricing
+        .latest_realized_vol_snapshot
+        .as_ref()
+        .expect("RV refresh should publish a pricing snapshot");
+    assert_eq!(snapshot.as_of_ms, 4_501);
+    assert!(
+        snapshot
+            .blocked_reasons
+            .contains(&crate::bolt_v3_realized_volatility::RealizedVolBlockReason::SourceStale)
+            || snapshot
+                .blocked_reasons
+                .contains(&crate::bolt_v3_realized_volatility::RealizedVolBlockReason::NotWarm),
+        "expected stale-source fail-closed blocker, got {:?}",
+        snapshot.blocked_reasons
+    );
+}
+
+#[test]
 fn surfaced_realized_volatility_quote_and_trade_sources_can_share_instrument() {
     let mut engine_config = test_realized_volatility_engine_config();
     engine_config.sources.push(

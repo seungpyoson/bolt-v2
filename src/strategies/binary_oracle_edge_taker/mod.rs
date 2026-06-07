@@ -1217,6 +1217,14 @@ impl BinaryOracleEdgeTaker {
             .observe_realized_vol_snapshot(engine.snapshot_at(as_of_ms));
     }
 
+    fn refresh_realized_volatility_snapshot_at(&mut self, now_ms: u64) {
+        let Some(engine) = self.realized_vol_engine.as_ref() else {
+            return;
+        };
+        self.pricing
+            .observe_realized_vol_snapshot(engine.snapshot_at(now_ms));
+    }
+
     fn refresh_fee_readiness(&mut self) {
         refresh_fee_readiness_for_active(&mut self.active, self.context.fee_provider());
     }
@@ -3923,6 +3931,7 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn try_submit_exit_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
+        self.refresh_realized_volatility_snapshot_at(now_ms);
         let mut decision = self.exit_submission_decision_at(now_ms);
 
         let Some(instrument_id) = decision.instrument_id else {
@@ -4122,6 +4131,7 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn try_submit_entry_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
+        self.refresh_realized_volatility_snapshot_at(now_ms);
         let decision = self.entry_submission_decision_at(now_ms);
         self.log_entry_evaluation(now_ms, &decision);
 

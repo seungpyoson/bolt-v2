@@ -50,7 +50,8 @@ use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
     ClientBlock, DataClientReadinessProbeQuoteTargetSource, GATE_PROVIDER_CAPABILITIES,
     GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, KillSwitchConfigBlock,
-    LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock, RiskBlock,
+    LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock,
+    RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceClassBlock, RiskBlock,
     SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
@@ -297,6 +298,15 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
                     source.canonical_quote_asset, surface.canonical_quote_asset
                 ));
             }
+            if !realized_volatility_source_pair_supported(source.source_class, source.sample_kind) {
+                errors.push(format!(
+                    "{source_context}.{} {:?} with {} {:?} is not supported by the taker realized-volatility router",
+                    stringify!(source_class),
+                    source.source_class,
+                    stringify!(sample_kind),
+                    source.sample_kind,
+                ));
+            }
             if source.enabled && source.counts_toward_quorum {
                 enabled_quorum_sources += 1;
             }
@@ -311,6 +321,25 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
     }
 
     errors
+}
+
+fn realized_volatility_source_pair_supported(
+    source_class: RealizedVolatilitySourceClassBlock,
+    sample_kind: RealizedVolatilitySampleKindBlock,
+) -> bool {
+    matches!(
+        (source_class, sample_kind),
+        (
+            RealizedVolatilitySourceClassBlock::SpotQuote,
+            RealizedVolatilitySampleKindBlock::Midpoint,
+        ) | (
+            RealizedVolatilitySourceClassBlock::Trade,
+            RealizedVolatilitySampleKindBlock::Trade,
+        ) | (
+            RealizedVolatilitySourceClassBlock::Index,
+            RealizedVolatilitySampleKindBlock::Index,
+        )
+    )
 }
 
 fn validate_gate_providers(

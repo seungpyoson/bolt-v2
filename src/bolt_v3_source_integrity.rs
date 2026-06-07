@@ -194,8 +194,12 @@ mod tests {
     // terminology from submit-admission construction and its call sites.
     // Re-derived again after merging current main's trade-flow extraction into
     // the #579 retired-gate removal head.
+    // Re-derived again after moving surfaced realized-volatility bindings and
+    // source forwarding into the strategy source set.
+    // Re-derived again after spelling the realized-volatility binding insertion
+    // as an explicit entry match to satisfy both clippy and source-fence.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "e059376f430b66d5c437b816d093c992ed8ef1f007168c983df09737bfac45c4";
+        "a980d29ae379fee7736723ebfc161cf63f027eea3ab561d6d336cb6666a01d4a";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

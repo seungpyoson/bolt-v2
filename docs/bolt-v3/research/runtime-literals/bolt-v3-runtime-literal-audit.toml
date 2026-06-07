@@ -8676,7 +8676,7 @@ reason = "Stable realized-volatility rejection-reason evidence label emitted fro
 path = "src/bolt_v3_realized_volatility.rs"
 kind = "number"
 literal = '''1'''
-context = '''.saturating_add(1);'''
+context = '''const COUNTER_INCREMENT_U64: u64 = 1;'''
 classification = "realized_volatility_counter_step"
 reason = "Increment-by-one step for an internal realized-volatility rejection counter; not an operator runtime value."
 
@@ -8839,54 +8839,6 @@ literal = '''0'''
 context = '''let range = sorted[sorted.len() - 1] - sorted[0];'''
 classification = "realized_volatility_vector_index_bound"
 reason = "Zero-based vector index bound used for quantile and dispersion calculations over already computed RV values; not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "string"
-literal = '''"window_ms"'''
-context = '''("window_ms", policy.window_ms),'''
-classification = "realized_volatility_config_schema_field"
-reason = "Realized-volatility surface policy schema field name validated from bolt-v3 TOML; the field value is TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "string"
-literal = '''"sampling_interval_ms"'''
-context = '''("sampling_interval_ms", policy.sampling_interval_ms),'''
-classification = "realized_volatility_config_schema_field"
-reason = "Realized-volatility surface policy schema field name validated from bolt-v3 TOML; the field value is TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "string"
-literal = '''"min_ready_sources"'''
-context = '''("min_ready_sources", policy.min_ready_sources as u64),'''
-classification = "realized_volatility_config_schema_field"
-reason = "Realized-volatility surface policy schema field name validated from bolt-v3 TOML; the field value is TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "string"
-literal = '''"max_source_age_ms"'''
-context = '''("max_source_age_ms", policy.max_source_age_ms),'''
-classification = "realized_volatility_config_schema_field"
-reason = "Realized-volatility surface policy schema field name validated from bolt-v3 TOML; the field value is TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "string"
-literal = '''"max_event_receive_lag_ms"'''
-context = '''("max_event_receive_lag_ms", policy.max_event_receive_lag_ms),'''
-classification = "realized_volatility_config_schema_field"
-reason = "Realized-volatility surface policy schema field name validated from bolt-v3 TOML; the field value is TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "string"
-literal = '''"max_inter_sample_gap_ms"'''
-context = '''("max_inter_sample_gap_ms", policy.max_inter_sample_gap_ms),'''
-classification = "realized_volatility_config_schema_field"
-reason = "Realized-volatility surface policy schema field name validated from bolt-v3 TOML; the field value is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"

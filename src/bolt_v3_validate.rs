@@ -204,18 +204,39 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
 
         let policy = &surface.policy;
         for (field, value) in [
-            ("window_ms", policy.window_ms),
-            ("sampling_interval_ms", policy.sampling_interval_ms),
-            ("min_ready_sources", policy.min_ready_sources as u64),
-            ("max_source_age_ms", policy.max_source_age_ms),
-            ("max_event_receive_lag_ms", policy.max_event_receive_lag_ms),
-            ("max_inter_sample_gap_ms", policy.max_inter_sample_gap_ms),
+            (stringify!(window_ms), policy.window_ms),
+            (
+                stringify!(sampling_interval_ms),
+                policy.sampling_interval_ms,
+            ),
+            (
+                stringify!(min_ready_sources),
+                policy.min_ready_sources as u64,
+            ),
+            (stringify!(max_source_age_ms), policy.max_source_age_ms),
+            (
+                stringify!(max_event_receive_lag_ms),
+                policy.max_event_receive_lag_ms,
+            ),
+            (
+                stringify!(max_inter_sample_gap_ms),
+                policy.max_inter_sample_gap_ms,
+            ),
         ] {
-            if value == 0 {
+            if value == u64::MIN {
                 errors.push(format!(
                     "{context}.policy.{field} must be a positive integer"
                 ));
             }
+        }
+        if policy.window_ms < policy.sampling_interval_ms {
+            errors.push(format!(
+                "{context}.policy.{} {} must be greater than or equal to policy.{} {}",
+                stringify!(window_ms),
+                policy.window_ms,
+                stringify!(sampling_interval_ms),
+                policy.sampling_interval_ms,
+            ));
         }
         if !is_positive_finite(policy.min_coverage_ratio) || policy.min_coverage_ratio > UNIT_F64 {
             errors.push(format!(
@@ -1573,15 +1594,20 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             ));
         }
 
-        if let Some(surface_id) = &strategy.realized_volatility_surface_id
-            && !root
-                .realized_volatility_surfaces
-                .as_ref()
-                .is_some_and(|surfaces| surfaces.contains_key(surface_id))
-        {
-            errors.push(format!(
-                "{context}: realized_volatility_surface_id `{surface_id}` references missing realized_volatility_surfaces.{surface_id}"
-            ));
+        match &strategy.realized_volatility_surface_id {
+            Some(surface_id)
+                if !root
+                    .realized_volatility_surfaces
+                    .as_ref()
+                    .is_some_and(|surfaces| surfaces.contains_key(surface_id)) =>
+            {
+                errors.push(format!(
+                    "{context}: {} `{surface_id}` references missing {}.{surface_id}",
+                    stringify!(realized_volatility_surface_id),
+                    stringify!(realized_volatility_surfaces),
+                ));
+            }
+            _ => {}
         }
 
         match root.clients.get(strategy.execution_client_id.as_str()) {

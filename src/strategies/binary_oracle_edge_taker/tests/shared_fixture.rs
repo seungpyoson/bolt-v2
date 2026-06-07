@@ -660,8 +660,16 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
     strategy.active.books.down.liquidity_available = Some(500.0);
     strategy.active.fast_venue_incoherent = false;
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_vol = Some(1.5);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_ts_ms = Some(1_200);
     strategy.pricing.last_lead_gap_probability = Some(0.0);
     strategy.pricing.last_jitter_penalty_probability = Some(0.0);
     strategy
@@ -725,8 +733,16 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
     strategy.active.books.down.liquidity_available = Some(500.0);
     strategy.active.fast_venue_incoherent = false;
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_vol = Some(1.5);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_ts_ms = Some(1_200);
     strategy.pricing.last_lead_gap_probability = Some(0.0);
     strategy.pricing.last_jitter_penalty_probability = Some(0.0);
     (strategy, fee_provider)

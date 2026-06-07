@@ -14,8 +14,16 @@ fn switch_resets_only_active_market_state() {
     );
     set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_vol = Some(1.5);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_ts_ms = Some(1_200);
     {
         let active = &mut strategy.active;
         active.interval_open = Some(3_000.0);
@@ -42,8 +50,22 @@ fn switch_resets_only_active_market_state() {
         strategy.pricing.fast_spot,
         Some(fast_spot("bybit", 3_100.5, 1_200))
     );
-    assert_eq!(strategy.pricing.realized_vol.last_ready_vol, Some(1.5));
-    assert_eq!(strategy.pricing.realized_vol.last_ready_ts_ms, Some(1_200));
+    assert_eq!(
+        strategy
+            .pricing
+            .realized_vol
+            .expect_configured()
+            .last_ready_vol,
+        Some(1.5)
+    );
+    assert_eq!(
+        strategy
+            .pricing
+            .realized_vol
+            .expect_configured()
+            .last_ready_ts_ms,
+        Some(1_200)
+    );
 }
 
 #[test]

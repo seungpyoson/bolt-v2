@@ -556,8 +556,11 @@ fn pricing_state_reports_realized_vol_source_during_bridge_without_fast_spot() {
     let config = test_strategy().config.clone();
     let mut pricing = PricingState::from_config(&taker_pricing_config(&config));
     pricing.realized_vol_source_venue = Some("bybit".to_string());
-    pricing.realized_vol.last_ready_vol = Some(1.5);
-    pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    pricing.realized_vol.expect_configured_mut().last_ready_vol = Some(1.5);
+    pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_ts_ms = Some(1_200);
 
     assert_eq!(
         pricing.current_realized_vol_source_at(1_300),
@@ -571,8 +574,16 @@ fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.pricing.fast_spot = None;
     strategy.pricing.last_reference_fair_value = Some(3_101.0);
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_vol = Some(2.5);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_ts_ms = Some(1_200);
     strategy.pricing.realized_vol_source_venue = Some("bybit".to_string());
 
     let submission = strategy.entry_submission_decision_at(1_200);
@@ -593,8 +604,16 @@ fn entry_evaluation_log_fields_fail_closed_without_fast_spot() {
 fn entry_evaluation_blocks_when_realized_vol_is_not_ready() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_101.0, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = None;
-    strategy.pricing.realized_vol.last_ready_ts_ms = None;
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_vol = None;
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_ts_ms = None;
 
     let decision = strategy.entry_evaluation_at(1_200);
 
@@ -871,8 +890,16 @@ fn task5_exit_decision_uses_hysteresis_boundary_and_fails_closed() {
 fn task6_entry_evaluation_blocks_when_realized_vol_is_not_ready() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_101.0, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = None;
-    strategy.pricing.realized_vol.last_ready_ts_ms = None;
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_vol = None;
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_ts_ms = None;
 
     let decision = strategy.entry_evaluation_at(1_200);
 
@@ -888,8 +915,16 @@ fn task6_entry_evaluation_blocks_when_realized_vol_is_not_ready() {
 fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.4, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_vol = Some(2.5);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_ts_ms = Some(1_200);
 
     let decision = strategy.entry_evaluation_at(1_200);
 
@@ -922,8 +957,16 @@ fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
     let mut strategy =
         ready_to_trade_strategy_with_live_fees(Decimal::new(250, 2), Decimal::new(250, 2));
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.4, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_vol = Some(2.5);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_ts_ms = Some(1_200);
     strategy.pricing.last_lead_gap_probability = Some(0.02);
     strategy.pricing.last_jitter_penalty_probability = Some(0.01);
 
@@ -942,8 +985,16 @@ fn task6_entry_evaluation_requires_live_uncertainty_components() {
     let mut strategy =
         ready_to_trade_strategy_with_live_fees(Decimal::new(250, 2), Decimal::new(250, 2));
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.4, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_vol = Some(2.5);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_ts_ms = Some(1_200);
     strategy.pricing.last_lead_gap_probability = None;
     strategy.pricing.last_jitter_penalty_probability = None;
 
@@ -960,9 +1011,21 @@ fn task6_entry_evaluation_requires_live_uncertainty_components() {
 fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
-    strategy.pricing.realized_vol.bridge_valid_ms = 1_000_000;
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_vol = Some(2.5);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .bridge_valid_ms = 1_000_000;
     strategy.config.edge_threshold_basis_points = 2_000;
 
     let baseline = strategy.entry_evaluation_at(1_200);
@@ -971,7 +1034,11 @@ fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
     strategy.config.theta_decay_factor = 100.0;
     strategy.active.last_reference_ts_ms = Some(291_000);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 291_000));
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(291_000);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_ts_ms = Some(291_000);
     let near_expiry = strategy.entry_evaluation_at(291_000);
 
     assert!(near_expiry.gate.blocked_by.is_empty());
@@ -1001,8 +1068,16 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
             orderbook_venue("bybit", 0.9, 3_101.0, 1_200),
         ],
     });
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_vol = Some(2.5);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_ts_ms = Some(1_200);
 
     let evaluation = strategy.entry_evaluation_at(1_200);
     let submission = strategy.entry_submission_decision_at(1_200);
@@ -1074,8 +1149,16 @@ fn task6_exit_decision_requires_live_uncertainty_components() {
         ManagedPositionOrigin::StrategyEntry,
     );
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_vol = Some(2.5);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_ts_ms = Some(1_200);
     strategy.pricing.last_lead_gap_probability = None;
     strategy.pricing.last_jitter_penalty_probability = None;
 

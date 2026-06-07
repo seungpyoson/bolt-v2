@@ -9,6 +9,10 @@ use crate::bolt_v3_numeric::{
     HALF_F64, MILLIS_PER_SECOND_F64, POWER_OF_TWO, UNIT_F64, ZERO_F64, is_positive_finite,
 };
 
+const ZERO_MILLIS_U64: u64 = u64::MIN;
+const INITIAL_REJECTION_COUNT: u64 = u64::MIN;
+const COUNTER_INCREMENT_U64: u64 = 1;
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RealizedVolEngineConfig {
     pub surface_id: String,
@@ -261,10 +265,13 @@ impl RealizedVolEngine {
         }
         for state in self.sources.values().filter(|state| state.config.enabled) {
             let diagnostic = source_diagnostic(&self.config, state, as_of_ms);
-            if diagnostic.status == RealizedVolSourceStatus::Ready
-                && state.config.counts_toward_quorum
-            {
-                if let Some(value) = diagnostic.annualized_realized_vol_decimal {
+            match (
+                diagnostic.status,
+                state.config.counts_toward_quorum,
+                diagnostic.annualized_realized_vol_decimal,
+                diagnostic.block_reason,
+            ) {
+                (RealizedVolSourceStatus::Ready, true, Some(value), _) => {
                     ready_values.push((
                         diagnostic.source_id.clone(),
                         diagnostic.source_class,
@@ -272,10 +279,10 @@ impl RealizedVolEngine {
                         value,
                     ));
                 }
-            } else if state.config.counts_toward_quorum
-                && let Some(reason) = diagnostic.block_reason
-            {
-                blockers.insert(reason);
+                (_, true, _, Some(reason)) => {
+                    blockers.insert(reason);
+                }
+                _ => {}
             }
             diagnostics.push(diagnostic);
         }
@@ -290,10 +297,13 @@ impl RealizedVolEngine {
             blockers.insert(RealizedVolBlockReason::SampleKindMismatch);
         }
         let aggregate = upper_quantile(&ready_values, self.config.aggregation);
-        if let Some(value) = aggregate
-            && dispersion(&ready_values, value) > self.config.max_cross_source_dispersion
-        {
-            blockers.insert(RealizedVolBlockReason::CrossSourceDispersion);
+        match aggregate {
+            Some(value)
+                if dispersion(&ready_values, value) > self.config.max_cross_source_dispersion =>
+            {
+                blockers.insert(RealizedVolBlockReason::CrossSourceDispersion);
+            }
+            _ => {}
         }
         let ready = blockers.is_empty() && aggregate.is_some();
         RealizedVolSnapshot {
@@ -490,10 +500,11 @@ fn grid_prices(
             latest = Some(samples[index]);
             index += 1;
         }
-        if let Some(sample) = latest
-            && ts.saturating_sub(sample.event_ts_ms) <= config.max_source_age_ms
-        {
-            out.push((ts, sample.price));
+        match latest {
+            Some(sample) if ts.saturating_sub(sample.event_ts_ms) <= config.max_source_age_ms => {
+                out.push((ts, sample.price));
+            }
+            _ => {}
         }
         ts = ts.saturating_add(config.sampling_interval_ms);
     }
@@ -548,7 +559,7 @@ fn compute_rv(
     for pair in grid.windows(2) {
         let dt = pair[1].0.saturating_sub(pair[0].0);
         let log_return = (pair[1].1 / pair[0].1).ln();
-        if dt == 0 || !log_return.is_finite() {
+        if dt == ZERO_MILLIS_U64 || !log_return.is_finite() {
             return SourceComputation {
                 rv: None,
                 block_reason: Some(RealizedVolBlockReason::NotWarm),
@@ -634,12 +645,8 @@ fn prune_source_samples(samples: &mut VecDeque<RealizedVolObservation>, min_even
 }
 
 fn increment_counter<K: Ord>(counters: &mut BTreeMap<K, u64>, key: K) {
-    let next = counters
-        .get(&key)
-        .copied()
-        .unwrap_or(u64::MIN)
-        .saturating_add(1);
-    let _ = counters.insert(key, next);
+    let count = counters.entry(key).or_insert(INITIAL_REJECTION_COUNT);
+    *count = count.saturating_add(COUNTER_INCREMENT_U64);
 }
 
 fn config_fingerprint(config: &RealizedVolEngineConfig) -> String {

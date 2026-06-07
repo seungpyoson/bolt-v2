@@ -417,13 +417,12 @@ fn realized_vol_source_bindings(
             source_class: source.source_class,
             sample_kind: source.sample_kind,
         };
-        match bindings.remove(&instrument_id) {
-            Some(mut instrument_bindings) => {
-                instrument_bindings.push(binding);
-                let _ = bindings.insert(instrument_id, instrument_bindings);
+        match bindings.entry(instrument_id) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().push(binding);
             }
-            None => {
-                let _ = bindings.insert(instrument_id, vec![binding]);
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let _ = entry.insert(vec![binding]);
             }
         }
     }
@@ -534,7 +533,7 @@ impl PricingState {
                     "binary_oracle_edge_taker selected lead venue missing realized-vol state: venue={}",
                     candidate.venue_name
                 );
-                self.realized_vol.empty_like()
+                self.realized_vol.expect_configured().empty_like()
             })
     }
 

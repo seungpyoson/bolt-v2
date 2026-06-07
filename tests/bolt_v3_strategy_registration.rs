@@ -158,6 +158,18 @@ fn realized_volatility_validation_rejects_quorum_larger_than_enabled_sources() {
 }
 
 #[test]
+fn realized_volatility_validation_rejects_sampling_interval_larger_than_window() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.policy.window_ms = surface.policy.sampling_interval_ms - 1;
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "window_ms",
+    );
+}
+
+#[test]
 fn realized_volatility_validation_rejects_strategy_missing_surface_reference() {
     assert_realized_volatility_validation_error(
         |loaded| {

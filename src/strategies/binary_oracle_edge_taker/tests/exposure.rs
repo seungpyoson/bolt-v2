@@ -2160,8 +2160,16 @@ fn exit_evaluation_log_fields_use_position_context_after_rotation() {
     strategy.active.interval_open = Some(3_200.0);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_101.0, 2_000));
     strategy.pricing.realized_vol_source_venue = Some("bybit".to_string());
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(2_000);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_vol = Some(2.5);
+    strategy
+        .pricing
+        .realized_vol
+        .expect_configured_mut()
+        .last_ready_ts_ms = Some(2_000);
 
     let decision = strategy.exit_submission_decision_at(2_000);
     let fields = strategy.exit_evaluation_log_fields_at(2_000, &decision);

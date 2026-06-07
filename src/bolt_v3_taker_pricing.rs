@@ -6,7 +6,6 @@
 //! It deliberately does not introduce IV, maker spread logic, or submit policy.
 
 use std::collections::BTreeMap;
-use std::ops::{Deref, DerefMut};
 
 use crate::{
     bolt_v3_market_families::{self, FairProbabilityInputs},
@@ -85,20 +84,16 @@ impl OptionalRealizedVolEstimator {
     pub(crate) fn set(&mut self, estimator: RealizedVolEstimator) {
         self.0 = Some(estimator);
     }
-}
 
-impl Deref for OptionalRealizedVolEstimator {
-    type Target = RealizedVolEstimator;
-
-    fn deref(&self) -> &Self::Target {
+    #[cfg(test)]
+    pub(crate) fn expect_configured(&self) -> &RealizedVolEstimator {
         self.0
             .as_ref()
             .expect("legacy realized-volatility estimator is not configured")
     }
-}
 
-impl DerefMut for OptionalRealizedVolEstimator {
-    fn deref_mut(&mut self) -> &mut Self::Target {
+    #[cfg(test)]
+    pub(crate) fn expect_configured_mut(&mut self) -> &mut RealizedVolEstimator {
         self.0
             .as_mut()
             .expect("legacy realized-volatility estimator is not configured")

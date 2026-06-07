@@ -12,6 +12,7 @@ pub mod bolt_v3_maker_event_fence;
 pub mod bolt_v3_maker_inventory;
 pub mod bolt_v3_maker_microprice;
 pub mod bolt_v3_maker_model;
+pub mod bolt_v3_maker_reservation;
 pub mod bolt_v3_market_families;
 pub mod bolt_v3_numeric;
 pub mod bolt_v3_operator_artifacts;

@@ -47,8 +47,8 @@ use crate::{
         run_nt_backtest_node, run_purpose_label,
     },
     source_proof::{
-        AcceptanceMode, AcceptedDataset, IngestManifestObjectRecord, SourceProofReport,
-        select_accepted_dataset,
+        AcceptanceMode, AcceptedDataset, IngestManifestObjectRecord, SourceBindingRegistry,
+        SourceProofReport, resolve_source_bindings_path, select_accepted_dataset_with_registry,
     },
 };
 
@@ -76,6 +76,8 @@ pub struct RunSpec {
     pub accepted_by: String,
     /// Acceptance timestamp (RFC 3339).
     pub accepted_at_utc: String,
+    /// Runtime source-binding registry TOML used for source-proof acceptance.
+    pub source_bindings_path: PathBuf,
     pub accepted_object: IngestManifestObjectRecord,
     pub source_proof: SourceProofReport,
     pub instrument_spec: SpotInstrumentSpec,
@@ -231,22 +233,36 @@ fn ensure_object_within_raw_payload_limit(
     Ok(())
 }
 
+fn read_source_binding_registry(path: &Path) -> Result<SourceBindingRegistry> {
+    let resolved_path = resolve_source_bindings_path(path);
+    let text = fs::read_to_string(&resolved_path)
+        .with_context(|| format!("read source-bindings registry {}", path.display()))?;
+    SourceBindingRegistry::from_toml_str(&text)
+        .with_context(|| format!("parse source-bindings registry {}", path.display()))
+}
+
 fn accepted_dataset_for_run_spec_hash(
     spec: &RunSpec,
     object_sha256: &str,
 ) -> Result<(SourceProofReport, AcceptedDataset)> {
+    let registry = read_source_binding_registry(&spec.source_bindings_path)?;
     let accepted_proof = spec
         .source_proof
         .clone()
-        .accept(
+        .accept_with_registry(
+            &registry,
             AcceptanceMode::Manual,
             spec.accepted_by.clone(),
             spec.accepted_at_utc.clone(),
         )
         .map_err(|error| anyhow::anyhow!("source-proof acceptance failed: {error}"))?;
-    let accepted =
-        select_accepted_dataset(&accepted_proof, &spec.accepted_object, object_sha256)
-            .map_err(|error| anyhow::anyhow!("accepted-data ledger rejected object: {error}"))?;
+    let accepted = select_accepted_dataset_with_registry(
+        &accepted_proof,
+        &spec.accepted_object,
+        object_sha256,
+        &registry,
+    )
+    .map_err(|error| anyhow::anyhow!("accepted-data ledger rejected object: {error}"))?;
     Ok((accepted_proof, accepted))
 }
 
@@ -1198,6 +1214,9 @@ mod tests {
     fn run_spec_for(gz_bytes: &[u8]) -> RunSpec {
         let mut spec: RunSpec =
             toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses");
+        spec.source_bindings_path = PathBuf::from(
+            "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml",
+        );
         let object_hash = sha256_hex(gz_bytes);
         spec.accepted_object.sha256 = object_hash.clone();
         spec.accepted_object.bytes = gz_bytes.len() as u64;

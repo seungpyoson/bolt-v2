@@ -224,7 +224,14 @@ fn read_run_spec_with_hash(path: &Path) -> Result<(RunSpec, String)> {
     let bytes = fs::read(path).with_context(|| format!("read run-spec {}", path.display()))?;
     let hash = sha256_hex(&bytes);
     let text = std::str::from_utf8(&bytes).context("run-spec TOML is not UTF-8")?;
-    let spec: RunSpec = toml::from_str(text).context("parse run-spec TOML")?;
+    let mut spec: RunSpec = toml::from_str(text).context("parse run-spec TOML")?;
+    if spec.source_bindings_path.is_relative() {
+        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let sibling_relative = base_dir.join(&spec.source_bindings_path);
+        if sibling_relative.exists() {
+            spec.source_bindings_path = sibling_relative;
+        }
+    }
     Ok((spec, hash))
 }
 
@@ -397,6 +404,51 @@ mod tests {
         toml::to_string_pretty(&value).expect("mutated run-spec serializes")
     }
 
+    fn run_spec_text_with_source_binding(
+        source_bindings_path: &Path,
+        source_binding: &str,
+        venue: &str,
+        product_family: &str,
+        source_url: &str,
+    ) -> String {
+        let mut value: toml::Value =
+            toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec TOML parses as value");
+        let root = value.as_table_mut().expect("run-spec root is a table");
+        root.insert(
+            "source_bindings_path".to_string(),
+            toml::Value::String(source_bindings_path.display().to_string()),
+        );
+        let accepted_object = root
+            .get_mut("accepted_object")
+            .and_then(toml::Value::as_table_mut)
+            .expect("run-spec has accepted_object table");
+        accepted_object.insert(
+            "source_url".to_string(),
+            toml::Value::String(source_url.to_string()),
+        );
+        let source_proof = root
+            .get_mut("source_proof")
+            .and_then(toml::Value::as_table_mut)
+            .expect("run-spec has source_proof table");
+        for (field, value) in [
+            ("source_binding", source_binding),
+            ("venue", venue),
+            ("product_family", product_family),
+            ("product_category", product_family),
+        ] {
+            source_proof.insert(field.to_string(), toml::Value::String(value.to_string()));
+        }
+        let manifest = root
+            .get_mut("manifest")
+            .and_then(toml::Value::as_table_mut)
+            .expect("run-spec has manifest table");
+        manifest.insert(
+            "venue_binding_key".to_string(),
+            toml::Value::String(source_binding.to_string()),
+        );
+        toml::to_string_pretty(&value).expect("mutated run-spec serializes")
+    }
+
     #[test]
     fn cli_publish_output_flag_is_explicit_opt_in() {
         let base_args = [
@@ -561,6 +613,68 @@ mod tests {
         assert!(
             !object_reader_called,
             "run-manifest validation must reject before local object read"
+        );
+    }
+
+    #[test]
+    fn cli_uses_run_spec_source_bindings_path_before_reading_object() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let source_bindings_path = dir.path().join("source-bindings.toml");
+        fs::write(
+            &source_bindings_path,
+            r#"schema_version = "backfill-source-bindings.v1"
+contract_version = "backfill-table-contract.v1"
+
+[[source_binding]]
+key = "runtime-synthetic-native-trades"
+venue = "runtime-synthetic"
+product_family = "spot"
+source_uri = "https://runtime-source.example/trades/{symbol}/{dt}.csv.gz"
+evidence_state = "owner_archive_backfillable"
+table_families = ["trades"]
+"#,
+        )
+        .unwrap();
+        let source_url = "https://runtime-source.example/trades/BNBUSDC/2026-03-01.csv.gz";
+        let run_spec_text = run_spec_text_with_source_binding(
+            &source_bindings_path,
+            "runtime-synthetic-native-trades",
+            "runtime-synthetic",
+            "spot",
+            source_url,
+        );
+        let run_spec_path = dir.path().join("run.toml");
+        fs::write(&run_spec_path, &run_spec_text).unwrap();
+        let spec: RunSpec = toml::from_str(&run_spec_text).expect("mutated run-spec parses");
+        let run_spec_hash = sha256_hex(run_spec_text.as_bytes());
+        let execution_plan = write_matching_execution_plan(dir.path(), &spec, &run_spec_hash);
+        let cli = Cli {
+            run_spec: run_spec_path,
+            execution_plan,
+            object_path: dir.path().join("object.csv.gz"),
+            output_dir: dir.path().join("out"),
+            publish_output: false,
+            prove_published_catalog: false,
+        };
+        let mut object_reader_called = false;
+        let mut object_reader = |_path: &Path, _expected_bytes: u64| {
+            object_reader_called = true;
+            anyhow::bail!("object reader reached after runtime registry preflight")
+        };
+        let mut resolver = |_region: &str, _path: &str| Ok::<String, String>("unused".to_string());
+
+        let err = run_cli_with_object_reader_and_resolver(&cli, &mut object_reader, &mut resolver)
+            .expect_err("object reader sentinel should stop after registry preflight");
+
+        let error_chain = err
+            .chain()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(object_reader_called, "{error_chain}");
+        assert!(
+            error_chain.contains("object reader reached after runtime registry preflight"),
+            "{error_chain}"
         );
     }
 

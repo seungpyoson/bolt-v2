@@ -14,6 +14,7 @@ capture_time_utc = "2026-06-02T04:27:02Z"   # ingest manifest completed_at
 created_at_utc = "2026-06-02T00:00:00Z"
 accepted_by = "backtesting-vertical-slice-operator"
 accepted_at_utc = "2026-06-02T00:00:00Z"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 
 [accepted_object]
 s3_uri = "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BNBUSDC/object=d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598.csv.gz"

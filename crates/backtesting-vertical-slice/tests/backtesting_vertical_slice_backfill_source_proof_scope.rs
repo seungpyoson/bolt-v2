@@ -109,6 +109,7 @@ fn source_proof_scope_reads_toml_spec_and_writes_report_idempotently() {
         &spec_path,
         format!(
             r#"report_id = "synthetic-source-proof-scope"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 source_proof_path = "{}"
 manifest_path = "{}"
 output_dir = "{}"

@@ -40,6 +40,7 @@ fn source_proof_admissibility_cli_writes_report_from_config_owned_spec() {
             r#"
 report_id = "source-proof-admissibility-cli"
 output_dir = "{}"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 
 [[source_proof]]
 proof_uri = "proof://synthetic/cli-source-proof.json"

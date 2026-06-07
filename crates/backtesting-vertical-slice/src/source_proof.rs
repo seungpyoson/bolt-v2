@@ -20,6 +20,8 @@
 //! No backtest may consume raw staged data directly. The only path to backtest
 //! input is through an [`AcceptedDataset`] produced here.
 
+use std::path::{Path, PathBuf};
+
 use chrono::{DateTime, NaiveDate};
 use serde::{Deserialize, Serialize};
 
@@ -34,12 +36,54 @@ const SOURCE_BINDINGS_REGISTRY: &str = include_str!(
 );
 
 #[derive(Debug, Deserialize)]
-struct SourceBindingRegistry {
+pub struct SourceBindingRegistry {
     #[serde(rename = "source_binding", default)]
     source_bindings: Vec<SourceBindingConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+impl SourceBindingRegistry {
+    pub fn from_toml_str(text: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(text)
+    }
+
+    fn source_binding_config(
+        &self,
+        source_binding: &str,
+        venue: &str,
+    ) -> Option<SourceBindingConfig> {
+        let source_binding = source_binding.trim();
+        let venue = venue.trim();
+        if source_binding.is_empty() || venue.is_empty() {
+            return None;
+        }
+        self.source_bindings
+            .iter()
+            .find(|binding| {
+                binding.key == source_binding && binding.venue.eq_ignore_ascii_case(venue)
+            })
+            .cloned()
+    }
+}
+
+pub fn committed_source_binding_registry() -> SourceBindingRegistry {
+    SourceBindingRegistry::from_toml_str(SOURCE_BINDINGS_REGISTRY)
+        .expect("committed source binding registry parses")
+}
+
+pub fn resolve_source_bindings_path(path: &Path) -> PathBuf {
+    if path.exists() || path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let repo_relative = repo_root.join(path);
+    if repo_relative.exists() {
+        repo_relative
+    } else {
+        path.to_path_buf()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct SourceBindingConfig {
     key: String,
     venue: String,
@@ -565,6 +609,13 @@ impl SourceProofReport {
     ///
     /// Returns the first blocking [`AcceptanceError`].
     pub fn evaluate_acceptance(&self) -> Result<(), AcceptanceError> {
+        self.evaluate_acceptance_with_registry(&committed_source_binding_registry())
+    }
+
+    pub fn evaluate_acceptance_with_registry(
+        &self,
+        registry: &SourceBindingRegistry,
+    ) -> Result<(), AcceptanceError> {
         if self.status == SourceProofStatus::Rejected {
             return Err(AcceptanceError::ProofRejected);
         }
@@ -572,7 +623,7 @@ impl SourceProofReport {
         ensure_staged_s3_uri("raw_sample_uri", &self.raw_sample_uri)?;
         ensure_staged_s3_uri("schema_sample_uri", &self.schema_sample_uri)?;
         ensure_backfillable_evidence_state(self.evidence_state)?;
-        ensure_source_binding_metadata_matches(self)?;
+        ensure_source_binding_metadata_matches(self, registry)?;
         let acceptance_scope = self
             .acceptance_scope
             .as_ref()
@@ -615,7 +666,22 @@ impl SourceProofReport {
     /// Returns an [`AcceptanceError`] if [`Self::evaluate_acceptance`] fails;
     /// the record is left unchanged.
     pub fn accept(
+        self,
+        mode: AcceptanceMode,
+        accepted_by: impl Into<String>,
+        accepted_at_utc: impl Into<String>,
+    ) -> Result<Self, AcceptanceError> {
+        self.accept_with_registry(
+            &committed_source_binding_registry(),
+            mode,
+            accepted_by,
+            accepted_at_utc,
+        )
+    }
+
+    pub fn accept_with_registry(
         mut self,
+        registry: &SourceBindingRegistry,
         mode: AcceptanceMode,
         accepted_by: impl Into<String>,
         accepted_at_utc: impl Into<String>,
@@ -625,7 +691,7 @@ impl SourceProofReport {
         if self.status != SourceProofStatus::Pending {
             return Err(AcceptanceError::NotPending(self.status));
         }
-        self.evaluate_acceptance()?;
+        self.evaluate_acceptance_with_registry(registry)?;
         // Acceptance provenance is mandatory: an accepted record must record who
         // accepted it and when, or the acceptance is unattributable.
         let accepted_by = accepted_by.into();
@@ -781,13 +847,27 @@ pub fn select_accepted_dataset(
     object: &IngestManifestObjectRecord,
     verified_object_sha256: &str,
 ) -> Result<AcceptedDataset, AcceptanceError> {
+    select_accepted_dataset_with_registry(
+        proof,
+        object,
+        verified_object_sha256,
+        &committed_source_binding_registry(),
+    )
+}
+
+pub fn select_accepted_dataset_with_registry(
+    proof: &SourceProofReport,
+    object: &IngestManifestObjectRecord,
+    verified_object_sha256: &str,
+    registry: &SourceBindingRegistry,
+) -> Result<AcceptedDataset, AcceptanceError> {
     if !proof.is_accepted() {
         return Err(AcceptanceError::ProofNotAccepted(proof.status));
     }
     // Defence in depth: re-evaluate the acceptance invariants even for a record
     // that already claims accepted status, so a hand-edited record cannot slip
     // through.
-    proof.evaluate_acceptance()?;
+    proof.evaluate_acceptance_with_registry(registry)?;
     object.check_complete()?;
     ensure_staged_s3_uri("raw_sample_uri", &proof.raw_sample_uri)?;
     ensure_staged_s3_uri("s3_uri", &object.s3_uri)?;
@@ -824,8 +904,12 @@ pub fn select_accepted_dataset(
     // Bind the object to the proof's source: the object's own provenance URL
     // must use the HTTPS host declared by the source-binding registry. This is
     // stricter than venue-label inference and avoids accepting arbitrary TLDs.
-    if !source_url_matches_declared_source(&object.source_url, &proof.source_binding, &proof.venue)
-    {
+    if !source_url_matches_declared_source(
+        &object.source_url,
+        &proof.source_binding,
+        &proof.venue,
+        registry,
+    ) {
         return Err(AcceptanceError::SourceVenueMismatch {
             venue: proof.venue.clone(),
             source_url: object.source_url.clone(),
@@ -888,8 +972,13 @@ fn ensure_staged_s3_uri(field: &'static str, uri: &str) -> Result<(), Acceptance
     }
 }
 
-fn source_url_matches_declared_source(source_url: &str, source_binding: &str, venue: &str) -> bool {
-    let Some(config) = source_binding_config(source_binding, venue) else {
+fn source_url_matches_declared_source(
+    source_url: &str,
+    source_binding: &str,
+    venue: &str,
+    registry: &SourceBindingRegistry,
+) -> bool {
+    let Some(config) = registry.source_binding_config(source_binding, venue) else {
         return false;
     };
     if source_url.contains(['{', '}']) {
@@ -903,20 +992,6 @@ fn source_url_matches_declared_source(source_url: &str, source_binding: &str, ve
     };
     object.host.eq_ignore_ascii_case(declared.host)
         && template_remainder_matches(declared.remainder, object.remainder)
-}
-
-fn source_binding_config(source_binding: &str, venue: &str) -> Option<SourceBindingConfig> {
-    let source_binding = source_binding.trim();
-    let venue = venue.trim();
-    if source_binding.is_empty() || venue.is_empty() {
-        return None;
-    }
-    toml::from_str::<SourceBindingRegistry>(SOURCE_BINDINGS_REGISTRY)
-        .ok()?
-        .source_bindings
-        .into_iter()
-        // Binding keys are canonical config IDs; venue labels are operator-facing names.
-        .find(|binding| binding.key == source_binding && binding.venue.eq_ignore_ascii_case(venue))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1109,8 +1184,9 @@ fn validate_claim_limits(proof: &SourceProofReport) -> Result<(), AcceptanceErro
 
 fn ensure_source_binding_metadata_matches(
     proof: &SourceProofReport,
+    registry: &SourceBindingRegistry,
 ) -> Result<(), AcceptanceError> {
-    let Some(config) = source_binding_config(&proof.source_binding, &proof.venue) else {
+    let Some(config) = registry.source_binding_config(&proof.source_binding, &proof.venue) else {
         return Err(AcceptanceError::UnknownSourceBinding {
             source_binding: proof.source_binding.clone(),
             venue: proof.venue.clone(),

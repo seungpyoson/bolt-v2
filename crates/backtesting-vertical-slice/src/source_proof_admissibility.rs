@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::source_proof::SourceProofReport;
+use crate::source_proof::{SourceBindingRegistry, SourceProofReport, resolve_source_bindings_path};
 
 pub const SOURCE_PROOF_ADMISSIBILITY_SCHEMA_VERSION: &str = "source-proof-admissibility-report.v1";
 pub const SOURCE_PROOF_ADMISSIBILITY_REPORT_FILE: &str = "source-proof-admissibility-report.json";
@@ -124,6 +124,7 @@ pub struct SourceProofAdmissibilityProofFile {
 pub struct SourceProofAdmissibilitySpec {
     pub report_id: String,
     pub output_dir: PathBuf,
+    pub source_bindings_path: PathBuf,
     #[serde(rename = "source_proof", default)]
     pub source_proofs: Vec<SourceProofAdmissibilityProofFile>,
 }
@@ -215,6 +216,14 @@ pub enum SourceProofAdmissibilityFileError {
         path: String,
         error: String,
     },
+    ReadSourceBindings {
+        path: String,
+        error: String,
+    },
+    ParseSourceBindingsToml {
+        path: String,
+        error: String,
+    },
     ReadSourceProof {
         proof_uri: String,
         path: String,
@@ -239,6 +248,12 @@ impl fmt::Display for SourceProofAdmissibilityFileError {
                 f,
                 "parse source-proof admissibility spec TOML {path}: {error}"
             ),
+            Self::ReadSourceBindings { path, error } => {
+                write!(f, "read source-bindings registry {path}: {error}")
+            }
+            Self::ParseSourceBindingsToml { path, error } => {
+                write!(f, "parse source-bindings registry TOML {path}: {error}")
+            }
             Self::ReadSourceProof {
                 proof_uri,
                 path,
@@ -277,6 +292,18 @@ impl SourceProofAdmissibilityReport {
         report_id: impl Into<String>,
         source_proofs: Vec<SourceProofAdmissibilityJson>,
     ) -> Result<Self, SourceProofAdmissibilityReportError> {
+        Self::from_json_values_with_registry(
+            report_id,
+            source_proofs,
+            &crate::source_proof::committed_source_binding_registry(),
+        )
+    }
+
+    pub fn from_json_values_with_registry(
+        report_id: impl Into<String>,
+        source_proofs: Vec<SourceProofAdmissibilityJson>,
+        registry: &SourceBindingRegistry,
+    ) -> Result<Self, SourceProofAdmissibilityReportError> {
         let report_id = report_id.into();
         if report_id.trim().is_empty() {
             return Err(SourceProofAdmissibilityReportError::EmptyReportId);
@@ -293,7 +320,7 @@ impl SourceProofAdmissibilityReport {
                     source_proof.proof_uri,
                 ));
             }
-            records.push(classify_source_proof_json(source_proof));
+            records.push(classify_source_proof_json(source_proof, registry));
         }
 
         let summary = SourceProofAdmissibilitySummary::from_records(&records);
@@ -407,10 +434,27 @@ pub fn write_source_proof_admissibility_report_from_spec_file(
             error: error.to_string(),
         }
     })?;
+    let resolved_source_bindings_path = resolve_source_bindings_path(&spec.source_bindings_path);
+    let source_bindings_path = spec.source_bindings_path.display().to_string();
+    let source_bindings_text =
+        fs::read_to_string(&resolved_source_bindings_path).map_err(|error| {
+            SourceProofAdmissibilityFileError::ReadSourceBindings {
+                path: source_bindings_path.clone(),
+                error: error.to_string(),
+            }
+        })?;
+    let source_bindings_registry = SourceBindingRegistry::from_toml_str(&source_bindings_text)
+        .map_err(
+            |error| SourceProofAdmissibilityFileError::ParseSourceBindingsToml {
+                path: source_bindings_path,
+                error: error.to_string(),
+            },
+        )?;
     write_source_proof_admissibility_report_from_files(
         &spec.output_dir,
         spec.report_id,
         spec.source_proofs,
+        &source_bindings_registry,
     )
 }
 
@@ -418,6 +462,7 @@ pub fn write_source_proof_admissibility_report_from_files(
     output_dir: &Path,
     report_id: impl Into<String>,
     source_proof_files: Vec<SourceProofAdmissibilityProofFile>,
+    source_bindings_registry: &SourceBindingRegistry,
 ) -> Result<SourceProofAdmissibilityArtifact, SourceProofAdmissibilityFileError> {
     let source_proofs = source_proof_files
         .into_iter()
@@ -441,14 +486,19 @@ pub fn write_source_proof_admissibility_report_from_files(
             Ok(SourceProofAdmissibilityJson { proof_uri, proof })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let report = SourceProofAdmissibilityReport::from_json_values(report_id, source_proofs)
-        .map_err(SourceProofAdmissibilityFileError::BuildReport)?;
+    let report = SourceProofAdmissibilityReport::from_json_values_with_registry(
+        report_id,
+        source_proofs,
+        source_bindings_registry,
+    )
+    .map_err(SourceProofAdmissibilityFileError::BuildReport)?;
     write_source_proof_admissibility_report(output_dir, &report)
         .map_err(SourceProofAdmissibilityFileError::WriteArtifact)
 }
 
 fn classify_source_proof_json(
     source_proof: SourceProofAdmissibilityJson,
+    registry: &SourceBindingRegistry,
 ) -> SourceProofAdmissibilityRecord {
     let SourceProofAdmissibilityJson { proof_uri, proof } = source_proof;
     let missing_current_contract_fields = missing_current_contract_fields(&proof);
@@ -463,7 +513,7 @@ fn classify_source_proof_json(
             if !missing_current_contract_fields.is_empty() {
                 blocking_issues.push(SourceProofAdmissibilityIssue::MissingCurrentContractField);
             }
-            match report.evaluate_acceptance() {
+            match report.evaluate_acceptance_with_registry(registry) {
                 Ok(()) if blocking_issues.is_empty() => SourceProofAdmissibilityRecord {
                     proof_uri,
                     status: SourceProofAdmissibilityStatus::AcceptReady,

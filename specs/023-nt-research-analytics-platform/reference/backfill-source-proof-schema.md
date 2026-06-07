@@ -68,7 +68,10 @@ Every source proof has explicit pass/fail/pending checks:
 
 - `source_access`: endpoint, bucket, archive listing, or local owner sample is
   reachable without exposing credentials.
-- `license`: storage and derived-table use are permitted.
+- `license`: storage and derived-table use are permitted. Evidence may be a
+  public license/terms page, vendor or commercial agreement pointer, or recorded
+  operator attestation to written approval; it must be durable enough to audit
+  after the proof is accepted.
 - `schema`: sample parser identifies every required field and type.
 - `time_semantics`: event, capture, and availability timestamps are mapped.
 - `instrument_universe`: instruments active during the requested window are

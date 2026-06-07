@@ -43,6 +43,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - backfill preflight selection is now a cheap TOML-driven gate over the coverage ledger: it selects at most one bounded canonical-ready accepted tranche before any payload download, conversion, catalog projection, or backtest work can start
 - source-proof migration preflight is now a cheap TOML-driven gate over the legacy derivability report: requested table families, required derivable fields, raw-payload count, S3-bound status, and byte budget are config-owned, so candidate selection does not depend on venue names or provider-specific branches
 - combined backfill readiness is now a cheap TOML-driven gate over the backfill preflight report and the source-proof migration preflight report, so a path is not considered ready unless both the canonical-ready tranche and required source-proof candidate are selected
+- source-binding coverage is now a cheap TOML-driven gate over the configured source-binding registry and coverage ledger; it reports whether required table-family bindings have ledger records without inferring from prefixes or venue names
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
 - the current `BacktestExtensionSurface` classification is recorded in `backtest-extension-surface-matrix.md`; supported primitive NT controls are TOML pass-throughs, Bolt-owned pieces are provenance/governance boundaries, unmodeled NT model/system surfaces fail before NT config construction, and each successful run now writes `backtest-run-manifest.json` plus result-contract claim-limit entries for resolved NT defaults, supported run/venue/catalog pass-through fields, and unsupported NT surfaces
 
@@ -693,6 +694,22 @@ Current evidence:
   `missing_selected_backfill_record`, and
   `missing_selected_source_proof_candidate`. This is the current end-to-end
   no-go artifact for the existing TradeTick backfill path.
+- The source-binding coverage CLI was run against the committed
+  `backfill-source-bindings.v1.toml` registry and the current source-proof-bound
+  coverage ledger for `required_table_families = ["trades"]`:
+  `/private/tmp/bte-coverage-ledger-20260607/backfill-binding-coverage-trades-output/backfill-binding-coverage-report.json`
+  has content hash
+  `f50b38f3c19517ab5937f992ca700b941b311f657035cb92a8e8b8468f0d9067`,
+  size 7211 bytes, `status = blocked`,
+  `configured_required_binding_count = 2`, and
+  `ledger_records_for_required_bindings = 0`. The two configured `trades`
+  bindings are `binance-spot-native-trades` and `bybit-spot-tick-trades`; both
+  have zero ledger records, zero canonical-ready records, and zero accepted
+  records. The same report found 145 ledger records with empty source binding
+  and one unconfigured binding key, `bybit:rest+public_archive:v5`. Therefore
+  the next backfill unblocker is not converter execution: current manifests must
+  be safely bound to configured source-binding keys and source proofs before any
+  broad canonical conversion can be selected.
 - Binance run `binance-backfill-run-d928f6666827dd47` records 4,701 completed
   payload objects, 42,358,207,176 payload bytes, zero errors, and
   `payload_completion_ok = true`, but it is still raw staging and not a
@@ -732,7 +749,7 @@ Distance from the overall backtesting engine:
    source-proof migration preflight selector that proves whether the staged
    legacy proofs contain a candidate for a requested table family, and a
    combined readiness report that joins both gates for the selected NT data
-   path. A real
+   path, plus source-binding coverage over the registry and ledger. A real
    manifest-only ledger can now be generated across all 190 observed manifests,
    and real source-proof admissibility/derivability/preflight reports can now
    be generated across the current staged evidence. The

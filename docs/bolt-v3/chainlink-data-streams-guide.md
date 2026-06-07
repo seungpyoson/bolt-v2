@@ -245,7 +245,8 @@ with one `feed_bindings` entry per supported asset mapping `feed_id` to the NT
 resolution instrument. Secrets are SSM parameter names only (resolved at
 runtime, never stored in TOML). The authoritative schema is owned by the code
 (`parse_feed_binding` / `ChainlinkDataConfig` in
-`src/bolt_v3_providers/chainlink.rs` + `src/bolt_v3_chainlink/strike_source.rs`)
+`src/bolt_v3_providers/chainlink.rs` +
+`src/bolt_v3_providers/chainlink/strike_source.rs`)
 and the shipped values live in `config/root.toml` — this guide does not restate
 them so they cannot drift. Shape:
 
@@ -271,6 +272,64 @@ The strategy selects its feed per its own `target.underlying_asset` (one
 strategy instance = one asset), so the binding follows whichever market that
 instance trades.
 
+### Strategy Subscription Contract (`price_to_beat`)
+
+For the current binary-oracle strategy, `price_to_beat` is selected by the
+strategy's `[resolution_data]` block:
+
+```toml
+[resolution_data]
+data_client_id = "chainlink_strike"
+instrument_id = "BTC-USD.CHAINLINK"
+```
+
+That block does not contain a Chainlink `feed_id`. `data_client_id` selects the
+root `[clients.chainlink_strike]` data client, and `instrument_id` selects the
+matching `[[clients.chainlink_strike.data.feed_bindings]]` row in
+`config/root.toml`.
+
+At load time, the binary-oracle archetype bridge validates the binding and
+copies it into the raw strategy config as `resolution_client_id` and
+`resolution_instrument_id`. The current validation requires this client to be
+the Chainlink Data Streams strike client and requires the instrument to have a
+matching `feed_bindings` entry. This means the feed IDs are config-driven, but
+the current `price_to_beat` subscription path is Chainlink strike-source
+specific.
+
+At runtime, the strategy subscribes to the strike like this:
+
+1. When an interval is selected and `price_to_beat` is still unset, the strategy
+   calls `subscribe_resolution_strike`.
+2. The strategy computes `window_open_unix_seconds` from the market interval
+   open timestamp.
+3. The strategy calls NT `subscribe_index_prices` with the configured
+   `resolution_instrument_id`, the configured `resolution_client_id`, and a
+   params map containing `window_open_unix_seconds`.
+4. The Chainlink strike source receives that subscribe command, maps the
+   resolution instrument to its configured `feed_id`, fetches one REST report for
+   that window-open timestamp, and emits one NT `IndexPriceUpdate`.
+5. The strategy accepts only an `IndexPriceUpdate` for its configured
+   `resolution_instrument_id`; if the update timestamp matches the selected
+   interval open and the value is positive finite, it binds that value as
+   `price_to_beat`.
+
+This is a point-in-time resolution-strike path, not a continuous reference-price
+feed. Do not route `price_to_beat` through `[reference_data]`,
+`decision_reference`, PRR WebSocket quotes, or future normalized reference-quote
+providers. Those belong to live fair-value/reference pricing and must remain
+separate from the market boundary strike.
+
+Code landmarks for future sessions:
+
+- Loader injection and validation:
+  `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs`
+- Strategy subscribe and receive path:
+  `src/strategies/binary_oracle_edge_taker/mod.rs`
+  (`subscribe_resolution_strike`, `on_index_price`)
+- Chainlink subscribe handler:
+  `src/bolt_v3_providers/chainlink/strike_source.rs`
+  (`ChainlinkStrikeSourceClient::subscribe_index_prices`)
+
 ### Adding a New Asset
 
 1. Probe all `0x0003`-prefix feeds via REST: list `GET /api/v1/feeds`, then `GET /api/v1/reports/latest?feedID={id}` for each and decode the mid price
@@ -280,11 +339,11 @@ instance trades.
 
 ### Source Code (bolt-v2)
 
-- Strike source (REST boundary fetch + emit `IndexPriceUpdate`): `src/bolt_v3_chainlink/strike_source.rs`
-- HMAC auth (signed request URL + headers): `src/bolt_v3_chainlink/auth.rs`
-- V3 `fullReport` decode: `src/bolt_v3_chainlink/report.rs`
+- Strike source (REST boundary fetch + emit `IndexPriceUpdate`): `src/bolt_v3_providers/chainlink/strike_source.rs`
+- HMAC auth (signed request URL + headers): `src/bolt_v3_providers/chainlink/auth.rs`
+- V3 `fullReport` decode: `src/bolt_v3_providers/chainlink/report.rs`
 - Provider binding + config schema (`ChainlinkDataConfig`, `parse_feed_binding`): `src/bolt_v3_providers/chainlink.rs`
-- SSM secret loading: `src/secrets.rs`
+- SSM secret loading: `src/bolt_v3_providers/chainlink.rs` via `src/bolt_v3_secrets.rs`
 
 ---
 
@@ -322,5 +381,5 @@ Mixing any of these (e.g., testnet feed IDs on production endpoint) will silentl
 - REST API reference: https://docs.chain.link/data-streams/reference/data-streams-api/interface-api
 - Authentication: https://docs.chain.link/data-streams/reference/data-streams-api/authentication
 - Rust SDK tutorial: https://docs.chain.link/data-streams/tutorials/rust-sdk-stream
-- Bolt-v2 strike source: `src/bolt_v3_chainlink/` (auth.rs, report.rs, strike_source.rs)
+- Bolt-v2 strike source: `src/bolt_v3_providers/chainlink/` (auth.rs, report.rs, strike_source.rs)
 - Bolt-v2 provider binding + config schema: `src/bolt_v3_providers/chainlink.rs`

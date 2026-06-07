@@ -50,6 +50,54 @@ pub const UNSUPPORTED_NT_VENUE_SURFACES: &[&str] = &[
     "fee_model",
     "settlement_prices",
 ];
+/// NT data-query surfaces declared in TOML but rejected until typed mappings exist.
+pub const UNSUPPORTED_NT_CATALOG_QUERY_SURFACES: &[(&str, &str, &str)] = &[
+    (
+        "catalog.instrument_ids",
+        "catalog_input.instrument_ids",
+        "BacktestDataConfig.instrument_ids",
+    ),
+    (
+        "catalog.start_time",
+        "catalog_input.start_time",
+        "BacktestDataConfig.start_time",
+    ),
+    (
+        "catalog.end_time",
+        "catalog_input.end_time",
+        "BacktestDataConfig.end_time",
+    ),
+    (
+        "catalog.filter_expr",
+        "catalog_input.filter_expr",
+        "BacktestDataConfig.filter_expr",
+    ),
+    (
+        "catalog.client_id",
+        "catalog_input.client_id",
+        "BacktestDataConfig.client_id",
+    ),
+    (
+        "catalog.metadata",
+        "catalog_input.metadata",
+        "BacktestDataConfig.metadata",
+    ),
+    (
+        "catalog.bar_spec",
+        "catalog_input.bar_spec",
+        "BacktestDataConfig.bar_spec",
+    ),
+    (
+        "catalog.bar_types",
+        "catalog_input.bar_types",
+        "BacktestDataConfig.bar_types",
+    ),
+    (
+        "catalog.optimize_file_loading",
+        "catalog_input.optimize_file_loading",
+        "BacktestDataConfig.optimize_file_loading",
+    ),
+];
 /// Artifact-local manifest version written beside each backtest result.
 pub const BACKTEST_RUN_MANIFEST_ARTIFACT_VERSION: &str = "backtest-run-manifest.v1";
 
@@ -302,6 +350,33 @@ pub struct ManifestCatalogInput {
     pub data_type: String,
     /// NautilusTrader instrument id, such as `SYMBOL.VENUE`.
     pub nt_instrument_id: String,
+    /// NT multi-instrument query ids. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrument_ids: Option<Vec<String>>,
+    /// NT data-query start time. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<i64>,
+    /// NT data-query end time. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<i64>,
+    /// NT catalog filter expression. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_expr: Option<String>,
+    /// NT data client id. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    /// NT catalog query metadata. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<BTreeMap<String, String>>,
+    /// NT bar specification. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_spec: Option<String>,
+    /// NT explicit bar type strings. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_types: Option<Vec<String>>,
+    /// NT directory-based file loading optimization. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimize_file_loading: Option<bool>,
 }
 
 /// Artifact output store options used for publishing and published-catalog proof.
@@ -593,7 +668,7 @@ impl std::fmt::Display for ManifestError {
             }
             Self::UnsupportedNtSurface { field } => write!(
                 f,
-                "unsupported NT venue surface {field}: add typed BacktestVenueConfig mapping before use"
+                "unsupported NT surface {field}: add typed NT config mapping before use"
             ),
             Self::OutputPrefixOutsideArtifactRoot => {
                 write!(f, "output prefix must live under artifact_root/backtests/")
@@ -1134,6 +1209,16 @@ impl BacktestingRunManifest {
                 "requests_rejected_before_nt_config",
             )
         }));
+        surfaces.extend(UNSUPPORTED_NT_CATALOG_QUERY_SURFACES.iter().map(
+            |(surface, _, nt_field)| {
+                resolved_surface(
+                    surface,
+                    NtSurfaceClassification::UnsupportedForNow,
+                    nt_field,
+                    "requests_rejected_before_nt_config",
+                )
+            },
+        ));
         Ok(surfaces)
     }
 
@@ -1182,6 +1267,7 @@ impl BacktestingRunManifest {
         }
         ensure_supported_enums(self)?;
         ensure_unsupported_nt_venue_surfaces_absent(&self.venue)?;
+        ensure_unsupported_nt_catalog_query_surfaces_absent(&self.catalog_input)?;
         ensure_supported_data_type(&self.catalog_input.data_type)?;
         let catalog_fs_protocol =
             parse_catalog_fs_protocol(&self.catalog_input.catalog_fs_protocol)?;
@@ -1315,6 +1401,7 @@ impl BacktestingRunManifest {
     ///
     /// Returns an error if the data type or instrument id is unsupported.
     pub fn to_nt_data_config(&self) -> Result<BacktestDataConfig, ManifestError> {
+        ensure_unsupported_nt_catalog_query_surfaces_absent(&self.catalog_input)?;
         let data_type = match self.catalog_input.data_type.as_str() {
             "TradeTick" => NautilusDataType::TradeTick,
             other => {
@@ -1540,6 +1627,54 @@ fn ensure_unsupported_nt_venue_surfaces_absent(
         (
             UNSUPPORTED_NT_VENUE_SURFACES[6],
             venue.settlement_prices.is_some(),
+        ),
+    ] {
+        if present {
+            return Err(ManifestError::UnsupportedNtSurface { field });
+        }
+    }
+    Ok(())
+}
+
+fn ensure_unsupported_nt_catalog_query_surfaces_absent(
+    catalog: &ManifestCatalogInput,
+) -> Result<(), ManifestError> {
+    for (field, present) in [
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[0].1,
+            catalog.instrument_ids.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[1].1,
+            catalog.start_time.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[2].1,
+            catalog.end_time.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[3].1,
+            catalog.filter_expr.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[4].1,
+            catalog.client_id.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[5].1,
+            catalog.metadata.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[6].1,
+            catalog.bar_spec.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[7].1,
+            catalog.bar_types.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[8].1,
+            catalog.optimize_file_loading.is_some(),
         ),
     ] {
         if present {
@@ -1879,6 +2014,9 @@ mod tests {
         select_accepted_dataset,
     };
 
+    const TEST_INSTRUMENT_ID: &str = "TESTPAIR.TESTVENUE";
+    const TEST_BAR_TYPE: &str = "TESTPAIR.TESTVENUE-1-MINUTE-LAST-EXTERNAL";
+
     fn accepted_dataset() -> AcceptedDataset {
         let checks = RequiredChecks {
             source_access: RequiredCheck::passed("m"),
@@ -2034,6 +2172,15 @@ mod tests {
                 catalog_fs_rust_storage_options: BTreeMap::new(),
                 data_type: "TradeTick".to_string(),
                 nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
+                instrument_ids: None,
+                start_time: None,
+                end_time: None,
+                filter_expr: None,
+                client_id: None,
+                metadata: None,
+                bar_spec: None,
+                bar_types: None,
+                optimize_file_loading: None,
             },
             artifact_root: "s3://bolt-parquet/nt-research-analytics".to_string(),
             output_prefix: "s3://bolt-parquet/nt-research-analytics/backtests/bnbusdc".to_string(),
@@ -2601,6 +2748,24 @@ mod tests {
                         && resolved.nt_field == nt_field
                 }),
                 "missing resolved NT surface {surface}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_nt_surfaces_record_unsupported_catalog_query_mappings() {
+        let manifest = valid_manifest();
+        let surfaces = manifest.resolved_nt_surfaces().expect("resolved surfaces");
+
+        for (surface, _, nt_field) in UNSUPPORTED_NT_CATALOG_QUERY_SURFACES {
+            assert!(
+                surfaces.iter().any(|resolved| {
+                    resolved.surface == *surface
+                        && resolved.classification == NtSurfaceClassification::UnsupportedForNow
+                        && resolved.nt_field == *nt_field
+                        && resolved.resolved_value == "requests_rejected_before_nt_config"
+                }),
+                "missing unsupported catalog query NT surface {surface}"
             );
         }
     }
@@ -3188,14 +3353,16 @@ mod tests {
     #[test]
     fn typed_unsupported_nt_venue_model_surfaces_parse_then_fail_before_nt_config() {
         let serialized = toml::to_string(&valid_manifest()).expect("serialize");
+        let leverages = format!("{{ \"{TEST_INSTRUMENT_ID}\" = \"2\" }}");
+        let settlement_prices = format!("{{ \"{TEST_INSTRUMENT_ID}\" = \"65000\" }}");
         for (field, value) in [
-            ("leverages", "{ \"BTCUSDT.BINANCE\" = \"2\" }"),
+            ("leverages", leverages.as_str()),
             ("margin_model", "\"standard\""),
             ("modules", "[\"latency-probe\"]"),
             ("fill_model", "\"probabilistic\""),
             ("latency_model", "\"static\""),
             ("fee_model", "\"maker_taker\""),
-            ("settlement_prices", "{ \"BTCUSDT.BINANCE\" = \"65000\" }"),
+            ("settlement_prices", settlement_prices.as_str()),
         ] {
             let text = serialized.replace("[venue]\n", &format!("[venue]\n{field} = {value}\n"));
             let manifest = parse_manifest_toml(&text)
@@ -3206,6 +3373,39 @@ mod tests {
             assert!(
                 matches!(err, ManifestError::UnsupportedNtSurface { field: actual } if actual == field),
                 "unsupported venue surface {field:?} should fail with a structured error, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_unsupported_nt_catalog_query_surfaces_parse_then_fail_before_nt_config() {
+        let serialized = toml::to_string(&valid_manifest()).expect("serialize");
+        let instrument_ids = format!("[\"{TEST_INSTRUMENT_ID}\"]");
+        let bar_types = format!("[\"{TEST_BAR_TYPE}\"]");
+        for (field, value) in [
+            ("instrument_ids", instrument_ids.as_str()),
+            ("start_time", "1772323200000000000"),
+            ("end_time", "1772409600000000000"),
+            ("filter_expr", "\"price > 0\""),
+            ("client_id", "\"TEST-CLIENT\""),
+            ("metadata", "{ source = \"proof\" }"),
+            ("bar_spec", "\"1-MINUTE-LAST\""),
+            ("bar_types", bar_types.as_str()),
+            ("optimize_file_loading", "true"),
+        ] {
+            let text = serialized.replace(
+                "[catalog_input]\n",
+                &format!("[catalog_input]\n{field} = {value}\n"),
+            );
+            let manifest = parse_manifest_toml(&text)
+                .expect("unsupported NT catalog query surface should be represented in schema");
+            let err = manifest
+                .to_nt_data_config()
+                .expect_err("unsupported NT catalog query surface must not reach NT config");
+            let expected = format!("catalog_input.{field}");
+            assert!(
+                matches!(err, ManifestError::UnsupportedNtSurface { field: actual } if actual == expected),
+                "unsupported catalog query surface {field:?} should fail with a structured error, got {err}"
             );
         }
     }

@@ -1,6 +1,6 @@
 mod support;
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::Result;
 use bolt_v2::{
@@ -77,6 +77,7 @@ fn strategy_input_snapshot_with_realized_volatility_snapshot() -> BoltV3Strategy
         realized_volatility_aggregation: "upper_quantile".to_string(),
         realized_volatility_sources_used: vec!["<SOURCE_ID_A>".to_string()],
         realized_volatility_source_diagnostics: Vec::new(),
+        realized_volatility_unknown_source_rejections: BTreeMap::new(),
         realized_volatility_blockers: Vec::new(),
         realized_volatility_config_fingerprint: "<config_fingerprint>".to_string(),
         seconds_to_market_end: 300,
@@ -290,7 +291,7 @@ fn latest_entry_decision_evidence_chain_rejects_stale_v5_before_admission_payloa
     );
     assert!(
         !rendered.contains("execution_client_id"),
-        "stale v5 should not reach v6 admission payload parsing, got: {rendered}"
+        "stale v5 should not reach current admission payload parsing, got: {rendered}"
     );
 }
 
@@ -323,6 +324,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         realized_volatility_aggregation: String::new(),
         realized_volatility_sources_used: Vec::new(),
         realized_volatility_source_diagnostics: Vec::new(),
+        realized_volatility_unknown_source_rejections: BTreeMap::new(),
         realized_volatility_blockers: Vec::new(),
         realized_volatility_config_fingerprint: String::new(),
         seconds_to_market_end: 300,

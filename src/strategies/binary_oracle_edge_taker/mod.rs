@@ -3693,6 +3693,7 @@ impl BinaryOracleEdgeTaker {
             realized_volatility_aggregation,
             realized_volatility_sources_used,
             realized_volatility_source_diagnostics,
+            realized_volatility_unknown_source_rejections,
             realized_volatility_blockers,
             realized_volatility_config_fingerprint,
         ) = match realized_volatility_snapshot {
@@ -3702,7 +3703,7 @@ impl BinaryOracleEdgeTaker {
                 snapshot
                     .annualized_realized_vol_decimal
                     .map(evidence_number)
-                    .unwrap_or_else(|| evidence_number(realized_volatility)),
+                    .unwrap_or_default(),
                 evidence_number(snapshot.seconds_per_annum),
                 realized_volatility_aggregation_evidence_label(snapshot.aggregate_method)
                     .to_string(),
@@ -3714,6 +3715,7 @@ impl BinaryOracleEdgeTaker {
                         BoltV3RealizedVolatilitySourceDiagnosticEvidence::from_realized_vol_diagnostic,
                     )
                     .collect(),
+                snapshot.unknown_source_rejections.clone(),
                 snapshot
                     .blocked_reasons
                     .iter()
@@ -3731,6 +3733,7 @@ impl BinaryOracleEdgeTaker {
                 String::new(),
                 Vec::new(),
                 Vec::new(),
+                std::collections::BTreeMap::new(),
                 Vec::new(),
                 String::new(),
             ),
@@ -3791,6 +3794,7 @@ impl BinaryOracleEdgeTaker {
             realized_volatility_aggregation,
             realized_volatility_sources_used,
             realized_volatility_source_diagnostics,
+            realized_volatility_unknown_source_rejections,
             realized_volatility_blockers,
             realized_volatility_config_fingerprint,
             seconds_to_market_end,

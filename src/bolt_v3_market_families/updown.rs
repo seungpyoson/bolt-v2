@@ -61,8 +61,8 @@ use crate::{
         selected_market_requirement_from_parts,
     },
     bolt_v3_numeric::{
-        MILLIS_PER_SECOND_U64, POWER_OF_TWO, SECONDS_PER_YEAR_F64, UNIT_F64, ZERO_F64,
-        is_positive_finite, sanitize_probability,
+        HALF_F64, MILLIS_PER_SECOND_U64, POWER_OF_TWO, SECONDS_PER_YEAR_F64, UNIT_F64, ZERO_F64,
+        is_non_negative_finite, is_positive_finite, sanitize_probability,
     },
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{
@@ -1102,15 +1102,9 @@ fn selected_market_resolution_mapping(
 pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
     if !is_positive_finite(inputs.spot_price)
         || !is_positive_finite(inputs.strike_price)
-        || !is_positive_finite(inputs.realized_vol)
+        || !is_non_negative_finite(inputs.realized_vol)
         || !inputs.pricing_kurtosis.is_finite()
     {
-        return None;
-    }
-
-    let sigma_eff =
-        inputs.realized_vol * (UNIT_F64 + inputs.pricing_kurtosis / KURTOSIS_NORMALIZATION);
-    if !is_positive_finite(sigma_eff) {
         return None;
     }
 
@@ -1119,10 +1113,32 @@ pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
         return None;
     }
 
+    let sigma_eff =
+        inputs.realized_vol * (UNIT_F64 + inputs.pricing_kurtosis / KURTOSIS_NORMALIZATION);
+    if !is_non_negative_finite(sigma_eff) {
+        return None;
+    }
+    if sigma_eff == ZERO_F64 {
+        return Some(deterministic_up_probability(
+            inputs.spot_price,
+            inputs.strike_price,
+        ));
+    }
+
     let d2 = ((inputs.spot_price / inputs.strike_price).ln()
         - (sigma_eff.powi(POWER_OF_TWO) / SIGMA_SQUARED_HALF_DIVISOR) * time_to_expiry_years)
         / (sigma_eff * time_to_expiry_years.sqrt());
     sanitize_probability(standard_normal_cdf(d2))
+}
+
+fn deterministic_up_probability(spot_price: f64, strike_price: f64) -> f64 {
+    if spot_price > strike_price {
+        UNIT_F64
+    } else if spot_price < strike_price {
+        ZERO_F64
+    } else {
+        HALF_F64
+    }
 }
 
 fn standard_normal_cdf(x: f64) -> f64 {
@@ -1838,12 +1854,50 @@ mod tests {
             "below-strike spot should imply <50% up probability"
         );
         assert!(above > below);
-        assert!(
+    }
+
+    #[test]
+    fn fair_probability_accepts_zero_volatility_as_deterministic_limit() {
+        assert_eq!(
+            fair_probability_up(&FairProbabilityInputs {
+                spot_price: 3_101.0,
+                strike_price: 3_100.0,
+                seconds_to_market_end: 60,
+                realized_vol: 0.0,
+                pricing_kurtosis: 0.0,
+            }),
+            Some(UNIT_F64)
+        );
+        assert_eq!(
+            fair_probability_up(&FairProbabilityInputs {
+                spot_price: 3_099.0,
+                strike_price: 3_100.0,
+                seconds_to_market_end: 60,
+                realized_vol: 0.0,
+                pricing_kurtosis: 0.0,
+            }),
+            Some(ZERO_F64)
+        );
+        assert_eq!(
             fair_probability_up(&FairProbabilityInputs {
                 spot_price: 3_100.0,
                 strike_price: 3_100.0,
                 seconds_to_market_end: 60,
                 realized_vol: 0.0,
+                pricing_kurtosis: 0.0,
+            }),
+            Some(HALF_F64)
+        );
+    }
+
+    #[test]
+    fn fair_probability_fails_closed_on_invalid_inputs() {
+        assert!(
+            fair_probability_up(&FairProbabilityInputs {
+                spot_price: 3_100.0,
+                strike_price: 3_100.0,
+                seconds_to_market_end: 60,
+                realized_vol: -0.01,
                 pricing_kurtosis: 0.0,
             })
             .is_none()

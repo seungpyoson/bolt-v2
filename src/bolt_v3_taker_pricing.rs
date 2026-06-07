@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 use crate::{
     bolt_v3_market_families::{self, FairProbabilityInputs},
     bolt_v3_numeric::{
-        MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64, clamp_probability, is_positive_finite,
-        sanitize_probability,
+        MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64, clamp_probability, is_non_negative_finite,
+        is_positive_finite, sanitize_probability,
     },
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_taker_signal::{
@@ -378,7 +378,7 @@ impl TakerPricingState {
             || !snapshot.ready
             || !snapshot
                 .annualized_realized_vol_decimal
-                .is_some_and(is_positive_finite)
+                .is_some_and(is_non_negative_finite)
         {
             return None;
         }
@@ -392,7 +392,7 @@ impl TakerPricingState {
         realized_vol: f64,
         ready_ts_ms: u64,
     ) {
-        if !is_positive_finite(realized_vol) {
+        if !is_non_negative_finite(realized_vol) {
             return;
         }
         let Some(realized_vol_state) = self.realized_vol.as_mut() else {
@@ -448,7 +448,7 @@ impl TakerPricingState {
 
         let realized_vol = self
             .current_realized_vol_for_config_at(config, request.now_ms)
-            .filter(|value| is_positive_finite(*value));
+            .filter(|value| is_non_negative_finite(*value));
         if realized_vol.is_none() {
             blocked_by.push(TakerPricingBlockReason::RealizedVolNotReady);
         }

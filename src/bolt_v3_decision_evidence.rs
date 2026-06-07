@@ -17,7 +17,7 @@ use crate::bolt_v3_realized_volatility::{
     RealizedVolSourceDiagnostic, RealizedVolSourceRejectReason, RealizedVolSourceStatus,
 };
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 6;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 7;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
@@ -319,6 +319,7 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub realized_volatility_sources_used: Vec<String>,
     pub realized_volatility_source_diagnostics:
         Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
+    pub realized_volatility_unknown_source_rejections: BTreeMap<String, u64>,
     pub realized_volatility_blockers: Vec<String>,
     pub realized_volatility_config_fingerprint: String,
     pub seconds_to_market_end: u64,
@@ -1098,6 +1099,7 @@ mod tests {
             realized_volatility_aggregation: String::new(),
             realized_volatility_sources_used: Vec::new(),
             realized_volatility_source_diagnostics: Vec::new(),
+            realized_volatility_unknown_source_rejections: BTreeMap::new(),
             realized_volatility_blockers: Vec::new(),
             realized_volatility_config_fingerprint: String::new(),
             seconds_to_market_end: 300,

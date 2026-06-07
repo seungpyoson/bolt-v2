@@ -129,6 +129,58 @@ fn taker_pricing_consumes_realized_vol_snapshot_without_internal_estimator_warmu
 }
 
 #[test]
+fn taker_pricing_accepts_ready_surfaced_zero_realized_volatility_snapshot() {
+    let mut config = pricing_config();
+    config.realized_volatility_surface_id = Some("<surface_id>".to_string());
+    let mut pricing = TakerPricingState::from_config(&config);
+    pricing.observe_reference_quote(&FastSpotObservation {
+        venue: "<REFERENCE_SOURCE_ID>".to_string(),
+        price: 3_101.0,
+        observed_ts_ms: 1_000,
+    });
+    pricing.observe_signal_quote(
+        &FastSpotObservation {
+            venue: "<SIGNAL_SOURCE_ID>".to_string(),
+            price: 3_101.0,
+            observed_ts_ms: 1_000,
+        },
+        &config,
+    );
+    pricing.observe_realized_vol_snapshot(RealizedVolSnapshot {
+        surface_id: "<surface_id>".to_string(),
+        as_of_ms: 1_000,
+        annualized_realized_vol_decimal: Some(0.0),
+        ready: true,
+        sources_used: vec!["<SOURCE_ID_A>".to_string()],
+        source_diagnostics: Vec::new(),
+        unknown_source_rejections: BTreeMap::new(),
+        blocked_reasons: Vec::new(),
+        aggregate_method: RealizedVolAggregation::UpperQuantile { quantile: 1.0 },
+        seconds_per_annum: 31_536_000.0,
+        config_fingerprint: "<config_fingerprint>".to_string(),
+    });
+
+    let result = pricing
+        .entry_pricing_at(
+            &config,
+            TakerPricingRequest {
+                now_ms: 1_000,
+                strike_price: Some(3_100.0),
+                seconds_to_market_end: Some(300),
+            },
+        )
+        .expect("ready zero-RV surfaced snapshot should satisfy taker pricing");
+
+    assert_close(result.realized_vol, 0.0);
+    assert_close(result.fair_probability_up, 1.0);
+    assert_eq!(
+        result.realized_vol_surface_id.as_deref(),
+        Some("<surface_id>")
+    );
+    assert_eq!(result.realized_vol_source_ts_ms, Some(1_000));
+}
+
+#[test]
 fn surfaced_realized_volatility_mode_blocks_instead_of_falling_back_to_legacy_estimator() {
     let mut config = pricing_config();
     config.realized_volatility_surface_id = Some("<surface_id>".to_string());
@@ -285,6 +337,14 @@ fn taker_pricing_accepts_source_owned_realized_vol_seed_without_strategy_estimat
         pricing.current_realized_vol_source_at(1_001),
         (None, Some(1_001))
     );
+
+    pricing.seed_ready_realized_vol(Some("zero".to_string()), 0.0, 1_002);
+
+    assert_eq!(pricing.current_realized_vol_at(1_002), Some(0.0));
+    assert_eq!(
+        pricing.current_realized_vol_source_at(1_002),
+        (Some("zero".to_string()), Some(1_002))
+    );
 }
 
 #[test]
@@ -293,7 +353,7 @@ fn taker_pricing_rejects_invalid_source_owned_realized_vol_seed() {
     let mut pricing = TakerPricingState::from_config(&config);
 
     pricing.seed_ready_realized_vol(Some("reference".to_string()), 2.5, 1_000);
-    pricing.seed_ready_realized_vol(Some("zero".to_string()), 0.0, 1_001);
+    pricing.seed_ready_realized_vol(Some("negative".to_string()), -0.01, 1_001);
     pricing.seed_ready_realized_vol(Some("nan".to_string()), f64::NAN, 1_002);
 
     assert_eq!(pricing.current_realized_vol_at(1_002), Some(2.5));

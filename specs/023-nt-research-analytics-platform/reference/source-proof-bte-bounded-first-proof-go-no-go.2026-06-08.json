@@ -1,0 +1,153 @@
+{
+  "schema_version": "source-proof-bte-bounded-first-proof-go-no-go.v1",
+  "recorded_at": "2026-06-08",
+  "evidence_base_commit": "a28ab4f6",
+  "branch": "codex/bte-clean-converter-nt-use-main-reconcile",
+  "prompt_source": {
+    "original_user_path": "/Users/spson/Downloads/prompts/backtesting.md",
+    "original_user_path_status": "missing_at_latest_check",
+    "current_found_path": "/Users/spson/Downloads/New Folder With Items/prompts/backtesting.md",
+    "current_found_path_bytes": 6229
+  },
+  "decision": {
+    "bounded_pmxt_polymarket_first_proof": "go_for_tdd_only",
+    "broad_pmxt_polymarket_l2_backfill": "no_go",
+    "production_backfill": "no_go",
+    "dynamic_tick_size_replay": "no_go_until_nt_backtestnode_epoch_replay_is_proven"
+  },
+  "bounded_first_proof_scope": {
+    "source_binding": "polymarket-parquet-archive-index",
+    "fixture_type": "binary-option",
+    "table_family": "order_book_snapshot_deltas",
+    "fidelity_class": "L2_REPLAY",
+    "source_object_uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+    "source_object_sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "current_source_proof_status": "pending",
+    "current_source_proof_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json",
+    "selector_policy_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json",
+    "selector_policy": "Select from source-proof event counts where tick_size_change_rows == 0, book_rows > 0, price_change_rows > 0, last_trade_price_rows > 0, and replay_rows <= configured row budget; order by replay_rows ASC then asset_id ASC.",
+    "claim_limits": [
+      "Does not prove dynamic tick-size replay.",
+      "Does not prove assets with tick_size_change rows.",
+      "Does not prove full PMXT Polymarket L2 source acceptance.",
+      "Does not authorize broad backfill.",
+      "Does not authorize production backfill."
+    ]
+  },
+  "hard_stop_audit": [
+    {
+      "prompt_requirement": "authoritative raw object/source proof",
+      "bounded_first_proof_status": "partially_proven",
+      "evidence": "Raw object and hash are fixed in the pending PMXT fixture and first-proof policy; source proof remains pending until TDD produces NT mapping, catalog read-back, BacktestNode, storage, coverage, and cost evidence.",
+      "required_before_acceptance": "Promote or supersede the pending fixture only after the bounded selected universe is written to NT catalog, queried back, and consumed by BacktestNode."
+    },
+    {
+      "prompt_requirement": "clean output prefix",
+      "bounded_first_proof_status": "proven_shape_not_concrete_run_path",
+      "evidence": "Contract requires one configured artifact_root with typed nt-catalog/source-proofs/backtests subpaths; implementation must create a new projection id/run id and fail closed on any dirty prefix.",
+      "required_before_acceptance": "TDD must prove clean local artifact_root staging first, then any publish path must use configured artifact_root and create-only semantics."
+    },
+    {
+      "prompt_requirement": "idempotency proof",
+      "bounded_first_proof_status": "existing_trade_path_proven_new_l2_path_unproven",
+      "evidence": "Current catalog projection fails closed on dirty catalog roots for TradeTick; bounded PMXT L2 must extend the same dirty-prefix, manifest/checkpoint, and logical-hash checks to BinaryOption, OrderBookDelta, and TradeTick.",
+      "required_before_acceptance": "RED/GREEN tests for dirty output rejection, mismatched source proof/hash/converter identity rejection, idempotent rerun, and invalid checkpoint refusal."
+    },
+    {
+      "prompt_requirement": "whether NT already provides needed mechanism",
+      "bounded_first_proof_status": "proven_for_core_catalog_backtest_parser_surfaces",
+      "evidence": "Pinned NT exposes ParquetDataCatalog, BacktestNode, NautilusDataType::OrderBookDelta, L2_MBP book type, Polymarket instrument/provider/parser surfaces, and typed catalog query support.",
+      "required_before_acceptance": "BTE must depend on pinned nautilus-polymarket and prove direct parser/provider reuse; build_polymarket_trade_id is crate-private and needs a tested mirror or upstream public API."
+    },
+    {
+      "prompt_requirement": "BacktestNode consumes exactly the verified catalog",
+      "bounded_first_proof_status": "proven_nt_surface_unproven_bte_l2_manifest_path",
+      "evidence": "NT BacktestNode queries OrderBookDelta from ParquetDataCatalog and validates L2_MBP venues have order-book data, but BTE manifest mapping currently admits only TradeTick.",
+      "required_before_acceptance": "Extend BTE manifest/data config generically to OrderBookDelta plus TradeTick data configs and prove BacktestNode consumes the same logical catalog hash."
+    },
+    {
+      "prompt_requirement": "result contract provenance binds the run",
+      "bounded_first_proof_status": "existing_trade_contract_shape_proven_new_l2_bindings_unproven",
+      "evidence": "Existing result contracts bind accepted proof and logical catalog evidence for the trade path; bounded PMXT must also bind selected_asset_ids_hash, event_count_ledger_hash, converter identity, NT revision, and first-proof claim limits.",
+      "required_before_acceptance": "BacktestResultContract must preserve PMXT source proof id/version, accepted object hash, selected universe hash, conversion manifest/checkpoint hash, logical catalog hash, NT revision, and claim limits."
+    }
+  ],
+  "nt_use_matrix_delta": [
+    {
+      "requirement": "PMXT archive rows to NT data",
+      "nt_provides": "parser_and_instrument_surfaces_yes_raw_archive_adapter_no",
+      "evidence": "nautilus-polymarket public APIs expose instrument provider, Gamma parser, BinaryOption build/rebuild, websocket message structs, parse_book_snapshot, parse_book_deltas, parse_trade_tick, and parse_quote_from_price_change.",
+      "decision": "Use NT parser/provider. Bolt owns raw PMXT parquet row decoding, event-count selector, timestamp_received provenance, dedupe, and manifest/checkpoint governance."
+    },
+    {
+      "requirement": "catalog write/read",
+      "nt_provides": "yes",
+      "evidence": "ParquetDataCatalog writes instruments and typed data; query_typed_data/query support OrderBookDelta and TradeTick.",
+      "decision": "Use NT ParquetDataCatalog only; no custom catalog format."
+    },
+    {
+      "requirement": "backtest execution",
+      "nt_provides": "yes_for_bounded_static_instrument_universe",
+      "evidence": "BacktestNode dispatches OrderBookDelta catalog queries and validates L2_MBP venues have configured order-book data.",
+      "decision": "Use NT BacktestNode. No custom simulation engine."
+    },
+    {
+      "requirement": "dynamic tick-size instrument epoch replay",
+      "nt_provides": "unproven_for_backtestnode_catalog_replay",
+      "evidence": "NT live Polymarket path rebuilds BinaryOption and emits DataEvent::Instrument, but BacktestDataConfig catalog replay feeds Data enum records and Data has no InstrumentAny variant.",
+      "decision": "Exclude tick-changing assets for bounded first proof; keep full PMXT L2 and broad backfill blocked until this is proven."
+    },
+    {
+      "requirement": "artifact/proof governance",
+      "nt_provides": "no",
+      "evidence": "Source-proof acceptance, artifact_root path governance, clean-prefix checks, logical catalog hash, selected universe hash, and claim limits are Bolt contract surfaces.",
+      "decision": "Bolt owns minimal gates and provenance only."
+    }
+  ],
+  "generic_implementation_slice": [
+    {
+      "area": "source selector",
+      "required_shape": "TOML/source-proof-owned event-count selector over source event families and row budget; no venue, asset, or symbol constants in production code."
+    },
+    {
+      "area": "manifest data config",
+      "required_shape": "Data-family driven support for multiple NT data configs, at minimum OrderBookDelta and TradeTick for L2Replay, without replacing existing TradeTick path."
+    },
+    {
+      "area": "catalog projection",
+      "required_shape": "Write InstrumentAny::BinaryOption, OrderBookDelta, and TradeTick to ParquetDataCatalog; read all three logical classes back and hash them deterministically."
+    },
+    {
+      "area": "NT parser/provider reuse",
+      "required_shape": "Add pinned nautilus-polymarket dependency to the isolated BTE crate and call public NT Polymarket parser/provider APIs for instruments, snapshots, deltas, and trades."
+    },
+    {
+      "area": "trade id",
+      "required_shape": "Because build_polymarket_trade_id is pub(crate), mirror the pinned format only behind focused tests/provenance or wait for an upstream public API."
+    },
+    {
+      "area": "result contract",
+      "required_shape": "Bind source proof, object hash, event-count ledger hash, selected_asset_ids_hash, converter identity/version, conversion manifest/checkpoint hash, logical catalog hash, NT revision, and claim limits."
+    }
+  ],
+  "required_red_green_tests_before_acceptance": [
+    "Reject dirty existing PMXT L2 output without matching manifest/checkpoint.",
+    "Reject existing output with mismatched source proof, object hash, selected universe hash, or converter identity.",
+    "Rerun the same manifest/checkpoint idempotently.",
+    "Resume only from a validated PMXT L2 checkpoint.",
+    "Refuse partial failed PMXT L2 output without a valid checkpoint.",
+    "Compute selected first-proof universe from configured event-count predicates with no venue or asset constants.",
+    "Reject selected assets that have tick_size_change rows.",
+    "Reuse nautilus-polymarket public parser/provider APIs for BinaryOption instruments and token-id joins.",
+    "Prove selected PMXT trade-id dedupe and sequence policy, including the crate-private NT helper mirror constraint.",
+    "Write and read back BinaryOption instruments, OrderBookDelta rows, and TradeTick rows from ParquetDataCatalog.",
+    "Run BacktestNode with L2_MBP venue config over only the verified catalog.",
+    "Bind BacktestResultContract provenance and claim limits for the bounded PMXT first proof."
+  ],
+  "still_blocking_broad_backfill": [
+    "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven.",
+    "One-hour bounded sample does not prove one-year PMXT coverage, gaps, retention, throughput, or cost.",
+    "Pending PMXT source proof has not passed storage, coverage, completeness, cost, and accepted NT mapping checks.",
+    "No accepted clean PMXT L2 catalog/backtest/result-contract artifact exists yet."
+  ]
+}

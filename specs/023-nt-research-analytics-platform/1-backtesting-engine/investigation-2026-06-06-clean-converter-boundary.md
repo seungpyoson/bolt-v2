@@ -123,6 +123,11 @@ Go for the local BNBUSDC vertical-slice path after this fix:
   `build_polymarket_trade_id` helper is `pub(crate)`, so BTE must either
   mirror the pinned helper format with TDD/provenance or wait for an upstream
   public API before claiming direct helper reuse.
+- The bounded-first-proof go/no-go checkpoint is now recorded in
+  `reference/source-proof-bte-bounded-first-proof-go-no-go.2026-06-08.json`:
+  go for TDD only on the selected no-tick PMXT Polymarket first proof, no-go
+  for production backfill or broad PMXT L2 backfill, and no-go for dynamic
+  tick-size replay until BacktestNode catalog epoch handling is proven.
 - generated result contracts now preserve structured source-proof claim-limit evidence from the accepted proof instead of rebuilding source limits from plain `forbidden_claims` strings
 - non-latest source-proof pins now require structured manifest justification: `normal` runs still cannot pin them, non-normal pins require `proof_pin_reason_code`, and `audit_or_investigation` pins require `proof_pin_reason_detail`
 - the accepted `proof_pin_reason_code` vocabulary now matches the plan/reference contract, including published-result reproduction and regression-comparison pins

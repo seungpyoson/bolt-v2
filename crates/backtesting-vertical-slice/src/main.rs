@@ -35,9 +35,9 @@ struct Cli {
     /// Path to the run-spec TOML (dataset facts: object, source proof, manifest).
     #[arg(long)]
     run_spec: PathBuf,
-    /// Optional pre-payload execution plan that must match the run-spec.
+    /// Pre-payload execution plan that must match the run-spec.
     #[arg(long)]
-    execution_plan: Option<PathBuf>,
+    execution_plan: PathBuf,
     /// Local path to the accepted object whose SHA-256 the run-spec pins.
     #[arg(long = "object")]
     object_path: PathBuf,
@@ -105,11 +105,9 @@ where
     F: FnMut(&Path, u64) -> Result<Vec<u8>>,
     R: ArtifactStoreSecretResolver,
 {
-    if let Some(execution_plan_path) = &cli.execution_plan {
-        let execution_plan = read_execution_plan(execution_plan_path)?;
-        validate_execution_plan_for_run_spec(&execution_plan, run_spec_hash, &spec)
-            .with_context(|| format!("execution plan {}", execution_plan_path.display()))?;
-    }
+    let execution_plan = read_execution_plan(&cli.execution_plan)?;
+    validate_execution_plan_for_run_spec(&execution_plan, run_spec_hash, &spec)
+        .with_context(|| format!("execution plan {}", cli.execution_plan.display()))?;
     let publish_options = PublishOptions {
         prove_published_catalog: cli.prove_published_catalog,
     };
@@ -338,12 +336,46 @@ mod tests {
         "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
     );
 
+    fn write_matching_execution_plan(dir: &Path, spec: &RunSpec, run_spec_hash: &str) -> PathBuf {
+        let path = dir.join("execution-plan.json");
+        let accepted_tranche_id = format!("{}-accepted-tranche", spec.manifest.run_id);
+        let plan = serde_json::json!({
+            "schema_version": "backfill-execution-plan.v1",
+            "plan_id": format!("{}-execution-plan", spec.manifest.run_id),
+            "status": "ready",
+            "accepted_tranche_id": accepted_tranche_id,
+            "accepted_tranche_manifest_hash": sha256_hex(accepted_tranche_id.as_bytes()),
+            "run_spec_hash": run_spec_hash,
+            "operator_run_id": spec.manifest.run_id,
+            "output_prefix": spec.manifest.output_prefix,
+            "source_proof_id": spec.manifest.source_proof_id,
+            "source_proof_version": spec.manifest.source_proof_version,
+            "source_binding": spec.manifest.venue_binding_key,
+            "object_count": 1,
+            "accepted_bytes": spec.accepted_object.bytes,
+            "max_object_bytes": spec.converter.raw_payload.max_object_bytes,
+            "max_decoded_bytes": spec.converter.raw_payload.max_decoded_bytes,
+            "objects": [{
+                "s3_uri": spec.accepted_object.s3_uri,
+                "source_url": spec.accepted_object.source_url,
+                "sha256": spec.accepted_object.sha256,
+                "bytes": spec.accepted_object.bytes,
+                "archive_date": spec.accepted_object.archive_date,
+            }],
+            "blocking_issues": []
+        });
+        fs::write(&path, serde_json::to_vec_pretty(&plan).unwrap()).unwrap();
+        path
+    }
+
     #[test]
     fn cli_publish_output_flag_is_explicit_opt_in() {
         let base_args = [
             "backtesting-vertical-slice",
             "--run-spec",
             "run.toml",
+            "--execution-plan",
+            "execution-plan.json",
             "--object",
             "object.csv.gz",
             "--output-dir",
@@ -372,6 +404,8 @@ mod tests {
             "backtesting-vertical-slice",
             "--run-spec",
             "run.toml",
+            "--execution-plan",
+            "execution-plan.json",
             "--object",
             "object.csv.gz",
             "--output-dir",
@@ -411,15 +445,17 @@ mod tests {
     }
 
     #[test]
-    fn cli_rejects_object_above_configured_payload_max_before_reading_object() {
+    fn cli_rejects_plan_object_above_payload_budget_before_reading_object() {
         let dir = tempfile::TempDir::new().unwrap();
         let run_spec_path = dir.path().join("run.toml");
         fs::write(&run_spec_path, COMMITTED_RUN_SPEC).unwrap();
         let mut spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
         spec.converter.raw_payload.max_object_bytes = spec.accepted_object.bytes - 1;
+        let run_spec_hash = sha256_hex(COMMITTED_RUN_SPEC.as_bytes());
+        let execution_plan = write_matching_execution_plan(dir.path(), &spec, &run_spec_hash);
         let cli = Cli {
             run_spec: run_spec_path,
-            execution_plan: None,
+            execution_plan,
             object_path: dir.path().join("oversized-object.csv.gz"),
             output_dir: dir.path().join("out"),
             publish_output: false,
@@ -431,7 +467,6 @@ mod tests {
             anyhow::bail!("object reader must not run after configured payload max rejection")
         };
         let mut resolver = |_region: &str, _path: &str| Ok::<String, String>("unused".to_string());
-        let run_spec_hash = sha256_hex(COMMITTED_RUN_SPEC.as_bytes());
 
         let err = run_cli_with_spec_object_reader_and_resolver(
             &cli,
@@ -440,16 +475,18 @@ mod tests {
             &mut object_reader,
             &mut resolver,
         )
-        .expect_err("payload max must reject before object read");
+        .expect_err("execution plan payload budget must reject before object read");
 
-        assert!(
-            err.to_string()
-                .contains("converter.raw_payload.max_object_bytes"),
-            "{err}"
-        );
+        let error_chain = err
+            .chain()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(error_chain.contains("execution plan"), "{error_chain}");
+        assert!(error_chain.contains("byte budget"), "{error_chain}");
         assert!(
             !object_reader_called,
-            "configured payload max must reject before local object read"
+            "execution plan byte budget must reject before local object read"
         );
     }
 
@@ -458,9 +495,12 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let run_spec_path = dir.path().join("run.toml");
         fs::write(&run_spec_path, COMMITTED_RUN_SPEC).unwrap();
+        let spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
+        let run_spec_hash = sha256_hex(COMMITTED_RUN_SPEC.as_bytes());
+        let execution_plan = write_matching_execution_plan(dir.path(), &spec, &run_spec_hash);
         let cli = Cli {
             run_spec: run_spec_path,
-            execution_plan: None,
+            execution_plan,
             object_path: dir.path().join("missing-object.csv.gz"),
             output_dir: dir.path().join("out"),
             publish_output: true,
@@ -484,6 +524,24 @@ mod tests {
             !object_reader_called,
             "publish preflight must run before local object read"
         );
+    }
+
+    #[test]
+    fn cli_requires_execution_plan_before_reading_object() {
+        let args = [
+            "backtesting-vertical-slice",
+            "--run-spec",
+            "run.toml",
+            "--object",
+            "object.csv.gz",
+            "--output-dir",
+            "out",
+        ];
+
+        let err = Cli::try_parse_from(args).expect_err("execution plan is required");
+
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+        assert!(err.to_string().contains("--execution-plan"), "{err}");
     }
 
     #[test]
@@ -525,7 +583,7 @@ mod tests {
         .unwrap();
         let cli = Cli {
             run_spec: run_spec_path,
-            execution_plan: Some(execution_plan_path),
+            execution_plan: execution_plan_path,
             object_path: dir.path().join("object.csv.gz"),
             output_dir: dir.path().join("out"),
             publish_output: false,

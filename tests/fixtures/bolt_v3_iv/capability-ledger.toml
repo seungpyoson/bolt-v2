@@ -1,0 +1,71 @@
+[[surfaces]]
+surface_id = "nt.model.option_greeks"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "OptionGreeks"
+matched_terms = ["option", "greeks"]
+seed_family = "model_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.model.option_chain_slice"
+evidence_path = "crates/model/src/data/option_chain.rs"
+symbol = "OptionChainSlice"
+matched_terms = ["option", "chain"]
+seed_family = "model_data"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.data.actor.subscribe_option_greeks"
+evidence_path = "crates/data/src/client.rs"
+symbol = "subscribe_option_greeks"
+matched_terms = ["option", "greeks"]
+seed_family = "data_actor_subscription"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.data.engine.publish_option_chain_slice"
+evidence_path = "crates/data/src/engine/option_publications.rs"
+symbol = "publish_option_chain_slice"
+matched_terms = ["option", "chain"]
+seed_family = "data_engine_publication"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.common.msgbus.option_greeks_topic"
+evidence_path = "crates/common/src/msgbus/option_topics.rs"
+symbol = "option_greeks_topic"
+matched_terms = ["option", "greeks"]
+seed_family = "msgbus"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.data.option_chains.option_chain_aggregator"
+evidence_path = "crates/data/src/option_chains/mod.rs"
+symbol = "OptionChainAggregator"
+matched_terms = ["option", "chain"]
+seed_family = "option_chain_manager"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.model.greeks.black_scholes_greeks_result"
+evidence_path = "crates/model/src/data/greeks.rs"
+symbol = "BlackScholesGreeksResult"
+matched_terms = ["greeks"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.adapters.option_greeks_subscription"
+evidence_path = "crates/adapters/generic/src/data.rs"
+symbol = "subscribe_option_greeks_for_adapter"
+matched_terms = ["option", "greeks"]
+seed_family = "adapter"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.model.custom_data_registration"
+evidence_path = "crates/model/src/data/custom.rs"
+symbol = "register_custom_data"
+matched_terms = ["custom data"]
+seed_family = "custom_data"
+classification = "supported"

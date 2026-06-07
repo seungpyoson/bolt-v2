@@ -1,0 +1,526 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs, io,
+    path::{Path, PathBuf},
+};
+
+use serde::{Deserialize, Serialize};
+
+pub const REQUIRED_CANDIDATE_SWEEP_TERMS: [&str; 18] = [
+    "option",
+    "options",
+    "greeks",
+    "implied",
+    "iv",
+    "volatility",
+    "smile",
+    "surface",
+    "chain",
+    "custom data",
+    "strike",
+    "expiry",
+    "expiration",
+    "tenor",
+    "moneyness",
+    "skew",
+    "premium",
+    "vol",
+];
+
+const REQUIRED_SEED_FAMILIES: [SeedFamily; 8] = [
+    SeedFamily::ModelData,
+    SeedFamily::DataActorSubscription,
+    SeedFamily::DataEnginePublication,
+    SeedFamily::Msgbus,
+    SeedFamily::OptionChainManager,
+    SeedFamily::GreeksHelper,
+    SeedFamily::Adapter,
+    SeedFamily::CustomData,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SeedFamily {
+    ModelData,
+    DataActorSubscription,
+    DataEnginePublication,
+    Msgbus,
+    OptionChainManager,
+    GreeksHelper,
+    Adapter,
+    CustomData,
+}
+
+impl SeedFamily {
+    pub fn required() -> &'static [Self] {
+        &REQUIRED_SEED_FAMILIES
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityClassification {
+    Supported,
+    Unreachable,
+    NotIvOptions,
+    Excluded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IvCapabilityCandidate {
+    pub surface_id: String,
+    pub evidence_path: String,
+    pub symbol: String,
+    pub matched_terms: BTreeSet<String>,
+    pub seed_family: Option<SeedFamily>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IvCapabilityLedger {
+    pub surfaces: Vec<IvCapabilityCandidate>,
+    pub classifications: BTreeMap<String, CapabilityClassification>,
+}
+
+impl IvCapabilityLedger {
+    pub fn classification_for(&self, surface_id: &str) -> Option<CapabilityClassification> {
+        self.classifications.get(surface_id).copied()
+    }
+
+    pub fn validate_candidates(
+        &self,
+        candidates: &[IvCapabilityCandidate],
+    ) -> Result<(), IvCapabilityError> {
+        for candidate in candidates {
+            if !self.classifications.contains_key(&candidate.surface_id) {
+                return Err(IvCapabilityError::UnclassifiedCandidate {
+                    surface_id: candidate.surface_id.clone(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NtCargoEvidence {
+    pub nt_revision: String,
+    pub resolved_checkout_path: PathBuf,
+    pub lock_revisions: BTreeMap<String, String>,
+    pub metadata_packages: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IvCapabilityError {
+    InvalidCargoMetadata(String),
+    InvalidCargoLock(String),
+    MissingNtMetadata,
+    MissingNtLockSource,
+    MissingNtCheckoutPath,
+    RevisionMismatch {
+        package: String,
+        metadata_revision: String,
+        lock_revision: String,
+    },
+    Io(String),
+    Toml(String),
+    UnclassifiedCandidate {
+        surface_id: String,
+    },
+}
+
+impl From<io::Error> for IvCapabilityError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error.to_string())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoMetadata {
+    packages: Vec<CargoMetadataPackage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoMetadataPackage {
+    name: String,
+    source: Option<String>,
+    manifest_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FixtureLedger {
+    surfaces: Vec<FixtureSurface>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FixtureSurface {
+    surface_id: String,
+    evidence_path: String,
+    symbol: String,
+    matched_terms: Vec<String>,
+    seed_family: Option<SeedFamily>,
+    classification: CapabilityClassification,
+}
+
+pub fn resolve_nt_cargo_evidence(
+    metadata_json: &str,
+    lock_text: &str,
+) -> Result<NtCargoEvidence, IvCapabilityError> {
+    let metadata = serde_json::from_str::<CargoMetadata>(metadata_json)
+        .map_err(|error| IvCapabilityError::InvalidCargoMetadata(error.to_string()))?;
+
+    let mut metadata_revisions = BTreeMap::new();
+    let mut metadata_packages = BTreeSet::new();
+    let mut checkout_path = None;
+
+    for package in metadata.packages {
+        let Some(source) = package.source.as_deref() else {
+            continue;
+        };
+        let Some(revision) = nt_source_revision(source) else {
+            continue;
+        };
+
+        metadata_packages.insert(package.name.clone());
+        metadata_revisions.insert(package.name.clone(), revision);
+
+        if checkout_path.is_none() {
+            checkout_path = checkout_root_from_manifest(&package.manifest_path);
+        }
+    }
+
+    if metadata_revisions.is_empty() {
+        return Err(IvCapabilityError::MissingNtMetadata);
+    }
+
+    let nt_revision = single_revision(&metadata_revisions)?;
+    let lock_revisions = nt_lock_revisions(lock_text)?;
+
+    for (package, lock_revision) in &lock_revisions {
+        if let Some(metadata_revision) = metadata_revisions.get(package) {
+            if metadata_revision != lock_revision {
+                return Err(IvCapabilityError::RevisionMismatch {
+                    package: package.clone(),
+                    metadata_revision: metadata_revision.clone(),
+                    lock_revision: lock_revision.clone(),
+                });
+            }
+        }
+    }
+
+    let resolved_checkout_path = checkout_path.ok_or(IvCapabilityError::MissingNtCheckoutPath)?;
+
+    Ok(NtCargoEvidence {
+        nt_revision,
+        resolved_checkout_path,
+        lock_revisions,
+        metadata_packages,
+    })
+}
+
+pub fn scan_seed_families(root: &Path) -> Result<Vec<IvCapabilityCandidate>, IvCapabilityError> {
+    let mut candidates = scan_candidates(root)?;
+    candidates.retain(|candidate| candidate.seed_family.is_some());
+    Ok(candidates)
+}
+
+pub fn scan_whole_checkout_candidates(
+    root: &Path,
+) -> Result<Vec<IvCapabilityCandidate>, IvCapabilityError> {
+    scan_candidates(root)
+}
+
+pub fn load_capability_ledger_fixture(
+    path: &Path,
+) -> Result<IvCapabilityLedger, IvCapabilityError> {
+    let text = fs::read_to_string(path)?;
+    let fixture = toml::from_str::<FixtureLedger>(&text)
+        .map_err(|error| IvCapabilityError::Toml(error.to_string()))?;
+
+    let mut surfaces = Vec::with_capacity(fixture.surfaces.len());
+    let mut classifications = BTreeMap::new();
+
+    for surface in fixture.surfaces {
+        classifications.insert(surface.surface_id.clone(), surface.classification);
+        surfaces.push(IvCapabilityCandidate {
+            surface_id: surface.surface_id,
+            evidence_path: surface.evidence_path,
+            symbol: surface.symbol,
+            matched_terms: surface.matched_terms.into_iter().collect(),
+            seed_family: surface.seed_family,
+        });
+    }
+
+    Ok(IvCapabilityLedger {
+        surfaces,
+        classifications,
+    })
+}
+
+fn nt_source_revision(source: &str) -> Option<String> {
+    if !source.contains("nautilus_trader") {
+        return None;
+    }
+
+    if let Some((_, revision)) = source.rsplit_once('#') {
+        if !revision.is_empty() {
+            return Some(revision.to_string());
+        }
+    }
+
+    source.find("rev=").and_then(|start| {
+        let revision_start = start + "rev=".len();
+        let revision = source[revision_start..]
+            .split(['&', '#'])
+            .next()
+            .unwrap_or_default();
+
+        (!revision.is_empty()).then(|| revision.to_string())
+    })
+}
+
+fn checkout_root_from_manifest(manifest_path: &str) -> Option<PathBuf> {
+    let mut cursor = Path::new(manifest_path).parent();
+
+    while let Some(path) = cursor {
+        if path.file_name().and_then(|name| name.to_str()) == Some("crates") {
+            return path.parent().map(Path::to_path_buf);
+        }
+
+        cursor = path.parent();
+    }
+
+    Path::new(manifest_path).parent().map(Path::to_path_buf)
+}
+
+fn nt_lock_revisions(lock_text: &str) -> Result<BTreeMap<String, String>, IvCapabilityError> {
+    let lock = toml::from_str::<toml::Value>(lock_text)
+        .map_err(|error| IvCapabilityError::InvalidCargoLock(error.to_string()))?;
+    let packages = lock
+        .get("package")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| IvCapabilityError::InvalidCargoLock("missing package array".to_string()))?;
+    let mut revisions = BTreeMap::new();
+
+    for package in packages {
+        let Some(name) = package.get("name").and_then(toml::Value::as_str) else {
+            continue;
+        };
+        let Some(source) = package.get("source").and_then(toml::Value::as_str) else {
+            continue;
+        };
+        let Some(revision) = nt_source_revision(source) else {
+            continue;
+        };
+
+        revisions.insert(name.to_string(), revision);
+    }
+
+    if revisions.is_empty() {
+        return Err(IvCapabilityError::MissingNtLockSource);
+    }
+
+    let expected_revision = single_revision(&revisions)?;
+    for (package, revision) in &revisions {
+        if revision != &expected_revision {
+            return Err(IvCapabilityError::RevisionMismatch {
+                package: package.clone(),
+                metadata_revision: expected_revision.clone(),
+                lock_revision: revision.clone(),
+            });
+        }
+    }
+
+    Ok(revisions)
+}
+
+fn single_revision(revisions: &BTreeMap<String, String>) -> Result<String, IvCapabilityError> {
+    let Some((_, first_revision)) = revisions.iter().next() else {
+        return Err(IvCapabilityError::MissingNtMetadata);
+    };
+
+    for (package, revision) in revisions {
+        if revision != first_revision {
+            return Err(IvCapabilityError::RevisionMismatch {
+                package: package.clone(),
+                metadata_revision: first_revision.clone(),
+                lock_revision: revision.clone(),
+            });
+        }
+    }
+
+    Ok(first_revision.clone())
+}
+
+fn scan_candidates(root: &Path) -> Result<Vec<IvCapabilityCandidate>, IvCapabilityError> {
+    let mut files = Vec::new();
+    collect_rust_files(root, &mut files)?;
+
+    let mut candidates = Vec::new();
+    for file in files {
+        let text = fs::read_to_string(&file)?;
+        let relative_path = relative_path(root, &file);
+        let matched_terms = matched_terms(&relative_path, &text);
+
+        if matched_terms.is_empty() {
+            continue;
+        }
+
+        let seed_family = classify_seed_family(&relative_path, &text);
+        for symbol in public_symbols(&text) {
+            candidates.push(IvCapabilityCandidate {
+                surface_id: surface_id(&relative_path, &symbol),
+                evidence_path: relative_path.clone(),
+                symbol,
+                matched_terms: matched_terms.clone(),
+                seed_family,
+            });
+        }
+    }
+
+    Ok(candidates)
+}
+
+fn collect_rust_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), IvCapabilityError> {
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            collect_rust_files(&path, files)?;
+        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+            files.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn relative_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn matched_terms(relative_path: &str, text: &str) -> BTreeSet<String> {
+    let haystack = format!("{} {}", relative_path, text).to_lowercase();
+
+    REQUIRED_CANDIDATE_SWEEP_TERMS
+        .iter()
+        .filter(|term| term_matches(&haystack, term))
+        .map(|term| (*term).to_string())
+        .collect()
+}
+
+fn term_matches(haystack: &str, term: &str) -> bool {
+    if term == "custom data" {
+        return haystack.contains("custom data")
+            || haystack.contains("custom_data")
+            || haystack.contains("custom-data");
+    }
+
+    haystack.contains(term)
+}
+
+fn classify_seed_family(relative_path: &str, text: &str) -> Option<SeedFamily> {
+    let relative_path = relative_path.to_lowercase();
+    let text = text.to_lowercase();
+    let combined = format!("{relative_path} {text}");
+
+    if combined.contains("custom data") || combined.contains("custom_data") {
+        Some(SeedFamily::CustomData)
+    } else if relative_path.contains("crates/adapters") {
+        Some(SeedFamily::Adapter)
+    } else if relative_path.contains("msgbus")
+        || relative_path.contains("topic")
+        || text.contains("topic")
+    {
+        Some(SeedFamily::Msgbus)
+    } else if relative_path.contains("option_chains")
+        || relative_path.contains("option_chain_manager")
+        || text.contains("optionchainaggregator")
+    {
+        Some(SeedFamily::OptionChainManager)
+    } else if relative_path.contains("greeks") || text.contains("blackscholes") {
+        Some(SeedFamily::GreeksHelper)
+    } else if relative_path.contains("crates/data/src/client") || text.contains("subscribe_option")
+    {
+        Some(SeedFamily::DataActorSubscription)
+    } else if relative_path.contains("crates/data/src/engine") || text.contains("publish_option") {
+        Some(SeedFamily::DataEnginePublication)
+    } else if relative_path.contains("crates/model/src/data") {
+        Some(SeedFamily::ModelData)
+    } else {
+        None
+    }
+}
+
+fn public_symbols(text: &str) -> Vec<String> {
+    let prefixes = [
+        "pub struct ",
+        "pub enum ",
+        "pub trait ",
+        "pub fn ",
+        "pub async fn ",
+        "pub type ",
+        "pub const ",
+        "pub mod ",
+    ];
+    let mut symbols = Vec::new();
+
+    for line in text.lines() {
+        let line = line.trim_start();
+        for prefix in prefixes {
+            if let Some(rest) = line.strip_prefix(prefix) {
+                if let Some(symbol) = symbol_token(rest) {
+                    symbols.push(symbol);
+                }
+            }
+        }
+    }
+
+    symbols
+}
+
+fn symbol_token(rest: &str) -> Option<String> {
+    let token = rest
+        .split(|character: char| {
+            character.is_whitespace() || matches!(character, '<' | '(' | '{' | ';' | ':' | '=')
+        })
+        .next()
+        .unwrap_or_default();
+
+    (!token.is_empty()).then(|| token.to_string())
+}
+
+fn surface_id(relative_path: &str, symbol: &str) -> String {
+    let path = relative_path
+        .strip_suffix(".rs")
+        .unwrap_or(relative_path)
+        .replace('/', ".")
+        .replace('-', "_");
+
+    format!("nt.{path}.{}", to_snake_case(symbol))
+}
+
+fn to_snake_case(symbol: &str) -> String {
+    let mut snake = String::new();
+
+    for (index, character) in symbol.chars().enumerate() {
+        if character.is_uppercase() {
+            if index != 0 {
+                snake.push('_');
+            }
+            for lowercase in character.to_lowercase() {
+                snake.push(lowercase);
+            }
+        } else {
+            snake.push(character);
+        }
+    }
+
+    snake
+}

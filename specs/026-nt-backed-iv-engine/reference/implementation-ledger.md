@@ -62,3 +62,29 @@ Phase 1 adds documentation, module boundaries, and fixture inventory only. Runti
 | `git diff --check` | GREEN | No whitespace errors after Phase 2 edits. |
 
 `just source-fence`, clippy, full IV user-story targets, and CI remain open for the broader feature and are still tracked by `T123` and `T124`.
+
+## Phase 3 User Story 1 Capability Inventory
+
+| Task | Evidence | Status |
+|---|---|---|
+| `T025` | `tests/bolt_v3_iv_capability.rs` asserts Cargo metadata plus `Cargo.lock` resolve to the pinned NT checkout and a single NT revision. | Complete |
+| `T026` | `tests/bolt_v3_iv_capability.rs` asserts seed-family discovery covers model data, data actor subscriptions, data-engine publications, msgbus topics, option-chain manager, greeks helper, adapter, and custom-data surfaces. | Complete |
+| `T027` | `tests/bolt_v3_iv_capability.rs` asserts the whole-checkout sweep includes every FR-054 term. | Complete |
+| `T028` | `tests/bolt_v3_iv_capability.rs` asserts unclassified candidates are rejected before fixture-backed ledger validation passes. | Complete |
+| `T029` | RED evidence below records the missing capability module failure. | Complete |
+| `T030` | `src/bolt_v3_iv/capability.rs` implements the NT Cargo metadata and lockfile resolver. | Complete |
+| `T031` | `src/bolt_v3_iv/capability.rs` implements seed-family scanning for the required NT capability families. | Complete |
+| `T032` | `src/bolt_v3_iv/capability.rs` implements recursive public-symbol candidate discovery across Rust source files. | Complete |
+| `T033` | `src/bolt_v3_iv/capability.rs` implements explicit candidate classification and unclassified-candidate rejection. | Complete |
+| `T034` | `src/bolt_v3_iv/capability.rs` implements the capability ledger TOML fixture loader. | Complete |
+| `T035` | `tests/fixtures/bolt_v3_iv/capability-ledger.toml` records supported fixture classifications. | Complete |
+| `T036` | GREEN evidence below records the passing focused US1 test target. | Complete |
+
+## Phase 3 RED/GREEN Evidence
+
+| Command | Outcome | Notes |
+|---|---|---|
+| `cargo test --locked --test bolt_v3_iv_capability` | RED | Failed with `E0432` unresolved import because `bolt_v2::bolt_v3_iv::capability` did not exist. |
+| `cargo test --locked --test bolt_v3_iv_capability` | GREEN | 4 tests passed after adding the capability resolver, scanners, explicit ledger model, and TOML fixture. |
+
+NT-first decisions for US1: the Cargo resolver derives NT evidence from `cargo metadata` and `Cargo.lock`; scanners operate against source files from the resolved checkout shape; no FV/RV, strategy-specific, venue-specific, or sidecar collection behavior was introduced.

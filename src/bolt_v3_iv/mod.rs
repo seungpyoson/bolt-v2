@@ -6,6 +6,7 @@
 pub mod audit;
 pub mod authz;
 pub mod bounds;
+pub mod capability;
 pub mod error;
 pub mod health;
 pub mod provenance;

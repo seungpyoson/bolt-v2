@@ -53,21 +53,21 @@
 
 ### Tests for User Story 1
 
-- [ ] T025 [P] [US1] Add failing test for Cargo metadata and `Cargo.lock` NT checkout resolution in `tests/bolt_v3_iv_capability.rs`
-- [ ] T026 [P] [US1] Add failing test for seed-family IV/options surface discovery in `tests/bolt_v3_iv_capability.rs`
-- [ ] T027 [P] [US1] Add failing test for whole-checkout candidate sweep terms from FR-054 in `tests/bolt_v3_iv_capability.rs`, including option, options, greeks, implied, iv, volatility, smile, surface, chain, custom data, strike, expiry, expiration, tenor, moneyness, skew, premium, and vol
-- [ ] T028 [P] [US1] Add failing test for unclassified candidate rejection in `tests/bolt_v3_iv_capability.rs`
-- [ ] T029 [US1] Record US1 RED evidence in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T025 [P] [US1] Add failing test for Cargo metadata and `Cargo.lock` NT checkout resolution in `tests/bolt_v3_iv_capability.rs`
+- [X] T026 [P] [US1] Add failing test for seed-family IV/options surface discovery in `tests/bolt_v3_iv_capability.rs`
+- [X] T027 [P] [US1] Add failing test for whole-checkout candidate sweep terms from FR-054 in `tests/bolt_v3_iv_capability.rs`, including option, options, greeks, implied, iv, volatility, smile, surface, chain, custom data, strike, expiry, expiration, tenor, moneyness, skew, premium, and vol
+- [X] T028 [P] [US1] Add failing test for unclassified candidate rejection in `tests/bolt_v3_iv_capability.rs`
+- [X] T029 [US1] Record US1 RED evidence in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
 ### Implementation for User Story 1
 
-- [ ] T030 [P] [US1] Implement Cargo metadata NT checkout resolver in `src/bolt_v3_iv/capability.rs`
-- [ ] T031 [P] [US1] Implement seed-family scanner for NT model, data actor, data engine, msgbus, option-chain, greeks-helper, adapter, and custom-data surfaces in `src/bolt_v3_iv/capability.rs`
-- [ ] T032 [P] [US1] Implement whole-checkout public-symbol candidate sweep in `src/bolt_v3_iv/capability.rs`
-- [ ] T033 [P] [US1] Implement candidate classification model in `src/bolt_v3_iv/capability.rs`
-- [ ] T034 [US1] Add generated ledger artifact loader for test fixtures in `src/bolt_v3_iv/capability.rs`
-- [ ] T035 [US1] Add capability fixture classifications in `tests/fixtures/bolt_v3_iv/capability-ledger.toml`
-- [ ] T036 [US1] Record US1 GREEN evidence and NT-first decisions in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T030 [P] [US1] Implement Cargo metadata NT checkout resolver in `src/bolt_v3_iv/capability.rs`
+- [X] T031 [P] [US1] Implement seed-family scanner for NT model, data actor, data engine, msgbus, option-chain, greeks-helper, adapter, and custom-data surfaces in `src/bolt_v3_iv/capability.rs`
+- [X] T032 [P] [US1] Implement whole-checkout public-symbol candidate sweep in `src/bolt_v3_iv/capability.rs`
+- [X] T033 [P] [US1] Implement candidate classification model in `src/bolt_v3_iv/capability.rs`
+- [X] T034 [US1] Add generated ledger artifact loader for test fixtures in `src/bolt_v3_iv/capability.rs`
+- [X] T035 [US1] Add capability fixture classifications in `tests/fixtures/bolt_v3_iv/capability-ledger.toml`
+- [X] T036 [US1] Record US1 GREEN evidence and NT-first decisions in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
 **Checkpoint**: IV capability scope is source-backed and independently testable.
 

@@ -18,6 +18,7 @@ use crate::{
     backfill_preflight::{
         BackfillPreflightReport, BackfillPreflightSelectedRecord, BackfillPreflightStatus,
     },
+    catalog_projection::NT_DATA_TYPE_TRADE_TICK,
     source_proof_migration_preflight::{
         SourceProofMigrationPreflightCandidate, SourceProofMigrationPreflightReport,
         SourceProofMigrationPreflightStatus,
@@ -52,6 +53,7 @@ pub enum BackfillReadinessBlocker {
     EmptyReadinessId,
     EmptyRequiredTableFamily,
     EmptyRequiredNtDataType,
+    UnsupportedRequiredNtDataType,
     BackfillPreflightBlocked,
     SourceProofMigrationPreflightBlocked,
     BackfillBindingCoverageBlocked,
@@ -185,6 +187,8 @@ pub fn evaluate_backfill_readiness(
     }
     if required_nt_data_type.trim().is_empty() {
         blockers.push(BackfillReadinessBlocker::EmptyRequiredNtDataType);
+    } else if required_nt_data_type.trim() != NT_DATA_TYPE_TRADE_TICK {
+        blockers.push(BackfillReadinessBlocker::UnsupportedRequiredNtDataType);
     }
     if backfill_preflight.status != BackfillPreflightStatus::Go
         || !backfill_preflight.blocking_reasons.is_empty()

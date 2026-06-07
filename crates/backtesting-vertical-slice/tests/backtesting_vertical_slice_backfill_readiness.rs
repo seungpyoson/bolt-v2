@@ -97,6 +97,25 @@ fn readiness_blocks_when_selected_backfill_record_is_not_canonical_ready() {
 }
 
 #[test]
+fn readiness_blocks_when_required_nt_data_type_is_not_supported() {
+    let report = evaluate_backfill_readiness(
+        "synthetic-readiness",
+        ready_backfill_preflight(),
+        candidate_source_proof_preflight("trades"),
+        ready_binding_coverage(),
+        "trades",
+        "QuoteTick",
+    );
+
+    assert_eq!(report.status, BackfillReadinessStatus::Blocked);
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillReadinessBlocker::UnsupportedRequiredNtDataType)
+    );
+}
+
+#[test]
 fn readiness_requires_selected_source_proof_table_family_to_match_requested_path() {
     let report = evaluate_backfill_readiness(
         "synthetic-readiness",

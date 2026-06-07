@@ -1349,6 +1349,18 @@ Midpoint table-family coverage audit:
   `bars`, `trades`, and `prediction_market_events` table families and no
   `order_book_deltas` claim. The reference-fixture test also passed with the
   new Kalshi pending proof.
+- BTE-024 is now closed for the committed shortlisted fixture set. Current
+  fixture evidence is:
+  `hyperliquid-hip4-outcome-meta` = `METADATA_ONLY`,
+  `polymarket-parquet-archive-index` = `L2_REPLAY`,
+  `kalshi-official-historical-api` = `TRADE_BAR_REPLAY`, and
+  `binance-spot-native-trades` = `TRADE_REPLAY`. Each fixture carries four
+  forbidden claims and four structured claim-limit records. The common blocking
+  claim across all pending fixture records is no canonical NT catalog/backtest
+  input before acceptance; weaker-fidelity records explicitly forbid historical
+  L2/L3, execution-quality, queue-position, fillability, liquidity, or sizing
+  claims as applicable. The audit command used was:
+  `jq -r '[input_filename, .source_binding, .fixture_type, .table_family, .fidelity_class, .nt_mapping_status, (.forbidden_claims|length), (.claim_limits|length), (.required_checks.nt_mapping.outcome // "missing")] | @tsv' specs/023-nt-research-analytics-platform/reference/source-proof-fixture.*.json`.
 
 ## Recommendation
 

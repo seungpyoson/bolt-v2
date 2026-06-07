@@ -24,7 +24,9 @@ Required fields:
 - `product_category`: cross-venue category.
 - `table_family`: canonical table family.
 - `evidence_state`: one of the states in `backfill-table-contract.v1`.
-- `fixture_type`: `prediction-market`, `perps-spot`, `options`, or `mixed`.
+- `fixture_type`: `binary-option` or `perps-spot` for accepted BTE source
+  proofs. Legacy/non-current evidence rows may be reported under older fixture
+  labels, but they cannot be accepted as canonical BTE input.
 - `requested_time_range`: inclusive start and exclusive end in UTC.
 - `coverage_time_range`: proven source coverage in UTC, using the same
   inclusive start and exclusive end convention as `requested_time_range`.
@@ -64,6 +66,12 @@ valid for a positive canonical backfill claim only when `evidence_state` is
 `excluded_from_current_scope` cannot be accepted for canonical one-year backfill
 selection. They can be recorded only as rejected, excluded, or bounded evidence
 with explicit `claim_limits`.
+
+Accepted proofs also require the selected source-binding registry row to declare
+matching `market_structure_fixture = "binary-option"` or
+`market_structure_fixture = "perps-spot"`. Concrete venue/provider values remain
+registry data; the `fixture` field in source-binding rows is a data-family label,
+not the market-structure proof fixture.
 
 ## Required Checks
 

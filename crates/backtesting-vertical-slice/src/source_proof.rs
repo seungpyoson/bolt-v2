@@ -54,6 +54,7 @@ pub struct SourceBindingMetadata {
     pub key: String,
     pub venue: String,
     pub product_family: String,
+    pub market_structure_fixture: Option<FixtureType>,
     pub evidence_state: EvidenceState,
     pub table_families: Vec<String>,
 }
@@ -91,6 +92,7 @@ impl SourceBindingRegistry {
                 key: config.key,
                 venue: config.venue,
                 product_family: config.product_family,
+                market_structure_fixture: config.market_structure_fixture,
                 evidence_state: config.evidence_state,
                 table_families: config.table_families,
             })
@@ -120,6 +122,8 @@ struct SourceBindingConfig {
     key: String,
     venue: String,
     product_family: String,
+    #[serde(default)]
+    market_structure_fixture: Option<FixtureType>,
     source_uri: String,
     evidence_state: EvidenceState,
     #[serde(default)]
@@ -156,6 +160,7 @@ pub enum EvidenceState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FixtureType {
+    BinaryOption,
     PredictionMarket,
     PerpsSpot,
     Options,
@@ -1464,6 +1469,19 @@ fn ensure_source_binding_metadata_matches(
             actual: proof.product_family.clone(),
         });
     }
+    let Some(market_structure_fixture) = config.market_structure_fixture else {
+        return Err(AcceptanceError::MissingField(
+            "source_binding.market_structure_fixture",
+        ));
+    };
+    ensure_bte_market_structure_fixture(market_structure_fixture)?;
+    if proof.fixture_type != market_structure_fixture {
+        return Err(AcceptanceError::SourceBindingMismatch {
+            field: "market_structure_fixture",
+            expected: fixture_type_label(market_structure_fixture).to_string(),
+            actual: fixture_type_label(proof.fixture_type).to_string(),
+        });
+    }
     if proof.evidence_state != config.evidence_state {
         return Err(AcceptanceError::SourceBindingMismatch {
             field: "evidence_state",
@@ -1484,6 +1502,31 @@ fn ensure_source_binding_metadata_matches(
         });
     }
     Ok(())
+}
+
+fn ensure_bte_market_structure_fixture(fixture_type: FixtureType) -> Result<(), AcceptanceError> {
+    if matches!(
+        fixture_type,
+        FixtureType::BinaryOption | FixtureType::PerpsSpot
+    ) {
+        Ok(())
+    } else {
+        Err(AcceptanceError::SourceBindingMismatch {
+            field: "market_structure_fixture",
+            expected: "binary-option|perps-spot".to_string(),
+            actual: fixture_type_label(fixture_type).to_string(),
+        })
+    }
+}
+
+fn fixture_type_label(fixture_type: FixtureType) -> &'static str {
+    match fixture_type {
+        FixtureType::BinaryOption => "binary-option",
+        FixtureType::PredictionMarket => "prediction-market",
+        FixtureType::PerpsSpot => "perps-spot",
+        FixtureType::Options => "options",
+        FixtureType::Mixed => "mixed",
+    }
 }
 
 fn ensure_coverage_within_requested(
@@ -1673,6 +1716,39 @@ mod tests {
         }
     }
 
+    fn source_binding_registry_without_market_structure_fixture() -> SourceBindingRegistry {
+        SourceBindingRegistry::from_toml_str(
+            r#"
+[[source_binding]]
+key = "bybit-spot-tick-trades"
+venue = "bybit"
+product_family = "spot"
+source_uri = "https://public.bybit.com/spot/{symbol}/{symbol}_{dt}.csv.gz"
+evidence_state = "owner_archive_backfillable"
+table_families = ["trades"]
+"#,
+        )
+        .expect("source binding registry parses")
+    }
+
+    fn source_binding_registry_with_market_structure_fixture(
+        fixture_type: &str,
+    ) -> SourceBindingRegistry {
+        SourceBindingRegistry::from_toml_str(&format!(
+            r#"
+[[source_binding]]
+key = "bybit-spot-tick-trades"
+venue = "bybit"
+product_family = "spot"
+market_structure_fixture = "{fixture_type}"
+source_uri = "https://public.bybit.com/spot/{{symbol}}/{{symbol}}_{{dt}}.csv.gz"
+evidence_state = "owner_archive_backfillable"
+table_families = ["trades"]
+"#
+        ))
+        .expect("source binding registry parses")
+    }
+
     fn kimchi_registry() -> SourceBindingRegistry {
         SourceBindingRegistry::from_toml_str(
             r#"
@@ -1680,6 +1756,7 @@ mod tests {
 key = "synthetic-kimchi-premium-signal"
 venue = "synthetic-signal-source"
 product_family = "cross_market_signal"
+market_structure_fixture = "perps-spot"
 source_uri = "https://signals.example.test/kimchi/{dt}.json"
 evidence_state = "directly_backfillable"
 table_families = ["signals"]
@@ -2065,6 +2142,87 @@ table_families = ["signals"]
         assert!(
             matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
             "{err:?}"
+        );
+    }
+
+    #[test]
+    fn acceptance_requires_source_binding_market_structure_fixture() {
+        let err = candidate_proof()
+            .accept_with_registry(
+                &source_binding_registry_without_market_structure_fixture(),
+                AcceptanceMode::Manual,
+                "operator",
+                "2026-06-02T00:00:00Z",
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            err,
+            AcceptanceError::MissingField("source_binding.market_structure_fixture")
+        );
+    }
+
+    #[test]
+    fn acceptance_rejects_source_binding_market_structure_fixture_mismatch() {
+        let err = candidate_proof()
+            .accept_with_registry(
+                &source_binding_registry_with_market_structure_fixture("binary-option"),
+                AcceptanceMode::Manual,
+                "operator",
+                "2026-06-02T00:00:00Z",
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            AcceptanceError::SourceBindingMismatch {
+                field: "market_structure_fixture",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn acceptance_rejects_legacy_non_bte_market_structure_fixture() {
+        let mut proof = candidate_proof();
+        proof.fixture_type = FixtureType::PredictionMarket;
+
+        let err = proof
+            .accept_with_registry(
+                &source_binding_registry_with_market_structure_fixture("prediction-market"),
+                AcceptanceMode::Manual,
+                "operator",
+                "2026-06-02T00:00:00Z",
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            AcceptanceError::SourceBindingMismatch {
+                field: "market_structure_fixture",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn committed_registry_exposes_required_market_structure_fixtures() {
+        let registry = committed_source_binding_registry();
+
+        let perps_spot = registry
+            .source_binding_metadata("bybit-spot-tick-trades", "bybit")
+            .expect("perps/spot sample binding");
+        assert_eq!(
+            perps_spot.market_structure_fixture,
+            Some(FixtureType::PerpsSpot)
+        );
+
+        let binary_option = registry
+            .source_binding_metadata("hyperliquid-hip4-outcome-meta", "hyperliquid")
+            .expect("binary-option sample binding");
+        assert_eq!(
+            binary_option.market_structure_fixture,
+            Some(FixtureType::BinaryOption)
         );
     }
 

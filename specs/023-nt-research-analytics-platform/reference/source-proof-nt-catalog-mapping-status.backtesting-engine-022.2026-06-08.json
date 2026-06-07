@@ -64,12 +64,12 @@
       "evidence": "nt://crates/adapters/polymarket/src/http/data_api.rs:55"
     },
     {
-      "limitation": "The manifest/data-config path now maps TradeTick and OrderBookDelta plus configured instrument_ids, but this proves only NT data-config construction, not PMXT catalog projection/read-back or BacktestNode consumption of a verified PMXT L2 catalog.",
+      "limitation": "The manifest/data-config path now maps TradeTick and OrderBookDelta plus configured instrument_ids, but this proves only NT data-config construction, not PMXT source-row projection or BacktestNode consumption of a verified PMXT L2 catalog.",
       "evidence": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1448, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1524, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1762, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1991"
     },
     {
-      "limitation": "Current catalog projection is a CurrencyPair plus TradeTick projection for canonical trades, not a generic BinaryOption L2 projection.",
-      "evidence": "repo://crates/backtesting-vertical-slice/src/catalog_projection.rs:1"
+      "limitation": "The catalog hash/read-back path now covers an NT-native BinaryOption, OrderBookDelta, and TradeTick fixture, but production source projection is still the CurrencyPair plus TradeTick canonical-trades path and no PMXT source-row adapter exists yet.",
+      "evidence": "repo://crates/backtesting-vertical-slice/src/catalog_projection.rs:313, repo://crates/backtesting-vertical-slice/src/catalog_projection.rs:777"
     }
   ],
   "source_mapping_status": [
@@ -135,6 +135,22 @@
     "claim_limits": [
       "Does not prove PMXT BinaryOption catalog projection.",
       "Does not prove PMXT OrderBookDelta or TradeTick read-back.",
+      "Does not prove BacktestNode consumes a verified PMXT L2 catalog.",
+      "Does not authorize broad PMXT backfill."
+    ]
+  },
+  "bounded_l2_catalog_hash_status": {
+    "status": "tdd_proven_for_nt_native_binary_option_order_book_delta_trade_tick_fixture",
+    "evidence": [
+      "RED just bte-test catalog_projection::tests::binary_option_l2_catalog_records_round_trip_through_nt_catalog failed because logical_catalog_hash rejected InstrumentAny::BinaryOption after NT catalog write/read succeeded.",
+      "GREEN just bte-test catalog_projection::tests::binary_option_l2_catalog_records_round_trip_through_nt_catalog passed after logical_catalog_hash covered BinaryOption instruments and OrderBookDelta rows.",
+      "just bte-test catalog_projection::tests:: passed 16 focused catalog projection tests.",
+      "just bte-fmt-check passed."
+    ],
+    "claim_limits": [
+      "Does not prove PMXT raw parquet row decoding.",
+      "Does not prove nautilus-polymarket parser/provider reuse inside the isolated BTE crate.",
+      "Does not prove source-backed selected PMXT universe projection.",
       "Does not prove BacktestNode consumes a verified PMXT L2 catalog.",
       "Does not authorize broad PMXT backfill."
     ]

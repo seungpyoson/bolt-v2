@@ -62,8 +62,8 @@
     {
       "prompt_requirement": "BacktestNode consumes exactly the verified catalog",
       "bounded_first_proof_status": "manifest_data_config_tdd_proven_catalog_consumption_unproven",
-      "evidence": "NT BacktestNode queries OrderBookDelta from ParquetDataCatalog and validates L2_MBP venues have order-book data. BTE manifest/data-config mapping is now TDD-proven for OrderBookDelta and configured instrument_ids, but no selected PMXT L2 catalog has been written, read back, logically hashed, and consumed by BacktestNode.",
-      "required_before_acceptance": "Write the selected PMXT L2 universe to ParquetDataCatalog, read back BinaryOption/OrderBookDelta/TradeTick classes, bind the logical catalog hash, and prove BacktestNode consumes that exact catalog."
+      "evidence": "NT BacktestNode queries OrderBookDelta from ParquetDataCatalog and validates L2_MBP venues have order-book data. BTE manifest/data-config mapping is now TDD-proven for OrderBookDelta and configured instrument_ids, and NT-native BinaryOption/OrderBookDelta/TradeTick fixture write/read/logical-hash is TDD-proven. No selected PMXT L2 source-backed catalog has been consumed by BacktestNode.",
+      "required_before_acceptance": "Project the selected PMXT L2 universe into ParquetDataCatalog from source rows, bind the logical catalog hash, and prove BacktestNode consumes that exact catalog."
     },
     {
       "prompt_requirement": "result contract provenance binds the run",
@@ -116,7 +116,8 @@
     },
     {
       "area": "catalog projection",
-      "required_shape": "Write InstrumentAny::BinaryOption, OrderBookDelta, and TradeTick to ParquetDataCatalog; read all three logical classes back and hash them deterministically."
+      "required_shape": "Write InstrumentAny::BinaryOption, OrderBookDelta, and TradeTick to ParquetDataCatalog; read all three logical classes back and hash them deterministically.",
+      "current_status": "TDD-proven for an NT-native fixture; source-backed PMXT row projection and BacktestNode consumption remain pending."
     },
     {
       "area": "NT parser/provider reuse",
@@ -151,7 +152,11 @@
     "RED just bte-test run_manifest::tests::data_config_maps_configured_multi_instrument_ids failed with UnsupportedNtSurface for catalog_input.instrument_ids.",
     "GREEN just bte-test run_manifest::tests::data_config_maps_configured_multi_instrument_ids passed after mapping configured instrument_ids into NT BacktestDataConfig.",
     "just bte-test run_manifest::tests:: passed 65 focused manifest tests.",
-    "just bte-fmt-check passed."
+    "just bte-fmt-check passed.",
+    "RED just bte-test catalog_projection::tests::binary_option_l2_catalog_records_round_trip_through_nt_catalog failed because logical_catalog_hash rejected InstrumentAny::BinaryOption after NT catalog write/read succeeded.",
+    "GREEN just bte-test catalog_projection::tests::binary_option_l2_catalog_records_round_trip_through_nt_catalog passed after logical_catalog_hash covered BinaryOption instruments and OrderBookDelta rows.",
+    "just bte-test catalog_projection::tests:: passed 16 focused catalog projection tests.",
+    "just bte-fmt-check passed after catalog projection changes."
   ],
   "still_blocking_broad_backfill": [
     "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven.",

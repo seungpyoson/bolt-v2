@@ -16,12 +16,12 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
-use nautilus_core::UnixNanos;
+use nautilus_core::{Params, UnixNanos};
 use nautilus_model::{
-    data::TradeTick,
+    data::{OrderBookDelta, TradeTick},
     enums::AggressorSide,
     identifiers::{InstrumentId, Symbol, TradeId},
-    instruments::{CurrencyPair, Instrument, InstrumentAny},
+    instruments::{BinaryOption, CurrencyPair, Instrument, InstrumentAny},
     types::{Currency, Money, Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
@@ -326,6 +326,21 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
             tick.instrument_id.to_string(),
         )
     });
+    let mut deltas = catalog
+        .query_typed_data::<OrderBookDelta>(None, None, None, None, None, true)
+        .context("query order book deltas from catalog for logical hash")?;
+    deltas.sort_by_key(|delta| {
+        (
+            delta.ts_event.as_u64(),
+            delta.instrument_id.to_string(),
+            delta.sequence,
+            delta.action.to_string(),
+            delta.order.side.to_string(),
+            delta.order.price.as_decimal().to_string(),
+            delta.order.size.as_decimal().to_string(),
+            delta.order.order_id,
+        )
+    });
 
     let mut hasher = Sha256::new();
     hasher.update(b"nautilus-logical-catalog.v1");
@@ -349,6 +364,28 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update([8u8]);
         hasher.update(tick.ts_init.as_u64().to_string().as_bytes());
     }
+    for delta in deltas {
+        hasher.update([9u8]);
+        hasher.update(delta.instrument_id.to_string().as_bytes());
+        hasher.update([10u8]);
+        hasher.update(delta.action.to_string().as_bytes());
+        hasher.update([11u8]);
+        hasher.update(delta.order.side.to_string().as_bytes());
+        hasher.update([12u8]);
+        hasher.update(delta.order.price.as_decimal().to_string().as_bytes());
+        hasher.update([13u8]);
+        hasher.update(delta.order.size.as_decimal().to_string().as_bytes());
+        hasher.update([14u8]);
+        hasher.update(delta.order.order_id.to_string().as_bytes());
+        hasher.update([15u8]);
+        hasher.update(delta.flags.to_string().as_bytes());
+        hasher.update([16u8]);
+        hasher.update(delta.sequence.to_string().as_bytes());
+        hasher.update([17u8]);
+        hasher.update(delta.ts_event.as_u64().to_string().as_bytes());
+        hasher.update([18u8]);
+        hasher.update(delta.ts_init.as_u64().to_string().as_bytes());
+    }
     Ok(hex::encode(hasher.finalize()))
 }
 
@@ -371,12 +408,156 @@ fn update_instrument_hash(hasher: &mut Sha256, instrument: &InstrumentAny) -> Re
         InstrumentAny::CurrencyPair(currency_pair) => {
             update_currency_pair_hash(hasher, currency_pair)?
         }
+        InstrumentAny::BinaryOption(binary_option) => {
+            update_binary_option_hash(hasher, binary_option)?
+        }
         other => {
             anyhow::bail!(
                 "logical catalog hash does not support instrument type for {}",
                 other.id()
             );
         }
+    }
+    Ok(())
+}
+
+fn update_binary_option_hash(hasher: &mut Sha256, instrument: &BinaryOption) -> Result<()> {
+    update_hash_field(hasher, "instrument.type", "binary_option");
+    update_hash_field(hasher, "instrument.id", &instrument.id.to_string());
+    update_hash_field(
+        hasher,
+        "instrument.raw_symbol",
+        instrument.raw_symbol.as_ref(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.asset_class",
+        &instrument.asset_class.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.currency",
+        &instrument.currency.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.activation_ns",
+        &instrument.activation_ns.as_u64().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.expiration_ns",
+        &instrument.expiration_ns.as_u64().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.price_precision",
+        &instrument.price_precision.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.size_precision",
+        &instrument.size_precision.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.price_increment",
+        &instrument.price_increment.as_decimal().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.size_increment",
+        &instrument.size_increment.as_decimal().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.margin_init",
+        &instrument.margin_init.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.margin_maint",
+        &instrument.margin_maint.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.maker_fee",
+        &instrument.maker_fee.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.taker_fee",
+        &instrument.taker_fee.to_string(),
+    );
+    update_optional_hash_field(hasher, "instrument.outcome", instrument.outcome.as_ref());
+    update_optional_hash_field(
+        hasher,
+        "instrument.description",
+        instrument.description.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.max_quantity",
+        instrument.max_quantity.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.min_quantity",
+        instrument.min_quantity.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.max_notional",
+        instrument.max_notional.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.min_notional",
+        instrument.min_notional.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.max_price",
+        instrument.max_price.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.min_price",
+        instrument.min_price.as_ref(),
+    );
+    update_optional_params_hash(hasher, "instrument.info", instrument.info.as_ref())?;
+    update_hash_field(
+        hasher,
+        "instrument.ts_event",
+        &instrument.ts_event.as_u64().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.ts_init",
+        &instrument.ts_init.as_u64().to_string(),
+    );
+    Ok(())
+}
+
+fn update_optional_params_hash(
+    hasher: &mut Sha256,
+    label: &str,
+    value: Option<&Params>,
+) -> Result<()> {
+    let Some(params) = value else {
+        update_hash_field(hasher, label, "<none>");
+        return Ok(());
+    };
+    update_hash_field(hasher, &format!("{label}.len"), &params.len().to_string());
+    let mut entries = params.iter().collect::<Vec<_>>();
+    entries.sort_by_key(|(key, _)| key.as_str());
+    for (key, value) in entries {
+        update_hash_field(hasher, &format!("{label}.key"), key);
+        update_hash_field(
+            hasher,
+            &format!("{label}.value"),
+            &serde_json::to_string(value).context("serialize instrument params value")?,
+        );
     }
     Ok(())
 }
@@ -771,6 +952,110 @@ mod tests {
         assert_eq!(loaded[0].instrument_id.to_string(), "BNBUSDC.BYBIT");
         // 617 rescaled to price precision 1 -> 617.0
         assert_eq!(loaded[2].price, Price::from("617.0"));
+    }
+
+    #[test]
+    fn binary_option_l2_catalog_records_round_trip_through_nt_catalog() {
+        use nautilus_model::{
+            data::{OrderBookDelta, order::BookOrder},
+            enums::{AssetClass, BookAction, OrderSide, RecordFlag},
+            instruments::BinaryOption,
+        };
+        use ustr::Ustr;
+
+        let ts_init = UnixNanos::from(1_000_000_000u64);
+        let instrument_id = InstrumentId::from_str("YES.TESTVENUE").unwrap();
+        let instrument = InstrumentAny::BinaryOption(
+            BinaryOption::new_checked(
+                instrument_id,
+                Symbol::new_checked("YES").unwrap(),
+                AssetClass::Alternative,
+                Currency::from_str("USD").unwrap(),
+                UnixNanos::from(0),
+                UnixNanos::from(2_000_000_000u64),
+                2,
+                6,
+                Price::from("0.01"),
+                Quantity::from("0.000001"),
+                Some(Ustr::from("Yes")),
+                Some(Ustr::from("Bounded binary option fixture")),
+                None,
+                Some(Quantity::from("1")),
+                None,
+                None,
+                Some(Price::from("1.00")),
+                Some(Price::from("0.01")),
+                None,
+                None,
+                Some(Decimal::ZERO),
+                Some(Decimal::ZERO),
+                None,
+                ts_init,
+                ts_init,
+            )
+            .expect("binary option"),
+        );
+        let instrument_id = instrument.id();
+        let deltas = vec![
+            OrderBookDelta::clear(
+                instrument_id,
+                0,
+                UnixNanos::from(1_772_323_201_665_000_000u64),
+                ts_init,
+            ),
+            OrderBookDelta::new_checked(
+                instrument_id,
+                BookAction::Add,
+                BookOrder::new(OrderSide::Buy, Price::from("0.49"), Quantity::from("10"), 0),
+                RecordFlag::F_LAST as u8,
+                0,
+                UnixNanos::from(1_772_323_201_665_000_000u64),
+                ts_init,
+            )
+            .expect("bid delta"),
+        ];
+        let tick = TradeTick::new(
+            instrument_id,
+            Price::from("0.51"),
+            Quantity::from("2"),
+            AggressorSide::Buyer,
+            TradeId::new_checked("pmxt-trade-1").unwrap(),
+            UnixNanos::from(1_772_323_201_665_000_000u64),
+            ts_init,
+        );
+
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+        catalog
+            .write_instruments(vec![instrument])
+            .expect("write binary option instrument");
+        catalog
+            .write_to_parquet(deltas.clone(), None, None, None)
+            .expect("write order book deltas");
+        catalog
+            .write_to_parquet(vec![tick], None, None, None)
+            .expect("write trade tick");
+
+        let loaded_deltas = catalog
+            .query_typed_data::<OrderBookDelta>(
+                Some(vec![instrument_id.to_string()]),
+                None,
+                None,
+                None,
+                None,
+                true,
+            )
+            .expect("read order book deltas");
+        let loaded_ticks =
+            read_back_trade_ticks(dir.path(), &instrument_id.to_string()).expect("read ticks");
+
+        assert_eq!(loaded_deltas.len(), deltas.len());
+        assert_eq!(loaded_ticks.len(), 1);
+        assert!(
+            !logical_catalog_hash(dir.path())
+                .expect("logical hash")
+                .is_empty()
+        );
     }
 
     #[test]

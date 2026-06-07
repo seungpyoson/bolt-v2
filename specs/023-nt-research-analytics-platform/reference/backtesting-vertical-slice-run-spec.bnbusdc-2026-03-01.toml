@@ -5,7 +5,7 @@
 # ingest manifest run `bybit-backfill-run-fdcc0758bbd03113` (errors=0).
 #
 # This file is config-driven input for `cargo run --bin backtesting_vertical_slice
-# -- --run-spec <this file> --object-gz <local .csv.gz> --output-dir <dir>`.
+# -- --run-spec <this file> --object <local accepted object> --output-dir <dir>`.
 # The binary re-verifies the object SHA-256 against `accepted_object.sha256`
 # before any normalization, and overrides `manifest.catalog_input.catalog_path`
 # with the local projection root.
@@ -128,6 +128,9 @@ nt_instrument_id = "BNBUSDC.BYBIT"
 [converter]
 identity = "csv-native-trades-to-canonical-trades.v1"
 version = "1"
+
+[converter.raw_payload]
+container = "csv_gzip"
 
 [converter.csv]
 trade_id_column = "id"

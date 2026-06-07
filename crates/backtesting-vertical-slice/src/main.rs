@@ -3,7 +3,8 @@
 //!
 //! Everything that identifies the dataset (accepted object, source proof, run
 //! manifest, instrument spec) comes from a config-driven run-spec TOML; the only
-//! command-line inputs are filesystem paths. The orchestration itself lives in
+//! command-line inputs are filesystem paths. The object container is declared in
+//! the run-spec converter config. The orchestration itself lives in
 //! [`backtesting_vertical_slice::operator`] so it is unit-testable; this binary
 //! is a thin CLI shim that reads the inputs, runs the operator path, and prints
 //! the produced artifacts.
@@ -30,9 +31,9 @@ struct Cli {
     /// Path to the run-spec TOML (dataset facts: object, source proof, manifest).
     #[arg(long)]
     run_spec: PathBuf,
-    /// Local path to the accepted `.csv.gz` object whose SHA-256 the run-spec pins.
-    #[arg(long)]
-    object_gz: PathBuf,
+    /// Local path to the accepted object whose SHA-256 the run-spec pins.
+    #[arg(long = "object")]
+    object_path: PathBuf,
     /// Output directory for produced artifacts.
     #[arg(long)]
     output_dir: PathBuf,
@@ -47,7 +48,7 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut object_reader =
-        |path: &Path, expected_bytes: u64| read_object_gz_checked(path, expected_bytes);
+        |path: &Path, expected_bytes: u64| read_object_checked(path, expected_bytes);
     let spec_text = fs::read_to_string(&cli.run_spec)
         .with_context(|| format!("read run-spec {}", cli.run_spec.display()))?;
     let spec: RunSpec = toml::from_str(&spec_text).context("parse run-spec TOML")?;
@@ -99,7 +100,7 @@ where
     } else {
         None
     };
-    let gz_bytes = object_reader(&cli.object_gz, spec.accepted_object.bytes)?;
+    let object_bytes = object_reader(&cli.object_path, spec.accepted_object.bytes)?;
 
     let (artifacts, published_artifacts, published_catalog_proof): (
         _,
@@ -108,7 +109,7 @@ where
     ) = if cli.publish_output {
         let published = run_from_run_spec_and_publish_with_resolved_storage_options(
             &spec,
-            &gz_bytes,
+            &object_bytes,
             &cli.output_dir,
             publish_options,
             resolved_publish_storage_options.as_ref(),
@@ -120,7 +121,7 @@ where
         )
     } else {
         (
-            run_from_run_spec(&spec, &gz_bytes, &cli.output_dir)?,
+            run_from_run_spec(&spec, &object_bytes, &cli.output_dir)?,
             None,
             None,
         )
@@ -192,7 +193,7 @@ where
     Ok(())
 }
 
-fn read_object_gz_checked(path: &Path, expected_bytes: u64) -> Result<Vec<u8>> {
+fn read_object_checked(path: &Path, expected_bytes: u64) -> Result<Vec<u8>> {
     let metadata = fs::metadata(path).with_context(|| format!("stat object {}", path.display()))?;
     let actual_bytes = metadata.len();
     ensure!(
@@ -217,7 +218,7 @@ mod tests {
             "backtesting-vertical-slice",
             "--run-spec",
             "run.toml",
-            "--object-gz",
+            "--object",
             "object.csv.gz",
             "--output-dir",
             "out",
@@ -245,7 +246,7 @@ mod tests {
             "backtesting-vertical-slice",
             "--run-spec",
             "run.toml",
-            "--object-gz",
+            "--object",
             "object.csv.gz",
             "--output-dir",
             "out",
@@ -272,12 +273,12 @@ mod tests {
     }
 
     #[test]
-    fn read_object_gz_rejects_size_mismatch_before_loading_object() {
+    fn read_object_rejects_size_mismatch_before_loading_object() {
         let dir = tempfile::TempDir::new().unwrap();
         let object_path = dir.path().join("object.csv.gz");
         fs::write(&object_path, b"not-the-accepted-object").unwrap();
 
-        let err = read_object_gz_checked(&object_path, 99).unwrap_err();
+        let err = read_object_checked(&object_path, 99).unwrap_err();
 
         assert!(err.to_string().contains("object byte length 23"), "{err}");
         assert!(err.to_string().contains("run-spec 99"), "{err}");
@@ -290,7 +291,7 @@ mod tests {
         fs::write(&run_spec_path, COMMITTED_RUN_SPEC).unwrap();
         let cli = Cli {
             run_spec: run_spec_path,
-            object_gz: dir.path().join("missing-object.csv.gz"),
+            object_path: dir.path().join("missing-object.csv.gz"),
             output_dir: dir.path().join("out"),
             publish_output: true,
             prove_published_catalog: true,

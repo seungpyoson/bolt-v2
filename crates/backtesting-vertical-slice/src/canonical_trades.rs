@@ -69,6 +69,7 @@ pub struct TradeConverterDefinition {
 pub struct ConverterConfig {
     pub identity: String,
     pub version: String,
+    pub raw_payload: RawPayloadConfig,
     pub csv: CsvTradeMappingConfig,
 }
 
@@ -79,6 +80,24 @@ impl ConverterConfig {
         hasher.update(bytes);
         Ok(hex::encode(hasher.finalize()))
     }
+}
+
+/// Raw accepted-object container decoded before CSV normalization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawPayloadConfig {
+    pub container: RawPayloadContainer,
+    /// Required for [`RawPayloadContainer::SingleCsvZip`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zip_member: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawPayloadContainer {
+    CsvGzip,
+    CsvText,
+    SingleCsvZip,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

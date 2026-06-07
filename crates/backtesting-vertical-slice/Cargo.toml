@@ -35,6 +35,7 @@ sha2 = "0.10.9"
 tokio = { version = "=1.52.3", features = ["rt"] }
 toml = "1.1"
 ustr = "1.1.0"
+zip = { version = "=0.6.6", default-features = false, features = ["deflate"] }
 
 nautilus-backtest = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c", features = ["streaming", "examples"] }
 nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }

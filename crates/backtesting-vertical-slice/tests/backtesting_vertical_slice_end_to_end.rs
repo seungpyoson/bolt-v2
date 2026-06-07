@@ -7,7 +7,7 @@
 //! `BacktestNode` run of a compiled Rust strategy, and the objective result
 //! contract. CI-safe (no network): this test exercises the pipeline with
 //! committed synthetic data only. Real-object verification is operator-run-only
-//! via the `backtesting_vertical_slice` binary (`--run-spec`, `--object-gz`,
+//! via the `backtesting_vertical_slice` binary (`--run-spec`, `--object`,
 //! `--output-dir`) and is not asserted here.
 
 use std::collections::BTreeMap;
@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use backtesting_vertical_slice::{
     canonical_trades::{
         CanonicalInstrumentIdentity, ConverterConfig, CsvTimestampUnit, CsvTradeMappingConfig,
-        TRANSFORM_IDENTITY,
+        RawPayloadConfig, RawPayloadContainer, TRANSFORM_IDENTITY,
     },
     catalog_projection::SpotInstrumentSpec,
     result_contract::ResultArtifactUris,
@@ -54,6 +54,10 @@ fn converter_config() -> ConverterConfig {
     ConverterConfig {
         identity: TRANSFORM_IDENTITY.to_string(),
         version: "1".to_string(),
+        raw_payload: RawPayloadConfig {
+            container: RawPayloadContainer::CsvGzip,
+            zip_member: None,
+        },
         csv: csv_mapping(),
     }
 }

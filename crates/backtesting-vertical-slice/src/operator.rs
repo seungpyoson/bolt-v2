@@ -2,9 +2,9 @@
 //!
 //! Everything that identifies the dataset (accepted object, source proof, run
 //! manifest, instrument spec) comes from a config-driven [`RunSpec`]; the only
-//! runtime inputs are the raw `.csv.gz` bytes of the accepted object and an
+//! runtime inputs are the raw bytes of the accepted object and an
 //! output directory. [`run_from_run_spec`] re-verifies the object SHA-256
-//! against the run-spec before any normalization, decompresses the object,
+//! against the run-spec before any normalization, decodes the object,
 //! accepts the source proof and binds the object through the ledger, guarantees
 //! a clean catalog root, runs the backtest, and writes the accepted proof,
 //! artifact-local run manifest, and result contract as JSON artifacts.
@@ -12,7 +12,7 @@
 use std::{
     collections::BTreeMap,
     fs,
-    io::Read,
+    io::{Cursor, Read},
     path::{Component, Path, PathBuf},
 };
 
@@ -26,8 +26,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     canonical_trades::{
-        CanonicalInstrumentIdentity, CanonicalTradesTable, ConverterConfig,
-        require_registered_trade_converter,
+        CanonicalInstrumentIdentity, CanonicalTradesTable, ConverterConfig, RawPayloadConfig,
+        RawPayloadContainer, require_registered_trade_converter,
     },
     catalog_projection::{
         CatalogProjection, SpotInstrumentSpec, logical_catalog_hash, read_back_trade_ticks,
@@ -179,7 +179,65 @@ fn validate_converter_config(converter: &ConverterConfig) -> Result<()> {
         "run-spec converter.version must not be empty"
     );
     require_registered_trade_converter(&converter.identity, &converter.version)?;
+    validate_raw_payload_config(&converter.raw_payload)?;
     Ok(())
+}
+
+fn validate_raw_payload_config(config: &RawPayloadConfig) -> Result<()> {
+    match config.container {
+        RawPayloadContainer::CsvGzip | RawPayloadContainer::CsvText => {
+            ensure!(
+                config.zip_member.is_none(),
+                "converter.raw_payload.zip_member is only valid for single_csv_zip"
+            );
+        }
+        RawPayloadContainer::SingleCsvZip => {
+            ensure!(
+                config
+                    .zip_member
+                    .as_ref()
+                    .is_some_and(|member| !member.trim().is_empty()),
+                "converter.raw_payload.zip_member is required for single_csv_zip"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn decode_csv_payload(config: &RawPayloadConfig, object_bytes: &[u8]) -> Result<String> {
+    validate_raw_payload_config(config)?;
+    match config.container {
+        RawPayloadContainer::CsvGzip => {
+            let mut csv_text = String::new();
+            flate2::read::GzDecoder::new(object_bytes)
+                .read_to_string(&mut csv_text)
+                .context("decompress gzip csv object")?;
+            Ok(csv_text)
+        }
+        RawPayloadContainer::CsvText => {
+            String::from_utf8(object_bytes.to_vec()).context("decode plain csv object as UTF-8")
+        }
+        RawPayloadContainer::SingleCsvZip => {
+            let member_name = config
+                .zip_member
+                .as_deref()
+                .context("converter.raw_payload.zip_member is required for single_csv_zip")?;
+            let cursor = Cursor::new(object_bytes);
+            let mut archive = zip::ZipArchive::new(cursor).context("open zip csv object")?;
+            let mut member = archive
+                .by_name(member_name)
+                .with_context(|| format!("open zip member {member_name:?}"))?;
+            ensure!(
+                !member.is_dir(),
+                "configured zip member {member_name:?} is a directory"
+            );
+            let mut csv_text = String::new();
+            member
+                .read_to_string(&mut csv_text)
+                .with_context(|| format!("decode zip member {member_name:?} as UTF-8 CSV"))?;
+            Ok(csv_text)
+        }
+    }
 }
 
 struct CompletedOutputInputs<'a> {
@@ -377,22 +435,22 @@ fn read_json_artifact<T: DeserializeOwned>(path: &Path) -> Result<T> {
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
-/// Run the vertical slice from a parsed [`RunSpec`] and the raw `.csv.gz` bytes
+/// Run the vertical slice from a parsed [`RunSpec`] and the raw bytes
 /// of the accepted object, writing artifacts under `output_dir`.
 ///
 /// # Errors
 ///
-/// Returns an error if the object hash does not match the run-spec, the gzip
-/// cannot be decompressed, source-proof acceptance / ledger selection fails, or
-/// any backtest gate fails.
+/// Returns an error if the object hash does not match the run-spec, the object
+/// cannot be decoded as the configured payload container, source-proof
+/// acceptance / ledger selection fails, or any backtest gate fails.
 pub fn run_from_run_spec(
     spec: &RunSpec,
-    gz_bytes: &[u8],
+    object_bytes: &[u8],
     output_dir: &Path,
 ) -> Result<RunArtifacts> {
     validate_converter_config(&spec.converter)?;
 
-    let object_byte_len = gz_bytes.len() as u64;
+    let object_byte_len = object_bytes.len() as u64;
     ensure!(
         object_byte_len == spec.accepted_object.bytes,
         "object byte length {object_byte_len} does not match run-spec {}",
@@ -402,7 +460,7 @@ pub fn run_from_run_spec(
     // Re-verify the accepted object content hash against the run-spec, so raw
     // staged data can never reach the backtest without matching the pinned hash.
     let mut hasher = Sha256::new();
-    hasher.update(gz_bytes);
+    hasher.update(object_bytes);
     let verified_sha256 = hex::encode(hasher.finalize());
     ensure!(
         verified_sha256 == spec.accepted_object.sha256,
@@ -518,12 +576,9 @@ pub fn run_from_run_spec(
             .with_context(|| format!("clean catalog root {}", catalog_root.display()))?;
     }
 
-    // Decompress to CSV text only when conversion is required. Completed
-    // outputs are reused from the proven canonical Parquet artifact.
-    let mut csv_text = String::new();
-    flate2::read::GzDecoder::new(gz_bytes)
-        .read_to_string(&mut csv_text)
-        .context("decompress gzip object")?;
+    // Decode to CSV text only when conversion is required. Completed outputs
+    // are reused from the proven canonical Parquet artifact.
+    let csv_text = decode_csv_payload(&spec.converter.raw_payload, object_bytes)?;
 
     let mut output = run_backtest(BacktestRunInputs {
         accepted: &accepted,
@@ -590,12 +645,12 @@ pub fn run_from_run_spec(
 /// to the configured output prefix.
 pub fn run_from_run_spec_and_publish(
     spec: &RunSpec,
-    gz_bytes: &[u8],
+    object_bytes: &[u8],
     output_dir: &Path,
 ) -> Result<PublishedRunArtifacts> {
     run_from_run_spec_and_publish_with_options(
         spec,
-        gz_bytes,
+        object_bytes,
         output_dir,
         PublishOptions::default(),
     )
@@ -603,19 +658,25 @@ pub fn run_from_run_spec_and_publish(
 
 pub fn run_from_run_spec_and_publish_with_options(
     spec: &RunSpec,
-    gz_bytes: &[u8],
+    object_bytes: &[u8],
     output_dir: &Path,
     options: PublishOptions,
 ) -> Result<PublishedRunArtifacts> {
     let mut resolver = |_region: &str, _path: &str| {
         Err("artifact-store SSM resolver was not configured".to_string())
     };
-    run_from_run_spec_and_publish_with_resolver(spec, gz_bytes, output_dir, options, &mut resolver)
+    run_from_run_spec_and_publish_with_resolver(
+        spec,
+        object_bytes,
+        output_dir,
+        options,
+        &mut resolver,
+    )
 }
 
 pub fn run_from_run_spec_and_publish_with_resolver<F>(
     spec: &RunSpec,
-    gz_bytes: &[u8],
+    object_bytes: &[u8],
     output_dir: &Path,
     options: PublishOptions,
     resolver: &mut F,
@@ -629,7 +690,7 @@ where
         .map_err(|error| anyhow::anyhow!("artifact-store options rejected: {error}"))?;
     run_from_run_spec_and_publish_with_resolved_storage_options(
         spec,
-        gz_bytes,
+        object_bytes,
         output_dir,
         options,
         storage_options.as_ref(),
@@ -638,12 +699,12 @@ where
 
 pub fn run_from_run_spec_and_publish_with_resolved_storage_options(
     spec: &RunSpec,
-    gz_bytes: &[u8],
+    object_bytes: &[u8],
     output_dir: &Path,
     options: PublishOptions,
     storage_options: Option<&BTreeMap<String, String>>,
 ) -> Result<PublishedRunArtifacts> {
-    let mut run = run_from_run_spec(spec, gz_bytes, output_dir)?;
+    let mut run = run_from_run_spec(spec, object_bytes, output_dir)?;
     let mut published_artifacts = if options.prove_published_catalog {
         publish_output_artifacts_with_storage_options_excluding(
             output_dir,
@@ -978,17 +1039,19 @@ fn artifact_relative_path(root: &Path, file: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::io::{Cursor, Write};
 
     use flate2::{Compression, write::GzEncoder};
 
     use super::*;
+    use crate::canonical_trades::{RawPayloadConfig, RawPayloadContainer};
     use crate::conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionManifest,
     };
     use crate::result_contract::BacktestResultContract;
     use crate::run_manifest::{BacktestRunManifestArtifact, NtSurfaceClassification};
+    use crate::source_proof::EvidenceState;
 
     const COMMITTED_RUN_SPEC: &str = include_str!(
         "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
@@ -1020,6 +1083,16 @@ mod tests {
         encoder.finish().expect("gzip finish")
     }
 
+    fn zip_single_csv(member_name: &str, text: &str) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        writer
+            .start_file(member_name, zip::write::FileOptions::default())
+            .expect("start zip member");
+        writer.write_all(text.as_bytes()).expect("write zip member");
+        writer.finish().expect("finish zip").into_inner()
+    }
+
     fn sha256_hex(bytes: &[u8]) -> String {
         let mut hasher = Sha256::new();
         hasher.update(bytes);
@@ -1035,6 +1108,10 @@ mod tests {
         spec.accepted_object.sha256 = object_hash.clone();
         spec.accepted_object.bytes = gz_bytes.len() as u64;
         spec.source_proof.raw_sample_hash = object_hash;
+        spec.converter.raw_payload = RawPayloadConfig {
+            container: RawPayloadContainer::CsvGzip,
+            zip_member: None,
+        };
         spec
     }
 
@@ -1568,6 +1645,20 @@ mod tests {
     }
 
     #[test]
+    fn committed_result_contract_converter_config_hash_matches_run_spec() {
+        let spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
+        let contract: BacktestResultContract =
+            serde_json::from_str(COMMITTED_RESULT_CONTRACT).expect("result contract parses");
+
+        assert_eq!(
+            contract.converter_config_hash,
+            spec.converter
+                .content_hash()
+                .expect("converter config hash")
+        );
+    }
+
+    #[test]
     fn run_from_run_spec_rejects_unregistered_converter_version() {
         let gz = gzip(SAMPLE_CSV);
         let mut spec = run_spec_for(&gz);
@@ -1606,6 +1697,58 @@ mod tests {
             artifacts.output.canonical_table.rows[0].aggressor_side,
             "BUYER"
         );
+        assert_eq!(
+            artifacts.output.canonical_table.rows[1].aggressor_side,
+            "SELLER"
+        );
+    }
+
+    #[test]
+    fn run_from_run_spec_uses_configured_single_csv_zip_payload() {
+        let zip_bytes = zip_single_csv("BNBUSDC-trades-2026-03-01.csv", ALT_SCHEMA_CSV);
+        let mut spec = run_spec_for(&zip_bytes);
+        spec.accepted_object.s3_uri =
+            "s3://bolt-parquet/backfill-staging/binance/BNBUSDC-trades-2026-03-01.zip".to_string();
+        spec.accepted_object.source_url =
+            "https://data.binance.vision/data/spot/daily/trades/BNBUSDC/BNBUSDC-trades-2026-03-01.zip"
+                .to_string();
+        spec.accepted_object.schema_columns =
+            ["trade_id", "ts_ms", "px", "qty", "taker_side", "ignored"]
+                .into_iter()
+                .map(ToString::to_string)
+                .collect();
+        spec.source_proof.source_binding = "binance-spot-native-trades".to_string();
+        spec.source_proof.venue = "binance".to_string();
+        spec.source_proof.evidence_state = EvidenceState::DirectlyBackfillable;
+        spec.source_proof.source_proof_id = "source-proof-binance-spot-native-trades".to_string();
+        spec.source_proof.raw_sample_uri = spec.accepted_object.s3_uri.clone();
+        spec.manifest.venue_binding_key = "binance-spot-native-trades".to_string();
+        spec.manifest.source_proof_id = "source-proof-binance-spot-native-trades".to_string();
+        spec.manifest.venue.nt_venue = "BINANCE".to_string();
+        spec.manifest.catalog_input.nt_instrument_id = "BNBUSDC.BINANCE".to_string();
+        spec.instrument_spec.nt_instrument_id = "BNBUSDC.BINANCE".to_string();
+        spec.identity.nt_instrument_id = "BNBUSDC.BINANCE".to_string();
+        spec.manifest.strategy.parameters.insert(
+            "bar_type".to_string(),
+            "BNBUSDC.BINANCE-1-MINUTE-LAST-INTERNAL".to_string(),
+        );
+        spec.converter.raw_payload = RawPayloadConfig {
+            container: RawPayloadContainer::SingleCsvZip,
+            zip_member: Some("BNBUSDC-trades-2026-03-01.csv".to_string()),
+        };
+        spec.converter.csv.trade_id_column = "trade_id".to_string();
+        spec.converter.csv.timestamp_column = "ts_ms".to_string();
+        spec.converter.csv.price_column = "px".to_string();
+        spec.converter.csv.size_column = "qty".to_string();
+        spec.converter.csv.side_column = "taker_side".to_string();
+        spec.converter.csv.buyer_side_values = vec!["B".to_string()];
+        spec.converter.csv.seller_side_values = vec!["S".to_string()];
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let artifacts = run_from_run_spec(&spec, &zip_bytes, dir.path()).expect("operator run");
+
+        assert_eq!(artifacts.output.canonical_table.rows.len(), 2);
+        assert_eq!(artifacts.output.canonical_table.rows[0].trade_id, "a1");
         assert_eq!(
             artifacts.output.canonical_table.rows[1].aggressor_side,
             "SELLER"

@@ -1,6 +1,6 @@
 # Tasks: Backtesting Engine
 
-- [ ] BACKTESTING_ENGINE-001 Use the NT version resolved by the target `bolt-v2` branch and prove required `nautilus-backtest` crate/feature enablement.
+- [x] BACKTESTING_ENGINE-001 Use the NT version resolved by the target `bolt-v2` branch and prove required `nautilus-backtest` crate/feature enablement.
 - [ ] BACKTESTING_ENGINE-002 Define `BacktestingRunManifest` obligations and validation rules, including source proof id/version, `run_purpose`, latest accepted proof default for `normal`, explicit older-proof pin for non-normal reproducibility/audit/comparison runs with required `proof_pin_reason_code` and conditional `proof_pin_reason_detail`, and deferred future currentness-rule slots for NT version, strategy config hash, catalog hash, manifest schema, and execution model.
 - [ ] BACKTESTING_ENGINE-003 Define `binary option` and `perps/spot` proof fixtures, with concrete venue/provider selected only through TOML/registry bindings.
 - [x] BACKTESTING_ENGINE-004 Define one S3 `artifact_root` config with typed subpaths `raw/`, `nt-catalog/`, `source-proofs/`, `backtests/`, `artifact-index/`, and RA-reserved `research-analytics/`; define short config-selected path keys, `nt-catalog/` projection-root behavior, and reject separate canonical root knobs.

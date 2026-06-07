@@ -367,6 +367,7 @@ mod tests {
     use crate::bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config};
     use crate::bolt_v3_providers::{
         binance::{self, ResolvedBoltV3BinanceSecrets},
+        chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     };
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
@@ -541,8 +542,8 @@ transport_backend = "sockudo"
         .expect("fixture secrets should resolve");
 
         // polymarket_main + binance_reference + chainlink_strike (shipped live
-        // resolution-strike client).
-        assert_eq!(resolved.clients.len(), 3);
+        // resolution-strike client) + chainlink_reference.
+        assert_eq!(resolved.clients.len(), 4);
         assert!(
             calls.iter().all(|(region, _)| region == "eu-west-2"),
             "all SSM calls must use [aws].region from the fixture root.toml: {calls:#?}"
@@ -579,6 +580,15 @@ transport_backend = "sockudo"
             .expect("binance_reference should resolve to Binance secrets");
         assert_eq!(binance.api_key.as_str(), "binance-api-key");
         assert_eq!(binance.api_secret.as_str(), synthetic_binance_secret());
+
+        let chainlink_reference = resolved
+            .get_as::<ResolvedBoltV3ChainlinkReferenceSecrets>("chainlink_reference")
+            .expect("chainlink_reference should resolve to Chainlink reference secrets");
+        assert_eq!(chainlink_reference.api_key.as_str(), "chainlink-api-key");
+        assert_eq!(
+            chainlink_reference.api_secret.as_str(),
+            "chainlink-api-secret"
+        );
     }
 
     #[test]

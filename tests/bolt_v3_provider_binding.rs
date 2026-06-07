@@ -47,6 +47,7 @@ use bolt_v2::{
         ProviderArtifactReference, ProviderLiveSubmitApprovalContext,
         ProviderProductSubmitProofArtifactRequest, binance::ResolvedBoltV3BinanceSecrets,
         binding_for_provider_key, chainlink::ResolvedBoltV3ChainlinkSecrets,
+        chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
         hyperliquid::ResolvedBoltV3HyperliquidSecrets,
         hyperliquid_artifacts::read_hyperliquid_live_submit_approval_artifact,
         polymarket::ResolvedBoltV3PolymarketSecrets, validate_client_block,
@@ -128,6 +129,15 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         Arc::new(ResolvedBoltV3ChainlinkSecrets {
             api_key: zeroize::Zeroizing::new("binding-chainlink-api-key".to_string()),
             api_secret: zeroize::Zeroizing::new("binding-chainlink-api-secret".to_string()),
+        }),
+    );
+    clients.insert(
+        "chainlink_reference".to_string(),
+        Arc::new(ResolvedBoltV3ChainlinkReferenceSecrets {
+            api_key: zeroize::Zeroizing::new("binding-chainlink-reference-api-key".to_string()),
+            api_secret: zeroize::Zeroizing::new(
+                "binding-chainlink-reference-api-secret".to_string(),
+            ),
         }),
     );
     ResolvedBoltV3Secrets { clients }

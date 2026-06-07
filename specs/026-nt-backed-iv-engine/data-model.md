@@ -22,6 +22,7 @@ Validation:
 - The ledger must fail if it cannot resolve the checkout from Cargo metadata and lockfile evidence.
 - The ledger must sweep the full resolved NT checkout for Rust public symbols and modules whose path, symbol, doc comment, or enclosing module matches IV/options discovery terms, not only a curated seed list.
 - Every sweep candidate must be classified as supported, unreachable from the Rust binary, not IV/options related after inspection, or explicitly excluded with approved rationale.
+- Candidate sweep terms include option, options, greeks, implied, iv, volatility, smile, surface, chain, custom data, strike, expiry, expiration, tenor, moneyness, skew, premium, and vol.
 - No handwritten NT revision or local checkout path is accepted as capability evidence.
 
 ## IvProfile
@@ -33,6 +34,8 @@ Fields:
 - `profile_id`
 - `schema_version`
 - `strategy_ids`
+- `selector_authorization`
+- `audit_policy`
 - `sources`
 - `enabled_products`
 - `freshness`
@@ -45,15 +48,37 @@ Fields:
 - `quorum_policy`
 - `projection_policy`
 - `derived_input_policy`
+- `helper_policy`
+- `schema_version_policy`
 
 Validation:
 
 - Profile IDs are unique and non-empty.
 - Unknown or unsupported schema versions reject at startup.
+- Supported schema versions and migration behavior are declared in `schema_version_policy`; no best-effort schema compatibility is allowed.
 - Strategy authorization, sources, source lifecycle, enabled products, memory bounds, and query policies live in this profile boundary.
 - Swapping, renaming, adding, or removing a source requires editing only this profile.
 - A profile with no source and no derived-input policy rejects at startup.
 - No runtime value is inferred from code when TOML omits it.
+
+## IvAuditPolicy
+
+Per-profile audit/replay boundary for raw payload access.
+
+Fields:
+
+- `enabled_raw_products`
+- `authorized_audit_handles`
+- `access_purposes`
+- `eligible_sources`
+- `audit_retention`
+
+Validation:
+
+- Raw payload access is disabled unless the raw product, source, handle, and access purpose all match this policy.
+- Strategy query handles cannot be listed as authorized audit handles.
+- Audit retention cannot exceed profile memory bounds.
+- Every raw audit response records access purpose and raw event provenance.
 
 ## IvSourceConfig
 
@@ -116,6 +141,25 @@ Validation:
 - Empty selector collections reject.
 - Source-scope selector fields are not reused as query filters without conversion into the matching query selector variant.
 - Selector fingerprints are recorded in provenance so policy decisions can be audited.
+
+## IvSelectorAuthorization
+
+Strategy authorization rule for profile-wide or selector-scoped IV access.
+
+Fields:
+
+- `authorization_mode`: profile-wide or selector-scoped
+- `strategy_id`
+- `allowed_product_kinds`
+- `allowed_selector_fingerprints`
+- `allowed_source_ids`
+
+Validation:
+
+- Profile-wide mode allows any configured selector for the listed strategy and product kinds.
+- Selector-scoped mode requires a matching selector fingerprint and product kind.
+- Unknown strategy IDs, product kinds, source IDs, and selector fingerprints reject at startup.
+- Authorization cannot grant raw-payload product kinds to strategy query handles.
 
 ## IvSubscriptionPlan
 
@@ -238,9 +282,31 @@ Validation:
 - Required when policy-produced or projected: `policy_decisions`, `transformation_steps`.
 - Required when rejected: `reject_reason`.
 - Derived products include all input references and helper identity.
-- Policy outputs include candidate lists, rejected candidates, accepted candidates, and policy names.
+- `helper_identity` uses the typed `IvHelperIdentity` shape: `nt_symbol`, `nt_revision`, `parameter_signature`, `helper_policy_id`, and `engine_mapping`.
+- `policy_decisions` is a non-empty list of typed `IvPolicyDecision` variants, not a free-form string.
+- Policy outputs include candidate lists, rejected candidates, accepted candidates, policy IDs, and policy decision variants.
 - Timestamp fields are typed nanoseconds.
 - Missing required provenance rejects the product even when the raw value is otherwise usable.
+
+## IvPolicyDecision
+
+Typed decision record attached to provenance when policy affects an output or rejection.
+
+Variants:
+
+- `ProjectionDecision`: input product IDs, selector fingerprints, projection kind, accepted input set, rejected input set, basis, convention, and `max_projection_input_skew_ns`
+- `InterpolationDecision`: input point IDs, axes, method, minimum-points check, extrapolation mode, accepted range, and rejected range
+- `FallbackDecision`: candidate order, rejected candidates with reasons, accepted candidate, timestamp-skew check, and source eligibility
+- `QuorumDecision`: participating sources, rejected sources, agreement band, tie-break, and final quorum state
+- `HelperDecision`: helper policy ID, helper identity, input set ID, output validation, and rejection reason when applicable
+- `RawAuditDecision`: audit handle ID, raw product kind, access purpose, source eligibility, and retention result
+- `RejectionDecision`: reject reason, failed field, policy ID, source health state, and subscription generation
+
+Validation:
+
+- Every projected, interpolated, fallback-selected, quorum-selected, helper-derived, raw-audit, or rejected output has the matching variant.
+- A decision variant cannot omit the policy ID that caused the decision.
+- Candidate and rejected lists are retained even when the output rejects.
 
 ## IvPoint
 
@@ -360,18 +426,43 @@ Validation:
 - Evidence kind must not be mislabeled as an option-chain point.
 - Projection into IV requires explicit configured policy.
 
+## IvHelperPolicy
+
+TOML and ledger-backed policy for choosing NT math helpers.
+
+Fields:
+
+- `helper_policy_id`
+- `nt_helper_symbol`
+- `parameter_signature`
+- `allowed_outputs`
+- `input_policy_ref`
+- `output_bounds`
+- `convention_policy`
+- `failure_policy`
+
+Validation:
+
+- Helper symbol must exist in the `IvCapabilityLedger` and be classified as supported.
+- Parameter signature must match the selected helper and resolved `IvDerivedInputSet`.
+- Output bounds must reference `IvNumericBounds`.
+- Helper invocation provenance records helper identity and `HelperDecision`.
+- Missing helper policy rejects derived-IV and derived-greeks queries.
+
 ## IvDerivedInputPolicy
 
 Typed policy for resolving inputs needed by NT math helpers.
 
 Fields:
 
+- `helper_policy_ref`
 - `required_fields`
 - `field_sources`
 - `freshness`
 - `max_input_skew_ns`
 - `bounds`
 - `convention_policy`
+- `operator_value_refresh_policy`
 
 Allowed field source kinds:
 
@@ -384,6 +475,7 @@ Validation:
 
 - Required fields include option price, underlying price, strike, option side, time-to-expiry, rate, carry, source timestamps, and convention.
 - Operator-configured values are TOML-owned and provenance-recorded.
+- Operator-configured rate and carry values include freshness or validity metadata; expired operator values reject instead of silently reusing stale inputs.
 - No rate, carry, time convention, or fallback input is guessed in code.
 - Missing, stale, skewed, non-finite, or convention-incompatible inputs reject.
 
@@ -418,7 +510,8 @@ Fields:
 
 - `profile_id`
 - `source_id`
-- `helper`
+- `helper_policy_id`
+- `helper_identity`
 - `inputs`
 - `output_iv`
 - `output_greeks`
@@ -430,6 +523,7 @@ Validation:
 - Inputs come from `IvDerivedInputSet`.
 - Missing or invalid input rejects.
 - Output IV is finite, positive, and within configured bounds.
+- Output greeks are emitted only when the helper policy allows greeks under the IV engine boundary.
 
 ## IvProjectionPolicy
 
@@ -475,6 +569,7 @@ Validation:
 - Interpolation rejects when required axes or minimum points are unavailable.
 - Extrapolation is rejected unless TOML explicitly permits the configured mode.
 - Every interpolation output records input points, axes, method, and source eligibility.
+- Extrapolation here means strike/tenor axis extrapolation only; temporal lookback/as-of behavior is governed by freshness and history policy.
 
 ## IvFallbackPolicy
 
@@ -529,6 +624,28 @@ Validation:
 - Eviction records provenance and source-health events.
 - Retention misses reject current and historical queries with a typed reason.
 
+## IvNumericBounds
+
+Typed numeric and convention bounds used by ingestion, projection, helper inputs, and helper outputs.
+
+Fields:
+
+- `finite_required`
+- `positive_required`
+- `inclusive_min`
+- `inclusive_max`
+- `exclusive_min`
+- `exclusive_max`
+- `unit`
+- `allowed_conventions`
+
+Validation:
+
+- Bounds are TOML-owned and referenced by policy ID.
+- Unit-ambiguous values reject at config load.
+- IV, rate, carry, time-to-expiry, strike, price, skew, and agreement-band fields each reference an explicit bound policy.
+- Convention eligibility is validated before a value can be indexed, projected, or passed to an NT helper.
+
 ## IvSourceHealth
 
 Source status for subscriptions and data quality.
@@ -568,6 +685,7 @@ Allowed transitions:
 - `unsubscribing` -> `removed`
 - `subscription_failed` -> `subscribing`
 - any non-removed state -> `rejected` when config validation or runtime mapping fails
+- `rejected` is terminal for the current subscription generation unless a reload creates a new generation
 - `removed` is terminal for the subscription generation
 
 Validation:
@@ -595,7 +713,7 @@ Fields:
 
 Validation:
 
-- Strategy must be authorized for the profile and selector.
+- Strategy must be authorized for the profile, requested product kind, source filter, and selector fingerprint under `IvSelectorAuthorization`.
 - Unknown product kinds reject.
 - Raw-payload product kinds reject on strategy-facing query handles.
 - Current queries reject stale or retained-only data.
@@ -632,3 +750,9 @@ Required reasons:
 - `QuorumNotMet`
 - `CapabilityUnclassified`
 - `ProvenanceIncomplete`
+- `UnknownSchemaVersion`
+- `UnknownPolicy`
+- `SelectorProductMismatch`
+- `UnauthorizedProduct`
+- `HelperNotConfigured`
+- `OperatorInputExpired`

@@ -38,10 +38,14 @@ Every query includes:
 
 The `selector` field is a typed `IvSelector` union. It is not an arbitrary key-value bag. The selector variant must match the requested product kind and the owning profile's configured source kinds.
 
+Authorization is evaluated through `IvSelectorAuthorization`. A profile may use profile-wide access or selector-scoped access, but the effective rule must authorize the strategy ID, product kind, source filter, and selector fingerprint. Raw-payload product kinds are never authorized for strategy query handles.
+
 Derived IV queries additionally include either:
 
 - an `IvDerivedInputSet` with all required helper inputs, or
 - permission to resolve every required input through the profile's `IvDerivedInputPolicy`
+
+Derived IV queries also require an `IvHelperPolicy` reference. The helper policy selects the NT helper symbol, parameter signature, allowed output shape, output bounds, and helper provenance fields. The engine rejects derived queries when helper policy is missing, unsupported by the capability ledger, or incompatible with resolved inputs.
 
 Optional query fields are allowed only when the owning IV profile permits overrides:
 
@@ -63,6 +67,8 @@ Responses are either:
 
 No query may silently fall back to another basis, convention, source, timestamp, projection, interpolation, fallback, quorum, extrapolation policy, rate input, carry input, or time convention.
 
+Policy decisions are typed `IvPolicyDecision` variants. Free-form policy decision strings are not part of the contract.
+
 ## Raw Payload Access
 
 Raw payload access returns preserved NT payloads through an audit/replay API. It does not grant strategy code direct ownership of NT subscription mechanics or raw IV-bearing DTOs.
@@ -70,6 +76,8 @@ Raw payload access returns preserved NT payloads through an audit/replay API. It
 Raw payloads are evidence, observability, replay, and test outputs. IV-shaped strategy decisions must use IV engine products, projections, or derived products so provenance, policy, freshness, retention, and source authorization are enforced in one place.
 
 The strategy-facing `IvQueryHandle` rejects raw-payload product kinds. Full raw payload retrieval is limited to `IvRawAuditReader` or equivalent audit/test modules outside `src/strategies/**`. Strategy-facing products may include `raw_event_id` references in provenance, but the raw NT payload bytes or typed NT payload structs remain engine-owned.
+
+Raw payload retrieval also requires the owning profile's `IvAuditPolicy` to authorize the raw product kind, source, audit handle, access purpose, and audit retention boundary.
 
 ## Projection Contract
 
@@ -88,10 +96,12 @@ Projection:
 Derived IV and derived greeks:
 
 - must use NT math helpers only inside the IV engine
+- must select the helper through `IvHelperPolicy`
 - must resolve option price, underlying price, strike, option side, time-to-expiry, rate, carry, timestamps, and convention through `IvDerivedInputPolicy`
 - must allow query-supplied inputs only when the owning profile permits that source kind
 - must record all resolved inputs and helper identity in provenance
 - must reject incomplete, stale, skewed, non-finite, or convention-incompatible inputs
+- must reject expired operator-configured rate or carry inputs rather than silently reusing stale operator values
 
 ## Policy Contract
 
@@ -100,6 +110,7 @@ Interpolation:
 - must name the configured method and axes
 - must record every input point used
 - must reject if input count, source eligibility, axis, or extrapolation requirements are not satisfied
+- treats extrapolation as strike/tenor axis extrapolation only; temporal behavior is governed by freshness and history policy
 
 Fallback:
 
@@ -137,6 +148,7 @@ Ledger generation:
 - resolves the Cargo git checkout for the locked NT revision
 - scans model, data actor, data engine, msgbus, option-chain, greeks-helper, adapter, and custom-data surfaces as minimum seed families
 - performs a whole-checkout Rust source sweep for public modules, types, functions, methods, topics, and data definitions whose path, symbol, doc comment, or enclosing module contains IV/options indicators such as option, options, greeks, implied, iv, volatility, smile, surface, chain, or custom data
+- includes option-microstructure indicators such as strike, expiry, expiration, tenor, moneyness, skew, premium, and vol in the candidate sweep
 - requires every candidate from the seed scan or whole-checkout sweep to be classified as supported, unreachable from the Rust binary, not IV/options related after inspection, or explicitly excluded with approved rationale
 - fails if a discovered IV/options surface is unclassified
 

@@ -30,6 +30,9 @@
 - [x] Provenance schema is defined for raw, indexed, derived, projected, and rejected outputs
 - [x] Raw payload access is audit/replay-only and source-fenced away from strategy handles
 - [x] Capability ledger discovery includes a whole-checkout IV/options candidate sweep
+- [x] Capability ledger sweep includes option-microstructure vocabulary beyond explicit IV names
+- [x] Helper policy, audit policy, selector authorization, numeric bounds, and schema-version policy are specified
+- [x] Policy decisions are typed rather than free-form strings
 - [x] Projection temporal skew is configured and testable
 - [x] Unknown IV schema versions reject at startup
 - [x] Live-node/config/strategy-registration integration is explicitly planned
@@ -53,6 +56,7 @@
 - [x] User scenarios cover primary flows
 - [x] Feature meets measurable outcomes defined in Success Criteria
 - [x] Blocking findings from internal and external review are represented as requirements
+- [x] Non-blocking external review concerns that affect implementation precision are represented as requirements or data-model entities
 
 ## Notes
 

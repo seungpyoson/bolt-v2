@@ -13,7 +13,7 @@ Bolt-owned entities, config keys, source kinds, and product names use `IV` or `i
 
 ## Decision: Cargo-pinned NT capability ledger defines "all"
 
-The IV engine scope is defined by scanning the NautilusTrader checkout pinned in `Cargo.toml`. The ledger resolves the locked dependency graph with `cargo metadata --locked`, cross-checks NT package source revisions in `Cargo.lock`, locates the Cargo git checkout for that revision, scans known seed families, and performs a whole-checkout public-symbol candidate sweep for IV/options terms. Every candidate is classified as supported, unreachable from the Rust binary, not IV/options related after inspection, or explicitly excluded with approved rationale.
+The IV engine scope is defined by scanning the NautilusTrader checkout pinned in `Cargo.toml`. The ledger resolves the locked dependency graph with `cargo metadata --locked`, cross-checks NT package source revisions in `Cargo.lock`, locates the Cargo git checkout for that revision, scans known seed families, and performs a whole-checkout public-symbol candidate sweep for IV/options terms. The sweep includes implied-volatility and option-microstructure vocabulary: option, options, greeks, implied, iv, volatility, smile, surface, chain, custom data, strike, expiry, expiration, tenor, moneyness, skew, premium, and vol. Every candidate is classified as supported, unreachable from the Rust binary, not IV/options related after inspection, or explicitly excluded with approved rationale.
 
 **Rationale**: The user requires all relevant NT IV/options capabilities. A source-backed ledger makes this requirement testable and prevents drift.
 
@@ -82,7 +82,7 @@ The IV store keeps raw NT payloads and indexed IV products. Strategies query IV 
 
 ## Decision: Provenance is a required schema
 
-Every raw event, indexed product, derived product, projection, policy output, and rejection carries `IvProvenance` with profile, source, selector fingerprint, NT revision evidence, raw event IDs, input IDs, helper identity, policy decisions, timestamp units, ingest sequence, subscription generation, source-health state, and reject reason when applicable.
+Every raw event, indexed product, derived product, projection, policy output, and rejection carries `IvProvenance` with profile, source, selector fingerprint, NT revision evidence, raw event IDs, input IDs, helper identity, typed policy decisions, timestamp units, ingest sequence, subscription generation, source-health state, and reject reason when applicable.
 
 **Rationale**: Raw, indexed, derived, and projected values are not interchangeable. Required provenance makes policy and source decisions auditable.
 
@@ -90,6 +90,17 @@ Every raw event, indexed product, derived product, projection, policy output, an
 
 - Free-form provenance maps: rejected because they would leave audit gaps.
 - Provenance only on successful products: rejected because rejected queries also need source and policy evidence.
+
+## Decision: Policy decisions are typed, not strings
+
+Projection, interpolation, extrapolation, fallback, quorum, helper invocation, raw audit access, and rejection paths record typed `IvPolicyDecision` variants in provenance.
+
+**Rationale**: Policies change returned IV. Typed decisions let tests assert exact candidate sets, rejected inputs, accepted inputs, helper identity, and rejection causes.
+
+**Alternatives considered**:
+
+- Store free-form policy text: rejected because it cannot be exhaustively tested.
+- Store only policy IDs: rejected because a policy ID does not prove which candidates or inputs were considered.
 
 ## Decision: Aggregate greeks are a typed product
 
@@ -102,9 +113,9 @@ NT aggregate greeks events are preserved raw and indexed into `IvAggregateGreeks
 - Raw-only aggregate greeks access: rejected because strategies would need custom parsing/state.
 - Fold aggregate greeks into `IvGreeksPoint`: rejected because aggregate selectors are not necessarily one instrument-level IV point.
 
-## Decision: Derived IV uses NT helpers only with complete configured inputs
+## Decision: Derived IV uses NT helpers only with complete configured inputs and helper policy
 
-Derived IV is available when the request supplies or resolves an `IvDerivedInputSet` under `IvDerivedInputPolicy`: option price, underlying price, strike, option side, time-to-expiry, rate, carry, source timestamps, and accepted convention. Missing or invalid inputs reject.
+Derived IV is available when `IvHelperPolicy` selects a ledger-supported NT helper and the request supplies or resolves an `IvDerivedInputSet` under `IvDerivedInputPolicy`: option price, underlying price, strike, option side, time-to-expiry, rate, carry, source timestamps, and accepted convention. Missing helper policy, incompatible helper signature, expired operator-configured values, or invalid inputs reject.
 
 **Rationale**: NT helpers are part of the capability set, but IV derivation is invalid if required assumptions are guessed.
 
@@ -112,6 +123,7 @@ Derived IV is available when the request supplies or resolves an `IvDerivedInput
 
 - Hardcoded default rate/carry/time convention: rejected by no-hardcodes and correctness.
 - Strategy-local derivation: rejected because it bypasses the IV engine.
+- Infer helper from product kind: rejected because helper choice can change output semantics and must be provenance-recorded.
 
 ## Decision: Projection is explicit
 
@@ -145,6 +157,28 @@ Custom implied-volatility data from NT adapters is stored as `IvEvidence`. It ca
 
 - Store custom implied-volatility evidence as `IvPoint`: rejected because it loses semantic distinction.
 - Ignore custom implied-volatility data: rejected because it misses NT capability.
+
+## Decision: Raw payload access requires an audit policy
+
+Each IV profile defines `IvAuditPolicy` for enabled raw products, authorized audit handles, access purposes, eligible sources, and audit retention. Strategies are never authorized audit handles.
+
+**Rationale**: Preserving raw NT payloads is required, but raw dereference must remain audit/replay-only and source-fenced away from strategy logic.
+
+**Alternatives considered**:
+
+- Make raw access globally available to any internal caller: rejected because strategies could bypass product provenance.
+- Use only source-fence without config policy: rejected because audit access still needs runtime authorization and retention boundaries.
+
+## Decision: Strategy authorization can be profile-wide or selector-scoped
+
+`IvSelectorAuthorization` lets a profile declare profile-wide strategy access or selector-scoped strategy access by product kind, source ID, and selector fingerprint.
+
+**Rationale**: Some strategies should consume every product in a profile, while others need narrower access. The choice must be explicit and testable.
+
+**Alternatives considered**:
+
+- Only profile-wide authorization: rejected because it over-grants when a profile shares sources across strategy families.
+- Only selector-scoped authorization: rejected because it creates unnecessary config noise for simple profiles.
 
 ## Decision: NT timestamp handling is explicit
 
@@ -190,12 +224,12 @@ The IV TOML schema version is explicit, and unknown or unsupported versions reje
 
 - Best-effort schema compatibility: rejected because it can silently change strategy-visible IV outputs.
 
-## Decision: This IV packet is explicit-path, not the active Speckit pointer
+## Decision: This IV packet is the active Speckit planning pointer
 
-The repository source-fence currently requires `.specify/feature.json` and the AGENTS Speckit block to remain pinned to `specs/023-nt-order-intent-layer`. The IV plan remains under `specs/026-nt-backed-iv-engine/` and future IV tasks must name that path explicitly.
+For this planning branch, `.specify/feature.json` and the AGENTS Speckit block point to `specs/026-nt-backed-iv-engine/` so `$speckit-plan` and `$speckit-tasks` operate on the IV packet.
 
-**Rationale**: Changing the active Speckit pointer would fail existing source-fence checks unrelated to the IV design.
+**Rationale**: The user explicitly requested a detailed Speckit plan and tasks for the IV engine. The active pointer must match the current planning deliverable.
 
 **Alternatives considered**:
 
-- Repoint the active Speckit block to this IV plan: rejected because current source-fence verifies the existing order-intent pointer.
+- Leave the pointer on another feature and require explicit paths: rejected because Speckit setup scripts would target the wrong plan.

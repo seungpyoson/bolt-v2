@@ -181,24 +181,35 @@ As a strategy author, I need a strategy-agnostic IV API that exposes all strateg
 - **FR-045**: System MUST keep per-profile memory bounds for raw events, indexed points, smiles, surfaces, derived products, and source-health events TOML-owned and enforced.
 - **FR-046**: System MUST source-fence `src/strategies/**` from importing raw IV payload audit readers, raw IV payload DTOs, and raw-payload strategy query product kinds.
 - **FR-047**: System MUST make the NT capability ledger perform a whole-checkout IV/options candidate sweep in addition to seed-family scans.
+- **FR-048**: System MUST define `IvHelperPolicy` so NT math helper selection, helper parameter signatures, output validation, and helper provenance are TOML-owned or ledger-owned rather than inferred in derivation code.
+- **FR-049**: System MUST define typed `IvPolicyDecision` variants for projection, interpolation, extrapolation, fallback, quorum, helper invocation, and rejection decisions; free-form policy decision strings are not accepted.
+- **FR-050**: System MUST define `IvAuditPolicy` inside each `IvProfile` so raw payload access has explicit enabled raw products, access purposes, authorized audit handles, retention limits, and source eligibility.
+- **FR-051**: System MUST define `IvSelectorAuthorization` so each profile can choose whether strategy access is profile-wide or selector-scoped; selector-scoped profiles must map strategy IDs to allowed products and selector fingerprints.
+- **FR-052**: System MUST define `IvNumericBounds` and `IvConventionBounds` for input and output validation, including finiteness, positivity, IV ranges, rate/carry ranges, time-to-expiry ranges, strike ranges, and convention eligibility.
+- **FR-053**: System MUST define the accepted IV TOML schema-version set, version bump rule, and migration behavior; unknown versions reject before subscription planning.
+- **FR-054**: System MUST include option-microstructure terms such as strike, expiry, expiration, tenor, moneyness, skew, premium, and vol in the whole-checkout candidate sweep so NT symbols without explicit `iv` or `implied` names are still surfaced for classification.
 
 ### Key Entities *(include if feature involves data)*
 
 - **IvCapabilityLedger**: Source-backed inventory of NT IV/options APIs at the Cargo-pinned revision.
 - **IvProfile**: TOML lifecycle boundary that owns IV sources, source policies, strategy authorization, enabled products, retention, freshness, interpolation, fallback, quorum, projection, and derived-input policy.
+- **IvAuditPolicy**: Per-profile audit/replay boundary for raw payload access, authorized audit handles, allowed raw products, and audit retention.
 - **IvSourceConfig**: TOML-derived source definition containing source ID, data client, source kind, selectors, params, retention, freshness, accepted conventions, and enabled products.
 - **IvSelector**: Typed union for source and query selectors, validated against source kind and product kind.
+- **IvSelectorAuthorization**: Strategy-to-product and strategy-to-selector authorization rule for profile-wide or selector-scoped IV access.
 - **IvSubscriptionPlan**: Concrete NT subscribe/unsubscribe operations derived from `IvSourceConfig`.
 - **IvRuntimeBinding**: Live NT data actor, msgbus, subscription, event-router, and source-health binding for one configured source.
 - **IvRawEvent**: Preserved NT payload or custom implied-volatility event with source identity and receive metadata.
 - **IvRawAuditAccess**: Audit, replay, and test-only raw payload reader that is not available through strategy query handles.
 - **IvProvenance**: Required audit schema for raw, indexed, derived, projected, policy, and rejected outputs.
+- **IvPolicyDecision**: Typed decision record for projection, interpolation, extrapolation, fallback, quorum, helper, and rejection paths.
 - **IvPoint**: One timestamped IV value for one instrument, basis, source, convention, and provenance record.
 - **IvGreeksPoint**: IV point plus all NT greek values and related fields.
 - **IvAggregateGreeks**: Queryable aggregate greeks product derived from NT aggregate greeks events with selector, source, timestamps, values, and provenance.
 - **IvSmile**: Strike-indexed IV points for one option series, side, source, and as-of time.
 - **IvSurface**: Collection of smiles across configured series selectors.
 - **IvEvidence**: Custom IV evidence that is not equivalent to instrument-level option IV.
+- **IvHelperPolicy**: TOML and ledger-backed policy for choosing NT IV/greeks helpers, allowed parameter signatures, output bounds, and helper provenance.
 - **IvDerivedInputPolicy**: Typed policy for resolving option price, underlying, strike, side, time-to-expiry, rate, carry, timestamps, and convention.
 - **IvDerivedInputSet**: Resolved helper input bundle with provenance for one derived-IV request.
 - **IvDerivedPoint**: IV and greeks produced by NT math helpers with complete input provenance.
@@ -206,6 +217,7 @@ As a strategy author, I need a strategy-agnostic IV API that exposes all strateg
 - **IvInterpolationPolicy**: Typed policy for smile/surface interpolation and extrapolation rejection or permission.
 - **IvFallbackPolicy**: Typed policy for ordered source/product/basis fallback.
 - **IvQuorumPolicy**: Typed policy for multi-source agreement before returning a value.
+- **IvNumericBounds**: Typed numeric and convention validation boundaries for input, output, projection, and helper data.
 - **IvMemoryBounds**: TOML-owned retention and memory limits for IV stores and health history.
 - **IvSourceHealth**: Subscription state, freshness, last event, last rejection, rejection counts, and retention state for one source.
 - **IvQuery**: Strategy-facing request for points, greeks, smiles, surfaces, custom IV evidence, aggregate greeks, projections, source health, or derived IV.
@@ -233,6 +245,12 @@ As a strategy author, I need a strategy-agnostic IV API that exposes all strateg
 - **SC-016**: Source-fence tests run through `just source-fence` and reject strategy-local NT IV subscriptions, NT helper-backed derivation, raw IV payload audit reader imports, raw IV payload DTO imports, raw-payload product requests through strategy handles, and IV-shaped derivation from raw payload values.
 - **SC-017**: Derived-input and projection tests prove missing policies, missing inputs, unresolved rate/carry/time fields, scalar projection without explicit policy, and projection input skew violations all reject.
 - **SC-018**: Capability-sweep tests prove an IV/options-like public NT symbol placed outside the seed families is surfaced as an unclassified candidate until classified.
+- **SC-019**: Helper-policy tests prove NT helper selection is deterministic, provenance-recorded, and rejected when helper policy, helper signature, or output bounds are missing or invalid.
+- **SC-020**: Provenance tests prove every policy-produced output includes the typed `IvPolicyDecision` variant required for the applied policy rather than a free-form string.
+- **SC-021**: Audit-policy tests prove raw payload access is available only through configured audit/replay handles and is never injected into strategy query handles.
+- **SC-022**: Selector-authorization tests prove profile-wide access and selector-scoped access both enforce configured products and selector fingerprints exactly.
+- **SC-023**: Bound-schema tests prove every numeric and convention bound rejects non-finite, out-of-range, unit-ambiguous, or convention-ineligible input before ingestion, projection, or helper output is accepted.
+- **SC-024**: Schema-version tests prove accepted IV TOML schema versions load, unknown versions reject before source planning, and version-bump migrations are explicit.
 
 ## Assumptions
 

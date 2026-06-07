@@ -40,6 +40,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - the CLI has an explicit `--publish-output` opt-in that copies the verified local artifact tree to `manifest.output_prefix` through NT/object-store plumbing after the local run succeeds
 - published artifacts are create-only: the operator preflights the bounded target artifact set and writes through object-store `PutMode::Create`, so an existing published artifact rejects the run instead of being overwritten
 - publish flows resolve and validate artifact-store options before reading the accepted object, so missing S3/SSM setup cannot waste local object I/O on large accepted objects
+- backfill preflight selection is now a cheap TOML-driven gate over the coverage ledger: it selects at most one bounded canonical-ready accepted tranche before any payload download, conversion, catalog projection, or backtest work can start
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
 - the current `BacktestExtensionSurface` classification is recorded in `backtest-extension-surface-matrix.md`; supported primitive NT controls are TOML pass-throughs, Bolt-owned pieces are provenance/governance boundaries, unmodeled NT model/system surfaces fail before NT config construction, and each successful run now writes `backtest-run-manifest.json` plus result-contract claim-limit entries for resolved NT defaults, supported run/venue/catalog pass-through fields, and unsupported NT surfaces
 
@@ -628,6 +629,17 @@ Current evidence:
   manifest metadata census found only 22 of 190 manifests with top-level
   source-binding/source-proof fields; the other 168 cannot be safely bound by
   prefix or venue inference without violating the source-proof contract.
+- The config-driven backfill preflight CLI was run against the current
+  source-proof-bound coverage ledger before any payload conversion:
+  `/private/tmp/bte-coverage-ledger-20260607/backfill-preflight-bound-output/backfill-preflight-report.json`
+  has content hash
+  `7e3869c002579370b8eac5e1c6b452a76ffe65e65bc53f0913afb934f61af912`,
+  size 633 bytes, `status = blocked`, `total_records = 166`,
+  `accepted_records = 0`, `accepted_with_gaps_records = 0`,
+  `canonical_ready_records = 0`, `eligible_record_count = 0`, and blocking
+  reasons `no_accepted_records` plus `no_canonical_ready_records`. This is the
+  intended fail-fast point that prevents repeating the previous slow path while
+  source-proof acceptance and canonical-ready evidence are still absent.
 - Binance run `binance-backfill-run-d928f6666827dd47` records 4,701 completed
   payload objects, 42,358,207,176 payload bytes, zero errors, and
   `payload_completion_ok = true`, but it is still raw staging and not a
@@ -662,9 +674,11 @@ Distance from the overall backtesting engine:
    coverage spec, an operator CLI for that spec, generic TOML source-proof
    metadata binding, unsupported-schema rejected records, and a report-only
    source-proof admissibility CLI plus a report-only legacy source-proof
-   derivability CLI. A real manifest-only ledger can now be generated across all
-   190 observed manifests, and real source-proof admissibility/derivability
-   reports can now be generated across all 21 observed staged proofs. The
+   derivability CLI plus a preflight selector that refuses broad conversion
+   unless the ledger has one bounded canonical-ready accepted tranche. A real
+   manifest-only ledger can now be generated across all 190 observed manifests,
+   and real source-proof admissibility/derivability/preflight reports can now
+   be generated across the current staged evidence. The
    current S3 evidence still produces rejected gates, not accepted backfill: all
    discovered source-proof reports are non-current-contract source-proof-v3
    records, all 21 still lack passed license/schema/fidelity/forbidden-claim/NT

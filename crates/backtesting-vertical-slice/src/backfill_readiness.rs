@@ -230,6 +230,8 @@ pub fn evaluate_backfill_readiness(
             binding.key == source_binding
                 && binding.required_table_family_match
                 && binding.ledger_record_count > 0
+                && binding.canonical_ready_record_count > 0
+                && binding.accepted_record_count > 0
         });
         if !coverage_has_selected_binding {
             blockers.push(BackfillReadinessBlocker::SelectedSourceBindingMissingFromCoverage);

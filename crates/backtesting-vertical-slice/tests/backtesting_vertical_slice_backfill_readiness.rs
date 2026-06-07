@@ -125,6 +125,44 @@ fn readiness_blocks_when_binding_coverage_lacks_selected_binding() {
 }
 
 #[test]
+fn readiness_blocks_when_selected_binding_has_no_canonical_ready_coverage() {
+    let report = evaluate_backfill_readiness(
+        "synthetic-readiness",
+        ready_backfill_preflight(),
+        candidate_source_proof_preflight("trades"),
+        ready_binding_coverage_with_counts("synthetic-source-binding", 1, 0, 1),
+        "trades",
+        "TradeTick",
+    );
+
+    assert_eq!(report.status, BackfillReadinessStatus::Blocked);
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillReadinessBlocker::SelectedSourceBindingMissingFromCoverage)
+    );
+}
+
+#[test]
+fn readiness_blocks_when_selected_binding_has_no_accepted_coverage() {
+    let report = evaluate_backfill_readiness(
+        "synthetic-readiness",
+        ready_backfill_preflight(),
+        candidate_source_proof_preflight("trades"),
+        ready_binding_coverage_with_counts("synthetic-source-binding", 1, 1, 0),
+        "trades",
+        "TradeTick",
+    );
+
+    assert_eq!(report.status, BackfillReadinessStatus::Blocked);
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillReadinessBlocker::SelectedSourceBindingMissingFromCoverage)
+    );
+}
+
+#[test]
 fn readiness_blocks_when_selected_source_proof_id_differs() {
     let report = evaluate_backfill_readiness(
         "synthetic-readiness",
@@ -464,6 +502,15 @@ fn ready_binding_coverage()
 fn ready_binding_coverage_for_binding(
     source_binding: &str,
 ) -> backtesting_vertical_slice::backfill_binding_coverage::BackfillBindingCoverageReport {
+    ready_binding_coverage_with_counts(source_binding, 1, 1, 1)
+}
+
+fn ready_binding_coverage_with_counts(
+    source_binding: &str,
+    ledger_record_count: u64,
+    canonical_ready_record_count: u64,
+    accepted_record_count: u64,
+) -> backtesting_vertical_slice::backfill_binding_coverage::BackfillBindingCoverageReport {
     BackfillBindingCoverageReport {
         schema_version: "backfill-binding-coverage-report.v1".to_string(),
         report_id: "synthetic-binding-coverage".to_string(),
@@ -477,9 +524,9 @@ fn ready_binding_coverage_for_binding(
             key: source_binding.to_string(),
             table_families: vec!["trades".to_string()],
             required_table_family_match: true,
-            ledger_record_count: 1,
-            canonical_ready_record_count: 1,
-            accepted_record_count: 1,
+            ledger_record_count,
+            canonical_ready_record_count,
+            accepted_record_count,
         }],
         blocking_issues: Vec::new(),
     }

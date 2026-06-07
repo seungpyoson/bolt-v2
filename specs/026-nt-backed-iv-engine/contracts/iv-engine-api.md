@@ -9,13 +9,14 @@ Strategies can request:
 - raw NT option-greeks payloads
 - raw NT option-chain payloads
 - raw NT aggregate greeks payloads
-- raw NT custom volatility payloads
-- custom volatility evidence
+- raw NT custom implied-volatility payloads
+- custom IV evidence
 - IV points
 - IV plus greeks points
 - aggregate greeks products
 - smiles
 - surfaces
+- projected scalar IV
 - derived IV points
 - source health
 
@@ -27,8 +28,15 @@ Every query includes:
 - `profile_id`
 - `selector`
 - `product_kind`
-- `as_of`
+- `as_of_ns`
 - history/current mode
+
+The `selector` field is a typed `IvSelector` union. It is not an arbitrary key-value bag. The selector variant must match the requested product kind and the owning profile's configured source kinds.
+
+Derived IV queries additionally include either:
+
+- an `IvDerivedInputSet` with all required helper inputs, or
+- permission to resolve every required input through the profile's `IvDerivedInputPolicy`
 
 Optional query fields are allowed only when the owning IV profile permits overrides:
 
@@ -45,14 +53,37 @@ Optional query fields are allowed only when the owning IV profile permits overri
 
 Responses are either:
 
-- `Ok(product)` with provenance, profile identity, source identity, timestamp units, and policy decisions
-- `Rejected(reason)` with a typed `IvRejectReason`
+- `Ok(product)` with `IvProvenance`, profile identity, source identity, timestamp units, and policy decisions
+- `Rejected(reason)` with a typed `IvRejectReason` and rejection provenance
 
-No query may silently fall back to another basis, convention, source, timestamp, projection, interpolation, fallback, quorum, or extrapolation policy.
+No query may silently fall back to another basis, convention, source, timestamp, projection, interpolation, fallback, quorum, extrapolation policy, rate input, carry input, or time convention.
 
 ## Raw Payload Access
 
 Raw payload access returns preserved NT payloads through the engine store. It does not grant the strategy direct ownership of NT subscription mechanics.
+
+Raw payloads are evidence and observability outputs. IV-shaped strategy decisions must use IV engine products, projections, or derived products so provenance, policy, freshness, retention, and source authorization are enforced in one place.
+
+## Projection Contract
+
+Projection is required when a query asks for a scalar value from a smile, surface, aggregate, or custom-IV-evidence product.
+
+Projection:
+
+- must name the configured projection kind
+- must identify input products and selector fingerprints
+- must record basis, convention, timestamp, source eligibility, and evidence mapping
+- must reject if required interpolation, fallback, or quorum policies are absent or fail
+
+## Derived Input Contract
+
+Derived IV and derived greeks:
+
+- must use NT math helpers only inside the IV engine
+- must resolve option price, underlying price, strike, option side, time-to-expiry, rate, carry, timestamps, and convention through `IvDerivedInputPolicy`
+- must allow query-supplied inputs only when the owning profile permits that source kind
+- must record all resolved inputs and helper identity in provenance
+- must reject incomplete, stale, skewed, non-finite, or convention-incompatible inputs
 
 ## Policy Contract
 
@@ -74,7 +105,34 @@ Quorum:
 - must record participating and rejected sources
 - must reject when source count or agreement-band requirements are not met
 
+## Runtime Binding Contract
+
+The live IV engine must bind through NT runtime APIs, not through an offline-only store.
+
+Runtime binding:
+
+- maps option-greeks sources to NT option-greeks subscription operations
+- maps option-chain sources to NT option-chain subscription operations
+- maps aggregate-greeks sources to NT greeks topic subscription operations
+- maps custom-implied-volatility sources to ledger-classified NT custom-data subscription operations
+- routes incoming NT events into raw preservation before indexing or projection
+- records subscription failures, unsupported mappings, and stale generations in `IvSourceHealth`
+
+## Capability Ledger Contract
+
+The capability ledger test resolves NT source evidence from Cargo, not from a hand-maintained local path.
+
+Ledger generation:
+
+- runs against the locked dependency graph from `cargo metadata --locked`
+- cross-checks NT package source revisions in `Cargo.lock`
+- resolves the Cargo git checkout for the locked NT revision
+- scans model, data actor, data engine, msgbus, option-chain, greeks-helper, adapter, and custom-data surfaces
+- fails if a discovered IV/options surface is unclassified
+
 ## Source-Fence Contract
+
+The IV source-fence must be wired into `just source-fence` through a checked verifier or test target.
 
 The IV source-fence must reject:
 
@@ -83,6 +141,7 @@ The IV source-fence must reject:
 - strategy module imports of NT greeks subscription APIs
 - strategy module imports of NT IV or greeks math helpers for strategy-local IV derivation
 - concrete venue, asset, market, cadence, source, or instrument constants in IV core logic
+- strategy-local derivation of IV-shaped products from raw payload access
 
 The IV source-fence must allow:
 

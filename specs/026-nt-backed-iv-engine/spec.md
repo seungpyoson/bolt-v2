@@ -3,7 +3,7 @@
 **Feature Branch**: `026-nt-backed-iv-engine`
 **Created**: 2026-06-07
 **Status**: Draft
-**Input**: Build a standalone IV engine that uses all IV, option, greeks, option-chain, and derived-volatility capabilities exposed by the NautilusTrader Rust APIs pinned in `Cargo.toml`. Strategies must be able to consume the engine outputs through generic APIs. The engine must not be hardcoded to a strategy, venue, market family, asset, cadence, or example instrument.
+**Input**: Build a standalone IV engine that uses all IV, option, greeks, option-chain, and derived implied-volatility capabilities exposed by the NautilusTrader Rust APIs pinned in `Cargo.toml`. Strategies must be able to consume the engine outputs through generic APIs. The engine must not be hardcoded to a strategy, venue, market family, asset, cadence, or example instrument.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -17,15 +17,16 @@ As the maintainer, I need a source-backed inventory of every IV/options capabili
 
 **Acceptance Scenarios**:
 
-1. **Given** the Cargo-pinned NT checkout, **When** the inventory command scans model data, greeks helpers, msgbus subscriptions, data-actor subscriptions, data-engine publications, option-chain manager surfaces, adapter option-greeks support, and custom volatility data types, **Then** the feature records each supported surface in the IV capability ledger.
+1. **Given** the Cargo-pinned NT checkout, **When** the inventory command scans model data, greeks helpers, msgbus subscriptions, data-actor subscriptions, data-engine publications, option-chain manager surfaces, adapter option-greeks support, and custom implied-volatility data types, **Then** the feature records each supported surface in the IV capability ledger.
 2. **Given** a newly discovered NT IV/options surface, **When** the ledger does not classify it as supported, intentionally excluded with rationale, or not reachable from the Rust binary, **Then** the inventory test fails.
 3. **Given** a stale hardcoded NT revision in a doc, **When** it conflicts with `Cargo.toml`, **Then** `Cargo.toml` remains the only source of truth and the stale doc value is ignored for IV scope.
+4. **Given** the locked dependency graph, **When** the ledger test runs, **Then** it resolves the NT checkout through Cargo metadata and `Cargo.lock` evidence rather than a hand-maintained checkout path.
 
 ---
 
 ### User Story 2 - Subscribe to configured NT IV/options sources (Priority: P1)
 
-As a strategy operator, I need the IV engine to subscribe through NT to every configured IV/options source type NT exposes, so strategies can rely on one engine for option greeks, option-chain slices, aggregate greeks, and custom volatility evidence.
+As a strategy operator, I need the IV engine to subscribe through NT to every configured IV/options source type NT exposes, so strategies can rely on one engine for option greeks, option-chain slices, aggregate greeks, and custom IV evidence.
 
 **Why this priority**: The engine must not merely normalize offline samples; it must own the live NT subscription boundary for IV/options data.
 
@@ -36,9 +37,10 @@ As a strategy operator, I need the IV engine to subscribe through NT to every co
 1. **Given** a TOML config with option-greeks sources, **When** the IV engine starts, **Then** it issues NT option-greeks subscriptions for every configured instrument through the configured client and passes configured NT params through unchanged.
 2. **Given** a TOML config with option-chain sources, **When** the IV engine starts, **Then** it issues NT option-chain subscriptions for every configured option series and configured strike range.
 3. **Given** a TOML config with aggregate greeks sources, **When** the IV engine starts, **Then** it subscribes to NT greeks topics for the configured underlying selectors.
-4. **Given** a TOML config with custom volatility data sources exposed by NT adapters, **When** the IV engine starts, **Then** it subscribes through NT custom-data plumbing and records those events as separate IV evidence, not as option-chain IV.
+4. **Given** a TOML config with custom implied-volatility data sources exposed by NT adapters, **When** the IV engine starts, **Then** it subscribes through NT custom-data plumbing and records those events as separate IV evidence, not as option-chain IV.
 5. **Given** a source removed from TOML, **When** the engine reloads or stops, **Then** it unsubscribes from the matching NT source and prevents stale data from appearing fresh.
 6. **Given** an operator swaps, removes, or renames an IV source inside a profile, **When** TOML is updated, **Then** the source lifecycle, strategy authorization, and query policies are changed in that single profile boundary without editing a separate allow-list section.
+7. **Given** a configured source cannot be mapped to an NT runtime subscription operation or its subscription fails, **When** the engine starts or reloads, **Then** source health records the failure and current queries for that source reject.
 
 ---
 
@@ -48,7 +50,7 @@ As a strategy author, I need access to both raw NT payloads and generic indexed 
 
 **Why this priority**: A normalized scalar would throw away NT value; raw-only pass-through would force every strategy to rebuild IV state. The engine must provide both.
 
-**Independent Test**: Feed sample NT `OptionGreeks`, `OptionChainSlice`, aggregate greeks, and custom volatility events into the engine; assert raw retrieval returns the original payloads and indexed queries return equivalent IV points, smiles, surfaces, aggregate greeks products, custom evidence, provenance, and source-health state.
+**Independent Test**: Feed sample NT `OptionGreeks`, `OptionChainSlice`, aggregate greeks, and custom implied-volatility events into the engine; assert raw retrieval returns the original payloads and indexed queries return equivalent IV points, smiles, surfaces, aggregate greeks products, custom IV evidence, provenance, and source-health state.
 
 **Acceptance Scenarios**:
 
@@ -73,6 +75,7 @@ As a strategy author, I need the IV engine to use NT's implied-volatility and gr
 1. **Given** configured option price, underlying price, strike, option side, time-to-expiry, rate, and carry inputs, **When** derived IV is requested, **Then** the engine calls the configured NT math helper and records all inputs, output, and helper identity in provenance.
 2. **Given** any missing, non-finite, non-positive where positive is required, or convention-incompatible derived-IV input, **When** derived IV is requested, **Then** the engine rejects the derivation with a typed reason and does not guess defaults.
 3. **Given** NT helper output is zero, non-finite, or outside configured IV bounds, **When** the engine validates the output, **Then** the derived IV point is rejected and source health records the failure.
+4. **Given** a derived-IV query supplies only some helper inputs, **When** the owning profile's derived-input policy cannot resolve the rest from configured source references, instrument metadata, or operator-configured values, **Then** the query rejects without using defaults.
 
 ---
 
@@ -107,6 +110,7 @@ As a strategy author, I need a strategy-agnostic IV API that exposes all engine 
 1. **Given** any registered strategy with an IV selector in TOML, **When** it requests IV data, **Then** it uses the same generic IV API as every other strategy.
 2. **Given** a strategy tries to bypass the IV engine by subscribing directly to NT IV/options topics inside strategy code, **When** source-fence checks run, **Then** the check fails regardless of which strategies are currently configured to use IV.
 3. **Given** a strategy requests data for a selector that is not configured for that strategy, **When** the IV API evaluates the request, **Then** it rejects the request without leaking another strategy's source data.
+4. **Given** a strategy receives raw NT payloads through the IV API, **When** it needs IV-shaped values, **Then** it must request an IV engine product, projection, or derived product rather than deriving IV locally.
 
 ### Edge Cases
 
@@ -116,11 +120,12 @@ As a strategy author, I need a strategy-agnostic IV API that exposes all engine 
 - Two configured sources publish the same instrument and basis at the same event time; the store preserves both and query policy determines ordering without dropping provenance.
 - A source clock is ahead of query as-of time; freshness evaluation rejects current views until policy permits the timestamp.
 - A derived-IV request has price and underlying inputs from different source timestamps outside configured skew; derivation rejects rather than blending silently.
-- A custom volatility data event represents a broad volatility index rather than instrument-level IV; it is stored as IV evidence and never mislabelled as an option-chain point.
+- A custom implied-volatility data event represents index-style IV evidence rather than instrument-level IV; it is stored as IV evidence and never mislabelled as an option-chain point.
 - A strategy requests scalar IV when only a smile is available; the request must choose a configured projection policy or reject.
 - A strategy requests interpolation outside the configured smile or surface domain; the query rejects unless TOML explicitly permits that extrapolation mode.
 - A query requires quorum across sources and the configured quorum threshold is not met; the query rejects instead of falling back to a single source.
 - A source ID is renamed inside an IV profile; no other TOML section is edited to preserve strategy authorization for that profile.
+- A subscription reload races with an older event; the event's subscription generation prevents stale-generation data from satisfying current queries.
 
 ## Requirements *(mandatory)*
 
@@ -131,7 +136,7 @@ As a strategy author, I need a strategy-agnostic IV API that exposes all engine 
 - **FR-003**: System MUST support NT option-greeks subscriptions through configured data clients and configured instrument selectors.
 - **FR-004**: System MUST support NT option-chain subscriptions through configured data clients, configured option-series selectors, and configured strike-range policies.
 - **FR-005**: System MUST support NT aggregate greeks subscriptions where NT exposes them and MUST model aggregate greeks as a queryable product rather than leaving them as an untyped raw-only side path.
-- **FR-006**: System MUST support NT custom volatility data sources where NT adapters expose them through the Rust runtime.
+- **FR-006**: System MUST support NT custom implied-volatility data sources where NT adapters expose them through the Rust runtime.
 - **FR-007**: System MUST preserve raw NT `OptionGreeks` payloads, including instrument identity, greeks convention, all `OptionGreekValues`, mark IV, bid IV, ask IV, underlying price, open interest, event timestamp, and init timestamp.
 - **FR-008**: System MUST preserve raw NT `OptionChainSlice` payloads, including series identity, ATM strike, call and put strike maps, nested quotes, nested greeks, and timestamps.
 - **FR-009**: System MUST index IV points for every usable mark, bid, and ask IV value without collapsing them into one basis.
@@ -144,7 +149,7 @@ As a strategy author, I need a strategy-agnostic IV API that exposes all engine 
 - **FR-016**: System MUST use NT math helpers for derived IV and derived greeks when configured inputs are complete and valid.
 - **FR-017**: System MUST reject derived-IV requests when any required input, convention, timestamp, side, rate, carry, price, strike, or time-to-expiry field is missing or invalid.
 - **FR-018**: System MUST record complete provenance for every raw, indexed, and derived IV product.
-- **FR-019**: System MUST model custom volatility data as a separate IV evidence product, not as an option-chain IV point.
+- **FR-019**: System MUST model custom implied-volatility data as a separate IV evidence product, not as an option-chain IV point.
 - **FR-020**: System MUST make IV profiles, source selection, freshness, retention, allowed bases, accepted conventions, interpolation policy, fallback policy, extrapolation policy, quorum policy, and query projection policy TOML-owned and Rust-validated.
 - **FR-021**: System MUST reject unknown TOML policies, unknown source kinds, empty source selectors, duplicate source IDs, invalid numeric bounds, and unit-ambiguous fields at startup.
 - **FR-022**: System MUST preserve NT timestamps in nanoseconds internally or convert through a named type with tests proving the conversion.
@@ -161,24 +166,41 @@ As a strategy author, I need a strategy-agnostic IV API that exposes all engine 
 - **FR-033**: System MUST define interpolation policy with explicit axes, method, minimum input points, source eligibility, and extrapolation behavior.
 - **FR-034**: System MUST define fallback policy with explicit ordered candidates, source eligibility, maximum timestamp skew, provenance, and rejection behavior when no candidate qualifies.
 - **FR-035**: System MUST define quorum policy with explicit source count, source eligibility, agreement band, tie-breaking, and rejection behavior when quorum is not met.
+- **FR-036**: System MUST define `IvSelector` as a typed Rust-validated union for option-greeks, option-chain, aggregate-greeks, custom-implied-volatility, smile, surface, and IV-evidence selectors.
+- **FR-037**: System MUST reject source configs and queries whose selector variant does not match the configured source kind or requested product kind.
+- **FR-038**: System MUST define `IvProvenance` and attach it to every raw event, indexed product, derived product, projection, policy output, and rejection.
+- **FR-039**: System MUST define `IvProjectionPolicy` for scalar projection from smiles, surfaces, aggregate products, or custom evidence and MUST reject scalar requests when the policy is absent or invalid.
+- **FR-040**: System MUST define `IvDerivedInputPolicy` and `IvDerivedInputSet` so derived IV queries either supply or profile-resolve every NT helper input with provenance.
+- **FR-041**: System MUST bind live sources through NT runtime subscription APIs and event handlers, with source-health transitions for configured, subscribing, active, stale, unsubscribing, removed, subscription-failed, and rejected states.
+- **FR-042**: System MUST generate the capability ledger from Cargo metadata and `Cargo.lock` evidence for the pinned NT checkout; handwritten NT revisions or local checkout paths are not accepted.
+- **FR-043**: System MUST wire IV source-fence enforcement into the repository `just source-fence` path or an invoked checked test so bypasses fail in CI.
+- **FR-044**: System MUST make raw payload access an engine-mediated evidence path, not a permission for strategies to build strategy-local IV-shaped products.
+- **FR-045**: System MUST keep per-profile memory bounds for raw events, indexed points, smiles, surfaces, derived products, and source-health events TOML-owned and enforced.
 
 ### Key Entities *(include if feature involves data)*
 
 - **IvCapabilityLedger**: Source-backed inventory of NT IV/options APIs at the Cargo-pinned revision.
 - **IvProfile**: TOML lifecycle boundary that owns IV sources, source policies, strategy authorization, enabled products, retention, freshness, interpolation, fallback, quorum, projection, and derived-input policy.
 - **IvSourceConfig**: TOML-derived source definition containing source ID, data client, source kind, selectors, params, retention, freshness, accepted conventions, and enabled products.
+- **IvSelector**: Typed union for source and query selectors, validated against source kind and product kind.
 - **IvSubscriptionPlan**: Concrete NT subscribe/unsubscribe operations derived from `IvSourceConfig`.
-- **IvRawEvent**: Preserved NT payload or custom volatility event with source identity and receive metadata.
+- **IvRuntimeBinding**: Live NT data actor, msgbus, subscription, event-router, and source-health binding for one configured source.
+- **IvRawEvent**: Preserved NT payload or custom implied-volatility event with source identity and receive metadata.
+- **IvProvenance**: Required audit schema for raw, indexed, derived, projected, policy, and rejected outputs.
 - **IvPoint**: One timestamped IV value for one instrument, basis, source, convention, and provenance record.
 - **IvGreeksPoint**: IV point plus all NT greek values and related fields.
 - **IvAggregateGreeks**: Queryable aggregate greeks product derived from NT aggregate greeks events with selector, source, timestamps, values, and provenance.
 - **IvSmile**: Strike-indexed IV points for one option series, side, source, and as-of time.
 - **IvSurface**: Collection of smiles across configured series selectors.
-- **IvEvidence**: Custom volatility or broad volatility evidence that is not equivalent to instrument-level option IV.
+- **IvEvidence**: Custom IV evidence that is not equivalent to instrument-level option IV.
+- **IvDerivedInputPolicy**: Typed policy for resolving option price, underlying, strike, side, time-to-expiry, rate, carry, timestamps, and convention.
+- **IvDerivedInputSet**: Resolved helper input bundle with provenance for one derived-IV request.
 - **IvDerivedPoint**: IV and greeks produced by NT math helpers with complete input provenance.
+- **IvProjectionPolicy**: Typed policy for scalar projection from smile, surface, aggregate, or evidence products.
 - **IvInterpolationPolicy**: Typed policy for smile/surface interpolation and extrapolation rejection or permission.
 - **IvFallbackPolicy**: Typed policy for ordered source/product/basis fallback.
 - **IvQuorumPolicy**: Typed policy for multi-source agreement before returning a value.
+- **IvMemoryBounds**: TOML-owned retention and memory limits for IV stores and health history.
 - **IvSourceHealth**: Subscription state, freshness, last event, last rejection, rejection counts, and retention state for one source.
 - **IvQuery**: Strategy-facing request for raw events, points, greeks, smiles, surfaces, source health, or derived IV.
 - **IvRejectReason**: Typed fail-closed reason for rejected ingestion, derivation, or query.
@@ -199,6 +221,11 @@ As a strategy author, I need a strategy-agnostic IV API that exposes all engine 
 - **SC-010**: Live integration tests prove root TOML loading, live-node startup, NT subscription planning, and strategy query-handle registration all use the IV engine path.
 - **SC-011**: Aggregate greeks tests prove NT aggregate greeks events are preserved raw and exposed as typed aggregate products.
 - **SC-012**: Policy tests prove interpolation, extrapolation, fallback, and quorum decisions are TOML-owned, provenance-recorded, and fail closed when policy requirements are not met.
+- **SC-013**: Selector tests prove every source kind and product kind accepts only its typed selector variant and rejects mismatches.
+- **SC-014**: Provenance tests prove every raw, indexed, derived, projected, policy, and rejected output includes required provenance fields.
+- **SC-015**: Ledger tests prove the NT checkout is resolved from Cargo metadata and `Cargo.lock`, and fail when a discovered IV/options surface is unclassified.
+- **SC-016**: Source-fence tests run through `just source-fence` and reject strategy-local NT IV subscriptions, NT helper-backed derivation, and IV-shaped derivation from raw payloads.
+- **SC-017**: Derived-input and projection tests prove missing policies, missing inputs, unresolved rate/carry/time fields, and scalar projection without explicit policy all reject.
 
 ## Assumptions
 

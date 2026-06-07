@@ -115,6 +115,14 @@ Go for the local BNBUSDC vertical-slice path after this fix:
   `CurrencyPair` plus `TradeTick` only. The next implementation gate is
   therefore a data-family extension for PMXT binary-option L2, not a
   venue-specific branch.
+- Pinned NT Polymarket API exposure is now recorded in the PMXT row-to-NT
+  contract and BTE-022 mapping status. The required instrument/provider,
+  Gamma parse, BinaryOption build/rebuild, websocket message, snapshot,
+  price-change, and trade parser surfaces are public once the isolated BTE
+  crate depends on `nautilus-polymarket`; the exact historical
+  `build_polymarket_trade_id` helper is `pub(crate)`, so BTE must either
+  mirror the pinned helper format with TDD/provenance or wait for an upstream
+  public API before claiming direct helper reuse.
 - generated result contracts now preserve structured source-proof claim-limit evidence from the accepted proof instead of rebuilding source limits from plain `forbidden_claims` strings
 - non-latest source-proof pins now require structured manifest justification: `normal` runs still cannot pin them, non-normal pins require `proof_pin_reason_code`, and `audit_or_investigation` pins require `proof_pin_reason_detail`
 - the accepted `proof_pin_reason_code` vocabulary now matches the plan/reference contract, including published-result reproduction and regression-comparison pins
@@ -1419,10 +1427,15 @@ Midpoint table-family coverage audit:
   preserving instrument fields. That NT path resolves currency (`pUSD`),
   `size_precision = 6`, `size_increment = 0.000001`, activation from Gamma
   `startDate`, expiration from Gamma `endDate`, and fee defaults/schedule
-  semantics. The fixture remains pending because the isolated BTE crate does
-  not yet have an approved `nautilus-polymarket` dependency/lock entry and
-  still needs a generic PMXT order-book adapter plus `ParquetDataCatalog`
-  write/read-back.
+  semantics. Those modules and parser/provider items are public in the pinned
+  `nautilus-polymarket` crate, so direct reuse is blocked by BTE dependency
+  wiring rather than by an absent NT API. The exception is the historical
+  `build_polymarket_trade_id` helper in the NT HTTP data API path: it is
+  `pub(crate)`, so the selected PMXT trade-id path needs a tested local mirror
+  of the pinned format or an upstream/public NT surface. The fixture remains
+  pending because the isolated BTE crate does not yet have an approved
+  `nautilus-polymarket` dependency/lock entry and still needs a generic PMXT
+  order-book adapter plus `ParquetDataCatalog` write/read-back.
 - Kalshi official historical endpoints are now verified and downgraded for BTE
   source selection. The committed endpoint inspection
   `specs/023-nt-research-analytics-platform/reference/source-proof-endpoint-inspection.kalshi-official-historical-api.2026-06-08.json`

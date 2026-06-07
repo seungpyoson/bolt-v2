@@ -44,12 +44,24 @@
     {
       "capability": "Pinned NT Polymarket websocket parser converts snapshots and price changes to OrderBookDeltas and trades to TradeTick.",
       "evidence": "nt://crates/adapters/polymarket/src/websocket/parse.rs:61"
+    },
+    {
+      "capability": "Pinned NT exposes nautilus_polymarket http, providers, websocket messages, and websocket parse modules publicly, so parser/provider reuse is a dependency-wiring issue rather than a missing NT surface for the bounded PMXT proof.",
+      "evidence": "nt://crates/adapters/polymarket/src/lib.rs:54-57, nt://crates/adapters/polymarket/src/http/mod.rs:20-24, nt://crates/adapters/polymarket/src/websocket/mod.rs:22-23"
+    },
+    {
+      "capability": "Pinned NT Polymarket public APIs include PolymarketInstrumentProvider token lookup, Gamma market parsing, BinaryOption construction/rebuild, websocket message structs, and book/trade parsers.",
+      "evidence": "nt://crates/adapters/polymarket/src/providers.rs:112, nt://crates/adapters/polymarket/src/http/parse.rs:88,179,261, nt://crates/adapters/polymarket/src/websocket/messages.rs:85-136, nt://crates/adapters/polymarket/src/websocket/parse.rs:62,137,185,265"
     }
   ],
   "bolt_current_limitations": [
     {
       "limitation": "The isolated BTE crate does not currently depend on nautilus-polymarket, so reuse of NT Polymarket parser/provider is documented but not machine-checked in the BTE crate.",
       "evidence": "repo://crates/backtesting-vertical-slice/Cargo.toml:41 current NT dependency block lists nautilus-backtest/core/model/persistence/trading; rg found no nautilus-polymarket dependency in this Cargo.toml."
+    },
+    {
+      "limitation": "Pinned NT's historical Polymarket build_polymarket_trade_id helper is pub(crate), so BTE cannot directly call it through nautilus-polymarket even after the dependency is added.",
+      "evidence": "nt://crates/adapters/polymarket/src/http/data_api.rs:55"
     },
     {
       "limitation": "ManifestCatalogInput documents and accepts only TradeTick as the supported catalog data type in this slice.",
@@ -127,6 +139,7 @@
     "TDD go/no-go decision before touching the isolated BTE crate dependency boundary.",
     "TDD proof that the configured first-proof selector computes per-asset PMXT event counts, excludes tick_size_change assets, applies a row budget, and records claim limits without venue or asset constants.",
     "Machine-checked BTE crate proof that nautilus-polymarket parser/provider is reused for Polymarket instruments and token-id joins.",
+    "TDD proof for the selected PMXT historical TradeId path because pinned NT's build_polymarket_trade_id helper is crate-private; either mirror the pinned format with provenance or expose it upstream before claiming direct NT helper reuse.",
     "Generic PMXT order-book projection contract from source event types to NT OrderBookDelta/TradeTick, including snapshot flags, side/action rules, timestamps, trade ids, and first-proof tick-size claim limits.",
     "ParquetDataCatalog write/readback proof for a selected PMXT Polymarket sample staged under artifact_root.",
     "BacktestNode consumption proof for the same verified catalog path.",

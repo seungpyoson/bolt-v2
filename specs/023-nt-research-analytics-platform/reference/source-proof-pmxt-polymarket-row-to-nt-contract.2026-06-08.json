@@ -158,6 +158,58 @@
       "evidence": "nt://crates/adapters/polymarket/src/http/parse.rs:261"
     }
   ],
+  "nt_public_api_exposure": {
+    "status": "mostly_public_dependency_not_wired_trade_id_helper_private",
+    "pinned_nt_rev": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+    "public_module_evidence": [
+      {
+        "module": "nautilus_polymarket::http",
+        "evidence": "nt://crates/adapters/polymarket/src/lib.rs:54 and nt://crates/adapters/polymarket/src/http/mod.rs:20-24"
+      },
+      {
+        "module": "nautilus_polymarket::providers",
+        "evidence": "nt://crates/adapters/polymarket/src/lib.rs:55"
+      },
+      {
+        "module": "nautilus_polymarket::websocket::{messages,parse}",
+        "evidence": "nt://crates/adapters/polymarket/src/lib.rs:57 and nt://crates/adapters/polymarket/src/websocket/mod.rs:22-23"
+      }
+    ],
+    "directly_reusable_public_items": [
+      {
+        "surface": "PolymarketInstrumentProvider::{new,with_filter,with_filters,get_by_token_id,build_token_map,load_by_slugs}",
+        "access": "public",
+        "evidence": "nt://crates/adapters/polymarket/src/providers.rs:63,72,84,112,122,142"
+      },
+      {
+        "surface": "parse_gamma_market/create_instrument_from_def/rebuild_instrument_with_tick_size",
+        "access": "public",
+        "evidence": "nt://crates/adapters/polymarket/src/http/parse.rs:88,179,261"
+      },
+      {
+        "surface": "PolymarketBookLevel/PolymarketBookSnapshot/PolymarketQuote/PolymarketQuotes/PolymarketTrade/PolymarketTickSizeChange",
+        "access": "public",
+        "evidence": "nt://crates/adapters/polymarket/src/websocket/messages.rs:85,92,102,116,124,136"
+      },
+      {
+        "surface": "parse_book_snapshot/parse_book_deltas/parse_trade_tick/parse_quote_from_price_change",
+        "access": "public",
+        "evidence": "nt://crates/adapters/polymarket/src/websocket/parse.rs:62,137,185,265"
+      }
+    ],
+    "private_or_not_directly_reusable_items": [
+      {
+        "surface": "build_polymarket_trade_id",
+        "access": "pub(crate)",
+        "evidence": "nt://crates/adapters/polymarket/src/http/data_api.rs:55",
+        "implementation_constraint": "The BTE crate cannot call this helper directly through nautilus-polymarket. The selected PMXT historical trade-id path must either mirror the pinned helper format with tests/provenance or wait for an upstream/public NT API; direct helper reuse cannot be claimed."
+      }
+    ],
+    "bte_dependency_status": {
+      "root_workspace_dependency": "repo://Cargo.toml:41 pins nautilus-polymarket at the same NT revision.",
+      "isolated_bte_crate_dependency": "missing in repo://crates/backtesting-vertical-slice/Cargo.toml; adding it is an implementation-scope Cargo.toml/Cargo.lock change and must be covered by TDD."
+    }
+  },
   "draft_mapping_contract": [
     {
       "source_event_type": "book",
@@ -210,6 +262,7 @@
   },
   "unresolved_before_implementation": [
     "The isolated BTE crate must have an approved dependency or integration boundary for nautilus-polymarket before parser/provider reuse is machine-checked.",
+    "Pinned NT's historical Polymarket build_polymarket_trade_id helper is pub(crate), so the selected PMXT trade-id format must be mirrored with tests/provenance or exposed upstream before direct helper reuse can be claimed.",
     "PMXT price_change grouping policy must be implemented and verified against pinned NT live-client parity, including timestamp_received boundary handling.",
     "PMXT last_trade_price selected TradeId/dedupe policy must be TDD-proven before catalog acceptance.",
     "The selected first-proof instrument-universe selector must be TDD-proven with TOML/source-proof-owned predicates and claim limits.",

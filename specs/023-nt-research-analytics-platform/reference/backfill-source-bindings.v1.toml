@@ -337,6 +337,22 @@ warning = "Archive index listing is source proof input; Parquet schema/license/c
 table_families = ["order_book_snapshots_fixed_depth", "order_book_snapshot_deltas", "bars"]
 
 [[source_binding]]
+key = "kalshi-official-historical-api"
+venue = "kalshi"
+product_family = "prediction_market_outcome"
+market_structure_fixture = "binary-option"
+fixture = "prediction-market"
+family = "historical_market_data"
+method = "GET"
+source_uri = "https://external-api.kalshi.com/trade-api/v2/historical"
+payload_extension = "json"
+extractor = "kalshi_historical_rest"
+pagination = "cursor"
+evidence_state = "pending_source_proof"
+warning = "Official historical API exposes historical markets, candlesticks, trades, fills, and orders; no official historical orderbook snapshot/delta endpoint is documented."
+table_families = ["bars", "trades", "prediction_market_events"]
+
+[[source_binding]]
 key = "bybit-spot-tick-trades"
 venue = "bybit"
 product_family = "spot"

@@ -1323,6 +1323,32 @@ Midpoint table-family coverage audit:
   Focused verification passed:
   `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_source_proof_reference_fixtures -- --nocapture`
   (2 tests).
+- Kalshi official historical endpoints are now verified and downgraded for BTE
+  source selection. The committed endpoint inspection
+  `specs/023-nt-research-analytics-platform/reference/source-proof-endpoint-inspection.kalshi-official-historical-api.2026-06-08.json`
+  binds official docs and bounded public API probes. Kalshi historical docs list
+  only `GET /historical/cutoff`, `GET /historical/markets`,
+  `GET /historical/markets/{ticker}`,
+  `GET /historical/markets/{ticker}/candlesticks`,
+  `GET /historical/trades`, `GET /historical/fills`, and
+  `GET /historical/orders`; current/live orderbook surfaces are
+  `GET /markets/{ticker}/orderbook`, `GET /markets/orderbooks`, and
+  authenticated WebSocket `orderbook_snapshot`/`orderbook_delta` updates.
+  A public cutoff probe returned `2026-04-08T00:00:00Z` for market, trade, and
+  order historical cutoffs; a historical market/trade/candlestick sample was
+  reachable; and a checked historical-orderbook path returned `404`. The new
+  pending fixture
+  `source-proof-fixture.binary-option.kalshi-official-historical-pending.v1.json`
+  records `fidelity_class = TRADE_BAR_REPLAY`, passes source-access/schema/time
+  semantics/granularity, keeps license/instrument-universe/coverage/
+  retention/completeness/NT mapping/storage/cost pending, and forbids
+  historical L2/L3 order-book replay and execution-quality claims. RED/GREEN
+  evidence: `source_proof::tests::committed_registry_exposes_required_market_structure_fixtures`
+  first failed because `kalshi-official-historical-api` was absent from the
+  committed registry, then passed after adding the TOML-owned binding with
+  `bars`, `trades`, and `prediction_market_events` table families and no
+  `order_book_deltas` claim. The reference-fixture test also passed with the
+  new Kalshi pending proof.
 
 ## Recommendation
 

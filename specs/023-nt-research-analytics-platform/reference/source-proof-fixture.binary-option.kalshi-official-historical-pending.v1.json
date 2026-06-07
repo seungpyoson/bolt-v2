@@ -1,0 +1,123 @@
+{
+  "source_proof_id": "source-proof-kalshi-official-historical-binary-option-pending-2026-06-08",
+  "source_proof_version": 1,
+  "contract_version": "backfill-table-contract.v1",
+  "schema_version": "backfill-source-proof.v1",
+  "status": "pending",
+  "source_binding": "kalshi-official-historical-api",
+  "venue": "kalshi",
+  "product_family": "prediction_market_outcome",
+  "product_category": "binary-option",
+  "table_family": "bars",
+  "evidence_state": "pending_source_proof",
+  "source_candidate_class": "official_free",
+  "source_selection_status": "PENDING_MORE_PROOF",
+  "fixture_type": "binary-option",
+  "requested_time_range": {
+    "start_utc": "2025-06-01T00:00:00Z",
+    "end_utc": "2026-06-01T00:00:00Z"
+  },
+  "coverage_time_range": {
+    "start_utc": "2026-04-07T23:34:00Z",
+    "end_utc": "2026-04-07T23:34:00Z"
+  },
+  "instrument_universe_id": "kalshi-official-historical-current-candidate-pending-2026-06-08",
+  "raw_sample_uri": "https://external-api.kalshi.com/trade-api/v2/historical/markets/KXMVECROSSCATEGORY-S2026144E784A147-ED367B84557/candlesticks?start_ts=1775602800&end_ts=1775606400&period_interval=1",
+  "raw_sample_hash": "0f8d9c1603fae084e7cf174238ba28218b029bcec899af2e1a902fbefdd875e8",
+  "schema_sample_uri": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-endpoint-inspection.kalshi-official-historical-api.2026-06-08.json",
+  "schema_sample_hash": "2407051b52b55b8105dde4e8f4056dc385680971e1a300630906b89996445e1e",
+  "license_ref": "pending://source-proofs/v1/source_binding=kalshi-official-historical-api/proof=source-proof-kalshi-official-historical-binary-option-pending-2026-06-08/version=1/license-or-terms-evidence",
+  "license_scope": "unknown",
+  "retention_ref": "pending://source-proofs/v1/source_binding=kalshi-official-historical-api/proof=source-proof-kalshi-official-historical-binary-option-pending-2026-06-08/version=1/retention-freshness-evidence",
+  "cost_ref": "pending://source-proofs/v1/source_binding=kalshi-official-historical-api/proof=source-proof-kalshi-official-historical-binary-option-pending-2026-06-08/version=1/cost-evidence",
+  "nt_mapping_status": "pending",
+  "fidelity_class": "TRADE_BAR_REPLAY",
+  "l2_replay_evidence": {},
+  "forbidden_claims": [
+    "No NT catalog or backtest input from this pending Kalshi official historical proof.",
+    "No historical L2/L3 order-book replay claim from the official Kalshi historical API.",
+    "No execution-quality, queue-position, fillability, or book-liquidity claim from official historical candlesticks/trades.",
+    "No provider-selected production source claim until license, retention, coverage, NT mapping, storage, fidelity, and cost checks pass."
+  ],
+  "claim_limits": [
+    {
+      "id": "binary-option-kalshi-source-proof-claim-limit-001",
+      "severity": "blocking",
+      "claim": "No NT catalog or backtest input from this pending Kalshi official historical proof.",
+      "reason": "The report records an official historical API candidate before accepted source proof, artifact-root staging, NT mapping, and source selection checks have passed.",
+      "evidence_ref": "source-proof://source-proof-kalshi-official-historical-binary-option-pending-2026-06-08/status"
+    },
+    {
+      "id": "binary-option-kalshi-source-proof-claim-limit-002",
+      "severity": "blocking",
+      "claim": "No historical L2/L3 order-book replay claim from the official Kalshi historical API.",
+      "reason": "Official historical docs list cutoff, markets, market candlesticks, trades, fills, and orders; current REST and WebSocket orderbook surfaces are not historical replay endpoints.",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-endpoint-inspection.kalshi-official-historical-api.2026-06-08.json sha256=2407051b52b55b8105dde4e8f4056dc385680971e1a300630906b89996445e1e"
+    },
+    {
+      "id": "binary-option-kalshi-source-proof-claim-limit-003",
+      "severity": "blocking",
+      "claim": "No execution-quality, queue-position, fillability, or book-liquidity claim from official historical candlesticks/trades.",
+      "reason": "The highest official historical fidelity proven here is TRADE_BAR_REPLAY from 1-minute candlesticks and trade samples, not source-order-preserving book deltas.",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-endpoint-inspection.kalshi-official-historical-api.2026-06-08.json sha256=2407051b52b55b8105dde4e8f4056dc385680971e1a300630906b89996445e1e"
+    },
+    {
+      "id": "binary-option-kalshi-source-proof-claim-limit-004",
+      "severity": "blocking",
+      "claim": "No provider-selected production source claim until license, retention, coverage, NT mapping, storage, fidelity, and cost checks pass.",
+      "reason": "This fixture records endpoint proof and downgrade classification only; it is not an accepted source proof.",
+      "evidence_ref": "source-proof://source-proof-kalshi-official-historical-binary-option-pending-2026-06-08/source_selection_status"
+    }
+  ],
+  "gap_policy_id": "",
+  "required_checks": {
+    "source_access": {
+      "outcome": "passed",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-endpoint-inspection.kalshi-official-historical-api.2026-06-08.json candlestick_response_sha256=0f8d9c1603fae084e7cf174238ba28218b029bcec899af2e1a902fbefdd875e8"
+    },
+    "license": {
+      "outcome": "pending",
+      "evidence_ref": "pending durable license or terms evidence for storage and derived-table use"
+    },
+    "schema": {
+      "outcome": "passed",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-endpoint-inspection.kalshi-official-historical-api.2026-06-08.json candlestick_shape=end_period_ts,yes_bid,yes_ask,price,volume,open_interest"
+    },
+    "time_semantics": {
+      "outcome": "passed",
+      "evidence_ref": "historical cutoff endpoint returned market_settled_ts/trades_created_ts/orders_updated_ts=2026-04-08T00:00:00Z; candlesticks use end_period_ts"
+    },
+    "instrument_universe": {
+      "outcome": "pending",
+      "evidence_ref": "pending source-backed mapping from Kalshi market ticker/price-level structure into checked NautilusTrader BinaryOption instruments"
+    },
+    "coverage": {
+      "outcome": "pending",
+      "evidence_ref": "pending one-year coverage proof across historical/live cutoffs and selected Kalshi markets"
+    },
+    "retention_freshness": {
+      "outcome": "pending",
+      "evidence_ref": "pending durable retention and update-lag evidence for official historical endpoints"
+    },
+    "granularity": {
+      "outcome": "passed",
+      "evidence_ref": "official historical candlesticks support period_interval 1, 60, and 1440 minutes; no historical orderbook granularity documented"
+    },
+    "completeness": {
+      "outcome": "pending",
+      "evidence_ref": "pending page counts, cursor coverage, checksum/staging hashes, and gap threshold evidence"
+    },
+    "nt_mapping": {
+      "outcome": "pending",
+      "evidence_ref": "pending NT Bar or TradeTick mapping plus ParquetDataCatalog projection/read-back for a staged Kalshi sample"
+    },
+    "cost": {
+      "outcome": "pending",
+      "evidence_ref": "pending free/public source, storage, transfer, query, logging, and reserve-cost evidence"
+    },
+    "storage": {
+      "outcome": "pending",
+      "evidence_ref": "pending artifact-root staging proof for raw sample, schema sample, manifest, and source proof evidence"
+    }
+  }
+}

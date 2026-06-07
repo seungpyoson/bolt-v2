@@ -22,7 +22,7 @@
 - [x] BACKTESTING_ENGINE-020 Prove license and commercial/personal-use boundary for each shortlisted source.
 - [x] BACKTESTING_ENGINE-021 Fetch or inspect representative sample data for each shortlisted source.
 - [ ] BACKTESTING_ENGINE-022 Prove shortlisted source samples map to NT-compatible catalog classes and `ParquetDataCatalog` input path.
-- [ ] BACKTESTING_ENGINE-023 Verify Kalshi historical endpoints and confirm whether archived orderbook snapshots/deltas exist or downgrade to `TRADE_BAR_REPLAY`/`SIGNAL_ONLY`.
+- [x] BACKTESTING_ENGINE-023 Verify Kalshi historical endpoints and confirm whether archived orderbook snapshots/deltas exist or downgrade to `TRADE_BAR_REPLAY`/`SIGNAL_ONLY`.
 - [ ] BACKTESTING_ENGINE-024 Assign fidelity class and forbidden claims for each shortlisted source.
 - [ ] BACKTESTING_ENGINE-025 Evaluate highest-fidelity historical market data available for each fixture before accepting weaker replay; use source-proven L2/L3 order-book data when it passes, and cap weaker-data results with explicit non-execution-quality claim limits.
 - [ ] BACKTESTING_ENGINE-026 Estimate subscription, AWS storage/compute/transfer, query/log, and reserve costs for backtesting data and replay.

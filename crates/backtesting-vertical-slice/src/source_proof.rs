@@ -2560,6 +2560,23 @@ table_families = ["signals"]
             binary_option.market_structure_fixture,
             Some(FixtureType::BinaryOption)
         );
+
+        let kalshi = registry
+            .source_binding_metadata("kalshi-official-historical-api", "kalshi")
+            .expect("Kalshi historical candidate binding");
+        assert_eq!(
+            kalshi.market_structure_fixture,
+            Some(FixtureType::BinaryOption)
+        );
+        assert_eq!(kalshi.evidence_state, EvidenceState::PendingSourceProof);
+        assert!(kalshi.table_families.contains(&"bars".to_string()));
+        assert!(kalshi.table_families.contains(&"trades".to_string()));
+        assert!(
+            !kalshi
+                .table_families
+                .contains(&"order_book_deltas".to_string()),
+            "official Kalshi historical API must not claim historical order-book deltas"
+        );
     }
 
     #[test]

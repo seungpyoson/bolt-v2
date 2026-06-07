@@ -8,7 +8,15 @@ fn production_rust_does_not_hardcode_sample_venue_or_instrument() {
         let content = fs::read_to_string(&path).expect("read Rust source");
         let production = production_region(&content);
         let lower = production.to_ascii_lowercase();
-        for needle in ["bybit", "bnbusdc", "public_archive"] {
+        for needle in [
+            "bybit",
+            "bnbusdc",
+            "public_archive",
+            "upbit",
+            "bithumb",
+            "korbit",
+            "coinone",
+        ] {
             if lower.contains(needle) {
                 failures.push(format!("{} contains {needle:?}", path.display()));
             }

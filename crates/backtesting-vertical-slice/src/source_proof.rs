@@ -35,6 +35,14 @@ const SOURCE_BINDINGS_REGISTRY: &str = include_str!(
     "../../../specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 );
 
+const KIMCHI_PREMIUM_SIGNAL_FAMILY: &str = "kimchi-premium";
+const KIMCHI_REQUIRED_CROSS_MARKET_ROLES: [&str; 4] = [
+    "korean_spot",
+    "reference_price",
+    "fx_quote",
+    "token_mapping",
+];
+
 #[derive(Debug, Deserialize)]
 pub struct SourceBindingRegistry {
     #[serde(rename = "source_binding", default)]
@@ -348,6 +356,22 @@ impl SourceProofClaimLimit {
     }
 }
 
+/// One point-in-time source component used to build a cross-market signal.
+///
+/// Roles such as `korean_spot`, `reference_price`, and `fx_quote` are source
+/// roles, not venue identities. Concrete venues/providers stay in TOML source
+/// bindings and source-proof evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossMarketJoinComponent {
+    pub role: String,
+    pub source_binding: String,
+    pub source_proof_id: String,
+    pub source_proof_version: u32,
+    pub event_time_utc: String,
+    pub available_at_utc: String,
+    pub join_time_utc: String,
+}
+
 /// Inclusive-start, exclusive-end UTC time range (RFC 3339 strings).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeRange {
@@ -400,6 +424,9 @@ pub struct SourceProofReport {
     /// Structured limitation records backing `forbidden_claims`.
     #[serde(default)]
     pub claim_limits: Vec<SourceProofClaimLimit>,
+    /// Point-in-time component proofs for cross-market signal families.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cross_market_components: Vec<CrossMarketJoinComponent>,
     /// Structured manifest/run summary proving acceptance is bounded by object
     /// counts, byte counts, failures, skips, and selector-scope checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -442,6 +469,8 @@ pub enum AcceptanceError {
         field: &'static str,
         reason: &'static str,
     },
+    /// A cross-market signal source lacks point-in-time component proof.
+    InvalidCrossMarketJoin { field: &'static str, reason: String },
     /// A not-applicable required check lacks a matching structured claim limit.
     NotApplicableCheckMissingClaimLimit { check: &'static str },
     /// The proof referenced by the dataset is not accepted.
@@ -513,6 +542,9 @@ impl std::fmt::Display for AcceptanceError {
             }
             Self::InvalidClaimLimit { field, reason } => {
                 write!(f, "claim_limits.{field} {reason}")
+            }
+            Self::InvalidCrossMarketJoin { field, reason } => {
+                write!(f, "{field} {reason}")
             }
             Self::NotApplicableCheckMissingClaimLimit { check } => write!(
                 f,
@@ -698,6 +730,7 @@ impl SourceProofReport {
         }
         validate_claim_limits(self)?;
         validate_not_applicable_required_checks(self)?;
+        validate_cross_market_components(self)?;
         // When the proof claims to supersede a prior proof, that reference must be
         // a real, distinct id — not blank and not the proof's own id.
         if let Some(superseded) = &self.supersedes_source_proof_id {
@@ -1250,6 +1283,109 @@ fn validate_not_applicable_required_checks(
     Ok(())
 }
 
+fn validate_cross_market_components(proof: &SourceProofReport) -> Result<(), AcceptanceError> {
+    if proof.product_category == KIMCHI_PREMIUM_SIGNAL_FAMILY {
+        for required_role in KIMCHI_REQUIRED_CROSS_MARKET_ROLES {
+            if !proof
+                .cross_market_components
+                .iter()
+                .any(|component| component.role == required_role)
+            {
+                return Err(AcceptanceError::InvalidCrossMarketJoin {
+                    field: "cross_market_components",
+                    reason: format!("missing required role {required_role:?}"),
+                });
+            }
+        }
+    }
+
+    let coverage_start =
+        coverage_bound_nanos(&proof.coverage_time_range.start_utc, "coverage start_utc")?;
+    let coverage_end =
+        coverage_bound_nanos(&proof.coverage_time_range.end_utc, "coverage end_utc")?;
+    for component in &proof.cross_market_components {
+        validate_cross_market_component(component, coverage_start, coverage_end)?;
+    }
+    Ok(())
+}
+
+fn validate_cross_market_component(
+    component: &CrossMarketJoinComponent,
+    coverage_start: i64,
+    coverage_end: i64,
+) -> Result<(), AcceptanceError> {
+    for (field, value) in [
+        ("cross_market_components.role", component.role.as_str()),
+        (
+            "cross_market_components.source_binding",
+            component.source_binding.as_str(),
+        ),
+        (
+            "cross_market_components.source_proof_id",
+            component.source_proof_id.as_str(),
+        ),
+        (
+            "cross_market_components.event_time_utc",
+            component.event_time_utc.as_str(),
+        ),
+        (
+            "cross_market_components.available_at_utc",
+            component.available_at_utc.as_str(),
+        ),
+        (
+            "cross_market_components.join_time_utc",
+            component.join_time_utc.as_str(),
+        ),
+    ] {
+        if value.trim().is_empty() {
+            return Err(AcceptanceError::InvalidCrossMarketJoin {
+                field,
+                reason: "must not be empty".to_string(),
+            });
+        }
+    }
+    if component.source_proof_version == 0 {
+        return Err(AcceptanceError::InvalidCrossMarketJoin {
+            field: "cross_market_components.source_proof_version",
+            reason: "must not be zero".to_string(),
+        });
+    }
+
+    let join_time = coverage_bound_nanos(
+        &component.join_time_utc,
+        "cross_market_components.join_time_utc",
+    )?;
+    if join_time < coverage_start || join_time >= coverage_end {
+        return Err(AcceptanceError::InvalidCrossMarketJoin {
+            field: "cross_market_components.join_time_utc",
+            reason: "must be inside proof coverage window".to_string(),
+        });
+    }
+
+    let event_time = coverage_bound_nanos(
+        &component.event_time_utc,
+        "cross_market_components.event_time_utc",
+    )?;
+    if event_time > join_time {
+        return Err(AcceptanceError::InvalidCrossMarketJoin {
+            field: "cross_market_components.event_time_utc",
+            reason: "would future-leak after join_time_utc".to_string(),
+        });
+    }
+
+    let available_at = coverage_bound_nanos(
+        &component.available_at_utc,
+        "cross_market_components.available_at_utc",
+    )?;
+    if available_at > join_time {
+        return Err(AcceptanceError::InvalidCrossMarketJoin {
+            field: "cross_market_components.available_at_utc",
+            reason: "would future-leak after join_time_utc".to_string(),
+        });
+    }
+    Ok(())
+}
+
 fn ensure_source_binding_metadata_matches(
     proof: &SourceProofReport,
     registry: &SourceBindingRegistry,
@@ -1446,6 +1582,7 @@ mod tests {
             fidelity_class: SourceProofFidelityClass::TradeReplay,
             forbidden_claims: forbidden_claims.clone(),
             claim_limits: claim_limits_for(&forbidden_claims),
+            cross_market_components: Vec::new(),
             acceptance_scope: Some(accepted_scope()),
             gap_policy_id: String::new(),
             required_checks: passing_checks(),
@@ -1473,6 +1610,101 @@ mod tests {
                 "rpi".to_string(),
             ],
         }
+    }
+
+    fn kimchi_registry() -> SourceBindingRegistry {
+        SourceBindingRegistry::from_toml_str(
+            r#"
+[[source_binding]]
+key = "synthetic-kimchi-premium-signal"
+venue = "synthetic-signal-source"
+product_family = "cross_market_signal"
+source_uri = "https://signals.example.test/kimchi/{dt}.json"
+evidence_state = "directly_backfillable"
+table_families = ["signals"]
+"#,
+        )
+        .expect("kimchi registry parses")
+    }
+
+    fn kimchi_component(role: &str) -> CrossMarketJoinComponent {
+        CrossMarketJoinComponent {
+            role: role.to_string(),
+            source_binding: format!("{role}-binding"),
+            source_proof_id: format!("source-proof-{role}"),
+            source_proof_version: 1,
+            event_time_utc: "2026-03-01T00:00:00Z".to_string(),
+            available_at_utc: "2026-03-01T00:00:00Z".to_string(),
+            join_time_utc: "2026-03-01T00:00:00Z".to_string(),
+        }
+    }
+
+    fn kimchi_signal_proof() -> SourceProofReport {
+        let mut proof = candidate_proof();
+        let forbidden_claims = vec!["No execution-quality or trade-replay claims.".to_string()];
+        proof.source_proof_id = "source-proof-synthetic-kimchi-premium".to_string();
+        proof.source_binding = "synthetic-kimchi-premium-signal".to_string();
+        proof.venue = "synthetic-signal-source".to_string();
+        proof.product_family = "cross_market_signal".to_string();
+        proof.product_category = "kimchi-premium".to_string();
+        proof.table_family = "signals".to_string();
+        proof.evidence_state = EvidenceState::DirectlyBackfillable;
+        proof.fidelity_class = SourceProofFidelityClass::SignalOnly;
+        proof.forbidden_claims = forbidden_claims.clone();
+        proof.claim_limits = claim_limits_for(&forbidden_claims);
+        proof.raw_sample_uri = "s3://bolt-parquet/.../kimchi/raw/sample.json".to_string();
+        proof.schema_sample_uri = "s3://bolt-parquet/.../kimchi/schema-sample.json".to_string();
+        proof.cross_market_components = vec![
+            kimchi_component("korean_spot"),
+            kimchi_component("reference_price"),
+            kimchi_component("fx_quote"),
+            kimchi_component("token_mapping"),
+        ];
+        proof
+    }
+
+    #[test]
+    fn kimchi_premium_source_proof_requires_configured_component_roles_without_venue_constants() {
+        let registry = kimchi_registry();
+        let mut proof = kimchi_signal_proof();
+        proof
+            .cross_market_components
+            .retain(|component| component.role != "fx_quote");
+
+        let err = proof
+            .evaluate_acceptance_with_registry(&registry)
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("cross_market_components")
+                && err.to_string().contains("fx_quote"),
+            "{err}"
+        );
+
+        kimchi_signal_proof()
+            .evaluate_acceptance_with_registry(&registry)
+            .expect("configured cross-market roles should satisfy kimchi signal proof");
+    }
+
+    #[test]
+    fn kimchi_premium_source_proof_rejects_future_leaking_reference_or_fx_components() {
+        let registry = kimchi_registry();
+        let mut proof = kimchi_signal_proof();
+        proof
+            .cross_market_components
+            .iter_mut()
+            .find(|component| component.role == "reference_price")
+            .expect("reference component")
+            .available_at_utc = "2026-03-01T00:00:01Z".to_string();
+
+        let err = proof
+            .evaluate_acceptance_with_registry(&registry)
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("available_at_utc") && err.to_string().contains("future"),
+            "{err}"
+        );
     }
 
     #[test]

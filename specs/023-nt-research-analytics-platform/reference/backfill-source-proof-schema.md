@@ -46,6 +46,9 @@ Required fields:
   and `selector_scope_violations`.
 - `claim_limits`: list of machine-readable limitation records with `id`,
   `severity`, `claim`, `reason`, and `evidence_ref`.
+- `cross_market_components`: optional list of point-in-time component source
+  proofs for cross-market signal families; required for `product_category =
+  "kimchi-premium"`.
 - `gap_policy_id`: required when gaps are tolerated.
 - `required_checks`: structured check results.
 
@@ -98,6 +101,27 @@ NautilusTrader catalog/backtest replay claims.
 
 All checks must pass before `status=accepted`. Pending or failed checks keep the
 proof out of canonical backfill selection.
+
+## Cross-Market Signal Components
+
+Cross-market signals must prove their component sources as point-in-time inputs,
+not by joining independent latest values after the fact.
+
+Each `cross_market_components` row contains:
+
+- `role`: source role, not a venue identity.
+- `source_binding`: TOML-selected source key for that component.
+- `source_proof_id` and `source_proof_version`: accepted component proof.
+- `event_time_utc`: component event timestamp.
+- `available_at_utc`: when the component value was available to the join.
+- `join_time_utc`: timestamp of the signal join.
+
+For `product_category = "kimchi-premium"`, the required roles are
+`korean_spot`, `reference_price`, `fx_quote`, and `token_mapping`.
+Production code must not name candidate Korean spot venues; those remain
+source-binding/evidence values. Component `event_time_utc` and
+`available_at_utc` must be less than or equal to `join_time_utc`, and
+`join_time_utc` must be inside the proof coverage window.
 
 ## Acceptance Scope
 

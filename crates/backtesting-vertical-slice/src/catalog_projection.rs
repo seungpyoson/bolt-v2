@@ -583,6 +583,7 @@ mod tests {
             fidelity_class: SourceProofFidelityClass::TradeReplay,
             forbidden_claims: forbidden_claims.clone(),
             claim_limits: claim_limits_for(&forbidden_claims),
+            cross_market_components: Vec::new(),
             acceptance_scope: Some(AcceptanceScope {
                 planned_objects: 1,
                 completed_objects: 1,

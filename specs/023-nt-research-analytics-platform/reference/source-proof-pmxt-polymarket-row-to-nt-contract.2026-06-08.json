@@ -180,10 +180,17 @@
       "mapping": "Apply NT rebuild_instrument_with_tick_size semantics before subsequent affected book/trade rows; prove whether the catalog should persist multiple instrument snapshots, an instrument event, or a single resolved instrument plus claim limit."
     }
   ],
+  "resolved_parser_field_findings": [
+    {
+      "field": "PolymarketQuote.hash",
+      "status": "neutral_empty_string_supported_by_pinned_nt_parse_surfaces",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-nt-parser-field-use.2026-06-08.json",
+      "mapping_policy": "For PMXT price_change rows, the converter may populate the NT PolymarketQuote hash field with an empty string for parse_book_deltas and parse_quote_from_price_change reuse, because pinned NT does not read this field in those parse paths and its own tests use String::new()."
+    }
+  ],
   "unresolved_before_implementation": [
     "The isolated BTE crate must have an approved dependency or integration boundary for nautilus-polymarket before parser/provider reuse is machine-checked.",
     "PMXT price_change grouping must be specified for market/source timestamp/asset_id batches and mixed timestamp_received groups.",
-    "PMXT does not expose the PolymarketQuote hash field required by the NT websocket message struct; parser reuse must either prove that a neutral value is unobserved by NT semantics or use a lower-level NT data constructor with the same checked semantics.",
     "PMXT last_trade_price includes transaction_hash while NT's Polymarket parser derives TradeId without it; the chosen TradeId/provenance policy must be explicit.",
     "tick_size_change catalog representation must be proven with NT catalog read-back and BacktestNode consumption before an L2 replay claim.",
     "The resulting ParquetDataCatalog proof must write/read InstrumentAny::BinaryOption, OrderBookDelta, and TradeTick under artifact_root staging; local prototype directories are insufficient.",

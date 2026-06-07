@@ -1,0 +1,220 @@
+use serde::{Deserialize, Serialize};
+
+use super::{
+    error::IvRejectReason, provenance::IvPolicyDecision, store::IvSmilePoint, time::UnixNanos,
+};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IvPolicyInput {
+    pub product_id: String,
+    pub value: f64,
+    pub ts_event_ns: UnixNanos,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IvPolicyOutput {
+    pub value: f64,
+    pub policy_decisions: Vec<IvPolicyDecision>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IvPolicyError {
+    Rejected {
+        reason: IvRejectReason,
+        policy_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IvProjectionPolicy {
+    pub policy_id: String,
+    pub max_projection_input_skew_ns: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IvInterpolationPolicy {
+    pub policy_id: String,
+    pub allow_extrapolation: bool,
+    pub minimum_points: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IvFallbackPolicy {
+    pub policy_id: String,
+    pub ordered_candidate_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IvFallbackCandidate {
+    pub candidate_id: String,
+    pub value: f64,
+    pub eligible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IvQuorumPolicy {
+    pub policy_id: String,
+    pub minimum_sources: usize,
+    pub agreement_band: f64,
+}
+
+pub fn project_scalar(
+    policy: &IvProjectionPolicy,
+    inputs: &[IvPolicyInput],
+) -> Result<IvPolicyOutput, IvPolicyError> {
+    if inputs.is_empty() || input_skew(inputs) > policy.max_projection_input_skew_ns {
+        return Err(rejected(
+            policy.policy_id.clone(),
+            IvRejectReason::ProjectionRejected,
+        ));
+    }
+
+    Ok(IvPolicyOutput {
+        value: average(inputs.iter().map(|input| input.value)),
+        policy_decisions: vec![IvPolicyDecision::Projection],
+    })
+}
+
+pub fn interpolate_smile(
+    policy: &IvInterpolationPolicy,
+    points: &[IvSmilePoint],
+    strike: f64,
+) -> Result<IvPolicyOutput, IvPolicyError> {
+    if points.len() < policy.minimum_points {
+        return Err(rejected(
+            policy.policy_id.clone(),
+            IvRejectReason::InterpolationRejected,
+        ));
+    }
+
+    let mut points = points.to_vec();
+    points.sort_by(|left, right| left.strike.total_cmp(&right.strike));
+    let first = points.first().expect("minimum_points checked");
+    let last = points.last().expect("minimum_points checked");
+
+    if strike < first.strike || strike > last.strike {
+        if !policy.allow_extrapolation {
+            return Err(rejected(
+                policy.policy_id.clone(),
+                IvRejectReason::ExtrapolationRejected,
+            ));
+        }
+
+        return Ok(IvPolicyOutput {
+            value: if strike < first.strike {
+                first.iv
+            } else {
+                last.iv
+            },
+            policy_decisions: vec![IvPolicyDecision::Interpolation],
+        });
+    }
+
+    for window in points.windows(2) {
+        let left = window[0];
+        let right = window[1];
+        if strike >= left.strike && strike <= right.strike {
+            let width = right.strike - left.strike;
+            let weight = if width == 0.0 {
+                0.0
+            } else {
+                (strike - left.strike) / width
+            };
+            return Ok(IvPolicyOutput {
+                value: left.iv + ((right.iv - left.iv) * weight),
+                policy_decisions: vec![IvPolicyDecision::Interpolation],
+            });
+        }
+    }
+
+    Err(rejected(
+        policy.policy_id.clone(),
+        IvRejectReason::InterpolationRejected,
+    ))
+}
+
+pub fn resolve_fallback(
+    policy: &IvFallbackPolicy,
+    candidates: &[IvFallbackCandidate],
+) -> Result<IvPolicyOutput, IvPolicyError> {
+    for candidate_id in &policy.ordered_candidate_ids {
+        if let Some(candidate) = candidates
+            .iter()
+            .find(|candidate| candidate.eligible && candidate.candidate_id == *candidate_id)
+        {
+            return Ok(IvPolicyOutput {
+                value: candidate.value,
+                policy_decisions: vec![IvPolicyDecision::Fallback],
+            });
+        }
+    }
+
+    Err(rejected(
+        policy.policy_id.clone(),
+        IvRejectReason::FallbackRejected,
+    ))
+}
+
+pub fn resolve_quorum(
+    policy: &IvQuorumPolicy,
+    inputs: &[IvPolicyInput],
+) -> Result<IvPolicyOutput, IvPolicyError> {
+    if inputs.len() < policy.minimum_sources {
+        return Err(rejected(
+            policy.policy_id.clone(),
+            IvRejectReason::QuorumNotMet,
+        ));
+    }
+
+    let min = inputs
+        .iter()
+        .map(|input| input.value)
+        .fold(f64::INFINITY, f64::min);
+    let max = inputs
+        .iter()
+        .map(|input| input.value)
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    if max - min > policy.agreement_band {
+        return Err(rejected(
+            policy.policy_id.clone(),
+            IvRejectReason::QuorumNotMet,
+        ));
+    }
+
+    Ok(IvPolicyOutput {
+        value: average(inputs.iter().map(|input| input.value)),
+        policy_decisions: vec![IvPolicyDecision::Quorum],
+    })
+}
+
+fn input_skew(inputs: &[IvPolicyInput]) -> u64 {
+    let min_ts = inputs
+        .iter()
+        .map(|input| input.ts_event_ns.get())
+        .min()
+        .unwrap_or_default();
+    let max_ts = inputs
+        .iter()
+        .map(|input| input.ts_event_ns.get())
+        .max()
+        .unwrap_or_default();
+
+    max_ts.saturating_sub(min_ts)
+}
+
+fn average(values: impl Iterator<Item = f64>) -> f64 {
+    let mut sum = 0.0;
+    let mut count = 0_u64;
+
+    for value in values {
+        sum += value;
+        count += 1;
+    }
+
+    sum / count as f64
+}
+
+fn rejected(policy_id: String, reason: IvRejectReason) -> IvPolicyError {
+    IvPolicyError::Rejected { reason, policy_id }
+}

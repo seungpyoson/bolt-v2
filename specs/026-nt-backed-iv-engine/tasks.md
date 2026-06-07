@@ -173,29 +173,29 @@
 
 ### Tests for User Story 5
 
-- [ ] T081 [P] [US5] Add failing full-profile TOML parse test in `tests/bolt_v3_iv_config.rs`
-- [ ] T082 [P] [US5] Add failing unknown schema-version rejection test in `tests/bolt_v3_iv_config.rs`
-- [ ] T083 [P] [US5] Add failing selector/source/product mismatch test in `tests/bolt_v3_iv_config.rs`
-- [ ] T084 [P] [US5] Add failing numeric and convention bounds rejection test in `tests/bolt_v3_iv_config.rs`
-- [ ] T085 [P] [US5] Add failing interpolation/projection/fallback/quorum policy tests in `tests/bolt_v3_iv_policy.rs`
-- [ ] T086 [P] [US5] Add failing typed `IvPolicyDecision` provenance test in `tests/bolt_v3_iv_policy.rs`
-- [ ] T087 [P] [US5] Add failing source-health transition and retention eviction test in `tests/bolt_v3_iv_live_integration.rs`
-- [ ] T088 [US5] Record US5 RED evidence in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T081 [P] [US5] Add failing full-profile TOML parse test in `tests/bolt_v3_iv_config.rs`
+- [X] T082 [P] [US5] Add failing unknown schema-version rejection test in `tests/bolt_v3_iv_config.rs`
+- [X] T083 [P] [US5] Add failing selector/source/product mismatch test in `tests/bolt_v3_iv_config.rs`
+- [X] T084 [P] [US5] Add failing numeric and convention bounds rejection test in `tests/bolt_v3_iv_config.rs`
+- [X] T085 [P] [US5] Add failing interpolation/projection/fallback/quorum policy tests in `tests/bolt_v3_iv_policy.rs`
+- [X] T086 [P] [US5] Add failing typed `IvPolicyDecision` provenance test in `tests/bolt_v3_iv_policy.rs`
+- [X] T087 [P] [US5] Add failing source-health transition and retention eviction test in `tests/bolt_v3_iv_live_integration.rs`
+- [X] T088 [US5] Record US5 RED evidence in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
 ### Implementation for User Story 5
 
-- [ ] T089 [P] [US5] Implement IV TOML schema and `IvProfile` parsing in `src/bolt_v3_iv/config.rs`
-- [ ] T090 [P] [US5] Implement schema-version policy validation in `src/bolt_v3_iv/config.rs`
-- [ ] T091 [P] [US5] Implement selector/source/product validation in `src/bolt_v3_iv/config.rs`
-- [ ] T092 [P] [US5] Implement bounds validation in `src/bolt_v3_iv/bounds.rs`
-- [ ] T093 [P] [US5] Implement projection policy in `src/bolt_v3_iv/policy.rs`
-- [ ] T094 [P] [US5] Implement interpolation and extrapolation policy in `src/bolt_v3_iv/policy.rs`
-- [ ] T095 [P] [US5] Implement fallback policy in `src/bolt_v3_iv/policy.rs`
-- [ ] T096 [P] [US5] Implement quorum policy in `src/bolt_v3_iv/policy.rs`
-- [ ] T097 [US5] Implement source-health state machine in `src/bolt_v3_iv/health.rs`
-- [ ] T098 [US5] Implement retention and memory-bound eviction in `src/bolt_v3_iv/store.rs`
-- [ ] T099 [US5] Integrate IV profile loading into root config in `src/bolt_v3_config.rs`
-- [ ] T100 [US5] Record US5 GREEN evidence and config group-by-change decisions in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T089 [P] [US5] Implement IV TOML schema and `IvProfile` parsing in `src/bolt_v3_iv/config.rs`
+- [X] T090 [P] [US5] Implement schema-version policy validation in `src/bolt_v3_iv/config.rs`
+- [X] T091 [P] [US5] Implement selector/source/product validation in `src/bolt_v3_iv/config.rs`
+- [X] T092 [P] [US5] Implement bounds validation in `src/bolt_v3_iv/bounds.rs`
+- [X] T093 [P] [US5] Implement projection policy in `src/bolt_v3_iv/policy.rs`
+- [X] T094 [P] [US5] Implement interpolation and extrapolation policy in `src/bolt_v3_iv/policy.rs`
+- [X] T095 [P] [US5] Implement fallback policy in `src/bolt_v3_iv/policy.rs`
+- [X] T096 [P] [US5] Implement quorum policy in `src/bolt_v3_iv/policy.rs`
+- [X] T097 [US5] Implement source-health state machine in `src/bolt_v3_iv/health.rs`
+- [X] T098 [US5] Implement retention and memory-bound eviction in `src/bolt_v3_iv/store.rs`
+- [X] T099 [US5] Integrate IV profile loading into root config in `src/bolt_v3_config.rs`
+- [X] T100 [US5] Record US5 GREEN evidence and config group-by-change decisions in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
 **Checkpoint**: IV runtime behavior is config-owned, typed, bounded, and lifecycle-aware.
 

@@ -20,6 +20,7 @@ use nautilus_model::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::bolt_v3_iv::config::IvRootConfig;
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
 
 pub const TEST_DOUBLE_PROVIDER_KIND: &str = "test_double";
@@ -69,6 +70,7 @@ pub struct BoltV3RootConfig {
     pub aws: AwsBlock,
     pub clients: BTreeMap<String, ClientBlock>,
     pub gate_providers: Option<BTreeMap<String, GateProviderBlock>>,
+    pub iv: Option<IvRootConfig>,
 }
 
 // `[risk]` owns Bolt-v3 strategy-sizing limits and the explicit

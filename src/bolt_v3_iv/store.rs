@@ -86,6 +86,15 @@ pub struct IvEvidence {
     pub provenance: IvProvenance,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IvRetentionPolicy {
+    pub max_raw_events: usize,
+    pub max_indexed_points: usize,
+    pub max_smiles: usize,
+    pub max_surfaces: usize,
+    pub max_source_health_events: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IvStoreError {
     PayloadKindMismatch,
@@ -194,6 +203,15 @@ impl IvStore {
         );
         provenance.extend(self.iv_evidence.iter().map(|evidence| &evidence.provenance));
         provenance
+    }
+
+    pub fn enforce_retention(&mut self, policy: &IvRetentionPolicy) {
+        truncate_front(&mut self.raw_events, policy.max_raw_events);
+        truncate_front(&mut self.iv_points, policy.max_indexed_points);
+        truncate_front(&mut self.greeks_points, policy.max_indexed_points);
+        truncate_front(&mut self.smiles, policy.max_smiles);
+        truncate_front(&mut self.aggregate_greeks, policy.max_indexed_points);
+        truncate_front(&mut self.iv_evidence, policy.max_indexed_points);
     }
 
     fn index_raw_event(&mut self, raw_event: &IvRawEvent) -> Result<(), IvStoreError> {
@@ -322,6 +340,13 @@ impl IvStore {
 
 fn valid_iv(value: f64) -> bool {
     value.is_finite() && value.is_sign_positive()
+}
+
+fn truncate_front<T>(items: &mut Vec<T>, max_len: usize) {
+    if items.len() > max_len {
+        let remove_count = items.len() - max_len;
+        items.drain(0..remove_count);
+    }
 }
 
 impl From<IvRejectReason> for IvStoreError {

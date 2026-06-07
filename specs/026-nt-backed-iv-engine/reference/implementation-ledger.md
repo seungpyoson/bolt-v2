@@ -174,3 +174,37 @@ Raw-boundary decisions for US3: raw payloads stay in `IvRawEvent` and are reacha
 | `cargo test --locked --test bolt_v3_iv_derive` | GREEN | 6 tests passed after adding helper policy selection, complete-input derivation, fail-closed input validation, output-bound validation, and helper provenance. |
 
 Helper NT-source decisions for US4: the wrapper calls `nautilus_model::data::imply_vol_and_greeks`; test fixtures compute the expected price/vol from `nautilus_model::data::black_scholes_greeks`; no strategy-local or non-NT IV helper path was introduced.
+
+## Phase 7 User Story 5 Config And Lifecycle
+
+| Task | Evidence | Status |
+|---|---|---|
+| `T081` | `tests/bolt_v3_iv_config.rs` asserts full IV TOML profile parsing into typed Rust config. | Complete |
+| `T082` | `tests/bolt_v3_iv_config.rs` asserts unknown IV schema versions reject before subscription planning. | Complete |
+| `T083` | `tests/bolt_v3_iv_config.rs` asserts selector/source mismatches reject with a field-specific diagnostic. | Complete |
+| `T084` | `tests/bolt_v3_iv_config.rs` asserts zero memory bounds and empty source selectors reject. | Complete |
+| `T085` | `tests/bolt_v3_iv_policy.rs` asserts projection, interpolation/extrapolation, fallback, and quorum policy behavior. | Complete |
+| `T086` | `tests/bolt_v3_iv_policy.rs` asserts policy outputs carry typed `IvPolicyDecision` variants. | Complete |
+| `T087` | `tests/bolt_v3_iv_live_integration.rs` asserts source-health transitions and retention eviction keep current views bounded. | Complete |
+| `T088` | RED evidence below records missing config/policy/retention/root IV wiring. | Complete |
+| `T089` | `src/bolt_v3_iv/config.rs` implements IV TOML schema parsing for `IvRootConfig`, `IvProfile`, and `IvSourceConfig`. | Complete |
+| `T090` | `src/bolt_v3_iv/config.rs` validates supported IV schema version. | Complete |
+| `T091` | `src/bolt_v3_iv/config.rs` validates selector/source/product shape and reuses subscription planning validation. | Complete |
+| `T092` | `src/bolt_v3_iv/bounds.rs` implements reusable numeric/convention bound acceptance; `config.rs` validates positive memory bounds. | Complete |
+| `T093` | `src/bolt_v3_iv/policy.rs` implements projection policy skew rejection and typed decision output. | Complete |
+| `T094` | `src/bolt_v3_iv/policy.rs` implements interpolation and configured extrapolation rejection. | Complete |
+| `T095` | `src/bolt_v3_iv/policy.rs` implements ordered fallback policy. | Complete |
+| `T096` | `src/bolt_v3_iv/policy.rs` implements quorum policy. | Complete |
+| `T097` | `src/bolt_v3_iv/health.rs` state machine is exercised by `tests/bolt_v3_iv_live_integration.rs`. | Complete |
+| `T098` | `src/bolt_v3_iv/store.rs` implements retention eviction for raw and indexed IV products. | Complete |
+| `T099` | `src/bolt_v3_config.rs` accepts optional `[iv]` root config and `src/bolt_v3_validate.rs` validates it through root validation. | Complete |
+| `T100` | GREEN evidence below records the passing US5 test targets. | Complete |
+
+## Phase 7 RED/GREEN Evidence
+
+| Command | Outcome | Notes |
+|---|---|---|
+| `cargo test --locked --test bolt_v3_iv_config --test bolt_v3_iv_policy --test bolt_v3_iv_live_integration` | RED | Failed with unresolved imports for `config`, `policy`, missing `IvRetentionPolicy`/`enforce_retention`, and missing root `iv` field. |
+| `cargo test --locked --test bolt_v3_iv_config --test bolt_v3_iv_policy --test bolt_v3_iv_live_integration` | GREEN | 9 tests passed after adding typed IV TOML config, policy functions, retention eviction, and root config integration. |
+
+Config group-by-change decisions for US5: one `[iv]` root block owns IV profiles; each `IvProfile` owns its sources, enabled products, memory bounds, and source selectors; changing a source ID or selector stays inside that profile block.

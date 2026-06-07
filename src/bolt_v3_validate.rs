@@ -172,6 +172,9 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     if let Some(gate_providers) = &root.gate_providers {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));
     }
+    if let Some(iv) = &root.iv {
+        errors.extend(crate::bolt_v3_iv::config::validate_iv_root_config(iv));
+    }
     errors.extend(crate::bolt_v3_providers::validate_resolution_oracle_client_consistency(root));
 
     errors

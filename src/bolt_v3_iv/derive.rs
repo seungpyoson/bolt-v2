@@ -190,7 +190,10 @@ pub fn derive_iv(
         resolved.option_price,
     );
 
-    if !bounds_accept(&policy.output_bounds, helper_result.vol, &inputs.convention) {
+    if !policy
+        .output_bounds
+        .accepts(helper_result.vol, &inputs.convention)
+    {
         return Err(IvDeriveError::Rejected {
             reason: IvRejectReason::InvalidIvValue,
             field: "iv".to_string(),
@@ -391,47 +394,4 @@ fn validate_operator_input(
     }
 
     Ok(())
-}
-
-fn bounds_accept(bounds: &IvNumericBounds, value: f64, convention: &IvConvention) -> bool {
-    if bounds.finite_required && !value.is_finite() {
-        return false;
-    }
-    if bounds.positive_required && value <= 0.0 {
-        return false;
-    }
-    if bounds
-        .inclusive_min
-        .is_some_and(|inclusive_min| value < inclusive_min)
-    {
-        return false;
-    }
-    if bounds
-        .inclusive_max
-        .is_some_and(|inclusive_max| value > inclusive_max)
-    {
-        return false;
-    }
-    if bounds
-        .exclusive_min
-        .is_some_and(|exclusive_min| value <= exclusive_min)
-    {
-        return false;
-    }
-    if bounds
-        .exclusive_max
-        .is_some_and(|exclusive_max| value >= exclusive_max)
-    {
-        return false;
-    }
-    if !bounds.allowed_conventions.allowed_conventions.is_empty()
-        && !bounds
-            .allowed_conventions
-            .allowed_conventions
-            .contains(convention)
-    {
-        return false;
-    }
-
-    true
 }

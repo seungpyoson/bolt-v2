@@ -104,10 +104,9 @@ impl ExpectedIdentity {
     }
 
     pub fn requote_to(&mut self, next: OrderIdentity) -> bool {
-        if let Some(current) = &self.expected
-            && next.generation <= current.generation
-        {
-            return false;
+        match &self.expected {
+            Some(current) if next.generation <= current.generation => return false,
+            _ => {}
         }
         self.expected = Some(next);
         true

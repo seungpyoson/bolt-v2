@@ -29,7 +29,7 @@
   "license_ref": "pending://source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/version=1/license-or-terms-evidence",
   "license_scope": "unknown",
   "retention_ref": "pending://source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/version=1/retention-freshness-evidence",
-  "cost_ref": "pending://source-proofs/v1/source_binding=binance-spot-native-trades/proof=source-proof-binance-spot-native-trades-perps-spot-pending-2026-06-08/version=1/cost-evidence",
+  "cost_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-cost-estimate.backtesting-engine.2026-06-08.json evidence_id=source-proof-cost-estimate-backtesting-engine-2026-06-08; pending exact accepted symbol/window cost proof",
   "nt_mapping_status": "accepted",
   "fidelity_class": "TRADE_REPLAY",
   "l2_replay_evidence": {},
@@ -113,7 +113,7 @@
     },
     "cost": {
       "outcome": "pending",
-      "evidence_ref": "pending free/public, storage, transfer, query, logging, and reserve-cost evidence"
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-cost-estimate.backtesting-engine.2026-06-08.json evidence_id=source-proof-cost-estimate-backtesting-engine-2026-06-08; pending exact accepted symbol/window cost proof"
     },
     "storage": {
       "outcome": "pending",

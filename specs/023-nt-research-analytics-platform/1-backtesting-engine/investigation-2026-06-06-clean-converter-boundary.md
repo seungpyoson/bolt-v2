@@ -1387,6 +1387,22 @@ Midpoint table-family coverage audit:
   L2/L3, execution-quality, queue-position, fillability, liquidity, or sizing
   claims as applicable. The audit command used was:
   `jq -r '[input_filename, .source_binding, .fixture_type, .table_family, .fidelity_class, .nt_mapping_status, (.forbidden_claims|length), (.claim_limits|length), (.required_checks.nt_mapping.outcome // "missing")] | @tsv' specs/023-nt-research-analytics-platform/reference/source-proof-fixture.*.json`.
+- BTE-026 now has a bounded cost estimate artifact:
+  `specs/023-nt-research-analytics-platform/reference/source-proof-cost-estimate.backtesting-engine.2026-06-08.json`.
+  It records official/current AWS S3, Athena, CloudWatch Logs, data transfer,
+  Fargate, and Batch pricing evidence, plus provider subscription facts for
+  PMXT, Binance public data, Kalshi historical APIs, Hyperliquid requester-pays
+  archive, Tardis Perpetuals Professional, and Telonex Plus. The important
+  backfill-risk finding is that the current PMXT Polymarket v2 index averages
+  about `514 MB/hour`, or roughly `12 GiB/day` and `4.29 TiB/year`, before
+  conversion, NT catalog writes, validation scans, or downstream analytics. A
+  one-year PMXT Polymarket v2 planning scenario is about `$101/month` in S3
+  Standard storage, `$15.83/month` in Glacier Flexible Retrieval, `$4.35/month`
+  in deep archive storage, `$21.47` per full Athena scan, and about `$94.11`
+  for a 100-hour `16 vCPU`/`64 GB` Fargate conversion worker baseline. This
+  closes the planning estimate task only; fixture-level cost checks remain
+  pending until the exact source binding, date window, instrument universe,
+  coverage ledger, and throughput benchmark are accepted.
 
 ## Recommendation
 

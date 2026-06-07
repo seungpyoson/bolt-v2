@@ -29,7 +29,7 @@
   "license_ref": "https://archive.pmxt.dev/docs/v2-data-overview#license",
   "license_scope": "public",
   "retention_ref": "pending://source-proofs/v1/source_binding=polymarket-parquet-archive-index/proof=source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08/version=1/retention-freshness-evidence",
-  "cost_ref": "pending://source-proofs/v1/source_binding=polymarket-parquet-archive-index/proof=source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08/version=1/cost-evidence",
+  "cost_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-cost-estimate.backtesting-engine.2026-06-08.json evidence_id=source-proof-cost-estimate-backtesting-engine-2026-06-08; pending exact accepted instrument/window cost proof",
   "nt_mapping_status": "pending",
   "fidelity_class": "L2_REPLAY",
   "l2_replay_evidence": {
@@ -116,7 +116,7 @@
     },
     "cost": {
       "outcome": "pending",
-      "evidence_ref": "pending free/public source, storage, transfer, query, logging, and reserve-cost evidence for the requested window"
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-cost-estimate.backtesting-engine.2026-06-08.json evidence_id=source-proof-cost-estimate-backtesting-engine-2026-06-08; pending exact accepted instrument/window cost proof"
     },
     "storage": {
       "outcome": "pending",

@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use super::{
+    authz::{IvAuthorizationMode, IvProfileSelectorAuthorization, IvSelectorAuthorization},
     selector::IvSelector,
     subscription::{IvProfileSubscriptionConfig, IvSourceSubscriptionConfig, plan_profile_start},
     types::{IvProductKind, IvSourceKind},
@@ -21,6 +22,8 @@ pub struct IvRootConfig {
 #[serde(deny_unknown_fields)]
 pub struct IvProfile {
     pub profile_id: String,
+    pub strategy_ids: BTreeSet<String>,
+    pub selector_authorization: IvProfileSelectorAuthorization,
     pub enabled_products: BTreeSet<IvProductKind>,
     pub max_raw_events: usize,
     pub max_indexed_points: usize,
@@ -34,6 +37,7 @@ pub struct IvProfile {
 #[serde(deny_unknown_fields)]
 pub struct IvSourceConfig {
     pub source_id: String,
+    pub selector_fingerprint: String,
     pub source_kind: IvSourceKind,
     pub client_id: String,
     pub accepted_conventions: BTreeSet<String>,
@@ -97,6 +101,13 @@ impl IvProfile {
                 .collect(),
         }
     }
+
+    pub fn strategy_authorizations(&self) -> Vec<IvSelectorAuthorization> {
+        self.strategy_ids
+            .iter()
+            .map(|strategy_id| self.selector_authorization.for_strategy(strategy_id))
+            .collect()
+    }
 }
 
 fn validate_profile(profile: &IvProfile) -> Vec<String> {
@@ -105,6 +116,18 @@ fn validate_profile(profile: &IvProfile) -> Vec<String> {
 
     if profile.profile_id.trim().is_empty() {
         errors.push("iv.profiles.profile_id must be non-empty".to_string());
+    }
+    if profile.strategy_ids.is_empty() {
+        errors.push(format!("{profile_context}.strategy_ids must be non-empty"));
+    }
+    if profile
+        .strategy_ids
+        .iter()
+        .any(|strategy_id| strategy_id.trim().is_empty())
+    {
+        errors.push(format!(
+            "{profile_context}.strategy_ids must not contain blank values"
+        ));
     }
     if profile.enabled_products.is_empty() {
         errors.push(format!(
@@ -148,13 +171,27 @@ fn validate_profile(profile: &IvProfile) -> Vec<String> {
     }
 
     let mut seen_sources = BTreeSet::new();
+    let mut seen_selector_fingerprints = BTreeSet::new();
     for source in &profile.sources {
         let source_context = format!("{profile_context}.sources.{}", source.source_id);
         if !seen_sources.insert(source.source_id.clone()) {
             errors.push(format!("{source_context}.source_id is duplicated"));
         }
+        if !source.selector_fingerprint.trim().is_empty()
+            && !seen_selector_fingerprints.insert(source.selector_fingerprint.clone())
+        {
+            errors.push(format!(
+                "{source_context}.selector_fingerprint is duplicated"
+            ));
+        }
         errors.extend(validate_source(&source_context, source));
     }
+    errors.extend(validate_selector_authorization(
+        &profile_context,
+        profile,
+        &seen_sources,
+        &seen_selector_fingerprints,
+    ));
 
     if let Err(error) = plan_profile_start(&profile.subscription_config()) {
         errors.push(format!(
@@ -177,6 +214,9 @@ fn validate_source(context: &str, source: &IvSourceConfig) -> Vec<String> {
     if source.source_id.trim().is_empty() {
         errors.push(format!("{context}.source_id must be non-empty"));
     }
+    if source.selector_fingerprint.trim().is_empty() {
+        errors.push(format!("{context}.selector_fingerprint must be non-empty"));
+    }
     if source.client_id.trim().is_empty() {
         errors.push(format!("{context}.client_id must be non-empty"));
     }
@@ -190,6 +230,53 @@ fn validate_source(context: &str, source: &IvSourceConfig) -> Vec<String> {
         ));
     }
     errors.extend(validate_selector_not_empty(context, &source.selector));
+
+    errors
+}
+
+fn validate_selector_authorization(
+    context: &str,
+    profile: &IvProfile,
+    source_ids: &BTreeSet<String>,
+    selector_fingerprints: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let auth = &profile.selector_authorization;
+    let auth_context = format!("{context}.selector_authorization");
+
+    if auth.allowed_product_kinds.is_empty() {
+        errors.push(format!(
+            "{auth_context}.allowed_product_kinds must be non-empty"
+        ));
+    }
+    for product_kind in &auth.allowed_product_kinds {
+        if !profile.enabled_products.contains(product_kind) {
+            errors.push(format!(
+                "{auth_context}.allowed_product_kinds contains disabled product kind {product_kind:?}"
+            ));
+        }
+    }
+    for source_id in &auth.allowed_source_ids {
+        if !source_ids.contains(source_id) {
+            errors.push(format!(
+                "{auth_context}.allowed_source_ids contains unknown source {source_id}"
+            ));
+        }
+    }
+    if auth.authorization_mode == IvAuthorizationMode::SelectorScoped
+        && auth.allowed_selector_fingerprints.is_empty()
+    {
+        errors.push(format!(
+            "{auth_context}.allowed_selector_fingerprints must be non-empty for selector_scoped authorization"
+        ));
+    }
+    for selector_fingerprint in &auth.allowed_selector_fingerprints {
+        if !selector_fingerprints.contains(selector_fingerprint) {
+            errors.push(format!(
+                "{auth_context}.allowed_selector_fingerprints contains unknown selector {selector_fingerprint}"
+            ));
+        }
+    }
 
     errors
 }

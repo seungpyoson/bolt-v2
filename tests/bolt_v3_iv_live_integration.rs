@@ -9,6 +9,8 @@ use bolt_v2::{
         time::UnixNanos,
         types::{IvBasis, IvConvention, IvSourceKind},
     },
+    bolt_v3_live_node::plan_iv_engine_lifecycle,
+    bolt_v3_strategy_registration::build_iv_query_handle_registry_for_root,
 };
 
 fn repo_path(relative: &str) -> String {
@@ -91,6 +93,7 @@ schema_version = 1
 
 [[iv.profiles]]
 profile_id = "configured-profile"
+strategy_ids = ["configured-strategy"]
 enabled_products = ["iv_point", "source_health"]
 max_raw_events = 2
 max_indexed_points = 2
@@ -98,8 +101,15 @@ max_smiles = 2
 max_surfaces = 2
 max_source_health_events = 2
 
+[iv.profiles.selector_authorization]
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["iv_point", "source_health"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
 [[iv.profiles.sources]]
 source_id = "configured-greeks-source"
+selector_fingerprint = "configured-greeks-selector"
 source_kind = "option_greeks"
 client_id = "configured-client"
 accepted_conventions = ["configured-convention"]
@@ -123,4 +133,60 @@ configured_source_param = "configured-value"
         parsed.iv.unwrap().profiles[0].profile_id,
         "configured-profile"
     );
+}
+
+#[test]
+fn live_node_strategy_handle_registration_and_iv_lifecycle_are_config_driven() {
+    let root = fs::read_to_string(repo_path("tests/fixtures/bolt_v3/root.toml")).unwrap();
+    let with_iv = format!(
+        "{root}\n{}",
+        r#"
+[iv]
+schema_version = 1
+
+[[iv.profiles]]
+profile_id = "configured-profile"
+strategy_ids = ["configured-strategy"]
+enabled_products = ["iv_point", "source_health"]
+max_raw_events = 2
+max_indexed_points = 2
+max_smiles = 2
+max_surfaces = 2
+max_source_health_events = 2
+
+[iv.profiles.selector_authorization]
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["iv_point", "source_health"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[iv.profiles.sources]]
+source_id = "configured-greeks-source"
+selector_fingerprint = "configured-greeks-selector"
+source_kind = "option_greeks"
+client_id = "configured-client"
+accepted_conventions = ["configured-convention"]
+
+[iv.profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["configured-instrument"]
+
+[iv.profiles.sources.selector.nt_params]
+configured_nt_param = "configured-value"
+
+[iv.profiles.sources.params]
+configured_source_param = "configured-value"
+"#
+    );
+    let parsed: BoltV3RootConfig = toml::from_str(&with_iv).unwrap();
+
+    let registry = build_iv_query_handle_registry_for_root(&parsed, IvStore::default()).unwrap();
+    let handle = registry
+        .handle("configured-strategy", "configured-profile")
+        .expect("configured strategy should receive configured IV profile handle");
+    assert!(handle.authorization().is_profile_wide());
+
+    let lifecycle = plan_iv_engine_lifecycle(&parsed).unwrap();
+    assert_eq!(lifecycle.start_plans.len(), 1);
+    assert_eq!(lifecycle.stop_plans.len(), 1);
 }

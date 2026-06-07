@@ -209,27 +209,27 @@
 
 ### Tests for User Story 6
 
-- [ ] T101 [P] [US6] Add failing profile-wide strategy query test in `tests/bolt_v3_iv_query.rs`
-- [ ] T102 [P] [US6] Add failing selector-scoped strategy query authorization test in `tests/bolt_v3_iv_query.rs`
-- [ ] T103 [P] [US6] Add failing raw-product strategy query rejection test in `tests/bolt_v3_iv_query.rs`
-- [ ] T104 [P] [US6] Add failing live-node strategy-handle registration test in `tests/bolt_v3_iv_live_integration.rs`
-- [ ] T105 [P] [US6] Add failing direct NT IV subscription source-fence case in `tests/bolt_v3_iv_source_fence.rs`
-- [ ] T106 [P] [US6] Add failing strategy-local NT helper derivation source-fence case in `tests/bolt_v3_iv_source_fence.rs`
-- [ ] T107 [P] [US6] Add failing raw audit reader and raw DTO strategy import source-fence case in `tests/bolt_v3_iv_source_fence.rs`
-- [ ] T108 [P] [US6] Add failing IV-core hardcoded runtime value source-fence case in `tests/bolt_v3_iv_source_fence.rs`
-- [ ] T109 [US6] Record US6 RED evidence in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T101 [P] [US6] Add failing profile-wide strategy query test in `tests/bolt_v3_iv_query.rs`
+- [X] T102 [P] [US6] Add failing selector-scoped strategy query authorization test in `tests/bolt_v3_iv_query.rs`
+- [X] T103 [P] [US6] Add failing raw-product strategy query rejection test in `tests/bolt_v3_iv_query.rs`
+- [X] T104 [P] [US6] Add failing live-node strategy-handle registration test in `tests/bolt_v3_iv_live_integration.rs`
+- [X] T105 [P] [US6] Add failing direct NT IV subscription source-fence case in `tests/bolt_v3_iv_source_fence.rs`
+- [X] T106 [P] [US6] Add failing strategy-local NT helper derivation source-fence case in `tests/bolt_v3_iv_source_fence.rs`
+- [X] T107 [P] [US6] Add failing raw audit reader and raw DTO strategy import source-fence case in `tests/bolt_v3_iv_source_fence.rs`
+- [X] T108 [P] [US6] Add failing IV-core hardcoded runtime value source-fence case in `tests/bolt_v3_iv_source_fence.rs`
+- [X] T109 [US6] Record US6 RED evidence in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
 ### Implementation for User Story 6
 
-- [ ] T110 [P] [US6] Implement `IvQuery` and `IvQueryHandle` in `src/bolt_v3_iv/query.rs`
-- [ ] T111 [P] [US6] Implement profile-wide strategy authorization in `src/bolt_v3_iv/authz.rs`
-- [ ] T112 [P] [US6] Implement selector-scoped strategy authorization in `src/bolt_v3_iv/authz.rs`
-- [ ] T113 [US6] Implement strategy-safe product query routing in `src/bolt_v3_iv/query.rs`
-- [ ] T114 [US6] Implement raw-product rejection on strategy handles in `src/bolt_v3_iv/query.rs`
-- [ ] T115 [US6] Integrate IV query handles into strategy registration in `src/bolt_v3_strategy_registration.rs`
-- [ ] T116 [US6] Integrate IV engine start/stop into live node in `src/bolt_v3_live_node.rs`
-- [ ] T117 [US6] Implement IV source-fence checks in `tests/bolt_v3_iv_source_fence.rs`
-- [ ] T118 [US6] Record US6 GREEN evidence and strategy-boundary decisions in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T110 [P] [US6] Implement `IvQuery` and `IvQueryHandle` in `src/bolt_v3_iv/query.rs`
+- [X] T111 [P] [US6] Implement profile-wide strategy authorization in `src/bolt_v3_iv/authz.rs`
+- [X] T112 [P] [US6] Implement selector-scoped strategy authorization in `src/bolt_v3_iv/authz.rs`
+- [X] T113 [US6] Implement strategy-safe product query routing in `src/bolt_v3_iv/query.rs`
+- [X] T114 [US6] Implement raw-product rejection on strategy handles in `src/bolt_v3_iv/query.rs`
+- [X] T115 [US6] Integrate IV query handles into strategy registration in `src/bolt_v3_strategy_registration.rs`
+- [X] T116 [US6] Integrate IV engine start/stop into live node in `src/bolt_v3_live_node.rs`
+- [X] T117 [US6] Implement IV source-fence checks in `tests/bolt_v3_iv_source_fence.rs`
+- [X] T118 [US6] Record US6 GREEN evidence and strategy-boundary decisions in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
 
 **Checkpoint**: Strategies consume IV through one generic engine API and cannot own IV mechanics.
 

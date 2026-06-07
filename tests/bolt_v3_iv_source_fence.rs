@@ -7,3 +7,160 @@ fn iv_source_fence_entrypoint_is_wired_to_the_iv_module_boundary() {
     assert!(manifest_dir.join("src/bolt_v3_iv").is_dir());
     assert!(manifest_dir.join("src/bolt_v3_iv/mod.rs").is_file());
 }
+
+#[test]
+fn source_fence_accepts_public_strategy_query_imports() {
+    let source = r#"
+use crate::bolt_v3_iv::query::{IvQuery, IvQueryHandle};
+
+fn strategy_consumes_iv(handle: &IvQueryHandle, query: &IvQuery) {
+    let _ = handle.query(query);
+}
+"#;
+
+    assert!(iv_strategy_source_fence_violations(source).is_empty());
+}
+
+#[test]
+fn source_fence_rejects_strategy_local_nt_iv_subscriptions() {
+    let source = r#"
+use nautilus_live::node::LiveNode;
+
+fn strategy_owned_subscription(node: &mut LiveNode) {
+    node.subscribe_option_greeks();
+}
+"#;
+
+    assert_strategy_source_fence_rejects(source, "strategy-owned NT IV subscription");
+}
+
+#[test]
+fn source_fence_rejects_strategy_local_nt_helper_derivation() {
+    let source = r#"
+use nautilus_model::data::imply_vol_and_greeks;
+
+fn strategy_owned_derived_iv() {
+    let _ = imply_vol_and_greeks;
+}
+"#;
+
+    assert_strategy_source_fence_rejects(source, "strategy-local NT helper derivation");
+}
+
+#[test]
+fn source_fence_rejects_raw_audit_reader_and_raw_dto_strategy_imports() {
+    let source = r#"
+use crate::bolt_v3_iv::raw_access::read_raw_event;
+use crate::bolt_v3_iv::ingest::{IvRawEvent, IvRawPayload};
+"#;
+
+    assert_strategy_source_fence_rejects(source, "raw IV payload bypass");
+}
+
+#[test]
+fn source_fence_rejects_iv_core_hardcoded_runtime_values() {
+    let source = r#"
+pub fn configured_source() -> &'static str {
+    "configured-instrument"
+}
+"#;
+
+    assert_iv_core_source_fence_rejects(source, "hardcoded IV runtime value");
+}
+
+#[test]
+fn source_fence_accepts_current_iv_core_files_without_runtime_hardcodes() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let iv_dir = manifest_dir.join("src/bolt_v3_iv");
+
+    for entry in std::fs::read_dir(iv_dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap();
+        let violations = iv_core_source_fence_violations(&source);
+        assert!(
+            violations.is_empty(),
+            "{} had IV source-fence violations: {violations:?}",
+            path.display()
+        );
+    }
+}
+
+fn assert_strategy_source_fence_rejects(source: &str, expected_reason: &str) {
+    let violations = iv_strategy_source_fence_violations(source);
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains(expected_reason)),
+        "expected source-fence violation containing {expected_reason:?}, got {violations:?}"
+    );
+}
+
+fn assert_iv_core_source_fence_rejects(source: &str, expected_reason: &str) {
+    let violations = iv_core_source_fence_violations(source);
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains(expected_reason)),
+        "expected source-fence violation containing {expected_reason:?}, got {violations:?}"
+    );
+}
+
+fn iv_strategy_source_fence_violations(_source: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    let checks = [
+        (
+            "subscribe_option_greeks",
+            "strategy-owned NT IV subscription",
+        ),
+        (
+            "subscribe_option_chain",
+            "strategy-owned NT IV subscription",
+        ),
+        (
+            "subscribe_aggregate_greeks",
+            "strategy-owned NT IV subscription",
+        ),
+        ("subscribe_custom_data", "strategy-owned NT IV subscription"),
+        (
+            "imply_vol_and_greeks",
+            "strategy-local NT helper derivation",
+        ),
+        (
+            "black_scholes_greeks",
+            "strategy-local NT helper derivation",
+        ),
+        ("read_raw_event", "raw IV payload bypass"),
+        ("IvRawAuditRequest", "raw IV payload bypass"),
+        ("IvRawEvent", "raw IV payload bypass"),
+        ("IvRawPayload", "raw IV payload bypass"),
+    ];
+
+    for (needle, reason) in checks {
+        if _source.contains(needle) {
+            violations.push(format!("{reason}: {needle}"));
+        }
+    }
+
+    violations
+}
+
+fn iv_core_source_fence_violations(source: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+
+    for needle in [
+        "\"configured-",
+        "\"configured_",
+        "\"strategy-",
+        "\"source-",
+        "\"instrument-",
+    ] {
+        if source.contains(needle) {
+            violations.push(format!("hardcoded IV runtime value: {needle}"));
+        }
+    }
+
+    violations
+}

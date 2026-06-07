@@ -90,7 +90,8 @@ Fields:
 
 - `profile_id`
 - `source_id`
-- `data_client_id`
+- `selector_fingerprint`
+- `client_id`
 - `source_kind`
 - `selector`
 - `nt_params`
@@ -98,6 +99,7 @@ Fields:
 Validation:
 
 - Source IDs are unique within a profile and non-empty.
+- Selector fingerprints are unique within a profile and non-empty.
 - Source kind is a known enum from the capability ledger.
 - Selector is a typed `IvSelector` variant compatible with the source kind.
 - Numeric bounds are positive where required.

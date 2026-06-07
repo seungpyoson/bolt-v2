@@ -108,27 +108,46 @@ agreement_band = "operator_agreement_band_bounds_policy"
 
 [[iv.profiles.sources]]
 source_id = "operator_option_greeks_source"
-data_client_id = "operator_options_client"
+selector_fingerprint = "operator_option_greeks_selector"
+client_id = "operator_options_client"
 source_kind = "option_greeks"
-selector = { option_greeks = { instrument_ids = ["operator.instrument_id"] } }
+
+[iv.profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["operator.instrument_id"]
 
 [[iv.profiles.sources]]
 source_id = "operator_option_chain_source"
-data_client_id = "operator_options_client"
+selector_fingerprint = "operator_option_chain_selector"
+client_id = "operator_options_client"
 source_kind = "option_chain"
-selector = { option_chain = { series_ids = ["operator.series_id"], strike_range_policy = "operator_strike_range" } }
+
+[iv.profiles.sources.selector]
+selector_kind = "source_option_chain"
+series_ids = ["operator.series_id"]
+strike_range_policy = "operator_strike_range"
 
 [[iv.profiles.sources]]
 source_id = "operator_aggregate_greeks_source"
-data_client_id = "operator_options_client"
+selector_fingerprint = "operator_aggregate_greeks_selector"
+client_id = "operator_options_client"
 source_kind = "aggregate_greeks"
-selector = { aggregate_greeks = { underlying_selectors = ["operator.underlying_selector"] } }
+
+[iv.profiles.sources.selector]
+selector_kind = "source_aggregate_greeks"
+aggregate_key = "operator_aggregate_key"
+underlying_selectors = ["operator.underlying_selector"]
 
 [[iv.profiles.sources]]
 source_id = "operator_custom_implied_volatility_source"
-data_client_id = "operator_options_client"
+selector_fingerprint = "operator_custom_implied_volatility_selector"
+client_id = "operator_options_client"
 source_kind = "custom_implied_volatility"
-selector = { custom_implied_volatility = { custom_iv_data_type = "operator_custom_iv_data_type", custom_iv_data_fields = ["operator_field"] } }
+
+[iv.profiles.sources.selector]
+selector_kind = "source_custom_implied_volatility"
+custom_iv_data_type = "operator_custom_iv_data_type"
+custom_iv_data_fields = ["operator_field"]
 ```
 
 ## Query Flow

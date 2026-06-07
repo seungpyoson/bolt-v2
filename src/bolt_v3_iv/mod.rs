@@ -14,6 +14,7 @@ pub mod health;
 pub mod ingest;
 pub mod policy;
 pub mod provenance;
+pub mod query;
 pub mod raw_access;
 pub mod runtime;
 pub mod selector;

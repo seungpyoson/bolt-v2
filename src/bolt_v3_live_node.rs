@@ -83,10 +83,13 @@ use crate::{
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
-    bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
+    },
+    bolt_v3_iv::subscription::{
+        IvSubscriptionError, IvSubscriptionPlan, plan_profile_start, plan_profile_stop,
     },
     bolt_v3_providers::{
         self, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
@@ -132,6 +135,36 @@ struct BoltV3LiveNodeAdapterBundle {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3StrategyFreeReferenceCacheEvidence {
     cached_instrument_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IvEngineLifecyclePlan {
+    pub start_plans: Vec<IvSubscriptionPlan>,
+    pub stop_plans: Vec<IvSubscriptionPlan>,
+}
+
+pub fn plan_iv_engine_lifecycle(
+    root: &BoltV3RootConfig,
+) -> Result<IvEngineLifecyclePlan, IvSubscriptionError> {
+    let Some(iv) = &root.iv else {
+        return Ok(IvEngineLifecyclePlan {
+            start_plans: Vec::new(),
+            stop_plans: Vec::new(),
+        });
+    };
+
+    let mut start_plans = Vec::new();
+    let mut stop_plans = Vec::new();
+    for profile in &iv.profiles {
+        let subscription_config = profile.subscription_config();
+        start_plans.extend(plan_profile_start(&subscription_config)?);
+        stop_plans.extend(plan_profile_stop(&subscription_config)?);
+    }
+
+    Ok(IvEngineLifecyclePlan {
+        start_plans,
+        stop_plans,
+    })
 }
 
 #[cfg(test)]

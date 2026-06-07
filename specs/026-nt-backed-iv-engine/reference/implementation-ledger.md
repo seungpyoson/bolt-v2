@@ -207,4 +207,36 @@ Helper NT-source decisions for US4: the wrapper calls `nautilus_model::data::imp
 | `cargo test --locked --test bolt_v3_iv_config --test bolt_v3_iv_policy --test bolt_v3_iv_live_integration` | RED | Failed with unresolved imports for `config`, `policy`, missing `IvRetentionPolicy`/`enforce_retention`, and missing root `iv` field. |
 | `cargo test --locked --test bolt_v3_iv_config --test bolt_v3_iv_policy --test bolt_v3_iv_live_integration` | GREEN | 9 tests passed after adding typed IV TOML config, policy functions, retention eviction, and root config integration. |
 
-Config group-by-change decisions for US5: one `[iv]` root block owns IV profiles; each `IvProfile` owns its sources, enabled products, memory bounds, and source selectors; changing a source ID or selector stays inside that profile block.
+Config group-by-change decisions for US5: one `[iv]` root block owns IV profiles; each `IvProfile` owns its sources, strategy IDs, selector authorization, enabled products, memory bounds, and source selectors; changing a source ID, selector fingerprint, or strategy authorization stays inside that profile block.
+
+## Phase 8 User Story 6 Strategy Query API
+
+| Task | Evidence | Status |
+|---|---|---|
+| `T101` | `tests/bolt_v3_iv_query.rs` asserts profile-wide strategy handles can query an indexed IV point and receive provenance. | Complete |
+| `T102` | `tests/bolt_v3_iv_query.rs` asserts selector-scoped authorization requires matching source ID and selector fingerprint. | Complete |
+| `T103` | `tests/bolt_v3_iv_query.rs` asserts strategy query handles reject raw payload requests. | Complete |
+| `T104` | `tests/bolt_v3_iv_live_integration.rs` asserts root IV config builds strategy query handle registrations and live IV lifecycle plans. | Complete |
+| `T105` | `tests/bolt_v3_iv_source_fence.rs` rejects strategy-local NT IV subscription calls. | Complete |
+| `T106` | `tests/bolt_v3_iv_source_fence.rs` rejects strategy-local NT helper IV derivation calls. | Complete |
+| `T107` | `tests/bolt_v3_iv_source_fence.rs` rejects raw audit reader and raw payload DTO imports in strategy source. | Complete |
+| `T108` | `tests/bolt_v3_iv_source_fence.rs` rejects hardcoded IV runtime values in IV core source and scans current IV core files. | Complete |
+| `T109` | RED evidence below records the missing query/config/registration/lifecycle failures. | Complete |
+| `T110` | `src/bolt_v3_iv/query.rs` defines `IvQuery`, `IvProductQuery`, `IvRawPayloadQuery`, `IvQueryProduct`, `IvQueryError`, and `IvQueryHandle`. | Complete |
+| `T111` | `src/bolt_v3_iv/authz.rs` authorizes profile-wide strategy product/source requests. | Complete |
+| `T112` | `src/bolt_v3_iv/authz.rs` authorizes selector-scoped requests by product kind, source ID, and selector fingerprint. | Complete |
+| `T113` | `src/bolt_v3_iv/query.rs` routes strategy-safe product queries through indexed store products. | Complete |
+| `T114` | `src/bolt_v3_iv/query.rs` rejects raw payload requests and raw event dereference on strategy handles. | Complete |
+| `T115` | `src/bolt_v3_strategy_registration.rs` builds an IV query handle registry from root IV config and injects it into `StrategyRegistrationContext`. | Complete |
+| `T116` | `src/bolt_v3_live_node.rs` derives IV start/stop lifecycle plans from root IV profiles. | Complete |
+| `T117` | `tests/bolt_v3_iv_source_fence.rs` implements strategy and IV-core source-fence checks. | Complete |
+| `T118` | GREEN evidence below records the passing US6 test targets. | Complete |
+
+## Phase 8 RED/GREEN Evidence
+
+| Command | Outcome | Notes |
+|---|---|---|
+| `cargo test --locked --test bolt_v3_iv_query --test bolt_v3_iv_config --test bolt_v3_iv_live_integration --test bolt_v3_iv_source_fence` | RED | Failed with missing `bolt_v3_iv::query`, missing profile-owned `strategy_ids`/`selector_authorization`, missing `strategy_authorizations()`, and missing live/strategy registration functions. |
+| `cargo test --locked --test bolt_v3_iv_query --test bolt_v3_iv_config --test bolt_v3_iv_live_integration --test bolt_v3_iv_source_fence` | GREEN | 19 tests passed after adding config-owned strategy authorization, query handles, raw rejection, strategy-registration IV handle registry, live IV lifecycle planning, and IV source-fence checks. |
+
+Strategy-boundary decisions for US6: strategies receive IV access only through `IvQueryHandle`; raw payload dereference remains rejected on strategy handles; strategy registration builds handles from profile-owned TOML authorization; source-fence allows public query API imports while rejecting direct NT IV subscription calls, NT helper derivation, raw audit readers, raw IV DTO imports, and IV-core placeholder runtime hardcodes.

@@ -155,6 +155,7 @@ storage_options = {}
 rust_storage_options = { region = "us-east-1", conditional_put = "etag" }
 
 [manifest.strategy]
+source_kind = "compiled_rust_registry"
 registry_key = "hurst_vpin_directional"
 
 [manifest.strategy.parameters]

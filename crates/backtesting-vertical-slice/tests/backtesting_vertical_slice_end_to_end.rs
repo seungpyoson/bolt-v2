@@ -21,7 +21,7 @@ use backtesting_vertical_slice::{
     result_contract::ResultArtifactUris,
     run_manifest::{
         BacktestingRunManifest, ManifestCatalogInput, ManifestVenueConfig, MarketStructureFixture,
-        RunPurpose, STRATEGY_HURST_VPIN_DIRECTIONAL, StrategySource,
+        RunPurpose, STRATEGY_HURST_VPIN_DIRECTIONAL, StrategySource, StrategySourceKind,
     },
     runner::{BacktestRunInputs, run_backtest},
     source_proof::{
@@ -179,6 +179,7 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
         proof_pin_reason_code: None,
         proof_pin_reason_detail: None,
         strategy: StrategySource {
+            source_kind: StrategySourceKind::CompiledRustRegistry,
             registry_key: STRATEGY_HURST_VPIN_DIRECTIONAL.to_string(),
             parameters: BTreeMap::from([
                 ("trade_size".to_string(), "0.01".to_string()),
@@ -187,6 +188,10 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
                     "BNBUSDC.BYBIT-1-MINUTE-LAST-INTERNAL".to_string(),
                 ),
             ]),
+            typed_config_uri: None,
+            typed_config_hash: None,
+            promotion_package_uri: None,
+            promotion_package_hash: None,
         },
         venue: ManifestVenueConfig {
             nt_venue: "BYBIT".to_string(),

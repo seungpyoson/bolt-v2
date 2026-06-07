@@ -1227,8 +1227,8 @@ fn runtime_mapping_emits_surface_id_and_signal_data_for_surfaced_mode() {
 
     assert_eq!(table.get("realized_volatility_surface_id").and_then(toml::Value::as_str), Some("<surface_id>"));
     assert!(!table.contains_key("vol_window_secs"));
-    assert_eq!(table.get("signal_venue").and_then(toml::Value::as_str), Some("okx_data"));
-    assert_eq!(table.get("signal_instrument_id").and_then(toml::Value::as_str), Some("BTC-USDT.OKX"));
+    assert_eq!(table.get("signal_venue").and_then(toml::Value::as_str), Some("<SIGNAL_SOURCE_ID>"));
+    assert_eq!(table.get("signal_instrument_id").and_then(toml::Value::as_str), Some("<INSTRUMENT_ID>"));
 }
 ```
 

@@ -4,10 +4,11 @@ use anyhow::Result;
 use bolt_v2::{
     bolt_v3_archetypes::binary_oracle_edge_taker,
     bolt_v3_config::{
-        BoltV3RootConfig, DECISION_REFERENCE_GATE_ROLE, RealizedVolatilityAggregationBlock,
-        RealizedVolatilityPolicyBlock, RealizedVolatilitySampleKindBlock,
-        RealizedVolatilitySourceBlock, RealizedVolatilitySourceClassBlock,
-        RealizedVolatilitySurfaceBlock, ReferenceDataBlock, load_bolt_v3_config,
+        BoltV3RootConfig, ClientBlock, DECISION_REFERENCE_GATE_ROLE,
+        RealizedVolatilityAggregationBlock, RealizedVolatilityPolicyBlock,
+        RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceBlock,
+        RealizedVolatilitySourceClassBlock, RealizedVolatilitySurfaceBlock, ReferenceDataBlock,
+        load_bolt_v3_config,
     },
     bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
@@ -24,12 +25,15 @@ use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
     enums::OrderSide,
-    identifiers::{ClientId, InstrumentId, StrategyId},
+    identifiers::{ClientId, InstrumentId, StrategyId, Venue},
 };
 use rust_decimal::Decimal;
 use std::{collections::BTreeMap, sync::Arc};
 
 struct NoopFeeProvider;
+
+const RV_DATA_CLIENT_ID: &str = "<DATA_CLIENT_ID>";
+const RV_DATA_CLIENT_VENUE: &str = "<DATA_CLIENT_VENUE>";
 
 impl FeeProvider for NoopFeeProvider {
     fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
@@ -60,7 +64,7 @@ fn valid_realized_volatility_surface() -> RealizedVolatilitySurfaceBlock {
         },
         sources: vec![RealizedVolatilitySourceBlock {
             source_id: "<SOURCE_ID_A>".to_string(),
-            data_client_id: ClientId::from("polymarket_main"),
+            data_client_id: ClientId::from(RV_DATA_CLIENT_ID),
             instrument_id: InstrumentId::from("<INSTRUMENT_ID_A>.<DATA_CLIENT_ID>"),
             source_class: RealizedVolatilitySourceClassBlock::SpotQuote,
             sample_kind: RealizedVolatilitySampleKindBlock::Midpoint,
@@ -71,10 +75,24 @@ fn valid_realized_volatility_surface() -> RealizedVolatilitySurfaceBlock {
     }
 }
 
+fn insert_placeholder_realized_volatility_client(root: &mut BoltV3RootConfig) {
+    root.clients.insert(
+        RV_DATA_CLIENT_ID.to_string(),
+        ClientBlock {
+            venue: Venue::from(RV_DATA_CLIENT_VENUE),
+            data: Some(toml::Value::Table(toml::map::Map::new())),
+            execution: None,
+            secrets: None,
+            readiness_probe: None,
+        },
+    );
+}
+
 fn insert_realized_volatility_surface(
     root: &mut BoltV3RootConfig,
     surface: RealizedVolatilitySurfaceBlock,
 ) {
+    insert_placeholder_realized_volatility_client(root);
     let _ = root
         .realized_volatility_surfaces
         .get_or_insert_with(BTreeMap::new)
@@ -213,6 +231,14 @@ fn runtime_mapping_emits_surface_id_and_signal_data_for_surfaced_mode() {
     loaded.strategies[0].config.realized_volatility_surface_id = Some("<surface_id>".to_string());
 
     let strategy = loaded.strategies.first().expect("fixture strategy");
+    let expected_signal_data = strategy
+        .config
+        .signal_data
+        .values()
+        .next()
+        .expect("fixture strategy should include signal data");
+    let expected_signal_venue = expected_signal_data.data_client_id.to_string();
+    let expected_signal_instrument = expected_signal_data.instrument_id.to_string();
     let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
         .expect("surface id should map into runtime config");
     let table = raw.as_table().expect("runtime config should be a table");
@@ -229,14 +255,14 @@ fn runtime_mapping_emits_surface_id_and_signal_data_for_surfaced_mode() {
     assert!(!table.contains_key("vol_bridge_valid_secs"));
     assert_eq!(
         table.get("signal_venue").and_then(toml::Value::as_str),
-        Some("okx_data"),
+        Some(expected_signal_venue.as_str()),
         "surfaced RV mode still needs signal data for fast-spot pricing"
     );
     assert_eq!(
         table
             .get("signal_instrument_id")
             .and_then(toml::Value::as_str),
-        Some("BTC-USDT.OKX"),
+        Some(expected_signal_instrument.as_str()),
         "surfaced RV mode must not remove the fast-spot instrument binding"
     );
 }

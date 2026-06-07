@@ -696,6 +696,11 @@ mod tests {
         format!(
             r#"{}
 
+[clients."<DATA_CLIENT_ID>"]
+venue = "<DATA_CLIENT_VENUE>"
+
+[clients."<DATA_CLIENT_ID>".data]
+
 [realized_volatility_surfaces."<surface_id>"]
 canonical_base_asset = "<BASE_ASSET>"
 canonical_quote_asset = "<QUOTE_ASSET>"
@@ -715,7 +720,7 @@ upper_quantile = {upper_quantile}
 
 [[realized_volatility_surfaces."<surface_id>".sources]]
 source_id = "<SOURCE_ID_A>"
-data_client_id = "polymarket_main"
+data_client_id = "<DATA_CLIENT_ID>"
 instrument_id = "<INSTRUMENT_ID_A>.<DATA_CLIENT_ID>"
 source_class = "spot_quote"
 sample_kind = "midpoint"

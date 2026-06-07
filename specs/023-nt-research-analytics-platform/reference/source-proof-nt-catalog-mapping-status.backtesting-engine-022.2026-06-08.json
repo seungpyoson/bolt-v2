@@ -1,0 +1,124 @@
+{
+  "schema_version": "source-proof-nt-catalog-mapping-status.v1",
+  "task_id": "BACKTESTING_ENGINE-022",
+  "status": "open_binary_option_l2_mapping_unproven",
+  "recorded_at": "2026-06-08",
+  "decision": "Do not select a binary-option L2 source or start broad backfill until the chosen source sample is converted into NT-native data classes, written to ParquetDataCatalog under the artifact root, queried back, and consumed by BacktestNode.",
+  "nt_capability_evidence": [
+    {
+      "capability": "ParquetDataCatalog supports NT-native writes for order-book deltas, depth10, trades, bars, quotes, prices, statuses, closes, and custom data.",
+      "evidence": "nt://crates/persistence/src/backend/catalog.rs:373"
+    },
+    {
+      "capability": "ParquetDataCatalog writes InstrumentAny instruments separately from market data.",
+      "evidence": "nt://crates/persistence/src/backend/catalog.rs:701"
+    },
+    {
+      "capability": "ParquetDataCatalog supports typed read-back through query_typed_data.",
+      "evidence": "nt://crates/persistence/src/backend/catalog.rs:1732"
+    },
+    {
+      "capability": "ParquetDataCatalog has convenience typed queries for TradeTick, OrderBookDelta, and OrderBookDepth10.",
+      "evidence": "nt://crates/persistence/src/backend/catalog.rs:2084"
+    },
+    {
+      "capability": "BacktestDataConfig/NautilusDataType includes OrderBookDelta and OrderBookDepth10 in addition to TradeTick.",
+      "evidence": "nt://crates/backtest/src/config.rs:50"
+    },
+    {
+      "capability": "BacktestNode dispatches ParquetDataCatalog queries for TradeTick, OrderBookDelta, and OrderBookDepth10.",
+      "evidence": "nt://crates/backtest/src/node.rs:539"
+    },
+    {
+      "capability": "Pinned NT Polymarket provider indexes loaded instruments by token id for asset_id joins.",
+      "evidence": "nt://crates/adapters/polymarket/src/providers.rs:110"
+    },
+    {
+      "capability": "Pinned NT Polymarket parser derives BinaryOption fields from Gamma market definitions.",
+      "evidence": "nt://crates/adapters/polymarket/src/http/parse.rs:88"
+    },
+    {
+      "capability": "Pinned NT Polymarket constructs InstrumentAny::BinaryOption through BinaryOption::new_checked.",
+      "evidence": "nt://crates/adapters/polymarket/src/http/parse.rs:179"
+    },
+    {
+      "capability": "Pinned NT Polymarket websocket parser converts snapshots and price changes to OrderBookDeltas and trades to TradeTick.",
+      "evidence": "nt://crates/adapters/polymarket/src/websocket/parse.rs:61"
+    }
+  ],
+  "bolt_current_limitations": [
+    {
+      "limitation": "The isolated BTE crate does not currently depend on nautilus-polymarket, so reuse of NT Polymarket parser/provider is documented but not machine-checked in the BTE crate.",
+      "evidence": "repo://crates/backtesting-vertical-slice/Cargo.toml:41 current NT dependency block lists nautilus-backtest/core/model/persistence/trading; rg found no nautilus-polymarket dependency in this Cargo.toml."
+    },
+    {
+      "limitation": "ManifestCatalogInput documents and accepts only TradeTick as the supported catalog data type in this slice.",
+      "evidence": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs:394"
+    },
+    {
+      "limitation": "to_nt_data_config maps only TradeTick to NautilusDataType and rejects all other NT data classes.",
+      "evidence": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1449"
+    },
+    {
+      "limitation": "ensure_supported_data_type permits only TradeTick.",
+      "evidence": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1747"
+    },
+    {
+      "limitation": "Source-proof fidelity binding currently accepts only TradeTick with TradeReplay.",
+      "evidence": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1972"
+    },
+    {
+      "limitation": "Current catalog projection is a CurrencyPair plus TradeTick projection for canonical trades, not a generic BinaryOption L2 projection.",
+      "evidence": "repo://crates/backtesting-vertical-slice/src/catalog_projection.rs:1"
+    }
+  ],
+  "source_mapping_status": [
+    {
+      "source_binding": "binance-spot-native-trades",
+      "nt_classes": [
+        "TradeTick"
+      ],
+      "status": "proven_for_trade_replay_only"
+    },
+    {
+      "source_binding": "polymarket-parquet-archive-index",
+      "nt_classes": [
+        "OrderBookDelta",
+        "TradeTick"
+      ],
+      "status": "best_binary_option_l2_candidate_but_unproven_in_bte",
+      "required_path": "Approve BTE dependency/integration path to pinned nautilus-polymarket, reuse NT Polymarket instrument parser/provider, normalize PMXT archive rows generically, write InstrumentAny::BinaryOption plus OrderBookDelta/TradeTick into ParquetDataCatalog, and query them back."
+    },
+    {
+      "source_binding": "pmxt-kalshi-orderbook-archive",
+      "nt_classes": [
+        "OrderBookDelta",
+        "OrderBookDepth10"
+      ],
+      "status": "candidate_only_no_nt_kalshi_provider_no_timestamp_policy_no_catalog_proof"
+    },
+    {
+      "source_binding": "kalshi-official-historical-api",
+      "nt_classes": [
+        "Bar",
+        "TradeTick"
+      ],
+      "status": "lower_fidelity_candidate_only_no_catalog_proof"
+    },
+    {
+      "source_binding": "hyperliquid-hip4-outcome-meta",
+      "nt_classes": [],
+      "status": "metadata_only_not_replay_input"
+    }
+  ],
+  "non_hardcoding_decision": "Bybit, Binance, Polymarket, Kalshi, and Hyperliquid remain source-binding examples. The next mapping work must be data-family driven: source schema plus registry binding plus NT data class, with no runtime venue or instrument constants in production code.",
+  "next_required_evidence": [
+    "TDD go/no-go decision before touching the isolated BTE crate dependency boundary.",
+    "Machine-checked BTE crate proof that nautilus-polymarket parser/provider is reused for Polymarket instruments and token-id joins.",
+    "Generic PMXT order-book projection contract from source event types to NT OrderBookDelta/TradeTick, including snapshot flags, side/action rules, timestamps, trade ids, tick-size changes, and claim limits.",
+    "ParquetDataCatalog write/readback proof for a selected PMXT Polymarket sample staged under artifact_root.",
+    "BacktestNode consumption proof for the same verified catalog path.",
+    "Coverage ledger using timestamp_received as the archive-hour coverage axis before broad backfill."
+  ],
+  "bte_022_can_close": false
+}

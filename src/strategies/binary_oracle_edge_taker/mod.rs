@@ -3700,10 +3700,10 @@ impl BinaryOracleEdgeTaker {
             Some(snapshot) => (
                 snapshot.surface_id.clone(),
                 Some(snapshot.as_of_ms),
-                snapshot
-                    .annualized_realized_vol_decimal
-                    .map(evidence_number)
-                    .unwrap_or_default(),
+                match snapshot.annualized_realized_vol_decimal {
+                    Some(value) => evidence_number(value),
+                    None => String::new(),
+                },
                 evidence_number(snapshot.seconds_per_annum),
                 realized_volatility_aggregation_evidence_label(snapshot.aggregate_method)
                     .to_string(),

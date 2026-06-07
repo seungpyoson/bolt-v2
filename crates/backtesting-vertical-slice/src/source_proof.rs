@@ -184,20 +184,28 @@ pub enum NtMappingStatus {
 
 /// Outcome of a single required check.
 ///
-/// Only [`Self::Passed`] contributes to acceptance. Any `Failed` or `Pending`
-/// check keeps the proof out of canonical backfill/catalog/backtest selection.
+/// [`Self::Passed`] contributes directly to acceptance. [`Self::NotApplicable`]
+/// contributes only when a structured claim-limit record binds the same
+/// evidence reference. Any `Failed` or `Pending` check keeps the proof out of
+/// canonical backfill/catalog/backtest selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckOutcome {
     Passed,
     Failed,
     Pending,
+    NotApplicable,
 }
 
 impl CheckOutcome {
     #[must_use]
-    pub const fn is_passed(self) -> bool {
-        matches!(self, Self::Passed)
+    pub const fn is_acceptable(self) -> bool {
+        matches!(self, Self::Passed | Self::NotApplicable)
+    }
+
+    #[must_use]
+    pub const fn is_not_applicable(self) -> bool {
+        matches!(self, Self::NotApplicable)
     }
 }
 
@@ -240,7 +248,7 @@ impl RequiredCheck {
     }
 
     fn is_acceptable(&self) -> bool {
-        self.outcome.is_passed() && !self.evidence_ref.trim().is_empty()
+        self.outcome.is_acceptable() && !self.evidence_ref.trim().is_empty()
     }
 }
 
@@ -260,6 +268,19 @@ pub struct RequiredChecks {
 }
 
 impl RequiredChecks {
+    const NAMES: [&'static str; 10] = [
+        "source_access",
+        "license",
+        "schema",
+        "time_semantics",
+        "instrument_universe",
+        "coverage",
+        "granularity",
+        "completeness",
+        "nt_mapping",
+        "storage",
+    ];
+
     fn as_slice(&self) -> [&RequiredCheck; 10] {
         [
             &self.source_access,
@@ -276,32 +297,33 @@ impl RequiredChecks {
     }
 
     /// Names of checks that are not acceptable (failed, pending, or missing
-    /// evidence), in declaration order. Empty when every check passed.
+    /// evidence), in declaration order. Empty when every check is acceptable.
     #[must_use]
     pub fn unmet(&self) -> Vec<&'static str> {
-        const NAMES: [&str; 10] = [
-            "source_access",
-            "license",
-            "schema",
-            "time_semantics",
-            "instrument_universe",
-            "coverage",
-            "granularity",
-            "completeness",
-            "nt_mapping",
-            "storage",
-        ];
         self.as_slice()
             .iter()
-            .zip(NAMES)
+            .zip(Self::NAMES)
             .filter(|(check, _)| !check.is_acceptable())
             .map(|(_, name)| name)
             .collect()
     }
 
-    /// True only when every required check passed with non-empty evidence.
+    fn not_applicable_evidence_refs(&self) -> Vec<(&'static str, &str)> {
+        self.as_slice()
+            .iter()
+            .zip(Self::NAMES)
+            .filter_map(|(check, name)| {
+                check
+                    .outcome
+                    .is_not_applicable()
+                    .then_some((name, check.evidence_ref.as_str()))
+            })
+            .collect()
+    }
+
+    /// True only when every required check is acceptable with non-empty evidence.
     #[must_use]
-    pub fn all_passed(&self) -> bool {
+    pub fn all_acceptable(&self) -> bool {
         self.unmet().is_empty()
     }
 }
@@ -420,6 +442,8 @@ pub enum AcceptanceError {
         field: &'static str,
         reason: &'static str,
     },
+    /// A not-applicable required check lacks a matching structured claim limit.
+    NotApplicableCheckMissingClaimLimit { check: &'static str },
     /// The proof referenced by the dataset is not accepted.
     ProofNotAccepted(SourceProofStatus),
     /// A rejected proof cannot satisfy acceptance invariants.
@@ -490,6 +514,10 @@ impl std::fmt::Display for AcceptanceError {
             Self::InvalidClaimLimit { field, reason } => {
                 write!(f, "claim_limits.{field} {reason}")
             }
+            Self::NotApplicableCheckMissingClaimLimit { check } => write!(
+                f,
+                "required_checks.{check} not_applicable requires matching claim_limits.evidence_ref"
+            ),
             Self::ProofNotAccepted(status) => {
                 write!(f, "source proof is not accepted (status: {status:?})")
             }
@@ -669,6 +697,7 @@ impl SourceProofReport {
             return Err(AcceptanceError::ForbiddenClaimMissing);
         }
         validate_claim_limits(self)?;
+        validate_not_applicable_required_checks(self)?;
         // When the proof claims to supersede a prior proof, that reference must be
         // a real, distinct id — not blank and not the proof's own id.
         if let Some(superseded) = &self.supersedes_source_proof_id {
@@ -1206,6 +1235,21 @@ fn validate_claim_limits(proof: &SourceProofReport) -> Result<(), AcceptanceErro
     Ok(())
 }
 
+fn validate_not_applicable_required_checks(
+    proof: &SourceProofReport,
+) -> Result<(), AcceptanceError> {
+    for (check_name, evidence_ref) in proof.required_checks.not_applicable_evidence_refs() {
+        if !proof
+            .claim_limits
+            .iter()
+            .any(|limit| limit.evidence_ref == evidence_ref)
+        {
+            return Err(AcceptanceError::NotApplicableCheckMissingClaimLimit { check: check_name });
+        }
+    }
+    Ok(())
+}
+
 fn ensure_source_binding_metadata_matches(
     proof: &SourceProofReport,
     registry: &SourceBindingRegistry,
@@ -1433,7 +1477,7 @@ mod tests {
 
     #[test]
     fn all_checks_passed_when_every_check_passes() {
-        assert!(passing_checks().all_passed());
+        assert!(passing_checks().all_acceptable());
         assert!(passing_checks().unmet().is_empty());
     }
 
@@ -1441,7 +1485,7 @@ mod tests {
     fn pending_check_is_reported_as_unmet() {
         let mut checks = passing_checks();
         checks.license = RequiredCheck::pending("manual review outstanding");
-        assert!(!checks.all_passed());
+        assert!(!checks.all_acceptable());
         assert_eq!(checks.unmet(), vec!["license"]);
     }
 
@@ -1450,6 +1494,36 @@ mod tests {
         let mut checks = passing_checks();
         checks.nt_mapping = RequiredCheck::passed("");
         assert_eq!(checks.unmet(), vec!["nt_mapping"]);
+    }
+
+    #[test]
+    fn not_applicable_required_check_requires_matching_claim_limit_evidence() {
+        let mut proof = candidate_proof();
+        let evidence_ref = "source-proof://claim-limit/instrument-universe-not-historical";
+        proof.required_checks.instrument_universe = RequiredCheck {
+            outcome: CheckOutcome::NotApplicable,
+            evidence_ref: evidence_ref.to_string(),
+        };
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("required_checks.instrument_universe")
+                && err.to_string().contains("claim_limits.evidence_ref"),
+            "{err}"
+        );
+
+        proof.claim_limits.push(SourceProofClaimLimit {
+            id: "instrument-universe-current-only".to_string(),
+            severity: "blocking".to_string(),
+            claim: "No historical venue-rule, fillability, rounding, sizing, or execution-quality claims.".to_string(),
+            reason: "instrument metadata is a current construction snapshot, not a historical universe snapshot.".to_string(),
+            evidence_ref: evidence_ref.to_string(),
+        });
+
+        proof.evaluate_acceptance().expect(
+            "not_applicable check is acceptable only when a claim limit binds the same evidence",
+        );
     }
 
     #[test]

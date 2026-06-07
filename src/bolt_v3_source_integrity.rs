@@ -193,7 +193,7 @@ mod tests {
     // Re-derived again by #574 follow-up review cleanup after decoupling stale
     // snapshot fair-value rejection from test-only signal candidate processing.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "a7794d95c06d693ad3e65535751827da7ace5f8c2f3bff154d53d626e3ab722f";
+        "d9c4519be1f40601e40da47b42d074f43590833b817be2aacf8e4c30f1eb0344";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

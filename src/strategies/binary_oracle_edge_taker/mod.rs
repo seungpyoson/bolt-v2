@@ -356,6 +356,7 @@ fn signed_trade_flow_config(config: &BinaryOracleEdgeTakerConfig) -> SignedTrade
 pub struct SignedTradeFlow {
     window_ms: u64,
     max_samples: usize,
+    last_observed_ns: Option<u64>,
     samples: VecDeque<SignedTrade>,
 }
 
@@ -364,22 +365,24 @@ impl SignedTradeFlow {
         Self {
             window_ms: config.window_secs.saturating_mul(MILLIS_PER_SECOND_U64),
             max_samples: config.max_samples as usize,
+            last_observed_ns: None,
             samples: VecDeque::new(),
         }
     }
 
     fn observe(&mut self, trade: &TradeTick) {
-        let ts_ms = trade.ts_event.as_u64() / NANOS_PER_MILLI_U64;
-        // Reject non-monotonic observations, mirroring `RealizedVolEstimator`: a
-        // timestamp at or before the latest retained sample would break the
-        // oldest-first ordering and the time-window eviction cutoff.
+        let ts_ns = trade.ts_event.as_u64();
+        let ts_ms = ts_ns / NANOS_PER_MILLI_U64;
+        // Reject non-monotonic observations at nanosecond resolution so
+        // distinct trades within one millisecond are retained without allowing
+        // equal or older observations to corrupt oldest-first ordering.
         if self
-            .samples
-            .back()
-            .is_some_and(|previous| ts_ms <= previous.ts_ms)
+            .last_observed_ns
+            .is_some_and(|previous| ts_ns <= previous)
         {
             return;
         }
+        self.last_observed_ns = Some(ts_ns);
         self.samples.push_back(SignedTrade {
             ts_ms,
             aggressor: trade.aggressor_side,
@@ -431,7 +434,7 @@ impl SignedTradeFlow {
         let cutoff_ms = now_ms.saturating_sub(self.window_ms);
         self.samples
             .iter()
-            .filter(move |trade| trade.ts_ms >= cutoff_ms)
+            .filter(move |trade| trade.ts_ms >= cutoff_ms && trade.ts_ms <= now_ms)
     }
 }
 
@@ -497,7 +500,13 @@ impl PricingState {
             .fair_value
             .filter(|fair_value| fair_value.is_finite() && *fair_value > 0.0)
         {
-            self.last_reference_fair_value = Some(fair_value);
+            if !self
+                .last_reference_observed_ts_ms
+                .is_some_and(|last| snapshot.ts_ms <= last)
+            {
+                self.last_reference_observed_ts_ms = Some(snapshot.ts_ms);
+                self.last_reference_fair_value = Some(fair_value);
+            }
         }
 
         let candidates = self.build_lead_venue_signals(snapshot);
@@ -584,8 +593,8 @@ impl PricingState {
 
     #[cfg(test)]
     fn build_lead_venue_signals(&mut self, snapshot: &ReferenceSnapshot) -> Vec<LeadVenueSignal> {
-        let agreement_anchor = best_healthy_oracle_price(snapshot).or(snapshot.fair_value);
-        let reference_anchor = snapshot.fair_value;
+        let reference_anchor = self.last_reference_fair_value;
+        let agreement_anchor = best_healthy_oracle_price(snapshot).or(reference_anchor);
 
         snapshot
             .venues

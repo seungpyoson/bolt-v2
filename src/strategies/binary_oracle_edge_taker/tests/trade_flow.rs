@@ -2,6 +2,33 @@
 
 use super::*;
 
+const TEST_WIDE_TRADE_FLOW_WINDOW_SECS: u64 = 600;
+const TEST_NARROW_TRADE_FLOW_WINDOW_SECS: u64 = 10;
+const TEST_TRADE_FLOW_MAX_SAMPLES: u64 = 100;
+const TEST_TRADE_SIZE: f64 = 1.0;
+const TEST_FIRST_SAME_MS_TRADE_PRICE: f64 = 0.50;
+const TEST_SECOND_SAME_MS_TRADE_PRICE: f64 = 0.51;
+const TEST_REJECTED_EQUAL_NS_PRICE: f64 = 0.52;
+const TEST_REJECTED_OLDER_NS_PRICE: f64 = 0.53;
+const TEST_FUTURE_WINDOW_PAST_PRICE: f64 = 0.54;
+const TEST_FUTURE_WINDOW_FUTURE_PRICE: f64 = 0.55;
+const TEST_FIRST_SAME_MS_TRADE_NS: u64 = NANOS_PER_MILLI_U64 + 1;
+const TEST_SECOND_SAME_MS_TRADE_NS: u64 = TEST_FIRST_SAME_MS_TRADE_NS + 1;
+const TEST_EQUAL_NS_WATERMARK: u64 = TEST_SECOND_SAME_MS_TRADE_NS;
+const TEST_OLDER_NS_THAN_WATERMARK: u64 = TEST_EQUAL_NS_WATERMARK - 1;
+const TEST_SAME_MS_SAMPLE_TS_MS: u64 = TEST_FIRST_SAME_MS_TRADE_NS / NANOS_PER_MILLI_U64;
+const TEST_PAST_SAMPLE_TS_MS: u64 = 5_000;
+const TEST_NOW_TS_MS: u64 = 12_000;
+const TEST_FUTURE_SAMPLE_TS_MS: u64 = 15_000;
+
+fn generated_trade_flow_instrument_id() -> String {
+    format!(
+        "{}.{}",
+        test_identifier_token(std::any::type_name::<SignedTradeFlow>()).to_ascii_uppercase(),
+        test_identifier_token(std::any::type_name::<SignedTradeFlowConfig>()).to_ascii_uppercase(),
+    )
+}
+
 #[test]
 fn signed_trade_flow_observe_appends_signed_price_and_size() {
     let mut config = test_strategy().config.clone();
@@ -117,6 +144,76 @@ fn signed_trade_flow_drops_out_of_order_and_duplicate_timestamps() {
 }
 
 #[test]
+fn signed_trade_flow_retains_same_millisecond_distinct_trades() {
+    let mut config = test_strategy().config.clone();
+    config.trade_flow_window_secs = TEST_WIDE_TRADE_FLOW_WINDOW_SECS;
+    config.trade_flow_max_samples = TEST_TRADE_FLOW_MAX_SAMPLES;
+    let mut flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&config));
+    let instrument_id = generated_trade_flow_instrument_id();
+
+    flow.observe(&trade_tick_with_aggressor_ns(
+        instrument_id.as_str(),
+        TEST_FIRST_SAME_MS_TRADE_PRICE,
+        TEST_TRADE_SIZE,
+        AggressorSide::Buyer,
+        TEST_FIRST_SAME_MS_TRADE_NS,
+    ));
+    flow.observe(&trade_tick_with_aggressor_ns(
+        instrument_id.as_str(),
+        TEST_SECOND_SAME_MS_TRADE_PRICE,
+        TEST_TRADE_SIZE,
+        AggressorSide::Seller,
+        TEST_SECOND_SAME_MS_TRADE_NS,
+    ));
+
+    assert_eq!(flow.len(), 2);
+    assert_eq!(
+        flow.samples()
+            .iter()
+            .map(|trade| trade.ts_ms)
+            .collect::<Vec<_>>(),
+        vec![TEST_SAME_MS_SAMPLE_TS_MS, TEST_SAME_MS_SAMPLE_TS_MS]
+    );
+}
+
+#[test]
+fn signed_trade_flow_rejects_equal_and_older_nanosecond_observations() {
+    let mut config = test_strategy().config.clone();
+    config.trade_flow_window_secs = TEST_WIDE_TRADE_FLOW_WINDOW_SECS;
+    config.trade_flow_max_samples = TEST_TRADE_FLOW_MAX_SAMPLES;
+    let mut flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&config));
+    let instrument_id = generated_trade_flow_instrument_id();
+
+    flow.observe(&trade_tick_with_aggressor_ns(
+        instrument_id.as_str(),
+        TEST_SECOND_SAME_MS_TRADE_PRICE,
+        TEST_TRADE_SIZE,
+        AggressorSide::Buyer,
+        TEST_EQUAL_NS_WATERMARK,
+    ));
+    flow.observe(&trade_tick_with_aggressor_ns(
+        instrument_id.as_str(),
+        TEST_REJECTED_EQUAL_NS_PRICE,
+        TEST_TRADE_SIZE,
+        AggressorSide::Seller,
+        TEST_EQUAL_NS_WATERMARK,
+    ));
+    flow.observe(&trade_tick_with_aggressor_ns(
+        instrument_id.as_str(),
+        TEST_REJECTED_OLDER_NS_PRICE,
+        TEST_TRADE_SIZE,
+        AggressorSide::Seller,
+        TEST_OLDER_NS_THAN_WATERMARK,
+    ));
+
+    assert_eq!(flow.len(), 1);
+    assert_eq!(
+        flow.samples().front().map(|trade| trade.price),
+        Some(Price::new(TEST_SECOND_SAME_MS_TRADE_PRICE, TEST_TRADE_PRICE_PRECISION).as_f64())
+    );
+}
+
+#[test]
 fn signed_trade_flow_samples_within_excludes_trades_aged_out_by_caller_clock() {
     // Eviction only runs inside `observe`, so in a quiet market `samples()`
     // can still hold trades that have aged out of the window. A point-in-time
@@ -157,6 +254,37 @@ fn signed_trade_flow_samples_within_excludes_trades_aged_out_by_caller_clock() {
             .map(|trade| trade.ts_ms)
             .collect::<Vec<_>>(),
         vec![5_000]
+    );
+}
+
+#[test]
+fn signed_trade_flow_samples_within_excludes_future_trades() {
+    let mut config = test_strategy().config.clone();
+    config.trade_flow_window_secs = TEST_NARROW_TRADE_FLOW_WINDOW_SECS;
+    config.trade_flow_max_samples = TEST_TRADE_FLOW_MAX_SAMPLES;
+    let mut flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&config));
+    let instrument_id = generated_trade_flow_instrument_id();
+
+    flow.observe(&trade_tick_with_aggressor(
+        instrument_id.as_str(),
+        TEST_FUTURE_WINDOW_PAST_PRICE,
+        TEST_TRADE_SIZE,
+        AggressorSide::Buyer,
+        TEST_PAST_SAMPLE_TS_MS,
+    ));
+    flow.observe(&trade_tick_with_aggressor(
+        instrument_id.as_str(),
+        TEST_FUTURE_WINDOW_FUTURE_PRICE,
+        TEST_TRADE_SIZE,
+        AggressorSide::Buyer,
+        TEST_FUTURE_SAMPLE_TS_MS,
+    ));
+
+    assert_eq!(
+        flow.samples_within(TEST_NOW_TS_MS)
+            .map(|trade| trade.ts_ms)
+            .collect::<Vec<_>>(),
+        vec![TEST_PAST_SAMPLE_TS_MS]
     );
 }
 

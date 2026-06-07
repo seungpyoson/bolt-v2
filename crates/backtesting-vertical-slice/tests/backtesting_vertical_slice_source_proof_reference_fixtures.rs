@@ -156,6 +156,14 @@ fn assert_nt_mapping_evidence_is_bounded(path: &PathBuf, report: &SourceProofRep
                 "metadata-only fixture report {path:?} must mark NT replay mapping as not applicable"
             );
             assert!(
+                report
+                    .required_checks
+                    .nt_mapping
+                    .evidence_ref
+                    .starts_with("repo://"),
+                "metadata-only fixture report {path:?} must bind a committed NT mapping inspection"
+            );
+            assert!(
                 report.forbidden_claims.iter().any(|claim| {
                     claim.contains("NT catalog")
                         || claim.contains("BinaryOption mapping")

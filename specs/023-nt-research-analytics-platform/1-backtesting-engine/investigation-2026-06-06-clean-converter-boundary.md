@@ -1274,16 +1274,25 @@ Midpoint table-family coverage audit:
   classes such as `TradeTick`, `QuoteTick`, `Bar`, `OrderBookDelta`, and
   `OrderBookDepth10`. The current binary-option sample is Hyperliquid outcome
   metadata only, so it remains `METADATA_ONLY`, `nt_mapping_status =
-  not_applicable`, and blocked from NT catalog/backtest claims. The perps/spot
-  native-trades fixture now carries the already proven NT `TradeTick` mapping:
+  not_applicable`, and blocked from NT catalog/backtest claims. The committed
+  mapping inspection report
+  `specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.hyperliquid-hip4-outcome-meta.2026-06-08.json`
+  records why: `outcomeMeta` has outcome labels, side specs, quote token, and
+  question metadata, but not the activation/expiration timestamps or price/size
+  increments required for checked NT `BinaryOption` construction. A bounded
+  current probe for outcome side `#1010` showed `l2Book` and recent
+  `candleSnapshot` shapes can exist, but those probes are not accepted
+  historical coverage or a replay data source. The perps/spot native-trades
+  fixture now carries the already proven NT `TradeTick` mapping:
   `nt_mapping_status = accepted`, `required_checks.nt_mapping.outcome =
   passed`, and evidence bound to the accepted Binance BNBUSDC 2026-03-01 sample
   plus `ParquetDataCatalog` projection/query read-back. RED/GREEN focused test
   evidence: the reference-fixture test first failed because the perps/spot
-  fixture still had pending NT mapping, then passed after binding the generic
-  trade-replay-to-`TradeTick` evidence. BTE-022 remains open overall until the
-  binary-option fixture either proves replay data into an NT data class or is
-  explicitly routed through an approved non-replay signal/input contract.
+  fixture still had pending NT mapping, then failed because the metadata-only
+  binary fixture lacked a committed NT mapping inspection, then passed after
+  binding both facts. BTE-022 remains open overall until the binary-option
+  fixture either proves replay data into an NT data class or is explicitly
+  routed through an approved non-replay signal/input contract.
 
 ## Recommendation
 

@@ -65,8 +65,8 @@
       "id": "binary-option-source-proof-claim-limit-004",
       "severity": "blocking",
       "claim": "No quote-token, instrument-parser, or normalized BinaryOption mapping claims until parser-fidelity proof passes.",
-      "reason": "Quote-token parser fidelity and NautilusTrader BinaryOption mapping evidence are pending.",
-      "evidence_ref": "source-proof://source-proof-hyperliquid-hip4-outcome-meta-binary-option-pending-2026-06-08/nt_mapping"
+      "reason": "The outcomeMeta sample exposes outcome labels and quote token, but not activation/expiration timestamps or price/size increments required for checked NautilusTrader BinaryOption construction.",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.hyperliquid-hip4-outcome-meta.2026-06-08.json sha256=b764fbaf876ec2e09819cb2652f4e15ece1ed9c966ac9c93ef0140f2abdc0cff"
     }
   ],
   "gap_policy_id": "",
@@ -109,7 +109,7 @@
     },
     "nt_mapping": {
       "outcome": "not_applicable",
-      "evidence_ref": "source-proof://source-proof-hyperliquid-hip4-outcome-meta-binary-option-pending-2026-06-08/nt_mapping"
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.hyperliquid-hip4-outcome-meta.2026-06-08.json sha256=b764fbaf876ec2e09819cb2652f4e15ece1ed9c966ac9c93ef0140f2abdc0cff"
     },
     "cost": {
       "outcome": "pending",

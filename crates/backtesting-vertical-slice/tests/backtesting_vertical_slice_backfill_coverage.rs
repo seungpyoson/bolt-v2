@@ -1,8 +1,9 @@
 use backtesting_vertical_slice::{
     backfill_coverage::{
-        BackfillCoverageIssue, BackfillCoverageManifestEvidence, BackfillCoverageParseError,
-        BackfillCoverageStatus, BackfillPhysicalInventory, BackfillWriteMode,
-        classify_manifest_coverage, classify_physical_inventory,
+        BackfillCoverageIssue, BackfillCoverageLedger, BackfillCoverageLedgerError,
+        BackfillCoverageManifestEvidence, BackfillCoverageParseError, BackfillCoverageStatus,
+        BackfillPhysicalInventory, BackfillWriteMode, classify_manifest_coverage,
+        classify_physical_inventory,
     },
     source_proof::SourceProofStatus,
 };
@@ -210,5 +211,99 @@ fn coverage_manifest_evidence_rejects_unknown_write_mode() {
     assert_eq!(
         err,
         BackfillCoverageParseError::UnknownWriteMode("download_then_guess".to_string())
+    );
+}
+
+#[test]
+fn coverage_ledger_artifact_aggregates_manifest_records_and_physical_only_inventory() {
+    let accepted = completed_manifest();
+    let mut rejected = completed_manifest();
+    rejected.manifest_id = "manifest-synthetic-rejected".to_string();
+    rejected.planned_objects = 4;
+    rejected.failed_objects = 1;
+
+    let matched_inventory = BackfillPhysicalInventory {
+        inventory_id: accepted.manifest_id.clone(),
+        object_count: 5,
+        byte_count: 1_500,
+    };
+    let orphan_inventory = BackfillPhysicalInventory {
+        inventory_id: "manifest-synthetic-orphan".to_string(),
+        object_count: 2,
+        byte_count: 200,
+    };
+
+    let ledger = BackfillCoverageLedger::from_evidence(
+        "ledger-synthetic",
+        vec![accepted, rejected],
+        vec![matched_inventory, orphan_inventory],
+    )
+    .expect("ledger aggregate builds from normalized evidence");
+
+    assert_eq!(ledger.ledger_id, "ledger-synthetic");
+    assert_eq!(ledger.records.len(), 3);
+    assert_eq!(ledger.summary.accepted_records, 1);
+    assert_eq!(ledger.summary.rejected_records, 1);
+    assert_eq!(ledger.summary.physical_only_records, 1);
+    assert_eq!(ledger.summary.accepted_objects, 3);
+    assert_eq!(ledger.summary.accepted_bytes, 900);
+    assert_eq!(ledger.summary.physical_only_objects, 4);
+    assert_eq!(ledger.summary.physical_only_bytes, 800);
+    assert_eq!(ledger.summary.blocking_issue_count, 2);
+
+    let hash = ledger.content_hash().expect("ledger content hashes");
+    assert_eq!(hash.len(), 64);
+    assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+    let json = serde_json::to_value(&ledger).expect("ledger serializes");
+    assert_eq!(json["schema_version"], "backfill-coverage-ledger.v1");
+    assert_eq!(
+        json["records"]
+            .as_array()
+            .expect("records array")
+            .iter()
+            .filter(|record| record["source_proof_id"].is_string())
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn coverage_ledger_artifact_rejects_duplicate_manifest_ids_before_summary() {
+    let manifest = completed_manifest();
+
+    let err = BackfillCoverageLedger::from_evidence(
+        "ledger-synthetic",
+        vec![manifest.clone(), manifest],
+        vec![],
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        err,
+        BackfillCoverageLedgerError::DuplicateManifestId("manifest-synthetic-complete".to_string())
+    );
+}
+
+#[test]
+fn coverage_ledger_artifact_rejects_duplicate_inventory_ids_before_summary() {
+    let inventory = BackfillPhysicalInventory {
+        inventory_id: "manifest-synthetic-physical".to_string(),
+        object_count: 1,
+        byte_count: 100,
+    };
+
+    let err = BackfillCoverageLedger::from_evidence(
+        "ledger-synthetic",
+        vec![],
+        vec![inventory.clone(), inventory],
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        err,
+        BackfillCoverageLedgerError::DuplicateInventoryId(
+            "manifest-synthetic-physical".to_string()
+        )
     );
 }

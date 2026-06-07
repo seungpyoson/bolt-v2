@@ -4,12 +4,15 @@
 //! normalized manifest facts and optional physical S3 inventory summaries before
 //! any payload download, canonical write, NT catalog projection, or backtest.
 
-use std::{error::Error, fmt};
+use std::{collections::BTreeMap, error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::source_proof::SourceProofStatus;
+
+pub const BACKFILL_COVERAGE_LEDGER_SCHEMA_VERSION: &str = "backfill-coverage-ledger.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -74,6 +77,37 @@ impl fmt::Display for BackfillCoverageParseError {
 }
 
 impl Error for BackfillCoverageParseError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackfillCoverageLedgerError {
+    EmptyLedgerId,
+    DuplicateManifestId(String),
+    DuplicateInventoryId(String),
+    Serialize(String),
+}
+
+impl fmt::Display for BackfillCoverageLedgerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyLedgerId => write!(f, "backfill coverage ledger id must not be empty"),
+            Self::DuplicateManifestId(manifest_id) => {
+                write!(
+                    f,
+                    "backfill coverage ledger has duplicate manifest id {manifest_id:?}"
+                )
+            }
+            Self::DuplicateInventoryId(inventory_id) => {
+                write!(
+                    f,
+                    "backfill coverage ledger has duplicate inventory id {inventory_id:?}"
+                )
+            }
+            Self::Serialize(error) => write!(f, "serialize backfill coverage ledger: {error}"),
+        }
+    }
+}
+
+impl Error for BackfillCoverageLedgerError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -224,6 +258,143 @@ pub struct BackfillCoverageRecord {
     pub physical_only_objects: u64,
     pub physical_only_bytes: u64,
     pub blocking_issues: Vec<BackfillCoverageIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackfillCoverageSummary {
+    pub total_records: u64,
+    pub accepted_records: u64,
+    pub accepted_with_gaps_records: u64,
+    pub rejected_records: u64,
+    pub physical_only_records: u64,
+    pub canonical_ready_records: u64,
+    pub accepted_objects: u64,
+    pub accepted_bytes: u64,
+    pub skipped_objects: u64,
+    pub physical_only_objects: u64,
+    pub physical_only_bytes: u64,
+    pub blocking_issue_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackfillCoverageLedger {
+    pub schema_version: String,
+    pub ledger_id: String,
+    pub records: Vec<BackfillCoverageRecord>,
+    pub summary: BackfillCoverageSummary,
+}
+
+impl BackfillCoverageLedger {
+    pub fn from_evidence(
+        ledger_id: impl Into<String>,
+        manifests: Vec<BackfillCoverageManifestEvidence>,
+        inventories: Vec<BackfillPhysicalInventory>,
+    ) -> Result<Self, BackfillCoverageLedgerError> {
+        let ledger_id = ledger_id.into();
+        if ledger_id.trim().is_empty() {
+            return Err(BackfillCoverageLedgerError::EmptyLedgerId);
+        }
+
+        let mut inventory_by_id = BTreeMap::new();
+        for inventory in inventories {
+            let inventory_id = inventory.inventory_id.clone();
+            if inventory_by_id
+                .insert(inventory_id.clone(), inventory)
+                .is_some()
+            {
+                return Err(BackfillCoverageLedgerError::DuplicateInventoryId(
+                    inventory_id,
+                ));
+            }
+        }
+
+        let mut manifest_ids = BTreeMap::new();
+        let mut records = Vec::new();
+        for manifest in manifests {
+            if manifest_ids
+                .insert(manifest.manifest_id.clone(), ())
+                .is_some()
+            {
+                return Err(BackfillCoverageLedgerError::DuplicateManifestId(
+                    manifest.manifest_id,
+                ));
+            }
+            let inventory = inventory_by_id.remove(&manifest.manifest_id);
+            records.push(classify_manifest_coverage(&manifest, inventory.as_ref()));
+        }
+        for inventory in inventory_by_id.into_values() {
+            records.push(classify_physical_inventory(&inventory));
+        }
+
+        let summary = BackfillCoverageSummary::from_records(&records);
+        Ok(Self {
+            schema_version: BACKFILL_COVERAGE_LEDGER_SCHEMA_VERSION.to_string(),
+            ledger_id,
+            records,
+            summary,
+        })
+    }
+
+    pub fn content_hash(&self) -> Result<String, BackfillCoverageLedgerError> {
+        let bytes = serde_json::to_vec(self)
+            .map_err(|error| BackfillCoverageLedgerError::Serialize(error.to_string()))?;
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        Ok(hex::encode(hasher.finalize()))
+    }
+}
+
+impl BackfillCoverageSummary {
+    fn from_records(records: &[BackfillCoverageRecord]) -> Self {
+        let mut summary = Self {
+            total_records: records.len() as u64,
+            accepted_records: 0,
+            accepted_with_gaps_records: 0,
+            rejected_records: 0,
+            physical_only_records: 0,
+            canonical_ready_records: 0,
+            accepted_objects: 0,
+            accepted_bytes: 0,
+            skipped_objects: 0,
+            physical_only_objects: 0,
+            physical_only_bytes: 0,
+            blocking_issue_count: 0,
+        };
+
+        for record in records {
+            match record.status {
+                BackfillCoverageStatus::Accepted => summary.accepted_records += 1,
+                BackfillCoverageStatus::AcceptedWithGaps => {
+                    summary.accepted_with_gaps_records += 1;
+                }
+                BackfillCoverageStatus::Rejected => summary.rejected_records += 1,
+                BackfillCoverageStatus::PhysicalOnly => summary.physical_only_records += 1,
+            }
+            if record.canonical_ready {
+                summary.canonical_ready_records += 1;
+            }
+            summary.accepted_objects = summary
+                .accepted_objects
+                .saturating_add(record.accepted_objects);
+            summary.accepted_bytes = summary.accepted_bytes.saturating_add(record.accepted_bytes);
+            summary.skipped_objects = summary
+                .skipped_objects
+                .saturating_add(record.skipped_objects);
+            summary.physical_only_objects = summary
+                .physical_only_objects
+                .saturating_add(record.physical_only_objects);
+            summary.physical_only_bytes = summary
+                .physical_only_bytes
+                .saturating_add(record.physical_only_bytes);
+            summary.blocking_issue_count = summary
+                .blocking_issue_count
+                .saturating_add(record.blocking_issues.len() as u64);
+        }
+
+        summary
+    }
 }
 
 pub fn classify_physical_inventory(

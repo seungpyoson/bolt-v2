@@ -55,5 +55,17 @@ fn main() -> Result<()> {
         "producer_iam_scope_proven = {}",
         report.producer_iam_scope_proven
     );
+    println!(
+        "producer_iam_scope_denied_write_attempts = {}",
+        report.producer_iam_scope_denied_write_attempts
+    );
+    println!(
+        "producer_iam_scope_denied_write_rejections = {}",
+        report.producer_iam_scope_denied_write_rejections
+    );
+    println!(
+        "producer_iam_scope_violation_count = {}",
+        report.producer_iam_scope_violation_count
+    );
     Ok(())
 }

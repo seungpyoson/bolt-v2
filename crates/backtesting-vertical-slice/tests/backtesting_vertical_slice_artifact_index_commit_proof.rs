@@ -28,6 +28,7 @@ fn artifact_index_commit_proof_executes_pointer_swap_and_stale_etag_rejection() 
         producer_project: "backtesting-engine".to_string(),
         writer_id: "backtesting-engine".to_string(),
         research_analytics_subfamily: None,
+        denied_artifact_kinds: vec![ArtifactKind::ResearchAnalytics],
     };
     let object_store = InMemory::new();
 
@@ -59,5 +60,10 @@ fn artifact_index_commit_proof_executes_pointer_swap_and_stale_etag_rejection() 
     assert!(report.stale_etag_update_rejected);
     assert!(!report.direct_s3_commit_proven);
     assert!(!report.producer_iam_scope_proven);
+    assert_eq!(
+        report.producer_iam_scope_denied_kinds,
+        vec![ArtifactKind::ResearchAnalytics]
+    );
+    assert_eq!(report.producer_iam_scope_violation_count, 3);
     assert_eq!(report.resolved_snapshot_id, report.final_snapshot_id);
 }

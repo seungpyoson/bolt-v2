@@ -47,6 +47,8 @@ pub struct ArtifactIndexCommitProofSpec {
     pub writer_id: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub research_analytics_subfamily: Option<ResearchAnalyticsSubfamily>,
+    #[serde(default)]
+    pub denied_artifact_kinds: Vec<ArtifactKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +84,11 @@ pub struct ArtifactIndexCommitProofReport {
     pub persisted_final_snapshot_json_sha256: String,
     pub direct_s3_commit_proven: bool,
     pub producer_iam_scope_proven: bool,
+    pub producer_iam_scope_denied_kinds: Vec<ArtifactKind>,
+    pub producer_iam_scope_denied_write_attempts: usize,
+    pub producer_iam_scope_denied_write_rejections: usize,
+    pub producer_iam_scope_violation_count: usize,
+    pub producer_iam_scope_violation_uris: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +113,31 @@ struct ArtifactIndexAuditEpochObject {
     precondition: ArtifactIndexPointerPrecondition,
     prior_etag: Option<String>,
     new_etag: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArtifactIndexIamProbeObject {
+    schema_version: String,
+    proof_id: String,
+    writer_id: String,
+    denied_artifact_kind: ArtifactKind,
+    probe_path_kind: ArtifactIndexIamProbePathKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ArtifactIndexIamProbePathKind {
+    Event,
+    Snapshot,
+    LatestPointer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ArtifactIndexIamScopeProbeSummary {
+    denied_write_attempts: usize,
+    denied_write_rejections: usize,
+    violation_uris: Vec<String>,
 }
 
 pub fn run_artifact_index_commit_proof_from_spec_file_with_resolver<F>(
@@ -428,6 +460,11 @@ async fn execute_commit_sequence(
     let resolved = resolve_committed_snapshot(&read_pointer, &read_snapshot)?;
     let snapshot_bytes =
         serde_json::to_vec_pretty(&read_snapshot).context("serialize readback snapshot")?;
+    let iam_scope_probe =
+        probe_producer_iam_scope(spec, object_store.as_ref(), &artifact_root_object_path).await?;
+    let producer_iam_scope_proven = !spec.denied_artifact_kinds.is_empty()
+        && iam_scope_probe.denied_write_attempts == iam_scope_probe.denied_write_rejections
+        && iam_scope_probe.violation_uris.is_empty();
 
     Ok(ArtifactIndexCommitProofReport {
         schema_version: ARTIFACT_INDEX_COMMIT_PROOF_SCHEMA_VERSION.to_string(),
@@ -459,8 +496,79 @@ async fn execute_commit_sequence(
         final_snapshot_content_hash: read_snapshot.snapshot_content_hash,
         persisted_final_snapshot_json_sha256: sha256_hex(&snapshot_bytes),
         direct_s3_commit_proven: direct_s3_store && artifact_protocol(&spec.artifact_root) == "s3",
-        producer_iam_scope_proven: false,
+        producer_iam_scope_proven,
+        producer_iam_scope_denied_kinds: spec.denied_artifact_kinds.clone(),
+        producer_iam_scope_denied_write_attempts: iam_scope_probe.denied_write_attempts,
+        producer_iam_scope_denied_write_rejections: iam_scope_probe.denied_write_rejections,
+        producer_iam_scope_violation_count: iam_scope_probe.violation_uris.len(),
+        producer_iam_scope_violation_uris: iam_scope_probe.violation_uris,
     })
+}
+
+async fn probe_producer_iam_scope(
+    spec: &ArtifactIndexCommitProofSpec,
+    object_store: &dyn ObjectStore,
+    artifact_root_object_path: &ObjectPath,
+) -> Result<ArtifactIndexIamScopeProbeSummary> {
+    let mut denied_write_attempts = 0;
+    let mut denied_write_rejections = 0;
+    let mut violation_uris = Vec::new();
+    for denied_kind in &spec.denied_artifact_kinds {
+        for (path_kind, uri) in denied_probe_uris(spec, *denied_kind) {
+            denied_write_attempts += 1;
+            let object_path = path_for_uri(&spec.artifact_root, artifact_root_object_path, &uri)?;
+            let probe = ArtifactIndexIamProbeObject {
+                schema_version: "artifact-index-iam-scope-probe.v1".to_string(),
+                proof_id: spec.proof_id.clone(),
+                writer_id: spec.writer_id.clone(),
+                denied_artifact_kind: *denied_kind,
+                probe_path_kind: path_kind,
+            };
+            match put_create_json(object_store, &object_path, &probe).await {
+                Ok(_) => violation_uris.push(uri),
+                Err(error) if is_permission_rejection(&error) => denied_write_rejections += 1,
+                Err(error) if is_existing_object(&error) => violation_uris.push(uri),
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("probe denied Artifact Index path {uri}"));
+                }
+            }
+        }
+    }
+    Ok(ArtifactIndexIamScopeProbeSummary {
+        denied_write_attempts,
+        denied_write_rejections,
+        violation_uris,
+    })
+}
+
+fn denied_probe_uris(
+    spec: &ArtifactIndexCommitProofSpec,
+    denied_kind: ArtifactKind,
+) -> Vec<(ArtifactIndexIamProbePathKind, String)> {
+    let root = spec.artifact_root.trim_end_matches('/');
+    let kind = denied_kind.as_str();
+    let hash = sha256_hex(format!("{}:{kind}:iam-scope-probe", spec.proof_id).as_bytes());
+    vec![
+        (
+            ArtifactIndexIamProbePathKind::Event,
+            format!(
+                "{root}/artifact-index/v1/events/kind={kind}/artifact_id={}-denied-{kind}/hash={hash}.json",
+                spec.proof_id
+            ),
+        ),
+        (
+            ArtifactIndexIamProbePathKind::Snapshot,
+            format!(
+                "{root}/artifact-index/v1/snapshots/kind={kind}/snapshot_id={}-denied-{kind}/manifest.json",
+                spec.proof_id
+            ),
+        ),
+        (
+            ArtifactIndexIamProbePathKind::LatestPointer,
+            format!("{root}/artifact-index/v1/pointers/kind={kind}/latest.json"),
+        ),
+    ]
 }
 
 fn staged_record(spec: &ArtifactIndexCommitProofSpec, suffix: &str) -> Result<ArtifactIndexRecord> {
@@ -661,6 +769,10 @@ fn validate_spec(spec: &ArtifactIndexCommitProofSpec) -> Result<()> {
             "research_analytics_subfamily is only valid for research_analytics"
         );
     }
+    ensure!(
+        !spec.denied_artifact_kinds.contains(&spec.artifact_kind),
+        "denied_artifact_kinds must not include artifact_kind"
+    );
     Ok(())
 }
 
@@ -685,6 +797,24 @@ fn is_conditional_rejection(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<ObjectStoreError>()
         .is_some_and(|error| matches!(error, ObjectStoreError::Precondition { .. }))
+}
+
+fn is_permission_rejection(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ObjectStoreError>()
+        .is_some_and(|error| {
+            matches!(
+                error,
+                ObjectStoreError::PermissionDenied { .. }
+                    | ObjectStoreError::Unauthenticated { .. }
+            )
+        })
+}
+
+fn is_existing_object(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ObjectStoreError>()
+        .is_some_and(|error| matches!(error, ObjectStoreError::AlreadyExists { .. }))
 }
 
 fn write_report(

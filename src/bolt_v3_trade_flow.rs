@@ -2,9 +2,7 @@ use std::collections::VecDeque;
 
 use nautilus_model::{data::TradeTick, enums::AggressorSide};
 
-use crate::bolt_v3_numeric::MILLIS_PER_SECOND_U64;
-
-const NANOS_PER_MILLI_U64: u64 = MILLIS_PER_SECOND_U64 * MILLIS_PER_SECOND_U64;
+use crate::bolt_v3_numeric::{MILLIS_PER_SECOND_U64, NANOS_PER_MILLI_U64};
 
 /// A single signed trade retained for downstream adverse-selection / VPIN analysis.
 ///

@@ -1,6 +1,10 @@
 use std::process::Command;
 
 use backtesting_vertical_slice::{
+    backfill_binding_coverage::{
+        BackfillBindingCoverageBinding, BackfillBindingCoverageIssue,
+        BackfillBindingCoverageReport, BackfillBindingCoverageStatus,
+    },
     backfill_preflight::{
         BackfillPreflightBlockingReason, BackfillPreflightSelectedRecord,
         BackfillPreflightSelection, BackfillPreflightStatus,
@@ -24,6 +28,7 @@ fn readiness_blocks_when_backfill_and_source_proof_preflights_block() {
         "synthetic-readiness",
         blocked_backfill_preflight(),
         blocked_source_proof_preflight(),
+        ready_binding_coverage(),
         "trades",
         "TradeTick",
     );
@@ -49,6 +54,7 @@ fn readiness_requires_selected_source_proof_table_family_to_match_requested_path
         "synthetic-readiness",
         ready_backfill_preflight(),
         candidate_source_proof_preflight("instruments"),
+        ready_binding_coverage(),
         "trades",
         "TradeTick",
     );
@@ -62,11 +68,31 @@ fn readiness_requires_selected_source_proof_table_family_to_match_requested_path
 }
 
 #[test]
+fn readiness_blocks_when_binding_coverage_blocks() {
+    let report = evaluate_backfill_readiness(
+        "synthetic-readiness",
+        ready_backfill_preflight(),
+        candidate_source_proof_preflight("trades"),
+        blocked_binding_coverage(),
+        "trades",
+        "TradeTick",
+    );
+
+    assert_eq!(report.status, BackfillReadinessStatus::Blocked);
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillReadinessBlocker::BackfillBindingCoverageBlocked)
+    );
+}
+
+#[test]
 fn readiness_is_ready_when_backfill_and_source_proof_preflights_align() {
     let report = evaluate_backfill_readiness(
         "synthetic-readiness",
         ready_backfill_preflight(),
         candidate_source_proof_preflight("trades"),
+        ready_binding_coverage(),
         "trades",
         "TradeTick",
     );
@@ -87,6 +113,7 @@ fn readiness_reads_toml_spec_and_writes_report_idempotently() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let backfill_path = dir.path().join("backfill-preflight.json");
     let source_proof_path = dir.path().join("source-proof-preflight.json");
+    let binding_coverage_path = dir.path().join("binding-coverage.json");
     let output_dir = dir.path().join("out");
     let spec_path = dir.path().join("readiness.toml");
     std::fs::write(
@@ -101,17 +128,24 @@ fn readiness_reads_toml_spec_and_writes_report_idempotently() {
     )
     .expect("write source proof");
     std::fs::write(
+        &binding_coverage_path,
+        serde_json::to_vec_pretty(&ready_binding_coverage()).expect("binding coverage json"),
+    )
+    .expect("write binding coverage");
+    std::fs::write(
         &spec_path,
         format!(
             r#"readiness_id = "synthetic-readiness"
 backfill_preflight_report_path = "{}"
 source_proof_migration_preflight_report_path = "{}"
+backfill_binding_coverage_report_path = "{}"
 output_dir = "{}"
 required_table_family = "trades"
 required_nt_data_type = "TradeTick"
 "#,
             backfill_path.display(),
             source_proof_path.display(),
+            binding_coverage_path.display(),
             output_dir.display()
         ),
     )
@@ -129,6 +163,7 @@ fn readiness_cli_writes_blocked_report() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let backfill_path = dir.path().join("backfill-preflight.json");
     let source_proof_path = dir.path().join("source-proof-preflight.json");
+    let binding_coverage_path = dir.path().join("binding-coverage.json");
     let output_dir = dir.path().join("out");
     let spec_path = dir.path().join("readiness.toml");
     std::fs::write(
@@ -142,17 +177,24 @@ fn readiness_cli_writes_blocked_report() {
     )
     .expect("write source proof");
     std::fs::write(
+        &binding_coverage_path,
+        serde_json::to_vec_pretty(&blocked_binding_coverage()).expect("binding coverage json"),
+    )
+    .expect("write binding coverage");
+    std::fs::write(
         &spec_path,
         format!(
             r#"readiness_id = "synthetic-readiness"
 backfill_preflight_report_path = "{}"
 source_proof_migration_preflight_report_path = "{}"
+backfill_binding_coverage_report_path = "{}"
 output_dir = "{}"
 required_table_family = "trades"
 required_nt_data_type = "TradeTick"
 "#,
             backfill_path.display(),
             source_proof_path.display(),
+            binding_coverage_path.display(),
             output_dir.display()
         ),
     )
@@ -276,6 +318,37 @@ fn candidate_source_proof_preflight(
             ],
         }),
         blocking_reasons: Vec::new(),
+    }
+}
+
+fn blocked_binding_coverage()
+-> backtesting_vertical_slice::backfill_binding_coverage::BackfillBindingCoverageReport {
+    let mut report = ready_binding_coverage();
+    report.status = BackfillBindingCoverageStatus::Blocked;
+    report.blocking_issues = vec![BackfillBindingCoverageIssue::EmptySourceBindingRecords];
+    report
+}
+
+fn ready_binding_coverage()
+-> backtesting_vertical_slice::backfill_binding_coverage::BackfillBindingCoverageReport {
+    BackfillBindingCoverageReport {
+        schema_version: "backfill-binding-coverage-report.v1".to_string(),
+        report_id: "synthetic-binding-coverage".to_string(),
+        status: BackfillBindingCoverageStatus::Ready,
+        required_table_families: vec!["trades".to_string()],
+        configured_required_binding_count: 1,
+        ledger_records_for_required_bindings: 1,
+        empty_source_binding_record_count: 0,
+        unconfigured_source_bindings: Vec::new(),
+        bindings: vec![BackfillBindingCoverageBinding {
+            key: "synthetic-source-binding".to_string(),
+            table_families: vec!["trades".to_string()],
+            required_table_family_match: true,
+            ledger_record_count: 1,
+            canonical_ready_record_count: 1,
+            accepted_record_count: 1,
+        }],
+        blocking_issues: Vec::new(),
     }
 }
 

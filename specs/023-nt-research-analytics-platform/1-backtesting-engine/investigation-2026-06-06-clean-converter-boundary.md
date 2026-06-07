@@ -328,6 +328,7 @@ GREEN checks after implementation:
 - `just bte-test coverage_ledger_records_unsupported_manifest_schema_instead_of_aborting_batch`: RED failed with `E0599` because `BackfillCoverageIssue::UnsupportedManifestSchema` did not exist; GREEN passed after batch manifest ingestion began recording unsupported manifest schemas as rejected coverage records instead of aborting the whole ledger
 - `just bte-test --test backtesting_vertical_slice_backfill_coverage`: 20 passed after unsupported manifest schemas became rejected coverage records
 - `cargo test --test backtesting_vertical_slice_backfill_binding_coverage binding_coverage_blocks`: RED failed with missing `BackfillBindingCoverageIssue::UnconfiguredSourceBindingRecords` and `BackfillBindingCoverageIssue::EmptySourceBindingRecords`; GREEN passed after source-binding coverage blocks any ledger records with empty or unconfigured source bindings, even when another record exists for the required table family.
+- `cargo test --test backtesting_vertical_slice_backfill_readiness readiness_blocks_when_binding_coverage_blocks`: RED failed because `evaluate_backfill_readiness` did not accept a binding-coverage report and `BackfillReadinessBlocker::BackfillBindingCoverageBlocked` did not exist; GREEN passed after combined readiness required the binding-coverage report and blocked whenever that report is not ready.
 - static provider-literal scan for the coverage source, coverage CLI, and their tests: no hits for current venue/provider/sample tokens, so the new coverage-ledger API, operator command, and tests are not hardcoded to the accepted sample or a specific venue
 - `just bte-test research_analytics_artifacts_use_typed_subfamilies_and_one_kind_pointer research_analytics_records_require_matching_subfamily_prefix`: RED failed with missing `ResearchAnalyticsSubfamily` and RA-specific staged-record constructor; GREEN passed after adding typed RA subfamilies, enforcing `research-analytics/v1/<subfamily>/` manifest prefixes, and keeping every RA subfamily on the single `research_analytics` Artifact Index pointer
 - `just bte-test approved_for_config_requires_objective_evidence_and_non_live_boundary promotion_package_rejects_proof_strength_upgrade_and_forbidden_actions promotion_package_artifacts_must_live_under_ra_promotion_family promotion_package_rejects_notebook_to_production_direct_promotion approved_for_config_accepts_preserved_claim_limited_typed_config_only`: RED failed with missing `research_analytics` module; GREEN passed after adding a pure `PromotionPackage` validator with canonical status enum, accepted source-proof refs, objective BTE result refs, preserved claim limits, fidelity upgrade rejection, notebook/runtime boundary checks, typed config artifact checks, reviewer-policy refs, and RA-owned promotion-family URI validation
@@ -715,6 +716,19 @@ Current evidence:
   `missing_selected_backfill_record`, and
   `missing_selected_source_proof_candidate`. This is the current end-to-end
   no-go artifact for the existing TradeTick backfill path.
+- After source-binding coverage became part of combined readiness, the same
+  TradeTick path was rerun with the real strict binding-coverage report at
+  `/private/tmp/bte-coverage-ledger-20260607/backfill-readiness-tradetick-with-binding-output/backfill-readiness-report.json`.
+  The report content hash is
+  `659901841f7e95d6740e6c3ec1d928ea91a42151a595848ffe9842cc0ce1aab2`
+  and file SHA256 is
+  `fced283f2966456be401cc3caf924dfc9c0bcb837240fcc64a6f077a35c95e6d`.
+  It remains `blocked`; the joined statuses are backfill preflight `blocked`,
+  source-proof migration preflight `blocked`, and binding coverage `blocked`,
+  with blockers `backfill_preflight_blocked`,
+  `source_proof_migration_preflight_blocked`,
+  `backfill_binding_coverage_blocked`, `missing_selected_backfill_record`,
+  and `missing_selected_source_proof_candidate`.
 - The source-binding coverage CLI was run against the committed
   `backfill-source-bindings.v1.toml` registry and the current source-proof-bound
   coverage ledger for `required_table_families = ["trades"]`:

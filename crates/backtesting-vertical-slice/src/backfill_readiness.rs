@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    backfill_binding_coverage::{
+        BackfillBindingCoverageReport, BackfillBindingCoverageStatus,
+    },
     backfill_preflight::{
         BackfillPreflightReport, BackfillPreflightSelectedRecord, BackfillPreflightStatus,
     },
@@ -32,6 +35,7 @@ pub struct BackfillReadinessSpec {
     pub readiness_id: String,
     pub backfill_preflight_report_path: PathBuf,
     pub source_proof_migration_preflight_report_path: PathBuf,
+    pub backfill_binding_coverage_report_path: PathBuf,
     pub output_dir: PathBuf,
     pub required_table_family: String,
     pub required_nt_data_type: String,
@@ -52,6 +56,7 @@ pub enum BackfillReadinessBlocker {
     EmptyRequiredNtDataType,
     BackfillPreflightBlocked,
     SourceProofMigrationPreflightBlocked,
+    BackfillBindingCoverageBlocked,
     MissingSelectedBackfillRecord,
     MissingSelectedSourceProofCandidate,
     SourceProofTableFamilyMismatch,
@@ -69,6 +74,8 @@ pub struct BackfillReadinessReport {
     pub backfill_preflight_status: BackfillPreflightStatus,
     pub source_proof_migration_preflight_id: String,
     pub source_proof_migration_preflight_status: SourceProofMigrationPreflightStatus,
+    pub backfill_binding_coverage_id: String,
+    pub backfill_binding_coverage_status: BackfillBindingCoverageStatus,
     pub selected_backfill_record: Option<BackfillPreflightSelectedRecord>,
     pub selected_source_proof_candidate: Option<SourceProofMigrationPreflightCandidate>,
     pub blockers: Vec<BackfillReadinessBlocker>,
@@ -89,6 +96,8 @@ pub enum BackfillReadinessError {
     ParseBackfillPreflightJson { path: String, error: String },
     ReadSourceProofPreflight { path: String, error: String },
     ParseSourceProofPreflightJson { path: String, error: String },
+    ReadBackfillBindingCoverage { path: String, error: String },
+    ParseBackfillBindingCoverageJson { path: String, error: String },
     CreateDir { path: String, error: String },
     ReadExisting { path: String, error: String },
     Write { path: String, error: String },
@@ -121,6 +130,13 @@ impl fmt::Display for BackfillReadinessError {
                 f,
                 "parse source-proof migration preflight report JSON {path}: {error}"
             ),
+            Self::ReadBackfillBindingCoverage { path, error } => {
+                write!(f, "read backfill binding coverage report {path}: {error}")
+            }
+            Self::ParseBackfillBindingCoverageJson { path, error } => write!(
+                f,
+                "parse backfill binding coverage report JSON {path}: {error}"
+            ),
             Self::CreateDir { path, error } => {
                 write!(
                     f,
@@ -151,6 +167,7 @@ pub fn evaluate_backfill_readiness(
     readiness_id: impl Into<String>,
     backfill_preflight: BackfillPreflightReport,
     source_proof_preflight: SourceProofMigrationPreflightReport,
+    binding_coverage: BackfillBindingCoverageReport,
     required_table_family: impl Into<String>,
     required_nt_data_type: impl Into<String>,
 ) -> BackfillReadinessReport {
@@ -177,6 +194,11 @@ pub fn evaluate_backfill_readiness(
         || !source_proof_preflight.blocking_reasons.is_empty()
     {
         blockers.push(BackfillReadinessBlocker::SourceProofMigrationPreflightBlocked);
+    }
+    if binding_coverage.status != BackfillBindingCoverageStatus::Ready
+        || !binding_coverage.blocking_issues.is_empty()
+    {
+        blockers.push(BackfillReadinessBlocker::BackfillBindingCoverageBlocked);
     }
     if backfill_preflight.selected_record.is_none() {
         blockers.push(BackfillReadinessBlocker::MissingSelectedBackfillRecord);
@@ -205,6 +227,8 @@ pub fn evaluate_backfill_readiness(
         backfill_preflight_status: backfill_preflight.status,
         source_proof_migration_preflight_id: source_proof_preflight.preflight_id.clone(),
         source_proof_migration_preflight_status: source_proof_preflight.status,
+        backfill_binding_coverage_id: binding_coverage.report_id.clone(),
+        backfill_binding_coverage_status: binding_coverage.status,
         selected_backfill_record: backfill_preflight.selected_record,
         selected_source_proof_candidate: source_proof_preflight.selected_candidate,
         blockers,
@@ -262,10 +286,14 @@ pub fn write_backfill_readiness_report_from_spec_file(
     let backfill_preflight = read_backfill_preflight(&spec.backfill_preflight_report_path)?;
     let source_proof_preflight =
         read_source_proof_preflight(&spec.source_proof_migration_preflight_report_path)?;
+    let binding_coverage = read_backfill_binding_coverage(
+        &spec.backfill_binding_coverage_report_path,
+    )?;
     let report = evaluate_backfill_readiness(
         spec.readiness_id,
         backfill_preflight,
         source_proof_preflight,
+        binding_coverage,
         spec.required_table_family,
         spec.required_nt_data_type,
     );
@@ -297,6 +325,23 @@ fn read_source_proof_preflight(
         })?;
     serde_json::from_slice(&bytes).map_err(|error| {
         BackfillReadinessError::ParseSourceProofPreflightJson {
+            path: path_display,
+            error: error.to_string(),
+        }
+    })
+}
+
+fn read_backfill_binding_coverage(
+    path: &Path,
+) -> Result<BackfillBindingCoverageReport, BackfillReadinessError> {
+    let path_display = path.display().to_string();
+    let bytes =
+        fs::read(path).map_err(|error| BackfillReadinessError::ReadBackfillBindingCoverage {
+            path: path_display.clone(),
+            error: error.to_string(),
+        })?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        BackfillReadinessError::ParseBackfillBindingCoverageJson {
             path: path_display,
             error: error.to_string(),
         }

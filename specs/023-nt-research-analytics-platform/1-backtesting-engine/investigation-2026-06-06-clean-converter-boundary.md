@@ -1180,6 +1180,20 @@ Midpoint table-family coverage audit:
   proved the previous CLI path invoked the object reader for an unsupported
   catalog data type; GREEN verification now covers the CLI preflight plus
   fresh and completed-output operator paths.
+- Binary-option source-proof population is now machine-readable before provider
+  selection. RED
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_source_proof_reference_fixtures -- --nocapture`
+  failed because no `source-proof-fixture.*.json` reports were committed.
+  GREEN passed after adding
+  `specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.official-free-pending.v1.json`.
+  The report records the TOML-selected official/free binary-option candidate as
+  `status = pending`, `source_selection_status = PENDING_MORE_PROOF`,
+  `fidelity_class = METADATA_ONLY`, and `evidence_state =
+  bounded_or_current_only`; it carries no `acceptance_scope`, no acceptance
+  provenance, no raw/catalog/result payloads, and explicit claim limits
+  forbidding NT catalog/backtest input, historical replay claims, L2/L3
+  execution-quality claims, and quote-token/NT BinaryOption mapping claims
+  until those proofs pass.
 
 ## Recommendation
 

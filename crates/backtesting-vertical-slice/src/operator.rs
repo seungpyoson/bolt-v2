@@ -184,6 +184,14 @@ fn validate_converter_config(converter: &ConverterConfig) -> Result<()> {
 }
 
 fn validate_raw_payload_config(config: &RawPayloadConfig) -> Result<()> {
+    ensure!(
+        config.max_object_bytes > 0,
+        "converter.raw_payload.max_object_bytes must be positive"
+    );
+    ensure!(
+        config.max_decoded_bytes > 0,
+        "converter.raw_payload.max_decoded_bytes must be positive"
+    );
     match config.container {
         RawPayloadContainer::CsvGzip | RawPayloadContainer::CsvText => {
             ensure!(
@@ -204,19 +212,52 @@ fn validate_raw_payload_config(config: &RawPayloadConfig) -> Result<()> {
     Ok(())
 }
 
+fn ensure_object_within_raw_payload_limit(
+    config: &RawPayloadConfig,
+    object_byte_len: u64,
+) -> Result<()> {
+    ensure!(
+        object_byte_len <= config.max_object_bytes,
+        "accepted object byte length {object_byte_len} exceeds converter.raw_payload.max_object_bytes {}",
+        config.max_object_bytes
+    );
+    Ok(())
+}
+
+fn read_limited_csv_text<R: Read>(
+    reader: R,
+    max_decoded_bytes: u64,
+    context_label: &str,
+) -> Result<String> {
+    let read_limit = max_decoded_bytes
+        .checked_add(1)
+        .context("converter.raw_payload.max_decoded_bytes is too large")?;
+    let mut limited = reader.take(read_limit);
+    let mut bytes = Vec::new();
+    limited
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("decode {context_label}"))?;
+    ensure!(
+        bytes.len() as u64 <= max_decoded_bytes,
+        "decoded CSV byte length {} exceeds converter.raw_payload.max_decoded_bytes {max_decoded_bytes}",
+        bytes.len()
+    );
+    String::from_utf8(bytes).with_context(|| format!("decode {context_label} as UTF-8 CSV"))
+}
+
 fn decode_csv_payload(config: &RawPayloadConfig, object_bytes: &[u8]) -> Result<String> {
     validate_raw_payload_config(config)?;
     match config.container {
-        RawPayloadContainer::CsvGzip => {
-            let mut csv_text = String::new();
-            flate2::read::GzDecoder::new(object_bytes)
-                .read_to_string(&mut csv_text)
-                .context("decompress gzip csv object")?;
-            Ok(csv_text)
-        }
-        RawPayloadContainer::CsvText => {
-            String::from_utf8(object_bytes.to_vec()).context("decode plain csv object as UTF-8")
-        }
+        RawPayloadContainer::CsvGzip => read_limited_csv_text(
+            flate2::read::GzDecoder::new(object_bytes),
+            config.max_decoded_bytes,
+            "gzip csv object",
+        ),
+        RawPayloadContainer::CsvText => read_limited_csv_text(
+            Cursor::new(object_bytes),
+            config.max_decoded_bytes,
+            "plain csv object",
+        ),
         RawPayloadContainer::SingleCsvZip => {
             let member_name = config
                 .zip_member
@@ -224,18 +265,18 @@ fn decode_csv_payload(config: &RawPayloadConfig, object_bytes: &[u8]) -> Result<
                 .context("converter.raw_payload.zip_member is required for single_csv_zip")?;
             let cursor = Cursor::new(object_bytes);
             let mut archive = zip::ZipArchive::new(cursor).context("open zip csv object")?;
-            let mut member = archive
+            let member = archive
                 .by_name(member_name)
                 .with_context(|| format!("open zip member {member_name:?}"))?;
             ensure!(
                 !member.is_dir(),
                 "configured zip member {member_name:?} is a directory"
             );
-            let mut csv_text = String::new();
-            member
-                .read_to_string(&mut csv_text)
-                .with_context(|| format!("decode zip member {member_name:?} as UTF-8 CSV"))?;
-            Ok(csv_text)
+            read_limited_csv_text(
+                member,
+                config.max_decoded_bytes,
+                &format!("zip member {member_name:?}"),
+            )
         }
     }
 }
@@ -456,6 +497,8 @@ pub fn run_from_run_spec(
         "object byte length {object_byte_len} does not match run-spec {}",
         spec.accepted_object.bytes
     );
+
+    ensure_object_within_raw_payload_limit(&spec.converter.raw_payload, object_byte_len)?;
 
     // Re-verify the accepted object content hash against the run-spec, so raw
     // staged data can never reach the backtest without matching the pinned hash.
@@ -1110,6 +1153,8 @@ mod tests {
         spec.source_proof.raw_sample_hash = object_hash;
         spec.converter.raw_payload = RawPayloadConfig {
             container: RawPayloadContainer::CsvGzip,
+            max_object_bytes: gz_bytes.len() as u64,
+            max_decoded_bytes: 4096,
             zip_member: None,
         };
         spec
@@ -1704,6 +1749,54 @@ mod tests {
     }
 
     #[test]
+    fn run_from_run_spec_rejects_object_above_configured_payload_max_before_artifacts() {
+        let gz = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&gz);
+        spec.converter.raw_payload.max_object_bytes = gz.len() as u64 - 1;
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let err = run_from_run_spec(&spec, &gz, dir.path())
+            .err()
+            .expect("configured object max must reject oversized object");
+
+        assert!(
+            err.to_string()
+                .contains("converter.raw_payload.max_object_bytes"),
+            "{err}"
+        );
+        assert!(
+            !dir.path().join(CONVERSION_CHECKPOINT_FILE).exists(),
+            "object max rejection must happen before checkpoint writes"
+        );
+    }
+
+    #[test]
+    fn run_from_run_spec_rejects_decoded_payload_above_configured_max_before_catalog_work() {
+        let gz = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&gz);
+        spec.converter.raw_payload.max_decoded_bytes = 1;
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let err = run_from_run_spec(&spec, &gz, dir.path())
+            .err()
+            .expect("configured decoded max must reject oversized CSV expansion");
+
+        assert!(
+            err.to_string()
+                .contains("converter.raw_payload.max_decoded_bytes"),
+            "{err}"
+        );
+        assert!(
+            !dir.path().join(CATALOG_DIR).exists(),
+            "decoded max rejection must happen before NT catalog projection"
+        );
+        assert!(
+            !dir.path().join(CANONICAL_ARTIFACT_FILE).exists(),
+            "decoded max rejection must happen before canonical artifact writes"
+        );
+    }
+
+    #[test]
     fn run_from_run_spec_uses_configured_single_csv_zip_payload() {
         let zip_bytes = zip_single_csv("BNBUSDC-trades-2026-03-01.csv", ALT_SCHEMA_CSV);
         let mut spec = run_spec_for(&zip_bytes);
@@ -1734,6 +1827,8 @@ mod tests {
         );
         spec.converter.raw_payload = RawPayloadConfig {
             container: RawPayloadContainer::SingleCsvZip,
+            max_object_bytes: zip_bytes.len() as u64,
+            max_decoded_bytes: ALT_SCHEMA_CSV.len() as u64,
             zip_member: Some("BNBUSDC-trades-2026-03-01.csv".to_string()),
         };
         spec.converter.csv.trade_id_column = "trade_id".to_string();

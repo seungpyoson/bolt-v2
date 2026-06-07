@@ -1,7 +1,7 @@
 {
   "metadata_version": "catalog-metadata.v1",
-  "manifest_hash": "ec98b6fbfc1466562f64424dea8b3a478b4ed633c5d01e4a837bca035ffb3345",
-  "checkpoint_hash": "b96529e452023a35c8f6017ff7a19095b023e9038834f2000e12013db3dbd738",
+  "manifest_hash": "a35705f61ffc42c6fb019fa4e457e9d655d63825cd6401383c0977bafc951ccb",
+  "checkpoint_hash": "3c77e46b26b6998ce0edba532b3a608521490b2afb61e3a304e121a0b74ae0e5",
   "catalog_hash": "530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f",
   "nt_data_type": "TradeTick",
   "nt_instrument_id": "BNBUSDC.BYBIT",

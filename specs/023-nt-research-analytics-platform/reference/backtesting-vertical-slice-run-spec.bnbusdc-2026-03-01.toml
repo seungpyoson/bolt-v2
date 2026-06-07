@@ -131,6 +131,8 @@ version = "1"
 
 [converter.raw_payload]
 container = "csv_gzip"
+max_object_bytes = 8505
+max_decoded_bytes = 1048576
 
 [converter.csv]
 trade_id_column = "id"

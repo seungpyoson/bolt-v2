@@ -100,6 +100,7 @@ where
     } else {
         None
     };
+    ensure_object_read_within_raw_payload_limit(&spec)?;
     let object_bytes = object_reader(&cli.object_path, spec.accepted_object.bytes)?;
 
     let (artifacts, published_artifacts, published_catalog_proof): (
@@ -193,6 +194,16 @@ where
     Ok(())
 }
 
+fn ensure_object_read_within_raw_payload_limit(spec: &RunSpec) -> Result<()> {
+    ensure!(
+        spec.accepted_object.bytes <= spec.converter.raw_payload.max_object_bytes,
+        "accepted_object.bytes {} exceeds converter.raw_payload.max_object_bytes {}",
+        spec.accepted_object.bytes,
+        spec.converter.raw_payload.max_object_bytes
+    );
+    Ok(())
+}
+
 fn read_object_checked(path: &Path, expected_bytes: u64) -> Result<Vec<u8>> {
     let metadata = fs::metadata(path).with_context(|| format!("stat object {}", path.display()))?;
     let actual_bytes = metadata.len();
@@ -282,6 +293,46 @@ mod tests {
 
         assert!(err.to_string().contains("object byte length 23"), "{err}");
         assert!(err.to_string().contains("run-spec 99"), "{err}");
+    }
+
+    #[test]
+    fn cli_rejects_object_above_configured_payload_max_before_reading_object() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let run_spec_path = dir.path().join("run.toml");
+        fs::write(&run_spec_path, COMMITTED_RUN_SPEC).unwrap();
+        let mut spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
+        spec.converter.raw_payload.max_object_bytes = spec.accepted_object.bytes - 1;
+        let cli = Cli {
+            run_spec: run_spec_path,
+            object_path: dir.path().join("oversized-object.csv.gz"),
+            output_dir: dir.path().join("out"),
+            publish_output: false,
+            prove_published_catalog: false,
+        };
+        let mut object_reader_called = false;
+        let mut object_reader = |_path: &Path, _expected_bytes: u64| {
+            object_reader_called = true;
+            anyhow::bail!("object reader must not run after configured payload max rejection")
+        };
+        let mut resolver = |_region: &str, _path: &str| Ok::<String, String>("unused".to_string());
+
+        let err = run_cli_with_spec_object_reader_and_resolver(
+            &cli,
+            spec,
+            &mut object_reader,
+            &mut resolver,
+        )
+        .expect_err("payload max must reject before object read");
+
+        assert!(
+            err.to_string()
+                .contains("converter.raw_payload.max_object_bytes"),
+            "{err}"
+        );
+        assert!(
+            !object_reader_called,
+            "configured payload max must reject before local object read"
+        );
     }
 
     #[test]

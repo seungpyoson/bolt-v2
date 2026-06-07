@@ -87,6 +87,10 @@ impl ConverterConfig {
 #[serde(deny_unknown_fields)]
 pub struct RawPayloadConfig {
     pub container: RawPayloadContainer,
+    /// Maximum accepted-object byte length allowed before local read/hash/decode.
+    pub max_object_bytes: u64,
+    /// Maximum decoded CSV byte length allowed after container decoding.
+    pub max_decoded_bytes: u64,
     /// Required for [`RawPayloadContainer::SingleCsvZip`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zip_member: Option<String>,

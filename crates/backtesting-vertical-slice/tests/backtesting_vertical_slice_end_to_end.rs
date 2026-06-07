@@ -56,6 +56,8 @@ fn converter_config() -> ConverterConfig {
         version: "1".to_string(),
         raw_payload: RawPayloadConfig {
             container: RawPayloadContainer::CsvGzip,
+            max_object_bytes: 4096,
+            max_decoded_bytes: 4096,
             zip_member: None,
         },
         csv: csv_mapping(),

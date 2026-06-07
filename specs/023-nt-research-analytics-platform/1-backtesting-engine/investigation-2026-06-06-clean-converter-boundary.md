@@ -2,7 +2,7 @@
 
 ## Status
 
-This is not a completed production backtesting-engine rollout. It is a completed fix for the converter/output-boundary slice plus explicit primitive NT venue-control, catalog cloud-config mapping, TOML-owned artifact-store config, and SSM-backed artifact-store credential resolution.
+This is not a completed production backtesting-engine rollout. It is a completed fix for the converter/output-boundary slice plus explicit primitive NT venue-control, catalog cloud-config mapping, TOML-owned raw-payload bounds, TOML-owned artifact-store config, and SSM-backed artifact-store credential resolution.
 
 Go for the local BNBUSDC vertical-slice path after this fix:
 
@@ -11,8 +11,9 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - completed conversion writes durable `conversion-checkpoint.json`, `conversion-manifest.json`, and `catalog-metadata.json`
 - result contracts bind the source object, converter identity, converter config hash, conversion manifest hash, conversion checkpoint hash, catalog metadata hash, and catalog hash
 - result contract `manifest_hash` binds the submitted portable run-spec manifest, not the operator's temporary local catalog path
-- converter identity/version, raw payload container, and CSV native-trade column mapping are declared in the run-spec TOML; the operator validates identity/version and container config against the registered converter and binds the full converter config hash before any converted output is reused
-- the CLI and operator both fail fast when the local object byte count differs from `accepted_object.bytes`; the CLI stats the object path before reading the payload into memory, and the operator rejects mismatches before hashing, decompression, checkpoint writes, or NT work
+- converter identity/version, raw payload container, object/decoded byte budgets, and CSV native-trade column mapping are declared in the run-spec TOML; the operator validates identity/version and container config against the registered converter and binds the full converter config hash before any converted output is reused
+- the CLI and operator both fail fast when the local object byte count differs from `accepted_object.bytes` or exceeds `converter.raw_payload.max_object_bytes`; the CLI rejects the configured object-size policy before reading the payload into memory, and the operator rejects mismatches before hashing, decompression, checkpoint writes, or NT work
+- gzip, plain CSV, and single-member ZIP payload decoding is bounded by `converter.raw_payload.max_decoded_bytes`, so compressed/archive expansion rejects before canonical artifact writes or NT catalog projection
 - catalog metadata records both the portable output catalog URI and the actual execution catalog URI, plus whether direct S3 catalog access was proven
 - primitive NT `BacktestVenueConfig` controls are declared in TOML and mapped into NT rather than hidden behind NT defaults
 - NT `BacktestDataConfig` catalog filesystem protocol and storage options are declared in TOML and mapped into NT, so S3/cloud catalog consumption can use NT's own catalog path
@@ -54,17 +55,18 @@ No-go for broader production claims:
 
 - Accepted raw object exists: `s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BNBUSDC/object=d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598.csv.gz`
 - S3 listing result for that object: one object, `8505` bytes
-- Fresh read-only S3 `head-object` after the CLI preflight fix confirmed the accepted raw object still exists with `ContentLength = 8505` and ETag `"3959bd2c4ff9ac093c7692b812cea2f8"`; the object was not downloaded
+- Fresh read-only S3 `head-object` after the CLI preflight fix confirmed the accepted raw object still exists with `ContentLength = 8505` and ETag `"3959bd2c4ff9ac093c7692b812cea2f8"`; later, only this single approved 8505-byte object was downloaded to `/private/tmp/bte-bnbusdc-current-schema-object.csv.gz` for the current-schema local proof
 - Accepted source proof is committed at `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.bnbusdc-2026-03-01.json`
 - Run spec binds the same object, hash, output prefix, and trade-replay claim limits in `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml`
 - Run spec now configures `[manifest.artifact_store].rust_storage_options = { region = "us-east-1", conditional_put = "etag" }` so the S3 artifact-store path is explicit about object_store conditional-write semantics instead of relying on a hidden default
-- Run spec binds `[converter] identity = "csv-native-trades-to-canonical-trades.v1"`, `version = "1"`, `[converter.raw_payload] container = "csv_gzip"`, and `[converter.csv]` column/timestamp/side-token mapping. The Bybit-specific values live in the sample source proof and run-spec data, not in operator/runner control flow.
+- Run spec binds `[converter] identity = "csv-native-trades-to-canonical-trades.v1"`, `version = "1"`, `[converter.raw_payload] container = "csv_gzip"`, `max_object_bytes = 8505`, `max_decoded_bytes = 1048576`, and `[converter.csv]` column/timestamp/side-token mapping. The Bybit-specific values live in the sample source proof and run-spec data, not in operator/runner control flow.
 - Source-binding registry coverage is no longer single-venue for native trades: `bybit-spot-tick-trades` and `binance-spot-native-trades` are both configured as backfillable `native-trades`/`trades` bindings. The Binance row points at Binance Data Vision spot daily `trades` zip files and remains a candidate only; it does not create an accepted proof or bypass object/sample/hash gates.
 - Clean NT output prefix is empty as of this investigation: `aws s3 ls s3://bolt-parquet/nt-research-analytics/ --summarize --recursive` returned `Total Objects: 0`, `Total Size: 0`
 - Fresh read-only S3 object-count query after the CLI preflight fix returned `0` objects under `s3://bolt-parquet/nt-research-analytics/`
 - Converted artifacts were intentionally deleted by the user to avoid confusing stale partial outputs with accepted clean outputs
 - Local rebuilt-binary run against the accepted raw object wrote `/tmp/bte-real-e2e.RcFHhT/out` and produced `937` canonical rows, `937` NT catalog read-back trade ticks, NT `BacktestNode` iterations `937`, and catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`
-- Earlier pre-raw-payload-schema local generic-converter CLI proof into `/private/tmp/bte-s3-proof/out-local-generic-converter` produced converter config hash `4e54ce1edbdab877a776cb5d38ede603a747da49c0355f80b2f3665905333080`, conversion manifest hash `7d6d48376c026174bb84830dc6058e4eddecf9e3632344431413a4b2b3ca8352`, conversion checkpoint hash `60429ebd758ec1b0383dbedd0d0e38997a0bc90f33f2dc2ba2bf5bf6b1bd5842`, catalog metadata hash `3b9ee2bd6980de74aa30b677a408f073d5f68ff6aaf81a338425a2924709e587`, catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`, row count `937`, and NT iterations `937`; after adding `[converter.raw_payload]`, the committed reference contract hash is updated but a fresh real-object run is still required before claiming a new production output artifact
+- Earlier pre-raw-payload-schema local generic-converter CLI proof into `/private/tmp/bte-s3-proof/out-local-generic-converter` produced converter config hash `4e54ce1edbdab877a776cb5d38ede603a747da49c0355f80b2f3665905333080`, conversion manifest hash `7d6d48376c026174bb84830dc6058e4eddecf9e3632344431413a4b2b3ca8352`, conversion checkpoint hash `60429ebd758ec1b0383dbedd0d0e38997a0bc90f33f2dc2ba2bf5bf6b1bd5842`, catalog metadata hash `3b9ee2bd6980de74aa30b677a408f073d5f68ff6aaf81a338425a2924709e587`, catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`, row count `937`, and NT iterations `937`; after adding `[converter.raw_payload]` and byte bounds, these pre-schema hashes are forensic evidence only
+- Fresh current-schema local CLI run against the accepted raw object wrote `/private/tmp/bte-bnbusdc-current-schema-out-20260607a` and produced `937` canonical rows, `937` NT catalog read-back trade ticks, NT `BacktestNode` iterations `937`, catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`, converter config hash `a20a83ef7bf42926e394f16c43c09819b58fc8c08d42ceb23352f9a61e293144`, conversion manifest hash `a35705f61ffc42c6fb019fa4e457e9d655d63825cd6401383c0977bafc951ccb`, conversion checkpoint hash `3c77e46b26b6998ce0edba532b3a608521490b2afb61e3a304e121a0b74ae0e5`, and local catalog metadata hash `e552c285d2fb52521a38add9fbe94af360a5eb88e34dd63e8edca25f19a0a0e9`; the committed portable reference catalog metadata hash is `f82bd70268d1df4163c1746ad79194fc987082e4b6ab9cdc82d6d8275990e882` because it uses reference URIs instead of the local `/private/tmp` execution URI
 - Fresh release-binary local CLI run against the accepted raw object wrote `/tmp/bte-real-cli.sDvExP/out-local` and produced `937` canonical rows, `937` NT catalog read-back trade ticks, NT `BacktestNode` iterations `937`, and catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`
 - Fresh release-binary `--publish-output` run against the accepted raw object and a local `file://` output prefix published 8 artifacts; `diff -qr /tmp/bte-real-cli.sDvExP/out-publish /tmp/bte-real-cli.sDvExP/publish-root/backtests/backtesting-vertical-slice-bnbusdc-2026-03-01` returned no differences
 - Fresh current-branch local CLI run after SSM artifact-store changes wrote `/private/tmp/bte-s3-proof/out-local-after-ssm-artifact-store-3` and produced `937` canonical rows, `937` NT catalog read-back trade ticks, NT `BacktestNode` iterations `937`, and catalog hash `530167268245f7b7f484391653e5be172a1f921694c5f14c371beda687fa984f`
@@ -123,16 +125,17 @@ Added `crates/backtesting-vertical-slice/src/conversion_boundary.rs`:
 Updated `canonical_trades.rs`:
 
 - replaces the venue-specific production converter identity with `csv-native-trades-to-canonical-trades.v1`
-- moves raw object-container choice into `[converter.raw_payload]` TOML (`csv_gzip`, `csv_text`, or configured single-member `single_csv_zip`)
+- moves raw object-container choice and byte budgets into `[converter.raw_payload]` TOML (`csv_gzip`, `csv_text`, or configured single-member `single_csv_zip`, plus `max_object_bytes` and `max_decoded_bytes`)
 - moves raw CSV column names, timestamp unit, and side token mapping into `[converter.csv]` TOML
 - validates converter identity/version through a registered converter list before conversion
 - normalizes accepted native-trade CSV rows by resolving configured column names from the accepted schema, so adding another compatible venue/source family does not touch operator, runner, result contract, catalog projection, or NT execution code
-- content-hashes the full converter config so container or mapping changes are provenance-bound
+- content-hashes the full converter config so container, byte-budget, or mapping changes are provenance-bound
 
 Updated `operator.rs`:
 
 - resolves and validates artifact-store options before running conversion/backtest for publish flows, so misconfigured `s3://` output cannot repeat the slow metadata-service/object-store failure path
-- reads converter identity/version, raw payload container, and CSV mapping from the run spec and validates the registered converter before touching output
+- reads converter identity/version, raw payload container, raw payload byte budgets, and CSV mapping from the run spec and validates the registered converter before touching output
+- rejects accepted objects larger than `converter.raw_payload.max_object_bytes` before checkpoint writes and bounds decoded CSV reads with `converter.raw_payload.max_decoded_bytes`
 - computes the expected conversion fingerprint before output cleanup
 - includes converter config hash in the expected conversion fingerprint
 - computes the contract-bound run manifest hash before overriding the execution catalog path to the local projection root
@@ -178,13 +181,14 @@ Updated committed reference artifact:
 
 - `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-result-contract.bnbusdc-2026-03-01.json` now includes generic converter identity/version, converter config hash, conversion artifact hashes, and catalog metadata binding
 - `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-catalog-metadata.bnbusdc-2026-03-01.json` records the portable reference metadata and explicitly does not claim direct S3 catalog execution
-- `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml` now declares primitive NT venue controls, catalog filesystem fields, `[converter.raw_payload]`, and `[converter.csv]` mapping explicitly
+- `specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml` now declares primitive NT venue controls, catalog filesystem fields, `[converter.raw_payload]` container and byte budgets, and `[converter.csv]` mapping explicitly
 
 Updated CLI:
 
 - default run remains local-only
 - `--publish-output` runs the local proof first, then copies every produced artifact under `output_dir` to the configured `manifest.output_prefix`
 - if `[manifest.artifact_store.ssm_parameters]` is present, the CLI resolves those paths through the Rust AWS SDK and uses the resulting object-store options for publish/proof
+- rejects `accepted_object.bytes` above `converter.raw_payload.max_object_bytes` before invoking the local object reader
 - local `file://` publish roots are created before opening NT's local object store; remote prefixes are not pre-created locally
 
 ## TDD Evidence
@@ -203,8 +207,10 @@ RED checks observed before implementation:
 - `just bte-test run_from_run_spec_uses_configured_csv_trade_mapping` failed with missing `ConverterConfig.csv`, proving raw CSV column mapping was not yet config-owned
 - `just bte-test run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them` failed with missing `converter_config_hash` on converter config, conversion fingerprint, and result contract
 - `just bte-test run_from_run_spec_uses_configured_single_csv_zip_payload` failed with missing `RawPayloadConfig`, missing `RawPayloadContainer`, missing `ConverterConfig.raw_payload`, and no ZIP crate, proving object-container selection was still a hidden gzip assumption
+- `just bte-test cli_rejects_object_above_configured_payload_max_before_reading_object run_from_run_spec_rejects_object_above_configured_payload_max_before_artifacts run_from_run_spec_rejects_decoded_payload_above_configured_max_before_catalog_work` failed with missing `RawPayloadConfig.max_object_bytes` and `RawPayloadConfig.max_decoded_bytes`, proving raw payload size/expansion limits were not yet TOML-owned
 - `just bte-test cli_publish_output_flag_is_explicit_opt_in cli_published_catalog_proof_requires_publish_output cli_publish_preflight_rejects_missing_s3_ssm_before_reading_object` failed after switching the tests to `--object` because `Cli` still exposed `object_gz`
 - `just bte-test committed_result_contract_converter_config_hash_matches_run_spec` failed because the committed result contract still carried the pre-`raw_payload` converter config hash `4e54ce1edbdab877a776cb5d38ede603a747da49c0355f80b2f3665905333080` while the run-spec now hashes to `b947a94aa26e2f2391aef02fb9d85073045c08ba6035dcc987e8a73353e4df10`
+- `just bte-test committed_result_contract_converter_config_hash_matches_run_spec committed_result_contract_manifest_hash_matches_run_spec committed_result_contract_binds_catalog_metadata committed_result_contract_deserializes committed_run_spec_deserializes` failed after adding byte budgets because the committed result contract still carried converter config hash `b947a94aa26e2f2391aef02fb9d85073045c08ba6035dcc987e8a73353e4df10` while the run-spec now hashes to `a20a83ef7bf42926e394f16c43c09819b58fc8c08d42ceb23352f9a61e293144`
 - `just bte-test acceptance_blocked_when_evidence_state_is_not_backfillable` failed because `evaluate_acceptance()` still admitted accepted source proofs whose `evidence_state` was bounded/current-only, pending, vendor/forward-capture-only, not-applicable, or excluded
 - `just bte-test acceptance_blocked_when_source_binding_family_disagrees_with_registry` failed because `evaluate_acceptance()` still admitted a proof whose `product_family` disagreed with the registered TOML source binding
 - `just bte-test acceptance_blocked_when_source_binding_missing_from_registry` failed because `evaluate_acceptance()` returned `Ok(())` for an unknown `source_binding`, allowing `accept()` to stamp a registry-unknown proof before later object selection rejected it
@@ -230,6 +236,7 @@ GREEN checks after implementation:
 - `just bte-test run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them`: 1 passed after binding converter config hash and catalog metadata hash
 - `just bte-test run_from_run_spec_uses_configured_csv_trade_mapping run_from_run_spec_rejects_unregistered_converter_version run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them committed_result_contract_deserializes committed_result_contract_binds_catalog_metadata accepted_data_flows_through_to_objective_result_contract`: 6 passed
 - `just bte-test run_from_run_spec_uses_configured_single_csv_zip_payload`: 1 passed after adding `[converter.raw_payload]`, exact-pinned `zip = 0.6.6`, and a single-member ZIP CSV decoder with a Binance source-binding fixture swap
+- `just bte-test cli_rejects_object_above_configured_payload_max_before_reading_object run_from_run_spec_rejects_object_above_configured_payload_max_before_artifacts run_from_run_spec_rejects_decoded_payload_above_configured_max_before_catalog_work`: 3 passed after adding TOML-owned `max_object_bytes`, bounded decoded CSV reads, a CLI pre-read object-max guard, and an operator pre-check before checkpoint writes
 - `just bte-test cli_publish_output_flag_is_explicit_opt_in cli_published_catalog_proof_requires_publish_output cli_publish_preflight_rejects_missing_s3_ssm_before_reading_object read_object_rejects_size_mismatch_before_loading_object`: 4 passed after replacing the public CLI input with generic `--object`
 - `just bte-test committed_result_contract_converter_config_hash_matches_run_spec committed_result_contract_manifest_hash_matches_run_spec committed_result_contract_binds_catalog_metadata committed_result_contract_deserializes committed_run_spec_deserializes`: 5 passed after updating the reference converter, conversion, checkpoint, and catalog-metadata hashes
 - `just bte-test run_from_run_spec_uses_configured_single_csv_zip_payload run_from_run_spec_produces_artifacts run_from_run_spec_uses_configured_csv_trade_mapping run_from_run_spec_writes_conversion_artifacts_and_contract_binds_them committed_result_contract_converter_config_hash_matches_run_spec committed_result_contract_manifest_hash_matches_run_spec committed_result_contract_binds_catalog_metadata committed_result_contract_deserializes committed_run_spec_deserializes accepted_data_flows_through_to_objective_result_contract`: 10 passed
@@ -271,7 +278,7 @@ GREEN checks after implementation:
 - `just bte-test accepts_human_typed_strategy_config_with_artifact_hash accepts_research_analytics_promotion_package_strategy_config rejects_research_analytics_strategy_config_without_package_ref rejects_research_analytics_strategy_config_outside_promotion_family rejects_notebook_runtime_strategy_source`: RED failed with missing `StrategySourceKind`, strategy config provenance fields, and strategy-source error variants; GREEN passed after adding explicit `compiled_rust_registry`, `human_typed_config`, and `research_analytics_promotion_package` source kinds. Execution still resolves only registered compiled Rust strategies; human/RA sources add immutable typed-config/package URI+hash provenance and RA promotion artifacts must live under `artifact_root/research-analytics/v1/promotion-packages/`.
 - `just bte-test run_from_run_spec_reuses_completed_output_without_rebuilding_catalog`: RED failed because a second run into a completed output deleted the existing NT catalog root; GREEN passed after `ConversionOutputState::Complete` began loading the proven canonical Parquet artifact, recomputing the logical NT catalog hash, running NT read-back/BacktestNode checks, and preserving the completed conversion checkpoint/manifest/catalog metadata plus catalog root
 - `just bte-test run_from_run_spec_reuses_completed_output_without_rebuilding_catalog run_from_run_spec_accepts_completed_output_on_second_run`: 2 passed after the completed-output reuse path was added
-- `just bte-test`: 235 passed, including 2 slow public API tests
+- `just bte-test`: 238 passed, including 2 slow public API tests
 - `just bte-fmt-check`: passed
 - `just bte-clippy`: passed
 - `just bte-build`: passed
@@ -405,7 +412,9 @@ No-repeat controls before any future broad backfill or BTE conversion:
 5. Fail preflight on unbounded selectors such as `ALL_SWAP`, `baseCoin=all`, or
    "full all-symbol" unless the operator explicitly approves that scope.
 6. Use streaming or bounded readers for compressed/archive payloads; never
-   decode whole large archives into memory.
+   decode whole large archives into memory. The current vertical slice now
+   enforces TOML-owned `max_object_bytes` before object read/hash work and
+   `max_decoded_bytes` during gzip/plain/ZIP CSV decoding.
 7. Isolate failures per object or per declared binding so one bad source object
    cannot abandon later good objects, while still exiting non-zero when any
    object failed.

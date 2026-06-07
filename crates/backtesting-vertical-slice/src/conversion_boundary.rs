@@ -1,0 +1,486 @@
+//! Bolt-owned converter boundary metadata.
+//!
+//! NautilusTrader owns catalog encoding, catalog query, and backtest execution.
+//! It does not own Bolt's source-proof acceptance, converter identity, resume
+//! checkpoint, or artifact-governance decisions. This module records that thin
+//! boundary so a raw accepted source can become NT-ready catalog input only when
+//! the output prefix is either clean, exactly idempotent, or resumable from a
+//! validated checkpoint.
+
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use anyhow::{Context, Result, bail, ensure};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+pub const CONVERSION_MANIFEST_FILE: &str = "conversion-manifest.json";
+pub const CONVERSION_CHECKPOINT_FILE: &str = "conversion-checkpoint.json";
+pub const CATALOG_METADATA_FILE: &str = "catalog-metadata.json";
+
+pub const CONVERSION_MANIFEST_VERSION: &str = "conversion-manifest.v1";
+pub const CONVERSION_CHECKPOINT_VERSION: &str = "conversion-checkpoint.v1";
+pub const CATALOG_METADATA_VERSION: &str = "catalog-metadata.v1";
+
+/// Converter identity fields that must match before output can be reused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversionFingerprint {
+    pub source_proof_id: String,
+    pub source_proof_version: u32,
+    pub accepted_object_sha256: String,
+    pub converter_identity: String,
+    pub converter_version: String,
+    pub converter_config_hash: String,
+}
+
+impl ConversionFingerprint {
+    pub fn validate_against(&self, expected: &Self) -> Result<()> {
+        ensure_identity_field(
+            "source_proof_id",
+            &self.source_proof_id,
+            &expected.source_proof_id,
+        )?;
+        if self.source_proof_version != expected.source_proof_version {
+            bail!(
+                "conversion identity mismatch: source_proof_version expected {}, got {}",
+                expected.source_proof_version,
+                self.source_proof_version
+            );
+        }
+        ensure_identity_field(
+            "accepted_object_sha256",
+            &self.accepted_object_sha256,
+            &expected.accepted_object_sha256,
+        )?;
+        ensure_identity_field(
+            "converter_identity",
+            &self.converter_identity,
+            &expected.converter_identity,
+        )?;
+        ensure_identity_field(
+            "converter_version",
+            &self.converter_version,
+            &expected.converter_version,
+        )?;
+        ensure_identity_field(
+            "converter_config_hash",
+            &self.converter_config_hash,
+            &expected.converter_config_hash,
+        )?;
+        Ok(())
+    }
+}
+
+fn ensure_identity_field(field: &'static str, actual: &str, expected: &str) -> Result<()> {
+    ensure!(
+        actual == expected,
+        "conversion identity mismatch: {field} expected {expected:?}, got {actual:?}"
+    );
+    Ok(())
+}
+
+/// Durable stage marker for a conversion run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversionCheckpointStage {
+    Started,
+    CanonicalWritten,
+    CatalogProjected,
+    Completed,
+}
+
+/// Durable checkpoint written before and during conversion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversionCheckpoint {
+    pub checkpoint_version: String,
+    pub fingerprint: ConversionFingerprint,
+    pub stage: ConversionCheckpointStage,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub canonical_rows: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub catalog_hash: Option<String>,
+    pub updated_at: String,
+}
+
+impl ConversionCheckpoint {
+    #[must_use]
+    pub fn started(fingerprint: ConversionFingerprint, updated_at: impl Into<String>) -> Self {
+        Self {
+            checkpoint_version: CONVERSION_CHECKPOINT_VERSION.to_string(),
+            fingerprint,
+            stage: ConversionCheckpointStage::Started,
+            canonical_rows: None,
+            catalog_hash: None,
+            updated_at: updated_at.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn completed(
+        fingerprint: ConversionFingerprint,
+        canonical_rows: usize,
+        catalog_hash: impl Into<String>,
+        updated_at: impl Into<String>,
+    ) -> Self {
+        Self {
+            checkpoint_version: CONVERSION_CHECKPOINT_VERSION.to_string(),
+            fingerprint,
+            stage: ConversionCheckpointStage::Completed,
+            canonical_rows: Some(canonical_rows),
+            catalog_hash: Some(catalog_hash.into()),
+            updated_at: updated_at.into(),
+        }
+    }
+
+    pub fn validate_for(&self, expected: &ConversionFingerprint) -> Result<()> {
+        ensure!(
+            self.checkpoint_version == CONVERSION_CHECKPOINT_VERSION,
+            "unexpected conversion checkpoint version: expected {CONVERSION_CHECKPOINT_VERSION:?}, got {:?}",
+            self.checkpoint_version
+        );
+        ensure!(
+            !self.updated_at.trim().is_empty(),
+            "conversion checkpoint updated_at must not be empty"
+        );
+        self.fingerprint.validate_against(expected)?;
+        if self.stage == ConversionCheckpointStage::Completed {
+            ensure!(
+                self.canonical_rows.is_some(),
+                "completed conversion checkpoint missing canonical_rows"
+            );
+            ensure!(
+                self.catalog_hash
+                    .as_ref()
+                    .is_some_and(|hash| !hash.trim().is_empty()),
+                "completed conversion checkpoint missing catalog_hash"
+            );
+        }
+        Ok(())
+    }
+
+    pub fn content_hash(&self) -> Result<String> {
+        content_hash(self)
+    }
+}
+
+/// Completed conversion manifest binding input proof to NT catalog output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversionManifest {
+    pub manifest_version: String,
+    pub fingerprint: ConversionFingerprint,
+    pub normalized_schema_version: String,
+    pub nt_data_type: String,
+    pub nt_instrument_id: String,
+    pub canonical_rows: usize,
+    pub output_catalog_uri: String,
+    pub catalog_hash: String,
+    pub checkpoint_hash: String,
+    pub completed_at: String,
+}
+
+impl ConversionManifest {
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn completed(
+        fingerprint: ConversionFingerprint,
+        normalized_schema_version: impl Into<String>,
+        nt_data_type: impl Into<String>,
+        nt_instrument_id: impl Into<String>,
+        canonical_rows: usize,
+        output_catalog_uri: impl Into<String>,
+        catalog_hash: impl Into<String>,
+        checkpoint_hash: impl Into<String>,
+        completed_at: impl Into<String>,
+    ) -> Self {
+        Self {
+            manifest_version: CONVERSION_MANIFEST_VERSION.to_string(),
+            fingerprint,
+            normalized_schema_version: normalized_schema_version.into(),
+            nt_data_type: nt_data_type.into(),
+            nt_instrument_id: nt_instrument_id.into(),
+            canonical_rows,
+            output_catalog_uri: output_catalog_uri.into(),
+            catalog_hash: catalog_hash.into(),
+            checkpoint_hash: checkpoint_hash.into(),
+            completed_at: completed_at.into(),
+        }
+    }
+
+    pub fn validate_for(
+        &self,
+        expected: &ConversionFingerprint,
+        checkpoint_hash: &str,
+    ) -> Result<()> {
+        ensure!(
+            self.manifest_version == CONVERSION_MANIFEST_VERSION,
+            "unexpected conversion manifest version: expected {CONVERSION_MANIFEST_VERSION:?}, got {:?}",
+            self.manifest_version
+        );
+        self.fingerprint.validate_against(expected)?;
+        ensure!(
+            self.checkpoint_hash == checkpoint_hash,
+            "conversion manifest checkpoint_hash mismatch: expected {checkpoint_hash:?}, got {:?}",
+            self.checkpoint_hash
+        );
+        ensure!(
+            !self.normalized_schema_version.trim().is_empty(),
+            "conversion manifest missing normalized_schema_version"
+        );
+        ensure!(
+            !self.nt_data_type.trim().is_empty(),
+            "conversion manifest missing nt_data_type"
+        );
+        ensure!(
+            !self.nt_instrument_id.trim().is_empty(),
+            "conversion manifest missing nt_instrument_id"
+        );
+        ensure!(
+            !self.output_catalog_uri.trim().is_empty(),
+            "conversion manifest missing output_catalog_uri"
+        );
+        ensure!(
+            !self.catalog_hash.trim().is_empty(),
+            "conversion manifest missing catalog_hash"
+        );
+        ensure!(
+            !self.completed_at.trim().is_empty(),
+            "conversion manifest completed_at must not be empty"
+        );
+        Ok(())
+    }
+
+    pub fn content_hash(&self) -> Result<String> {
+        content_hash(self)
+    }
+}
+
+/// Catalog-local metadata written next to the NT catalog projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversionCatalogMetadata {
+    pub metadata_version: String,
+    pub manifest_hash: String,
+    pub checkpoint_hash: String,
+    pub catalog_hash: String,
+    pub nt_data_type: String,
+    pub nt_instrument_id: String,
+    pub canonical_rows: usize,
+    pub output_catalog_uri: String,
+    pub execution_catalog_uri: String,
+    pub direct_s3_catalog_access_proven: bool,
+}
+
+impl ConversionCatalogMetadata {
+    #[must_use]
+    pub fn from_manifest(
+        manifest: &ConversionManifest,
+        manifest_hash: String,
+        checkpoint_hash: String,
+    ) -> Self {
+        Self {
+            metadata_version: CATALOG_METADATA_VERSION.to_string(),
+            manifest_hash,
+            checkpoint_hash,
+            catalog_hash: manifest.catalog_hash.clone(),
+            nt_data_type: manifest.nt_data_type.clone(),
+            nt_instrument_id: manifest.nt_instrument_id.clone(),
+            canonical_rows: manifest.canonical_rows,
+            output_catalog_uri: manifest.output_catalog_uri.clone(),
+            execution_catalog_uri: manifest.output_catalog_uri.clone(),
+            direct_s3_catalog_access_proven: false,
+        }
+    }
+
+    #[must_use]
+    pub fn with_execution_catalog_access(
+        mut self,
+        execution_catalog_uri: impl Into<String>,
+        direct_s3_catalog_access_proven: bool,
+    ) -> Self {
+        self.execution_catalog_uri = execution_catalog_uri.into();
+        self.direct_s3_catalog_access_proven = direct_s3_catalog_access_proven;
+        self
+    }
+
+    fn validate_against(
+        &self,
+        manifest: &ConversionManifest,
+        manifest_hash: &str,
+        checkpoint_hash: &str,
+    ) -> Result<()> {
+        ensure!(
+            self.metadata_version == CATALOG_METADATA_VERSION,
+            "unexpected catalog metadata version: expected {CATALOG_METADATA_VERSION:?}, got {:?}",
+            self.metadata_version
+        );
+        ensure!(
+            self.manifest_hash == manifest_hash,
+            "catalog metadata manifest_hash mismatch: expected {manifest_hash:?}, got {:?}",
+            self.manifest_hash
+        );
+        ensure!(
+            self.checkpoint_hash == checkpoint_hash,
+            "catalog metadata checkpoint_hash mismatch: expected {checkpoint_hash:?}, got {:?}",
+            self.checkpoint_hash
+        );
+        ensure!(
+            self.catalog_hash == manifest.catalog_hash,
+            "catalog metadata catalog_hash mismatch: expected {:?}, got {:?}",
+            manifest.catalog_hash,
+            self.catalog_hash
+        );
+        ensure!(
+            self.nt_data_type == manifest.nt_data_type,
+            "catalog metadata nt_data_type mismatch"
+        );
+        ensure!(
+            self.nt_instrument_id == manifest.nt_instrument_id,
+            "catalog metadata nt_instrument_id mismatch"
+        );
+        ensure!(
+            self.canonical_rows == manifest.canonical_rows,
+            "catalog metadata canonical_rows mismatch"
+        );
+        ensure!(
+            self.output_catalog_uri == manifest.output_catalog_uri,
+            "catalog metadata output_catalog_uri mismatch"
+        );
+        ensure!(
+            !self.execution_catalog_uri.trim().is_empty(),
+            "catalog metadata execution_catalog_uri must not be empty"
+        );
+        ensure!(
+            !self.direct_s3_catalog_access_proven
+                || self.execution_catalog_uri.starts_with("s3://"),
+            "catalog metadata cannot claim direct S3 access for non-S3 execution catalog URI {:?}",
+            self.execution_catalog_uri
+        );
+        Ok(())
+    }
+
+    pub fn content_hash(&self) -> Result<String> {
+        content_hash(self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConversionOutputState {
+    CleanNew,
+    ResumeFromCheckpoint {
+        stage: ConversionCheckpointStage,
+    },
+    Complete {
+        manifest_hash: String,
+        checkpoint_hash: String,
+        catalog_hash: String,
+    },
+}
+
+pub fn inspect_conversion_output(
+    output_dir: &Path,
+    expected: &ConversionFingerprint,
+) -> Result<ConversionOutputState> {
+    if !output_dir.exists() {
+        return Ok(ConversionOutputState::CleanNew);
+    }
+    let entries = fs::read_dir(output_dir)
+        .with_context(|| format!("read conversion output dir {}", output_dir.display()))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("read conversion output dir {}", output_dir.display()))?;
+    if entries.is_empty() {
+        return Ok(ConversionOutputState::CleanNew);
+    }
+
+    let checkpoint_path = output_dir.join(CONVERSION_CHECKPOINT_FILE);
+    let manifest_path = output_dir.join(CONVERSION_MANIFEST_FILE);
+    let metadata_path = output_dir.join(CATALOG_METADATA_FILE);
+
+    if !checkpoint_path.exists() {
+        bail!(
+            "dirty conversion output {}: non-empty output has no validated {CONVERSION_CHECKPOINT_FILE}",
+            output_dir.display()
+        );
+    }
+
+    let checkpoint: ConversionCheckpoint = read_json(&checkpoint_path)?;
+    checkpoint.validate_for(expected)?;
+    let checkpoint_hash = checkpoint.content_hash()?;
+
+    if !manifest_path.exists() {
+        ensure!(
+            checkpoint.stage != ConversionCheckpointStage::Completed,
+            "dirty conversion output {}: completed checkpoint is missing {CONVERSION_MANIFEST_FILE}",
+            output_dir.display()
+        );
+        return Ok(ConversionOutputState::ResumeFromCheckpoint {
+            stage: checkpoint.stage,
+        });
+    }
+
+    ensure!(
+        checkpoint.stage == ConversionCheckpointStage::Completed,
+        "dirty conversion output {}: manifest exists but checkpoint stage is {:?}",
+        output_dir.display(),
+        checkpoint.stage
+    );
+    let manifest: ConversionManifest = read_json(&manifest_path)?;
+    manifest.validate_for(expected, &checkpoint_hash)?;
+    let manifest_hash = manifest.content_hash()?;
+
+    ensure!(
+        metadata_path.exists(),
+        "dirty conversion output {}: completed conversion is missing {CATALOG_METADATA_FILE}",
+        output_dir.display()
+    );
+    let metadata: ConversionCatalogMetadata = read_json(&metadata_path)?;
+    metadata.validate_against(&manifest, &manifest_hash, &checkpoint_hash)?;
+
+    Ok(ConversionOutputState::Complete {
+        manifest_hash,
+        checkpoint_hash,
+        catalog_hash: manifest.catalog_hash,
+    })
+}
+
+pub fn write_conversion_checkpoint(
+    output_dir: &Path,
+    checkpoint: &ConversionCheckpoint,
+) -> Result<PathBuf> {
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("create conversion output dir {}", output_dir.display()))?;
+    let path = output_dir.join(CONVERSION_CHECKPOINT_FILE);
+    write_json(&path, checkpoint)?;
+    Ok(path)
+}
+
+pub fn write_completed_conversion_artifacts(
+    output_dir: &Path,
+    manifest: &ConversionManifest,
+    checkpoint: &ConversionCheckpoint,
+    metadata: &ConversionCatalogMetadata,
+) -> Result<()> {
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("create conversion output dir {}", output_dir.display()))?;
+    write_json(&output_dir.join(CONVERSION_CHECKPOINT_FILE), checkpoint)?;
+    write_json(&output_dir.join(CONVERSION_MANIFEST_FILE), manifest)?;
+    write_json(&output_dir.join(CATALOG_METADATA_FILE), metadata)?;
+    Ok(())
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
+    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+}
+
+fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let bytes = serde_json::to_vec_pretty(value).context("serialize conversion artifact")?;
+    fs::write(path, bytes).with_context(|| format!("write {}", path.display()))
+}
+
+fn content_hash<T: Serialize>(value: &T) -> Result<String> {
+    let bytes = serde_json::to_vec(value).context("serialize conversion artifact for hash")?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(hex::encode(hasher.finalize()))
+}

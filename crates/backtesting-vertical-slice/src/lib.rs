@@ -19,10 +19,24 @@
 //! backtest input is an [`source_proof::AcceptedDataset`] produced from an
 //! accepted [`source_proof::SourceProofReport`].
 
+pub mod artifact_index;
+pub mod artifact_store_secrets;
+pub mod backfill_accepted_tranche;
+pub mod backfill_binding_coverage;
+pub mod backfill_coverage;
+pub mod backfill_execution_plan;
+pub mod backfill_preflight;
+pub mod backfill_readiness;
+pub mod backfill_source_proof_scope;
 pub mod canonical_trades;
 pub mod catalog_projection;
+pub mod conversion_boundary;
 pub mod operator;
+pub mod research_analytics;
 pub mod result_contract;
 pub mod run_manifest;
 pub mod runner;
 pub mod source_proof;
+pub mod source_proof_admissibility;
+pub mod source_proof_legacy_derivability;
+pub mod source_proof_migration_preflight;

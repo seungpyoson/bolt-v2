@@ -18,18 +18,24 @@ publish = false
 [dependencies]
 anyhow = "1"
 arrow = "58.3.0"
+aws-config = "1.8.17"
+aws-sdk-ssm = { version = "1.111.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+bytes = "=1.11.1"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 csv = "1"
 flate2 = "1.1.9"
 hex = "0.4"
+object_store = "=0.13.2"
 parquet = "58.3.0"
 rust_decimal = "1.42.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
+tokio = { version = "=1.52.3", features = ["rt"] }
 toml = "1.1"
 ustr = "1.1.0"
+zip = { version = "=0.6.6", default-features = false, features = ["deflate"] }
 
 nautilus-backtest = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c", features = ["streaming", "examples"] }
 nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }

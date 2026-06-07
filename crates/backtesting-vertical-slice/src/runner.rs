@@ -22,17 +22,22 @@ use rust_decimal::Decimal;
 
 use super::{
     canonical_trades::{
-        CanonicalInstrumentIdentity, CanonicalTradeRow, CanonicalTradesTable, TradeAggressorSide,
-        normalize_bybit_spot_tick_trades,
+        CanonicalInstrumentIdentity, CanonicalTradeRow, CanonicalTradesTable, ConverterConfig,
+        TradeAggressorSide, normalize_registered_trade_converter,
     },
     catalog_projection::{
         CatalogProjection, SpotInstrumentSpec, project_canonical_trades_to_catalog,
         read_back_trade_ticks,
     },
+    conversion_boundary::{
+        ConversionCatalogMetadata, ConversionCheckpoint, ConversionFingerprint, ConversionManifest,
+    },
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
     },
-    run_manifest::{BacktestingRunManifest, STRATEGY_HURST_VPIN_DIRECTIONAL},
+    run_manifest::{
+        BacktestingRunManifest, NtSurfaceClassification, STRATEGY_HURST_VPIN_DIRECTIONAL,
+    },
     source_proof::AcceptedDataset,
 };
 
@@ -40,6 +45,47 @@ use super::{
 const PARAM_BAR_TYPE: &str = "bar_type";
 /// Strategy parameter key for the trade size.
 const PARAM_TRADE_SIZE: &str = "trade_size";
+
+fn nt_surface_classification_label(classification: NtSurfaceClassification) -> &'static str {
+    match classification {
+        NtSurfaceClassification::Defaulted => "defaulted",
+        NtSurfaceClassification::PassThrough => "pass_through",
+        NtSurfaceClassification::CustomOwned => "custom_owned",
+        NtSurfaceClassification::UnsupportedForNow => "unsupported_for_now",
+    }
+}
+
+pub(crate) fn nt_extension_surface_claim_limits(
+    manifest: &BacktestingRunManifest,
+) -> Result<Vec<String>> {
+    Ok(manifest
+        .resolved_nt_surfaces()?
+        .into_iter()
+        .map(|surface| {
+            format!(
+                "NT {} surface {} nt_field={} resolved_value={}",
+                nt_surface_classification_label(surface.classification),
+                surface.surface,
+                surface.nt_field,
+                surface.resolved_value
+            )
+        })
+        .collect())
+}
+
+pub(crate) fn result_contract_warnings(nt_result: &BacktestResult) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if nt_result.total_orders == 0 {
+        warnings.push(
+            "No orders were placed: the accepted data is trade-only and carries no quote ticks, \
+             and the configured strategy's order entry is quote-driven. NautilusTrader still \
+             aggregated the accepted trades into bars and ran the strategy's signal logic. This \
+             reflects the TRADE_REPLAY fidelity of the source, not a defect."
+                .to_string(),
+        );
+    }
+    warnings
+}
 
 /// Inputs for one end-to-end backtest run over accepted data.
 pub struct BacktestRunInputs<'a> {
@@ -50,6 +96,8 @@ pub struct BacktestRunInputs<'a> {
     pub csv_text: &'a str,
     pub capture_time_nanos: i64,
     pub manifest: &'a BacktestingRunManifest,
+    pub contract_manifest_hash: &'a str,
+    pub converter: &'a ConverterConfig,
     /// Local path for the canonical normalized Parquet artifact.
     pub canonical_artifact_path: &'a Path,
     /// Local catalog projection root.
@@ -62,6 +110,11 @@ pub struct BacktestRunInputs<'a> {
 pub struct BacktestRunOutput {
     pub canonical_table: CanonicalTradesTable,
     pub projection: CatalogProjection,
+    pub conversion_checkpoint: ConversionCheckpoint,
+    pub conversion_manifest: ConversionManifest,
+    pub conversion_catalog_metadata: ConversionCatalogMetadata,
+    pub conversion_checkpoint_hash: String,
+    pub conversion_manifest_hash: String,
     pub read_back_count: usize,
     pub nt_result: BacktestResult,
     pub contract: BacktestResultContract,
@@ -110,6 +163,27 @@ fn add_manifest_strategy(
     }
 }
 
+pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<BacktestResult> {
+    let run_config = manifest
+        .to_nt_run_config()
+        .map_err(|error| anyhow::anyhow!("manifest to NautilusTrader config failed: {error}"))?;
+    let mut node = BacktestNode::new(vec![run_config]).context("construct BacktestNode")?;
+    node.build().context("build BacktestNode")?;
+    {
+        let engine = node
+            .get_engine_mut(&manifest.run_id)
+            .with_context(|| format!("no engine for run id {}", manifest.run_id))?;
+        add_manifest_strategy(engine, manifest)?;
+    }
+    let mut results = node.run().context("run BacktestNode")?;
+    ensure!(
+        results.len() == 1,
+        "expected exactly one backtest result, got {}",
+        results.len()
+    );
+    Ok(results.remove(0))
+}
+
 /// Run one minimal NautilusTrader `BacktestNode` backtest over accepted data and
 /// return all produced artifacts plus the objective result contract.
 ///
@@ -119,20 +193,17 @@ fn add_manifest_strategy(
 /// validation, catalog projection, read-back proof, NautilusTrader execution, or
 /// result-contract construction.
 pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> {
-    // Gate 2: canonical normalization + canonical artifact.
-    let canonical_table = normalize_bybit_spot_tick_trades(
-        inputs.accepted,
-        inputs.identity,
-        inputs.csv_text,
-        inputs.capture_time_nanos,
-        &inputs.manifest.run_id,
-    )
-    .context("canonical normalization failed")?;
-    canonical_table
-        .write_parquet(inputs.canonical_artifact_path)
-        .context("write canonical artifact failed")?;
+    ensure!(
+        !inputs.converter.version.trim().is_empty(),
+        "converter_version must not be empty"
+    );
+    ensure!(
+        !inputs.contract_manifest_hash.trim().is_empty(),
+        "contract_manifest_hash must not be empty"
+    );
 
-    // Gate 4: manifest validation, bound to the accepted dataset.
+    // Gate 4 preflight: reject unsupported NT/config surfaces before producing
+    // derived canonical or catalog artifacts.
     inputs
         .manifest
         .validate(inputs.accepted)
@@ -146,6 +217,20 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         "manifest catalog_path {:?} does not match projection root {catalog_root_str:?}",
         inputs.manifest.catalog_input.catalog_path
     );
+
+    // Gate 2: canonical normalization + canonical artifact.
+    let canonical_table = normalize_registered_trade_converter(
+        inputs.converter,
+        inputs.accepted,
+        inputs.identity,
+        inputs.csv_text,
+        inputs.capture_time_nanos,
+        &inputs.manifest.run_id,
+    )
+    .context("canonical normalization failed")?;
+    canonical_table
+        .write_parquet(inputs.canonical_artifact_path)
+        .context("write canonical artifact failed")?;
 
     // Gate 3: NautilusTrader catalog projection + read-back proof.
     let projection = project_canonical_trades_to_catalog(
@@ -184,25 +269,7 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     assert_time_window_overlaps_data(inputs.manifest, &canonical_table)?;
 
     // Gate 5: BacktestNode execution.
-    let run_config = inputs
-        .manifest
-        .to_nt_run_config()
-        .map_err(|error| anyhow::anyhow!("manifest to NautilusTrader config failed: {error}"))?;
-    let mut node = BacktestNode::new(vec![run_config]).context("construct BacktestNode")?;
-    node.build().context("build BacktestNode")?;
-    {
-        let engine = node
-            .get_engine_mut(&inputs.manifest.run_id)
-            .with_context(|| format!("no engine for run id {}", inputs.manifest.run_id))?;
-        add_manifest_strategy(engine, inputs.manifest)?;
-    }
-    let mut results = node.run().context("run BacktestNode")?;
-    ensure!(
-        results.len() == 1,
-        "expected exactly one backtest result, got {}",
-        results.len()
-    );
-    let nt_result = results.remove(0);
+    let nt_result = run_nt_backtest_node(inputs.manifest)?;
     // The read-back proof above loads the catalog through one NautilusTrader code
     // path; the engine consumed it through another. Bind the two by asserting the
     // engine's own iteration count equals the number of accepted trades inside the
@@ -222,33 +289,78 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         bail!("backtest did not consume the accepted data: {reason}");
     }
 
+    let conversion_fingerprint = ConversionFingerprint {
+        source_proof_id: inputs.accepted.source_proof_id.clone(),
+        source_proof_version: inputs.accepted.source_proof_version,
+        accepted_object_sha256: inputs.accepted.accepted_object_sha256.clone(),
+        converter_identity: inputs.converter.identity.clone(),
+        converter_version: inputs.converter.version.clone(),
+        converter_config_hash: inputs
+            .converter
+            .content_hash()
+            .context("hash converter config")?,
+    };
+    let conversion_checkpoint = ConversionCheckpoint::completed(
+        conversion_fingerprint.clone(),
+        canonical_table.rows.len(),
+        projection.catalog_hash.clone(),
+        inputs.created_at,
+    );
+    let conversion_checkpoint_hash = conversion_checkpoint
+        .content_hash()
+        .context("hash conversion checkpoint")?;
+    let conversion_manifest = ConversionManifest::completed(
+        conversion_fingerprint,
+        canonical_table.schema_version.clone(),
+        projection.data_type.clone(),
+        projection.nt_instrument_id.clone(),
+        canonical_table.rows.len(),
+        inputs.artifact_uris.nt_catalog_uri.clone(),
+        projection.catalog_hash.clone(),
+        conversion_checkpoint_hash.clone(),
+        inputs.created_at,
+    );
+    let conversion_manifest_hash = conversion_manifest
+        .content_hash()
+        .context("hash conversion manifest")?;
+    let conversion_catalog_metadata = ConversionCatalogMetadata::from_manifest(
+        &conversion_manifest,
+        conversion_manifest_hash.clone(),
+        conversion_checkpoint_hash.clone(),
+    )
+    .with_execution_catalog_access(
+        execution_catalog_uri(inputs.manifest),
+        direct_s3_catalog_access_proven(inputs.manifest),
+    );
+    let conversion_catalog_metadata_hash = conversion_catalog_metadata
+        .content_hash()
+        .context("hash catalog metadata")?;
+
     // Gate 6: objective result contract.
-    let mut warnings = Vec::new();
-    if nt_result.total_orders == 0 {
-        warnings.push(
-            "No orders were placed: the accepted data is trade-only and carries no quote ticks, \
-             and the configured strategy's order entry is quote-driven. NautilusTrader still \
-             aggregated the accepted trades into bars and ran the strategy's signal logic. This \
-             reflects the TRADE_REPLAY fidelity of the source, not a defect."
-                .to_string(),
-        );
-    }
-    let manifest_hash = inputs.manifest.manifest_hash();
+    let warnings = result_contract_warnings(&nt_result);
+    let mut claim_limits = inputs.accepted.result_contract_claim_limits();
+    claim_limits.extend(nt_extension_surface_claim_limits(inputs.manifest)?);
     let contract = build_result_contract(ResultContractInputs {
         run_id: &inputs.manifest.run_id,
         source_proof_id: &inputs.accepted.source_proof_id,
         source_proof_version: inputs.accepted.source_proof_version,
-        manifest_hash: &manifest_hash,
+        manifest_hash: inputs.contract_manifest_hash,
         acceptance_mode: inputs.accepted.acceptance_mode,
         accepted_by: &inputs.accepted.accepted_by,
         accepted_at: &inputs.accepted.accepted_at,
         accepted_object_sha256: &inputs.accepted.accepted_object_sha256,
+        converter_identity: &conversion_manifest.fingerprint.converter_identity,
+        converter_version: &conversion_manifest.fingerprint.converter_version,
+        converter_config_hash: &conversion_manifest.fingerprint.converter_config_hash,
+        conversion_manifest_hash: &conversion_manifest_hash,
+        conversion_checkpoint_hash: &conversion_checkpoint_hash,
         catalog_hash: &projection.catalog_hash,
+        catalog_metadata_hash: &conversion_catalog_metadata_hash,
         strategy: &inputs.manifest.strategy,
         run_purpose: run_purpose_label(inputs.manifest),
         market_structure_fixture: market_structure_label(inputs.manifest),
         fidelity_class: canonical_table.fidelity_class,
-        claim_limits: canonical_table.forbidden_claims.clone(),
+        claim_limits,
         warnings,
         mechanical_blockers: Vec::new(),
         nt_result: &nt_result,
@@ -260,13 +372,18 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     Ok(BacktestRunOutput {
         canonical_table,
         projection,
+        conversion_checkpoint,
+        conversion_manifest,
+        conversion_catalog_metadata,
+        conversion_checkpoint_hash,
+        conversion_manifest_hash,
         read_back_count: read_back.len(),
         nt_result,
         contract,
     })
 }
 
-fn run_purpose_label(manifest: &BacktestingRunManifest) -> &'static str {
+pub(crate) fn run_purpose_label(manifest: &BacktestingRunManifest) -> &'static str {
     use super::run_manifest::RunPurpose;
     match manifest.run_purpose {
         RunPurpose::Normal => "normal",
@@ -277,12 +394,26 @@ fn run_purpose_label(manifest: &BacktestingRunManifest) -> &'static str {
     }
 }
 
-fn market_structure_label(manifest: &BacktestingRunManifest) -> &'static str {
+pub(crate) fn market_structure_label(manifest: &BacktestingRunManifest) -> &'static str {
     use super::run_manifest::MarketStructureFixture;
     match manifest.market_structure_fixture {
         MarketStructureFixture::BinaryOption => "binary-option",
         MarketStructureFixture::PerpsSpot => "perps-spot",
     }
+}
+
+fn execution_catalog_uri(manifest: &BacktestingRunManifest) -> String {
+    match manifest.catalog_input.catalog_fs_protocol.as_str() {
+        crate::run_manifest::CATALOG_FS_PROTOCOL_NONE => {
+            manifest.catalog_input.catalog_path.clone()
+        }
+        protocol => format!("{protocol}://{}", manifest.catalog_input.catalog_path),
+    }
+}
+
+fn direct_s3_catalog_access_proven(manifest: &BacktestingRunManifest) -> bool {
+    manifest.catalog_input.catalog_fs_protocol == "s3"
+        && execution_catalog_uri(manifest).starts_with("s3://")
 }
 
 #[cfg(test)]
@@ -602,7 +733,7 @@ fn aggressor_label(side: AggressorSide) -> &'static str {
 /// Reason the NautilusTrader engine did not process exactly the accepted data, or
 /// `None` when its iteration count equals the accepted-trade count. NautilusTrader
 /// increments `iterations` once per data point delivered to the engine loop.
-fn iterations_mismatch(iterations: usize, expected: usize) -> Option<String> {
+pub(crate) fn iterations_mismatch(iterations: usize, expected: usize) -> Option<String> {
     if iterations == 0 {
         return Some(format!(
             "NautilusTrader engine iterated zero times; it processed none of the {expected} \
@@ -626,7 +757,11 @@ fn iterations_mismatch(iterations: usize, expected: usize) -> Option<String> {
 /// `ts_init` equals its canonical `event_time`, so the windowed row count is
 /// exactly the engine's expected iteration count; with no bounds it is the whole
 /// accepted set, matching the read-back proof.
-fn expected_iterations(rows: &[CanonicalTradeRow], start: Option<i64>, end: Option<i64>) -> usize {
+pub(crate) fn expected_iterations(
+    rows: &[CanonicalTradeRow],
+    start: Option<i64>,
+    end: Option<i64>,
+) -> usize {
     rows.iter()
         .filter(|row| start.is_none_or(|start| row.event_time >= start))
         .filter(|row| end.is_none_or(|end| row.event_time <= end))
@@ -638,7 +773,7 @@ fn expected_iterations(rows: &[CanonicalTradeRow], start: Option<i64>, end: Opti
 /// rows bound the accepted data's event range; a `start_time` after the last
 /// trade (or an `end_time` at/ before the first) would leave the engine with no
 /// data while the run still reports the accepted source/catalog hash.
-fn assert_time_window_overlaps_data(
+pub(crate) fn assert_time_window_overlaps_data(
     manifest: &BacktestingRunManifest,
     canonical_table: &CanonicalTradesTable,
 ) -> Result<()> {

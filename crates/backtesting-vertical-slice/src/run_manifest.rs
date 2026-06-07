@@ -6,11 +6,13 @@
 //! reject inline strategy code, Python strategy paths, untracked config blobs,
 //! and unaccepted data before any run.
 //!
-//! Strategy sources are restricted to existing compiled Rust strategies selected
-//! by a registry key (see [`registered_strategies`]); the manifest never carries
-//! executable strategy code or a runtime path.
+//! Strategy execution is restricted to existing compiled Rust strategies selected
+//! by a registry key (see [`registered_strategies`]). The manifest records
+//! whether the typed config was selected directly, human-authored, or generated
+//! by an approved-for-config Research Analytics promotion package; it never
+//! carries executable strategy code or a runtime path.
 
-use std::{collections::BTreeMap, str::FromStr};
+use std::{collections::BTreeMap, fmt::Debug, str::FromStr};
 
 use anyhow::{Result, bail};
 use nautilus_backtest::config::{
@@ -19,10 +21,11 @@ use nautilus_backtest::config::{
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::BarType,
-    enums::{AccountType, BookType, OmsType},
+    enums::{AccountType, BookType, OmsType, OtoTriggerMode},
     identifiers::InstrumentId,
-    types::{Money, Quantity},
+    types::{Currency, Money, Quantity},
 };
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ustr::Ustr;
@@ -35,6 +38,74 @@ pub const STRATEGY_HURST_VPIN_DIRECTIONAL: &str = "hurst_vpin_directional";
 pub const STRATEGY_PARAM_BAR_TYPE: &str = "bar_type";
 /// Strategy parameter key for the trade size.
 pub const STRATEGY_PARAM_TRADE_SIZE: &str = "trade_size";
+/// Explicit manifest value for no catalog filesystem protocol.
+pub const CATALOG_FS_PROTOCOL_NONE: &str = "NONE";
+/// NT venue-model surfaces declared in TOML but rejected until typed mappings exist.
+pub const UNSUPPORTED_NT_VENUE_SURFACES: &[&str] = &[
+    "leverages",
+    "margin_model",
+    "modules",
+    "fill_model",
+    "latency_model",
+    "fee_model",
+    "settlement_prices",
+];
+/// NT data-query surfaces declared in TOML but rejected until typed mappings exist.
+pub const UNSUPPORTED_NT_CATALOG_QUERY_SURFACES: &[(&str, &str, &str)] = &[
+    (
+        "catalog.instrument_ids",
+        "catalog_input.instrument_ids",
+        "BacktestDataConfig.instrument_ids",
+    ),
+    (
+        "catalog.start_time",
+        "catalog_input.start_time",
+        "BacktestDataConfig.start_time",
+    ),
+    (
+        "catalog.end_time",
+        "catalog_input.end_time",
+        "BacktestDataConfig.end_time",
+    ),
+    (
+        "catalog.filter_expr",
+        "catalog_input.filter_expr",
+        "BacktestDataConfig.filter_expr",
+    ),
+    (
+        "catalog.client_id",
+        "catalog_input.client_id",
+        "BacktestDataConfig.client_id",
+    ),
+    (
+        "catalog.metadata",
+        "catalog_input.metadata",
+        "BacktestDataConfig.metadata",
+    ),
+    (
+        "catalog.bar_spec",
+        "catalog_input.bar_spec",
+        "BacktestDataConfig.bar_spec",
+    ),
+    (
+        "catalog.bar_types",
+        "catalog_input.bar_types",
+        "BacktestDataConfig.bar_types",
+    ),
+    (
+        "catalog.optimize_file_loading",
+        "catalog_input.optimize_file_loading",
+        "BacktestDataConfig.optimize_file_loading",
+    ),
+];
+/// Artifact-local manifest version written beside each backtest result.
+pub const BACKTEST_RUN_MANIFEST_ARTIFACT_VERSION: &str = "backtest-run-manifest.v1";
+
+const CATALOG_STORAGE_OPTIONS_SHADOWED: &str =
+    "cannot be combined with catalog_fs_rust_storage_options";
+const S3_OPTION_CONDITIONAL_PUT: &str = "conditional_put";
+const S3_CONDITIONAL_PUT_ETAG: &str = "etag";
+const S3_CONDITIONAL_PUT_DISABLED: &str = "disabled";
 
 /// Existing compiled Rust strategies selectable from a run manifest.
 ///
@@ -74,23 +145,126 @@ pub enum RunPurpose {
     Migration,
 }
 
-/// The only admissible strategy source: a registered compiled Rust strategy
+/// Classification vocabulary for NT/custom backtest extension surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NtSurfaceClassification {
+    Defaulted,
+    PassThrough,
+    CustomOwned,
+    UnsupportedForNow,
+}
+
+/// Resolved evidence for one NT/custom extension surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedNtSurface {
+    pub surface: String,
+    pub classification: NtSurfaceClassification,
+    pub nt_field: String,
+    pub resolved_value: String,
+}
+
+/// Artifact-local backtest run manifest with resolved NT/default surfaces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BacktestRunManifestArtifact {
+    pub manifest_version: String,
+    pub submitted_manifest_hash: String,
+    pub manifest: BacktestingRunManifest,
+    pub resolved_nt_surfaces: Vec<ResolvedNtSurface>,
+}
+
+fn option_value<T: Debug>(value: Option<T>) -> String {
+    match value {
+        Some(value) => format!("{value:?}"),
+        None => "None".to_string(),
+    }
+}
+
+fn storage_option_keys_value<'a, I>(value: Option<I>) -> String
+where
+    I: IntoIterator<Item = (&'a String, &'a String)>,
+{
+    let Some(value) = value else {
+        return "None".to_string();
+    };
+    let mut keys = value
+        .into_iter()
+        .map(|(key, _)| key.as_str())
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    format!("keys={keys:?}")
+}
+
+fn resolved_surface(
+    surface: &str,
+    classification: NtSurfaceClassification,
+    nt_field: &str,
+    resolved_value: impl Into<String>,
+) -> ResolvedNtSurface {
+    ResolvedNtSurface {
+        surface: surface.to_string(),
+        classification,
+        nt_field: nt_field.to_string(),
+        resolved_value: resolved_value.into(),
+    }
+}
+
+/// Structured reason for pinning a non-latest accepted source proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProofPinReasonCode {
+    BaselineReproduction,
+    PublishedResultReproduction,
+    RegressionComparison,
+    AuditOrInvestigation,
+    MigrationValidation,
+}
+
+/// Source of the typed strategy config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StrategySourceKind {
+    /// Existing compiled Rust strategy selected directly from the registry.
+    CompiledRustRegistry,
+    /// Human-authored typed config with immutable artifact provenance.
+    HumanTypedConfig,
+    /// Typed config generated by a Research Analytics promotion package.
+    ResearchAnalyticsPromotionPackage,
+}
+
+/// Admissible strategy execution target plus typed-config provenance.
+///
+/// The executable strategy is always a registered compiled Rust strategy
 /// selected by key, with typed string parameters. There is deliberately no
 /// variant for inline code, notebook code, a Python path, or an untracked blob.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StrategySource {
+    /// Provenance class for the typed strategy config.
+    pub source_kind: StrategySourceKind,
     /// Key into [`registered_strategies`].
     pub registry_key: String,
     /// Typed parameters passed to the registered strategy constructor.
     pub parameters: BTreeMap<String, String>,
+    /// Immutable typed config artifact URI, required for human/RA config sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typed_config_uri: Option<String>,
+    /// SHA-256 of the typed config artifact, required for human/RA config sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typed_config_hash: Option<String>,
+    /// Promotion package artifact URI for RA-generated configs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promotion_package_uri: Option<String>,
+    /// SHA-256 of the promotion package artifact for RA-generated configs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promotion_package_hash: Option<String>,
 }
 
 /// Simulated venue settings mapped into [`BacktestVenueConfig`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestVenueConfig {
-    /// NautilusTrader venue name, for example `BYBIT`.
+    /// NautilusTrader venue name.
     pub nt_venue: String,
     /// One of `NETTING` or `HEDGING`.
     pub oms_type: String,
@@ -100,6 +274,65 @@ pub struct ManifestVenueConfig {
     pub book_type: String,
     /// Starting balances such as `["1_000_000 USDC"]`.
     pub starting_balances: Vec<String>,
+    /// If multi-venue routing should be enabled for the execution client.
+    pub routing: bool,
+    /// If the account for this exchange is frozen.
+    pub frozen_account: bool,
+    /// If stop orders are rejected when trigger price is in the market.
+    pub reject_stop_orders: bool,
+    /// If GTD time-in-force orders are supported by the venue.
+    pub support_gtd_orders: bool,
+    /// If contingent orders are supported/respected by the venue.
+    pub support_contingent_orders: bool,
+    /// If venue position IDs are generated on fills.
+    pub use_position_ids: bool,
+    /// If venue order IDs and position IDs are random UUID4s.
+    pub use_random_ids: bool,
+    /// If reduce-only execution instructions are honored.
+    pub use_reduce_only: bool,
+    /// If bars should be processed by the matching engine.
+    pub bar_execution: bool,
+    /// If bar high/low ordering should use NT's adaptive heuristic.
+    pub bar_adaptive_high_low_ordering: bool,
+    /// If trades should be processed by the matching engine.
+    pub trade_execution: bool,
+    /// If market orders should emit `OrderAccepted` events.
+    pub use_market_order_acks: bool,
+    /// If order book liquidity consumption should be tracked per level.
+    pub liquidity_consumption: bool,
+    /// If negative cash balances are allowed.
+    pub allow_cash_borrowing: bool,
+    /// If limit order queue-position tracking is enabled.
+    pub queue_position: bool,
+    /// One of `PARTIAL` or `FULL`.
+    pub oto_trigger_mode: String,
+    /// Account base currency, or `NONE` for a multi-currency account.
+    pub base_currency: String,
+    /// Account default leverage as a decimal string.
+    pub default_leverage: String,
+    /// Exchange-calculated market-order price protection boundary in points.
+    pub price_protection_points: u32,
+    /// NT per-instrument leverage map. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leverages: Option<BTreeMap<String, String>>,
+    /// NT margin model selector. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin_model: Option<String>,
+    /// NT simulation module selectors. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modules: Option<Vec<String>>,
+    /// NT fill model selector. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_model: Option<String>,
+    /// NT latency model selector. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_model: Option<String>,
+    /// NT fee model selector. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_model: Option<String>,
+    /// NT settlement prices keyed by instrument id. Unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_prices: Option<BTreeMap<String, String>>,
 }
 
 /// Catalog input mapped into [`BacktestDataConfig`].
@@ -107,10 +340,94 @@ pub struct ManifestVenueConfig {
 #[serde(deny_unknown_fields)]
 pub struct ManifestCatalogInput {
     pub catalog_path: String,
+    /// Catalog filesystem protocol, or `NONE` when `catalog_path` is already complete.
+    pub catalog_fs_protocol: String,
+    /// NT filesystem storage options for Python/fsspec-compatible paths.
+    pub catalog_fs_storage_options: BTreeMap<String, String>,
+    /// NT Rust object-store options for cloud-backed catalog paths.
+    pub catalog_fs_rust_storage_options: BTreeMap<String, String>,
     /// NautilusTrader data type, currently `TradeTick`.
     pub data_type: String,
-    /// NautilusTrader instrument id, for example `BNBUSDC.BYBIT`.
+    /// NautilusTrader instrument id, such as `SYMBOL.VENUE`.
     pub nt_instrument_id: String,
+    /// NT multi-instrument query ids. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrument_ids: Option<Vec<String>>,
+    /// NT data-query start time. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<i64>,
+    /// NT data-query end time. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<i64>,
+    /// NT catalog filter expression. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_expr: Option<String>,
+    /// NT data client id. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    /// NT catalog query metadata. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<BTreeMap<String, String>>,
+    /// NT bar specification. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_spec: Option<String>,
+    /// NT explicit bar type strings. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_types: Option<Vec<String>>,
+    /// NT directory-based file loading optimization. Declared but unsupported until mapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimize_file_loading: Option<bool>,
+}
+
+/// Artifact output store options used for publishing and published-catalog proof.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestArtifactStore {
+    /// NT/object-store options for Python/fsspec-compatible artifact writes.
+    pub storage_options: BTreeMap<String, String>,
+    /// NT/object-store options for the Rust cloud-backed artifact path.
+    pub rust_storage_options: BTreeMap<String, String>,
+    /// SSM parameters resolved into the Rust object-store options at runtime.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ssm_parameters: Option<ManifestArtifactStoreSsmParameters>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactSubpath {
+    Raw,
+    NtCatalog,
+    SourceProofs,
+    Backtests,
+    ArtifactIndex,
+    ResearchAnalytics,
+}
+
+impl ArtifactSubpath {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Raw => "raw",
+            Self::NtCatalog => "nt-catalog",
+            Self::SourceProofs => "source-proofs",
+            Self::Backtests => "backtests",
+            Self::ArtifactIndex => "artifact-index",
+            Self::ResearchAnalytics => "research-analytics",
+        }
+    }
+}
+
+/// SSM parameter paths for artifact-store credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestArtifactStoreSsmParameters {
+    /// AWS region used when resolving the configured SSM parameters.
+    pub region: String,
+    /// SSM parameter path whose decrypted value is the S3 access key id.
+    pub access_key_id: String,
+    /// SSM parameter path whose decrypted value is the S3 secret access key.
+    pub secret_access_key: String,
+    /// Optional SSM parameter path whose decrypted value is the S3 session token.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_token: Option<String>,
 }
 
 /// The typed backtest run manifest.
@@ -127,6 +444,10 @@ pub struct BacktestingRunManifest {
     pub source_proof_version: u32,
     /// True when this manifest pins a non-latest accepted proof.
     pub pins_non_latest_proof: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub proof_pin_reason_code: Option<ProofPinReasonCode>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub proof_pin_reason_detail: Option<String>,
     pub strategy: StrategySource,
     pub venue: ManifestVenueConfig,
     pub catalog_input: ManifestCatalogInput,
@@ -134,6 +455,8 @@ pub struct BacktestingRunManifest {
     pub artifact_root: String,
     /// Output prefix under `artifact_root/backtests/`.
     pub output_prefix: String,
+    /// Artifact-store options for output publication and direct catalog proof.
+    pub artifact_store: ManifestArtifactStore,
     /// Optional inclusive start time (Unix nanos).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub start_time: Option<i64>,
@@ -147,6 +470,9 @@ pub struct BacktestingRunManifest {
 pub enum ManifestError {
     MissingField(&'static str),
     InlineStrategyCode {
+        registry_key: String,
+    },
+    NotebookRuntimeStrategy {
         registry_key: String,
     },
     PythonStrategyPath {
@@ -165,8 +491,27 @@ pub enum ManifestError {
         registry_key: String,
         parameter: String,
     },
+    InvalidStrategySourceHash {
+        field: &'static str,
+        value: String,
+    },
+    StrategySourceFieldNotAllowed {
+        source_kind: StrategySourceKind,
+        field: &'static str,
+    },
+    StrategySourceOutsideAllowedArtifactRoot {
+        field: &'static str,
+        uri: String,
+        expected_prefix: String,
+    },
     InvalidStartingBalance {
         balance: String,
+    },
+    InvalidBaseCurrency {
+        currency: String,
+    },
+    InvalidDefaultLeverage {
+        leverage: String,
     },
     InvalidInstrumentId {
         instrument_id: String,
@@ -191,6 +536,9 @@ pub enum ManifestError {
         field: &'static str,
         value: String,
     },
+    UnsupportedNtSurface {
+        field: &'static str,
+    },
     OutputPrefixOutsideArtifactRoot,
     NegativeTime {
         field: &'static str,
@@ -199,6 +547,18 @@ pub enum ManifestError {
     InvertedTimeWindow {
         start: i64,
         end: i64,
+    },
+    RawArtifactStoreCredential {
+        field: &'static str,
+        key: String,
+    },
+    ArtifactStoreS3CredentialsNotResolved,
+    InvalidArtifactStoreSsmParameter {
+        field: &'static str,
+    },
+    ArtifactStoreSecretResolution {
+        field: &'static str,
+        source: String,
     },
 }
 
@@ -210,6 +570,12 @@ impl std::fmt::Display for ManifestError {
                 write!(
                     f,
                     "inline strategy code is not an accepted strategy source: {registry_key:?}"
+                )
+            }
+            Self::NotebookRuntimeStrategy { registry_key } => {
+                write!(
+                    f,
+                    "notebook runtime code is not an accepted strategy source: {registry_key:?}"
                 )
             }
             Self::PythonStrategyPath { registry_key } => {
@@ -243,8 +609,29 @@ impl std::fmt::Display for ManifestError {
                 f,
                 "parameter {parameter:?} is not accepted for strategy {registry_key:?}"
             ),
+            Self::InvalidStrategySourceHash { field, value } => {
+                write!(f, "{field} must be lowercase sha256 hex, got {value:?}")
+            }
+            Self::StrategySourceFieldNotAllowed { source_kind, field } => write!(
+                f,
+                "{field} is not allowed for strategy source kind {source_kind:?}"
+            ),
+            Self::StrategySourceOutsideAllowedArtifactRoot {
+                field,
+                uri,
+                expected_prefix,
+            } => write!(
+                f,
+                "{field} {uri:?} is outside the allowed strategy source prefix {expected_prefix:?}"
+            ),
             Self::InvalidStartingBalance { balance } => {
                 write!(f, "invalid starting balance: {balance:?}")
+            }
+            Self::InvalidBaseCurrency { currency } => {
+                write!(f, "invalid base currency: {currency:?}")
+            }
+            Self::InvalidDefaultLeverage { leverage } => {
+                write!(f, "invalid default leverage: {leverage:?}")
             }
             Self::InvalidInstrumentId { instrument_id } => {
                 write!(f, "invalid instrument id: {instrument_id:?}")
@@ -279,6 +666,10 @@ impl std::fmt::Display for ManifestError {
             Self::UnsupportedEnum { field, value } => {
                 write!(f, "unsupported value {value:?} for {field}")
             }
+            Self::UnsupportedNtSurface { field } => write!(
+                f,
+                "unsupported NT surface {field}: add typed NT config mapping before use"
+            ),
             Self::OutputPrefixOutsideArtifactRoot => {
                 write!(f, "output prefix must live under artifact_root/backtests/")
             }
@@ -288,13 +679,32 @@ impl std::fmt::Display for ManifestError {
             Self::InvertedTimeWindow { start, end } => {
                 write!(f, "start_time {start} must not be after end_time {end}")
             }
+            Self::RawArtifactStoreCredential { field, key } => write!(
+                f,
+                "{field}.{key} contains artifact_store credential material; configure artifact_store.ssm_parameters and resolve through SSM"
+            ),
+            Self::ArtifactStoreS3CredentialsNotResolved => write!(
+                f,
+                "artifact_store.ssm_parameters must resolve access_key_id and secret_access_key before publishing to an s3 output_prefix"
+            ),
+            Self::InvalidArtifactStoreSsmParameter { field } => write!(
+                f,
+                "artifact_store.ssm_parameters.{field} must be an absolute SSM parameter path without whitespace"
+            ),
+            Self::ArtifactStoreSecretResolution { field, source } => write!(
+                f,
+                "artifact_store.ssm_parameters.{field} SSM resolution failed: {source}"
+            ),
         }
     }
 }
 
 impl std::error::Error for ManifestError {}
 
-fn validate_strategy_source(strategy: &StrategySource) -> Result<(), ManifestError> {
+fn validate_strategy_source(
+    strategy: &StrategySource,
+    artifact_root: &str,
+) -> Result<(), ManifestError> {
     let key = strategy.registry_key.trim();
     if key.is_empty() {
         return Err(ManifestError::MissingField("strategy.registry_key"));
@@ -302,6 +712,12 @@ fn validate_strategy_source(strategy: &StrategySource) -> Result<(), ManifestErr
     // Reject executable code masquerading as a key.
     if key.contains(['{', '}', ';', '\n', '(', ')']) || key.contains("fn ") {
         return Err(ManifestError::InlineStrategyCode {
+            registry_key: key.to_string(),
+        });
+    }
+    // Reject notebook runtime paths before the generic filesystem-path guard.
+    if key.ends_with(".ipynb") || key.contains(".ipynb:") {
+        return Err(ManifestError::NotebookRuntimeStrategy {
             registry_key: key.to_string(),
         });
     }
@@ -369,7 +785,137 @@ fn validate_strategy_source(strategy: &StrategySource) -> Result<(), ManifestErr
         }
         _ => unreachable!("registered strategy was already matched"),
     }
+    validate_strategy_source_provenance(strategy, artifact_root)?;
     Ok(())
+}
+
+fn validate_strategy_source_provenance(
+    strategy: &StrategySource,
+    artifact_root: &str,
+) -> Result<(), ManifestError> {
+    match strategy.source_kind {
+        StrategySourceKind::CompiledRustRegistry => {
+            reject_strategy_source_field(
+                strategy.typed_config_uri.as_ref(),
+                strategy.source_kind,
+                "strategy.typed_config_uri",
+            )?;
+            reject_strategy_source_field(
+                strategy.typed_config_hash.as_ref(),
+                strategy.source_kind,
+                "strategy.typed_config_hash",
+            )?;
+            reject_strategy_source_field(
+                strategy.promotion_package_uri.as_ref(),
+                strategy.source_kind,
+                "strategy.promotion_package_uri",
+            )?;
+            reject_strategy_source_field(
+                strategy.promotion_package_hash.as_ref(),
+                strategy.source_kind,
+                "strategy.promotion_package_hash",
+            )
+        }
+        StrategySourceKind::HumanTypedConfig => {
+            validate_strategy_artifact_ref(
+                "strategy.typed_config_uri",
+                "strategy.typed_config_hash",
+                strategy.typed_config_uri.as_deref(),
+                strategy.typed_config_hash.as_deref(),
+                &format!("{}/", artifact_root.trim_end_matches('/')),
+            )?;
+            reject_strategy_source_field(
+                strategy.promotion_package_uri.as_ref(),
+                strategy.source_kind,
+                "strategy.promotion_package_uri",
+            )?;
+            reject_strategy_source_field(
+                strategy.promotion_package_hash.as_ref(),
+                strategy.source_kind,
+                "strategy.promotion_package_hash",
+            )
+        }
+        StrategySourceKind::ResearchAnalyticsPromotionPackage => {
+            let promotion_prefix = research_analytics_promotion_package_prefix(artifact_root);
+            validate_strategy_artifact_ref(
+                "strategy.typed_config_uri",
+                "strategy.typed_config_hash",
+                strategy.typed_config_uri.as_deref(),
+                strategy.typed_config_hash.as_deref(),
+                &promotion_prefix,
+            )?;
+            validate_strategy_artifact_ref(
+                "strategy.promotion_package_uri",
+                "strategy.promotion_package_hash",
+                strategy.promotion_package_uri.as_deref(),
+                strategy.promotion_package_hash.as_deref(),
+                &promotion_prefix,
+            )
+        }
+    }
+}
+
+fn reject_strategy_source_field<T>(
+    value: Option<&T>,
+    source_kind: StrategySourceKind,
+    field: &'static str,
+) -> Result<(), ManifestError> {
+    if value.is_some() {
+        Err(ManifestError::StrategySourceFieldNotAllowed { source_kind, field })
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_strategy_artifact_ref(
+    uri_field: &'static str,
+    hash_field: &'static str,
+    uri: Option<&str>,
+    hash: Option<&str>,
+    expected_prefix: &str,
+) -> Result<(), ManifestError> {
+    let uri = required_strategy_source_field(uri_field, uri)?;
+    let hash = required_strategy_source_field(hash_field, hash)?;
+    if !uri.starts_with(expected_prefix) {
+        return Err(ManifestError::StrategySourceOutsideAllowedArtifactRoot {
+            field: uri_field,
+            uri: uri.to_string(),
+            expected_prefix: expected_prefix.to_string(),
+        });
+    }
+    validate_strategy_source_hash(hash_field, hash)
+}
+
+fn required_strategy_source_field<'a>(
+    field: &'static str,
+    value: Option<&'a str>,
+) -> Result<&'a str, ManifestError> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(ManifestError::MissingField(field))
+}
+
+fn validate_strategy_source_hash(field: &'static str, value: &str) -> Result<(), ManifestError> {
+    let is_sha256 = value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if is_sha256 {
+        Ok(())
+    } else {
+        Err(ManifestError::InvalidStrategySourceHash {
+            field,
+            value: value.to_string(),
+        })
+    }
+}
+
+fn research_analytics_promotion_package_prefix(artifact_root: &str) -> String {
+    format!(
+        "{}/research-analytics/v1/promotion-packages/",
+        artifact_root.trim_end_matches('/')
+    )
 }
 
 fn validate_starting_balances(balances: &[String]) -> Result<(), ManifestError> {
@@ -390,65 +936,290 @@ impl BacktestingRunManifest {
     pub fn manifest_hash(&self) -> String {
         let mut hasher = Sha256::new();
         hasher.update(b"backtesting-run-manifest.v1");
-        hash_str(&mut hasher, "run_id", &self.run_id);
-        hash_str(
-            &mut hasher,
-            "market_structure_fixture",
-            market_structure_fixture_label(self.market_structure_fixture),
+        hasher.update(
+            serde_json::to_vec(self)
+                .expect("BacktestingRunManifest JSON serialization must be infallible"),
         );
-        hash_str(&mut hasher, "venue_binding_key", &self.venue_binding_key);
-        hash_str(
-            &mut hasher,
-            "run_purpose",
-            run_purpose_label(self.run_purpose),
-        );
-        hash_str(&mut hasher, "source_proof_id", &self.source_proof_id);
-        hash_u32(
-            &mut hasher,
-            "source_proof_version",
-            self.source_proof_version,
-        );
-        hash_bool(
-            &mut hasher,
-            "pins_non_latest_proof",
-            self.pins_non_latest_proof,
-        );
-        hash_str(
-            &mut hasher,
-            "strategy.registry_key",
-            &self.strategy.registry_key,
-        );
-        for (key, value) in &self.strategy.parameters {
-            hash_str(&mut hasher, "strategy.parameters.key", key);
-            hash_str(&mut hasher, "strategy.parameters.value", value);
-        }
-        hash_str(&mut hasher, "venue.nt_venue", &self.venue.nt_venue);
-        hash_str(&mut hasher, "venue.oms_type", &self.venue.oms_type);
-        hash_str(&mut hasher, "venue.account_type", &self.venue.account_type);
-        hash_str(&mut hasher, "venue.book_type", &self.venue.book_type);
-        for balance in &self.venue.starting_balances {
-            hash_str(&mut hasher, "venue.starting_balances", balance);
-        }
-        hash_str(
-            &mut hasher,
-            "catalog_input.catalog_path",
-            &self.catalog_input.catalog_path,
-        );
-        hash_str(
-            &mut hasher,
-            "catalog_input.data_type",
-            &self.catalog_input.data_type,
-        );
-        hash_str(
-            &mut hasher,
-            "catalog_input.nt_instrument_id",
-            &self.catalog_input.nt_instrument_id,
-        );
-        hash_str(&mut hasher, "artifact_root", &self.artifact_root);
-        hash_str(&mut hasher, "output_prefix", &self.output_prefix);
-        hash_i64_opt(&mut hasher, "start_time", self.start_time);
-        hash_i64_opt(&mut hasher, "end_time", self.end_time);
         hex::encode(hasher.finalize())
+    }
+
+    /// Build the artifact-local manifest that records submitted run intent plus
+    /// resolved NT/default surface values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the submitted manifest cannot map to NT config.
+    pub fn to_artifact_manifest(&self) -> Result<BacktestRunManifestArtifact, ManifestError> {
+        Ok(BacktestRunManifestArtifact {
+            manifest_version: BACKTEST_RUN_MANIFEST_ARTIFACT_VERSION.to_string(),
+            submitted_manifest_hash: self.manifest_hash(),
+            manifest: self.clone(),
+            resolved_nt_surfaces: self.resolved_nt_surfaces()?,
+        })
+    }
+
+    /// Resolve the NT/custom extension-surface records for this manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest cannot map to NT config.
+    pub fn resolved_nt_surfaces(&self) -> Result<Vec<ResolvedNtSurface>, ManifestError> {
+        let run_config = self.to_nt_run_config()?;
+        let engine = run_config.engine();
+        let venue = run_config
+            .venues()
+            .first()
+            .expect("BacktestingRunManifest always builds one BacktestVenueConfig");
+        let data = run_config
+            .data()
+            .first()
+            .expect("BacktestingRunManifest always builds one BacktestDataConfig");
+        let mut surfaces = vec![
+            resolved_surface(
+                "engine.config",
+                NtSurfaceClassification::Defaulted,
+                "BacktestRunConfig.engine",
+                format!(
+                    "BacktestEngineConfig::default(run_analysis={},bypass_logging={})",
+                    engine.run_analysis, engine.bypass_logging
+                ),
+            ),
+            resolved_surface(
+                "run.chunk_size",
+                NtSurfaceClassification::Defaulted,
+                "BacktestRunConfig.chunk_size",
+                option_value(run_config.chunk_size()),
+            ),
+            resolved_surface(
+                "run.raise_exception",
+                NtSurfaceClassification::Defaulted,
+                "BacktestRunConfig.raise_exception",
+                run_config.raise_exception().to_string(),
+            ),
+            resolved_surface(
+                "run.dispose_on_completion",
+                NtSurfaceClassification::Defaulted,
+                "BacktestRunConfig.dispose_on_completion",
+                run_config.dispose_on_completion().to_string(),
+            ),
+            resolved_surface(
+                "run.id",
+                NtSurfaceClassification::PassThrough,
+                "BacktestRunConfig.id",
+                run_config.id(),
+            ),
+            resolved_surface(
+                "run.start",
+                NtSurfaceClassification::PassThrough,
+                "BacktestRunConfig.start",
+                option_value(run_config.start()),
+            ),
+            resolved_surface(
+                "run.end",
+                NtSurfaceClassification::PassThrough,
+                "BacktestRunConfig.end",
+                option_value(run_config.end()),
+            ),
+            resolved_surface(
+                "venue.name",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.name",
+                venue.name().to_string(),
+            ),
+            resolved_surface(
+                "venue.oms_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.oms_type",
+                format!("{:?}", venue.oms_type()),
+            ),
+            resolved_surface(
+                "venue.account_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.account_type",
+                format!("{:?}", venue.account_type()),
+            ),
+            resolved_surface(
+                "venue.book_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.book_type",
+                format!("{:?}", venue.book_type()),
+            ),
+            resolved_surface(
+                "venue.starting_balances",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.starting_balances",
+                format!("{:?}", venue.starting_balances()),
+            ),
+            resolved_surface(
+                "venue.routing",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.routing",
+                venue.routing().to_string(),
+            ),
+            resolved_surface(
+                "venue.frozen_account",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.frozen_account",
+                venue.frozen_account().to_string(),
+            ),
+            resolved_surface(
+                "venue.reject_stop_orders",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.reject_stop_orders",
+                venue.reject_stop_orders().to_string(),
+            ),
+            resolved_surface(
+                "venue.support_gtd_orders",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.support_gtd_orders",
+                venue.support_gtd_orders().to_string(),
+            ),
+            resolved_surface(
+                "venue.support_contingent_orders",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.support_contingent_orders",
+                venue.support_contingent_orders().to_string(),
+            ),
+            resolved_surface(
+                "venue.use_position_ids",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_position_ids",
+                venue.use_position_ids().to_string(),
+            ),
+            resolved_surface(
+                "venue.use_random_ids",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_random_ids",
+                venue.use_random_ids().to_string(),
+            ),
+            resolved_surface(
+                "venue.use_reduce_only",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_reduce_only",
+                venue.use_reduce_only().to_string(),
+            ),
+            resolved_surface(
+                "venue.bar_execution",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.bar_execution",
+                venue.bar_execution().to_string(),
+            ),
+            resolved_surface(
+                "venue.bar_adaptive_high_low_ordering",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.bar_adaptive_high_low_ordering",
+                venue.bar_adaptive_high_low_ordering().to_string(),
+            ),
+            resolved_surface(
+                "venue.trade_execution",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.trade_execution",
+                venue.trade_execution().to_string(),
+            ),
+            resolved_surface(
+                "venue.use_market_order_acks",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_market_order_acks",
+                venue.use_market_order_acks().to_string(),
+            ),
+            resolved_surface(
+                "venue.liquidity_consumption",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.liquidity_consumption",
+                venue.liquidity_consumption().to_string(),
+            ),
+            resolved_surface(
+                "venue.allow_cash_borrowing",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.allow_cash_borrowing",
+                venue.allow_cash_borrowing().to_string(),
+            ),
+            resolved_surface(
+                "venue.queue_position",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.queue_position",
+                venue.queue_position().to_string(),
+            ),
+            resolved_surface(
+                "venue.oto_trigger_mode",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.oto_trigger_mode",
+                format!("{:?}", venue.oto_trigger_mode()),
+            ),
+            resolved_surface(
+                "venue.base_currency",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.base_currency",
+                option_value(venue.base_currency()),
+            ),
+            resolved_surface(
+                "venue.default_leverage",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.default_leverage",
+                venue.default_leverage().to_string(),
+            ),
+            resolved_surface(
+                "venue.price_protection_points",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.price_protection_points",
+                venue.price_protection_points().to_string(),
+            ),
+            resolved_surface(
+                "catalog.data_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.data_type",
+                format!("{:?}", data.data_type()),
+            ),
+            resolved_surface(
+                "catalog.catalog_path",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_path",
+                data.catalog_path(),
+            ),
+            resolved_surface(
+                "catalog.catalog_fs_protocol",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_fs_protocol",
+                option_value(data.catalog_fs_protocol()),
+            ),
+            resolved_surface(
+                "catalog.catalog_fs_storage_options",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_fs_storage_options",
+                storage_option_keys_value(data.catalog_fs_storage_options()),
+            ),
+            resolved_surface(
+                "catalog.catalog_fs_rust_storage_options",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_fs_rust_storage_options",
+                storage_option_keys_value(data.catalog_fs_rust_storage_options()),
+            ),
+            resolved_surface(
+                "catalog.instrument_id",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.instrument_id",
+                option_value(data.instrument_id()),
+            ),
+        ];
+        surfaces.extend(UNSUPPORTED_NT_VENUE_SURFACES.iter().map(|surface| {
+            resolved_surface(
+                &format!("venue.{surface}"),
+                NtSurfaceClassification::UnsupportedForNow,
+                &format!("BacktestVenueConfig.{surface}"),
+                "requests_rejected_before_nt_config",
+            )
+        }));
+        surfaces.extend(UNSUPPORTED_NT_CATALOG_QUERY_SURFACES.iter().map(
+            |(surface, _, nt_field)| {
+                resolved_surface(
+                    surface,
+                    NtSurfaceClassification::UnsupportedForNow,
+                    nt_field,
+                    "requests_rejected_before_nt_config",
+                )
+            },
+        ));
+        Ok(surfaces)
     }
 
     /// Validate the manifest against gate-4 rules and bind it to an accepted
@@ -465,9 +1236,25 @@ impl BacktestingRunManifest {
             ("artifact_root", self.artifact_root.as_str()),
             ("output_prefix", self.output_prefix.as_str()),
             ("venue.nt_venue", self.venue.nt_venue.as_str()),
+            ("venue.oms_type", self.venue.oms_type.as_str()),
+            ("venue.account_type", self.venue.account_type.as_str()),
+            ("venue.book_type", self.venue.book_type.as_str()),
+            (
+                "venue.oto_trigger_mode",
+                self.venue.oto_trigger_mode.as_str(),
+            ),
+            ("venue.base_currency", self.venue.base_currency.as_str()),
+            (
+                "venue.default_leverage",
+                self.venue.default_leverage.as_str(),
+            ),
             (
                 "catalog_input.catalog_path",
                 self.catalog_input.catalog_path.as_str(),
+            ),
+            (
+                "catalog_input.catalog_fs_protocol",
+                self.catalog_input.catalog_fs_protocol.as_str(),
             ),
             (
                 "catalog_input.nt_instrument_id",
@@ -479,9 +1266,30 @@ impl BacktestingRunManifest {
             }
         }
         ensure_supported_enums(self)?;
+        ensure_unsupported_nt_venue_surfaces_absent(&self.venue)?;
+        ensure_unsupported_nt_catalog_query_surfaces_absent(&self.catalog_input)?;
         ensure_supported_data_type(&self.catalog_input.data_type)?;
+        let catalog_fs_protocol =
+            parse_catalog_fs_protocol(&self.catalog_input.catalog_fs_protocol)?;
+        validate_catalog_storage_options(
+            catalog_fs_protocol.as_deref(),
+            &self.catalog_input.catalog_fs_storage_options,
+            &self.catalog_input.catalog_fs_rust_storage_options,
+        )?;
+        validate_catalog_storage_options(
+            output_prefix_protocol(&self.output_prefix),
+            &self.artifact_store.storage_options,
+            &self.artifact_store.rust_storage_options,
+        )?;
+        validate_artifact_store_secrets(&self.artifact_store)?;
+        ensure_artifact_store_conditional_put_enabled(
+            output_prefix_protocol(&self.output_prefix),
+            &self.artifact_store.storage_options,
+            &self.artifact_store.rust_storage_options,
+        )?;
+        validate_artifact_root_protocol(&self.artifact_root)?;
         ensure_data_type_matches_fidelity(&self.catalog_input.data_type, accepted.fidelity_class)?;
-        validate_strategy_source(&self.strategy)?;
+        validate_strategy_source(&self.strategy, &self.artifact_root)?;
         validate_starting_balances(&self.venue.starting_balances)?;
 
         // Data must be accepted: the only admissible input is the accepted
@@ -506,6 +1314,17 @@ impl BacktestingRunManifest {
         if self.run_purpose == RunPurpose::Normal && self.pins_non_latest_proof {
             return Err(ManifestError::NonLatestProofPinForNormalRun);
         }
+        if self.pins_non_latest_proof && self.proof_pin_reason_code.is_none() {
+            return Err(ManifestError::MissingField("proof_pin_reason_code"));
+        }
+        if self.proof_pin_reason_code == Some(ProofPinReasonCode::AuditOrInvestigation)
+            && self
+                .proof_pin_reason_detail
+                .as_deref()
+                .is_none_or(|detail| detail.trim().is_empty())
+        {
+            return Err(ManifestError::MissingField("proof_pin_reason_detail"));
+        }
         for (field, value) in [("start_time", self.start_time), ("end_time", self.end_time)] {
             if let Some(value) = value
                 && value < 0
@@ -527,18 +1346,52 @@ impl BacktestingRunManifest {
         Ok(())
     }
 
+    /// Resolve a typed artifact subpath under the configured artifact root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `artifact_root` uses an unsupported scheme.
+    pub fn artifact_subpath_uri(&self, subpath: ArtifactSubpath) -> Result<String, ManifestError> {
+        validate_artifact_root_protocol(&self.artifact_root)?;
+        Ok(format!(
+            "{}/{}",
+            self.artifact_root.trim_end_matches('/'),
+            subpath.as_str()
+        ))
+    }
+
     /// Map the venue settings into a NautilusTrader [`BacktestVenueConfig`].
     ///
     /// # Errors
     ///
     /// Returns an error if an enum value is unsupported.
     pub fn to_nt_venue_config(&self) -> Result<BacktestVenueConfig, ManifestError> {
+        ensure_unsupported_nt_venue_surfaces_absent(&self.venue)?;
         Ok(BacktestVenueConfig::builder()
             .name(Ustr::from(&self.venue.nt_venue))
             .oms_type(parse_oms_type(&self.venue.oms_type)?)
             .account_type(parse_account_type(&self.venue.account_type)?)
             .book_type(parse_book_type(&self.venue.book_type)?)
             .starting_balances(self.venue.starting_balances.clone())
+            .routing(self.venue.routing)
+            .frozen_account(self.venue.frozen_account)
+            .reject_stop_orders(self.venue.reject_stop_orders)
+            .support_gtd_orders(self.venue.support_gtd_orders)
+            .support_contingent_orders(self.venue.support_contingent_orders)
+            .use_position_ids(self.venue.use_position_ids)
+            .use_random_ids(self.venue.use_random_ids)
+            .use_reduce_only(self.venue.use_reduce_only)
+            .bar_execution(self.venue.bar_execution)
+            .bar_adaptive_high_low_ordering(self.venue.bar_adaptive_high_low_ordering)
+            .trade_execution(self.venue.trade_execution)
+            .use_market_order_acks(self.venue.use_market_order_acks)
+            .liquidity_consumption(self.venue.liquidity_consumption)
+            .allow_cash_borrowing(self.venue.allow_cash_borrowing)
+            .queue_position(self.venue.queue_position)
+            .oto_trigger_mode(parse_oto_trigger_mode(&self.venue.oto_trigger_mode)?)
+            .maybe_base_currency(parse_base_currency(&self.venue.base_currency)?)
+            .default_leverage(parse_default_leverage(&self.venue.default_leverage)?)
+            .price_protection_points(self.venue.price_protection_points)
             .build())
     }
 
@@ -548,6 +1401,7 @@ impl BacktestingRunManifest {
     ///
     /// Returns an error if the data type or instrument id is unsupported.
     pub fn to_nt_data_config(&self) -> Result<BacktestDataConfig, ManifestError> {
+        ensure_unsupported_nt_catalog_query_surfaces_absent(&self.catalog_input)?;
         let data_type = match self.catalog_input.data_type.as_str() {
             "TradeTick" => NautilusDataType::TradeTick,
             other => {
@@ -563,11 +1417,154 @@ impl BacktestingRunManifest {
             .map_err(|_| ManifestError::InvalidInstrumentId {
                 instrument_id: self.catalog_input.nt_instrument_id.clone(),
             })?;
+        let catalog_fs_protocol =
+            parse_catalog_fs_protocol(&self.catalog_input.catalog_fs_protocol)?;
+        validate_catalog_storage_options(
+            catalog_fs_protocol.as_deref(),
+            &self.catalog_input.catalog_fs_storage_options,
+            &self.catalog_input.catalog_fs_rust_storage_options,
+        )?;
         Ok(BacktestDataConfig::builder()
             .data_type(data_type)
             .catalog_path(self.catalog_input.catalog_path.clone())
+            .maybe_catalog_fs_protocol(catalog_fs_protocol)
+            .maybe_catalog_fs_storage_options(
+                if self.catalog_input.catalog_fs_storage_options.is_empty() {
+                    None
+                } else {
+                    Some(
+                        self.catalog_input
+                            .catalog_fs_storage_options
+                            .clone()
+                            .into_iter()
+                            .collect(),
+                    )
+                },
+            )
+            .maybe_catalog_fs_rust_storage_options(
+                if self
+                    .catalog_input
+                    .catalog_fs_rust_storage_options
+                    .is_empty()
+                {
+                    None
+                } else {
+                    Some(
+                        self.catalog_input
+                            .catalog_fs_rust_storage_options
+                            .clone()
+                            .into_iter()
+                            .collect(),
+                    )
+                },
+            )
             .instrument_id(instrument_id)
             .build())
+    }
+
+    /// Return the single effective artifact-store option map for publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the configured artifact-store options conflict with
+    /// the output prefix protocol or use an unsupported S3 option key.
+    pub fn artifact_store_storage_options(
+        &self,
+    ) -> Result<Option<BTreeMap<String, String>>, ManifestError> {
+        if self.artifact_store.ssm_parameters.is_some() {
+            return Err(ManifestError::UnsupportedEnum {
+                field: "artifact_store.ssm_parameters",
+                value: "requires SSM resolver".to_string(),
+            });
+        }
+        let options = self
+            .artifact_store_base_storage_options()?
+            .unwrap_or_default();
+        ensure_artifact_store_s3_credentials_resolved(
+            output_prefix_protocol(&self.output_prefix),
+            &options,
+        )?;
+        if options.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(options))
+        }
+    }
+
+    pub fn artifact_store_storage_options_resolved<F>(
+        &self,
+        resolver: &mut F,
+    ) -> Result<Option<BTreeMap<String, String>>, ManifestError>
+    where
+        F: FnMut(&str, &str) -> Result<String, String>,
+    {
+        let mut options = self
+            .artifact_store_base_storage_options()?
+            .unwrap_or_default();
+        if let Some(parameters) = &self.artifact_store.ssm_parameters {
+            validate_artifact_store_ssm_parameters(parameters)?;
+            options.insert(
+                "access_key_id".to_string(),
+                resolve_artifact_store_secret(
+                    resolver,
+                    &parameters.region,
+                    "access_key_id",
+                    &parameters.access_key_id,
+                )?,
+            );
+            options.insert(
+                "secret_access_key".to_string(),
+                resolve_artifact_store_secret(
+                    resolver,
+                    &parameters.region,
+                    "secret_access_key",
+                    &parameters.secret_access_key,
+                )?,
+            );
+            if let Some(session_token) = &parameters.session_token {
+                options.insert(
+                    "session_token".to_string(),
+                    resolve_artifact_store_secret(
+                        resolver,
+                        &parameters.region,
+                        "session_token",
+                        session_token,
+                    )?,
+                );
+            }
+        }
+        ensure_artifact_store_s3_credentials_resolved(
+            output_prefix_protocol(&self.output_prefix),
+            &options,
+        )?;
+        if options.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(options))
+        }
+    }
+
+    fn artifact_store_base_storage_options(
+        &self,
+    ) -> Result<Option<BTreeMap<String, String>>, ManifestError> {
+        validate_catalog_storage_options(
+            output_prefix_protocol(&self.output_prefix),
+            &self.artifact_store.storage_options,
+            &self.artifact_store.rust_storage_options,
+        )?;
+        validate_artifact_store_secrets(&self.artifact_store)?;
+        ensure_artifact_store_conditional_put_enabled(
+            output_prefix_protocol(&self.output_prefix),
+            &self.artifact_store.storage_options,
+            &self.artifact_store.rust_storage_options,
+        )?;
+        if !self.artifact_store.rust_storage_options.is_empty() {
+            Ok(Some(self.artifact_store.rust_storage_options.clone()))
+        } else if !self.artifact_store.storage_options.is_empty() {
+            Ok(Some(self.artifact_store.storage_options.clone()))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Map the manifest into a NautilusTrader [`BacktestRunConfig`].
@@ -601,58 +1598,89 @@ impl BacktestingRunManifest {
     }
 }
 
-fn hash_str(hasher: &mut Sha256, field: &str, value: &str) {
-    hasher.update([0]);
-    hasher.update(field.as_bytes());
-    hasher.update([1]);
-    hasher.update(value.len().to_le_bytes());
-    hasher.update(value.as_bytes());
-}
-
-fn hash_bool(hasher: &mut Sha256, field: &str, value: bool) {
-    hash_str(hasher, field, if value { "true" } else { "false" });
-}
-
-fn hash_u32(hasher: &mut Sha256, field: &str, value: u32) {
-    hasher.update([0]);
-    hasher.update(field.as_bytes());
-    hasher.update([2]);
-    hasher.update(value.to_le_bytes());
-}
-
-fn hash_i64_opt(hasher: &mut Sha256, field: &str, value: Option<i64>) {
-    hasher.update([0]);
-    hasher.update(field.as_bytes());
-    match value {
-        Some(value) => {
-            hasher.update([3]);
-            hasher.update(value.to_le_bytes());
-        }
-        None => hasher.update([4]),
-    }
-}
-
-fn market_structure_fixture_label(fixture: MarketStructureFixture) -> &'static str {
-    match fixture {
-        MarketStructureFixture::BinaryOption => "binary-option",
-        MarketStructureFixture::PerpsSpot => "perps-spot",
-    }
-}
-
-fn run_purpose_label(purpose: RunPurpose) -> &'static str {
-    match purpose {
-        RunPurpose::Normal => "normal",
-        RunPurpose::Reproduction => "reproduction",
-        RunPurpose::Audit => "audit",
-        RunPurpose::Regression => "regression",
-        RunPurpose::Migration => "migration",
-    }
-}
-
 fn ensure_supported_enums(manifest: &BacktestingRunManifest) -> Result<(), ManifestError> {
     parse_oms_type(&manifest.venue.oms_type)?;
     parse_account_type(&manifest.venue.account_type)?;
     parse_book_type(&manifest.venue.book_type)?;
+    parse_oto_trigger_mode(&manifest.venue.oto_trigger_mode)?;
+    parse_base_currency(&manifest.venue.base_currency)?;
+    parse_default_leverage(&manifest.venue.default_leverage)?;
+    Ok(())
+}
+
+fn ensure_unsupported_nt_venue_surfaces_absent(
+    venue: &ManifestVenueConfig,
+) -> Result<(), ManifestError> {
+    for (field, present) in [
+        (UNSUPPORTED_NT_VENUE_SURFACES[0], venue.leverages.is_some()),
+        (
+            UNSUPPORTED_NT_VENUE_SURFACES[1],
+            venue.margin_model.is_some(),
+        ),
+        (UNSUPPORTED_NT_VENUE_SURFACES[2], venue.modules.is_some()),
+        (UNSUPPORTED_NT_VENUE_SURFACES[3], venue.fill_model.is_some()),
+        (
+            UNSUPPORTED_NT_VENUE_SURFACES[4],
+            venue.latency_model.is_some(),
+        ),
+        (UNSUPPORTED_NT_VENUE_SURFACES[5], venue.fee_model.is_some()),
+        (
+            UNSUPPORTED_NT_VENUE_SURFACES[6],
+            venue.settlement_prices.is_some(),
+        ),
+    ] {
+        if present {
+            return Err(ManifestError::UnsupportedNtSurface { field });
+        }
+    }
+    Ok(())
+}
+
+fn ensure_unsupported_nt_catalog_query_surfaces_absent(
+    catalog: &ManifestCatalogInput,
+) -> Result<(), ManifestError> {
+    for (field, present) in [
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[0].1,
+            catalog.instrument_ids.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[1].1,
+            catalog.start_time.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[2].1,
+            catalog.end_time.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[3].1,
+            catalog.filter_expr.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[4].1,
+            catalog.client_id.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[5].1,
+            catalog.metadata.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[6].1,
+            catalog.bar_spec.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[7].1,
+            catalog.bar_types.is_some(),
+        ),
+        (
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[8].1,
+            catalog.optimize_file_loading.is_some(),
+        ),
+    ] {
+        if present {
+            return Err(ManifestError::UnsupportedNtSurface { field });
+        }
+    }
     Ok(())
 }
 
@@ -663,6 +1691,222 @@ fn ensure_supported_data_type(value: &str) -> Result<(), ManifestError> {
             data_type: other.to_string(),
         }),
     }
+}
+
+fn parse_catalog_fs_protocol(value: &str) -> Result<Option<String>, ManifestError> {
+    match value {
+        CATALOG_FS_PROTOCOL_NONE => Ok(None),
+        "s3" | "gs" | "gcs" | "az" | "abfs" | "http" | "https" => Ok(Some(value.to_string())),
+        other => Err(ManifestError::UnsupportedEnum {
+            field: "catalog_input.catalog_fs_protocol",
+            value: other.to_string(),
+        }),
+    }
+}
+
+fn output_prefix_protocol(output_prefix: &str) -> Option<&str> {
+    output_prefix
+        .split_once("://")
+        .map(|(protocol, _)| protocol)
+}
+
+fn validate_artifact_root_protocol(artifact_root: &str) -> Result<(), ManifestError> {
+    match output_prefix_protocol(artifact_root) {
+        Some("s3" | "file") => Ok(()),
+        Some(other) => Err(ManifestError::UnsupportedEnum {
+            field: "artifact_root",
+            value: other.to_string(),
+        }),
+        None => Err(ManifestError::UnsupportedEnum {
+            field: "artifact_root",
+            value: CATALOG_FS_PROTOCOL_NONE.to_string(),
+        }),
+    }
+}
+
+fn validate_catalog_storage_options(
+    protocol: Option<&str>,
+    storage_options: &BTreeMap<String, String>,
+    rust_storage_options: &BTreeMap<String, String>,
+) -> Result<(), ManifestError> {
+    if !storage_options.is_empty() && !rust_storage_options.is_empty() {
+        return Err(ManifestError::UnsupportedEnum {
+            field: "catalog_input.catalog_fs_storage_options",
+            value: CATALOG_STORAGE_OPTIONS_SHADOWED.to_string(),
+        });
+    }
+    if protocol.is_none() && (!storage_options.is_empty() || !rust_storage_options.is_empty()) {
+        return Err(ManifestError::UnsupportedEnum {
+            field: "catalog_input.catalog_fs_protocol",
+            value: format!("{CATALOG_FS_PROTOCOL_NONE} cannot carry storage options"),
+        });
+    }
+    if protocol == Some("s3") {
+        for (key, value) in storage_options {
+            ensure_supported_s3_storage_option(
+                "catalog_input.catalog_fs_storage_options",
+                key,
+                value,
+            )?;
+        }
+        for (key, value) in rust_storage_options {
+            ensure_supported_s3_storage_option(
+                "catalog_input.catalog_fs_rust_storage_options",
+                key,
+                value,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_supported_s3_storage_option(
+    field: &'static str,
+    key: &str,
+    value: &str,
+) -> Result<(), ManifestError> {
+    match key {
+        "endpoint_url" | "region" | "access_key_id" | "key" | "secret_access_key" | "secret"
+        | "session_token" | "token" | "allow_http" => Ok(()),
+        S3_OPTION_CONDITIONAL_PUT => validate_s3_conditional_put_value(field, value),
+        other => Err(ManifestError::UnsupportedEnum {
+            field,
+            value: other.to_string(),
+        }),
+    }
+}
+
+fn validate_s3_conditional_put_value(
+    field: &'static str,
+    value: &str,
+) -> Result<(), ManifestError> {
+    match value {
+        S3_CONDITIONAL_PUT_ETAG | S3_CONDITIONAL_PUT_DISABLED => Ok(()),
+        other => Err(ManifestError::UnsupportedEnum {
+            field,
+            value: format!("{S3_OPTION_CONDITIONAL_PUT}={other}"),
+        }),
+    }
+}
+
+fn ensure_artifact_store_conditional_put_enabled(
+    protocol: Option<&str>,
+    storage_options: &BTreeMap<String, String>,
+    rust_storage_options: &BTreeMap<String, String>,
+) -> Result<(), ManifestError> {
+    if protocol != Some("s3") {
+        return Ok(());
+    }
+    for options in [storage_options, rust_storage_options] {
+        if options.get(S3_OPTION_CONDITIONAL_PUT).map(String::as_str)
+            == Some(S3_CONDITIONAL_PUT_DISABLED)
+        {
+            return Err(ManifestError::UnsupportedEnum {
+                field: "artifact_store.rust_storage_options.conditional_put",
+                value: "disabled cannot support Artifact Index create-only event writes or conditional latest-pointer updates".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_artifact_store_secrets(
+    artifact_store: &ManifestArtifactStore,
+) -> Result<(), ManifestError> {
+    reject_raw_artifact_store_credentials(
+        "artifact_store.storage_options",
+        &artifact_store.storage_options,
+    )?;
+    reject_raw_artifact_store_credentials(
+        "artifact_store.rust_storage_options",
+        &artifact_store.rust_storage_options,
+    )?;
+    if let Some(parameters) = &artifact_store.ssm_parameters {
+        validate_artifact_store_ssm_parameters(parameters)?;
+    }
+    Ok(())
+}
+
+fn ensure_artifact_store_s3_credentials_resolved(
+    protocol: Option<&str>,
+    options: &BTreeMap<String, String>,
+) -> Result<(), ManifestError> {
+    if protocol != Some("s3") {
+        return Ok(());
+    }
+    let has_access_key = options.contains_key("access_key_id") || options.contains_key("key");
+    let has_secret_key =
+        options.contains_key("secret_access_key") || options.contains_key("secret");
+    if has_access_key && has_secret_key {
+        Ok(())
+    } else {
+        Err(ManifestError::ArtifactStoreS3CredentialsNotResolved)
+    }
+}
+
+fn reject_raw_artifact_store_credentials(
+    field: &'static str,
+    options: &BTreeMap<String, String>,
+) -> Result<(), ManifestError> {
+    for key in options.keys() {
+        if is_s3_credential_option(key) {
+            return Err(ManifestError::RawArtifactStoreCredential {
+                field,
+                key: key.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn is_s3_credential_option(key: &str) -> bool {
+    matches!(
+        key,
+        "access_key_id" | "key" | "secret_access_key" | "secret" | "session_token" | "token"
+    )
+}
+
+fn validate_artifact_store_ssm_parameters(
+    parameters: &ManifestArtifactStoreSsmParameters,
+) -> Result<(), ManifestError> {
+    if parameters.region.trim().is_empty() {
+        return Err(ManifestError::MissingField(
+            "artifact_store.ssm_parameters.region",
+        ));
+    }
+    for (field, value) in [
+        ("access_key_id", parameters.access_key_id.as_str()),
+        ("secret_access_key", parameters.secret_access_key.as_str()),
+    ] {
+        validate_artifact_store_ssm_parameter(field, value)?;
+    }
+    if let Some(session_token) = &parameters.session_token {
+        validate_artifact_store_ssm_parameter("session_token", session_token)?;
+    }
+    Ok(())
+}
+
+fn validate_artifact_store_ssm_parameter(
+    field: &'static str,
+    value: &str,
+) -> Result<(), ManifestError> {
+    if !value.starts_with('/') || value.trim() != value || value.chars().any(char::is_whitespace) {
+        return Err(ManifestError::InvalidArtifactStoreSsmParameter { field });
+    }
+    Ok(())
+}
+
+fn resolve_artifact_store_secret<F>(
+    resolver: &mut F,
+    region: &str,
+    field: &'static str,
+    path: &str,
+) -> Result<String, ManifestError>
+where
+    F: FnMut(&str, &str) -> Result<String, String>,
+{
+    resolver(region, path)
+        .map_err(|source| ManifestError::ArtifactStoreSecretResolution { field, source })
 }
 
 fn ensure_data_type_matches_fidelity(
@@ -712,6 +1956,40 @@ fn parse_book_type(value: &str) -> Result<BookType, ManifestError> {
     }
 }
 
+fn parse_oto_trigger_mode(value: &str) -> Result<OtoTriggerMode, ManifestError> {
+    match value {
+        "PARTIAL" => Ok(OtoTriggerMode::Partial),
+        "FULL" => Ok(OtoTriggerMode::Full),
+        other => Err(ManifestError::UnsupportedEnum {
+            field: "venue.oto_trigger_mode",
+            value: other.to_string(),
+        }),
+    }
+}
+
+fn parse_base_currency(value: &str) -> Result<Option<Currency>, ManifestError> {
+    if value == "NONE" {
+        return Ok(None);
+    }
+    Currency::from_str(value)
+        .map(Some)
+        .map_err(|_| ManifestError::InvalidBaseCurrency {
+            currency: value.to_string(),
+        })
+}
+
+fn parse_default_leverage(value: &str) -> Result<Decimal, ManifestError> {
+    let leverage = Decimal::from_str(value).map_err(|_| ManifestError::InvalidDefaultLeverage {
+        leverage: value.to_string(),
+    })?;
+    if leverage <= Decimal::ZERO {
+        return Err(ManifestError::InvalidDefaultLeverage {
+            leverage: value.to_string(),
+        });
+    }
+    Ok(leverage)
+}
+
 /// Build the typed manifest from TOML text.
 ///
 /// # Errors
@@ -729,110 +2007,99 @@ pub fn parse_manifest_toml(text: &str) -> Result<BacktestingRunManifest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source_proof::{
-        AcceptanceMode, EvidenceState, FixtureType, IngestManifestObjectRecord, NtMappingStatus,
-        RequiredCheck, RequiredChecks, SourceProofFidelityClass, SourceProofReport,
-        SourceProofStatus, TimeRange, select_accepted_dataset,
-    };
+    use crate::source_proof::{SourceProofFidelityClass, synthetic_accepted_dataset_for_tests};
+
+    const TEST_INSTRUMENT_ID: &str = "TESTPAIR.TESTVENUE";
+    const TEST_BAR_TYPE: &str = "TESTPAIR.TESTVENUE-1-MINUTE-LAST-EXTERNAL";
+    const TEST_RUN_ID: &str = "backtesting-vertical-slice-testpair-2026-03-01";
+    const TEST_SOURCE_PROOF_ID: &str = "source-proof-synthetic-native-trades";
+    const TEST_SOURCE_BINDING: &str = "synthetic-native-trades";
+    const TEST_NT_VENUE: &str = "TESTVENUE";
 
     fn accepted_dataset() -> AcceptedDataset {
-        let checks = RequiredChecks {
-            source_access: RequiredCheck::passed("m"),
-            license: RequiredCheck::passed("m"),
-            schema: RequiredCheck::passed("m"),
-            time_semantics: RequiredCheck::passed("m"),
-            instrument_universe: RequiredCheck::passed("m"),
-            coverage: RequiredCheck::passed("m"),
-            granularity: RequiredCheck::passed("m"),
-            completeness: RequiredCheck::passed("m"),
-            nt_mapping: RequiredCheck::passed("m"),
-            storage: RequiredCheck::passed("m"),
-        };
-        let object = IngestManifestObjectRecord {
-            s3_uri: "s3://bolt-parquet/.../object=d6af93.csv.gz".to_string(),
-            source_url: "https://public.bybit.com/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz"
-                .to_string(),
-            sha256: "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598".to_string(),
-            bytes: 8505,
-            archive_date: "2026-03-01".to_string(),
-            schema_columns: vec!["id".to_string()],
-        };
-        let proof = SourceProofReport {
-            source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
-            source_proof_version: 1,
-            contract_version: "backfill-table-contract.v1".to_string(),
-            schema_version: "backfill-source-proof.v1".to_string(),
-            status: SourceProofStatus::Pending,
-            source_binding: "bybit-spot-tick-trades".to_string(),
-            venue: "bybit".to_string(),
-            product_family: "spot".to_string(),
-            product_category: "spot".to_string(),
-            table_family: "trades".to_string(),
-            evidence_state: EvidenceState::OwnerArchiveBackfillable,
-            fixture_type: FixtureType::PerpsSpot,
-            requested_time_range: TimeRange {
-                start_utc: "2025-06-01T00:00:00Z".to_string(),
-                end_utc: "2026-06-01T00:00:00Z".to_string(),
-            },
-            coverage_time_range: TimeRange {
-                start_utc: "2026-03-01T00:00:00Z".to_string(),
-                end_utc: "2026-03-02T00:00:00Z".to_string(),
-            },
-            instrument_universe_id: "u".to_string(),
-            raw_sample_uri: object.s3_uri.clone(),
-            raw_sample_hash: object.sha256.clone(),
-            schema_sample_uri: "s".to_string(),
-            schema_sample_hash: "h".to_string(),
-            license_ref: "l".to_string(),
-            retention_ref: "r".to_string(),
-            nt_mapping_status: NtMappingStatus::Accepted,
-            fidelity_class: SourceProofFidelityClass::TradeReplay,
-            forbidden_claims: vec!["No execution-quality claims.".to_string()],
-            gap_policy_id: String::new(),
-            required_checks: checks,
-            acceptance_mode: None,
-            accepted_by: None,
-            accepted_at: None,
-            supersedes_source_proof_id: None,
-        }
-        .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
-        .unwrap();
-        select_accepted_dataset(&proof, &object, &object.sha256).unwrap()
+        synthetic_accepted_dataset_for_tests()
     }
 
     fn valid_manifest() -> BacktestingRunManifest {
         BacktestingRunManifest {
-            run_id: "backtesting-vertical-slice-bnbusdc-2026-03-01".to_string(),
+            run_id: TEST_RUN_ID.to_string(),
             market_structure_fixture: MarketStructureFixture::PerpsSpot,
-            venue_binding_key: "bybit-spot-tick-trades".to_string(),
+            venue_binding_key: TEST_SOURCE_BINDING.to_string(),
             run_purpose: RunPurpose::Normal,
-            source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
+            source_proof_id: TEST_SOURCE_PROOF_ID.to_string(),
             source_proof_version: 1,
             pins_non_latest_proof: false,
+            proof_pin_reason_code: None,
+            proof_pin_reason_detail: None,
             strategy: StrategySource {
+                source_kind: StrategySourceKind::CompiledRustRegistry,
                 registry_key: STRATEGY_HURST_VPIN_DIRECTIONAL.to_string(),
                 parameters: BTreeMap::from([
                     ("trade_size".to_string(), "0.01".to_string()),
-                    (
-                        "bar_type".to_string(),
-                        "BNBUSDC.BYBIT-1-MINUTE-LAST-INTERNAL".to_string(),
-                    ),
+                    ("bar_type".to_string(), TEST_BAR_TYPE.to_string()),
                 ]),
+                typed_config_uri: None,
+                typed_config_hash: None,
+                promotion_package_uri: None,
+                promotion_package_hash: None,
             },
             venue: ManifestVenueConfig {
-                nt_venue: "BYBIT".to_string(),
+                nt_venue: TEST_NT_VENUE.to_string(),
                 oms_type: "NETTING".to_string(),
                 account_type: "CASH".to_string(),
                 book_type: "L1_MBP".to_string(),
                 starting_balances: vec!["1_000_000 USDC".to_string()],
+                routing: false,
+                frozen_account: false,
+                reject_stop_orders: true,
+                support_gtd_orders: true,
+                support_contingent_orders: true,
+                use_position_ids: true,
+                use_random_ids: false,
+                use_reduce_only: true,
+                bar_execution: true,
+                bar_adaptive_high_low_ordering: false,
+                trade_execution: true,
+                use_market_order_acks: false,
+                liquidity_consumption: false,
+                allow_cash_borrowing: false,
+                queue_position: false,
+                oto_trigger_mode: "PARTIAL".to_string(),
+                base_currency: "NONE".to_string(),
+                default_leverage: "1".to_string(),
+                price_protection_points: 0,
+                leverages: None,
+                margin_model: None,
+                modules: None,
+                fill_model: None,
+                latency_model: None,
+                fee_model: None,
+                settlement_prices: None,
             },
             catalog_input: ManifestCatalogInput {
                 catalog_path: "/tmp/catalog".to_string(),
+                catalog_fs_protocol: CATALOG_FS_PROTOCOL_NONE.to_string(),
+                catalog_fs_storage_options: BTreeMap::new(),
+                catalog_fs_rust_storage_options: BTreeMap::new(),
                 data_type: "TradeTick".to_string(),
-                nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
+                nt_instrument_id: TEST_INSTRUMENT_ID.to_string(),
+                instrument_ids: None,
+                start_time: None,
+                end_time: None,
+                filter_expr: None,
+                client_id: None,
+                metadata: None,
+                bar_spec: None,
+                bar_types: None,
+                optimize_file_loading: None,
             },
             artifact_root: "s3://bolt-parquet/nt-research-analytics".to_string(),
-            output_prefix: "s3://bolt-parquet/nt-research-analytics/backtests/bnbusdc".to_string(),
+            output_prefix: "s3://bolt-parquet/nt-research-analytics/backtests/testpair".to_string(),
+            artifact_store: ManifestArtifactStore {
+                storage_options: BTreeMap::new(),
+                rust_storage_options: BTreeMap::new(),
+                ssm_parameters: None,
+            },
             start_time: None,
             end_time: None,
         }
@@ -843,9 +2110,303 @@ mod tests {
         let manifest = valid_manifest();
         manifest.validate(&accepted_dataset()).expect("valid");
         let run = manifest.to_nt_run_config().expect("run config");
-        assert_eq!(run.id(), "backtesting-vertical-slice-bnbusdc-2026-03-01");
+        assert_eq!(run.id(), TEST_RUN_ID);
         assert_eq!(run.venues().len(), 1);
         assert_eq!(run.data().len(), 1);
+    }
+
+    #[test]
+    fn venue_config_maps_explicit_nt_venue_controls() {
+        let mut manifest = valid_manifest();
+        manifest.venue.routing = true;
+        manifest.venue.frozen_account = true;
+        manifest.venue.reject_stop_orders = false;
+        manifest.venue.support_gtd_orders = false;
+        manifest.venue.support_contingent_orders = false;
+        manifest.venue.use_position_ids = false;
+        manifest.venue.use_random_ids = true;
+        manifest.venue.use_reduce_only = false;
+        manifest.venue.bar_execution = false;
+        manifest.venue.bar_adaptive_high_low_ordering = true;
+        manifest.venue.trade_execution = false;
+        manifest.venue.use_market_order_acks = true;
+        manifest.venue.liquidity_consumption = true;
+        manifest.venue.allow_cash_borrowing = true;
+        manifest.venue.queue_position = true;
+        manifest.venue.oto_trigger_mode = "FULL".to_string();
+        manifest.venue.base_currency = "USDC".to_string();
+        manifest.venue.default_leverage = "2".to_string();
+        manifest.venue.price_protection_points = 7;
+
+        let venue = manifest.to_nt_venue_config().expect("venue config");
+        assert!(venue.routing());
+        assert!(venue.frozen_account());
+        assert!(!venue.reject_stop_orders());
+        assert!(!venue.support_gtd_orders());
+        assert!(!venue.support_contingent_orders());
+        assert!(!venue.use_position_ids());
+        assert!(venue.use_random_ids());
+        assert!(!venue.use_reduce_only());
+        assert!(!venue.bar_execution());
+        assert!(venue.bar_adaptive_high_low_ordering());
+        assert!(!venue.trade_execution());
+        assert!(venue.use_market_order_acks());
+        assert!(venue.liquidity_consumption());
+        assert!(venue.allow_cash_borrowing());
+        assert!(venue.queue_position());
+        assert_eq!(
+            venue.oto_trigger_mode(),
+            nautilus_model::enums::OtoTriggerMode::Full
+        );
+        assert_eq!(
+            venue.base_currency().expect("base currency").to_string(),
+            "USDC"
+        );
+        assert_eq!(venue.default_leverage(), rust_decimal::Decimal::from(2));
+        assert_eq!(venue.price_protection_points(), 7);
+    }
+
+    #[test]
+    fn alternate_venue_provider_swap_is_toml_only() {
+        let mut accepted = accepted_dataset();
+        accepted.source_binding = "alt-native-trades".to_string();
+        accepted.source_proof_id = "source-proof-alt-native-trades".to_string();
+        accepted.venue = "altvenue".to_string();
+
+        let mut manifest = valid_manifest();
+        manifest.run_id = "backtesting-vertical-slice-altvenue-2026-03-01".to_string();
+        manifest.venue_binding_key = accepted.source_binding.clone();
+        manifest.source_proof_id = accepted.source_proof_id.clone();
+        manifest.venue.nt_venue = "ALTVENUE".to_string();
+        manifest.strategy.parameters.insert(
+            "bar_type".to_string(),
+            "ALTUSD.ALTVENUE-1-MINUTE-LAST-INTERNAL".to_string(),
+        );
+        manifest.catalog_input.nt_instrument_id = "ALTUSD.ALTVENUE".to_string();
+        manifest.output_prefix =
+            "s3://bolt-parquet/nt-research-analytics/backtests/altvenue".to_string();
+
+        manifest
+            .validate(&accepted)
+            .expect("alternate TOML-only venue/provider binding");
+        let venue = manifest.to_nt_venue_config().expect("venue config");
+        let data = manifest.to_nt_data_config().expect("data config");
+
+        assert_eq!(venue.name().as_str(), "ALTVENUE");
+        assert_eq!(
+            data.instrument_id().expect("instrument id").to_string(),
+            "ALTUSD.ALTVENUE"
+        );
+    }
+
+    #[test]
+    fn data_config_maps_catalog_cloud_options() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.catalog_path =
+            "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
+        manifest.catalog_input.catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_input.catalog_fs_rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("allow_http".to_string(), "false".to_string()),
+        ]);
+
+        let data = manifest.to_nt_data_config().expect("data config");
+        assert_eq!(data.catalog_path(), manifest.catalog_input.catalog_path);
+        assert_eq!(data.catalog_fs_protocol(), Some("s3"));
+        assert!(data.catalog_fs_storage_options().is_none());
+        assert_eq!(
+            data.catalog_fs_rust_storage_options()
+                .expect("storage options")
+                .get("region"),
+            Some(&"us-east-1".to_string())
+        );
+        assert_eq!(
+            data.catalog_fs_rust_storage_options()
+                .expect("rust storage options")
+                .get("allow_http"),
+            Some(&"false".to_string())
+        );
+    }
+
+    #[test]
+    fn data_config_preserves_configured_object_store_conditional_put() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.catalog_path =
+            "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
+        manifest.catalog_input.catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_input.catalog_fs_rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("conditional_put".to_string(), "etag".to_string()),
+        ]);
+
+        let data = manifest.to_nt_data_config().expect("data config");
+        assert_eq!(
+            data.catalog_fs_rust_storage_options()
+                .expect("rust storage options")
+                .get("conditional_put"),
+            Some(&"etag".to_string())
+        );
+    }
+
+    #[test]
+    fn artifact_store_options_are_toml_owned_for_publish_and_catalog_proof() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_root = "file:///bolt-artifacts".to_string();
+        manifest.output_prefix = "file:///bolt-artifacts/backtests/testpair".to_string();
+        manifest.artifact_store.rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("allow_http".to_string(), "false".to_string()),
+        ]);
+
+        let options = manifest
+            .artifact_store_storage_options()
+            .expect("artifact store options")
+            .expect("rust storage options present");
+        assert_eq!(options.get("region"), Some(&"us-east-1".to_string()));
+        assert_eq!(options.get("allow_http"), Some(&"false".to_string()));
+    }
+
+    #[test]
+    fn artifact_store_preserves_conditional_put_after_ssm_resolution() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_store.rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("conditional_put".to_string(), "etag".to_string()),
+        ]);
+        manifest.artifact_store.ssm_parameters = Some(ManifestArtifactStoreSsmParameters {
+            region: "us-east-1".to_string(),
+            access_key_id: "/bolt/artifacts/access-key-id".to_string(),
+            secret_access_key: "/bolt/artifacts/secret-access-key".to_string(),
+            session_token: None,
+        });
+
+        let options = manifest
+            .artifact_store_storage_options_resolved(&mut |_region, path| match path {
+                "/bolt/artifacts/access-key-id" => Ok("AKIATEST".to_string()),
+                "/bolt/artifacts/secret-access-key" => Ok("secret-value".to_string()),
+                other => Err(format!("unexpected path {other}")),
+            })
+            .expect("resolved artifact store options")
+            .expect("artifact store options");
+
+        assert_eq!(options.get("conditional_put"), Some(&"etag".to_string()));
+        assert_eq!(options.get("access_key_id"), Some(&"AKIATEST".to_string()));
+        assert_eq!(
+            options.get("secret_access_key"),
+            Some(&"secret-value".to_string())
+        );
+    }
+
+    #[test]
+    fn artifact_store_rejects_disabled_conditional_put_for_s3_commit_path() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_store.rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("conditional_put".to_string(), "disabled".to_string()),
+        ]);
+
+        let err = manifest
+            .artifact_store_storage_options_resolved(&mut |_region, _path| {
+                Ok("unused-secret".to_string())
+            })
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("conditional_put")
+                && err.to_string().contains("Artifact Index"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn artifact_store_rejects_s3_publish_without_resolved_ssm_credentials() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_store.rust_storage_options =
+            BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
+        let mut resolver_called = false;
+
+        let err = manifest
+            .artifact_store_storage_options_resolved(&mut |_region, _path| {
+                resolver_called = true;
+                Ok("unexpected-secret".to_string())
+            })
+            .unwrap_err();
+
+        assert!(
+            !resolver_called,
+            "missing SSM parameter config must fail before any secret lookup"
+        );
+        assert!(
+            err.to_string().contains("artifact_store.ssm_parameters")
+                && err.to_string().contains("s3 output_prefix")
+                && !err.to_string().contains("unexpected-secret"),
+            "error must explain the missing SSM credential binding without exposing values: {err}"
+        );
+    }
+
+    #[test]
+    fn artifact_store_resolves_s3_credentials_from_ssm_parameters() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_store.rust_storage_options =
+            BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
+        manifest.artifact_store.ssm_parameters = Some(ManifestArtifactStoreSsmParameters {
+            region: "us-east-1".to_string(),
+            access_key_id: "/bolt/artifacts/access-key-id".to_string(),
+            secret_access_key: "/bolt/artifacts/secret-access-key".to_string(),
+            session_token: Some("/bolt/artifacts/session-token".to_string()),
+        });
+
+        let mut requested_paths = Vec::new();
+        let options = manifest
+            .artifact_store_storage_options_resolved(&mut |region, path| {
+                assert_eq!(region, "us-east-1");
+                requested_paths.push(path.to_string());
+                match path {
+                    "/bolt/artifacts/access-key-id" => Ok("AKIATEST".to_string()),
+                    "/bolt/artifacts/secret-access-key" => Ok("secret-value".to_string()),
+                    "/bolt/artifacts/session-token" => Ok("session-value".to_string()),
+                    other => Err(format!("unexpected path {other}")),
+                }
+            })
+            .expect("resolved artifact store options")
+            .expect("s3 options");
+
+        assert_eq!(
+            requested_paths,
+            vec![
+                "/bolt/artifacts/access-key-id".to_string(),
+                "/bolt/artifacts/secret-access-key".to_string(),
+                "/bolt/artifacts/session-token".to_string(),
+            ]
+        );
+        assert_eq!(options.get("region"), Some(&"us-east-1".to_string()));
+        assert_eq!(options.get("access_key_id"), Some(&"AKIATEST".to_string()));
+        assert_eq!(
+            options.get("secret_access_key"),
+            Some(&"secret-value".to_string())
+        );
+        assert_eq!(
+            options.get("session_token"),
+            Some(&"session-value".to_string())
+        );
+    }
+
+    #[test]
+    fn artifact_store_rejects_raw_s3_credentials_in_toml() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_store.rust_storage_options = BTreeMap::from([
+            ("region".to_string(), "us-east-1".to_string()),
+            ("secret_access_key".to_string(), "not-from-ssm".to_string()),
+        ]);
+
+        let err = manifest.artifact_store_storage_options().unwrap_err();
+
+        assert!(
+            err.to_string().contains("artifact_store")
+                && err.to_string().contains("SSM")
+                && !err.to_string().contains("not-from-ssm"),
+            "error must reject raw credentials without rendering secret value: {err}"
+        );
     }
 
     #[test]
@@ -881,6 +2442,246 @@ mod tests {
     }
 
     #[test]
+    fn manifest_hash_covers_venue_controls_and_catalog_cloud_fields() {
+        fn assert_hash_changes(label: &str, mutate: impl FnOnce(&mut BacktestingRunManifest)) {
+            let manifest = valid_manifest();
+            let mut changed = manifest.clone();
+            mutate(&mut changed);
+            assert_ne!(
+                manifest.manifest_hash(),
+                changed.manifest_hash(),
+                "{label} must affect the manifest hash"
+            );
+        }
+
+        assert_hash_changes("venue.routing", |manifest| {
+            manifest.venue.routing = true;
+        });
+        assert_hash_changes("venue.reject_stop_orders", |manifest| {
+            manifest.venue.reject_stop_orders = false;
+        });
+        assert_hash_changes("venue.base_currency", |manifest| {
+            manifest.venue.base_currency = "USDC".to_string();
+        });
+        assert_hash_changes("venue.price_protection_points", |manifest| {
+            manifest.venue.price_protection_points = 7;
+        });
+        assert_hash_changes("catalog_input.catalog_fs_protocol", |manifest| {
+            manifest.catalog_input.catalog_path =
+                "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
+            manifest.catalog_input.catalog_fs_protocol = "s3".to_string();
+        });
+        assert_hash_changes(
+            "catalog_input.catalog_fs_rust_storage_options",
+            |manifest| {
+                manifest.catalog_input.catalog_fs_rust_storage_options =
+                    BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
+            },
+        );
+    }
+
+    #[test]
+    fn resolved_nt_surfaces_record_supported_manifest_to_nt_mappings() {
+        let manifest = valid_manifest();
+        let surfaces = manifest.resolved_nt_surfaces().expect("resolved surfaces");
+
+        for (surface, classification, nt_field) in [
+            (
+                "run.id",
+                NtSurfaceClassification::PassThrough,
+                "BacktestRunConfig.id",
+            ),
+            (
+                "run.start",
+                NtSurfaceClassification::PassThrough,
+                "BacktestRunConfig.start",
+            ),
+            (
+                "run.end",
+                NtSurfaceClassification::PassThrough,
+                "BacktestRunConfig.end",
+            ),
+            (
+                "venue.name",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.name",
+            ),
+            (
+                "venue.oms_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.oms_type",
+            ),
+            (
+                "venue.account_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.account_type",
+            ),
+            (
+                "venue.book_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.book_type",
+            ),
+            (
+                "venue.starting_balances",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.starting_balances",
+            ),
+            (
+                "venue.routing",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.routing",
+            ),
+            (
+                "venue.frozen_account",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.frozen_account",
+            ),
+            (
+                "venue.reject_stop_orders",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.reject_stop_orders",
+            ),
+            (
+                "venue.support_gtd_orders",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.support_gtd_orders",
+            ),
+            (
+                "venue.support_contingent_orders",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.support_contingent_orders",
+            ),
+            (
+                "venue.use_position_ids",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_position_ids",
+            ),
+            (
+                "venue.use_random_ids",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_random_ids",
+            ),
+            (
+                "venue.use_reduce_only",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_reduce_only",
+            ),
+            (
+                "venue.bar_execution",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.bar_execution",
+            ),
+            (
+                "venue.bar_adaptive_high_low_ordering",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.bar_adaptive_high_low_ordering",
+            ),
+            (
+                "venue.trade_execution",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.trade_execution",
+            ),
+            (
+                "venue.use_market_order_acks",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.use_market_order_acks",
+            ),
+            (
+                "venue.liquidity_consumption",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.liquidity_consumption",
+            ),
+            (
+                "venue.allow_cash_borrowing",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.allow_cash_borrowing",
+            ),
+            (
+                "venue.queue_position",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.queue_position",
+            ),
+            (
+                "venue.oto_trigger_mode",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.oto_trigger_mode",
+            ),
+            (
+                "venue.base_currency",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.base_currency",
+            ),
+            (
+                "venue.default_leverage",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.default_leverage",
+            ),
+            (
+                "venue.price_protection_points",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.price_protection_points",
+            ),
+            (
+                "catalog.data_type",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.data_type",
+            ),
+            (
+                "catalog.catalog_path",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_path",
+            ),
+            (
+                "catalog.catalog_fs_protocol",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_fs_protocol",
+            ),
+            (
+                "catalog.catalog_fs_storage_options",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_fs_storage_options",
+            ),
+            (
+                "catalog.catalog_fs_rust_storage_options",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.catalog_fs_rust_storage_options",
+            ),
+            (
+                "catalog.instrument_id",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.instrument_id",
+            ),
+        ] {
+            assert!(
+                surfaces.iter().any(|resolved| {
+                    resolved.surface == surface
+                        && resolved.classification == classification
+                        && resolved.nt_field == nt_field
+                }),
+                "missing resolved NT surface {surface}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_nt_surfaces_record_unsupported_catalog_query_mappings() {
+        let manifest = valid_manifest();
+        let surfaces = manifest.resolved_nt_surfaces().expect("resolved surfaces");
+
+        for (surface, _, nt_field) in UNSUPPORTED_NT_CATALOG_QUERY_SURFACES {
+            assert!(
+                surfaces.iter().any(|resolved| {
+                    resolved.surface == *surface
+                        && resolved.classification == NtSurfaceClassification::UnsupportedForNow
+                        && resolved.nt_field == *nt_field
+                        && resolved.resolved_value == "requests_rejected_before_nt_config"
+                }),
+                "missing unsupported catalog query NT surface {surface}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_inline_strategy_code() {
         let mut manifest = valid_manifest();
         manifest.strategy.registry_key = "fn on_trade(&mut self) { submit(); }".to_string();
@@ -908,6 +2709,95 @@ mod tests {
         assert!(matches!(
             manifest.validate(&accepted_dataset()).unwrap_err(),
             ManifestError::UntrackedConfigBlob { .. }
+        ));
+    }
+
+    #[test]
+    fn accepts_human_typed_strategy_config_with_artifact_hash() {
+        let mut manifest = valid_manifest();
+        manifest.strategy.source_kind = StrategySourceKind::HumanTypedConfig;
+        manifest.strategy.typed_config_uri = Some(
+            "s3://bolt-parquet/nt-research-analytics/backtests/strategy-configs/hurst-vpin.toml"
+                .to_string(),
+        );
+        manifest.strategy.typed_config_hash =
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string());
+
+        manifest
+            .validate(&accepted_dataset())
+            .expect("human typed config provenance should validate");
+    }
+
+    #[test]
+    fn accepts_research_analytics_promotion_package_strategy_config() {
+        let mut manifest = valid_manifest();
+        manifest.strategy.source_kind = StrategySourceKind::ResearchAnalyticsPromotionPackage;
+        manifest.strategy.typed_config_uri = Some(
+            "s3://bolt-parquet/nt-research-analytics/research-analytics/v1/promotion-packages/package-123/runtime-config.toml"
+                .to_string(),
+        );
+        manifest.strategy.typed_config_hash =
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string());
+        manifest.strategy.promotion_package_uri = Some(
+            "s3://bolt-parquet/nt-research-analytics/research-analytics/v1/promotion-packages/package-123/promotion-package.toml"
+                .to_string(),
+        );
+        manifest.strategy.promotion_package_hash =
+            Some("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string());
+
+        manifest
+            .validate(&accepted_dataset())
+            .expect("RA promotion package strategy config should validate");
+    }
+
+    #[test]
+    fn rejects_research_analytics_strategy_config_without_package_ref() {
+        let mut manifest = valid_manifest();
+        manifest.strategy.source_kind = StrategySourceKind::ResearchAnalyticsPromotionPackage;
+        manifest.strategy.typed_config_uri = Some(
+            "s3://bolt-parquet/nt-research-analytics/research-analytics/v1/promotion-packages/package-123/runtime-config.toml"
+                .to_string(),
+        );
+        manifest.strategy.typed_config_hash =
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string());
+
+        assert!(matches!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::MissingField("strategy.promotion_package_uri")
+        ));
+    }
+
+    #[test]
+    fn rejects_research_analytics_strategy_config_outside_promotion_family() {
+        let mut manifest = valid_manifest();
+        manifest.strategy.source_kind = StrategySourceKind::ResearchAnalyticsPromotionPackage;
+        manifest.strategy.typed_config_uri = Some(
+            "s3://bolt-parquet/nt-research-analytics/backtests/package-123/runtime-config.toml"
+                .to_string(),
+        );
+        manifest.strategy.typed_config_hash =
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string());
+        manifest.strategy.promotion_package_uri = Some(
+            "s3://bolt-parquet/nt-research-analytics/research-analytics/v1/promotion-packages/package-123/promotion-package.toml"
+                .to_string(),
+        );
+        manifest.strategy.promotion_package_hash =
+            Some("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string());
+
+        assert!(matches!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::StrategySourceOutsideAllowedArtifactRoot { .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_notebook_runtime_strategy_source() {
+        let mut manifest = valid_manifest();
+        manifest.strategy.registry_key = "research/notebook.ipynb".to_string();
+
+        assert!(matches!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::NotebookRuntimeStrategy { .. }
         ));
     }
 
@@ -1008,12 +2898,132 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_latest_proof_pin_without_reason_code() {
+        let mut manifest = valid_manifest();
+        manifest.run_purpose = RunPurpose::Audit;
+        manifest.pins_non_latest_proof = true;
+
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::MissingField("proof_pin_reason_code")
+        );
+    }
+
+    #[test]
+    fn rejects_audit_non_latest_proof_pin_without_reason_detail() {
+        let mut manifest = valid_manifest();
+        manifest.run_purpose = RunPurpose::Audit;
+        manifest.pins_non_latest_proof = true;
+        manifest.proof_pin_reason_code = Some(ProofPinReasonCode::AuditOrInvestigation);
+
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::MissingField("proof_pin_reason_detail")
+        );
+    }
+
+    #[test]
+    fn accepts_non_latest_reproduction_pin_with_reason_code() {
+        let mut manifest = valid_manifest();
+        manifest.run_purpose = RunPurpose::Reproduction;
+        manifest.pins_non_latest_proof = true;
+        manifest.proof_pin_reason_code = Some(ProofPinReasonCode::BaselineReproduction);
+
+        manifest
+            .validate(&accepted_dataset())
+            .expect("reproduction pin with structured reason should validate");
+    }
+
+    #[test]
+    fn accepts_all_configured_non_latest_proof_pin_reason_codes_from_toml() {
+        for (run_purpose, reason_code) in [
+            ("reproduction", "published_result_reproduction"),
+            ("regression", "regression_comparison"),
+        ] {
+            let toml = toml::to_string(&valid_manifest())
+                .expect("serialize manifest")
+                .replace(
+                    "run_purpose = \"normal\"",
+                    &format!("run_purpose = \"{run_purpose}\""),
+                )
+                .replace(
+                    "pins_non_latest_proof = false",
+                    &format!(
+                        "pins_non_latest_proof = true\nproof_pin_reason_code = \"{reason_code}\""
+                    ),
+                );
+            let manifest: BacktestingRunManifest =
+                toml::from_str(&toml).expect("parse allowed proof-pin reason code");
+
+            manifest
+                .validate(&accepted_dataset())
+                .expect("allowed proof-pin reason code should validate");
+        }
+    }
+
+    #[test]
     fn rejects_output_prefix_outside_artifact_root() {
         let mut manifest = valid_manifest();
         manifest.output_prefix = "s3://other-bucket/backtests/x".to_string();
         assert_eq!(
             manifest.validate(&accepted_dataset()).unwrap_err(),
             ManifestError::OutputPrefixOutsideArtifactRoot
+        );
+    }
+
+    #[test]
+    fn artifact_root_resolves_typed_subpaths_without_extra_root_knobs() {
+        let manifest = valid_manifest();
+        assert_eq!(
+            manifest
+                .artifact_subpath_uri(ArtifactSubpath::Raw)
+                .expect("raw subpath"),
+            "s3://bolt-parquet/nt-research-analytics/raw"
+        );
+        assert_eq!(
+            manifest
+                .artifact_subpath_uri(ArtifactSubpath::NtCatalog)
+                .expect("nt catalog subpath"),
+            "s3://bolt-parquet/nt-research-analytics/nt-catalog"
+        );
+        assert_eq!(
+            manifest
+                .artifact_subpath_uri(ArtifactSubpath::SourceProofs)
+                .expect("source proof subpath"),
+            "s3://bolt-parquet/nt-research-analytics/source-proofs"
+        );
+        assert_eq!(
+            manifest
+                .artifact_subpath_uri(ArtifactSubpath::Backtests)
+                .expect("backtest subpath"),
+            "s3://bolt-parquet/nt-research-analytics/backtests"
+        );
+        assert_eq!(
+            manifest
+                .artifact_subpath_uri(ArtifactSubpath::ArtifactIndex)
+                .expect("artifact index subpath"),
+            "s3://bolt-parquet/nt-research-analytics/artifact-index"
+        );
+        assert_eq!(
+            manifest
+                .artifact_subpath_uri(ArtifactSubpath::ResearchAnalytics)
+                .expect("research analytics subpath"),
+            "s3://bolt-parquet/nt-research-analytics/research-analytics"
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_artifact_root_scheme() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_root = "http://example.test/nt-research-analytics".to_string();
+        manifest.output_prefix =
+            "http://example.test/nt-research-analytics/backtests/run".to_string();
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "artifact_root",
+                value: "http".to_string(),
+            }
         );
     }
 
@@ -1078,6 +3088,63 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unsupported_catalog_fs_protocol() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.catalog_fs_protocol = "ftp".to_string();
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "catalog_input.catalog_fs_protocol",
+                value: "ftp".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_shadowed_catalog_storage_options_before_nt_config() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.catalog_path =
+            "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
+        manifest.catalog_input.catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_input.catalog_fs_storage_options =
+            BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
+        manifest.catalog_input.catalog_fs_rust_storage_options =
+            BTreeMap::from([("allow_http".to_string(), "false".to_string())]);
+
+        let expected = ManifestError::UnsupportedEnum {
+            field: "catalog_input.catalog_fs_storage_options",
+            value: "cannot be combined with catalog_fs_rust_storage_options".to_string(),
+        };
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            expected
+        );
+        assert_eq!(manifest.to_nt_data_config().unwrap_err(), expected);
+    }
+
+    #[test]
+    fn rejects_unknown_s3_catalog_rust_storage_option_before_nt_config() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.catalog_path =
+            "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
+        manifest.catalog_input.catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_input.catalog_fs_rust_storage_options = BTreeMap::from([(
+            "aws_virtual_hosted_style_request".to_string(),
+            "false".to_string(),
+        )]);
+
+        let expected = ManifestError::UnsupportedEnum {
+            field: "catalog_input.catalog_fs_rust_storage_options",
+            value: "aws_virtual_hosted_style_request".to_string(),
+        };
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            expected
+        );
+        assert_eq!(manifest.to_nt_data_config().unwrap_err(), expected);
+    }
+
+    #[test]
     fn rejects_fidelity_data_type_mismatch() {
         let manifest = valid_manifest();
         let mut accepted = accepted_dataset();
@@ -1111,6 +3178,43 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unsupported_oto_trigger_mode() {
+        let mut manifest = valid_manifest();
+        manifest.venue.oto_trigger_mode = "INVALID".to_string();
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "venue.oto_trigger_mode",
+                value: "INVALID".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_base_currency() {
+        let mut manifest = valid_manifest();
+        manifest.venue.base_currency = "NOT_A_CURRENCY".to_string();
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::InvalidBaseCurrency {
+                currency: "NOT_A_CURRENCY".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_non_positive_default_leverage() {
+        let mut manifest = valid_manifest();
+        manifest.venue.default_leverage = "0".to_string();
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::InvalidDefaultLeverage {
+                leverage: "0".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn rejects_malformed_manifest_toml() {
         assert!(parse_manifest_toml("this is not = valid = toml").is_err());
     }
@@ -1130,5 +3234,103 @@ mod tests {
             .expect("serialize")
             .replace("[strategy]\n", "[strategy]\nunknown_blob = \"x\"\n");
         assert!(parse_manifest_toml(&text).is_err());
+    }
+
+    #[test]
+    fn rejects_unsupported_nt_venue_model_surface_requests_before_nt_config() {
+        let serialized = toml::to_string(&valid_manifest()).expect("serialize");
+        for (field, value) in [
+            ("leverages", "{}"),
+            ("margin_model", "\"standard\""),
+            ("modules", "[]"),
+            ("fill_model", "\"probabilistic\""),
+            ("latency_model", "\"static\""),
+            ("fee_model", "\"maker_taker\""),
+            ("settlement_prices", "{}"),
+        ] {
+            let text = serialized.replace("[venue]\n", &format!("[venue]\n{field} = {value}\n"));
+            let manifest = parse_manifest_toml(&text)
+                .expect("unsupported NT venue surface should be represented in schema");
+            let err = manifest
+                .validate(&accepted_dataset())
+                .expect_err("unsupported NT venue surface must fail validation");
+            assert!(
+                matches!(err, ManifestError::UnsupportedNtSurface { field: actual } if actual == field),
+                "unsupported venue surface {field:?} must fail fast, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_unsupported_nt_venue_model_surfaces_parse_then_fail_before_nt_config() {
+        let serialized = toml::to_string(&valid_manifest()).expect("serialize");
+        let leverages = format!("{{ \"{TEST_INSTRUMENT_ID}\" = \"2\" }}");
+        let settlement_prices = format!("{{ \"{TEST_INSTRUMENT_ID}\" = \"65000\" }}");
+        for (field, value) in [
+            ("leverages", leverages.as_str()),
+            ("margin_model", "\"standard\""),
+            ("modules", "[\"latency-probe\"]"),
+            ("fill_model", "\"probabilistic\""),
+            ("latency_model", "\"static\""),
+            ("fee_model", "\"maker_taker\""),
+            ("settlement_prices", settlement_prices.as_str()),
+        ] {
+            let text = serialized.replace("[venue]\n", &format!("[venue]\n{field} = {value}\n"));
+            let manifest = parse_manifest_toml(&text)
+                .expect("unsupported NT venue surface should be represented in schema");
+            let err = manifest
+                .to_nt_venue_config()
+                .expect_err("unsupported NT venue surface must not reach NT config");
+            assert!(
+                matches!(err, ManifestError::UnsupportedNtSurface { field: actual } if actual == field),
+                "unsupported venue surface {field:?} should fail with a structured error, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_unsupported_nt_catalog_query_surfaces_parse_then_fail_before_nt_config() {
+        let serialized = toml::to_string(&valid_manifest()).expect("serialize");
+        let instrument_ids = format!("[\"{TEST_INSTRUMENT_ID}\"]");
+        let bar_types = format!("[\"{TEST_BAR_TYPE}\"]");
+        for (field, value) in [
+            ("instrument_ids", instrument_ids.as_str()),
+            ("start_time", "1772323200000000000"),
+            ("end_time", "1772409600000000000"),
+            ("filter_expr", "\"price > 0\""),
+            ("client_id", "\"TEST-CLIENT\""),
+            ("metadata", "{ source = \"proof\" }"),
+            ("bar_spec", "\"1-MINUTE-LAST\""),
+            ("bar_types", bar_types.as_str()),
+            ("optimize_file_loading", "true"),
+        ] {
+            let text = serialized.replace(
+                "[catalog_input]\n",
+                &format!("[catalog_input]\n{field} = {value}\n"),
+            );
+            let manifest = parse_manifest_toml(&text)
+                .expect("unsupported NT catalog query surface should be represented in schema");
+            let err = manifest
+                .to_nt_data_config()
+                .expect_err("unsupported NT catalog query surface must not reach NT config");
+            let expected = format!("catalog_input.{field}");
+            assert!(
+                matches!(err, ManifestError::UnsupportedNtSurface { field: actual } if actual == expected),
+                "unsupported catalog query surface {field:?} should fail with a structured error, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_nt_engine_surface_requests_before_nt_config() {
+        let text = format!(
+            "[engine]\nrisk_engine = {{ bypass = true }}\n{}",
+            toml::to_string(&valid_manifest()).expect("serialize")
+        );
+        let err = parse_manifest_toml(&text).unwrap_err().to_string();
+        assert!(
+            err.contains("engine"),
+            "unsupported engine surface must fail fast, got {err}"
+        );
     }
 }

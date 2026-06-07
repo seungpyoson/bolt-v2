@@ -9,11 +9,11 @@
 - [ ] BACKTESTING_ENGINE-007 Prove the resolved `bolt-v2` NT dependency can read/write/query a small multi-instrument `ParquetDataCatalog` fixture from the configured S3 `artifact_root`, including required `nautilus-persistence` crate features and storage options; if not supported, document the supported staging path before implementation relies on direct S3 catalog access.
 - [ ] BACKTESTING_ENGINE-008 Define artifact lifecycle config with retain-forever default, disabled delete/expiration, `active`/`archive`/`deep_archive` storage profiles, quiet window, active-to-inactive transition, and active storage for the hot Artifact Index pointer/current snapshot path.
 - [ ] BACKTESTING_ENGINE-009 Map manifest obligations to NT `BacktestRunConfig`, `BacktestDataConfig`, and `BacktestVenueConfig`.
-- [ ] BACKTESTING_ENGINE-010 Build `BacktestExtensionSurface` matrix covering `defaulted`, `pass_through`, `custom_owned`, and `unsupported_for_now`.
-- [ ] BACKTESTING_ENGINE-011 Record classification for engine, venue simulation, run, catalog, strategy, actor/execution-algorithm, risk, portfolio, execution, cache, message bus, streaming, fill, fee, latency, margin, leverage, queue, liquidity, settlement, and order-behavior surfaces.
-- [ ] BACKTESTING_ENGINE-012 Implement resolved-default materialization into the run manifest.
-- [ ] BACKTESTING_ENGINE-013 Define strategy source validation for existing compiled Rust strategies, human-written typed config, and future Research Analytics promotion packages.
-- [ ] BACKTESTING_ENGINE-014 Reject inline strategy code, notebook runtime code, Python strategy paths, and untracked config blobs.
+- [x] BACKTESTING_ENGINE-010 Build `BacktestExtensionSurface` matrix covering `defaulted`, `pass_through`, `custom_owned`, and `unsupported_for_now`.
+- [x] BACKTESTING_ENGINE-011 Record classification for engine, venue simulation, run, catalog, strategy, actor/execution-algorithm, risk, portfolio, execution, cache, message bus, streaming, fill, fee, latency, margin, leverage, queue, liquidity, settlement, and order-behavior surfaces.
+- [x] BACKTESTING_ENGINE-012 Implement resolved-default materialization into the run manifest.
+- [x] BACKTESTING_ENGINE-013 Define strategy source validation for existing compiled Rust strategies, human-written typed config, and future Research Analytics promotion packages.
+- [x] BACKTESTING_ENGINE-014 Reject inline strategy code, notebook runtime code, Python strategy paths, and untracked config blobs.
 - [ ] BACKTESTING_ENGINE-015 Define thin `SourceProofReport` schema for each market-structure fixture: official/free candidates checked first, paid/vendor candidates checked only after recorded official/free gaps, forward-capture status when no usable history exists, historical L2/L3 order-book delta or sufficient-cadence snapshot evidence when claiming `L2_REPLAY`, retention/freshness, schema, sample pointer, license, NT data-class mapping, cross-market reference/FX proof when applicable, fidelity class, forbidden claims, cost, source_proof_version, supersedes_source_proof_id, selection status, accepted_by/accepted_at, `acceptance_mode` only for accepted reports, required-check results, immutable accepted records, and no heavy raw/catalog/result payload storage.
 - [ ] BACKTESTING_ENGINE-016 Populate `SourceProofReport` for the `binary option` fixture before selecting any provider.
 - [ ] BACKTESTING_ENGINE-017 Populate `SourceProofReport` for the `perps/spot` fixture before selecting any provider, including kimchi-premium Korean spot/reference/FX source proof when that signal family is selected.
@@ -31,14 +31,14 @@
 - [ ] BACKTESTING_ENGINE-029 Implement NT `BacktestNode` orchestration without custom simulation behavior.
 - [ ] BACKTESTING_ENGINE-030 Emit objective `BacktestResultContract` with NT pointer, source hashes, source proof id/version, run purpose, fidelity, claim limits, warnings/mechanical blockers, and final artifact URIs, without strategy promotion or escalation recommendations.
 - [ ] BACKTESTING_ENGINE-031 Finalize exact `BacktestResultContract` field schema after inspecting selected NT output shape, and add validation that Backtesting Engine result contracts cannot encode subjective strategy-promotion decisions.
-- [ ] BACKTESTING_ENGINE-032 Add tests for TOML-only venue/provider swaps.
+- [x] BACKTESTING_ENGINE-032 Add tests for TOML-only venue/provider swaps.
 - [ ] BACKTESTING_ENGINE-033 Add tests that reject lower-fidelity execution-quality claims, unauthorized source-proof acceptance/upgrades, accepted proof mutation, and automated acceptance when any required schema/sample/license/time/fidelity/mapping/forbidden-claim check is missing, ambiguous, expired, or failed.
-- [ ] BACKTESTING_ENGINE-034 Add tests for unsupported extension-surface fail-fast behavior.
+- [x] BACKTESTING_ENGINE-034 Add tests for unsupported extension-surface fail-fast behavior.
 - [ ] BACKTESTING_ENGINE-035 Add tests for S3 `artifact_root` typed-subpath resolution, short config-selected path keys, `nt-catalog/` projection-root behavior, same-root backtest output prefix override, unsupported scheme rejection, hidden local fallback rejection, and direct NT S3 catalog access only after crate-feature proof passes.
 - [ ] BACKTESTING_ENGINE-036 Add Artifact Index tests for per-kind conditional pointer update retry/rebase, stale or hash-invalid latest pointer, staged/orphan event recovery, immutable idempotent producer-owned events, rejection of consumer mutation for upstream records, rejection of cross-kind joins built from independent latest pointers instead of manifest lineage ids, required parent lineage ids/hashes on event and snapshot rows, `sha256`-only content hashes, no recursive S3 discovery on the normal read path, audit epoch append, and active storage for the hot index path.
-- [ ] BACKTESTING_ENGINE-037 Add tests that artifact lifecycle config rejects default delete/expiration rules and follows configured quiet-window active-to-inactive transition.
+- [x] BACKTESTING_ENGINE-037 Add tests that artifact lifecycle config rejects default delete/expiration rules and follows configured quiet-window active-to-inactive transition.
 - [ ] BACKTESTING_ENGINE-038 Add tests that kimchi-premium source proof rejects hardcoded Korean venue names and future-leaking reference/FX joins.
 - [ ] BACKTESTING_ENGINE-039 Link/update issue dependencies named in `spec.md` before implementation review.
 - [ ] BACKTESTING_ENGINE-040 Run Rust fmt, clippy/build/test checks required by the future implementation branch.
 - [ ] BACKTESTING_ENGINE-041 Finalize exact manifest TOML schema after every manifest obligation maps to NT config fields, including the deferred currentness rules for NT version, strategy config hash, catalog hash, manifest schema, and execution model.
-- [ ] BACKTESTING_ENGINE-042 Add tests that fail when manifest-to-NT mapping omits a required field.
+- [x] BACKTESTING_ENGINE-042 Add tests that fail when manifest-to-NT mapping omits a required field.

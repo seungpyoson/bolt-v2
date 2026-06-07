@@ -37,13 +37,13 @@ use super::{
 /// NautilusTrader data type written for this projection.
 pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
 
-/// Accepted Bybit spot instrument metadata needed to build the NautilusTrader
+/// Accepted spot instrument metadata needed to build the NautilusTrader
 /// `CurrencyPair`. Built from the accepted instrument-universe payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpotInstrumentSpec {
-    /// NautilusTrader instrument id, for example `BNBUSDC.BYBIT`.
+    /// NautilusTrader instrument id, such as `SYMBOL.VENUE`.
     pub nt_instrument_id: String,
-    /// Venue-native raw symbol, for example `BNBUSDC`.
+    /// Venue-native raw symbol.
     pub raw_symbol: String,
     /// Base currency code, for example `BNB`.
     pub base_currency: String,
@@ -277,7 +277,7 @@ pub fn project_canonical_trades_to_catalog(
         nt_instrument_id: instrument_id.to_string(),
         data_type: NT_DATA_TYPE_TRADE_TICK.to_string(),
         trade_count,
-        catalog_hash: catalog_hash(catalog_root)?,
+        catalog_hash: logical_catalog_hash(catalog_root)?,
         fidelity_class: table.fidelity_class,
     })
 }
@@ -310,7 +310,7 @@ pub fn read_back_trade_ticks(
 /// This intentionally hashes NT-read instruments and `TradeTick` values, not
 /// raw Parquet bytes or paths. Parquet writer metadata can legitimately drift
 /// across NT/Arrow builds while representing identical logical catalog input.
-fn catalog_hash(root: &Path) -> Result<String> {
+pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
     let mut catalog = ParquetDataCatalog::new(root, None, None, None, None);
     let mut instruments = catalog
         .query_instruments(None)
@@ -497,11 +497,12 @@ fn update_currency_pair_hash(hasher: &mut Sha256, instrument: &CurrencyPair) -> 
 mod tests {
     use super::*;
     use crate::{
-        canonical_trades::{CanonicalInstrumentIdentity, normalize_bybit_spot_tick_trades},
+        canonical_trades::{CanonicalInstrumentIdentity, normalize_sample_spot_tick_trades},
         source_proof::{
-            AcceptanceMode, AcceptedDataset, EvidenceState, FixtureType,
+            AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
             IngestManifestObjectRecord, NtMappingStatus, RequiredCheck, RequiredChecks,
-            SourceProofReport, SourceProofStatus, TimeRange, select_accepted_dataset,
+            SourceProofClaimLimit, SourceProofReport, SourceProofStatus, TimeRange,
+            select_accepted_dataset,
         },
     };
 
@@ -549,6 +550,7 @@ mod tests {
                 "rpi".to_string(),
             ],
         };
+        let forbidden_claims = vec!["No execution-quality claims.".to_string()];
         let proof = SourceProofReport {
             source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
             source_proof_version: 1,
@@ -579,7 +581,16 @@ mod tests {
             retention_ref: "https://public.bybit.com/".to_string(),
             nt_mapping_status: NtMappingStatus::Accepted,
             fidelity_class: SourceProofFidelityClass::TradeReplay,
-            forbidden_claims: vec!["No execution-quality claims.".to_string()],
+            forbidden_claims: forbidden_claims.clone(),
+            claim_limits: claim_limits_for(&forbidden_claims),
+            acceptance_scope: Some(AcceptanceScope {
+                planned_objects: 1,
+                completed_objects: 1,
+                failed_objects: 0,
+                skipped_objects: 0,
+                accepted_bytes: object.bytes,
+                selector_scope_violations: 0,
+            }),
             gap_policy_id: String::new(),
             required_checks: checks,
             acceptance_mode: None,
@@ -590,6 +601,20 @@ mod tests {
         .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
         .unwrap();
         select_accepted_dataset(&proof, &object, &object.sha256).unwrap()
+    }
+
+    fn claim_limits_for(claims: &[String]) -> Vec<SourceProofClaimLimit> {
+        claims
+            .iter()
+            .enumerate()
+            .map(|(index, claim)| SourceProofClaimLimit {
+                id: format!("claim-limit-{}", index + 1),
+                severity: "blocking".to_string(),
+                claim: claim.clone(),
+                reason: "source fidelity does not prove this claim".to_string(),
+                evidence_ref: "source-proof://fidelity-class".to_string(),
+            })
+            .collect()
     }
 
     const SAMPLE_CSV: &str = "id,timestamp,price,volume,side,rpi\n\
@@ -603,7 +628,7 @@ mod tests {
             venue_symbol: "BNBUSDC".to_string(),
             nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
         };
-        normalize_bybit_spot_tick_trades(
+        normalize_sample_spot_tick_trades(
             &accepted_dataset(),
             &identity,
             SAMPLE_CSV,
@@ -672,7 +697,7 @@ mod tests {
             venue_symbol: "BNBUSDC".to_string(),
             nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
         };
-        let table = normalize_bybit_spot_tick_trades(
+        let table = normalize_sample_spot_tick_trades(
             &accepted_dataset(),
             &identity,
             &csv,
@@ -693,7 +718,7 @@ mod tests {
             venue_symbol: "BNBUSDC".to_string(),
             nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
         };
-        let table = normalize_bybit_spot_tick_trades(
+        let table = normalize_sample_spot_tick_trades(
             &accepted_dataset(),
             &identity,
             csv,
@@ -773,7 +798,7 @@ mod tests {
             1,1772323201665,999.9,0.3,buy,0\n\
             2,1772323312219,617.9,0.1456,sell,0\n\
             3,1772323312236,617,0.1544,sell,0\n";
-        let table_b = normalize_bybit_spot_tick_trades(
+        let table_b = normalize_sample_spot_tick_trades(
             &accepted_dataset(),
             &identity,
             csv_b,
@@ -973,7 +998,7 @@ mod tests {
         fs::write(dir.path().join("writer-version.txt"), b"nt writer metadata").unwrap();
         assert_eq!(
             projection.catalog_hash,
-            catalog_hash(dir.path()).unwrap(),
+            logical_catalog_hash(dir.path()).unwrap(),
             "catalog hash must describe logical catalog contents, not unrelated writer files"
         );
     }
@@ -990,8 +1015,8 @@ mod tests {
         fs::create_dir_all(root_b.path().join("data/beta")).unwrap();
         fs::write(root_b.path().join("data/beta/file.parquet"), b"identical").unwrap();
         assert_eq!(
-            catalog_hash(root_a.path()).unwrap(),
-            catalog_hash(root_b.path()).unwrap(),
+            logical_catalog_hash(root_a.path()).unwrap(),
+            logical_catalog_hash(root_b.path()).unwrap(),
             "unrelated bytes under different relative paths must not change the logical hash"
         );
     }

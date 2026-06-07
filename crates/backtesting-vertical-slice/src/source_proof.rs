@@ -20,6 +20,8 @@
 //! No backtest may consume raw staged data directly. The only path to backtest
 //! input is through an [`AcceptedDataset`] produced here.
 
+use std::path::{Path, PathBuf};
+
 use chrono::{DateTime, NaiveDate};
 use serde::{Deserialize, Serialize};
 
@@ -34,16 +36,86 @@ const SOURCE_BINDINGS_REGISTRY: &str = include_str!(
 );
 
 #[derive(Debug, Deserialize)]
-struct SourceBindingRegistry {
+pub struct SourceBindingRegistry {
     #[serde(rename = "source_binding", default)]
     source_bindings: Vec<SourceBindingConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceBindingMetadata {
+    pub key: String,
+    pub venue: String,
+    pub product_family: String,
+    pub evidence_state: EvidenceState,
+    pub table_families: Vec<String>,
+}
+
+impl SourceBindingRegistry {
+    pub fn from_toml_str(text: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(text)
+    }
+
+    fn source_binding_config(
+        &self,
+        source_binding: &str,
+        venue: &str,
+    ) -> Option<SourceBindingConfig> {
+        let source_binding = source_binding.trim();
+        let venue = venue.trim();
+        if source_binding.is_empty() || venue.is_empty() {
+            return None;
+        }
+        self.source_bindings
+            .iter()
+            .find(|binding| {
+                binding.key == source_binding && binding.venue.eq_ignore_ascii_case(venue)
+            })
+            .cloned()
+    }
+
+    pub fn source_binding_metadata(
+        &self,
+        source_binding: &str,
+        venue: &str,
+    ) -> Option<SourceBindingMetadata> {
+        self.source_binding_config(source_binding, venue)
+            .map(|config| SourceBindingMetadata {
+                key: config.key,
+                venue: config.venue,
+                product_family: config.product_family,
+                evidence_state: config.evidence_state,
+                table_families: config.table_families,
+            })
+    }
+}
+
+pub fn committed_source_binding_registry() -> SourceBindingRegistry {
+    SourceBindingRegistry::from_toml_str(SOURCE_BINDINGS_REGISTRY)
+        .expect("committed source binding registry parses")
+}
+
+pub fn resolve_source_bindings_path(path: &Path) -> PathBuf {
+    if path.exists() || path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let repo_relative = repo_root.join(path);
+    if repo_relative.exists() {
+        repo_relative
+    } else {
+        path.to_path_buf()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct SourceBindingConfig {
     key: String,
     venue: String,
+    product_family: String,
     source_uri: String,
+    evidence_state: EvidenceState,
+    #[serde(default)]
+    table_families: Vec<String>,
 }
 
 /// Lifecycle status of a source-proof record.
@@ -234,11 +306,42 @@ impl RequiredChecks {
     }
 }
 
+/// Machine-readable source-proof claim limitation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceProofClaimLimit {
+    pub id: String,
+    pub severity: String,
+    pub claim: String,
+    pub reason: String,
+    pub evidence_ref: String,
+}
+
+impl SourceProofClaimLimit {
+    #[must_use]
+    pub(crate) fn to_result_contract_claim_limit(&self) -> String {
+        format!(
+            "source_proof_claim_limit id={} severity={} claim={} reason={} evidence_ref={}",
+            self.id, self.severity, self.claim, self.reason, self.evidence_ref
+        )
+    }
+}
+
 /// Inclusive-start, exclusive-end UTC time range (RFC 3339 strings).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeRange {
     pub start_utc: String,
     pub end_utc: String,
+}
+
+/// Structured run-scope summary for the source proof's accepted manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptanceScope {
+    pub planned_objects: u64,
+    pub completed_objects: u64,
+    pub failed_objects: u64,
+    pub skipped_objects: u64,
+    pub accepted_bytes: u64,
+    pub selector_scope_violations: u64,
 }
 
 /// A thin source-proof record per the `backfill-source-proof.v1` contract.
@@ -272,6 +375,13 @@ pub struct SourceProofReport {
     pub nt_mapping_status: NtMappingStatus,
     pub fidelity_class: SourceProofFidelityClass,
     pub forbidden_claims: Vec<String>,
+    /// Structured limitation records backing `forbidden_claims`.
+    #[serde(default)]
+    pub claim_limits: Vec<SourceProofClaimLimit>,
+    /// Structured manifest/run summary proving acceptance is bounded by object
+    /// counts, byte counts, failures, skips, and selector-scope checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_scope: Option<AcceptanceScope>,
     /// Required when gaps are tolerated; empty string when not applicable.
     pub gap_policy_id: String,
     pub required_checks: RequiredChecks,
@@ -305,6 +415,11 @@ pub enum AcceptanceError {
     UnmetChecks(Vec<&'static str>),
     /// The lower-fidelity source cannot carry an execution-quality claim.
     ForbiddenClaimMissing,
+    /// A structured claim-limit row is missing or malformed.
+    InvalidClaimLimit {
+        field: &'static str,
+        reason: &'static str,
+    },
     /// The proof referenced by the dataset is not accepted.
     ProofNotAccepted(SourceProofStatus),
     /// A rejected proof cannot satisfy acceptance invariants.
@@ -313,6 +428,11 @@ pub enum AcceptanceError {
     ManifestRecordIncomplete(&'static str),
     /// The verified object hash does not match the manifest record hash.
     ContentHashMismatch { expected: String, actual: String },
+    /// The selected manifest object is not the raw sample object named by the
+    /// accepted source proof.
+    RawSampleUriMismatch { expected: String, actual: String },
+    /// A raw/sample artifact URI does not point at staged S3 object storage.
+    InvalidStagedUri { field: &'static str, uri: String },
     /// The selected object lies outside the proof's proven coverage window.
     OutsideCoverage { object_date: String },
     /// The proof coverage window is not contained by the requested window.
@@ -327,6 +447,25 @@ pub enum AcceptanceError {
     MalformedCoverageBound { field: &'static str, value: String },
     /// The object's source provenance does not reference the proof's venue.
     SourceVenueMismatch { venue: String, source_url: String },
+    /// The evidence state is not allowed for accepted canonical backfill input.
+    EvidenceStateNotBackfillable(EvidenceState),
+    /// The source proof disagrees with the configured source-binding metadata.
+    SourceBindingMismatch {
+        field: &'static str,
+        expected: String,
+        actual: String,
+    },
+    /// The source proof references no configured source-binding registry row.
+    UnknownSourceBinding {
+        source_binding: String,
+        venue: String,
+    },
+    /// The structured manifest/run scope summary is not admissible for an
+    /// accepted source proof.
+    InvalidAcceptanceScope {
+        field: &'static str,
+        reason: &'static str,
+    },
 }
 
 impl std::fmt::Display for AcceptanceError {
@@ -348,6 +487,9 @@ impl std::fmt::Display for AcceptanceError {
             Self::ForbiddenClaimMissing => {
                 write!(f, "non-L2 fidelity requires explicit forbidden claims")
             }
+            Self::InvalidClaimLimit { field, reason } => {
+                write!(f, "claim_limits.{field} {reason}")
+            }
             Self::ProofNotAccepted(status) => {
                 write!(f, "source proof is not accepted (status: {status:?})")
             }
@@ -360,6 +502,15 @@ impl std::fmt::Display for AcceptanceError {
                     f,
                     "content hash mismatch: expected {expected}, got {actual}"
                 )
+            }
+            Self::RawSampleUriMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "raw_sample_uri mismatch: expected proof raw_sample_uri {expected:?}, got manifest s3_uri {actual:?}"
+                )
+            }
+            Self::InvalidStagedUri { field, uri } => {
+                write!(f, "{field} must be a staged s3:// URI, got {uri:?}")
             }
             Self::OutsideCoverage { object_date } => {
                 write!(
@@ -390,6 +541,34 @@ impl std::fmt::Display for AcceptanceError {
                     f,
                     "object source_url {source_url:?} does not reference proof venue {venue:?}"
                 )
+            }
+            Self::EvidenceStateNotBackfillable(evidence_state) => {
+                write!(
+                    f,
+                    "evidence_state {evidence_state:?} is not backfillable for accepted source proof"
+                )
+            }
+            Self::SourceBindingMismatch {
+                field,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "source_binding {field} mismatch: expected {expected:?}, got {actual:?}"
+                )
+            }
+            Self::UnknownSourceBinding {
+                source_binding,
+                venue,
+            } => {
+                write!(
+                    f,
+                    "source_binding {source_binding:?} for venue {venue:?} is not configured in the registry"
+                )
+            }
+            Self::InvalidAcceptanceScope { field, reason } => {
+                write!(f, "acceptance_scope.{field} {reason}")
             }
         }
     }
@@ -454,10 +633,26 @@ impl SourceProofReport {
     ///
     /// Returns the first blocking [`AcceptanceError`].
     pub fn evaluate_acceptance(&self) -> Result<(), AcceptanceError> {
+        self.evaluate_acceptance_with_registry(&committed_source_binding_registry())
+    }
+
+    pub fn evaluate_acceptance_with_registry(
+        &self,
+        registry: &SourceBindingRegistry,
+    ) -> Result<(), AcceptanceError> {
         if self.status == SourceProofStatus::Rejected {
             return Err(AcceptanceError::ProofRejected);
         }
         self.check_required_identity()?;
+        ensure_staged_s3_uri("raw_sample_uri", &self.raw_sample_uri)?;
+        ensure_staged_s3_uri("schema_sample_uri", &self.schema_sample_uri)?;
+        ensure_backfillable_evidence_state(self.evidence_state)?;
+        ensure_source_binding_metadata_matches(self, registry)?;
+        let acceptance_scope = self
+            .acceptance_scope
+            .as_ref()
+            .ok_or(AcceptanceError::MissingField("acceptance_scope"))?;
+        validate_acceptance_scope(acceptance_scope, &self.gap_policy_id)?;
         ensure_coverage_within_requested(&self.requested_time_range, &self.coverage_time_range)?;
         if self.nt_mapping_status != NtMappingStatus::Accepted {
             return Err(AcceptanceError::NtMappingNotAccepted(
@@ -473,6 +668,7 @@ impl SourceProofReport {
         {
             return Err(AcceptanceError::ForbiddenClaimMissing);
         }
+        validate_claim_limits(self)?;
         // When the proof claims to supersede a prior proof, that reference must be
         // a real, distinct id — not blank and not the proof's own id.
         if let Some(superseded) = &self.supersedes_source_proof_id {
@@ -494,7 +690,22 @@ impl SourceProofReport {
     /// Returns an [`AcceptanceError`] if [`Self::evaluate_acceptance`] fails;
     /// the record is left unchanged.
     pub fn accept(
+        self,
+        mode: AcceptanceMode,
+        accepted_by: impl Into<String>,
+        accepted_at_utc: impl Into<String>,
+    ) -> Result<Self, AcceptanceError> {
+        self.accept_with_registry(
+            &committed_source_binding_registry(),
+            mode,
+            accepted_by,
+            accepted_at_utc,
+        )
+    }
+
+    pub fn accept_with_registry(
         mut self,
+        registry: &SourceBindingRegistry,
         mode: AcceptanceMode,
         accepted_by: impl Into<String>,
         accepted_at_utc: impl Into<String>,
@@ -504,7 +715,7 @@ impl SourceProofReport {
         if self.status != SourceProofStatus::Pending {
             return Err(AcceptanceError::NotPending(self.status));
         }
-        self.evaluate_acceptance()?;
+        self.evaluate_acceptance_with_registry(registry)?;
         // Acceptance provenance is mandatory: an accepted record must record who
         // accepted it and when, or the acceptance is unattributable.
         let accepted_by = accepted_by.into();
@@ -576,6 +787,7 @@ pub struct AcceptedDataset {
     pub(crate) instrument_universe_id: String,
     pub(crate) fidelity_class: SourceProofFidelityClass,
     pub(crate) forbidden_claims: Vec<String>,
+    pub(crate) claim_limits: Vec<SourceProofClaimLimit>,
     pub(crate) acceptance_mode: AcceptanceMode,
     pub(crate) accepted_by: String,
     pub(crate) accepted_at: String,
@@ -586,6 +798,60 @@ pub struct AcceptedDataset {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AcceptedGate;
+
+#[cfg(test)]
+pub(crate) fn synthetic_accepted_dataset_for_tests() -> AcceptedDataset {
+    let object = IngestManifestObjectRecord {
+        s3_uri: "s3://synthetic-artifacts/source-proofs/raw/object.csv.gz".to_string(),
+        source_url: "https://source.example.test/spot/TESTPAIR/TESTPAIR_2026-03-01.csv.gz"
+            .to_string(),
+        sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        bytes: 1,
+        archive_date: "2026-03-01".to_string(),
+        schema_columns: vec!["id".to_string()],
+    };
+    let forbidden_claims = vec!["No execution-quality claims.".to_string()];
+    let claim_limits = forbidden_claims
+        .iter()
+        .enumerate()
+        .map(|(index, claim)| SourceProofClaimLimit {
+            id: format!("claim-limit-{}", index + 1),
+            severity: "blocking".to_string(),
+            claim: claim.clone(),
+            reason: "source fidelity does not prove this claim".to_string(),
+            evidence_ref: "source-proof://synthetic/fidelity-class".to_string(),
+        })
+        .collect();
+
+    AcceptedDataset {
+        source_proof_id: "source-proof-synthetic-native-trades".to_string(),
+        source_proof_version: 1,
+        source_binding: "synthetic-native-trades".to_string(),
+        venue: "synthetic-venue".to_string(),
+        product_family: "spot".to_string(),
+        product_category: "spot".to_string(),
+        instrument_universe_id: "synthetic-instrument-universe".to_string(),
+        fidelity_class: SourceProofFidelityClass::TradeReplay,
+        forbidden_claims,
+        claim_limits,
+        acceptance_mode: AcceptanceMode::Manual,
+        accepted_by: "operator".to_string(),
+        accepted_at: "2026-06-02T00:00:00Z".to_string(),
+        accepted_object_sha256: object.sha256.clone(),
+        object,
+        _accepted_gate: AcceptedGate,
+    }
+}
+
+impl AcceptedDataset {
+    #[must_use]
+    pub(crate) fn result_contract_claim_limits(&self) -> Vec<String> {
+        self.claim_limits
+            .iter()
+            .map(SourceProofClaimLimit::to_result_contract_claim_limit)
+            .collect()
+    }
+}
 
 /// Select an accepted dataset for backtest input.
 ///
@@ -605,14 +871,46 @@ pub fn select_accepted_dataset(
     object: &IngestManifestObjectRecord,
     verified_object_sha256: &str,
 ) -> Result<AcceptedDataset, AcceptanceError> {
+    select_accepted_dataset_with_registry(
+        proof,
+        object,
+        verified_object_sha256,
+        &committed_source_binding_registry(),
+    )
+}
+
+pub fn select_accepted_dataset_with_registry(
+    proof: &SourceProofReport,
+    object: &IngestManifestObjectRecord,
+    verified_object_sha256: &str,
+    registry: &SourceBindingRegistry,
+) -> Result<AcceptedDataset, AcceptanceError> {
     if !proof.is_accepted() {
         return Err(AcceptanceError::ProofNotAccepted(proof.status));
     }
     // Defence in depth: re-evaluate the acceptance invariants even for a record
     // that already claims accepted status, so a hand-edited record cannot slip
     // through.
-    proof.evaluate_acceptance()?;
+    proof.evaluate_acceptance_with_registry(registry)?;
     object.check_complete()?;
+    ensure_staged_s3_uri("raw_sample_uri", &proof.raw_sample_uri)?;
+    ensure_staged_s3_uri("s3_uri", &object.s3_uri)?;
+    if proof.raw_sample_uri.trim() != object.s3_uri.trim() {
+        return Err(AcceptanceError::RawSampleUriMismatch {
+            expected: proof.raw_sample_uri.clone(),
+            actual: object.s3_uri.clone(),
+        });
+    }
+    let acceptance_scope = proof
+        .acceptance_scope
+        .as_ref()
+        .ok_or(AcceptanceError::MissingField("acceptance_scope"))?;
+    if object.bytes > acceptance_scope.accepted_bytes {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "accepted_bytes",
+            reason: "must be at least selected object bytes",
+        });
+    }
 
     if verified_object_sha256 != object.sha256 {
         return Err(AcceptanceError::ContentHashMismatch {
@@ -630,8 +928,12 @@ pub fn select_accepted_dataset(
     // Bind the object to the proof's source: the object's own provenance URL
     // must use the HTTPS host declared by the source-binding registry. This is
     // stricter than venue-label inference and avoids accepting arbitrary TLDs.
-    if !source_url_matches_declared_source(&object.source_url, &proof.source_binding, &proof.venue)
-    {
+    if !source_url_matches_declared_source(
+        &object.source_url,
+        &proof.source_binding,
+        &proof.venue,
+        registry,
+    ) {
         return Err(AcceptanceError::SourceVenueMismatch {
             venue: proof.venue.clone(),
             source_url: object.source_url.clone(),
@@ -672,6 +974,7 @@ pub fn select_accepted_dataset(
         instrument_universe_id: proof.instrument_universe_id.clone(),
         fidelity_class: proof.fidelity_class,
         forbidden_claims: proof.forbidden_claims.clone(),
+        claim_limits: proof.claim_limits.clone(),
         acceptance_mode,
         accepted_by: accepted_by.clone(),
         accepted_at: accepted_at.clone(),
@@ -681,44 +984,57 @@ pub fn select_accepted_dataset(
     })
 }
 
-fn source_url_matches_declared_source(source_url: &str, source_binding: &str, venue: &str) -> bool {
-    let Some(declared_source_uri) = source_binding_source_uri(source_binding, venue) else {
-        return false;
-    };
-    let Some(declared_host) = https_host(&declared_source_uri) else {
-        return false;
-    };
-    let Some(object_host) = https_host(source_url) else {
-        return false;
-    };
-    object_host.eq_ignore_ascii_case(declared_host)
-}
-
-fn source_binding_source_uri(source_binding: &str, venue: &str) -> Option<String> {
-    let source_binding = source_binding.trim();
-    let venue = venue.trim();
-    if source_binding.is_empty() || venue.is_empty() {
-        return None;
+fn ensure_staged_s3_uri(field: &'static str, uri: &str) -> Result<(), AcceptanceError> {
+    let uri = uri.trim();
+    if uri.starts_with("s3://") {
+        Ok(())
+    } else {
+        Err(AcceptanceError::InvalidStagedUri {
+            field,
+            uri: uri.to_string(),
+        })
     }
-    toml::from_str::<SourceBindingRegistry>(SOURCE_BINDINGS_REGISTRY)
-        .ok()?
-        .source_bindings
-        .into_iter()
-        // Binding keys are canonical config IDs; venue labels are operator-facing names.
-        .find(|binding| binding.key == source_binding && binding.venue.eq_ignore_ascii_case(venue))
-        .map(|binding| binding.source_uri)
 }
 
-fn https_host(source_url: &str) -> Option<&str> {
+fn source_url_matches_declared_source(
+    source_url: &str,
+    source_binding: &str,
+    venue: &str,
+    registry: &SourceBindingRegistry,
+) -> bool {
+    let Some(config) = registry.source_binding_config(source_binding, venue) else {
+        return false;
+    };
+    if source_url.contains(['{', '}']) {
+        return false;
+    }
+    let Some(declared) = https_url_parts(&config.source_uri) else {
+        return false;
+    };
+    let Some(object) = https_url_parts(source_url) else {
+        return false;
+    };
+    object.host.eq_ignore_ascii_case(declared.host)
+        && template_remainder_matches(declared.remainder, object.remainder)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HttpsUrlParts<'a> {
+    host: &'a str,
+    remainder: &'a str,
+}
+
+fn https_url_parts(source_url: &str) -> Option<HttpsUrlParts<'_>> {
     let (scheme, after_scheme) = source_url.split_once("://")?;
     if !scheme.eq_ignore_ascii_case("https") {
         return None;
     }
-    let authority = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
-        .trim();
+    let without_fragment = after_scheme.split('#').next().unwrap_or_default();
+    let remainder_start = without_fragment
+        .find(['/', '?'])
+        .unwrap_or(without_fragment.len());
+    let authority = without_fragment[..remainder_start].trim();
+    let remainder = &without_fragment[remainder_start..];
     let host = authority
         .rsplit_once('@')
         .map_or(authority, |(_, host)| host)
@@ -727,7 +1043,206 @@ fn https_host(source_url: &str) -> Option<&str> {
         .unwrap_or_default()
         .trim_matches(['[', ']'])
         .trim_matches('.');
-    if host.is_empty() { None } else { Some(host) }
+    if host.is_empty() {
+        None
+    } else {
+        Some(HttpsUrlParts { host, remainder })
+    }
+}
+
+fn template_remainder_matches(mut template: &str, mut actual: &str) -> bool {
+    while let Some(open) = template.find('{') {
+        let literal = &template[..open];
+        if !actual.starts_with(literal) {
+            return false;
+        }
+        actual = &actual[literal.len()..];
+        let Some(close_after_open) = template[open + 1..].find('}') else {
+            return false;
+        };
+        let close = open + 1 + close_after_open;
+        if close == open + 1 {
+            return false;
+        }
+        template = &template[close + 1..];
+        let next_literal_end = template.find('{').unwrap_or(template.len());
+        let next_literal = &template[..next_literal_end];
+        if next_literal.is_empty() {
+            return !actual.is_empty() && !actual.contains(['/', '?', '#']);
+        }
+        let Some(match_end) = actual.find(next_literal) else {
+            return false;
+        };
+        let matched_placeholder = &actual[..match_end];
+        if matched_placeholder.is_empty() || matched_placeholder.contains(['/', '?', '#']) {
+            return false;
+        }
+        actual = &actual[match_end..];
+    }
+    actual == template
+}
+
+fn ensure_backfillable_evidence_state(
+    evidence_state: EvidenceState,
+) -> Result<(), AcceptanceError> {
+    match evidence_state {
+        EvidenceState::DirectlyBackfillable | EvidenceState::OwnerArchiveBackfillable => Ok(()),
+        other => Err(AcceptanceError::EvidenceStateNotBackfillable(other)),
+    }
+}
+
+fn validate_acceptance_scope(
+    scope: &AcceptanceScope,
+    gap_policy_id: &str,
+) -> Result<(), AcceptanceError> {
+    if scope.planned_objects == 0 {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "planned_objects",
+            reason: "must be positive",
+        });
+    }
+    if scope.completed_objects == 0 {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "completed_objects",
+            reason: "must be positive",
+        });
+    }
+    if scope.accepted_bytes == 0 {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "accepted_bytes",
+            reason: "must be positive",
+        });
+    }
+    if scope.failed_objects != 0 {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "failed_objects",
+            reason: "must be zero",
+        });
+    }
+    if scope.selector_scope_violations != 0 {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "selector_scope_violations",
+            reason: "must be zero",
+        });
+    }
+    let accounted_objects = scope
+        .completed_objects
+        .checked_add(scope.failed_objects)
+        .and_then(|value| value.checked_add(scope.skipped_objects))
+        .ok_or(AcceptanceError::InvalidAcceptanceScope {
+            field: "planned_objects",
+            reason: "must not overflow completed + failed + skipped object counts",
+        })?;
+    if accounted_objects != scope.planned_objects {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "planned_objects",
+            reason: "must equal completed_objects + failed_objects + skipped_objects",
+        });
+    }
+    if scope.skipped_objects != 0 && gap_policy_id.trim().is_empty() {
+        return Err(AcceptanceError::InvalidAcceptanceScope {
+            field: "skipped_objects",
+            reason: "requires gap_policy_id",
+        });
+    }
+    Ok(())
+}
+
+fn validate_claim_limits(proof: &SourceProofReport) -> Result<(), AcceptanceError> {
+    for limit in &proof.claim_limits {
+        if limit.id.trim().is_empty() {
+            return Err(AcceptanceError::InvalidClaimLimit {
+                field: "id",
+                reason: "must not be empty",
+            });
+        }
+        if limit.severity.trim().is_empty() {
+            return Err(AcceptanceError::InvalidClaimLimit {
+                field: "severity",
+                reason: "must not be empty",
+            });
+        }
+        if limit.claim.trim().is_empty() {
+            return Err(AcceptanceError::InvalidClaimLimit {
+                field: "claim",
+                reason: "must not be empty",
+            });
+        }
+        if limit.reason.trim().is_empty() {
+            return Err(AcceptanceError::InvalidClaimLimit {
+                field: "reason",
+                reason: "must not be empty",
+            });
+        }
+        if limit.evidence_ref.trim().is_empty() {
+            return Err(AcceptanceError::InvalidClaimLimit {
+                field: "evidence_ref",
+                reason: "must not be empty",
+            });
+        }
+    }
+
+    if proof.fidelity_class == SourceProofFidelityClass::L2Replay {
+        return Ok(());
+    }
+    if proof.claim_limits.is_empty() {
+        return Err(AcceptanceError::InvalidClaimLimit {
+            field: "claim_limits",
+            reason: "must not be empty for non-L2 fidelity",
+        });
+    }
+    for forbidden_claim in &proof.forbidden_claims {
+        if !proof
+            .claim_limits
+            .iter()
+            .any(|limit| limit.claim == *forbidden_claim)
+        {
+            return Err(AcceptanceError::InvalidClaimLimit {
+                field: "claim",
+                reason: "must cover every forbidden_claims entry",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn ensure_source_binding_metadata_matches(
+    proof: &SourceProofReport,
+    registry: &SourceBindingRegistry,
+) -> Result<(), AcceptanceError> {
+    let Some(config) = registry.source_binding_config(&proof.source_binding, &proof.venue) else {
+        return Err(AcceptanceError::UnknownSourceBinding {
+            source_binding: proof.source_binding.clone(),
+            venue: proof.venue.clone(),
+        });
+    };
+    if proof.product_family != config.product_family {
+        return Err(AcceptanceError::SourceBindingMismatch {
+            field: "product_family",
+            expected: config.product_family,
+            actual: proof.product_family.clone(),
+        });
+    }
+    if proof.evidence_state != config.evidence_state {
+        return Err(AcceptanceError::SourceBindingMismatch {
+            field: "evidence_state",
+            expected: format!("{:?}", config.evidence_state),
+            actual: format!("{:?}", proof.evidence_state),
+        });
+    }
+    if !config.table_families.is_empty()
+        && !config
+            .table_families
+            .iter()
+            .any(|table_family| table_family == &proof.table_family)
+    {
+        return Err(AcceptanceError::SourceBindingMismatch {
+            field: "table_family",
+            expected: config.table_families.join(","),
+            actual: proof.table_family.clone(),
+        });
+    }
+    Ok(())
 }
 
 fn ensure_coverage_within_requested(
@@ -824,7 +1339,35 @@ mod tests {
         }
     }
 
+    fn accepted_scope() -> AcceptanceScope {
+        AcceptanceScope {
+            planned_objects: 1,
+            completed_objects: 1,
+            failed_objects: 0,
+            skipped_objects: 0,
+            accepted_bytes: 8505,
+            selector_scope_violations: 0,
+        }
+    }
+
+    fn claim_limits_for(claims: &[String]) -> Vec<SourceProofClaimLimit> {
+        claims
+            .iter()
+            .enumerate()
+            .map(|(index, claim)| SourceProofClaimLimit {
+                id: format!("claim-limit-{}", index + 1),
+                severity: "blocking".to_string(),
+                claim: claim.clone(),
+                reason: "source fidelity does not prove this claim".to_string(),
+                evidence_ref: "source-proof://fidelity-class".to_string(),
+            })
+            .collect()
+    }
+
     fn candidate_proof() -> SourceProofReport {
+        let forbidden_claims = vec![
+            "No execution-quality, queue-position, or order-book-liquidity claims.".to_string(),
+        ];
         SourceProofReport {
             source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
             source_proof_version: 1,
@@ -857,9 +1400,9 @@ mod tests {
             retention_ref: "https://public.bybit.com/ (archive retention reviewed)".to_string(),
             nt_mapping_status: NtMappingStatus::Accepted,
             fidelity_class: SourceProofFidelityClass::TradeReplay,
-            forbidden_claims: vec![
-                "No execution-quality, queue-position, or order-book-liquidity claims.".to_string(),
-            ],
+            forbidden_claims: forbidden_claims.clone(),
+            claim_limits: claim_limits_for(&forbidden_claims),
+            acceptance_scope: Some(accepted_scope()),
             gap_policy_id: String::new(),
             required_checks: passing_checks(),
             acceptance_mode: None,
@@ -1114,15 +1657,16 @@ mod tests {
 
     #[test]
     fn select_rejects_unknown_source_binding() {
-        let mut candidate = candidate_proof();
-        candidate.source_binding = "bybit-does-not-exist".to_string();
-        let accepted = candidate
-            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
-            .unwrap();
+        let mut accepted = candidate_proof();
+        accepted.status = SourceProofStatus::Accepted;
+        accepted.acceptance_mode = Some(AcceptanceMode::Manual);
+        accepted.accepted_by = Some("operator".to_string());
+        accepted.accepted_at = Some("2026-06-02T00:00:00Z".to_string());
+        accepted.source_binding = "bybit-does-not-exist".to_string();
         let object = manifest_object();
         let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
         assert!(
-            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            matches!(err, AcceptanceError::UnknownSourceBinding { .. }),
             "{err:?}"
         );
     }
@@ -1165,6 +1709,33 @@ mod tests {
         object.source_url =
             "https://evil.public.bybit.com/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
         let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn select_rejects_same_host_path_outside_declared_source_template() {
+        let mut proof = candidate_proof();
+        proof.source_proof_id = "source-proof-binance-spot-native-trades".to_string();
+        proof.source_binding = "binance-spot-native-trades".to_string();
+        proof.venue = "binance".to_string();
+        proof.evidence_state = EvidenceState::DirectlyBackfillable;
+        proof.raw_sample_uri =
+            "s3://bolt-parquet/.../binance/raw/object=monthly-trades.zip".to_string();
+        let raw_sample_uri = proof.raw_sample_uri.clone();
+        let accepted = proof
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.s3_uri = raw_sample_uri;
+        object.source_url =
+            "https://data.binance.vision/data/spot/monthly/trades/BNBUSDC/BNBUSDC-trades-2026-03.zip"
+                .to_string();
+
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+
         assert!(
             matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
             "{err:?}"
@@ -1275,6 +1846,22 @@ mod tests {
     }
 
     #[test]
+    fn non_l2_fidelity_requires_structured_claim_limits() {
+        let mut proof = candidate_proof();
+        proof.claim_limits.clear();
+        let err = proof.evaluate_acceptance().unwrap_err();
+        assert!(err.to_string().contains("claim_limits"), "{err}");
+    }
+
+    #[test]
+    fn structured_claim_limits_must_cover_forbidden_claims() {
+        let mut proof = candidate_proof();
+        proof.claim_limits[0].claim = "No unrelated claim.".to_string();
+        let err = proof.evaluate_acceptance().unwrap_err();
+        assert!(err.to_string().contains("forbidden_claims"), "{err}");
+    }
+
+    #[test]
     fn acceptance_blocked_when_contract_version_unexpected() {
         let mut proof = candidate_proof();
         proof.contract_version = "some-other-contract.v9".to_string();
@@ -1313,12 +1900,239 @@ mod tests {
     }
 
     #[test]
+    fn acceptance_blocked_when_evidence_state_is_not_backfillable() {
+        for evidence_state in [
+            EvidenceState::BoundedOrCurrentOnly,
+            EvidenceState::PendingSourceProof,
+            EvidenceState::VendorOrForwardCaptureOnly,
+            EvidenceState::NotApplicable,
+            EvidenceState::ExcludedFromCurrentScope,
+        ] {
+            let mut proof = candidate_proof();
+            proof.evidence_state = evidence_state;
+
+            let err = proof.evaluate_acceptance().unwrap_err();
+
+            assert!(
+                err.to_string().contains("evidence_state")
+                    && err.to_string().contains("backfillable"),
+                "{evidence_state:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn acceptance_blocked_when_structured_scope_summary_missing() {
+        let mut proof = candidate_proof();
+        proof.acceptance_scope = None;
+
+        assert_eq!(
+            proof.evaluate_acceptance().unwrap_err(),
+            AcceptanceError::MissingField("acceptance_scope")
+        );
+    }
+
+    #[test]
+    fn acceptance_blocked_when_structured_scope_summary_has_failures_or_scope_violations() {
+        let mut proof = candidate_proof();
+        let scope = proof.acceptance_scope.as_mut().expect("acceptance scope");
+        scope.failed_objects = 1;
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("failed_objects") && err.to_string().contains("must be zero"),
+            "{err}"
+        );
+
+        let mut proof = candidate_proof();
+        let scope = proof.acceptance_scope.as_mut().expect("acceptance scope");
+        scope.selector_scope_violations = 1;
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("selector_scope_violations")
+                && err.to_string().contains("must be zero"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn acceptance_blocked_when_source_binding_family_disagrees_with_registry() {
+        let mut proof = candidate_proof();
+        proof.product_family = "linear".to_string();
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("source_binding")
+                && err.to_string().contains("product_family")
+                && err.to_string().contains("spot")
+                && err.to_string().contains("linear"),
+            "{err}"
+        );
+
+        let mut proof = candidate_proof();
+        proof.table_family = "order_book_snapshots_fixed_depth".to_string();
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("source_binding")
+                && err.to_string().contains("table_family")
+                && err.to_string().contains("trades")
+                && err.to_string().contains("order_book_snapshots_fixed_depth"),
+            "{err}"
+        );
+
+        let mut proof = candidate_proof();
+        proof.evidence_state = EvidenceState::DirectlyBackfillable;
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("source_binding")
+                && err.to_string().contains("evidence_state")
+                && err.to_string().contains("OwnerArchiveBackfillable")
+                && err.to_string().contains("DirectlyBackfillable"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn acceptance_blocked_when_source_binding_missing_from_registry() {
+        let mut proof = candidate_proof();
+        proof.source_binding = "missing-native-trades".to_string();
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("source_binding")
+                && err.to_string().contains("registry")
+                && err.to_string().contains("missing-native-trades"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn native_trade_source_bindings_cover_multiple_configured_venues() {
+        let registry: toml::Value =
+            toml::from_str(SOURCE_BINDINGS_REGISTRY).expect("source bindings registry parses");
+        let bindings = registry
+            .get("source_binding")
+            .and_then(toml::Value::as_array)
+            .expect("source_binding array");
+        let mut venues = std::collections::BTreeSet::new();
+        let mut keys = Vec::new();
+        for binding in bindings {
+            let table_families = binding
+                .get("table_families")
+                .and_then(toml::Value::as_array)
+                .expect("table_families array");
+            let is_native_trade_fixture =
+                binding.get("fixture").and_then(toml::Value::as_str) == Some("native-trades");
+            let is_trade_table = table_families
+                .iter()
+                .any(|family| family.as_str() == Some("trades"));
+            let is_backfillable = matches!(
+                binding.get("evidence_state").and_then(toml::Value::as_str),
+                Some("directly_backfillable" | "owner_archive_backfillable")
+            );
+            if is_native_trade_fixture && is_trade_table && is_backfillable {
+                let key = binding
+                    .get("key")
+                    .and_then(toml::Value::as_str)
+                    .expect("key");
+                let venue = binding
+                    .get("venue")
+                    .and_then(toml::Value::as_str)
+                    .expect("venue");
+                let product_family = binding
+                    .get("product_family")
+                    .and_then(toml::Value::as_str)
+                    .expect("product_family");
+                let evidence_state = match binding
+                    .get("evidence_state")
+                    .and_then(toml::Value::as_str)
+                    .expect("evidence_state")
+                {
+                    "directly_backfillable" => EvidenceState::DirectlyBackfillable,
+                    "owner_archive_backfillable" => EvidenceState::OwnerArchiveBackfillable,
+                    other => panic!("unexpected backfillable evidence state {other:?}"),
+                };
+                let source_uri = binding
+                    .get("source_uri")
+                    .and_then(toml::Value::as_str)
+                    .expect("source_uri");
+
+                let mut proof = candidate_proof();
+                proof.source_proof_id = format!("source-proof-{key}");
+                proof.source_binding = key.to_string();
+                proof.venue = venue.to_string();
+                proof.product_family = product_family.to_string();
+                proof.product_category = product_family.to_string();
+                proof.evidence_state = evidence_state;
+                proof
+                    .evaluate_acceptance()
+                    .expect("configured native-trades source binding should pass proof acceptance");
+                let proof = proof
+                    .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+                    .expect("configured native-trades source binding should be acceptable");
+
+                let mut object = manifest_object();
+                object.source_url = source_uri
+                    .replace("{symbol}", "BNBUSDC")
+                    .replace("{dt}", "2026-03-01");
+                select_accepted_dataset(&proof, &object, &object.sha256).expect(
+                    "configured native-trades source binding should select by source template",
+                );
+
+                venues.insert(venue.to_string());
+                keys.push(key.to_string());
+            }
+        }
+
+        assert!(
+            venues.len() >= 2,
+            "native trade bindings must cover at least two configured venues; found venues={venues:?}, keys={keys:?}"
+        );
+    }
+
+    #[test]
     fn acceptance_blocked_when_schema_sample_hash_missing() {
         let mut proof = candidate_proof();
         proof.schema_sample_hash = "  ".to_string();
         assert_eq!(
             proof.evaluate_acceptance().unwrap_err(),
             AcceptanceError::MissingField("schema_sample_hash")
+        );
+    }
+
+    #[test]
+    fn acceptance_blocked_when_raw_sample_uri_is_not_staged_to_s3() {
+        let mut proof = candidate_proof();
+        proof.raw_sample_uri =
+            "https://public.bybit.com/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("raw_sample_uri") && err.to_string().contains("s3://"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn acceptance_blocked_when_schema_sample_uri_is_not_staged_to_s3() {
+        let mut proof = candidate_proof();
+        proof.schema_sample_uri = "https://public.bybit.com/schema-sample.json".to_string();
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert!(
+            err.to_string().contains("schema_sample_uri") && err.to_string().contains("s3://"),
+            "{err}"
         );
     }
 
@@ -1379,6 +2193,65 @@ mod tests {
         let object = manifest_object();
         let err = select_accepted_dataset(&proof, &object, &object.sha256).unwrap_err();
         assert!(matches!(err, AcceptanceError::ContentHashMismatch { .. }));
+    }
+
+    #[test]
+    fn ledger_rejects_manifest_object_from_different_staged_uri_than_raw_sample() {
+        let proof = candidate_proof()
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.s3_uri =
+            "s3://bolt-parquet/.../symbol=BNBUSDC/object=different-object.csv.gz".to_string();
+
+        let err = select_accepted_dataset(&proof, &object, &object.sha256).unwrap_err();
+
+        assert!(
+            err.to_string().contains("raw_sample_uri") && err.to_string().contains("s3_uri"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn ledger_rejects_raw_sample_that_was_not_staged_to_s3() {
+        let mut proof = candidate_proof();
+        proof.raw_sample_uri =
+            "https://public.bybit.com/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+        proof.status = SourceProofStatus::Accepted;
+        proof.acceptance_mode = Some(AcceptanceMode::Manual);
+        proof.accepted_by = Some("operator".to_string());
+        proof.accepted_at = Some("2026-06-02T00:00:00Z".to_string());
+        let mut object = manifest_object();
+        object.s3_uri = proof.raw_sample_uri.clone();
+
+        let err = select_accepted_dataset(&proof, &object, &object.sha256).unwrap_err();
+
+        assert!(
+            err.to_string().contains("raw_sample_uri") && err.to_string().contains("s3://"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn ledger_rejects_object_bytes_exceeding_structured_acceptance_scope() {
+        let mut proof = candidate_proof();
+        proof
+            .acceptance_scope
+            .as_mut()
+            .expect("acceptance scope")
+            .accepted_bytes = manifest_object().bytes - 1;
+        let proof = proof
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let object = manifest_object();
+
+        let err = select_accepted_dataset(&proof, &object, &object.sha256).unwrap_err();
+
+        assert!(
+            err.to_string().contains("accepted_bytes")
+                && err.to_string().contains("selected object bytes"),
+            "{err}"
+        );
     }
 
     #[test]

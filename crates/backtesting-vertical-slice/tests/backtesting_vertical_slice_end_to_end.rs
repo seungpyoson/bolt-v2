@@ -7,24 +7,28 @@
 //! `BacktestNode` run of a compiled Rust strategy, and the objective result
 //! contract. CI-safe (no network): this test exercises the pipeline with
 //! committed synthetic data only. Real-object verification is operator-run-only
-//! via the `backtesting_vertical_slice` binary (`--run-spec`, `--object-gz`,
+//! via the `backtesting_vertical_slice` binary (`--run-spec`, `--object`,
 //! `--output-dir`) and is not asserted here.
 
 use std::collections::BTreeMap;
 
 use backtesting_vertical_slice::{
-    canonical_trades::CanonicalInstrumentIdentity,
+    canonical_trades::{
+        CanonicalInstrumentIdentity, ConverterConfig, CsvTimestampUnit, CsvTradeMappingConfig,
+        RawPayloadConfig, RawPayloadContainer, TRANSFORM_IDENTITY,
+    },
     catalog_projection::SpotInstrumentSpec,
     result_contract::ResultArtifactUris,
     run_manifest::{
         BacktestingRunManifest, ManifestCatalogInput, ManifestVenueConfig, MarketStructureFixture,
-        RunPurpose, STRATEGY_HURST_VPIN_DIRECTIONAL, StrategySource,
+        RunPurpose, STRATEGY_HURST_VPIN_DIRECTIONAL, StrategySource, StrategySourceKind,
     },
     runner::{BacktestRunInputs, run_backtest},
     source_proof::{
-        AcceptanceMode, AcceptedDataset, EvidenceState, FixtureType, IngestManifestObjectRecord,
-        NtMappingStatus, RequiredCheck, RequiredChecks, SourceProofFidelityClass,
-        SourceProofReport, SourceProofStatus, TimeRange, select_accepted_dataset,
+        AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
+        IngestManifestObjectRecord, NtMappingStatus, RequiredCheck, RequiredChecks,
+        SourceProofClaimLimit, SourceProofFidelityClass, SourceProofReport, SourceProofStatus,
+        TimeRange, select_accepted_dataset,
     },
 };
 
@@ -32,6 +36,34 @@ const SAMPLE_CSV: &str = "id,timestamp,price,volume,side,rpi\n\
     1,1772323201665,617.2,0.3,buy,0\n\
     2,1772323312219,617.9,0.1456,sell,0\n\
     3,1772323312236,617,0.1544,sell,0\n";
+
+fn csv_mapping() -> CsvTradeMappingConfig {
+    CsvTradeMappingConfig {
+        has_headers: true,
+        trade_id_column: "id".to_string(),
+        timestamp_column: "timestamp".to_string(),
+        timestamp_unit: CsvTimestampUnit::Milliseconds,
+        price_column: "price".to_string(),
+        size_column: "volume".to_string(),
+        side_column: "side".to_string(),
+        buyer_side_values: vec!["buy".to_string()],
+        seller_side_values: vec!["sell".to_string()],
+    }
+}
+
+fn converter_config() -> ConverterConfig {
+    ConverterConfig {
+        identity: TRANSFORM_IDENTITY.to_string(),
+        version: "1".to_string(),
+        raw_payload: RawPayloadConfig {
+            container: RawPayloadContainer::CsvGzip,
+            max_object_bytes: 4096,
+            max_decoded_bytes: 4096,
+            zip_member: None,
+        },
+        csv: csv_mapping(),
+    }
+}
 
 const OBJECT_SHA256: &str = "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598";
 const SOURCE_PROOF_ID: &str = "source-proof-bybit-spot-tick-trades";
@@ -52,6 +84,20 @@ fn passing_checks() -> RequiredChecks {
     }
 }
 
+fn claim_limits_for(claims: &[String]) -> Vec<SourceProofClaimLimit> {
+    claims
+        .iter()
+        .enumerate()
+        .map(|(index, claim)| SourceProofClaimLimit {
+            id: format!("claim-limit-{}", index + 1),
+            severity: "blocking".to_string(),
+            claim: claim.clone(),
+            reason: "source fidelity does not prove this claim".to_string(),
+            evidence_ref: "source-proof://fidelity-class".to_string(),
+        })
+        .collect()
+}
+
 fn accepted_dataset() -> AcceptedDataset {
     let object = IngestManifestObjectRecord {
         s3_uri: "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BNBUSDC/object=d6af93.csv.gz".to_string(),
@@ -64,6 +110,12 @@ fn accepted_dataset() -> AcceptedDataset {
             .map(ToString::to_string)
             .collect(),
     };
+    let forbidden_claims = vec![
+        "No execution-quality, queue-position, or order-book-liquidity claims.".to_string(),
+        "No L2/L3 order-book replay claims from trade prints.".to_string(),
+        "Coverage is limited to BNBUSDC spot 2026-03-01; no multi-day or multi-instrument claims."
+            .to_string(),
+    ];
     let proof = SourceProofReport {
         source_proof_id: SOURCE_PROOF_ID.to_string(),
         source_proof_version: 1,
@@ -97,12 +149,16 @@ fn accepted_dataset() -> AcceptedDataset {
         fidelity_class: SourceProofFidelityClass::TradeReplay,
         // Mirrors the committed reference source proof exactly so the fixture
         // carries the full set of fidelity constraints through to the contract.
-        forbidden_claims: vec![
-            "No execution-quality, queue-position, or order-book-liquidity claims.".to_string(),
-            "No L2/L3 order-book replay claims from trade prints.".to_string(),
-            "Coverage is limited to BNBUSDC spot 2026-03-01; no multi-day or multi-instrument claims."
-                .to_string(),
-        ],
+        forbidden_claims: forbidden_claims.clone(),
+        claim_limits: claim_limits_for(&forbidden_claims),
+        acceptance_scope: Some(AcceptanceScope {
+            planned_objects: 1,
+            completed_objects: 1,
+            failed_objects: 0,
+            skipped_objects: 0,
+            accepted_bytes: object.bytes,
+            selector_scope_violations: 0,
+        }),
         gap_policy_id: String::new(),
         required_checks: passing_checks(),
         acceptance_mode: None,
@@ -143,7 +199,10 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
         source_proof_id: SOURCE_PROOF_ID.to_string(),
         source_proof_version: 1,
         pins_non_latest_proof: false,
+        proof_pin_reason_code: None,
+        proof_pin_reason_detail: None,
         strategy: StrategySource {
+            source_kind: StrategySourceKind::CompiledRustRegistry,
             registry_key: STRATEGY_HURST_VPIN_DIRECTIONAL.to_string(),
             parameters: BTreeMap::from([
                 ("trade_size".to_string(), "0.01".to_string()),
@@ -152,6 +211,10 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
                     "BNBUSDC.BYBIT-1-MINUTE-LAST-INTERNAL".to_string(),
                 ),
             ]),
+            typed_config_uri: None,
+            typed_config_hash: None,
+            promotion_package_uri: None,
+            promotion_package_hash: None,
         },
         venue: ManifestVenueConfig {
             nt_venue: "BYBIT".to_string(),
@@ -159,16 +222,59 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             account_type: "CASH".to_string(),
             book_type: "L1_MBP".to_string(),
             starting_balances: vec!["1_000_000 USDC".to_string()],
+            routing: false,
+            frozen_account: false,
+            reject_stop_orders: true,
+            support_gtd_orders: true,
+            support_contingent_orders: true,
+            use_position_ids: true,
+            use_random_ids: false,
+            use_reduce_only: true,
+            bar_execution: true,
+            bar_adaptive_high_low_ordering: false,
+            trade_execution: true,
+            use_market_order_acks: false,
+            liquidity_consumption: false,
+            allow_cash_borrowing: false,
+            queue_position: false,
+            oto_trigger_mode: "PARTIAL".to_string(),
+            base_currency: "NONE".to_string(),
+            default_leverage: "1".to_string(),
+            price_protection_points: 0,
+            leverages: None,
+            margin_model: None,
+            modules: None,
+            fill_model: None,
+            latency_model: None,
+            fee_model: None,
+            settlement_prices: None,
         },
         catalog_input: ManifestCatalogInput {
             catalog_path: catalog_path.to_string(),
+            catalog_fs_protocol: "NONE".to_string(),
+            catalog_fs_storage_options: BTreeMap::new(),
+            catalog_fs_rust_storage_options: BTreeMap::new(),
             data_type: "TradeTick".to_string(),
             nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
+            instrument_ids: None,
+            start_time: None,
+            end_time: None,
+            filter_expr: None,
+            client_id: None,
+            metadata: None,
+            bar_spec: None,
+            bar_types: None,
+            optimize_file_loading: None,
         },
         artifact_root: "s3://bolt-parquet/nt-research-analytics".to_string(),
         output_prefix:
             "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-end-to-end"
                 .to_string(),
+        artifact_store: backtesting_vertical_slice::run_manifest::ManifestArtifactStore {
+            storage_options: BTreeMap::new(),
+            rust_storage_options: BTreeMap::new(),
+            ssm_parameters: None,
+        },
         start_time: None,
         end_time: None,
     }
@@ -186,6 +292,8 @@ fn accepted_data_flows_through_to_objective_result_contract() {
     let canonical_path = temp.path().join("canonical-trades.parquet");
     let catalog_root = temp.path().join("nt-catalog");
     let catalog_path = catalog_root.to_str().unwrap().to_string();
+    let manifest = manifest(&catalog_path);
+    let contract_manifest_hash = manifest.manifest_hash();
 
     let output = run_backtest(BacktestRunInputs {
         accepted: &accepted,
@@ -193,7 +301,9 @@ fn accepted_data_flows_through_to_objective_result_contract() {
         instrument_spec: &instrument_spec(),
         csv_text: SAMPLE_CSV,
         capture_time_nanos: 1_772_512_022_000_000_000,
-        manifest: &manifest(&catalog_path),
+        manifest: &manifest,
+        contract_manifest_hash: &contract_manifest_hash,
+        converter: &converter_config(),
         canonical_artifact_path: &canonical_path,
         catalog_root: &catalog_root,
         created_at: "2026-06-02T00:00:00Z",
@@ -202,6 +312,9 @@ fn accepted_data_flows_through_to_objective_result_contract() {
                 .to_string(),
             canonical_table_uri: canonical_path.to_string_lossy().to_string(),
             nt_catalog_uri: catalog_path.clone(),
+            catalog_metadata_uri:
+                "s3://bolt-parquet/nt-research-analytics/backtests/end-to-end/catalog-metadata.json"
+                    .to_string(),
             result_contract_uri:
                 "s3://bolt-parquet/nt-research-analytics/backtests/end-to-end/result.json"
                     .to_string(),
@@ -264,7 +377,47 @@ fn accepted_data_flows_through_to_objective_result_contract() {
         "warning must explain the trade-only fidelity: {:?}",
         contract.warnings[0]
     );
-    assert_eq!(contract.claim_limits.len(), 3);
+    assert!(
+        contract.claim_limits.iter().any(|limit| {
+            limit.contains("NT defaulted surface run.chunk_size")
+                && limit.contains("resolved_value=None")
+        }),
+        "contract must record resolved NT defaults in claim limits: {:?}",
+        contract.claim_limits
+    );
+    assert!(
+        contract.claim_limits.iter().any(|limit| {
+            limit.contains("source_proof_claim_limit id=claim-limit-1")
+                && limit.contains("severity=blocking")
+                && limit.contains(
+                    "claim=No execution-quality, queue-position, or order-book-liquidity claims.",
+                )
+                && limit.contains("reason=source fidelity does not prove this claim")
+                && limit.contains("evidence_ref=source-proof://fidelity-class")
+        }),
+        "contract must preserve structured source-proof claim-limit evidence: {:?}",
+        contract.claim_limits
+    );
+    assert!(
+        contract.claim_limits.iter().any(|limit| {
+            limit.contains("NT pass_through surface run.id")
+                && limit.contains("backtesting-vertical-slice-end-to-end")
+        }),
+        "contract must record TOML-to-NT pass-through surfaces: {:?}",
+        contract.claim_limits
+    );
+    assert!(
+        contract
+            .claim_limits
+            .iter()
+            .any(|limit| { limit.contains("NT unsupported_for_now surface venue.fill_model") }),
+        "contract must record unsupported NT surfaces: {:?}",
+        contract.claim_limits
+    );
+    assert!(
+        contract.claim_limits.len() > 3,
+        "contract must retain source limits and add NT surface limits"
+    );
     assert_eq!(contract.catalog_hash, output.projection.catalog_hash);
 }
 
@@ -290,13 +443,17 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
     let full_canonical = full_temp.path().join("canonical-trades.parquet");
     let full_catalog = full_temp.path().join("nt-catalog");
     let full_catalog_path = full_catalog.to_str().unwrap().to_string();
+    let full_manifest = manifest(&full_catalog_path);
+    let full_contract_manifest_hash = full_manifest.manifest_hash();
     let full = run_backtest(BacktestRunInputs {
         accepted: &accepted,
         identity: &identity,
         instrument_spec: &instrument_spec(),
         csv_text: SAMPLE_CSV,
         capture_time_nanos: 1_772_512_022_000_000_000,
-        manifest: &manifest(&full_catalog_path),
+        manifest: &full_manifest,
+        contract_manifest_hash: &full_contract_manifest_hash,
+        converter: &converter_config(),
         canonical_artifact_path: &full_canonical,
         catalog_root: &full_catalog,
         created_at: "2026-06-02T00:00:00Z",
@@ -305,6 +462,9 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
                 .to_string(),
             canonical_table_uri: full_canonical.to_string_lossy().to_string(),
             nt_catalog_uri: full_catalog_path.clone(),
+            catalog_metadata_uri:
+                "s3://bolt-parquet/nt-research-analytics/backtests/win/catalog-metadata.json"
+                    .to_string(),
             result_contract_uri: "s3://bolt-parquet/nt-research-analytics/backtests/win/r.json"
                 .to_string(),
         },
@@ -327,6 +487,7 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
     let catalog_path = catalog_root.to_str().unwrap().to_string();
     let mut windowed_manifest = manifest(&catalog_path);
     windowed_manifest.end_time = Some(first_event);
+    let windowed_contract_manifest_hash = windowed_manifest.manifest_hash();
 
     let windowed = run_backtest(BacktestRunInputs {
         accepted: &accepted,
@@ -335,6 +496,8 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
         csv_text: SAMPLE_CSV,
         capture_time_nanos: 1_772_512_022_000_000_000,
         manifest: &windowed_manifest,
+        contract_manifest_hash: &windowed_contract_manifest_hash,
+        converter: &converter_config(),
         canonical_artifact_path: &canonical_path,
         catalog_root: &catalog_root,
         created_at: "2026-06-02T00:00:00Z",
@@ -343,6 +506,9 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
                 .to_string(),
             canonical_table_uri: canonical_path.to_string_lossy().to_string(),
             nt_catalog_uri: catalog_path.clone(),
+            catalog_metadata_uri:
+                "s3://bolt-parquet/nt-research-analytics/backtests/win/catalog-metadata-2.json"
+                    .to_string(),
             result_contract_uri: "s3://bolt-parquet/nt-research-analytics/backtests/win/r2.json"
                 .to_string(),
         },

@@ -5,7 +5,7 @@
 # ingest manifest run `bybit-backfill-run-fdcc0758bbd03113` (errors=0).
 #
 # This file is config-driven input for `cargo run --bin backtesting_vertical_slice
-# -- --run-spec <this file> --object-gz <local .csv.gz> --output-dir <dir>`.
+# -- --run-spec <this file> --object <local accepted object> --output-dir <dir>`.
 # The binary re-verifies the object SHA-256 against `accepted_object.sha256`
 # before any normalization, and overrides `manifest.catalog_input.catalog_path`
 # with the local projection root.
@@ -14,6 +14,7 @@ capture_time_utc = "2026-06-02T04:27:02Z"   # ingest manifest completed_at
 created_at_utc = "2026-06-02T00:00:00Z"
 accepted_by = "backtesting-vertical-slice-operator"
 accepted_at_utc = "2026-06-02T00:00:00Z"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 
 [accepted_object]
 s3_uri = "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BNBUSDC/object=d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598.csv.gz"
@@ -51,6 +52,35 @@ forbidden_claims = [
   "No L2/L3 order-book replay claims from trade prints.",
   "Coverage is limited to BNBUSDC spot 2026-03-01; no multi-day or multi-instrument claims.",
 ]
+
+[[source_proof.claim_limits]]
+id = "source-proof-claim-limit-001"
+severity = "blocking"
+claim = "No execution-quality, queue-position, or order-book-liquidity claims."
+reason = "TRADE_REPLAY source proof is native trade-print replay, not order-book replay."
+evidence_ref = "source-proof://source-proof-bybit-spot-tick-trades/fidelity"
+
+[[source_proof.claim_limits]]
+id = "source-proof-claim-limit-002"
+severity = "blocking"
+claim = "No L2/L3 order-book replay claims from trade prints."
+reason = "The accepted raw sample contains trade prints and no L2/L3 order-book deltas or depth snapshots."
+evidence_ref = "source-proof://source-proof-bybit-spot-tick-trades/schema"
+
+[[source_proof.claim_limits]]
+id = "source-proof-claim-limit-003"
+severity = "blocking"
+claim = "Coverage is limited to BNBUSDC spot 2026-03-01; no multi-day or multi-instrument claims."
+reason = "The accepted manifest scope contains exactly one BNBUSDC spot object for 2026-03-01."
+evidence_ref = "source-proof://source-proof-bybit-spot-tick-trades/acceptance-scope"
+
+[source_proof.acceptance_scope]
+planned_objects = 1
+completed_objects = 1
+failed_objects = 0
+skipped_objects = 0
+accepted_bytes = 8505
+selector_scope_violations = 0
 
 [source_proof.requested_time_range]
 start_utc = "2025-06-01T00:00:00Z"
@@ -117,6 +147,26 @@ instrument_id = "BNBUSDC"
 venue_symbol = "BNBUSDC"
 nt_instrument_id = "BNBUSDC.BYBIT"
 
+[converter]
+identity = "csv-native-trades-to-canonical-trades.v1"
+version = "1"
+
+[converter.raw_payload]
+container = "csv_gzip"
+max_object_bytes = 8505
+max_decoded_bytes = 1048576
+
+[converter.csv]
+has_headers = true
+trade_id_column = "id"
+timestamp_column = "timestamp"
+timestamp_unit = "milliseconds"
+price_column = "price"
+size_column = "volume"
+side_column = "side"
+buyer_side_values = ["buy"]
+seller_side_values = ["sell"]
+
 [manifest]
 run_id = "backtesting-vertical-slice-bnbusdc-2026-03-01"
 market_structure_fixture = "perps-spot"
@@ -128,7 +178,12 @@ pins_non_latest_proof = false
 artifact_root = "s3://bolt-parquet/nt-research-analytics"
 output_prefix = "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-bnbusdc-2026-03-01"
 
+[manifest.artifact_store]
+storage_options = {}
+rust_storage_options = { region = "us-east-1", conditional_put = "etag" }
+
 [manifest.strategy]
+source_kind = "compiled_rust_registry"
 registry_key = "hurst_vpin_directional"
 
 [manifest.strategy.parameters]
@@ -141,8 +196,30 @@ oms_type = "NETTING"
 account_type = "CASH"
 book_type = "L1_MBP"
 starting_balances = ["1_000_000 USDC"]
+routing = false
+frozen_account = false
+reject_stop_orders = true
+support_gtd_orders = true
+support_contingent_orders = true
+use_position_ids = true
+use_random_ids = false
+use_reduce_only = true
+bar_execution = true
+bar_adaptive_high_low_ordering = false
+trade_execution = true
+use_market_order_acks = false
+liquidity_consumption = false
+allow_cash_borrowing = false
+queue_position = false
+oto_trigger_mode = "PARTIAL"
+base_currency = "NONE"
+default_leverage = "1"
+price_protection_points = 0
 
 [manifest.catalog_input]
 catalog_path = "overridden-by-binary-at-runtime"
+catalog_fs_protocol = "NONE"
+catalog_fs_storage_options = {}
+catalog_fs_rust_storage_options = {}
 data_type = "TradeTick"
 nt_instrument_id = "BNBUSDC.BYBIT"

@@ -242,6 +242,7 @@ impl Error for BackfillCoverageWriteError {}
 pub struct BackfillCoverageManifestEvidence {
     pub manifest_id: String,
     pub source_binding: String,
+    pub table_family: Option<String>,
     pub source_proof_id: Option<String>,
     pub source_proof_version: Option<u32>,
     pub source_proof_status: Option<SourceProofStatus>,
@@ -293,6 +294,8 @@ impl BackfillCoverageManifestEvidence {
         let manifest_id =
             required_string(summary, "manifest_id", &[&["manifest_id"], &["run_id"]])?;
         let source_binding = optional_string(summary, &[&["source_binding"]]).unwrap_or_default();
+        let table_family = optional_string(summary, &[&["table_family"]])
+            .or_else(|| optional_single_string_array(summary, &[&["table_families"]]));
         let source_proof_id = optional_string(summary, &[&["source_proof_id"]]);
         let source_proof_version = optional_u32(
             summary,
@@ -378,6 +381,7 @@ impl BackfillCoverageManifestEvidence {
         Ok(Self {
             manifest_id,
             source_binding,
+            table_family,
             source_proof_id,
             source_proof_version,
             source_proof_status,
@@ -408,6 +412,7 @@ pub struct BackfillCoverageRecord {
     pub record_id: String,
     pub status: BackfillCoverageStatus,
     pub source_binding: Option<String>,
+    pub table_family: Option<String>,
     pub source_proof_id: Option<String>,
     pub source_proof_version: Option<u32>,
     pub canonical_ready: bool,
@@ -756,6 +761,7 @@ pub fn classify_physical_inventory(
         record_id: inventory.inventory_id.clone(),
         status: BackfillCoverageStatus::PhysicalOnly,
         source_binding: None,
+        table_family: None,
         source_proof_id: None,
         source_proof_version: None,
         canonical_ready: false,
@@ -773,6 +779,7 @@ fn classify_unsupported_manifest_schema(manifest_uri: String) -> BackfillCoverag
         record_id: manifest_uri,
         status: BackfillCoverageStatus::Rejected,
         source_binding: None,
+        table_family: None,
         source_proof_id: None,
         source_proof_version: None,
         canonical_ready: false,
@@ -805,6 +812,7 @@ pub fn classify_manifest_coverage(
         record_id: manifest.manifest_id.clone(),
         status,
         source_binding: Some(manifest.source_binding.clone()),
+        table_family: manifest.table_family.clone(),
         source_proof_id: manifest.source_proof_id.clone(),
         source_proof_version: manifest.source_proof_version,
         canonical_ready: accepted
@@ -931,6 +939,18 @@ fn optional_string(root: &Value, paths: &[&[&str]]) -> Option<String> {
         .iter()
         .find_map(|path| match value_at_path(root, path) {
             Some(Value::String(value)) => Some(value.clone()),
+            _ => None,
+        })
+}
+
+fn optional_single_string_array(root: &Value, paths: &[&[&str]]) -> Option<String> {
+    paths
+        .iter()
+        .find_map(|path| match value_at_path(root, path) {
+            Some(Value::Array(values)) if values.len() == 1 => values
+                .first()
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
             _ => None,
         })
 }

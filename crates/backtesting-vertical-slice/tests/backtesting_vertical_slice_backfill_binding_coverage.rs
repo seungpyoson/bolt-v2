@@ -15,7 +15,7 @@ use backtesting_vertical_slice::{
 #[test]
 fn binding_coverage_blocks_when_required_table_family_has_no_ledger_records() {
     let source_bindings = synthetic_source_bindings_toml();
-    let ledger = ledger(vec![record("synthetic-other-binding")]);
+    let ledger = ledger(vec![record("synthetic-other-binding", "trades")]);
 
     let report = evaluate_backfill_binding_coverage(
         "synthetic-binding-coverage",
@@ -43,8 +43,8 @@ fn binding_coverage_blocks_when_required_table_family_has_no_ledger_records() {
 fn binding_coverage_reports_bound_records_without_source_constants() {
     let source_bindings = synthetic_source_bindings_toml();
     let ledger = ledger(vec![
-        accepted_record("synthetic-native-trades"),
-        record("synthetic-native-trades"),
+        accepted_record("synthetic-native-trades", "trades"),
+        record("synthetic-native-trades", "trades"),
     ]);
 
     let report = evaluate_backfill_binding_coverage(
@@ -67,11 +67,46 @@ fn binding_coverage_reports_bound_records_without_source_constants() {
 }
 
 #[test]
+fn binding_coverage_blocks_unscoped_records_for_multi_family_binding() {
+    let source_bindings = synthetic_multi_family_source_bindings_toml();
+    let ledger = ledger(vec![accepted_unscoped_record(
+        "synthetic-multi-family-source",
+    )]);
+
+    let report = evaluate_backfill_binding_coverage(
+        "synthetic-binding-coverage",
+        &source_bindings,
+        &ledger,
+        vec!["trades".to_string()],
+    )
+    .expect("report");
+
+    assert_eq!(report.status, BackfillBindingCoverageStatus::Blocked);
+    assert!(
+        report
+            .blocking_issues
+            .contains(&BackfillBindingCoverageIssue::NoLedgerRecordsForRequiredTableFamily)
+    );
+    assert!(
+        report
+            .blocking_issues
+            .contains(&BackfillBindingCoverageIssue::MissingTableFamilyRecords)
+    );
+    assert_eq!(report.missing_table_family_record_count, 1);
+    let required = report
+        .bindings
+        .iter()
+        .find(|binding| binding.key == "synthetic-multi-family-source")
+        .expect("required binding");
+    assert_eq!(required.ledger_record_count, 0);
+}
+
+#[test]
 fn binding_coverage_blocks_unconfigured_source_bindings_even_with_required_records() {
     let source_bindings = synthetic_source_bindings_toml();
     let ledger = ledger(vec![
-        accepted_record("synthetic-native-trades"),
-        record("synthetic-unconfigured-trades"),
+        accepted_record("synthetic-native-trades", "trades"),
+        record("synthetic-unconfigured-trades", "trades"),
     ]);
 
     let report = evaluate_backfill_binding_coverage(
@@ -98,7 +133,7 @@ fn binding_coverage_blocks_unconfigured_source_bindings_even_with_required_recor
 fn binding_coverage_blocks_empty_source_bindings_even_with_required_records() {
     let source_bindings = synthetic_source_bindings_toml();
     let ledger = ledger(vec![
-        accepted_record("synthetic-native-trades"),
+        accepted_record("synthetic-native-trades", "trades"),
         empty_binding_record("synthetic-empty-binding-record"),
     ]);
 
@@ -130,7 +165,7 @@ fn binding_coverage_reads_toml_spec_and_writes_report_idempotently() {
         .expect("write bindings");
     std::fs::write(
         &ledger_path,
-        serde_json::to_vec_pretty(&ledger(vec![record("synthetic-native-trades")]))
+        serde_json::to_vec_pretty(&ledger(vec![record("synthetic-native-trades", "trades")]))
             .expect("ledger json"),
     )
     .expect("write ledger");
@@ -171,7 +206,7 @@ fn binding_coverage_cli_writes_blocked_report() {
         .expect("write bindings");
     std::fs::write(
         &ledger_path,
-        serde_json::to_vec_pretty(&ledger(vec![record("synthetic-other-binding")]))
+        serde_json::to_vec_pretty(&ledger(vec![record("synthetic-other-binding", "trades")]))
             .expect("ledger json"),
     )
     .expect("write ledger");
@@ -244,6 +279,26 @@ table_families = ["instruments"]
     .to_string()
 }
 
+fn synthetic_multi_family_source_bindings_toml() -> String {
+    r#"schema_version = "backfill-source-bindings.v1"
+contract_version = "backfill-table-contract.v1"
+
+[[source_binding]]
+key = "synthetic-multi-family-source"
+venue = "synthetic"
+product_family = "spot"
+fixture = "multi-family"
+family = "archive_index"
+method = "GET"
+source_uri = "https://example.invalid/multi-family/{dt}.json"
+payload_extension = "json"
+extractor = "synthetic_multi_family"
+evidence_state = "directly_backfillable"
+table_families = ["instruments", "trades"]
+"#
+    .to_string()
+}
+
 fn ledger(records: Vec<BackfillCoverageRecord>) -> BackfillCoverageLedger {
     BackfillCoverageLedger {
         schema_version: "backfill-coverage-ledger.v1".to_string(),
@@ -266,8 +321,8 @@ fn ledger(records: Vec<BackfillCoverageRecord>) -> BackfillCoverageLedger {
     }
 }
 
-fn record(source_binding: &str) -> BackfillCoverageRecord {
-    let mut record = accepted_record(source_binding);
+fn record(source_binding: &str, table_family: &str) -> BackfillCoverageRecord {
+    let mut record = accepted_record(source_binding, table_family);
     record.status = BackfillCoverageStatus::Rejected;
     record.canonical_ready = false;
     record.accepted_objects = 0;
@@ -275,11 +330,12 @@ fn record(source_binding: &str) -> BackfillCoverageRecord {
     record
 }
 
-fn accepted_record(source_binding: &str) -> BackfillCoverageRecord {
+fn accepted_record(source_binding: &str, table_family: &str) -> BackfillCoverageRecord {
     BackfillCoverageRecord {
         record_id: format!("record-{source_binding}"),
         status: BackfillCoverageStatus::Accepted,
         source_binding: Some(source_binding.to_string()),
+        table_family: Some(table_family.to_string()),
         source_proof_id: None,
         source_proof_version: None,
         canonical_ready: true,
@@ -292,8 +348,14 @@ fn accepted_record(source_binding: &str) -> BackfillCoverageRecord {
     }
 }
 
+fn accepted_unscoped_record(source_binding: &str) -> BackfillCoverageRecord {
+    let mut record = accepted_record(source_binding, "instruments");
+    record.table_family = None;
+    record
+}
+
 fn empty_binding_record(record_id: &str) -> BackfillCoverageRecord {
-    let mut record = accepted_record("synthetic-placeholder");
+    let mut record = accepted_record("synthetic-placeholder", "trades");
     record.record_id = record_id.to_string();
     record.source_binding = None;
     record

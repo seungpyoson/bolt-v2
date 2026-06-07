@@ -722,6 +722,7 @@ fn ready_binding_coverage_with_counts_and_table_family(
         configured_required_binding_count: 1,
         ledger_records_for_required_bindings: 1,
         empty_source_binding_record_count: 0,
+        missing_table_family_record_count: 0,
         unconfigured_source_bindings: Vec::new(),
         bindings: vec![BackfillBindingCoverageBinding {
             key: source_binding.to_string(),

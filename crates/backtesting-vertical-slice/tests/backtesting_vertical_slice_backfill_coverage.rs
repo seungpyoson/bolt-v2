@@ -18,6 +18,7 @@ fn completed_manifest() -> BackfillCoverageManifestEvidence {
     BackfillCoverageManifestEvidence {
         manifest_id: "manifest-synthetic-complete".to_string(),
         source_binding: "synthetic-native-trades".to_string(),
+        table_family: Some("trades".to_string()),
         source_proof_id: Some("source-proof-synthetic-native-trades".to_string()),
         source_proof_version: Some(1),
         source_proof_status: Some(SourceProofStatus::Accepted),

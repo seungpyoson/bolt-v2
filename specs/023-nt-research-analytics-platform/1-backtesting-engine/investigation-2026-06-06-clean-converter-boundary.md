@@ -930,6 +930,28 @@ Backfill must therefore be the next deliverable. The efficient order is:
 6. Production BTE should run only after the next tranche has the same source
    proof, normalized-row, gap-policy, NT catalog, and result-contract proof.
 
+Midpoint table-family coverage audit:
+
+- Root cause found: binding coverage counted ledger records by
+  `source_binding` only, while the registry allows source bindings to declare
+  multiple `table_families`. A multi-family binding could therefore make a
+  requested table family look covered with an unscoped ledger record.
+- Fix applied in the vertical slice: `BackfillCoverageRecord` now carries
+  optional `table_family`, and binding coverage counts by
+  `(source_binding, table_family)`. Records with source binding but no table
+  family remain readable as legacy evidence, but they no longer prove
+  table-family readiness and produce `missing_table_family_records`.
+- RED proof: `binding_coverage_blocks_unscoped_records_for_multi_family_binding`
+  previously returned `Ready`; it now blocks unscoped multi-family evidence.
+- Real strict binding-coverage proof remains blocked:
+  `/private/tmp/bte-coverage-ledger-20260607/backfill-binding-coverage-trades-strict-table-family-output/backfill-binding-coverage-report.json`
+  has content hash
+  `5c3ae7462f7989b5092331ff6c40a03b9c96462e76df3eff5ef0ee9c77c8e4ef`,
+  status `blocked`, `ledger_records_for_required_bindings = 0`,
+  `missing_table_family_record_count = 21`,
+  `empty_source_binding_record_count = 145`, and unconfigured source binding
+  `bybit:rest+public_archive:v5`.
+
 ## Recommendation
 
 Proceed with backfill-first proof, then production BTE proof; do not start

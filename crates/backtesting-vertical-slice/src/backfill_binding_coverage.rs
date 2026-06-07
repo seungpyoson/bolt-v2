@@ -5,7 +5,7 @@
 //! bindings from prefixes or venue names.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt, fs,
     path::{Path, PathBuf},
@@ -44,6 +44,7 @@ pub enum BackfillBindingCoverageIssue {
     NoConfiguredBindingForRequiredTableFamily,
     NoLedgerRecordsForRequiredTableFamily,
     EmptySourceBindingRecords,
+    MissingTableFamilyRecords,
     UnconfiguredSourceBindingRecords,
 }
 
@@ -68,6 +69,8 @@ pub struct BackfillBindingCoverageReport {
     pub configured_required_binding_count: u64,
     pub ledger_records_for_required_bindings: u64,
     pub empty_source_binding_record_count: u64,
+    #[serde(default)]
+    pub missing_table_family_record_count: u64,
     pub unconfigured_source_bindings: Vec<String>,
     pub bindings: Vec<BackfillBindingCoverageBinding>,
     pub blocking_issues: Vec<BackfillBindingCoverageIssue>,
@@ -264,8 +267,10 @@ fn evaluate_backfill_binding_coverage_from_bindings(
         })
         .count() as u64;
 
-    let mut ledger_counts: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+    let mut ledger_counts: BTreeMap<(String, String), (u64, u64, u64)> = BTreeMap::new();
+    let mut observed_source_bindings: BTreeSet<String> = BTreeSet::new();
     let mut empty_source_binding_record_count = 0_u64;
+    let mut missing_table_family_record_count = 0_u64;
     for record in &ledger.records {
         let Some(source_binding) = record.source_binding.as_deref() else {
             empty_source_binding_record_count += 1;
@@ -275,7 +280,18 @@ fn evaluate_backfill_binding_coverage_from_bindings(
             empty_source_binding_record_count += 1;
             continue;
         }
-        let entry = ledger_counts.entry(source_binding.to_string()).or_default();
+        observed_source_bindings.insert(source_binding.to_string());
+        let Some(table_family) = record.table_family.as_deref() else {
+            missing_table_family_record_count += 1;
+            continue;
+        };
+        if table_family.trim().is_empty() {
+            missing_table_family_record_count += 1;
+            continue;
+        }
+        let entry = ledger_counts
+            .entry((source_binding.to_string(), table_family.to_string()))
+            .or_default();
         entry.0 = entry.0.saturating_add(1);
         if record.canonical_ready {
             entry.1 = entry.1.saturating_add(1);
@@ -292,8 +308,8 @@ fn evaluate_backfill_binding_coverage_from_bindings(
         .iter()
         .map(|binding| binding.key.as_str())
         .collect::<Vec<_>>();
-    let unconfigured_source_bindings = ledger_counts
-        .keys()
+    let unconfigured_source_bindings = observed_source_bindings
+        .iter()
         .filter(|key| !configured_keys.contains(&key.as_str()))
         .cloned()
         .collect::<Vec<_>>();
@@ -307,7 +323,23 @@ fn evaluate_backfill_binding_coverage_from_bindings(
                     .any(|required| required == family)
             });
             let (ledger_record_count, canonical_ready_record_count, accepted_record_count) =
-                ledger_counts.get(&binding.key).copied().unwrap_or_default();
+                binding
+                    .table_families
+                    .iter()
+                    .filter(|family| {
+                        required_table_families
+                            .iter()
+                            .any(|required| required == *family)
+                    })
+                    .filter_map(|family| ledger_counts.get(&(binding.key.clone(), family.clone())))
+                    .copied()
+                    .fold((0_u64, 0_u64, 0_u64), |acc, count| {
+                        (
+                            acc.0.saturating_add(count.0),
+                            acc.1.saturating_add(count.1),
+                            acc.2.saturating_add(count.2),
+                        )
+                    });
             BackfillBindingCoverageBinding {
                 key: binding.key,
                 table_families: binding.table_families,
@@ -341,6 +373,9 @@ fn evaluate_backfill_binding_coverage_from_bindings(
     if empty_source_binding_record_count > 0 {
         blocking_issues.push(BackfillBindingCoverageIssue::EmptySourceBindingRecords);
     }
+    if missing_table_family_record_count > 0 {
+        blocking_issues.push(BackfillBindingCoverageIssue::MissingTableFamilyRecords);
+    }
     if !unconfigured_source_bindings.is_empty() {
         blocking_issues.push(BackfillBindingCoverageIssue::UnconfiguredSourceBindingRecords);
     }
@@ -359,6 +394,7 @@ fn evaluate_backfill_binding_coverage_from_bindings(
         configured_required_binding_count,
         ledger_records_for_required_bindings,
         empty_source_binding_record_count,
+        missing_table_family_record_count,
         unconfigured_source_bindings,
         bindings,
         blocking_issues,

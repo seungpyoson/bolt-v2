@@ -43,7 +43,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - source-proof required checks now support `not_applicable` only when a structured `claim_limits` row binds the same `evidence_ref`; this is generic schema behavior, not a Binance/Bybit branch
 - `SourceProofReport` now carries first-class generic source-selection evidence before provider selection: `source_candidate_class`, `source_selection_status`, `official_free_gap_ref`, `paid_vendor_gap_ref`, `cost_ref`, `retention_freshness` and `cost` required checks, and thin `l2_replay_evidence` pointers. Paid/vendor candidates require a recorded official/free gap, forward-capture candidates also require paid/vendor gap evidence, non-selected candidates cannot be accepted for canonical backfill input, `L2_REPLAY` requires order-book delta or sufficient snapshot-cadence evidence, and pending/rejected reports cannot carry acceptance provenance. This closes `BACKTESTING_ENGINE-015` without adding venue/provider constants or storing heavy raw/catalog/result payloads in the proof.
 - BTE-022 status is now recorded in `reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json`: pinned NT provides the required `ParquetDataCatalog`, `BacktestNode`, `OrderBookDelta`/`OrderBookDepth10`/`TradeTick`, and Polymarket instrument/parser surfaces, but the isolated BTE slice currently admits only `TradeTick` and lacks machine-checked Polymarket adapter reuse plus PMXT order-book catalog read-back proof.
-- PMXT Polymarket row-to-NT draft contract is now recorded in `reference/source-proof-pmxt-polymarket-row-to-nt-contract.2026-06-08.json`: `book`, `price_change`, `last_trade_price`, and `tick_size_change` rows line up with pinned NT Polymarket parser/data surfaces, but price-change regrouping, mixed `timestamp_received` policy, trade-id/transaction-hash provenance, and tick-size-change catalog representation remain unresolved before implementation or broad backfill.
+- PMXT Polymarket row-to-NT draft contract is now recorded in `reference/source-proof-pmxt-polymarket-row-to-nt-contract.2026-06-08.json`: `book`, `price_change`, `last_trade_price`, and `tick_size_change` rows line up with pinned NT Polymarket parser/data surfaces, but price-change implementation, mixed `timestamp_received` policy proof, selected trade-id policy tests, and tick-size-change catalog representation remain unresolved before broad backfill.
 - PMXT Polymarket parser field-use audit is now recorded in
   `reference/source-proof-pmxt-polymarket-nt-parser-field-use.2026-06-08.json`:
   pinned NT declares `PolymarketQuote.hash`, but `parse_book_deltas` and
@@ -58,11 +58,13 @@ Go for the local BNBUSDC vertical-slice path after this fix:
   events lack trade ids, while pinned NT's HTTP data API path already uses
   `transaction_hash` plus asset and sequence to disambiguate multi-fill
   collisions. The PMXT one-hour sample has `80,052` `last_trade_price` rows,
-  zero blank transaction hashes, and `42` exact duplicate trade groups with
-  different `timestamp_received` values. Therefore transaction hash must remain
-  in identity/provenance, but BTE still needs an explicit source-contract
-  decision and TDD proof for exact-duplicate dedupe versus sequencing before
-  catalog acceptance.
+  zero blank transaction hashes, `80,010` distinct semantic trade events, zero
+  cross-asset transaction-hash collisions, and `42` duplicate semantic trade
+  groups that differ only by `timestamp_received`. The selected policy is to
+  collapse those duplicate observations before assigning NT-style
+  transaction_hash+asset+sequence trade IDs; semantically distinct same
+  hash/asset fills still sequence using pinned NT's historical TradeId shape.
+  TDD/catalog proof remains required before catalog acceptance.
 - PMXT Polymarket price-change grouping status is now recorded in
   `reference/source-proof-pmxt-polymarket-price-change-grouping-status.2026-06-08.json`:
   pinned NT's live data client iterates `quotes.price_changes` and wraps each

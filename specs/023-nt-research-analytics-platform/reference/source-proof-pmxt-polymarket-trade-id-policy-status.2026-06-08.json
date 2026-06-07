@@ -2,11 +2,11 @@
   "schema_version": "source-proof-pmxt-polymarket-trade-id-policy-status.v1",
   "task_id": "BACKTESTING_ENGINE-022",
   "source_binding": "polymarket-parquet-archive-index",
-  "status": "open_dedupe_vs_sequence_policy_unresolved",
+  "status": "policy_selected_tdd_unproven",
   "recorded_at_utc": "2026-06-08T00:00:00Z",
   "scope": {
     "question": "How should PMXT last_trade_price transaction_hash map to NT TradeTick.trade_id?",
-    "answer": "Pinned NT has a transaction_hash-based Polymarket HTTP data API TradeId policy, but the PMXT sample contains exact duplicate trade observations with different timestamp_received values, so the BTE mapping must explicitly choose and test dedupe versus sequence before catalog acceptance.",
+    "answer": "Use pinned NT's historical Polymarket transaction_hash+asset+sequence TradeId shape for distinct fills, but first collapse exact duplicate PMXT trade observations that differ only by timestamp_received. The one-hour sample has no divergent same-(transaction_hash, asset_id) rows, so sequencing is a future-proof collision path rather than a reason to count duplicate observations twice.",
     "not_implementation": true,
     "not_catalog_readback_proof": true,
     "not_source_selection": true
@@ -43,10 +43,18 @@
     "blank_hash_rows": 0,
     "distinct_transaction_hashes": 80010,
     "distinct_tx_asset_pairs": 80010,
+    "distinct_semantic_trade_events": 80010,
     "duplicate_tx_asset_pairs": 42,
     "max_rows_per_tx_asset": 2,
     "duplicate_exact_field_groups": 42,
     "duplicate_exact_rows": 84,
+    "all_column_duplicate_groups": 0,
+    "all_column_duplicate_rows": 0,
+    "cross_asset_transaction_hash_groups": 0,
+    "max_distinct_timestamp_per_duplicate_tx_asset": 1,
+    "max_distinct_price_per_duplicate_tx_asset": 1,
+    "max_distinct_size_per_duplicate_tx_asset": 1,
+    "max_distinct_side_per_duplicate_tx_asset": 1,
     "max_duplicate_exact_group_rows": 2,
     "duplicate_groups_with_distinct_timestamp_received": 42,
     "timestamp_groups": 78246,
@@ -66,25 +74,45 @@
     },
     {
       "policy": "nt_http_hash_asset_sequence_policy",
-      "decision": "candidate",
-      "reason": "Pinned NT already uses transaction_hash, asset, and a sequence to disambiguate multi-fill collisions."
+      "decision": "accepted_for_distinct_same_hash_asset_fills",
+      "reason": "Pinned NT already uses transaction_hash, asset, and a sequence to disambiguate multi-fill collisions. PMXT rows sharing a transaction_hash and asset but differing in semantic trade fields should follow this shape rather than falling back to the websocket-derived id."
     },
     {
       "policy": "exact_duplicate_trade_observation_dedupe",
-      "decision": "open",
-      "reason": "The one-hour PMXT sample has 42 exact duplicate trade groups with different timestamp_received values. Treating them as distinct sequence ids may overcount volume; deduping them may drop legitimate repeated fills if the source contract defines them as separate observations."
+      "decision": "accepted_for_rows_differing_only_by_timestamp_received",
+      "reason": "The one-hour PMXT sample has 42 duplicate semantic trade groups, each with two rows. Every duplicate group has one transaction_hash, one asset_id, one timestamp, one price, one size, one side, and distinct timestamp_received values; there are zero all-column duplicate rows and zero cross-asset transaction-hash collisions. Counting these rows twice would overcount source volume."
+    },
+    {
+      "policy": "preserve_earliest_observed_timestamp_received",
+      "decision": "accepted",
+      "reason": "After deduping duplicate observations, the canonical TradeTick should preserve PMXT timestamp as ts_event and the earliest timestamp_received as ts_init, with duplicate_count and max timestamp_received kept in conversion provenance."
     }
   ],
+  "selected_policy": {
+    "semantic_trade_key": [
+      "transaction_hash",
+      "asset_id",
+      "timestamp",
+      "price",
+      "size",
+      "side",
+      "fee_rate_bps"
+    ],
+    "dedupe_rule": "Rows with the same semantic_trade_key are one source trade observation group; emit one TradeTick using the earliest timestamp_received as ts_init and record duplicate_count plus max timestamp_received in provenance.",
+    "trade_id_rule": "Use pinned NT's build_polymarket_trade_id(transaction_hash, asset_id, sequence) shape: last 24 characters of transaction_hash, last 4 characters of asset_id, and a zero-padded per-(transaction_hash, asset_id) sequence. The sequence is assigned after semantic duplicate groups are collapsed.",
+    "divergent_same_hash_asset_rule": "Rows sharing transaction_hash and asset_id but differing in timestamp, price, size, side, or fee_rate_bps are distinct fills and receive distinct NT-style sequence values in deterministic source order.",
+    "source_proof_gate": "Every accepted PMXT object must report duplicate semantic groups, cross-asset transaction-hash groups, and divergent same-(transaction_hash, asset_id) groups before conversion expands beyond a bounded proof."
+  },
   "required_green_tests_when_implementation_starts": [
     "PMXT last_trade_price rows with transaction_hash produce deterministic TradeIds that include transaction_hash-derived provenance.",
-    "Rows sharing transaction_hash and asset but differing in side, price, size, or timestamp remain distinct.",
-    "Exact duplicate rows with different timestamp_received follow the chosen source-contract policy, either dedupe with recorded duplicate_count or sequence as distinct TradeTicks with explicit claim-limit evidence.",
+    "Rows sharing transaction_hash and asset but differing in side, price, size, fee_rate_bps, or timestamp remain distinct and receive NT-style sequence suffixes.",
+    "Exact semantic duplicate rows with different timestamp_received are deduped to one TradeTick with recorded duplicate_count and received-time provenance.",
     "TradeTick ts_event and ts_init policy is deterministic and preserves source timestamp versus timestamp_received provenance."
   ],
   "current_decision": {
-    "trade_id_policy_can_close": false,
+    "trade_id_policy_can_close": true,
     "bte_022_can_close": false,
     "broad_backfill_allowed": false,
-    "next_required_evidence": "Source-contract decision on PMXT exact duplicate last_trade_price rows, then a focused TDD test proving the chosen TradeId and timestamp policy against the one-object sample."
+    "next_required_evidence": "Focused TDD tests proving the selected TradeId, dedupe, sequence, and timestamp policy against the one-object sample; this does not close tick-size epoch replay or PMXT L2 catalog/backtest proof."
   }
 }

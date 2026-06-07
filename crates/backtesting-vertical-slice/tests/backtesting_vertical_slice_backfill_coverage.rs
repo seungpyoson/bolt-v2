@@ -218,6 +218,36 @@ fn coverage_manifest_evidence_rejects_unknown_write_mode() {
 }
 
 #[test]
+fn coverage_manifest_evidence_parses_staging_only_and_manifest_exclusion_aliases() {
+    let summary = serde_json::json!({
+        "run_id": "manifest-synthetic-staging-only",
+        "source_binding": "synthetic-native-trades",
+        "source_proof_id": "source-proof-synthetic-native-trades",
+        "source_proof_version": 1,
+        "write_mode": "s3_staging_only",
+        "canonical_s3_write": false,
+        "object_count_excluding_manifest": 6,
+        "bytes_excluding_manifest": 1_800,
+        "errors": []
+    });
+
+    let manifest = BackfillCoverageManifestEvidence::from_manifest_json(
+        &summary,
+        Some(SourceProofStatus::Accepted),
+    )
+    .expect("manifest-exclusion aliases parse");
+
+    assert_eq!(manifest.write_mode, BackfillWriteMode::S3Staging);
+    assert_eq!(manifest.planned_objects, 6);
+    assert_eq!(manifest.completed_objects, 6);
+    assert_eq!(manifest.completed_bytes, 1_800);
+    assert_eq!(
+        classify_manifest_coverage(&manifest, None).status,
+        BackfillCoverageStatus::Accepted
+    );
+}
+
+#[test]
 fn coverage_ledger_artifact_aggregates_manifest_records_and_physical_only_inventory() {
     let accepted = completed_manifest();
     let mut rejected = completed_manifest();

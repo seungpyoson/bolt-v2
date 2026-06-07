@@ -198,6 +198,7 @@ impl BackfillCoverageManifestEvidence {
                 &["completed_objects"],
                 &["completed_payload_object_count"],
                 &["completed_object_count"],
+                &["object_count_excluding_manifest"],
                 &["counts", "payload_object_count"],
             ],
         )?;
@@ -240,6 +241,7 @@ impl BackfillCoverageManifestEvidence {
                 &["accepted_bytes"],
                 &["completed_bytes"],
                 &["completed_payload_bytes"],
+                &["bytes_excluding_manifest"],
                 &["counts", "payload_bytes"],
             ],
         )?;
@@ -634,7 +636,7 @@ fn parse_write_mode(value: &str) -> Result<BackfillWriteMode, BackfillCoveragePa
     match value {
         "dry_run" => Ok(BackfillWriteMode::DryRun),
         "local_staging" => Ok(BackfillWriteMode::LocalStaging),
-        "s3_staging" => Ok(BackfillWriteMode::S3Staging),
+        "s3_staging" | "s3_staging_only" => Ok(BackfillWriteMode::S3Staging),
         "canonical_s3" => Ok(BackfillWriteMode::CanonicalS3),
         other => Err(BackfillCoverageParseError::UnknownWriteMode(
             other.to_string(),

@@ -42,6 +42,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - publish flows resolve and validate artifact-store options before reading the accepted object, so missing S3/SSM setup cannot waste local object I/O on large accepted objects
 - backfill preflight selection is now a cheap TOML-driven gate over the coverage ledger: it selects at most one bounded canonical-ready accepted tranche before any payload download, conversion, catalog projection, or backtest work can start
 - source-proof migration preflight is now a cheap TOML-driven gate over the legacy derivability report: requested table families, required derivable fields, raw-payload count, S3-bound status, and byte budget are config-owned, so candidate selection does not depend on venue names or provider-specific branches
+- combined backfill readiness is now a cheap TOML-driven gate over the backfill preflight report and the source-proof migration preflight report, so a path is not considered ready unless both the canonical-ready tranche and required source-proof candidate are selected
 - artifact-store options are TOML-owned; raw S3 credentials in TOML are rejected; `s3://` publish/proof requires `[manifest.artifact_store.ssm_parameters]` to resolve `access_key_id` and `secret_access_key` through the Rust AWS SDK before any backtest or object-store operation starts
 - the current `BacktestExtensionSurface` classification is recorded in `backtest-extension-surface-matrix.md`; supported primitive NT controls are TOML pass-throughs, Bolt-owned pieces are provenance/governance boundaries, unmodeled NT model/system surfaces fail before NT config construction, and each successful run now writes `backtest-run-manifest.json` plus result-contract claim-limit entries for resolved NT defaults, supported run/venue/catalog pass-through fields, and unsupported NT surfaces
 
@@ -664,6 +665,20 @@ Current evidence:
   single-table market-data `trades` proof candidate for the existing converter
   path; an instrument-universe proof can be current-contract-shaped next, but it
   still cannot be accepted until those five evidence checks are explicit.
+- The combined backfill readiness CLI was run for the current NT `TradeTick`
+  path using the real backfill preflight report plus the real `trades`
+  source-proof migration preflight report:
+  `/private/tmp/bte-coverage-ledger-20260607/backfill-readiness-tradetick-output/backfill-readiness-report.json`
+  has content hash
+  `87a391ceda3529812d4c609ef97734c786f3d56f3cc27155c353f30ae18f0f31`,
+  size 727 bytes, `status = blocked`, `required_table_family = "trades"`,
+  `required_nt_data_type = "TradeTick"`, `backfill_preflight_status =
+  blocked`, `source_proof_migration_preflight_status = blocked`, no selected
+  backfill record, no selected source-proof candidate, and four blockers:
+  `backfill_preflight_blocked`, `source_proof_migration_preflight_blocked`,
+  `missing_selected_backfill_record`, and
+  `missing_selected_source_proof_candidate`. This is the current end-to-end
+  no-go artifact for the existing TradeTick backfill path.
 - Binance run `binance-backfill-run-d928f6666827dd47` records 4,701 completed
   payload objects, 42,358,207,176 payload bytes, zero errors, and
   `payload_completion_ok = true`, but it is still raw staging and not a
@@ -701,7 +716,9 @@ Distance from the overall backtesting engine:
    derivability CLI plus a preflight selector that refuses broad conversion
    unless the ledger has one bounded canonical-ready accepted tranche, and a
    source-proof migration preflight selector that proves whether the staged
-   legacy proofs contain a candidate for a requested table family. A real
+   legacy proofs contain a candidate for a requested table family, and a
+   combined readiness report that joins both gates for the selected NT data
+   path. A real
    manifest-only ledger can now be generated across all 190 observed manifests,
    and real source-proof admissibility/derivability/preflight reports can now
    be generated across the current staged evidence. The

@@ -23,6 +23,7 @@ pub mod artifact_index;
 pub mod artifact_store_secrets;
 pub mod backfill_coverage;
 pub mod backfill_preflight;
+pub mod backfill_readiness;
 pub mod canonical_trades;
 pub mod catalog_projection;
 pub mod conversion_boundary;

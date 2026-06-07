@@ -34,7 +34,7 @@
 //! [`crate::bolt_v3_numeric`]).
 
 use crate::bolt_v3_numeric::{
-    TWO_F64, UNIT_F64, ZERO_F64, is_positive_finite, sanitize_probability,
+    TWO_F64, UNIT_F64, ZERO_F64, is_non_negative_finite, is_positive_finite, sanitize_probability,
 };
 
 /// The Glosten-Milgrom break-even bid and ask for the YES outcome token, both in
@@ -64,10 +64,7 @@ pub fn gm_binary_quote(fair_p_up: f64, informed_fraction: f64) -> Option<BinaryG
     if !(p > ZERO_F64 && p < UNIT_F64) {
         return None;
     }
-    let mu = informed_fraction;
-    if !mu.is_finite() || !(ZERO_F64..=UNIT_F64).contains(&mu) {
-        return None;
-    }
+    let mu = sanitize_probability(informed_fraction)?;
 
     let p_down = UNIT_F64 - p;
     let informed_up = UNIT_F64 + mu;
@@ -113,7 +110,7 @@ pub fn gm_half_spread(fair_p_up: f64, informed_fraction: f64) -> Option<f64> {
 ///   hard inventory limit and must stop quoting to add; the governor reads the
 ///   `None` as the signal to go reduce-only.
 pub fn inventory_skew(net_position: f64, skew_gain: f64, position_cap: f64) -> Option<f64> {
-    if !net_position.is_finite() || !skew_gain.is_finite() || skew_gain < ZERO_F64 {
+    if !net_position.is_finite() || !is_non_negative_finite(skew_gain) {
         return None;
     }
     if !is_positive_finite(position_cap) {

@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 
 pub use crate::source_canonicalization::{
     GATED_SOURCE_ROOTS, GatedSourceRoot, STRATEGY_KEY, SUBMIT_ADMISSION_KEY,
-    TEST_MODULE_SPLIT_MARKER, canonical_source_bytes, canonical_source_digest,
-    canonical_source_set_bytes, canonical_source_set_digest,
+    TEST_MODULE_SPLIT_MARKER, TEST_ONLY_INNER_CFG_MARKER, canonical_source_bytes,
+    canonical_source_digest, canonical_source_set_bytes, canonical_source_set_digest,
     module_source_set_text as canonical_module_source_set_text,
     module_source_text as canonical_module_text,
     production_module_source_text as canonical_production_module_text,
@@ -167,14 +167,16 @@ mod tests {
     // parser rejection in the same canonical strategy source set.
     // Re-derived again by #579 after deleting retired evidence-gate source.
     // Re-derived again after #579 clippy cleanup changed the CLI source.
+    // Re-derived again after resolving #579 over A10's split test files.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "cd6343712bffa6356d12251e426b49aea209b0374aefbf08909678114b18dd37";
+        "8b4d8958a0e7eacfe9a9e0907c903f0c8ba6f03990f83eda6bcfc23c6fa78c63";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
     // Re-derived again by #579 after deleting retired evidence-gate source.
+    // Re-derived again after removing a stale deleted-executor comment.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "1b402cfdcde0efafe7355ef0dd23e87c368decb508a09e74773ce17432f39401";
+        "cfed7fbb9d8ab9459977d668216b1c3b0ef15e1a6de772324107d571585630d9";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
@@ -354,11 +356,15 @@ mod tests {
     fn production_text_for_strategy_directory_excludes_test_module_and_includes_selection() {
         // Source-set production-text boundary: the production text must equal the
         // per-file concatenation of every strategy source-set file's production
-        // half, each split at its own first top-level test-module marker.
+        // half, each empty when inner-cfg test-only or split at its own first
+        // top-level test-module marker.
         let expected: String = strategy_source_files_in_canonical_order()
             .iter()
             .map(|(_relative, path)| {
                 let text = std::fs::read_to_string(path).unwrap().replace("\r\n", "\n");
+                if text.starts_with(TEST_ONLY_INNER_CFG_MARKER) {
+                    return String::new();
+                }
                 text.split(TEST_MODULE_SPLIT_MARKER)
                     .next()
                     .unwrap()

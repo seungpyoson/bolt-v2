@@ -808,16 +808,16 @@ pub fn fee_inclusive_admission_notional(notional: Decimal, max_fee_bps: Decimal)
 /// rounded base, so the cap check downstream sees the same cash debit the venue
 /// will incur.
 ///
-/// Scope: this guard is required precisely where the operator approves an
-/// explicit `order_intent.notional` BEFORE the venue-precision order is
-/// constructed — currently the canary proof executor. The production strategy
-/// path does NOT use this guard and structurally does not need it: it builds
-/// the venue-precision order first and derives its admission notional from that
-/// already-rounded order (`binary_oracle_edge_taker::submit_admission_request_from_order`,
-/// whose intent is `BoltV3OrderIntentEvidence::from_compiled_order`), so the
-/// strict-`>` cap check in [`BoltV3SubmitAdmissionState::admit`] already
-/// evaluates the exact order handed to the venue — there is no separate
-/// unrounded intent for rounding to bypass. Both paths share the same
+/// Scope: this guard is required precisely for any path where the operator
+/// approves an explicit `order_intent.notional` BEFORE the venue-precision order
+/// is constructed. The production strategy path does NOT use this guard and
+/// structurally does not need it: it builds the venue-precision order first and
+/// derives its admission notional from that already-rounded order
+/// (`binary_oracle_edge_taker::submit_admission_request_from_order`, whose
+/// intent is `BoltV3OrderIntentEvidence::from_compiled_order`), so the strict-`>`
+/// cap check in [`BoltV3SubmitAdmissionState::admit`] already evaluates the exact
+/// order handed to the venue — there is no separate unrounded intent for rounding
+/// to bypass. Both paths share the same
 /// fee-inclusive cap arithmetic via [`fee_inclusive_admission_notional`].
 pub fn rounded_order_admission_notional(
     rounded_base_notional: Decimal,

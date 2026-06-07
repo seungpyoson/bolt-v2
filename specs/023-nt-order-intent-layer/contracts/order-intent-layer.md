@@ -59,7 +59,7 @@ Bolt MUST NOT validate as runtime policy:
 - Whether Deribit interprets GTD as venue day.
 - Whether a venue supports options, binary options, spot, or perpetuals.
 
-Those claims require NT adapter source evidence or runtime smoke/canary proof. The adapter set is determined by the claim being made; it is not fixed to Polymarket, Binance, or Deribit.
+Those claims require NT adapter source evidence or runtime smoke evidence. The adapter set is determined by the claim being made; it is not fixed to Polymarket, Binance, or Deribit.
 
 ## GTD Contract
 

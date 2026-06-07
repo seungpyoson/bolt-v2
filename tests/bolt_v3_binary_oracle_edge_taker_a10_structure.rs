@@ -1,0 +1,126 @@
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
+
+const EXPECTED_SPLIT_TEST_COUNT: usize = 236;
+const EXPECTED_DECLARED_MODULES: &[&str] = &[
+    "shared_fixture",
+    "book_sizing",
+    "config",
+    "core_glue",
+    "exposure",
+    "orders_admission",
+    "pricing",
+    "selection",
+    "source_evidence",
+    "trade_flow",
+];
+const EXPECTED_TEST_FILES: &[&str] = &[
+    "mod.rs",
+    "shared_fixture.rs",
+    "book_sizing.rs",
+    "config.rs",
+    "core_glue.rs",
+    "exposure.rs",
+    "orders_admission.rs",
+    "pricing.rs",
+    "selection.rs",
+    "source_evidence.rs",
+    "trade_flow.rs",
+];
+
+fn expected_set(values: &[&str]) -> BTreeSet<String> {
+    values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+fn repo_path(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
+}
+
+fn count_test_functions(source: &str) -> usize {
+    source
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            trimmed == "#[test]" || trimmed.starts_with("#[tokio::test")
+        })
+        .count()
+}
+
+fn declared_modules(source: &str) -> BTreeSet<String> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let module = line.trim().strip_prefix("mod ")?;
+            Some(module.strip_suffix(';')?.to_owned())
+        })
+        .collect()
+}
+
+fn rust_files(root: &Path) -> BTreeSet<String> {
+    std::fs::read_dir(root)
+        .unwrap_or_else(|error| panic!("split test root {} should read: {error}", root.display()))
+        .map(|entry| entry.expect("split test root entries should read"))
+        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("rs"))
+        .map(|entry| {
+            entry
+                .file_name()
+                .into_string()
+                .expect("split test file names should be UTF-8")
+        })
+        .collect()
+}
+
+#[test]
+fn binary_oracle_edge_taker_tests_are_split_by_a10_ownership() {
+    let strategy_root = repo_path("src/strategies/binary_oracle_edge_taker");
+    let mod_rs = strategy_root.join("mod.rs");
+    let mod_source = std::fs::read_to_string(&mod_rs).expect("strategy mod.rs should be readable");
+
+    assert!(
+        mod_source.contains("\n#[cfg(test)]\nmod tests;\n"),
+        "A10 requires mod.rs to declare the external test module only"
+    );
+    assert!(
+        !mod_source.contains("\n#[cfg(test)]\nmod tests {{"),
+        "A10 requires embedded test bodies to leave mod.rs"
+    );
+    assert_eq!(
+        count_test_functions(&mod_source),
+        0,
+        "A10 requires mod.rs to contain no embedded #[test] functions"
+    );
+
+    let tests_root = strategy_root.join("tests");
+    let tests_mod = std::fs::read_to_string(tests_root.join("mod.rs"))
+        .expect("split test harness module should be readable");
+    assert_eq!(
+        declared_modules(&tests_mod),
+        expected_set(EXPECTED_DECLARED_MODULES),
+        "tests/mod.rs must declare exactly the A10 split modules"
+    );
+    assert_eq!(
+        rust_files(&tests_root),
+        expected_set(EXPECTED_TEST_FILES),
+        "A10 split test root must contain exactly the expected .rs files"
+    );
+
+    let mut split_test_count = 0;
+    for file in EXPECTED_TEST_FILES {
+        let path = tests_root.join(file);
+        let source = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!("split test file {} should read: {error}", path.display())
+        });
+        assert!(
+            source.lines().next() == Some("#![cfg(test)]"),
+            "split test file {} must be test-only for source/literal scanners",
+            path.display()
+        );
+        split_test_count += count_test_functions(&source);
+    }
+    assert_eq!(
+        split_test_count, EXPECTED_SPLIT_TEST_COUNT,
+        "A10 must preserve the current embedded test inventory exactly"
+    );
+}

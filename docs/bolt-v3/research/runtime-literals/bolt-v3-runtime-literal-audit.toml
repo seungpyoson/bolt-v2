@@ -1778,7 +1778,7 @@ kind = "number"
 literal = '''0'''
 context = '''admitted_order_count: 0,'''
 classification = "submit_admission_counter_identity"
-reason = "The submit admission counter starts empty for each fresh unarmed runtime state; the operator-provided cap comes from the validated live canary gate report."
+reason = "The submit admission counter starts empty for each fresh unarmed runtime state; the operator-provided cap comes from validated live submit approval limits."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
@@ -1786,7 +1786,7 @@ kind = "number"
 literal = '''0'''
 context = '''admitted_entry_order_count: 0,'''
 classification = "submit_admission_counter_identity"
-reason = "The exposure-opening admission counter starts empty for each fresh unarmed runtime state; the operator-provided cap comes from the validated live canary gate report."
+reason = "The exposure-opening admission counter starts empty for each fresh unarmed runtime state; the operator-provided cap comes from validated live submit approval limits."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
@@ -3586,7 +3586,7 @@ kind = "number"
 literal = '''1'''
 context = '''.take(max_bytes.saturating_add(1))'''
 classification = "bounded_read_oversize_probe"
-reason = "This reads one extra byte beyond the config-owned operator evidence file cap to detect oversize artifacts; it is not an operator runtime value."
+reason = "This reads one extra byte beyond the config-owned operator artifact file cap to detect oversize artifacts; it is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -3602,7 +3602,7 @@ kind = "number"
 literal = '''64'''
 context = '''value.len() == 64'''
 classification = "sha256_hex_width"
-reason = "This is the structural length of a SHA-256 hex digest used to validate operator evidence hashes, not an operator runtime value."
+reason = "This is the structural length of a SHA-256 hex digest used to validate operator artifact hashes, not an operator runtime value."
 
 [[allowed]]
 path = "src/main.rs"
@@ -8123,6 +8123,14 @@ literal = '''"\n#[cfg(test)]\nmod tests"'''
 context = '''pub const TEST_MODULE_SPLIT_MARKER: &str = "\n#[cfg(test)]\nmod tests";'''
 classification = "source_canonicalization_test_module_marker"
 reason = "The single canonical 3-line marker separating production code from the bottom test module; defined once so the production/test boundary matches the historical split byte-for-byte."
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"#![cfg(test)]\n"'''
+context = '''pub const TEST_ONLY_INNER_CFG_MARKER: &str = "#![cfg(test)]\n";'''
+classification = "source_canonicalization_test_module_marker"
+reason = "The canonical marker for split test-only modules; production source text treats files beginning with this marker as empty."
 
 [[allowed]]
 path = "src/source_canonicalization.rs"

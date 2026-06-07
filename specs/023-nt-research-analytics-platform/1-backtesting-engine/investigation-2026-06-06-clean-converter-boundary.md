@@ -96,6 +96,17 @@ Go for the local BNBUSDC vertical-slice path after this fix:
   unproven. A first one-object proof may
   exclude tick-changing assets only with explicit claim limits; full L2
   acceptance must prove tick-size epochs.
+- PMXT Polymarket first-proof universe policy is now recorded in
+  `reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json`:
+  the same one-hour object has `71,593` assets, `343` assets with
+  `tick_size_change`, and `823` assets with `book`, `price_change`, and
+  `last_trade_price` rows but no tick-size change. Eligible no-tick assets have
+  a median `749` replay rows, with `451` eligible assets at or below `1,000`
+  rows, so a bounded first L2 proof can select by a TOML/source-proof-owned
+  predicate instead of hardcoded asset IDs. This path can only claim
+  catalog/read-back/`BacktestNode` plumbing for the selected unaffected
+  universe; it still cannot claim dynamic tick-size replay, full PMXT
+  Polymarket L2 acceptance, or broad backfill.
 - generated result contracts now preserve structured source-proof claim-limit evidence from the accepted proof instead of rebuilding source limits from plain `forbidden_claims` strings
 - non-latest source-proof pins now require structured manifest justification: `normal` runs still cannot pin them, non-normal pins require `proof_pin_reason_code`, and `audit_or_investigation` pins require `proof_pin_reason_detail`
 - the accepted `proof_pin_reason_code` vocabulary now matches the plan/reference contract, including published-result reproduction and regression-comparison pins

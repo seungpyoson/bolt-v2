@@ -203,11 +203,17 @@
     "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json",
     "mapping_constraint": "Pinned NT live handling rebuilds BinaryOption instruments and starts a book epoch on tick_size_change, but BacktestNode dynamic InstrumentAny replay is unproven. A first proof may exclude tick-changing assets only with explicit claim limits; full L2 acceptance must prove tick-size epochs."
   },
+  "first_proof_universe_policy": {
+    "status": "first_proof_exclusion_policy_selected_tdd_unproven",
+    "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json",
+    "mapping_constraint": "A bounded first proof may select an instrument universe from source-proof event counts where tick_size_change_rows == 0, book_rows > 0, price_change_rows > 0, last_trade_price_rows > 0, and replay_rows <= configured row budget. The selector and row budget must be TOML/source-proof-owned, not code constants."
+  },
   "unresolved_before_implementation": [
     "The isolated BTE crate must have an approved dependency or integration boundary for nautilus-polymarket before parser/provider reuse is machine-checked.",
     "PMXT price_change grouping policy must be implemented and verified against pinned NT live-client parity, including timestamp_received boundary handling.",
     "PMXT last_trade_price selected TradeId/dedupe policy must be TDD-proven before catalog acceptance.",
-    "tick_size_change dynamic instrument-epoch representation must be proven with NT catalog read-back and BacktestNode consumption, or explicitly excluded with claim limits for a bounded first proof.",
+    "The selected first-proof instrument-universe selector must be TDD-proven with TOML/source-proof-owned predicates and claim limits.",
+    "tick_size_change dynamic instrument-epoch representation remains unresolved for full L2 acceptance and must be proven with NT catalog read-back and BacktestNode consumption before broad backfill.",
     "The resulting ParquetDataCatalog proof must write/read InstrumentAny::BinaryOption, OrderBookDelta, and TradeTick under artifact_root staging; local prototype directories are insufficient.",
     "The coverage ledger must use timestamp_received as the archive-hour coverage axis because source timestamp can be older than the archive object hour."
   ],

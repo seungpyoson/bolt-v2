@@ -1,0 +1,187 @@
+{
+  "schema_version": "source-proof-pmxt-polymarket-first-proof-universe-policy.v1",
+  "task_id": "BACKTESTING_ENGINE-022",
+  "source_binding": "polymarket-parquet-archive-index",
+  "status": "first_proof_exclusion_policy_selected_tdd_unproven",
+  "recorded_at_utc": "2026-06-07T22:37:11Z",
+  "scope": {
+    "question": "Can the first PMXT Polymarket L2 proof proceed without proving dynamic tick-size replay?",
+    "answer": "Yes, only for a bounded first proof whose source-proof instrument universe explicitly excludes instruments with tick_size_change rows in the object window and records claim limits. This does not close full PMXT Polymarket L2 acceptance or broad backfill.",
+    "not_implementation": true,
+    "not_catalog_readback_proof": true,
+    "not_full_l2_acceptance": true,
+    "not_broad_backfill_authorization": true
+  },
+  "pinned_nt_revision": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+  "nt_path_assessment": [
+    {
+      "source": "nt://crates/backtest/src/node.rs:165",
+      "finding": "BacktestNode loads catalog instruments before market data and does not pass run start/end into query_instruments_filtered."
+    },
+    {
+      "source": "nt://crates/backtest/src/node.rs:381",
+      "finding": "BacktestNode catalog replay feeds market data into BacktestEngine::add_data as Vec<Data>."
+    },
+    {
+      "source": "nt://crates/model/src/data/mod.rs:100",
+      "finding": "NT Data does not include InstrumentAny instrument-definition updates."
+    },
+    {
+      "source": "nt://crates/backtest/src/node.rs:393",
+      "finding": "BacktestNode streaming mode preserves engine state across data chunks, but chunks still contain Data enum items and cannot carry InstrumentAny updates."
+    },
+    {
+      "source": "nt://crates/backtest/src/node.rs:233",
+      "finding": "Multiple BacktestRunConfig entries run separate engines, so epoch splitting through run configs does not preserve one continuous strategy/account state."
+    },
+    {
+      "source": "nt://crates/backtest/src/engine.rs:326",
+      "finding": "Direct BacktestEngine::add_instrument can apply InstrumentAny, but scheduling that between epochs is outside the current BacktestNode catalog-replay path required by this BTE proof."
+    }
+  ],
+  "pmxt_one_object_evidence": {
+    "source_uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+    "local_path": "/private/tmp/polymarket-may20-one.parquet",
+    "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "event_counts": [
+      {
+        "event_type": "book",
+        "rows": 28858,
+        "distinct_assets": 21862
+      },
+      {
+        "event_type": "last_trade_price",
+        "rows": 80052,
+        "distinct_assets": 4536
+      },
+      {
+        "event_type": "price_change",
+        "rows": 64768138,
+        "distinct_assets": 65045
+      },
+      {
+        "event_type": "tick_size_change",
+        "rows": 419,
+        "distinct_assets": 343
+      }
+    ],
+    "instrument_universe_counts": {
+      "assets_any": 71593,
+      "assets_with_tick_change": 343,
+      "assets_without_tick_change": 71250,
+      "book_assets_without_tick_change": 21778,
+      "price_change_assets_without_tick_change": 64702,
+      "trade_assets_without_tick_change": 4374,
+      "book_and_price_assets_without_tick_change": 15230,
+      "book_price_trade_assets_without_tick_change": 823
+    },
+    "rows_after_tick_change_asset_exclusion": [
+      {
+        "event_type": "book",
+        "rows_total": 28858,
+        "rows_without_tick_change_assets": 28160,
+        "assets_total": 21862,
+        "assets_without_tick_change": 21778
+      },
+      {
+        "event_type": "last_trade_price",
+        "rows_total": 80052,
+        "rows_without_tick_change_assets": 73150,
+        "assets_total": 4536,
+        "assets_without_tick_change": 4374
+      },
+      {
+        "event_type": "price_change",
+        "rows_total": 64768138,
+        "rows_without_tick_change_assets": 61735047,
+        "assets_total": 65045,
+        "assets_without_tick_change": 64702
+      }
+    ],
+    "eligible_first_proof_assets": {
+      "predicate": "tick_size_change_rows == 0 && book_rows > 0 && price_change_rows > 0 && last_trade_price_rows > 0",
+      "eligible_assets": 823,
+      "min_replay_rows": 4,
+      "p25_replay_rows": 249.5,
+      "p50_replay_rows": 749.0,
+      "p75_replay_rows": 4719.5,
+      "max_replay_rows": 162129,
+      "total_replay_rows": 7163397,
+      "assets_lte_100_rows": 96,
+      "assets_lte_1000_rows": 451,
+      "assets_lte_10000_rows": 668,
+      "total_rows_lte_1000_assets": 149156
+    }
+  },
+  "selected_first_proof_policy": {
+    "instrument_universe_source": "source-proof-computed-from-object-event-counts",
+    "selector_must_be_configured_not_hardcoded": true,
+    "selector_predicate": [
+      "tick_size_change_rows == 0",
+      "book_rows > 0",
+      "price_change_rows > 0",
+      "last_trade_price_rows > 0",
+      "replay_rows <= configured_first_proof_row_budget"
+    ],
+    "deterministic_selection_order": [
+      "replay_rows ASC",
+      "asset_id ASC"
+    ],
+    "required_manifest_bindings": [
+      "source_object_uri",
+      "source_object_sha256",
+      "event_count_ledger_hash",
+      "instrument_universe_selector",
+      "selected_asset_ids_hash",
+      "excluded_tick_change_asset_count",
+      "excluded_tick_change_event_count",
+      "row_budget"
+    ],
+    "runtime_code_restrictions": [
+      "No venue name constants.",
+      "No asset id constants.",
+      "No source-object constants in code.",
+      "The selector and row budget must come from TOML/source-proof metadata."
+    ]
+  },
+  "claim_limits": [
+    "Does not prove dynamic tick-size replay.",
+    "Does not prove assets with tick_size_change rows.",
+    "Does not prove full PMXT Polymarket L2 source acceptance.",
+    "Does not authorize broad backfill.",
+    "Does not prove continuous strategy/account state across tick-size epochs.",
+    "May prove NT catalog/read-back/BacktestNode plumbing for the selected unaffected instrument universe only."
+  ],
+  "rejected_alternatives": [
+    {
+      "alternative": "Ignore tick_size_change rows",
+      "reason": "Pinned NT live handling treats real tick-size changes as instrument epoch transitions and waits for a fresh snapshot before book deltas resume."
+    },
+    {
+      "alternative": "Load all instrument snapshots up front",
+      "reason": "BacktestNode query_instruments loads snapshots before market data; SimulatedExchange inserts by instrument id, so later snapshots can overwrite earlier snapshots before replay starts."
+    },
+    {
+      "alternative": "Split epochs into separate BacktestRunConfig entries",
+      "reason": "BacktestNode creates separate engines per run config, so this does not preserve one continuous strategy/account state."
+    },
+    {
+      "alternative": "Manually call BacktestEngine::add_instrument between replay epochs",
+      "reason": "This uses an NT API but leaves the current BacktestNode catalog-replay proof path and would need a separate design decision before implementation."
+    }
+  ],
+  "required_green_tests_when_implementation_starts": [
+    "Source-proof ledger computes per-asset event counts without venue or asset constants.",
+    "First-proof selector refuses assets with tick_size_change rows.",
+    "First-proof selector is deterministic and bounded by configured row budget.",
+    "Result contract records excluded tick-change asset/event counts and forbidden full-L2 claims.",
+    "BacktestNode proof reads only selected unaffected instruments and data rows from NT ParquetDataCatalog."
+  ],
+  "current_decision": {
+    "first_proof_exclusion_policy_can_close": true,
+    "tick_size_dynamic_replay_can_close": false,
+    "bte_022_can_close": false,
+    "broad_backfill_allowed": false,
+    "next_required_evidence": "TDD implementation proof for the configured first-proof selector, NT catalog read-back, and BacktestNode run over selected unaffected instruments; dynamic tick-size replay remains a separate blocker for full L2 acceptance."
+  }
+}

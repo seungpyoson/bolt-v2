@@ -116,8 +116,9 @@
     },
     {
       "policy": "exclude_tick_changing_assets_from_first_one_object_l2_proof",
-      "decision": "allowed_only_with_explicit_claim_limit",
-      "reason": "A bounded proof can choose an unaffected instrument universe to prove OrderBookDelta/TradeTick catalog plumbing, but this cannot close full PMXT Polymarket L2 source acceptance."
+      "decision": "accepted_for_bounded_first_proof_only",
+      "reason": "A bounded proof can choose an unaffected instrument universe to prove OrderBookDelta/TradeTick catalog plumbing, but this cannot close full PMXT Polymarket L2 source acceptance.",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json"
     },
     {
       "policy": "use_final_tick_size_for_entire_window",
@@ -133,8 +134,9 @@
   ],
   "current_decision": {
     "tick_size_change_policy_can_close": false,
+    "first_proof_exclusion_policy_can_close": true,
     "bte_022_can_close": false,
     "broad_backfill_allowed": false,
-    "next_required_evidence": "A focused NT catalog/backtest proof for multiple BinaryOption snapshots and dynamic tick-size epochs, or an explicit first-proof instrument-universe exclusion with claim limits."
+    "next_required_evidence": "TDD implementation proof for the configured first-proof selector, NT catalog read-back, and BacktestNode run over selected unaffected instruments. Dynamic tick-size replay remains a separate blocker for full L2 acceptance."
   }
 }

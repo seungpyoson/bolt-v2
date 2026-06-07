@@ -16,9 +16,13 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
+use sha2::{Digest, Sha256};
 
 use backtesting_vertical_slice::{
     artifact_store_secrets::{ArtifactStoreSecretResolver, ArtifactStoreSsmResolver},
+    backfill_execution_plan::{
+        BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
+    },
     operator::{
         PublishOptions, PublishedArtifact, PublishedCatalogProof, RunSpec, run_from_run_spec,
         run_from_run_spec_and_publish_with_resolved_storage_options,
@@ -31,6 +35,9 @@ struct Cli {
     /// Path to the run-spec TOML (dataset facts: object, source proof, manifest).
     #[arg(long)]
     run_spec: PathBuf,
+    /// Optional pre-payload execution plan that must match the run-spec.
+    #[arg(long)]
+    execution_plan: Option<PathBuf>,
     /// Local path to the accepted object whose SHA-256 the run-spec pins.
     #[arg(long = "object")]
     object_path: PathBuf,
@@ -49,17 +56,27 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut object_reader =
         |path: &Path, expected_bytes: u64| read_object_checked(path, expected_bytes);
-    let spec_text = fs::read_to_string(&cli.run_spec)
-        .with_context(|| format!("read run-spec {}", cli.run_spec.display()))?;
-    let spec: RunSpec = toml::from_str(&spec_text).context("parse run-spec TOML")?;
+    let (spec, run_spec_hash) = read_run_spec_with_hash(&cli.run_spec)?;
     if cli.publish_output && spec.manifest.artifact_store.ssm_parameters.is_some() {
         let mut resolver = ArtifactStoreSsmResolver::new()?;
-        run_cli_with_spec_object_reader_and_resolver(&cli, spec, &mut object_reader, &mut resolver)
+        run_cli_with_spec_object_reader_and_resolver(
+            &cli,
+            spec,
+            &run_spec_hash,
+            &mut object_reader,
+            &mut resolver,
+        )
     } else {
         let mut resolver = |_region: &str, _path: &str| {
             Err::<String, String>("artifact-store SSM resolver was not configured".to_string())
         };
-        run_cli_with_spec_object_reader_and_resolver(&cli, spec, &mut object_reader, &mut resolver)
+        run_cli_with_spec_object_reader_and_resolver(
+            &cli,
+            spec,
+            &run_spec_hash,
+            &mut object_reader,
+            &mut resolver,
+        )
     }
 }
 
@@ -73,15 +90,14 @@ where
     F: FnMut(&Path, u64) -> Result<Vec<u8>>,
     R: ArtifactStoreSecretResolver,
 {
-    let spec_text = fs::read_to_string(&cli.run_spec)
-        .with_context(|| format!("read run-spec {}", cli.run_spec.display()))?;
-    let spec: RunSpec = toml::from_str(&spec_text).context("parse run-spec TOML")?;
-    run_cli_with_spec_object_reader_and_resolver(cli, spec, object_reader, resolver)
+    let (spec, run_spec_hash) = read_run_spec_with_hash(&cli.run_spec)?;
+    run_cli_with_spec_object_reader_and_resolver(cli, spec, &run_spec_hash, object_reader, resolver)
 }
 
 fn run_cli_with_spec_object_reader_and_resolver<F, R>(
     cli: &Cli,
     spec: RunSpec,
+    run_spec_hash: &str,
     object_reader: &mut F,
     resolver: &mut R,
 ) -> Result<()>
@@ -89,6 +105,11 @@ where
     F: FnMut(&Path, u64) -> Result<Vec<u8>>,
     R: ArtifactStoreSecretResolver,
 {
+    if let Some(execution_plan_path) = &cli.execution_plan {
+        let execution_plan = read_execution_plan(execution_plan_path)?;
+        validate_execution_plan_for_run_spec(&execution_plan, run_spec_hash, &spec)
+            .with_context(|| format!("execution plan {}", execution_plan_path.display()))?;
+    }
     let publish_options = PublishOptions {
         prove_published_catalog: cli.prove_published_catalog,
     };
@@ -192,6 +213,100 @@ where
         }
     }
     Ok(())
+}
+
+fn read_run_spec_with_hash(path: &Path) -> Result<(RunSpec, String)> {
+    let bytes = fs::read(path).with_context(|| format!("read run-spec {}", path.display()))?;
+    let hash = sha256_hex(&bytes);
+    let text = std::str::from_utf8(&bytes).context("run-spec TOML is not UTF-8")?;
+    let spec: RunSpec = toml::from_str(text).context("parse run-spec TOML")?;
+    Ok((spec, hash))
+}
+
+fn read_execution_plan(path: &Path) -> Result<BackfillExecutionPlan> {
+    let bytes =
+        fs::read(path).with_context(|| format!("read execution plan {}", path.display()))?;
+    serde_json::from_slice(&bytes).context("parse execution-plan JSON")
+}
+
+fn validate_execution_plan_for_run_spec(
+    plan: &BackfillExecutionPlan,
+    run_spec_hash: &str,
+    spec: &RunSpec,
+) -> Result<()> {
+    ensure!(
+        plan.status == BackfillExecutionPlanStatus::Ready,
+        "execution plan status must be ready"
+    );
+    ensure!(
+        plan.blocking_issues.is_empty(),
+        "execution plan has blocking issues"
+    );
+    ensure!(
+        plan.run_spec_hash == run_spec_hash,
+        "execution plan run_spec_hash {} does not match submitted run-spec {run_spec_hash}",
+        plan.run_spec_hash
+    );
+    let binding = BackfillExecutionRunBinding::from_run_spec(spec);
+    ensure!(
+        plan.operator_run_id == binding.run_id,
+        "execution plan operator_run_id mismatch"
+    );
+    ensure!(
+        plan.output_prefix == binding.output_prefix,
+        "execution plan output_prefix mismatch"
+    );
+    ensure!(
+        plan.source_proof_id == binding.source_proof_id
+            && plan.source_proof_version == binding.source_proof_version,
+        "execution plan source proof mismatch"
+    );
+    ensure!(
+        plan.source_binding == binding.source_binding,
+        "execution plan source binding mismatch"
+    );
+    ensure!(
+        plan.object_count == 1 && plan.objects.len() == 1,
+        "execution plan must bind exactly one accepted object"
+    );
+    let object = &plan.objects[0];
+    ensure!(
+        plan.accepted_bytes == object.bytes,
+        "execution plan accepted_bytes mismatch"
+    );
+    ensure!(
+        object.s3_uri == binding.raw_sample_uri && object.s3_uri == binding.accepted_object_s3_uri,
+        "execution plan object URI mismatch"
+    );
+    ensure!(
+        object.sha256 == binding.raw_sample_hash && object.sha256 == binding.accepted_object_sha256,
+        "execution plan object hash mismatch"
+    );
+    ensure!(
+        object.source_url == binding.accepted_object_source_url,
+        "execution plan object source URL mismatch"
+    );
+    ensure!(
+        object.bytes == binding.accepted_object_bytes,
+        "execution plan object byte count mismatch"
+    );
+    ensure!(
+        object.archive_date == binding.accepted_object_archive_date,
+        "execution plan object archive date mismatch"
+    );
+    ensure!(
+        plan.max_object_bytes == binding.max_object_bytes && object.bytes <= plan.max_object_bytes,
+        "execution plan object byte budget mismatch"
+    );
+    ensure!(
+        plan.max_decoded_bytes == binding.max_decoded_bytes,
+        "execution plan decoded byte budget mismatch"
+    );
+    Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn ensure_object_read_within_raw_payload_limit(spec: &RunSpec) -> Result<()> {
@@ -304,6 +419,7 @@ mod tests {
         spec.converter.raw_payload.max_object_bytes = spec.accepted_object.bytes - 1;
         let cli = Cli {
             run_spec: run_spec_path,
+            execution_plan: None,
             object_path: dir.path().join("oversized-object.csv.gz"),
             output_dir: dir.path().join("out"),
             publish_output: false,
@@ -315,10 +431,12 @@ mod tests {
             anyhow::bail!("object reader must not run after configured payload max rejection")
         };
         let mut resolver = |_region: &str, _path: &str| Ok::<String, String>("unused".to_string());
+        let run_spec_hash = sha256_hex(COMMITTED_RUN_SPEC.as_bytes());
 
         let err = run_cli_with_spec_object_reader_and_resolver(
             &cli,
             spec,
+            &run_spec_hash,
             &mut object_reader,
             &mut resolver,
         )
@@ -342,6 +460,7 @@ mod tests {
         fs::write(&run_spec_path, COMMITTED_RUN_SPEC).unwrap();
         let cli = Cli {
             run_spec: run_spec_path,
+            execution_plan: None,
             object_path: dir.path().join("missing-object.csv.gz"),
             output_dir: dir.path().join("out"),
             publish_output: true,
@@ -365,5 +484,64 @@ mod tests {
             !object_reader_called,
             "publish preflight must run before local object read"
         );
+    }
+
+    #[test]
+    fn cli_execution_plan_mismatch_rejects_before_reading_object() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let run_spec_path = dir.path().join("run.toml");
+        fs::write(&run_spec_path, COMMITTED_RUN_SPEC).unwrap();
+        let spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
+        let execution_plan_path = dir.path().join("execution-plan.json");
+        let execution_plan = serde_json::json!({
+            "schema_version": "backfill-execution-plan.v1",
+            "plan_id": "synthetic-plan",
+            "status": "ready",
+            "accepted_tranche_id": "synthetic-tranche",
+            "accepted_tranche_manifest_hash": "synthetic-tranche-hash",
+            "run_spec_hash": "different-run-spec-hash",
+            "operator_run_id": spec.manifest.run_id,
+            "output_prefix": spec.manifest.output_prefix,
+            "source_proof_id": spec.manifest.source_proof_id,
+            "source_proof_version": spec.manifest.source_proof_version,
+            "source_binding": spec.manifest.venue_binding_key,
+            "object_count": 1,
+            "accepted_bytes": spec.accepted_object.bytes,
+            "max_object_bytes": spec.converter.raw_payload.max_object_bytes,
+            "max_decoded_bytes": spec.converter.raw_payload.max_decoded_bytes,
+            "objects": [{
+                "s3_uri": spec.accepted_object.s3_uri,
+                "source_url": spec.accepted_object.source_url,
+                "sha256": spec.accepted_object.sha256,
+                "bytes": spec.accepted_object.bytes,
+                "archive_date": spec.accepted_object.archive_date,
+            }],
+            "blocking_issues": []
+        });
+        fs::write(
+            &execution_plan_path,
+            serde_json::to_vec_pretty(&execution_plan).unwrap(),
+        )
+        .unwrap();
+        let cli = Cli {
+            run_spec: run_spec_path,
+            execution_plan: Some(execution_plan_path),
+            object_path: dir.path().join("object.csv.gz"),
+            output_dir: dir.path().join("out"),
+            publish_output: false,
+            prove_published_catalog: false,
+        };
+        let mut object_reader_called = false;
+        let mut object_reader = |_path: &Path, _expected_bytes: u64| {
+            object_reader_called = true;
+            anyhow::bail!("object reader must not run after execution-plan mismatch")
+        };
+        let mut resolver = |_region: &str, _path: &str| Ok::<String, String>("unused".to_string());
+
+        let err = run_cli_with_object_reader_and_resolver(&cli, &mut object_reader, &mut resolver)
+            .expect_err("execution-plan mismatch must reject before object read");
+
+        assert!(err.to_string().contains("execution plan"), "{err}");
+        assert!(!object_reader_called);
     }
 }

@@ -1,9 +1,12 @@
+use std::fs;
+
 use backtesting_vertical_slice::{
     backfill_coverage::{
-        BackfillCoverageIssue, BackfillCoverageLedger, BackfillCoverageLedgerError,
-        BackfillCoverageManifestEvidence, BackfillCoverageParseError, BackfillCoverageStatus,
-        BackfillPhysicalInventory, BackfillWriteMode, classify_manifest_coverage,
-        classify_physical_inventory,
+        BACKFILL_COVERAGE_LEDGER_FILE, BackfillCoverageIssue, BackfillCoverageLedger,
+        BackfillCoverageLedgerError, BackfillCoverageManifestEvidence, BackfillCoverageParseError,
+        BackfillCoverageStatus, BackfillCoverageWriteError, BackfillPhysicalInventory,
+        BackfillWriteMode, classify_manifest_coverage, classify_physical_inventory,
+        write_coverage_ledger_artifact,
     },
     source_proof::SourceProofStatus,
 };
@@ -305,5 +308,60 @@ fn coverage_ledger_artifact_rejects_duplicate_inventory_ids_before_summary() {
         BackfillCoverageLedgerError::DuplicateInventoryId(
             "manifest-synthetic-physical".to_string()
         )
+    );
+}
+
+#[test]
+fn coverage_ledger_writer_creates_deterministic_local_artifact_and_allows_same_rerun() {
+    let ledger = BackfillCoverageLedger::from_evidence(
+        "ledger-synthetic",
+        vec![completed_manifest()],
+        vec![],
+    )
+    .expect("ledger builds");
+    let dir = tempfile::TempDir::new().expect("temp dir");
+
+    let first = write_coverage_ledger_artifact(dir.path(), &ledger).expect("write ledger");
+    let second = write_coverage_ledger_artifact(dir.path(), &ledger).expect("same ledger rerun");
+
+    assert_eq!(first, second);
+    assert_eq!(first.path, dir.path().join(BACKFILL_COVERAGE_LEDGER_FILE));
+    assert_eq!(
+        first.content_hash,
+        ledger.content_hash().expect("ledger content hash")
+    );
+    assert!(first.bytes > 0);
+    assert_eq!(first.record_count, 1);
+
+    let written = fs::read(&first.path).expect("read written ledger");
+    assert_eq!(written.len() as u64, first.bytes);
+    let parsed: BackfillCoverageLedger =
+        serde_json::from_slice(&written).expect("parse written ledger");
+    assert_eq!(parsed, ledger);
+}
+
+#[test]
+fn coverage_ledger_writer_rejects_existing_mismatched_artifact_without_overwrite() {
+    let ledger = BackfillCoverageLedger::from_evidence(
+        "ledger-synthetic",
+        vec![completed_manifest()],
+        vec![],
+    )
+    .expect("ledger builds");
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let path = dir.path().join(BACKFILL_COVERAGE_LEDGER_FILE);
+    fs::write(&path, br#"{"schema_version":"wrong"}"#).expect("seed dirty artifact");
+
+    let err = write_coverage_ledger_artifact(dir.path(), &ledger).unwrap_err();
+
+    assert_eq!(
+        err,
+        BackfillCoverageWriteError::ExistingArtifactMismatch {
+            path: path.display().to_string()
+        }
+    );
+    assert_eq!(
+        fs::read_to_string(&path).expect("dirty artifact remains"),
+        r#"{"schema_version":"wrong"}"#
     );
 }

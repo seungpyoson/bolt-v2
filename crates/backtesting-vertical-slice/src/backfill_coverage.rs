@@ -4,7 +4,12 @@
 //! normalized manifest facts and optional physical S3 inventory summaries before
 //! any payload download, canonical write, NT catalog projection, or backtest.
 
-use std::{collections::BTreeMap, error::Error, fmt};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    fmt, fs,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,6 +18,7 @@ use sha2::{Digest, Sha256};
 use crate::source_proof::SourceProofStatus;
 
 pub const BACKFILL_COVERAGE_LEDGER_SCHEMA_VERSION: &str = "backfill-coverage-ledger.v1";
+pub const BACKFILL_COVERAGE_LEDGER_FILE: &str = "backfill-coverage-ledger.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -108,6 +114,44 @@ impl fmt::Display for BackfillCoverageLedgerError {
 }
 
 impl Error for BackfillCoverageLedgerError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackfillCoverageWriteError {
+    CreateDir { path: String, error: String },
+    ReadExisting { path: String, error: String },
+    Write { path: String, error: String },
+    Serialize(String),
+    ExistingArtifactMismatch { path: String },
+}
+
+impl fmt::Display for BackfillCoverageWriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CreateDir { path, error } => {
+                write!(
+                    f,
+                    "create backfill coverage artifact directory {path}: {error}"
+                )
+            }
+            Self::ReadExisting { path, error } => {
+                write!(
+                    f,
+                    "read existing backfill coverage artifact {path}: {error}"
+                )
+            }
+            Self::Write { path, error } => {
+                write!(f, "write backfill coverage artifact {path}: {error}")
+            }
+            Self::Serialize(error) => write!(f, "serialize backfill coverage artifact: {error}"),
+            Self::ExistingArtifactMismatch { path } => write!(
+                f,
+                "dirty backfill coverage artifact {path}: existing file content differs"
+            ),
+        }
+    }
+}
+
+impl Error for BackfillCoverageWriteError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -286,6 +330,14 @@ pub struct BackfillCoverageLedger {
     pub summary: BackfillCoverageSummary,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackfillCoverageLedgerArtifact {
+    pub path: PathBuf,
+    pub content_hash: String,
+    pub bytes: u64,
+    pub record_count: u64,
+}
+
 impl BackfillCoverageLedger {
     pub fn from_evidence(
         ledger_id: impl Into<String>,
@@ -344,6 +396,47 @@ impl BackfillCoverageLedger {
         hasher.update(bytes);
         Ok(hex::encode(hasher.finalize()))
     }
+}
+
+pub fn write_coverage_ledger_artifact(
+    output_dir: &Path,
+    ledger: &BackfillCoverageLedger,
+) -> Result<BackfillCoverageLedgerArtifact, BackfillCoverageWriteError> {
+    fs::create_dir_all(output_dir).map_err(|error| BackfillCoverageWriteError::CreateDir {
+        path: output_dir.display().to_string(),
+        error: error.to_string(),
+    })?;
+
+    let path = output_dir.join(BACKFILL_COVERAGE_LEDGER_FILE);
+    let bytes = serde_json::to_vec_pretty(ledger)
+        .map_err(|error| BackfillCoverageWriteError::Serialize(error.to_string()))?;
+    if path.exists() {
+        let existing =
+            fs::read(&path).map_err(|error| BackfillCoverageWriteError::ReadExisting {
+                path: path.display().to_string(),
+                error: error.to_string(),
+            })?;
+        if existing != bytes {
+            return Err(BackfillCoverageWriteError::ExistingArtifactMismatch {
+                path: path.display().to_string(),
+            });
+        }
+    } else {
+        fs::write(&path, &bytes).map_err(|error| BackfillCoverageWriteError::Write {
+            path: path.display().to_string(),
+            error: error.to_string(),
+        })?;
+    }
+
+    let content_hash = ledger
+        .content_hash()
+        .map_err(|error| BackfillCoverageWriteError::Serialize(error.to_string()))?;
+    Ok(BackfillCoverageLedgerArtifact {
+        path,
+        content_hash,
+        bytes: bytes.len() as u64,
+        record_count: ledger.records.len() as u64,
+    })
 }
 
 impl BackfillCoverageSummary {

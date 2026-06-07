@@ -218,11 +218,39 @@ impl BacktestResultContract {
                 "market_structure_fixture",
                 self.market_structure_fixture.as_str(),
             ),
+            ("nt_result.trader_id", self.nt_result.trader_id.as_str()),
+            ("nt_result.machine_id", self.nt_result.machine_id.as_str()),
+            ("nt_result.instance_id", self.nt_result.instance_id.as_str()),
+            (
+                "artifact_uris.source_proof_uri",
+                self.artifact_uris.source_proof_uri.as_str(),
+            ),
+            (
+                "artifact_uris.canonical_table_uri",
+                self.artifact_uris.canonical_table_uri.as_str(),
+            ),
+            (
+                "artifact_uris.nt_catalog_uri",
+                self.artifact_uris.nt_catalog_uri.as_str(),
+            ),
+            (
+                "artifact_uris.catalog_metadata_uri",
+                self.artifact_uris.catalog_metadata_uri.as_str(),
+            ),
+            (
+                "artifact_uris.result_contract_uri",
+                self.artifact_uris.result_contract_uri.as_str(),
+            ),
             ("created_at", self.created_at.as_str()),
         ] {
             if value.trim().is_empty() {
                 return Err(ResultContractError::MissingField(name));
             }
+        }
+        if let Some(run_config_id) = &self.nt_result.run_config_id
+            && run_config_id.trim().is_empty()
+        {
+            return Err(ResultContractError::MissingField("nt_result.run_config_id"));
         }
         if self.claim_limits.is_empty() {
             return Err(ResultContractError::MissingField("claim_limits"));
@@ -593,6 +621,26 @@ features = ["streaming", "examples"]
         assert_eq!(
             c.validate().unwrap_err(),
             ResultContractError::MissingField("market_structure_fixture")
+        );
+    }
+
+    #[test]
+    fn rejects_missing_artifact_uri() {
+        let mut c = contract();
+        c.artifact_uris.result_contract_uri.clear();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("artifact_uris.result_contract_uri")
+        );
+    }
+
+    #[test]
+    fn rejects_missing_nt_pointer_identity() {
+        let mut c = contract();
+        c.nt_result.trader_id.clear();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("nt_result.trader_id")
         );
     }
 

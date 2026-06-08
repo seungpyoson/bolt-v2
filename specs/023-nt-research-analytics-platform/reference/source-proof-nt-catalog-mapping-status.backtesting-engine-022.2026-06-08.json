@@ -331,6 +331,38 @@
     "current_one_off_result_contract_hash": "1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe",
     "delete_policy": "Do not delete historical scratch artifacts as part of BTE-022; archive or delete only after a separately approved cleanup."
   },
+  "accepted_trade_replay_runtime_recheck": {
+    "rechecked_at": "2026-06-09",
+    "branch": "codex/bte-clean-converter-nt-use-main-reconcile",
+    "head_commit": "31ead4815f356445de16b6f06c40ebcba65c683c",
+    "source_binding": "binance-spot-native-trades",
+    "scope": "one accepted Binance Data Vision BNBUSDC spot daily trades object for 2026-03-01",
+    "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin backtesting-vertical-slice -- --run-spec specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.binance-bnbusdc-2026-03-01.toml --execution-plan specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-plan/backfill-execution-plan.json --object /private/tmp/bte-binance-bnbusdc-2026-03-01.zip --output-dir /private/tmp/bte-binance-accepted-run-head-31ead481",
+    "output_dir": "/private/tmp/bte-binance-accepted-run-head-31ead481",
+    "publish_output": false,
+    "accepted_object_sha256": "433d32b8d828abee5e1937e01372d16f7edadc14c41fe736b0b9577541fa5e81",
+    "accepted_object_bytes": 1066394,
+    "result_contract_file_sha256": "50e3aa8710e2a3dcd0ad61484eb22b4cca8a035b4ed49edf2f5a61d9a35cc1f3",
+    "conversion_manifest_file_sha256": "419fa73d941cdfe819dfdb051ad48b0ab614c231301aad8a61d61ddabc28e6cb",
+    "catalog_metadata_file_sha256": "9b139d95254925253fd83f6234cd2e1abeccf9bdd35f2a1e085c08141f57219b",
+    "accepted_source_proof_file_sha256": "bf3f1e7fd977c7127e98508fc8b1f52c1f1841d4f393f04b6b19109a2ded6692",
+    "conversion_manifest_hash": "9203c797a0a289838cca1969b95463ab4f1b9764e0402c0be2808401e1c253b5",
+    "catalog_metadata_hash": "bdd93340d340aa8224209ecf22dcec00999c57d33f595eaa1d98e126941e74e7",
+    "catalog_hash": "8c128fe5acbb2e0df7c0f9b30d80de16acb285ca95f67a7bfc08c969f6b48362",
+    "canonical_rows": 71431,
+    "catalog_rows_by_nt_data_type": {
+      "TradeTick": 71431
+    },
+    "nt_instrument_id": "BNBUSDC.BINANCE",
+    "nt_iterations": 71431,
+    "nt_backtest_start": 1772323201711256000,
+    "nt_backtest_end": 1772409599584254000,
+    "nt_total_events": 0,
+    "nt_total_orders": 0,
+    "nt_total_positions": 0,
+    "mechanical_blockers": [],
+    "claim_limit": "This recheck proves the accepted one-object TradeTick/TRADE_REPLAY path at the current head only. It does not publish artifacts, prove Artifact Index producer IAM, prove multi-day/multi-instrument coverage, or authorize PMXT/Polymarket broad L2 backfill."
+  },
   "remaining_blockers": [
     {
       "blocker": "expanded_tranche_coverage_and_cost_unproven",

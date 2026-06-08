@@ -2240,3 +2240,50 @@ Current conclusion:
 - It still does not close `BACKTESTING_ENGINE-022`. PMXT broad backfill still
   needs durable accepted source proof, expanded coverage/cost/storage evidence,
   and dynamic tick-size replay proof or an accepted bounded-exclusion policy.
+
+## 2026-06-09 accepted TradeTick runtime recheck
+
+Root cause addressed:
+
+- The branch had several committed readiness artifacts for the accepted Binance
+  one-object TradeTick path, but the current head still needed a fresh
+  end-to-end runtime recheck after the PMXT/source-proof guard changes.
+- This recheck intentionally uses the non-Artifact-Index execution path:
+  `BACKTESTING_ENGINE-006` remains open, so this must not be mistaken for a
+  producer-indexed or S3-published proof.
+
+Verification:
+
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin backtesting-vertical-slice -- --run-spec specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.binance-bnbusdc-2026-03-01.toml --execution-plan specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-plan/backfill-execution-plan.json --object /private/tmp/bte-binance-bnbusdc-2026-03-01.zip --output-dir /private/tmp/bte-binance-accepted-run-head-31ead481`
+  exited 0 on head `31ead4815f356445de16b6f06c40ebcba65c683c`.
+- The accepted object hash was
+  `433d32b8d828abee5e1937e01372d16f7edadc14c41fe736b0b9577541fa5e81`
+  for 1,066,394 bytes.
+- The run produced 71,431 canonical rows, wrote/read 71,431 NT `TradeTick`
+  catalog rows, and `BacktestNode` processed 71,431 iterations from
+  `2026-03-01T00:00:01.711256000Z` through
+  `2026-03-01T23:59:59.584254000Z`.
+- Result artifacts were local under
+  `/private/tmp/bte-binance-accepted-run-head-31ead481`; publish output was
+  disabled.
+- Local artifact file hashes:
+  result contract
+  `50e3aa8710e2a3dcd0ad61484eb22b4cca8a035b4ed49edf2f5a61d9a35cc1f3`,
+  conversion manifest
+  `419fa73d941cdfe819dfdb051ad48b0ab614c231301aad8a61d61ddabc28e6cb`,
+  catalog metadata
+  `9b139d95254925253fd83f6234cd2e1abeccf9bdd35f2a1e085c08141f57219b`,
+  accepted source proof
+  `bf3f1e7fd977c7127e98508fc8b1f52c1f1841d4f393f04b6b19109a2ded6692`.
+
+Current conclusion:
+
+- The accepted one-object `binance-spot-native-trades` TradeTick/TRADE_REPLAY
+  path is freshly proven at the current head.
+- This does not close `BACKTESTING_ENGINE-006`: no Artifact Index producer IAM
+  enforcement was proven and no S3/Artifact Index mutation was attempted.
+- This does not close the PMXT portion of `BACKTESTING_ENGINE-022`: broad
+  PMXT/Polymarket L2 backfill still needs durable accepted source proof,
+  expanded coverage/cost/storage evidence, and dynamic tick-size replay proof
+  or an accepted bounded-exclusion policy.

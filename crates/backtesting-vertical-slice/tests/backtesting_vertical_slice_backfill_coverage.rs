@@ -605,6 +605,60 @@ fn coverage_ledger_writer_reads_manifest_json_files_and_writes_artifact() {
 }
 
 #[test]
+fn coverage_ledger_writer_binds_coverage_axis_from_manifest_file_spec() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let manifest_path = dir.path().join("manifest.json");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec(&serde_json::json!({
+            "run_id": "manifest-synthetic-file-axis",
+            "source_binding": "synthetic-native-trades",
+            "source_proof_id": "source-proof-synthetic-native-trades",
+            "source_proof_version": 1,
+            "write_mode": "s3_staging",
+            "canonical_s3_write": false,
+            "completed_objects": 2,
+            "completed_bytes": 600,
+            "errors": []
+        }))
+        .expect("serialize manifest"),
+    )
+    .expect("write manifest");
+    let spec_path = dir.path().join("coverage-ledger.toml");
+    let output_dir = dir.path().join("coverage-ledger");
+    fs::write(
+        &spec_path,
+        format!(
+            r#"
+ledger_id = "ledger-synthetic-file-axis"
+output_dir = "{}"
+
+[[manifest]]
+manifest_uri = "manifest://synthetic/file-axis.json"
+path = "{}"
+coverage_axis = "timestamp_received"
+source_proof_status = "accepted"
+"#,
+            output_dir.display(),
+            manifest_path.display()
+        ),
+    )
+    .expect("write coverage ledger spec");
+
+    let artifact =
+        write_coverage_ledger_artifact_from_spec_file(&spec_path).expect("write coverage ledger");
+    let ledger: BackfillCoverageLedger =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read ledger"))
+            .expect("parse ledger");
+
+    assert_eq!(ledger.summary.accepted_records, 1);
+    assert_eq!(
+        ledger.records[0].coverage_axis.as_deref(),
+        Some("timestamp_received")
+    );
+}
+
+#[test]
 fn coverage_ledger_writer_reports_manifest_uri_for_invalid_json_file() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let manifest_path = dir.path().join("bad.json");
@@ -758,6 +812,7 @@ fn manifest_file(manifest_uri: &str, path: PathBuf) -> BackfillCoverageManifestF
         path,
         source_binding: None,
         table_family: None,
+        coverage_axis: None,
         source_proof_id: None,
         source_proof_version: None,
         source_proof_status: Some(SourceProofStatus::Accepted),

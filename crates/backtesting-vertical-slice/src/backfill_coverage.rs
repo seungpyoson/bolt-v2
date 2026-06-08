@@ -273,6 +273,7 @@ pub struct BackfillCoverageManifestFile {
     pub path: PathBuf,
     pub source_binding: Option<String>,
     pub table_family: Option<String>,
+    pub coverage_axis: Option<String>,
     pub source_proof_id: Option<String>,
     pub source_proof_version: Option<u32>,
     pub source_proof_status: Option<SourceProofStatus>,
@@ -621,6 +622,7 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
                 path,
                 source_binding,
                 table_family,
+                coverage_axis,
                 source_proof_id,
                 source_proof_version,
                 source_proof_status,
@@ -644,6 +646,7 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
                 &mut summary,
                 source_binding,
                 table_family,
+                coverage_axis,
                 source_proof_id,
                 source_proof_version,
             );
@@ -692,6 +695,7 @@ fn bind_manifest_file_metadata(
     summary: &mut Value,
     source_binding: Option<String>,
     table_family: Option<String>,
+    coverage_axis: Option<String>,
     source_proof_id: Option<String>,
     source_proof_version: Option<u32>,
 ) {
@@ -703,6 +707,9 @@ fn bind_manifest_file_metadata(
     }
     if let Some(value) = table_family {
         object.insert("table_family".to_string(), Value::String(value));
+    }
+    if let Some(value) = coverage_axis {
+        object.insert("coverage_axis".to_string(), Value::String(value));
     }
     if let Some(value) = source_proof_id {
         object.insert("source_proof_id".to_string(), Value::String(value));

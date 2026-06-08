@@ -21,7 +21,9 @@ use parquet::arrow::{ArrowWriter, ProjectionMask, arrow_reader::ParquetRecordBat
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::first_proof_selector::{FirstProofSelectorReport, FirstProofSelectorStatus};
+use crate::first_proof_selector::{
+    FirstProofSelectorReport, FirstProofSelectorStatus, SelectedFirstProofAsset,
+};
 
 pub const SELECTED_SOURCE_SLICE_REPORT_SCHEMA_VERSION: &str = "selected-source-slice-report.v1";
 
@@ -135,11 +137,8 @@ pub fn write_selected_source_slice(
         .iter()
         .map(|asset| asset.asset_id.as_str())
         .collect::<BTreeSet<_>>();
-    let matching_row_groups = matching_source_row_groups(
-        &spec.source_parquet_path,
-        &spec.asset_id_column,
-        &selected_assets,
-    )?;
+    let matching_row_groups =
+        selector_source_row_groups(&spec.source_parquet_path, &selector.selected_assets)?;
     ensure!(
         !matching_row_groups.row_groups.is_empty(),
         "selected source slice found zero matching row groups"
@@ -288,10 +287,9 @@ struct MatchingRowGroups {
     row_groups: Vec<usize>,
 }
 
-fn matching_source_row_groups(
+fn selector_source_row_groups(
     source_parquet_path: &Path,
-    asset_id_column: &str,
-    selected_assets: &BTreeSet<&str>,
+    selected_assets: &[SelectedFirstProofAsset],
 ) -> Result<MatchingRowGroups> {
     let file = File::open(source_parquet_path)
         .with_context(|| format!("open source parquet {}", source_parquet_path.display()))?;
@@ -307,57 +305,32 @@ fn matching_source_row_groups(
         .iter()
         .map(|row_group| row_group.num_rows() as u64)
         .collect::<Vec<_>>();
+    let source_rows = row_group_rows.iter().sum::<u64>();
     let source_row_groups = row_group_rows.len() as u64;
-    let projection = ProjectionMask::columns(builder.parquet_schema(), [asset_id_column]);
-    let reader = builder
-        .with_projection(projection)
-        .build()
-        .with_context(|| {
-            format!(
-                "build asset-only source parquet reader {}",
-                source_parquet_path.display()
-            )
-        })?;
-
-    let mut source_rows = 0_u64;
-    let mut current_row_group = 0_usize;
-    let mut next_row_group_end = row_group_rows.first().copied().unwrap_or(0);
     let mut matching = BTreeSet::new();
-    for batch in reader {
-        let batch = batch.with_context(|| {
-            format!(
-                "read asset-only source parquet batch {}",
-                source_parquet_path.display()
-            )
-        })?;
-        let values = batch
-            .column_by_name(asset_id_column)
-            .with_context(|| format!("source parquet missing asset column {asset_id_column:?}"))?;
-        for row in 0..batch.num_rows() {
-            while current_row_group < row_group_rows.len() && source_rows >= next_row_group_end {
-                current_row_group += 1;
-                next_row_group_end += row_group_rows
-                    .get(current_row_group)
-                    .copied()
-                    .unwrap_or_default();
-            }
+    for asset in selected_assets {
+        ensure!(
+            !asset.source_row_groups.is_empty(),
+            "selected asset {:?} is missing source_row_groups",
+            asset.asset_id
+        );
+        for source_row_group in &asset.source_row_groups {
+            let row_group = usize::try_from(*source_row_group).with_context(|| {
+                format!(
+                    "selector source_row_group {source_row_group} for selected asset {:?} does not fit usize",
+                    asset.asset_id
+                )
+            })?;
             ensure!(
-                current_row_group < row_group_rows.len(),
-                "asset-only source scan exceeded parquet row group bounds"
+                row_group < row_group_rows.len(),
+                "selector source_row_group {source_row_group} for selected asset {:?} exceeds parquet row group count {}",
+                asset.asset_id,
+                row_group_rows.len()
             );
-            let asset_id = string_column_value(values.as_ref(), asset_id_column, row)?;
-            if selected_assets.contains(asset_id) {
-                matching.insert(current_row_group);
-            }
-            source_rows = source_rows.saturating_add(1);
+            matching.insert(row_group);
         }
     }
 
-    let expected_source_rows = row_group_rows.iter().sum::<u64>();
-    ensure!(
-        source_rows == expected_source_rows,
-        "asset-only source scan row count {source_rows} did not match parquet metadata row count {expected_source_rows}"
-    );
     Ok(MatchingRowGroups {
         source_rows,
         source_row_groups,

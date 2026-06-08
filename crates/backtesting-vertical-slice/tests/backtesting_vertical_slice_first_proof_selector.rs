@@ -273,13 +273,43 @@ event_family_column = "event_type"
     assert_eq!(
         ledger.event_counts,
         vec![
-            count("asset-a", "book", 1),
-            count("asset-a", "last_trade_price", 1),
-            count("asset-a", "price_change", 1),
-            count("asset-b", "book", 1),
-            count("asset-b", "price_change", 2),
-            count("asset-b", "tick_size_change", 1),
+            count_with_row_groups("asset-a", "book", 1, &[0]),
+            count_with_row_groups("asset-a", "last_trade_price", 1, &[1]),
+            count_with_row_groups("asset-a", "price_change", 1, &[1]),
+            count_with_row_groups("asset-b", "book", 1, &[2]),
+            count_with_row_groups("asset-b", "price_change", 2, &[0]),
+            count_with_row_groups("asset-b", "tick_size_change", 1, &[1]),
         ]
+    );
+
+    let ledger_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&artifact.path).expect("read ledger"))
+            .expect("ledger json value");
+    let event_counts = ledger_json["event_counts"]
+        .as_array()
+        .expect("event count rows");
+    let source_row_groups_for = |asset_id: &str, event_family: &str| -> Vec<u64> {
+        event_counts
+            .iter()
+            .find(|row| row["asset_id"] == asset_id && row["event_family"] == event_family)
+            .expect("event count row")["source_row_groups"]
+            .as_array()
+            .expect("source row groups")
+            .iter()
+            .map(|value| value.as_u64().expect("row group id"))
+            .collect()
+    };
+    assert_eq!(source_row_groups_for("asset-a", "book"), vec![0]);
+    assert_eq!(
+        source_row_groups_for("asset-a", "last_trade_price"),
+        vec![1]
+    );
+    assert_eq!(source_row_groups_for("asset-a", "price_change"), vec![1]);
+    assert_eq!(source_row_groups_for("asset-b", "book"), vec![2]);
+    assert_eq!(source_row_groups_for("asset-b", "price_change"), vec![0]);
+    assert_eq!(
+        source_row_groups_for("asset-b", "tick_size_change"),
+        vec![1]
     );
 }
 
@@ -330,10 +360,20 @@ event_family_column = "event_type"
 }
 
 fn count(asset_id: &str, event_family: &str, rows: u64) -> AssetEventCount {
+    count_with_row_groups(asset_id, event_family, rows, &[])
+}
+
+fn count_with_row_groups(
+    asset_id: &str,
+    event_family: &str,
+    rows: u64,
+    source_row_groups: &[u64],
+) -> AssetEventCount {
     AssetEventCount {
         asset_id: asset_id.to_string(),
         event_family: event_family.to_string(),
         rows,
+        source_row_groups: source_row_groups.to_vec(),
     }
 }
 
@@ -345,7 +385,7 @@ fn write_event_count_source_parquet(path: &std::path::Path) {
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
     };
-    use parquet::arrow::ArrowWriter;
+    use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
     let schema = Arc::new(Schema::new(vec![
         Field::new("asset", DataType::Utf8, false),
@@ -370,7 +410,10 @@ fn write_event_count_source_parquet(path: &std::path::Path) {
     )
     .expect("record batch");
     let file = File::create(path).expect("create source parquet");
-    let mut writer = ArrowWriter::try_new(file, schema, None).expect("parquet writer");
+    let props = WriterProperties::builder()
+        .set_max_row_group_row_count(Some(3))
+        .build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("parquet writer");
     writer.write(&batch).expect("write batch");
     writer.close().expect("close parquet");
 }

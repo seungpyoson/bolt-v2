@@ -41,6 +41,8 @@ pub struct AssetEventCount {
     pub asset_id: String,
     pub event_family: String,
     pub rows: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_row_groups: Vec<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +100,66 @@ pub enum FirstProofSelectorIssue {
 pub struct SelectedFirstProofAsset {
     pub asset_id: String,
     pub replay_rows: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_row_groups: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AssetEventAccumulator {
+    rows: u64,
+    source_row_groups: BTreeSet<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceRowGroupCursor {
+    row_group_rows: Vec<u64>,
+    source_rows: u64,
+    current_row_group: usize,
+    next_row_group_end: u64,
+}
+
+impl SourceRowGroupCursor {
+    fn new(row_group_rows: Vec<u64>) -> Self {
+        let next_row_group_end = row_group_rows.first().copied().unwrap_or(0);
+        Self {
+            row_group_rows,
+            source_rows: 0,
+            current_row_group: 0,
+            next_row_group_end,
+        }
+    }
+
+    fn expected_source_rows(&self) -> u64 {
+        self.row_group_rows.iter().sum()
+    }
+
+    fn source_rows(&self) -> u64 {
+        self.source_rows
+    }
+
+    fn current_row_group(&mut self) -> Result<u64, FirstProofSelectorError> {
+        while self.current_row_group < self.row_group_rows.len()
+            && self.source_rows >= self.next_row_group_end
+        {
+            self.current_row_group += 1;
+            self.next_row_group_end += self
+                .row_group_rows
+                .get(self.current_row_group)
+                .copied()
+                .unwrap_or_default();
+        }
+        if self.current_row_group >= self.row_group_rows.len() {
+            return Err(FirstProofSelectorError::SourceRowGroupBounds {
+                source_rows: self.source_rows,
+                expected_source_rows: self.expected_source_rows(),
+            });
+        }
+        Ok(self.current_row_group as u64)
+    }
+
+    fn advance_row(&mut self) {
+        self.source_rows = self.source_rows.saturating_add(1);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,20 +198,63 @@ pub struct FirstProofEventCountLedgerArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FirstProofSelectorError {
-    ReadSpec { path: String, error: String },
-    ParseSpecToml { path: String, error: String },
-    ReadEventCountLedger { path: String, error: String },
-    ParseEventCountLedgerJson { path: String, error: String },
-    ReadSourceParquet { path: String, error: String },
-    BuildSourceParquetReader { path: String, error: String },
-    ReadSourceParquetBatch { path: String, error: String },
-    MissingSourceColumn { column: String },
-    UnsupportedSourceColumn { column: String },
-    NullSourceColumnValue { column: String, row: usize },
-    CreateDir { path: String, error: String },
-    ReadExisting { path: String, error: String },
-    Write { path: String, error: String },
-    ExistingArtifactMismatch { path: String },
+    ReadSpec {
+        path: String,
+        error: String,
+    },
+    ParseSpecToml {
+        path: String,
+        error: String,
+    },
+    ReadEventCountLedger {
+        path: String,
+        error: String,
+    },
+    ParseEventCountLedgerJson {
+        path: String,
+        error: String,
+    },
+    ReadSourceParquet {
+        path: String,
+        error: String,
+    },
+    BuildSourceParquetReader {
+        path: String,
+        error: String,
+    },
+    ReadSourceParquetBatch {
+        path: String,
+        error: String,
+    },
+    MissingSourceColumn {
+        column: String,
+    },
+    UnsupportedSourceColumn {
+        column: String,
+    },
+    NullSourceColumnValue {
+        column: String,
+        row: usize,
+    },
+    SourceRowGroupBounds {
+        source_rows: u64,
+        expected_source_rows: u64,
+    },
+    CreateDir {
+        path: String,
+        error: String,
+    },
+    ReadExisting {
+        path: String,
+        error: String,
+    },
+    Write {
+        path: String,
+        error: String,
+    },
+    ExistingArtifactMismatch {
+        path: String,
+    },
     Serialize(String),
 }
 
@@ -188,6 +293,13 @@ impl fmt::Display for FirstProofSelectorError {
             Self::NullSourceColumnValue { column, row } => write!(
                 f,
                 "first-proof source parquet column {column:?} has null at row {row}"
+            ),
+            Self::SourceRowGroupBounds {
+                source_rows,
+                expected_source_rows,
+            } => write!(
+                f,
+                "first-proof source parquet row group scan exceeded row bounds: scanned {source_rows}, expected {expected_source_rows}"
             ),
             Self::CreateDir { path, error } => write!(
                 f,
@@ -252,14 +364,14 @@ pub fn evaluate_first_proof_selector(
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    let mut counts_by_asset = BTreeMap::<String, BTreeMap<String, u64>>::new();
+    let mut counts_by_asset = BTreeMap::<String, BTreeMap<String, AssetEventAccumulator>>::new();
     for count in event_counts {
         let asset_counts = counts_by_asset.entry(count.asset_id.clone()).or_default();
-        *asset_counts.entry(count.event_family.clone()).or_default() = asset_counts
-            .get(&count.event_family)
-            .copied()
-            .unwrap_or(0)
-            .saturating_add(count.rows);
+        let accumulator = asset_counts.entry(count.event_family.clone()).or_default();
+        accumulator.rows = accumulator.rows.saturating_add(count.rows);
+        accumulator
+            .source_row_groups
+            .extend(count.source_row_groups.iter().copied());
     }
 
     let mut excluded_event_assets = BTreeSet::new();
@@ -273,10 +385,10 @@ pub fn evaluate_first_proof_selector(
 
             let excluded_rows = counts
                 .iter()
-                .filter(|(event_family, rows)| {
-                    excluded_event_families.contains(event_family.as_str()) && **rows > 0
+                .filter(|(event_family, count)| {
+                    excluded_event_families.contains(event_family.as_str()) && count.rows > 0
                 })
-                .map(|(_, rows)| *rows)
+                .map(|(_, count)| count.rows)
                 .sum::<u64>();
             if excluded_rows > 0 {
                 excluded_event_assets.insert(asset_id.clone());
@@ -285,12 +397,15 @@ pub fn evaluate_first_proof_selector(
             }
 
             let mut replay_rows = 0_u64;
+            let mut source_row_groups = BTreeSet::new();
             for event_family in &required_event_families {
-                let rows = counts.get(*event_family).copied().unwrap_or(0);
+                let event_count = counts.get(*event_family).cloned().unwrap_or_default();
+                let rows = event_count.rows;
                 if rows == 0 {
                     return None;
                 }
                 replay_rows = replay_rows.saturating_add(rows);
+                source_row_groups.extend(event_count.source_row_groups);
             }
             if replay_rows > selection.row_budget {
                 return None;
@@ -298,6 +413,7 @@ pub fn evaluate_first_proof_selector(
             Some(SelectedFirstProofAsset {
                 asset_id: asset_id.clone(),
                 replay_rows,
+                source_row_groups: source_row_groups.into_iter().collect(),
             })
         })
         .collect::<Vec<_>>();
@@ -407,6 +523,12 @@ pub fn build_first_proof_event_count_ledger_from_parquet(
             spec.event_family_column.as_str(),
         ],
     );
+    let row_group_rows = builder
+        .metadata()
+        .row_groups()
+        .iter()
+        .map(|row_group| row_group.num_rows() as u64)
+        .collect::<Vec<_>>();
     let reader = builder
         .with_projection(projection)
         .build()
@@ -414,20 +536,28 @@ pub fn build_first_proof_event_count_ledger_from_parquet(
             path: source_path.clone(),
             error: error.to_string(),
         })?;
-    let mut counts = BTreeMap::<String, BTreeMap<String, u64>>::new();
-    let mut source_rows = 0_u64;
+    let mut counts = BTreeMap::<String, BTreeMap<String, AssetEventAccumulator>>::new();
+    let mut row_group_cursor = SourceRowGroupCursor::new(row_group_rows);
     for batch in reader {
         let batch = batch.map_err(|error| FirstProofSelectorError::ReadSourceParquetBatch {
             path: source_path.clone(),
             error: error.to_string(),
         })?;
-        source_rows = source_rows.saturating_add(batch.num_rows() as u64);
         add_batch_event_counts(
             &batch,
             &spec.asset_id_column,
             &spec.event_family_column,
             &mut counts,
+            &mut row_group_cursor,
         )?;
+    }
+    let source_rows = row_group_cursor.source_rows();
+    let expected_source_rows = row_group_cursor.expected_source_rows();
+    if source_rows != expected_source_rows {
+        return Err(FirstProofSelectorError::SourceRowGroupBounds {
+            source_rows,
+            expected_source_rows,
+        });
     }
     Ok(FirstProofEventCountLedgerReport {
         schema_version: FIRST_PROOF_EVENT_COUNT_LEDGER_SCHEMA_VERSION.to_string(),
@@ -437,10 +567,11 @@ pub fn build_first_proof_event_count_ledger_from_parquet(
             .flat_map(|(asset_id, event_counts)| {
                 event_counts
                     .into_iter()
-                    .map(move |(event_family, rows)| AssetEventCount {
+                    .map(move |(event_family, count)| AssetEventCount {
                         asset_id: asset_id.clone(),
                         event_family,
-                        rows,
+                        rows: count.rows,
+                        source_row_groups: count.source_row_groups.into_iter().collect(),
                     })
             })
             .collect(),
@@ -541,7 +672,8 @@ fn add_batch_event_counts(
     batch: &RecordBatch,
     asset_id_column: &str,
     event_family_column: &str,
-    counts: &mut BTreeMap<String, BTreeMap<String, u64>>,
+    counts: &mut BTreeMap<String, BTreeMap<String, AssetEventAccumulator>>,
+    row_group_cursor: &mut SourceRowGroupCursor,
 ) -> Result<(), FirstProofSelectorError> {
     let asset_values = batch.column_by_name(asset_id_column).ok_or_else(|| {
         FirstProofSelectorError::MissingSourceColumn {
@@ -554,19 +686,17 @@ fn add_batch_event_counts(
         }
     })?;
     for row in 0..batch.num_rows() {
+        let source_row_group = row_group_cursor.current_row_group()?;
         let asset_id = string_column_value(asset_values.as_ref(), asset_id_column, row)?;
         let event_family = string_column_value(event_values.as_ref(), event_family_column, row)?;
-        if let Some(event_counts) = counts.get_mut(asset_id) {
-            if let Some(rows) = event_counts.get_mut(event_family) {
-                *rows = rows.saturating_add(1);
-            } else {
-                event_counts.insert(event_family.to_string(), 1);
-            }
-        } else {
-            let mut event_counts = BTreeMap::new();
-            event_counts.insert(event_family.to_string(), 1);
-            counts.insert(asset_id.to_string(), event_counts);
-        }
+        let event_count = counts
+            .entry(asset_id.to_string())
+            .or_default()
+            .entry(event_family.to_string())
+            .or_default();
+        event_count.rows = event_count.rows.saturating_add(1);
+        event_count.source_row_groups.insert(source_row_group);
+        row_group_cursor.advance_row();
     }
     Ok(())
 }
@@ -641,6 +771,11 @@ fn event_count_ledger_hash(event_counts: &[AssetEventCount]) -> String {
         hasher.update(row.event_family.len().to_le_bytes());
         hasher.update(row.event_family.as_bytes());
         hasher.update(row.rows.to_le_bytes());
+        let source_row_groups = row.source_row_groups.into_iter().collect::<BTreeSet<_>>();
+        hasher.update((source_row_groups.len() as u64).to_le_bytes());
+        for source_row_group in source_row_groups {
+            hasher.update(source_row_group.to_le_bytes());
+        }
     }
     hex::encode(hasher.finalize())
 }

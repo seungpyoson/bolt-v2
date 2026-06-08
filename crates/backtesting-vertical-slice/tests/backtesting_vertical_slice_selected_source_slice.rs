@@ -125,6 +125,41 @@ fn selected_source_slice_cli_writes_artifact_from_config_owned_spec() {
     assert!(output_path.exists());
 }
 
+#[test]
+fn selected_source_slice_uses_selector_row_groups_without_full_asset_rescan() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let source_path = dir.path().join("source.parquet");
+    let selector_path = dir.path().join("selector.json");
+    let output_path = dir.path().join("selected.parquet");
+    let report_path = dir.path().join("selected-report.json");
+    let spec_path = dir.path().join("selected.toml");
+    write_source_parquet_with_unscannable_non_selected_row_group(&source_path);
+    write_selector_report_with_source_row_groups(&selector_path, &[0]);
+    write_spec(
+        &spec_path,
+        &source_path,
+        &selector_path,
+        &output_path,
+        &report_path,
+    );
+
+    let artifact = write_selected_source_slice_from_spec_file(&spec_path)
+        .expect("source slice uses selector row groups");
+
+    assert_eq!(artifact.source_rows, 4);
+    assert_eq!(artifact.source_row_groups, 2);
+    assert_eq!(artifact.projected_row_groups, 1);
+    assert_eq!(artifact.selected_rows, 2);
+    let (_, rows) = read_selected_rows(&artifact.output_parquet_path);
+    assert_eq!(
+        rows,
+        vec![
+            vec!["asset-a", "book", "payload-a-book"],
+            vec!["asset-a", "price_change", "payload-a-price"],
+        ]
+    );
+}
+
 fn write_selector_report(path: &std::path::Path) -> Vec<u8> {
     let selector_bytes = serde_json::to_vec_pretty(&FirstProofSelectorReport {
         schema_version: FIRST_PROOF_SELECTOR_SCHEMA_VERSION.to_string(),
@@ -143,6 +178,7 @@ fn write_selector_report(path: &std::path::Path) -> Vec<u8> {
         selected_assets: vec![SelectedFirstProofAsset {
             asset_id: "asset-a".to_string(),
             replay_rows: 2,
+            source_row_groups: vec![1],
         }],
         selected_asset_ids_hash: "selected-assets-hash".to_string(),
         excluded_event_asset_count: 0,
@@ -152,6 +188,37 @@ fn write_selector_report(path: &std::path::Path) -> Vec<u8> {
     .expect("selector json");
     std::fs::write(path, &selector_bytes).expect("write selector");
     selector_bytes
+}
+
+fn write_selector_report_with_source_row_groups(path: &std::path::Path, row_groups: &[u64]) {
+    let selector = serde_json::json!({
+        "schema_version": FIRST_PROOF_SELECTOR_SCHEMA_VERSION,
+        "selector_id": "selector-synthetic",
+        "status": "selected",
+        "selection": {
+            "required_event_families": ["book"],
+            "excluded_event_families": ["tick_size_change"],
+            "row_budget": 10,
+            "max_selected_assets": 1
+        },
+        "event_count_ledger_hash": "event-ledger-hash",
+        "total_assets": 2,
+        "eligible_assets": 1,
+        "selected_assets": [{
+            "asset_id": "asset-a",
+            "replay_rows": 2,
+            "source_row_groups": row_groups
+        }],
+        "selected_asset_ids_hash": "selected-assets-hash",
+        "excluded_event_asset_count": 0,
+        "excluded_event_row_count": 0,
+        "blocking_issues": []
+    });
+    std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&selector).expect("selector json"),
+    )
+    .expect("write selector");
 }
 
 fn write_spec(
@@ -211,6 +278,45 @@ fn write_source_parquet(path: &std::path::Path) {
                 "ignored-b2",
                 "ignored-a1",
                 "ignored-a2",
+            ])) as ArrayRef,
+        ],
+    )
+    .expect("record batch");
+    let file = File::create(path).expect("create source parquet");
+    let props = WriterProperties::builder()
+        .set_max_row_group_row_count(Some(2))
+        .build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("parquet writer");
+    writer.write(&batch).expect("write batch");
+    writer.close().expect("close parquet");
+}
+
+fn write_source_parquet_with_unscannable_non_selected_row_group(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("asset", DataType::Utf8, true),
+        Field::new("event_type", DataType::Utf8, false),
+        Field::new("payload", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec![
+                Some("asset-a"),
+                Some("asset-a"),
+                None,
+                Some("asset-b"),
+            ])) as ArrayRef,
+            Arc::new(StringArray::from(vec![
+                "book",
+                "price_change",
+                "book",
+                "price_change",
+            ])) as ArrayRef,
+            Arc::new(StringArray::from(vec![
+                "payload-a-book",
+                "payload-a-price",
+                "payload-null-book",
+                "payload-b-price",
             ])) as ArrayRef,
         ],
     )

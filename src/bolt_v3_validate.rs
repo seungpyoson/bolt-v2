@@ -57,7 +57,7 @@ use crate::bolt_v3_config::{
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
 use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 use crate::bolt_v3_providers::{
-    RESOLUTION_ORACLE_VENUE_KEY, ReferencePriceIdentifierKind,
+    RESOLUTION_ORACLE_VENUE_KEY, ReferencePriceIdentifierKind, chainlink_reference,
     reference_price_provider_identifier_is_configured, reference_price_provider_metadata,
 };
 
@@ -1440,7 +1440,7 @@ fn validate_root_owned_chainlink_feed_catalog(
     key: &str,
     client: &ClientBlock,
 ) -> Vec<String> {
-    if client.venue.as_str() != RESOLUTION_ORACLE_VENUE_KEY || client.data.is_none() {
+    if !uses_root_owned_chainlink_feed_catalog(client) || client.data.is_none() {
         return Vec::new();
     }
     let has_client_feed_bindings = client
@@ -1460,6 +1460,13 @@ fn validate_root_owned_chainlink_feed_catalog(
         ));
     }
     errors
+}
+
+fn uses_root_owned_chainlink_feed_catalog(client: &ClientBlock) -> bool {
+    matches!(
+        client.venue.as_str(),
+        RESOLUTION_ORACLE_VENUE_KEY | chainlink_reference::KEY
+    )
 }
 
 fn client_with_root_chainlink_feed_catalog(

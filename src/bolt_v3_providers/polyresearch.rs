@@ -607,7 +607,7 @@ fn require_matching_reference_param(
 
 #[derive(Debug, Deserialize)]
 struct PolyResearchPriceFrame {
-    r#type: String,
+    r#type: Option<String>,
     feed: Option<String>,
     timestamp: Option<u64>,
     data: Option<PolyResearchPriceData>,
@@ -629,7 +629,7 @@ pub(crate) fn polyresearch_reference_update_from_price_frame(
 ) -> Result<Option<ReferencePriceUpdate>, String> {
     let parsed = serde_json::from_str::<PolyResearchPriceFrame>(frame)
         .map_err(|error| format!("invalid PolyResearch price frame JSON: {error}"))?;
-    if parsed.r#type != POLYRESEARCH_PRICE_FEED_FRAME_TYPE {
+    if parsed.r#type.as_deref() != Some(POLYRESEARCH_PRICE_FEED_FRAME_TYPE) {
         return Ok(None);
     }
 
@@ -1365,6 +1365,27 @@ mod tests {
         assert_eq!(quote.ask(), Some(EXPECTED_ASK));
         assert_eq!(update.observed_ts_ms(), EXPECTED_OBSERVED_TS_MS);
         assert_eq!(update.received_ts_ms(), RECEIVED_TS_MS);
+    }
+
+    #[test]
+    fn untyped_control_frame_is_ignored() {
+        let subscription = PolyResearchReferenceSubscription {
+            asset: "BTC".to_string(),
+            source_id: "polyresearch_primary".to_string(),
+            symbol: "BTC/USD".to_string(),
+        };
+
+        let update = polyresearch_reference_update_from_price_frame(
+            &subscription,
+            r#"{"action":"pong"}"#,
+            1_774_672_589_123,
+        )
+        .expect("untyped PRR control frames should be ignored without parse errors");
+
+        assert!(
+            update.is_none(),
+            "untyped PRR control frames must not emit reference updates"
+        );
     }
 
     fn reference_price_subscribe_cmd(

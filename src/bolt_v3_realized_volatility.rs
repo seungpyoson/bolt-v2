@@ -308,22 +308,19 @@ impl RealizedVolEngine {
         }
         for state in self.sources.values() {
             let diagnostic = source_diagnostic(&self.config, state, as_of_ms);
-            match (
+            if let (true, RealizedVolSourceStatus::Ready, true, Some(value), _) = (
                 state.config.enabled,
                 diagnostic.status,
                 state.config.counts_toward_quorum,
                 diagnostic.annualized_realized_vol_decimal,
                 diagnostic.block_reason,
             ) {
-                (true, RealizedVolSourceStatus::Ready, true, Some(value), _) => {
-                    ready_values.push((
-                        diagnostic.source_id.clone(),
-                        diagnostic.source_class,
-                        diagnostic.sample_kind,
-                        value,
-                    ));
-                }
-                _ => {}
+                ready_values.push((
+                    diagnostic.source_id.clone(),
+                    diagnostic.source_class,
+                    diagnostic.sample_kind,
+                    value,
+                ));
             }
             diagnostics.push(diagnostic);
         }

@@ -2104,3 +2104,50 @@ Current conclusion:
   still requires durable accepted source proof, expanded coverage/cost/storage
   evidence, and dynamic tick-size replay proof or an accepted bounded-exclusion
   policy.
+
+## 2026-06-09 PMXT dynamic tick-size source-proof checkpoint
+
+Root cause addressed:
+
+- The PMXT one-off projection tests and
+  `source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json`
+  already recorded that dynamic tick-size replay is not proven through the
+  pinned NT `BacktestDataConfig` catalog path.
+- The pending PMXT `SourceProofReport` did not carry that exact limitation as
+  both a `forbidden_claims` entry and a structured `claim_limits` row.
+- That left the dynamic tick-size blocker visible in surrounding status
+  artifacts but weaker in the source-proof artifact that downstream gates read.
+
+Change:
+
+- Added the PMXT source-proof forbidden claim:
+  `No dynamic tick-size replay claim until NT-native instrument-epoch replay is
+  proven.`
+- Added the exact matching structured claim-limit row backed by
+  `source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json`.
+- Added a reference-fixture regression test that every one-off L2 source proof
+  must carry this dynamic tick-size replay exclusion as both prose and
+  structured claim-limit data.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_source_proof_reference_fixtures reference_fixtures_include_unselected_binary_option_source_proof -- --nocapture`
+  failed because the PMXT one-off L2 fixture did not forbid dynamic tick-size
+  replay claims.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_source_proof_reference_fixtures -- --nocapture`
+  passed 3 reference-fixture tests.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --lib source_proof::tests:: -- --nocapture`
+  passed 76 source-proof unit tests.
+
+Current conclusion:
+
+- This makes the dynamic tick-size limitation machine-visible at the
+  source-proof boundary before any downstream mapping/readiness/result contract
+  can overclaim it.
+- It does not close `BACKTESTING_ENGINE-022`: full PMXT/Polymarket L2
+  acceptance still needs either NT-native dynamic instrument-epoch replay proof
+  or an accepted bounded-exclusion policy plus durable source proof and
+  coverage/cost/storage evidence.

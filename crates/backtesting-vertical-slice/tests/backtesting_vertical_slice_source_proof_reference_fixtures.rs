@@ -151,6 +151,35 @@ fn assert_one_off_usage_scope_is_bounded(path: &PathBuf, report: &SourceProofRep
     );
 }
 
+fn assert_one_off_l2_blocks_dynamic_tick_size_replay(path: &PathBuf, report: &SourceProofReport) {
+    if report.usage_scope != SourceProofUsageScope::OneOffBackfillData
+        || report.fidelity_class != SourceProofFidelityClass::L2Replay
+    {
+        return;
+    }
+
+    assert!(
+        report.forbidden_claims.iter().any(|claim| {
+            let claim = claim.to_ascii_lowercase();
+            claim.contains("dynamic")
+                && claim.contains("tick")
+                && claim.contains("size")
+                && claim.contains("replay")
+        }),
+        "one-off L2 fixture report {path:?} must forbid dynamic tick-size replay claims"
+    );
+    assert!(
+        report.claim_limits.iter().any(|limit| {
+            let claim = limit.claim.to_ascii_lowercase();
+            claim.contains("dynamic")
+                && claim.contains("tick")
+                && claim.contains("size")
+                && claim.contains("replay")
+        }),
+        "one-off L2 fixture report {path:?} must bind the dynamic tick-size replay ban to a claim-limit record"
+    );
+}
+
 fn assert_nt_mapping_evidence_is_bounded(path: &PathBuf, report: &SourceProofReport) {
     match (report.table_family.as_str(), report.fidelity_class) {
         (_, SourceProofFidelityClass::L2Replay) => {
@@ -303,6 +332,7 @@ fn reference_fixtures_include_unselected_binary_option_source_proof() {
     for (path, value, report) in binary_option_reports {
         assert_unselected_official_free_candidate(path, report);
         assert_one_off_usage_scope_is_bounded(path, report);
+        assert_one_off_l2_blocks_dynamic_tick_size_replay(path, report);
         assert_sample_evidence_is_inspected(path, report);
         assert_nt_mapping_evidence_is_bounded(path, report);
         assert_no_heavy_payloads(path, value);

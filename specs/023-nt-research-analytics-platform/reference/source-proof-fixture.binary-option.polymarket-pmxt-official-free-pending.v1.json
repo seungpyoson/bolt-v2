@@ -42,6 +42,7 @@
     "No provider-selected production source claim until source proof, retention, coverage, storage, fidelity, and cost checks pass.",
     "No broad, canonical, or production PMXT backfill source claim from this one-off data.",
     "No broad BinaryOption instrument-universe claim beyond the selected one-off PMXT token whose GammaMarket metadata is source-backed.",
+    "No dynamic tick-size replay claim until NT-native instrument-epoch replay is proven.",
     "No execution-quality, queue-position, fillability, or sizing claims until gap policy, sequencing, and completeness are accepted."
   ],
   "claim_limits": [
@@ -75,6 +76,13 @@
     },
     {
       "id": "binary-option-pmxt-source-proof-claim-limit-005",
+      "severity": "blocking",
+      "claim": "No dynamic tick-size replay claim until NT-native instrument-epoch replay is proven.",
+      "reason": "Pinned NT live Polymarket handles tick-size changes as instrument epoch transitions, but the BacktestDataConfig catalog path has not proven timed InstrumentAny replay. The bounded first-proof path excludes tick-changing assets instead of overclaiming dynamic replay.",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json status=open_dynamic_instrument_epoch_replay_unproven"
+    },
+    {
+      "id": "binary-option-pmxt-source-proof-claim-limit-006",
       "severity": "blocking",
       "claim": "No execution-quality, queue-position, fillability, or sizing claims until gap policy, sequencing, and completeness are accepted.",
       "reason": "The sample proves event schema and hourly replay shape only; one-year coverage, gap thresholds, sequencing semantics, and replay completeness are not accepted.",

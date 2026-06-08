@@ -112,7 +112,7 @@
     }
   ],
   "first_proof_policy_status": {
-    "status": "first_proof_exclusion_policy_selected_tdd_unproven",
+    "status": "first_proof_exclusion_policy_selected_tdd_proven_for_generic_selector",
     "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json",
     "summary": "A bounded first PMXT Polymarket L2 proof may select an unaffected instrument universe with tick_size_change_rows == 0, book_rows > 0, price_change_rows > 0, last_trade_price_rows > 0, and a configured row budget. This is a TOML/source-proof-owned selector, not a venue or asset constant. It can prove catalog/read-back/BacktestNode plumbing only for the selected unaffected universe.",
     "claim_limits": [
@@ -120,6 +120,24 @@
       "Does not prove assets with tick_size_change rows.",
       "Does not prove full PMXT Polymarket L2 source acceptance.",
       "Does not authorize broad backfill."
+    ]
+  },
+  "bounded_first_proof_selector_status": {
+    "status": "tdd_proven_for_generic_event_count_selector",
+    "evidence": [
+      "RED just bte-test first_proof_selector_uses_configured_event_roles_without_asset_constants failed because the first-proof selector stub returned Blocked instead of Selected.",
+      "GREEN just bte-test first_proof_selector_uses_configured_event_roles_without_asset_constants passed after applying configured required/excluded event families, row budget, and deterministic replay_rows/asset_id ordering.",
+      "RED just bte-test first_proof_selector_writer_is_config_and_ledger_driven_and_idempotent failed with the explicit unimplemented writer error.",
+      "GREEN just bte-test first_proof_selector_writer_is_config_and_ledger_driven_and_idempotent passed after TOML spec parsing, JSON event-count ledger parsing, idempotent report writing, event_count_ledger_hash, and selected_asset_ids_hash support.",
+      "just bte-test first_proof_selector passed 2 focused selector tests.",
+      "just bte-fmt-check passed."
+    ],
+    "claim_limits": [
+      "Does not prove PMXT raw parquet row decoding.",
+      "Does not prove source-backed selected PMXT universe projection.",
+      "Does not bind selector output into BacktestResultContract claim limits yet.",
+      "Does not prove BacktestNode consumes a verified PMXT L2 catalog.",
+      "Does not authorize broad PMXT backfill."
     ]
   },
   "bounded_l2_manifest_mapping_status": {
@@ -157,7 +175,7 @@
   },
   "non_hardcoding_decision": "Bybit, Binance, Polymarket, Kalshi, and Hyperliquid remain source-binding examples. The next mapping work must be data-family driven: source schema plus registry binding plus NT data class, with no runtime venue or instrument constants in production code.",
   "next_required_evidence": [
-    "TDD proof that the configured first-proof selector computes per-asset PMXT event counts, excludes tick_size_change assets, applies a row budget, and records claim limits without venue or asset constants.",
+    "Bind the configured first-proof selector output into the bounded PMXT source proof/result contract claim limits without venue or asset constants.",
     "Machine-checked BTE crate proof that nautilus-polymarket parser/provider is reused for Polymarket instruments and token-id joins.",
     "TDD proof for the selected PMXT historical TradeId path because pinned NT's build_polymarket_trade_id helper is crate-private; either mirror the pinned format with provenance or expose it upstream before claiming direct NT helper reuse.",
     "Generic PMXT order-book projection contract from source event types to NT OrderBookDelta/TradeTick, including snapshot flags, side/action rules, timestamps, trade ids, and first-proof tick-size claim limits.",

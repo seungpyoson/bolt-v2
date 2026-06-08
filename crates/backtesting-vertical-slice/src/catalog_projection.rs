@@ -432,7 +432,7 @@ fn update_binary_option_hash(hasher: &mut Sha256, instrument: &BinaryOption) -> 
     update_hash_field(
         hasher,
         "instrument.asset_class",
-        &instrument.asset_class.to_string(),
+        instrument.asset_class.as_ref(),
     );
     update_hash_field(
         hasher,

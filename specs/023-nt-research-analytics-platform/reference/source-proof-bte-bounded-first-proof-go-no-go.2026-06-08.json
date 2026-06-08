@@ -107,7 +107,8 @@
   "generic_implementation_slice": [
     {
       "area": "source selector",
-      "required_shape": "TOML/source-proof-owned event-count selector over source event families and row budget; no venue, asset, or symbol constants in production code."
+      "required_shape": "TOML/source-proof-owned event-count selector over source event families and row budget; no venue, asset, or symbol constants in production code.",
+      "current_status": "TDD-proven for generic configured event-family roles, excluded-event assets, row-budget ordering, event-count ledger hash, selected_asset_ids_hash, and idempotent report writing; PMXT source-row projection, claim-limit/result-contract binding, and BacktestNode consumption remain pending."
     },
     {
       "area": "manifest data config",
@@ -156,7 +157,13 @@
     "RED just bte-test catalog_projection::tests::binary_option_l2_catalog_records_round_trip_through_nt_catalog failed because logical_catalog_hash rejected InstrumentAny::BinaryOption after NT catalog write/read succeeded.",
     "GREEN just bte-test catalog_projection::tests::binary_option_l2_catalog_records_round_trip_through_nt_catalog passed after logical_catalog_hash covered BinaryOption instruments and OrderBookDelta rows.",
     "just bte-test catalog_projection::tests:: passed 16 focused catalog projection tests.",
-    "just bte-fmt-check passed after catalog projection changes."
+    "just bte-fmt-check passed after catalog projection changes.",
+    "RED just bte-test first_proof_selector_uses_configured_event_roles_without_asset_constants failed because the new first-proof selector stub returned Blocked instead of Selected.",
+    "GREEN just bte-test first_proof_selector_uses_configured_event_roles_without_asset_constants passed after the selector applied configured required/excluded event families, row budget, and deterministic replay_rows/asset_id ordering.",
+    "RED just bte-test first_proof_selector_writer_is_config_and_ledger_driven_and_idempotent failed with the explicit unimplemented writer error.",
+    "GREEN just bte-test first_proof_selector_writer_is_config_and_ledger_driven_and_idempotent passed after TOML spec parsing, JSON event-count ledger parsing, idempotent report writing, event_count_ledger_hash, and selected_asset_ids_hash support.",
+    "just bte-test first_proof_selector passed 2 focused selector tests.",
+    "just bte-fmt-check passed after first-proof selector changes."
   ],
   "still_blocking_broad_backfill": [
     "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven.",

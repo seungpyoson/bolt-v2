@@ -34,6 +34,7 @@ pub mod backfill_source_proof_scope;
 pub mod canonical_trades;
 pub mod catalog_projection;
 pub mod conversion_boundary;
+pub mod first_proof_selector;
 pub mod nt_catalog_proof;
 pub mod nt_dependency_proof;
 pub mod operator;

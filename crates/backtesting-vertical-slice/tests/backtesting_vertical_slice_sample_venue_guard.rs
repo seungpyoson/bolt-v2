@@ -10,14 +10,17 @@ fn production_rust_does_not_hardcode_sample_venue_or_instrument() {
         let lower = production.to_ascii_lowercase();
         for needle in [
             "bybit",
+            "binance",
             "bnbusdc",
+            "pmxt",
+            "polymarket",
             "public_archive",
             "upbit",
             "bithumb",
             "korbit",
             "coinone",
         ] {
-            if lower.contains(needle) {
+            if lower.contains(needle) && !needle_allowed_in_production_path(needle, &path, &src) {
                 failures.push(format!("{} contains {needle:?}", path.display()));
             }
         }
@@ -25,7 +28,7 @@ fn production_rust_does_not_hardcode_sample_venue_or_instrument() {
 
     assert!(
         failures.is_empty(),
-        "sample venue/instrument values must stay in TOML reference fixtures or tests, not production Rust:\n{}",
+        "sample venue/instrument values must stay in TOML reference fixtures, tests, or explicit one-off proof modules, not generic production Rust:\n{}",
         failures.join("\n")
     );
 }
@@ -58,6 +61,23 @@ fn production_region(content: &str) -> &str {
         .split("\n#[cfg(test)]\nmod tests")
         .next()
         .unwrap_or(content)
+}
+
+fn needle_allowed_in_production_path(needle: &str, path: &Path, src: &Path) -> bool {
+    if !matches!(needle, "pmxt" | "polymarket") {
+        return false;
+    }
+
+    let relative = path.strip_prefix(src).expect("source-relative path");
+    matches!(
+        relative.to_str().expect("UTF-8 source path"),
+        "lib.rs"
+            | "pmxt_one_off_backfill_projection.rs"
+            | "polymarket_metadata_gate.rs"
+            | "polymarket_nt_surface_proof.rs"
+            | "bin/pmxt_one_off_l2_artifact_root_run.rs"
+            | "bin/polymarket_metadata_gate.rs"
+    )
 }
 
 fn rust_files(root: &Path) -> Vec<std::path::PathBuf> {

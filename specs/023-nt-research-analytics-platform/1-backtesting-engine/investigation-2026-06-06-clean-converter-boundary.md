@@ -1811,3 +1811,46 @@ Current conclusion:
   durable source-proof acceptance, expanded coverage/cost/storage proof, and
   NT-native dynamic tick-size epoch replay or an accepted bounded-exclusion
   policy.
+
+## 2026-06-09 generic hardcode guard checkpoint
+
+Prompt requirement addressed:
+
+- `/Users/spson/Downloads/New Folder With Items/prompts/backtesting.md`
+  requires no hardcoded runtime IDs, paths, quantities, venues, instruments, or
+  hashes.
+- The existing sample-venue guard blocked Bybit/BNBUSDC/Korean sample values in
+  production Rust, but did not encode the newer rule that Binance is also a
+  sample and that PMXT/Polymarket names must remain isolated to explicit
+  one-off proof or NT-Polymarket proof modules.
+
+Change:
+
+- `backtesting_vertical_slice_sample_venue_guard` now bans `binance`,
+  `bybit`, `bnbusdc`, Korean venue sample names, and `public_archive` from all
+  production Rust.
+- `pmxt` and `polymarket` are allowed only in the explicit PMXT one-off
+  projection, Polymarket metadata/surface proof modules, their CLI wrappers, and
+  `lib.rs` module declarations. Generic backfill/readiness/catalog/run code may
+  not gain PMXT or Polymarket-specific branches.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_sample_venue_guard production_rust_does_not_hardcode_sample_venue_or_instrument`
+  failed after adding `binance`, `pmxt`, and `polymarket` to the guard because
+  PMXT/Polymarket appear in the intended one-off/proof modules.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_sample_venue_guard`
+  passed 2 tests after adding the explicit PMXT/Polymarket proof-module
+  allowlist.
+
+Current conclusion:
+
+- Bybit, Binance, and BNBUSDC are enforced as sample/config/reference values,
+  not generic production-code constants.
+- PMXT remains a one-off backfill proof path, not a reusable canonical source
+  abstraction.
+- This guard does not close `BACKTESTING_ENGINE-022`; it prevents future drift
+  while source-proof acceptance, coverage/cost/storage, and dynamic tick-size
+  replay remain unresolved.

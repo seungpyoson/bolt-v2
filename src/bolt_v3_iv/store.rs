@@ -324,18 +324,21 @@ impl IvStore {
         raw_event: &IvRawEvent,
         payload: &IvOptionChainSlicePayload,
     ) -> Result<(), IvStoreError> {
-        self.index_option_chain_side(
+        let indexed_calls = self.index_option_chain_side(
             raw_event,
             payload,
             OPTION_CHAIN_CALL_SIDE_LABEL,
             &payload.calls,
         )?;
-        self.index_option_chain_side(
+        let indexed_puts = self.index_option_chain_side(
             raw_event,
             payload,
             OPTION_CHAIN_PUT_SIDE_LABEL,
             &payload.puts,
         )?;
+        if !indexed_calls && !indexed_puts {
+            return Err(IvStoreError::MissingIvBasis);
+        }
         Ok(())
     }
 
@@ -345,7 +348,7 @@ impl IvStore {
         payload: &IvOptionChainSlicePayload,
         side: &str,
         strikes: &[IvOptionChainStrikePayload],
-    ) -> Result<(), IvStoreError> {
+    ) -> Result<bool, IvStoreError> {
         let mut points_by_basis = BTreeMap::<IvBasis, Vec<IvSmilePoint>>::new();
         for strike in strikes {
             let Some(greeks) = &strike.greeks else {
@@ -365,6 +368,7 @@ impl IvStore {
             }
         }
 
+        let indexed_side = !points_by_basis.is_empty();
         for (basis, mut points_by_strike) in points_by_basis {
             points_by_strike.sort_by(|left, right| left.strike.total_cmp(&right.strike));
             self.smiles.push(IvSmile {
@@ -381,7 +385,7 @@ impl IvStore {
             });
         }
 
-        Ok(())
+        Ok(indexed_side)
     }
 
     fn index_aggregate_greeks(

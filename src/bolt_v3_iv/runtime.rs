@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,6 +61,11 @@ pub struct IvRuntimePlanOutcome {
 
 #[derive(Debug, Clone)]
 pub struct IvRuntimeEngine {
+    inner: Arc<RwLock<IvRuntimeEngineState>>,
+}
+
+#[derive(Debug)]
+struct IvRuntimeEngineState {
     profile_states: BTreeMap<String, IvQueryStateHandle>,
     retention_policies: BTreeMap<String, IvRetentionPolicy>,
     profile_sources: BTreeMap<String, BTreeMap<String, IvRuntimeSourceConfig>>,
@@ -115,10 +123,24 @@ impl IvRuntimeEngine {
         }
 
         Ok(Self {
-            profile_states,
-            retention_policies,
-            profile_sources,
+            inner: Arc::new(RwLock::new(IvRuntimeEngineState {
+                profile_states,
+                retention_policies,
+                profile_sources,
+            })),
         })
+    }
+
+    fn read_inner(&self) -> RwLockReadGuard<'_, IvRuntimeEngineState> {
+        self.inner
+            .read()
+            .expect("IV runtime engine state lock must not be poisoned")
+    }
+
+    fn write_inner(&self) -> RwLockWriteGuard<'_, IvRuntimeEngineState> {
+        self.inner
+            .write()
+            .expect("IV runtime engine state lock must not be poisoned")
     }
 
     pub fn apply_iv_root_reload(
@@ -134,10 +156,11 @@ impl IvRuntimeEngine {
             }
         }
 
-        let previous_profile_sources = self.profile_sources.clone();
+        let mut inner = self.write_inner();
+        let previous_profile_sources = inner.profile_sources.clone();
         for profile in &root.profiles {
             let next_sources = runtime_sources_from_profile(profile);
-            if let Some(state) = self.profile_states.get(&profile.profile_id) {
+            if let Some(state) = inner.profile_states.get(&profile.profile_id) {
                 if let Some(previous_sources) = previous_profile_sources.get(&profile.profile_id) {
                     state.mark_sources_removed(
                         &profile.profile_id,
@@ -154,17 +177,18 @@ impl IvRuntimeEngine {
                     profile,
                 ));
             } else {
-                self.profile_states.insert(
+                inner.profile_states.insert(
                     profile.profile_id.clone(),
                     IvQueryStateHandle::new(query_state_from_profile(profile)),
                 );
             }
 
-            self.retention_policies.insert(
+            inner.retention_policies.insert(
                 profile.profile_id.clone(),
                 retention_policy_from_profile(profile),
             );
-            self.profile_sources
+            inner
+                .profile_sources
                 .insert(profile.profile_id.clone(), next_sources);
         }
 
@@ -172,7 +196,7 @@ impl IvRuntimeEngine {
             if next_profile_ids.contains(profile_id) {
                 continue;
             }
-            if let Some(state) = self.profile_states.get(profile_id) {
+            if let Some(state) = inner.profile_states.get(profile_id) {
                 state.mark_sources_removed(
                     profile_id,
                     &source_generations_from_runtime_sources(previous_sources),
@@ -181,23 +205,25 @@ impl IvRuntimeEngine {
             }
         }
 
-        self.retention_policies
+        inner
+            .retention_policies
             .retain(|profile_id, _| next_profile_ids.contains(profile_id));
-        self.profile_sources
+        inner
+            .profile_sources
             .retain(|profile_id, _| next_profile_ids.contains(profile_id));
-        self.profile_states
+        inner
+            .profile_states
             .retain(|profile_id, _| next_profile_ids.contains(profile_id));
 
         Ok(())
     }
 
     pub fn state_for_profile(&self, profile_id: &str) -> Option<IvQueryStateHandle> {
-        self.profile_states.get(profile_id).cloned()
+        self.read_inner().profile_states.get(profile_id).cloned()
     }
 
     pub fn source_health(&self, profile_id: &str, source_id: &str) -> Option<IvSourceHealth> {
-        self.profile_states
-            .get(profile_id)
+        self.state_for_profile(profile_id)
             .and_then(|state| state.source_health_for(profile_id, source_id))
     }
 
@@ -206,7 +232,8 @@ impl IvRuntimeEngine {
         profile_id: &str,
         source_id: &str,
     ) -> Option<IvSourceNtProvenance> {
-        self.profile_sources
+        self.read_inner()
+            .profile_sources
             .get(profile_id)
             .and_then(|sources| sources.get(source_id))
             .map(|source| source.nt_provenance.clone())
@@ -219,7 +246,7 @@ impl IvRuntimeEngine {
         option_greeks: &nautilus_model::data::OptionGreeks,
         received_ts_ns: UnixNanos,
     ) -> Result<IvRawEvent, IvRuntimeEngineError> {
-        let source = self.runtime_source_config(profile_id, source_id)?;
+        let source = &self.runtime_source_config(profile_id, source_id)?;
         let ts_event_ns = UnixNanos::new(option_greeks.ts_event.as_u64());
         if source.source_kind != IvSourceKind::OptionGreeks
             || !source.selector_matches_option_greeks(&option_greeks.instrument_id.to_string())
@@ -280,7 +307,7 @@ impl IvRuntimeEngine {
         option_chain: &nautilus_model::data::OptionChainSlice,
         received_ts_ns: UnixNanos,
     ) -> Result<IvRawEvent, IvRuntimeEngineError> {
-        let source = self.runtime_source_config(profile_id, source_id)?;
+        let source = &self.runtime_source_config(profile_id, source_id)?;
         let ts_event_ns = UnixNanos::new(option_chain.ts_event.as_u64());
         if source.source_kind != IvSourceKind::OptionChain
             || !source.selector_matches_option_chain(&option_chain.series_id.to_string())
@@ -342,7 +369,7 @@ impl IvRuntimeEngine {
         custom_data: &CustomData,
         received_ts_ns: UnixNanos,
     ) -> Result<IvRawEvent, IvRuntimeEngineError> {
-        let source = self.runtime_source_config(profile_id, source_id)?;
+        let source = &self.runtime_source_config(profile_id, source_id)?;
         let ts_event_ns = UnixNanos::new(custom_data.data.ts_event().as_u64());
         let IvSelector::SourceAggregateGreeks {
             aggregate_key,
@@ -478,7 +505,7 @@ impl IvRuntimeEngine {
         custom_data: &CustomData,
         received_ts_ns: UnixNanos,
     ) -> Result<IvRawEvent, IvRuntimeEngineError> {
-        let source = self.runtime_source_config(profile_id, source_id)?;
+        let source = &self.runtime_source_config(profile_id, source_id)?;
         let ts_event_ns = UnixNanos::new(custom_data.data.ts_event().as_u64());
         let IvSelector::SourceCustomImpliedVolatility {
             custom_iv_data_type,
@@ -561,7 +588,7 @@ impl IvRuntimeEngine {
 
     pub fn ingest_event(&self, event: IvIngestEvent) -> Result<IvRawEvent, IvRuntimeEngineError> {
         let profile_id = event.profile_id.clone();
-        let state = self.profile_states.get(&profile_id).ok_or_else(|| {
+        let state = self.state_for_profile(&profile_id).ok_or_else(|| {
             IvRuntimeEngineError::UnknownProfileId {
                 profile_id: profile_id.clone(),
             }
@@ -569,8 +596,13 @@ impl IvRuntimeEngine {
         self.validate_ingest_event(&event)?;
         let event_for_error = event.clone();
         let ingest_result = state.ingest_event(event);
-        if let Some(policy) = self.retention_policies.get(&profile_id) {
-            state.enforce_retention(policy);
+        let retention_policy = self
+            .read_inner()
+            .retention_policies
+            .get(&profile_id)
+            .copied();
+        if let Some(policy) = retention_policy {
+            state.enforce_retention(&policy);
         }
         match ingest_result {
             Ok(raw_event) => Ok(raw_event),
@@ -585,12 +617,16 @@ impl IvRuntimeEngine {
     }
 
     fn validate_ingest_event(&self, event: &IvIngestEvent) -> Result<(), IvRuntimeEngineError> {
-        let Some(profile_sources) = self.profile_sources.get(&event.profile_id) else {
-            return Err(IvRuntimeEngineError::UnknownProfileId {
-                profile_id: event.profile_id.clone(),
-            });
+        let source = {
+            let inner = self.read_inner();
+            let Some(profile_sources) = inner.profile_sources.get(&event.profile_id) else {
+                return Err(IvRuntimeEngineError::UnknownProfileId {
+                    profile_id: event.profile_id.clone(),
+                });
+            };
+            profile_sources.get(&event.source_id).cloned()
         };
-        let Some(source) = profile_sources.get(&event.source_id) else {
+        let Some(source) = source else {
             return Err(self.reject_ingest_event(
                 event,
                 event.subscription_generation,
@@ -629,19 +665,20 @@ impl IvRuntimeEngine {
         &self,
         profile_id: &str,
         source_id: &str,
-    ) -> Result<&IvRuntimeSourceConfig, IvRuntimeEngineError> {
-        let profile_sources = self.profile_sources.get(profile_id).ok_or_else(|| {
+    ) -> Result<IvRuntimeSourceConfig, IvRuntimeEngineError> {
+        let inner = self.read_inner();
+        let profile_sources = inner.profile_sources.get(profile_id).ok_or_else(|| {
             IvRuntimeEngineError::UnknownProfileId {
                 profile_id: profile_id.to_string(),
             }
         })?;
-        profile_sources
-            .get(source_id)
-            .ok_or_else(|| IvRuntimeEngineError::IngestRejected {
+        profile_sources.get(source_id).cloned().ok_or_else(|| {
+            IvRuntimeEngineError::IngestRejected {
                 profile_id: profile_id.to_string(),
                 source_id: source_id.to_string(),
                 reason: IvRejectReason::SourceNotConfigured,
-            })
+            }
+        })
     }
 
     fn reject_ingest_event(
@@ -651,7 +688,7 @@ impl IvRuntimeEngine {
         reason: IvRejectReason,
         mark_rejected: bool,
     ) -> IvRuntimeEngineError {
-        if let Some(state) = self.profile_states.get(&event.profile_id) {
+        if let Some(state) = self.state_for_profile(&event.profile_id) {
             state.record_source_rejection(
                 event.profile_id.clone(),
                 event.source_id.clone(),
@@ -677,7 +714,7 @@ impl IvRuntimeEngine {
         reason: IvRejectReason,
         mark_rejected: bool,
     ) -> IvRuntimeEngineError {
-        if let Some(state) = self.profile_states.get(profile_id) {
+        if let Some(state) = self.state_for_profile(profile_id) {
             state.record_source_rejection(
                 profile_id.to_string(),
                 source_id.to_string(),
@@ -699,15 +736,26 @@ impl IvRuntimeEngine {
         outcomes: &[IvRuntimePlanOutcome],
     ) -> Result<(), IvRuntimeEngineError> {
         for outcome in outcomes {
-            let state = self
-                .profile_states
-                .get(&outcome.plan.profile_id)
-                .ok_or_else(|| IvRuntimeEngineError::UnknownProfileId {
-                    profile_id: outcome.plan.profile_id.clone(),
-                })?;
+            let (state, retention_policy) = {
+                let inner = self.read_inner();
+                let state = inner
+                    .profile_states
+                    .get(&outcome.plan.profile_id)
+                    .cloned()
+                    .ok_or_else(|| IvRuntimeEngineError::UnknownProfileId {
+                        profile_id: outcome.plan.profile_id.clone(),
+                    })?;
+                (
+                    state,
+                    inner
+                        .retention_policies
+                        .get(&outcome.plan.profile_id)
+                        .copied(),
+                )
+            };
             state.upsert_source_health(outcome.source_health.clone());
-            if let Some(policy) = self.retention_policies.get(&outcome.plan.profile_id) {
-                state.enforce_retention(policy);
+            if let Some(policy) = retention_policy {
+                state.enforce_retention(&policy);
             }
         }
 

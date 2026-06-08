@@ -648,6 +648,48 @@ fn runtime_nt_option_greeks_rejects_missing_iv_basis() {
 }
 
 #[test]
+fn runtime_nt_option_chain_rejects_missing_iv_basis() {
+    let mut parsed = live_event_router_root_config();
+    parsed.iv.as_mut().unwrap().profiles[0].sources[1].accepted_conventions =
+        BTreeSet::from(["BlackScholes".to_string()]);
+    let engine = IvRuntimeEngine::from_iv_root(parsed.iv.as_ref().unwrap()).unwrap();
+    let mut chain = configured_nt_option_chain_slice();
+    for strike in chain.calls.values_mut() {
+        let greeks = strike
+            .greeks
+            .as_mut()
+            .expect("configured option-chain strike should include greeks");
+        greeks.mark_iv = None;
+        greeks.bid_iv = None;
+        greeks.ask_iv = None;
+    }
+
+    let error = engine
+        .ingest_nt_option_chain_slice(
+            "configured-profile",
+            "configured-chain-source",
+            &chain,
+            UnixNanos::new(2_100),
+        )
+        .expect_err("option-chain events without mark/bid/ask IV must reject typed indexing");
+
+    assert!(matches!(
+        error,
+        IvRuntimeEngineError::IngestRejected {
+            reason: IvRejectReason::MissingIvBasis,
+            ..
+        }
+    ));
+    let health = engine
+        .source_health("configured-profile", "configured-chain-source")
+        .expect("missing-basis rejection should be recorded in source health");
+    assert_eq!(
+        health.last_reject_reason,
+        Some(IvRejectReason::MissingIvBasis)
+    );
+}
+
+#[test]
 fn live_iv_event_bindings_route_nt_option_chain_into_strategy_handle() {
     let parsed = live_event_router_root_config();
     let engine = IvRuntimeEngine::from_iv_root(parsed.iv.as_ref().unwrap()).unwrap();

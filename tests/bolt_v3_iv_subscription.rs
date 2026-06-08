@@ -837,6 +837,33 @@ fn runtime_engine_reload_updates_configured_source_generations() {
 }
 
 #[test]
+fn runtime_engine_clones_observe_reloaded_source_generations_for_live_handlers() {
+    let current = configured_runtime_config();
+    let mut next = current.clone();
+    next.profiles[0].sources[0].subscription_generation = 8;
+    let mut engine = IvRuntimeEngine::from_iv_root(&current).unwrap();
+    let handler_runtime = engine.clone();
+
+    engine.apply_iv_root_reload(&next).unwrap();
+
+    let stale_error = handler_runtime
+        .ingest_event(greeks_ingest_event("greeks-source", 7))
+        .expect_err("live handler runtime clone must reject the pre-reload generation");
+    assert_eq!(
+        stale_error,
+        IvRuntimeEngineError::IngestRejected {
+            profile_id: "iv-profile".to_string(),
+            source_id: "greeks-source".to_string(),
+            reason: IvRejectReason::StaleData,
+        }
+    );
+
+    handler_runtime
+        .ingest_event(greeks_ingest_event("greeks-source", 8))
+        .expect("live handler runtime clone must accept the reloaded generation");
+}
+
+#[test]
 fn runtime_engine_reload_invalidates_existing_handles_for_old_source_health() {
     let current = configured_runtime_config();
     let mut next = current.clone();

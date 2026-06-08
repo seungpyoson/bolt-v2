@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{fs, path::Path};
 
 #[test]
 fn iv_source_fence_entrypoint_is_wired_to_the_iv_module_boundary() {
@@ -88,6 +88,38 @@ fn source_fence_accepts_current_iv_core_files_without_runtime_hardcodes() {
     }
 }
 
+#[test]
+fn source_fence_rejects_forbidden_iv_bypass_in_strategy_tree() {
+    let temp = tempfile::tempdir().unwrap();
+    let strategy_dir = temp.path().join("src/strategies/configured_strategy");
+    fs::create_dir_all(&strategy_dir).unwrap();
+    fs::write(
+        strategy_dir.join("mod.rs"),
+        "use crate::bolt_v3_iv::raw_access::read_raw_event;\n",
+    )
+    .unwrap();
+
+    let violations = iv_strategy_tree_source_fence_violations(&temp.path().join("src/strategies"));
+
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("raw IV payload bypass")),
+        "expected fake strategy tree to reject raw IV bypass, got {violations:?}"
+    );
+}
+
+#[test]
+fn source_fence_accepts_current_strategy_tree_without_iv_bypasses() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let violations = iv_strategy_tree_source_fence_violations(&manifest_dir.join("src/strategies"));
+
+    assert!(
+        violations.is_empty(),
+        "current strategy tree had IV source-fence violations: {violations:?}"
+    );
+}
+
 fn assert_strategy_source_fence_rejects(source: &str, expected_reason: &str) {
     let violations = iv_strategy_source_fence_violations(source);
     assert!(
@@ -145,6 +177,32 @@ fn iv_strategy_source_fence_violations(_source: &str) -> Vec<String> {
     }
 
     violations
+}
+
+fn iv_strategy_tree_source_fence_violations(strategy_root: &Path) -> Vec<String> {
+    let mut violations = Vec::new();
+    collect_strategy_source_fence_violations(strategy_root, &mut violations);
+    violations
+}
+
+fn collect_strategy_source_fence_violations(path: &Path, violations: &mut Vec<String>) {
+    for entry in fs::read_dir(path).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_strategy_source_fence_violations(&path, violations);
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+
+        let source = fs::read_to_string(&path).unwrap();
+        violations.extend(
+            iv_strategy_source_fence_violations(&source)
+                .into_iter()
+                .map(|violation| format!("{}: {violation}", path.display())),
+        );
+    }
 }
 
 fn iv_core_source_fence_violations(source: &str) -> Vec<String> {

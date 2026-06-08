@@ -127,7 +127,7 @@ struct BoltV3LiveNodeAdapterBundle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoltV3StrategyFreeReferenceCacheEvidence {
+pub struct BoltV3StrategyFreeDataClientReadinessCacheEvidence {
     cached_instrument_ids: Vec<String>,
 }
 
@@ -136,7 +136,7 @@ mod strategy_free_probe {
     use super::*;
 
     #[derive(Debug, Clone, PartialEq)]
-    pub struct BoltV3StrategyFreeReferenceQuote {
+    pub struct BoltV3StrategyFreeDataClientReadinessQuote {
         pub data_client_id: String,
         pub instrument_id: String,
         pub bid_price: f64,
@@ -162,7 +162,7 @@ mod strategy_free_probe {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(super) struct StrategyFreeReferenceQuoteSubscription {
+    pub(super) struct StrategyFreeDataClientReadinessQuoteSubscription {
         pub(super) data_client_id: ClientId,
         pub(super) instrument_id: InstrumentId,
     }
@@ -194,8 +194,8 @@ mod strategy_free_probe {
     }
 
     #[derive(Debug, Clone)]
-    pub(super) struct BoltV3StrategyFreeReferenceQuoteProbeHandle {
-        pub(super) required: Rc<RefCell<Vec<StrategyFreeReferenceQuoteSubscription>>>,
+    pub(super) struct BoltV3StrategyFreeDataClientReadinessProbeHandle {
+        pub(super) required: Rc<RefCell<Vec<StrategyFreeDataClientReadinessQuoteSubscription>>>,
         pub(super) ambiguous_instrument_ids: Rc<RefCell<BTreeSet<String>>>,
         pub(super) market_data_kind: DataClientReadinessProbeMarketDataKind,
         pub(super) metadata_response_data_client_id: Option<ClientId>,
@@ -204,7 +204,7 @@ mod strategy_free_probe {
         pub(super) min_observed_targets: Option<usize>,
         pub(super) quote_targets_initialized: Rc<Cell<bool>>,
         pub(super) failure_reason: Rc<RefCell<Option<String>>>,
-        pub(super) quotes: Rc<RefCell<Vec<BoltV3StrategyFreeReferenceQuote>>>,
+        pub(super) quotes: Rc<RefCell<Vec<BoltV3StrategyFreeDataClientReadinessQuote>>>,
         pub(super) book_deltas: Rc<RefCell<Vec<BoltV3StrategyFreeBookDeltas>>>,
         pub(super) quote_notify: Rc<tokio::sync::Notify>,
         /// Present only for a trade chunk-count probe (`market_data_kind = "trade"`
@@ -213,9 +213,9 @@ mod strategy_free_probe {
         chunk_walk: Option<Rc<ChunkCountWalk>>,
     }
 
-    impl BoltV3StrategyFreeReferenceQuoteProbeHandle {
+    impl BoltV3StrategyFreeDataClientReadinessProbeHandle {
         pub(super) fn from_plan(
-            required: Vec<StrategyFreeReferenceQuoteSubscription>,
+            required: Vec<StrategyFreeDataClientReadinessQuoteSubscription>,
             ambiguous_instrument_ids: BTreeSet<String>,
             market_data_kind: DataClientReadinessProbeMarketDataKind,
             min_observed_targets: Option<usize>,
@@ -322,17 +322,19 @@ mod strategy_free_probe {
         /// the universe is exhausted.
         pub(super) fn chunk_count_next_chunk(
             &self,
-        ) -> Option<Vec<StrategyFreeReferenceQuoteSubscription>> {
+        ) -> Option<Vec<StrategyFreeDataClientReadinessQuoteSubscription>> {
             let walk = self.chunk_walk.as_ref()?;
             let cursor = walk.cursor.get();
             let chunk = walk.chunks.borrow().get(cursor).cloned()?;
             walk.cursor.set(cursor + 1);
-            let subscriptions: Vec<StrategyFreeReferenceQuoteSubscription> = chunk
+            let subscriptions: Vec<StrategyFreeDataClientReadinessQuoteSubscription> = chunk
                 .into_iter()
-                .map(|instrument_id| StrategyFreeReferenceQuoteSubscription {
-                    data_client_id: walk.data_client_id,
-                    instrument_id,
-                })
+                .map(
+                    |instrument_id| StrategyFreeDataClientReadinessQuoteSubscription {
+                        data_client_id: walk.data_client_id,
+                        instrument_id,
+                    },
+                )
                 .collect();
             *self.required.borrow_mut() = subscriptions.clone();
             Some(subscriptions)
@@ -342,7 +344,7 @@ mod strategy_free_probe {
         /// before advancing to the next chunk.
         pub(super) fn chunk_count_current_chunk(
             &self,
-        ) -> Vec<StrategyFreeReferenceQuoteSubscription> {
+        ) -> Vec<StrategyFreeDataClientReadinessQuoteSubscription> {
             self.required.borrow().clone()
         }
 
@@ -452,7 +454,7 @@ mod strategy_free_probe {
         pub(super) fn install_metadata_response_instrument_ids(
             &self,
             mut instrument_ids: Vec<InstrumentId>,
-        ) -> Vec<StrategyFreeReferenceQuoteSubscription> {
+        ) -> Vec<StrategyFreeDataClientReadinessQuoteSubscription> {
             let Some(data_client_id) = self.metadata_response_data_client_id else {
                 return Vec::new();
             };
@@ -481,10 +483,12 @@ mod strategy_free_probe {
             }
             let subscriptions = instrument_ids
                 .into_iter()
-                .map(|instrument_id| StrategyFreeReferenceQuoteSubscription {
-                    data_client_id,
-                    instrument_id,
-                })
+                .map(
+                    |instrument_id| StrategyFreeDataClientReadinessQuoteSubscription {
+                        data_client_id,
+                        instrument_id,
+                    },
+                )
                 .collect();
             let (required, ambiguous_instrument_ids) =
                 dedupe_strategy_free_reference_quote_subscriptions(subscriptions);
@@ -588,7 +592,7 @@ mod strategy_free_probe {
     }
 
     fn observed_required_book_delta_count(
-        required: &[StrategyFreeReferenceQuoteSubscription],
+        required: &[StrategyFreeDataClientReadinessQuoteSubscription],
         book_deltas: &[BoltV3StrategyFreeBookDeltas],
     ) -> usize {
         let mut observed = BTreeSet::new();
@@ -607,8 +611,8 @@ mod strategy_free_probe {
     }
 
     fn observed_required_quote_count(
-        required: &[StrategyFreeReferenceQuoteSubscription],
-        quotes: &[BoltV3StrategyFreeReferenceQuote],
+        required: &[StrategyFreeDataClientReadinessQuoteSubscription],
+        quotes: &[BoltV3StrategyFreeDataClientReadinessQuote],
     ) -> usize {
         let mut observed = BTreeSet::new();
         for required in required {
@@ -630,46 +634,46 @@ mod strategy_free_probe {
         client_key: &str,
     ) -> Result<
         (
-            Vec<StrategyFreeReferenceQuoteSubscription>,
+            Vec<StrategyFreeDataClientReadinessQuoteSubscription>,
             BTreeSet<String>,
         ),
         BoltV3LiveNodeError,
     > {
         let client = loaded.root.clients.get(client_key).ok_or_else(|| {
-            BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(anyhow::anyhow!(
+            BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(anyhow::anyhow!(
                 "data-client readiness quote probe client_key is not configured"
             ))
         })?;
         if client.data.is_none() {
-            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
+            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
                 anyhow::anyhow!(
                     "data-client readiness quote probe requires the selected client to declare [data]"
                 ),
             ));
         }
         let readiness_probe = client.readiness_probe.as_ref().ok_or_else(|| {
-        BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(anyhow::anyhow!(
+        BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(anyhow::anyhow!(
             "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
         ))
     })?;
         if readiness_probe.quote_target_source
             != DataClientReadinessProbeQuoteTargetSource::Configured
         {
-            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
+            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
                 anyhow::anyhow!(
                     "standalone data-client readiness quote probe requires quote_target_source = \"configured\"; metadata_response requires the combined data-client readiness probe"
                 ),
             ));
         }
         let Some(quote_targets) = &readiness_probe.quote_targets else {
-            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
+            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
                 anyhow::anyhow!(
                     "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
                 ),
             ));
         };
         if quote_targets.is_empty() {
-            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
+            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
                 anyhow::anyhow!(
                     "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
                 ),
@@ -677,7 +681,7 @@ mod strategy_free_probe {
         }
         let subscriptions = quote_targets
             .values()
-            .map(|target| StrategyFreeReferenceQuoteSubscription {
+            .map(|target| StrategyFreeDataClientReadinessQuoteSubscription {
                 data_client_id: ClientId::from(client_key),
                 instrument_id: target.instrument_id,
             })
@@ -700,7 +704,7 @@ mod strategy_free_probe {
         readiness_probe: &DataClientReadinessProbeBlock,
     ) -> Result<Option<usize>, BoltV3LiveNodeError> {
         match readiness_probe.min_observed_targets {
-            Some(0) => Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
+            Some(0) => Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
                 anyhow::anyhow!(
                     "clients.<id>.readiness_probe.min_observed_targets must be a positive integer when configured"
                 ),
@@ -712,21 +716,21 @@ mod strategy_free_probe {
     pub(super) fn strategy_free_data_client_readiness_quote_probe_handle(
         loaded: &LoadedBoltV3Config,
         client_key: &str,
-    ) -> Result<BoltV3StrategyFreeReferenceQuoteProbeHandle, BoltV3LiveNodeError> {
+    ) -> Result<BoltV3StrategyFreeDataClientReadinessProbeHandle, BoltV3LiveNodeError> {
         let client = loaded.root.clients.get(client_key).ok_or_else(|| {
-            BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(anyhow::anyhow!(
+            BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(anyhow::anyhow!(
                 "data-client readiness probe client_key is not configured"
             ))
         })?;
         if client.data.is_none() {
-            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
+            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
                 anyhow::anyhow!(
                     "data-client readiness probe requires the selected client to declare [data]"
                 ),
             ));
         }
         let Some(readiness_probe) = &client.readiness_probe else {
-            return Ok(BoltV3StrategyFreeReferenceQuoteProbeHandle::from_plan(
+            return Ok(BoltV3StrategyFreeDataClientReadinessProbeHandle::from_plan(
                 Vec::new(),
                 BTreeSet::new(),
                 DataClientReadinessProbeMarketDataKind::Quote,
@@ -737,14 +741,14 @@ mod strategy_free_probe {
         match readiness_probe.quote_target_source {
             DataClientReadinessProbeQuoteTargetSource::Configured => {
                 let Some(quote_targets) = &readiness_probe.quote_targets else {
-                    return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
+                    return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
                         anyhow::anyhow!(
                             "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
                         ),
                     ));
                 };
                 if quote_targets.is_empty() {
-                    return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
+                    return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
                         anyhow::anyhow!(
                             "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
                         ),
@@ -752,7 +756,7 @@ mod strategy_free_probe {
                 }
                 let subscriptions = quote_targets
                     .values()
-                    .map(|target| StrategyFreeReferenceQuoteSubscription {
+                    .map(|target| StrategyFreeDataClientReadinessQuoteSubscription {
                         data_client_id: ClientId::from(client_key),
                         instrument_id: target.instrument_id,
                     })
@@ -762,14 +766,14 @@ mod strategy_free_probe {
                 if let Some(min_observed) = min_observed_targets
                     && min_observed > required.len()
                 {
-                    return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
+                    return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
                         anyhow::anyhow!(
                             "clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} configured readiness_probe.quote_targets",
                             required.len()
                         ),
                     ));
                 }
-                Ok(BoltV3StrategyFreeReferenceQuoteProbeHandle::from_plan(
+                Ok(BoltV3StrategyFreeDataClientReadinessProbeHandle::from_plan(
                     required,
                     ambiguous_instrument_ids,
                     readiness_probe.market_data_kind,
@@ -783,7 +787,7 @@ mod strategy_free_probe {
                     let chunk_size = match readiness_probe.chunk_size {
                         Some(chunk_size) if chunk_size > 0 => chunk_size,
                         _ => {
-                            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
+                            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
                                 anyhow::anyhow!(
                                     "trade chunk-count readiness probe requires positive clients.<id>.readiness_probe.chunk_size"
                                 ),
@@ -795,7 +799,7 @@ mod strategy_free_probe {
                     {
                         Some(window) if window > 0 => window,
                         _ => {
-                            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
+                            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
                                 anyhow::anyhow!(
                                     "trade chunk-count readiness probe requires positive clients.<id>.readiness_probe.chunk_observation_window_seconds"
                                 ),
@@ -807,7 +811,7 @@ mod strategy_free_probe {
                             required_live_markets
                         }
                         _ => {
-                            return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
+                            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
                                 anyhow::anyhow!(
                                     "trade chunk-count readiness probe requires positive clients.<id>.readiness_probe.min_observed_targets (m)"
                                 ),
@@ -815,7 +819,7 @@ mod strategy_free_probe {
                         }
                     };
                     return Ok(
-                    BoltV3StrategyFreeReferenceQuoteProbeHandle::from_metadata_response_chunk_count_plan(
+                    BoltV3StrategyFreeDataClientReadinessProbeHandle::from_metadata_response_chunk_count_plan(
                         ClientId::from(client_key),
                         chunk_size,
                         chunk_observation_window_seconds,
@@ -825,12 +829,12 @@ mod strategy_free_probe {
                 );
                 }
                 let max_quote_targets = readiness_probe.max_metadata_quote_targets.ok_or_else(|| {
-                BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(anyhow::anyhow!(
+                BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(anyhow::anyhow!(
                     "data-client readiness quote probe requires clients.<id>.readiness_probe.max_metadata_quote_targets when quote_target_source = \"metadata_response\""
                 ))
             })?;
                 if max_quote_targets == 0 {
-                    return Err(BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(
+                    return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
                         anyhow::anyhow!(
                             "data-client readiness quote probe requires positive clients.<id>.readiness_probe.max_metadata_quote_targets"
                         ),
@@ -839,12 +843,12 @@ mod strategy_free_probe {
                 let allow_target_sampling = readiness_probe
                 .allow_metadata_target_sampling
                 .ok_or_else(|| {
-                    BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(anyhow::anyhow!(
+                    BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(anyhow::anyhow!(
                         "data-client readiness quote probe requires clients.<id>.readiness_probe.allow_metadata_target_sampling when quote_target_source = \"metadata_response\""
                     ))
                 })?;
                 Ok(
-                    BoltV3StrategyFreeReferenceQuoteProbeHandle::from_metadata_response_plan(
+                    BoltV3StrategyFreeDataClientReadinessProbeHandle::from_metadata_response_plan(
                         ClientId::from(client_key),
                         max_quote_targets,
                         allow_target_sampling,
@@ -857,9 +861,9 @@ mod strategy_free_probe {
     }
 
     fn dedupe_strategy_free_reference_quote_subscriptions(
-        subscriptions: Vec<StrategyFreeReferenceQuoteSubscription>,
+        subscriptions: Vec<StrategyFreeDataClientReadinessQuoteSubscription>,
     ) -> (
-        Vec<StrategyFreeReferenceQuoteSubscription>,
+        Vec<StrategyFreeDataClientReadinessQuoteSubscription>,
         BTreeSet<String>,
     ) {
         let mut seen = BTreeSet::new();
@@ -890,7 +894,7 @@ mod strategy_free_probe {
 #[cfg(test)]
 use strategy_free_probe::*;
 
-impl BoltV3StrategyFreeReferenceCacheEvidence {
+impl BoltV3StrategyFreeDataClientReadinessCacheEvidence {
     pub fn cached_instrument_ids(&self) -> &[String] {
         &self.cached_instrument_ids
     }
@@ -956,10 +960,13 @@ impl BoltV3LiveNodeRuntime {
     }
 
     pub fn cached_instrument_ids(&self) -> Vec<String> {
-        self.reference_cache_evidence().cached_instrument_ids
+        self.data_client_readiness_cache_evidence()
+            .cached_instrument_ids
     }
 
-    pub fn reference_cache_evidence(&self) -> BoltV3StrategyFreeReferenceCacheEvidence {
+    pub fn data_client_readiness_cache_evidence(
+        &self,
+    ) -> BoltV3StrategyFreeDataClientReadinessCacheEvidence {
         let cache = self.node.kernel().cache();
         let cache = cache.borrow();
         let cached_instrument_ids = cache
@@ -967,7 +974,7 @@ impl BoltV3LiveNodeRuntime {
             .into_iter()
             .map(ToString::to_string)
             .collect();
-        BoltV3StrategyFreeReferenceCacheEvidence {
+        BoltV3StrategyFreeDataClientReadinessCacheEvidence {
             cached_instrument_ids,
         }
     }
@@ -1132,8 +1139,8 @@ pub enum BoltV3LiveNodeError {
     StrategyFreeExecutionAccountsMissing {
         client_venues: Vec<String>,
     },
-    StrategyFreeReferenceProbeSetup(anyhow::Error),
-    StrategyFreeReferenceProbeFailed {
+    StrategyFreeDataClientReadinessSetup(anyhow::Error),
+    StrategyFreeDataClientReadinessFailed {
         reason: String,
     },
     StrategyFreeStartFailed(anyhow::Error),
@@ -1235,11 +1242,11 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                  account evidence was absent from NT cache for: {}",
                 client_venues.join(", ")
             ),
-            BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(error) => write!(
+            BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(error) => write!(
                 f,
                 "bolt-v3 strategy-free data-client readiness probe setup failed: {error}"
             ),
-            BoltV3LiveNodeError::StrategyFreeReferenceProbeFailed { reason } => write!(
+            BoltV3LiveNodeError::StrategyFreeDataClientReadinessFailed { reason } => write!(
                 f,
                 "bolt-v3 strategy-free controlled-run reached NT Running but live data-client readiness evidence was not observed; engine connectivity cannot be treated as proven: {reason}"
             ),
@@ -1289,11 +1296,11 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::StrategyFreeStartTimeoutOverflow
             | BoltV3LiveNodeError::StrategyFreeStartIncomplete
             | BoltV3LiveNodeError::StrategyFreeExecutionAccountsMissing { .. }
-            | BoltV3LiveNodeError::StrategyFreeReferenceProbeFailed { .. }
+            | BoltV3LiveNodeError::StrategyFreeDataClientReadinessFailed { .. }
             | BoltV3LiveNodeError::StrategyFreeStopTimeout { .. }
             | BoltV3LiveNodeError::StrategyFreeStopTimeoutOverflow => None,
             BoltV3LiveNodeError::DisconnectFailed(error)
-            | BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(error)
+            | BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(error)
             | BoltV3LiveNodeError::StrategyFreeStartFailed(error)
             | BoltV3LiveNodeError::StrategyFreeStopFailed(error) => Some(error.as_ref()),
         }
@@ -2964,7 +2971,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
     #[test]
     fn chunk_count_handle_chunks_universe_and_walks_in_sorted_order() {
         let handle =
-            BoltV3StrategyFreeReferenceQuoteProbeHandle::from_metadata_response_chunk_count_plan(
+            BoltV3StrategyFreeDataClientReadinessProbeHandle::from_metadata_response_chunk_count_plan(
                 ClientId::from("okx_data"),
                 2,
                 45,
@@ -3109,7 +3116,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             handle
                 .quotes
                 .borrow_mut()
-                .push(BoltV3StrategyFreeReferenceQuote {
+                .push(BoltV3StrategyFreeDataClientReadinessQuote {
                     data_client_id: subscription.data_client_id.to_string(),
                     instrument_id: subscription.instrument_id.to_string(),
                     bid_price: 1.0,
@@ -3248,7 +3255,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             handle
                 .quotes
                 .borrow_mut()
-                .push(BoltV3StrategyFreeReferenceQuote {
+                .push(BoltV3StrategyFreeDataClientReadinessQuote {
                     data_client_id: subscription.data_client_id.to_string(),
                     instrument_id: subscription.instrument_id.to_string(),
                     bid_price: 1.0,
@@ -3269,7 +3276,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         handle
             .quotes
             .borrow_mut()
-            .push(BoltV3StrategyFreeReferenceQuote {
+            .push(BoltV3StrategyFreeDataClientReadinessQuote {
                 data_client_id: subscription.data_client_id.to_string(),
                 instrument_id: subscription.instrument_id.to_string(),
                 bid_price: 1.0,
@@ -3290,7 +3297,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         handle
             .quotes
             .borrow_mut()
-            .push(BoltV3StrategyFreeReferenceQuote {
+            .push(BoltV3StrategyFreeDataClientReadinessQuote {
                 data_client_id: subscription.data_client_id.to_string(),
                 instrument_id: subscription.instrument_id.to_string(),
                 bid_price: 1.0,
@@ -3396,7 +3403,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         ]);
         assert_eq!(installed.len(), 5);
 
-        let record_delta = |subscription: &StrategyFreeReferenceQuoteSubscription| {
+        let record_delta = |subscription: &StrategyFreeDataClientReadinessQuoteSubscription| {
             let delta = OrderBookDelta::new(
                 subscription.instrument_id,
                 BookAction::Add,

@@ -134,6 +134,9 @@ fn active_reference_current_price_surfaces_do_not_claim_retired_reference_data_o
             "live reference quote evidence",
             "reference quote probe",
             "reference quote readiness",
+            "StrategyFreeReference",
+            "ReferenceQuoteProbe",
+            "ReferenceProbe",
         ] {
             assert!(
                 !source.contains(forbidden),

@@ -12,14 +12,41 @@ use crate::{
         REFERENCE_PRICE_ASSET_PARAM, REFERENCE_PRICE_INSTRUMENT_ID_PARAM,
         REFERENCE_PRICE_PROVIDER_PARAM, REFERENCE_PRICE_SOURCE_KEY_PARAM,
         REFERENCE_PRICE_SYMBOL_PARAM, ReferencePriceSourceStatus, ReferencePriceUpdate,
+        ReferenceQuoteProvenance,
     },
 };
 
 const CHAINLINK_REFERENCE_PROVIDER: &str = "chainlink_ws";
+const CHAINLINK_REFERENCE_INSTRUMENT: &str = "BTC-USD.CHAINLINK_REFERENCE";
 const POLYRESEARCH_REFERENCE_PROVIDER: &str = "polyresearch_ws";
+const POLYRESEARCH_REFERENCE_SYMBOL: &str = "BTC";
 
 fn reference_provider(key: &str) -> ReferencePriceProvider {
     ReferencePriceProvider::new(key).expect("test provider key should be valid")
+}
+
+fn reference_price_update(
+    source_id: &str,
+    provider: &str,
+    provider_instrument: &str,
+    price: f64,
+    observed_ts_ms: u64,
+    received_ts_ms: u64,
+) -> nautilus_model::data::CustomData {
+    ReferencePriceUpdate::try_new_with_provenance(
+        "BTC",
+        source_id,
+        provider,
+        provider_instrument,
+        price,
+        None,
+        None,
+        observed_ts_ms,
+        received_ts_ms,
+        ReferenceQuoteProvenance::empty(),
+    )
+    .expect("reference current price update should construct")
+    .to_custom_data()
 }
 
 #[test]
@@ -31,18 +58,14 @@ fn custom_reference_price_update_does_not_mutate_price_to_beat() {
     let _cache = register_test_strategy(&mut strategy);
     assert_eq!(strategy.active.price_to_beat, None);
 
-    let update = ReferencePriceUpdate::try_new(
-        "BTC",
+    let update = reference_price_update(
         "chainlink_primary",
         "chainlink_ws",
+        CHAINLINK_REFERENCE_INSTRUMENT,
         66_300.25,
-        None,
-        None,
         1_200,
         1_250,
-    )
-    .expect("reference price update should construct")
-    .to_custom_data();
+    );
 
     DataActor::on_data(&mut strategy, &update).expect("custom reference price should be handled");
 
@@ -64,18 +87,14 @@ fn selected_reference_current_price_feeds_entry_pricing_spot() {
     strategy.pricing.last_reference_current_price = None;
     let _cache = register_test_strategy(&mut strategy);
 
-    let update = ReferencePriceUpdate::try_new(
-        "BTC",
+    let update = reference_price_update(
         "chainlink_primary",
         CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
         66_300.25,
-        None,
-        None,
         1_200,
         1_250,
-    )
-    .expect("reference current price update should construct")
-    .to_custom_data();
+    );
 
     DataActor::on_data(&mut strategy, &update)
         .expect("custom reference current price should be handled");
@@ -155,18 +174,14 @@ fn non_winning_reference_price_source_updates_health_without_trading_state() {
         ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
     let _cache = register_test_strategy(&mut strategy);
 
-    let backup = ReferencePriceUpdate::try_new(
-        "BTC",
+    let backup = reference_price_update(
         "polyresearch_backup",
         POLYRESEARCH_REFERENCE_PROVIDER,
+        POLYRESEARCH_REFERENCE_SYMBOL,
         66_300.25,
-        None,
-        None,
         1_100,
         1_110,
-    )
-    .expect("backup quote should construct")
-    .to_custom_data();
+    );
     DataActor::on_data(&mut strategy, &backup).expect("backup quote should be handled");
 
     assert_eq!(strategy.active.reference_current_price, Some(66_300.25));
@@ -175,18 +190,14 @@ fn non_winning_reference_price_source_updates_health_without_trading_state() {
         Some("polyresearch_backup")
     );
 
-    let later_primary = ReferencePriceUpdate::try_new(
-        "BTC",
+    let later_primary = reference_price_update(
         "chainlink_primary",
         CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
         66_500.00,
-        None,
-        None,
         1_120,
         1_125,
-    )
-    .expect("primary quote should construct")
-    .to_custom_data();
+    );
     DataActor::on_data(&mut strategy, &later_primary).expect("primary quote should be handled");
 
     assert_eq!(strategy.active.reference_current_price, Some(66_300.25));
@@ -202,18 +213,14 @@ fn non_winning_reference_price_source_updates_health_without_trading_state() {
         Some(ReferencePriceSourceStatus::Available)
     );
 
-    let backup_update = ReferencePriceUpdate::try_new(
-        "BTC",
+    let backup_update = reference_price_update(
         "polyresearch_backup",
         POLYRESEARCH_REFERENCE_PROVIDER,
+        POLYRESEARCH_REFERENCE_SYMBOL,
         66_301.25,
-        None,
-        None,
         1_130,
         1_135,
-    )
-    .expect("backup update should construct")
-    .to_custom_data();
+    );
     DataActor::on_data(&mut strategy, &backup_update)
         .expect("winning backup quote should be handled");
 
@@ -238,18 +245,14 @@ fn reference_price_interval_transition_clears_stale_quotes_and_health() {
         ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
     let _cache = register_test_strategy(&mut strategy);
 
-    let first_interval_primary = ReferencePriceUpdate::try_new(
-        "BTC",
+    let first_interval_primary = reference_price_update(
         "chainlink_primary",
         CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
         66_300.25,
-        None,
-        None,
         1_100,
         1_110,
-    )
-    .expect("primary quote should construct")
-    .to_custom_data();
+    );
     DataActor::on_data(&mut strategy, &first_interval_primary)
         .expect("first interval quote should be handled");
 
@@ -268,18 +271,14 @@ fn reference_price_interval_transition_clears_stale_quotes_and_health() {
 
     strategy.active =
         ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-2", 1_200), 0);
-    let second_interval_backup = ReferencePriceUpdate::try_new(
-        "BTC",
+    let second_interval_backup = reference_price_update(
         "polyresearch_backup",
         POLYRESEARCH_REFERENCE_PROVIDER,
+        POLYRESEARCH_REFERENCE_SYMBOL,
         66_500.25,
-        None,
-        None,
         1_200,
         1_210,
-    )
-    .expect("backup quote should construct")
-    .to_custom_data();
+    );
     DataActor::on_data(&mut strategy, &second_interval_backup)
         .expect("second interval quote should be handled");
 
@@ -342,6 +341,43 @@ fn reference_price_update_with_wrong_provider_does_not_satisfy_source() {
 }
 
 #[test]
+fn reference_price_update_with_wrong_provider_instrument_does_not_satisfy_source() {
+    let mut strategy = test_strategy();
+    strategy.config.reference_current_price = Some(reference_price_config());
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let _cache = register_test_strategy(&mut strategy);
+
+    let wrong_instrument = ReferencePriceUpdate::try_new_with_provenance(
+        "BTC",
+        "chainlink_primary",
+        CHAINLINK_REFERENCE_PROVIDER,
+        "ETH-USD.CHAINLINK_REFERENCE",
+        66_300.25,
+        None,
+        None,
+        1_100,
+        1_110,
+        ReferenceQuoteProvenance::empty(),
+    )
+    .expect("wrong-instrument update should construct")
+    .to_custom_data();
+
+    DataActor::on_data(&mut strategy, &wrong_instrument)
+        .expect("wrong-instrument custom data should be handled fail-closed");
+
+    assert_eq!(strategy.active.reference_current_price, None);
+    assert_eq!(strategy.pricing.last_reference_current_price, None);
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get("chainlink_primary")
+            .map(|health| health.status()),
+        Some(ReferencePriceSourceStatus::MalformedFrame)
+    );
+}
+
+#[test]
 fn stale_block_marks_reference_price_source_stale() {
     let mut strategy = test_strategy();
     let mut reference_price = reference_price_config();
@@ -356,18 +392,14 @@ fn stale_block_marks_reference_price_source_stale() {
         ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
     let _cache = register_test_strategy(&mut strategy);
 
-    let stale_primary = ReferencePriceUpdate::try_new(
-        "BTC",
+    let stale_primary = reference_price_update(
         "chainlink_primary",
         CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
         100.0,
-        None,
-        None,
         1_100,
         1_110,
-    )
-    .expect("stale primary quote should construct")
-    .to_custom_data();
+    );
     DataActor::on_data(&mut strategy, &stale_primary).expect("stale quote should be handled");
 
     assert_eq!(strategy.active.reference_current_price, None);
@@ -404,32 +436,24 @@ fn drift_block_marks_reference_price_sources_unavailable() {
         ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
     let _cache = register_test_strategy(&mut strategy);
 
-    let primary = ReferencePriceUpdate::try_new(
-        "BTC",
+    let primary = reference_price_update(
         "chainlink_primary",
         CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
         100.0,
-        None,
-        None,
         1_100,
         1_110,
-    )
-    .expect("primary quote should construct")
-    .to_custom_data();
+    );
     DataActor::on_data(&mut strategy, &primary).expect("primary quote should be handled");
 
-    let backup = ReferencePriceUpdate::try_new(
-        "BTC",
+    let backup = reference_price_update(
         "polyresearch_backup",
         POLYRESEARCH_REFERENCE_PROVIDER,
+        POLYRESEARCH_REFERENCE_SYMBOL,
         101.0,
-        None,
-        None,
         1_100,
         1_110,
-    )
-    .expect("backup quote should construct")
-    .to_custom_data();
+    );
     DataActor::on_data(&mut strategy, &backup).expect("backup quote should be handled");
 
     assert_eq!(strategy.active.reference_current_price, None);
@@ -458,7 +482,7 @@ fn reference_price_config() -> ReferencePriceBlock {
             enabled: true,
             required: true,
             client_id: ClientId::from("chainlink_reference"),
-            instrument_id: Some("BTC-USD.CHAINLINK_REFERENCE".to_string()),
+            instrument_id: Some(CHAINLINK_REFERENCE_INSTRUMENT.to_string()),
             symbol: None,
         },
     );
@@ -470,7 +494,7 @@ fn reference_price_config() -> ReferencePriceBlock {
             required: false,
             client_id: ClientId::from("polyresearch_reference"),
             instrument_id: None,
-            symbol: Some("BTC".to_string()),
+            symbol: Some(POLYRESEARCH_REFERENCE_SYMBOL.to_string()),
         },
     );
     ReferencePriceBlock {

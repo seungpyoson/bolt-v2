@@ -402,6 +402,14 @@ fn reference_price_source_is_unsupported(
             .contains(&reference_price.asset.as_str())
 }
 
+fn reference_price_source_provider_identifier<'a>(
+    reference_price: &'a ReferencePriceBlock,
+    source_id: &str,
+) -> Option<&'a str> {
+    let source = reference_price.sources.get(source_id)?;
+    source.instrument_id.as_deref().or(source.symbol.as_deref())
+}
+
 fn order_price_for_side(
     book: &OutcomeBookState,
     order_side: OrderSide,
@@ -1449,6 +1457,31 @@ impl BinaryOracleEdgeTaker {
                 quote.source_id(),
                 expected_provider,
                 quote.provider().as_str(),
+                self.config.strategy_id,
+            );
+            return;
+        }
+        if let Some(expected_provider_instrument) = self
+            .config
+            .reference_current_price
+            .as_ref()
+            .and_then(|reference_price| {
+                reference_price_source_provider_identifier(reference_price, quote.source_id())
+            })
+            .map(ToString::to_string)
+            && quote.provider_instrument() != expected_provider_instrument
+        {
+            self.mark_reference_price_source_status(
+                quote.source_id(),
+                ReferencePriceSourceStatus::MalformedFrame,
+                Some(quote.observed_ts_ms()),
+                Some(quote.received_ts_ms()),
+            );
+            log::warn!(
+                "binary_oracle_edge_taker reference current price provider instrument mismatch ignored: source_id={} expected_provider_instrument={} actual_provider_instrument={} strategy_id={}",
+                quote.source_id(),
+                expected_provider_instrument,
+                quote.provider_instrument(),
                 self.config.strategy_id,
             );
             return;

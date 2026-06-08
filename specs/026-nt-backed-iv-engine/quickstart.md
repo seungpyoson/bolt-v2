@@ -34,6 +34,7 @@ fallback_policies = []
 quorum_policies = []
 helper_policies = []
 derived_inputs = []
+derived_input_policies = []
 
 [iv.profiles.audit_policy]
 enabled_raw_products = ["operator_raw_product_kind"]

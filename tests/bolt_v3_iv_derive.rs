@@ -3,8 +3,9 @@ use std::collections::BTreeSet;
 use bolt_v2::bolt_v3_iv::{
     bounds::{IvBoundUnit, IvConventionBounds, IvNumericBounds},
     derive::{
-        IvDeriveError, IvDerivedInputField, IvDerivedInputSet, IvDerivedInputSourceKind,
-        IvHelperPolicy, IvNtHelperSymbol, IvOptionSide, IvTimedInput, derive_iv,
+        IvDeriveError, IvDerivedInputField, IvDerivedInputFieldPolicy, IvDerivedInputPolicy,
+        IvDerivedInputSet, IvDerivedInputSourceKind, IvDerivedProfileSourceRef, IvHelperPolicy,
+        IvNtHelperSymbol, IvOptionSide, IvTimedInput, derive_iv, resolve_derived_input_policy,
         select_helper_policy,
     },
     error::IvRejectReason,
@@ -142,11 +143,94 @@ fn complete_inputs_derive_iv_with_nt_helper_and_helper_provenance() {
         output.provenance.helper_identity.as_ref(),
         Some(&output.helper_identity)
     );
+    assert_eq!(
+        output.provenance.policy_decisions,
+        vec![IvPolicyDecision::HelperDecision {
+            helper_policy_id: "configured-helper-policy".to_string(),
+            helper_symbol: "nautilus_model::data::imply_vol_and_greeks".to_string(),
+            input_event_ids: vec!["configured-input-event".to_string()],
+            output_validated: true,
+            rejection_reason: None,
+        }]
+    );
+}
+
+#[test]
+fn derived_input_policy_resolves_profile_source_and_operator_fields_before_helper_call() {
+    let mut request_inputs = complete_inputs();
+    request_inputs.underlying_price = None;
+    request_inputs.rate = None;
+    request_inputs.carry = None;
+
+    let mut profile_source_inputs = complete_inputs();
+    profile_source_inputs.source_id = "configured-underlying-source".to_string();
+    profile_source_inputs.selector_fingerprint = "configured-underlying-selector".to_string();
+    profile_source_inputs.underlying_price = Some(IvTimedInput {
+        value: 100.0,
+        ts_ns: UnixNanos::new(996),
+        source_kind: IvDerivedInputSourceKind::ProfileSourceRef,
+        expires_at_ns: None,
+    });
+    profile_source_inputs.input_event_ids = vec!["configured-underlying-event".to_string()];
+
+    let policy = IvDerivedInputPolicy {
+        input_policy_id: "configured-derived-input-policy".to_string(),
+        helper_policy_ref: "configured-helper-policy".to_string(),
+        field_policies: vec![
+            IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::UnderlyingPrice,
+                allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::ProfileSourceRef]),
+                profile_source_ref: Some(IvDerivedProfileSourceRef {
+                    source_id: "configured-underlying-source".to_string(),
+                    selector_fingerprint: "configured-underlying-selector".to_string(),
+                }),
+                operator_number: None,
+                operator_side: None,
+            },
+            IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::Rate,
+                allowed_source_kinds: BTreeSet::from([
+                    IvDerivedInputSourceKind::OperatorConfigured,
+                ]),
+                profile_source_ref: None,
+                operator_number: Some(operator(0.01, 994, 1_050)),
+                operator_side: None,
+            },
+            IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::Carry,
+                allowed_source_kinds: BTreeSet::from([
+                    IvDerivedInputSourceKind::OperatorConfigured,
+                ]),
+                profile_source_ref: None,
+                operator_number: Some(operator(0.0, 993, 1_050)),
+                operator_side: None,
+            },
+        ],
+    };
+
+    let resolved =
+        resolve_derived_input_policy(&policy, request_inputs, &[profile_source_inputs]).unwrap();
+    let output = derive_iv(&helper_policy(), resolved.clone()).unwrap();
+
+    assert_eq!(
+        resolved
+            .underlying_price
+            .expect("underlying must be policy-resolved")
+            .source_kind,
+        IvDerivedInputSourceKind::ProfileSourceRef
+    );
+    assert_eq!(
+        resolved
+            .rate
+            .expect("rate must be operator-resolved")
+            .source_kind,
+        IvDerivedInputSourceKind::OperatorConfigured
+    );
     assert!(
         output
             .provenance
-            .policy_decisions
-            .contains(&IvPolicyDecision::Helper)
+            .input_event_ids
+            .contains(&"configured-underlying-event".to_string())
     );
 }
 

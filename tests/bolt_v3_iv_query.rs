@@ -4,7 +4,8 @@ use bolt_v2::bolt_v3_iv::{
     authz::{IvAuthorizationMode, IvSelectorAuthorization},
     bounds::{IvBoundUnit, IvConventionBounds, IvNumericBounds},
     derive::{
-        IvDerivedInputSet, IvDerivedInputSourceKind, IvHelperPolicy, IvNtHelperSymbol,
+        IvDerivedInputField, IvDerivedInputFieldPolicy, IvDerivedInputPolicy, IvDerivedInputSet,
+        IvDerivedInputSourceKind, IvDerivedProfileSourceRef, IvHelperPolicy, IvNtHelperSymbol,
         IvOptionSide, IvTimedInput,
     },
     health::{IvSourceHealth, IvSourceHealthState},
@@ -165,6 +166,15 @@ fn timed(value: f64, ts: u64) -> IvTimedInput<f64> {
     }
 }
 
+fn operator_timed(value: f64, ts: u64) -> IvTimedInput<f64> {
+    IvTimedInput {
+        value,
+        ts_ns: UnixNanos::new(ts),
+        source_kind: IvDerivedInputSourceKind::OperatorConfigured,
+        expires_at_ns: Some(UnixNanos::new(2_050)),
+    }
+}
+
 fn complete_inputs() -> IvDerivedInputSet {
     let option_price =
         nautilus_model::data::black_scholes_greeks(100.0, 0.01, 0.0, 0.25, true, 100.0, 0.5).price;
@@ -206,6 +216,43 @@ fn complete_inputs() -> IvDerivedInputSet {
             source_kind: IvDerivedInputSourceKind::OperatorConfigured,
             expires_at_ns: Some(UnixNanos::new(2_050)),
         }),
+    }
+}
+
+fn profile_resolving_derived_input_policy() -> IvDerivedInputPolicy {
+    IvDerivedInputPolicy {
+        input_policy_id: "configured-derived-input-policy".to_string(),
+        helper_policy_ref: "configured-helper-policy".to_string(),
+        field_policies: vec![
+            IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::UnderlyingPrice,
+                allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::ProfileSourceRef]),
+                profile_source_ref: Some(IvDerivedProfileSourceRef {
+                    source_id: "configured-underlying-source".to_string(),
+                    selector_fingerprint: "configured-underlying-selector".to_string(),
+                }),
+                operator_number: None,
+                operator_side: None,
+            },
+            IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::Rate,
+                allowed_source_kinds: BTreeSet::from([
+                    IvDerivedInputSourceKind::OperatorConfigured,
+                ]),
+                profile_source_ref: None,
+                operator_number: Some(operator_timed(0.01, 1_994)),
+                operator_side: None,
+            },
+            IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::Carry,
+                allowed_source_kinds: BTreeSet::from([
+                    IvDerivedInputSourceKind::OperatorConfigured,
+                ]),
+                profile_source_ref: None,
+                operator_number: Some(operator_timed(0.0, 1_993)),
+                operator_side: None,
+            },
+        ],
     }
 }
 
@@ -492,4 +539,66 @@ fn derived_iv_query_uses_engine_owned_nt_helper_inputs() {
         "nautilus_model::data::imply_vol_and_greeks"
     );
     assert!(derived.point.iv > 0.0);
+}
+
+#[test]
+fn derived_iv_query_resolves_profile_owned_input_policy_before_helper_call() {
+    let mut request_inputs = complete_inputs();
+    request_inputs.underlying_price = None;
+    request_inputs.rate = None;
+    request_inputs.carry = None;
+
+    let mut profile_source_inputs = complete_inputs();
+    profile_source_inputs.source_id = "configured-underlying-source".to_string();
+    profile_source_inputs.source_kind = IvSourceKind::CustomImpliedVolatility;
+    profile_source_inputs.selector_fingerprint = "configured-underlying-selector".to_string();
+    profile_source_inputs.input_event_ids = vec!["configured-underlying-event".to_string()];
+    profile_source_inputs.underlying_price = Some(IvTimedInput {
+        value: 100.0,
+        ts_ns: UnixNanos::new(1_996),
+        source_kind: IvDerivedInputSourceKind::ProfileSourceRef,
+        expires_at_ns: None,
+    });
+
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_helper_policies(vec![helper_policy()])
+    .with_derived_input_policies(vec![profile_resolving_derived_input_policy()])
+    .with_derived_inputs(vec![request_inputs, profile_source_inputs]);
+
+    let product = handle
+        .query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::DerivedIv,
+            selector: IvSelector::DerivedIvQuery {
+                instrument_id: "configured-option-instrument".to_string(),
+                helper_policy_id: "configured-helper-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::DerivedIv(derived) = product else {
+        panic!("expected derived IV product");
+    };
+    assert_eq!(derived.point.source_id, "configured-source");
+    assert!(derived.point.iv > 0.0);
+    assert!(
+        derived
+            .provenance
+            .input_event_ids
+            .iter()
+            .any(|event_id| { event_id == "configured-input-event" })
+    );
+    assert!(
+        derived
+            .provenance
+            .input_event_ids
+            .iter()
+            .any(|event_id| { event_id == "configured-underlying-event" })
+    );
 }

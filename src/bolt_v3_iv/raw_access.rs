@@ -101,7 +101,15 @@ pub fn read_raw_event(
     }
 
     let mut provenance = raw_event.provenance.clone();
-    provenance.policy_decisions.push(IvPolicyDecision::RawAudit);
+    provenance
+        .policy_decisions
+        .push(IvPolicyDecision::RawAuditDecision {
+            audit_handle_id: request.audit_handle_id.clone(),
+            raw_event_id: request.raw_event_id.clone(),
+            payload_kind: raw_event.payload_kind.clone(),
+            access_purpose: request.access_purpose.clone(),
+            retention_result: "retained".to_string(),
+        });
 
     validate_iv_provenance(&provenance).map_err(|_| IvRawAccessError::ProvenanceIncomplete)?;
 

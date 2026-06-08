@@ -123,11 +123,31 @@ impl IvCapabilityLedger {
         candidates: &[IvCapabilityCandidate],
     ) -> Result<(), IvCapabilityError> {
         for candidate in candidates {
-            if self.classification_for(&candidate.surface_id).is_none() {
-                return Err(IvCapabilityError::UnclassifiedCandidate {
-                    surface_id: candidate.surface_id.clone(),
-                });
+            if self
+                .classifications
+                .contains_key(candidate.surface_id.as_str())
+            {
+                continue;
             }
+
+            let rule_classification = self
+                .classification_rules
+                .iter()
+                .find(|rule| candidate.surface_id.starts_with(&rule.surface_id_prefix))
+                .map(|rule| rule.classification);
+
+            if matches!(
+                rule_classification,
+                Some(CapabilityClassification::Unreachable)
+                    | Some(CapabilityClassification::NotIvOptions)
+                    | Some(CapabilityClassification::Excluded)
+            ) {
+                continue;
+            }
+
+            return Err(IvCapabilityError::UnclassifiedCandidate {
+                surface_id: candidate.surface_id.clone(),
+            });
         }
 
         Ok(())

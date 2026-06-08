@@ -155,6 +155,7 @@ pub fn build_iv_query_handle_registry_for_root(
                         .with_fallback_policies(profile.fallback_policies.clone())
                         .with_quorum_policies(profile.quorum_policies.clone())
                         .with_helper_policies(profile.helper_policies.clone())
+                        .with_derived_input_policies(profile.derived_input_policies.clone())
                         .with_derived_inputs(profile.derived_inputs.clone())
                         .with_current_subscription_generations(current_generations),
                 )

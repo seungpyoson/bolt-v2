@@ -194,6 +194,36 @@ fn ledger_rejects_unclassified_candidates_and_loads_fixture() {
 }
 
 #[test]
+fn ledger_requires_exact_review_for_supported_candidates() {
+    let candidate = IvCapabilityCandidate {
+        surface_id: "nt.crates.model.src.data.new_option_surface".to_string(),
+        evidence_path: "crates/model/src/data/new_option_surface.rs".to_string(),
+        symbol: "NewOptionSurface".to_string(),
+        matched_terms: BTreeSet::from(["option".to_string(), "surface".to_string()]),
+        seed_family: None,
+    };
+    let mut ledger = IvCapabilityLedger::empty();
+    ledger.classification_rules.push(
+        bolt_v2::bolt_v3_iv::capability::IvCapabilityClassificationRule {
+            surface_id_prefix: "nt.crates.model.src.data.".to_string(),
+            classification: CapabilityClassification::Supported,
+        },
+    );
+
+    assert!(matches!(
+        ledger.validate_candidates(std::slice::from_ref(&candidate)),
+        Err(IvCapabilityError::UnclassifiedCandidate { surface_id })
+            if surface_id == candidate.surface_id
+    ));
+
+    ledger.classifications.insert(
+        candidate.surface_id.clone(),
+        CapabilityClassification::Supported,
+    );
+    ledger.validate_candidates(&[candidate]).unwrap();
+}
+
+#[test]
 fn capability_ledger_classifies_whole_cargo_resolved_nt_checkout() {
     let metadata = cargo_metadata_json();
     let lock_text = fs::read_to_string(repo_path("Cargo.lock")).unwrap();

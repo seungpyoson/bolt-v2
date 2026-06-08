@@ -17,10 +17,14 @@ use bolt_v2::{
         runtime::{IvRuntimeEngine, IvRuntimeEngineError},
         selector::IvSelector,
         store::{IvRetentionPolicy, IvStore},
+        subscription::IvRuntimeOperation,
         time::UnixNanos,
         types::{IvBasis, IvConvention, IvSourceKind},
     },
-    bolt_v3_live_node::{plan_iv_engine_lifecycle, wire_bolt_v3_iv_runtime_event_bindings},
+    bolt_v3_live_node::{
+        plan_iv_engine_lifecycle, plan_iv_engine_reload_lifecycle,
+        wire_bolt_v3_iv_runtime_event_bindings,
+    },
     bolt_v3_strategy_registration::{
         build_iv_query_handle_registry_for_root, build_iv_query_handle_registry_for_runtime,
         validate_iv_strategy_references,
@@ -109,6 +113,7 @@ fallback_policies = []
 quorum_policies = []
 helper_policies = []
 derived_inputs = []
+derived_input_policies = []
 
 [iv.profiles.audit_policy]
 enabled_raw_products = ["option_greeks", "option_chain_slice"]
@@ -380,6 +385,7 @@ fallback_policies = []
 quorum_policies = []
 helper_policies = []
 derived_inputs = []
+derived_input_policies = []
 
 [iv.profiles.audit_policy]
 enabled_raw_products = ["aggregate_greeks", "custom_implied_volatility"]
@@ -1011,6 +1017,7 @@ fallback_policies = []
 quorum_policies = []
 helper_policies = []
 derived_inputs = []
+derived_input_policies = []
 
 [iv.profiles.audit_policy]
 enabled_raw_products = ["option_greeks"]
@@ -1091,6 +1098,7 @@ fallback_policies = []
 quorum_policies = []
 helper_policies = []
 derived_inputs = []
+derived_input_policies = []
 
 [iv.profiles.audit_policy]
 enabled_raw_products = ["option_greeks"]
@@ -1178,6 +1186,40 @@ configured_source_param = "configured-value"
 }
 
 #[test]
+fn live_iv_root_reload_plans_reloaded_and_removed_sources() {
+    let current = live_event_router_root_config();
+    let mut next = current.clone();
+    let profile = next.iv.as_mut().unwrap().profiles.first_mut().unwrap();
+    profile.sources[0].subscription_generation = 8;
+    profile.sources[0].selector_fingerprint = "configured-greeks-selector-reloaded".to_string();
+    let removed_source = profile.sources.pop().unwrap();
+
+    let lifecycle = plan_iv_engine_reload_lifecycle(&current, &next).unwrap();
+    let operations = lifecycle
+        .reload_plans
+        .iter()
+        .map(|plan| plan.operation)
+        .collect::<Vec<_>>();
+
+    assert!(lifecycle.start_plans.is_empty());
+    assert!(lifecycle.stop_plans.is_empty());
+    assert_eq!(
+        operations,
+        vec![
+            IvRuntimeOperation::UnsubscribeOptionGreeks,
+            IvRuntimeOperation::SubscribeOptionGreeks,
+            IvRuntimeOperation::UnsubscribeOptionChain,
+            IvRuntimeOperation::RemoveSource,
+        ]
+    );
+    assert_eq!(lifecycle.reload_plans[1].subscription_generation, 8);
+    assert_eq!(
+        lifecycle.reload_plans[3].source_id,
+        removed_source.source_id
+    );
+}
+
+#[test]
 fn registered_strategy_handle_reads_runtime_engine_state_after_registration() {
     let root = fs::read_to_string(repo_path("tests/fixtures/bolt_v3/root.toml")).unwrap();
     let with_iv = format!(
@@ -1200,6 +1242,7 @@ fallback_policies = []
 quorum_policies = []
 helper_policies = []
 derived_inputs = []
+derived_input_policies = []
 
 [iv.profiles.audit_policy]
 enabled_raw_products = ["option_greeks"]
@@ -1301,6 +1344,7 @@ fallback_policies = []
 quorum_policies = []
 helper_policies = []
 derived_inputs = []
+derived_input_policies = []
 
 [iv.profiles.audit_policy]
 enabled_raw_products = ["option_greeks"]
@@ -1419,6 +1463,7 @@ fallback_policies = []
 quorum_policies = []
 helper_policies = []
 derived_inputs = []
+derived_input_policies = []
 
 [iv.profiles.audit_policy]
 enabled_raw_products = ["option_greeks"]
@@ -1510,6 +1555,7 @@ fallback_policies = []
 quorum_policies = []
 helper_policies = []
 derived_inputs = []
+derived_input_policies = []
 
 [iv.profiles.audit_policy]
 enabled_raw_products = ["option_greeks"]
@@ -1597,6 +1643,7 @@ fallback_policies = []
 quorum_policies = []
 helper_policies = []
 derived_inputs = []
+derived_input_policies = []
 
 [iv.profiles.audit_policy]
 enabled_raw_products = ["option_greeks"]

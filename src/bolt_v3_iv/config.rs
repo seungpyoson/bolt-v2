@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     audit::IvAuditPolicy,
     authz::{IvAuthorizationMode, IvProfileSelectorAuthorization, IvSelectorAuthorization},
-    derive::{IvDerivedInputSet, IvHelperPolicy},
+    derive::{IvDerivedInputPolicy, IvDerivedInputSet, IvHelperPolicy},
     policy::{IvFallbackPolicy, IvInterpolationPolicy, IvProjectionPolicy, IvQuorumPolicy},
     selector::IvSelector,
     subscription::{IvProfileSubscriptionConfig, IvSourceSubscriptionConfig, plan_profile_start},
@@ -39,6 +39,7 @@ pub struct IvProfile {
     pub fallback_policies: Vec<IvFallbackPolicy>,
     pub quorum_policies: Vec<IvQuorumPolicy>,
     pub helper_policies: Vec<IvHelperPolicy>,
+    pub derived_input_policies: Vec<IvDerivedInputPolicy>,
     pub derived_inputs: Vec<IvDerivedInputSet>,
     pub sources: Vec<IvSourceConfig>,
 }
@@ -384,6 +385,19 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
             .iter()
             .map(|policy| policy.helper_policy_id.as_str()),
     ));
+    errors.extend(validate_unique_policy_ids(
+        context,
+        "derived_input_policies",
+        profile
+            .derived_input_policies
+            .iter()
+            .map(|policy| policy.input_policy_id.as_str()),
+    ));
+    let helper_policy_ids = profile
+        .helper_policies
+        .iter()
+        .map(|policy| policy.helper_policy_id.as_str())
+        .collect::<BTreeSet<_>>();
 
     for policy in &profile.interpolation_policies {
         if policy.minimum_points == 0 {
@@ -432,6 +446,20 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
             errors.push(format!(
                 "{context}.helper_policies.{}.max_operator_input_age_ns must be positive",
                 policy.helper_policy_id
+            ));
+        }
+    }
+    for policy in &profile.derived_input_policies {
+        if !helper_policy_ids.contains(policy.helper_policy_ref.as_str()) {
+            errors.push(format!(
+                "{context}.derived_input_policies.{}.helper_policy_ref must reference a configured helper policy",
+                policy.input_policy_id
+            ));
+        }
+        if policy.field_policies.is_empty() {
+            errors.push(format!(
+                "{context}.derived_input_policies.{}.field_policies must be non-empty",
+                policy.input_policy_id
             ));
         }
     }

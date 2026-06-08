@@ -89,7 +89,20 @@ pub fn project_scalar(
             value: average(inputs.iter().map(|input| input.value)).ok_or_else(|| {
                 rejected(policy.policy_id.clone(), IvRejectReason::ProjectionRejected)
             })?,
-            policy_decisions: vec![IvPolicyDecision::Projection],
+            policy_decisions: vec![IvPolicyDecision::ProjectionDecision {
+                policy_id: policy.policy_id.clone(),
+                input_product_ids: inputs
+                    .iter()
+                    .map(|input| input.product_id.clone())
+                    .collect(),
+                projection_kind: "mean".to_string(),
+                max_projection_input_skew_ns: policy.max_projection_input_skew_ns,
+                accepted_input_ids: inputs
+                    .iter()
+                    .map(|input| input.product_id.clone())
+                    .collect(),
+                rejected_input_ids: Vec::new(),
+            }],
         }),
     }
 }
@@ -125,7 +138,15 @@ pub fn interpolate_smile(
             } else {
                 last.iv
             },
-            policy_decisions: vec![IvPolicyDecision::Interpolation],
+            policy_decisions: vec![IvPolicyDecision::InterpolationDecision {
+                policy_id: policy.policy_id.clone(),
+                input_point_ids: points.iter().map(strike_id).collect(),
+                method: "nearest_extrapolation".to_string(),
+                minimum_points: policy.minimum_points,
+                allow_extrapolation: policy.allow_extrapolation,
+                accepted_range: Some(format!("{}..{}", first.strike, last.strike)),
+                rejected_range: None,
+            }],
         });
     }
 
@@ -141,7 +162,15 @@ pub fn interpolate_smile(
             };
             return Ok(IvPolicyOutput {
                 value: left.iv + ((right.iv - left.iv) * weight),
-                policy_decisions: vec![IvPolicyDecision::Interpolation],
+                policy_decisions: vec![IvPolicyDecision::InterpolationDecision {
+                    policy_id: policy.policy_id.clone(),
+                    input_point_ids: vec![strike_id(&left), strike_id(&right)],
+                    method: "linear".to_string(),
+                    minimum_points: policy.minimum_points,
+                    allow_extrapolation: policy.allow_extrapolation,
+                    accepted_range: Some(format!("{}..{}", left.strike, right.strike)),
+                    rejected_range: None,
+                }],
             });
         }
     }
@@ -163,7 +192,17 @@ pub fn resolve_fallback(
         {
             return Ok(IvPolicyOutput {
                 value: candidate.value,
-                policy_decisions: vec![IvPolicyDecision::Fallback],
+                policy_decisions: vec![IvPolicyDecision::FallbackDecision {
+                    policy_id: policy.policy_id.clone(),
+                    candidate_order: policy.ordered_candidate_ids.clone(),
+                    accepted_candidate: Some(candidate.candidate_id.clone()),
+                    rejected_candidates: policy
+                        .ordered_candidate_ids
+                        .iter()
+                        .take_while(|ordered_id| *ordered_id != candidate_id)
+                        .cloned()
+                        .collect(),
+                }],
             });
         }
     }
@@ -204,7 +243,16 @@ pub fn resolve_quorum(
     Ok(IvPolicyOutput {
         value: average(inputs.iter().map(|input| input.value))
             .ok_or_else(|| rejected(policy.policy_id.clone(), IvRejectReason::QuorumNotMet))?,
-        policy_decisions: vec![IvPolicyDecision::Quorum],
+        policy_decisions: vec![IvPolicyDecision::QuorumDecision {
+            policy_id: policy.policy_id.clone(),
+            participating_sources: inputs
+                .iter()
+                .map(|input| input.product_id.clone())
+                .collect(),
+            rejected_sources: Vec::new(),
+            agreement_band: policy.agreement_band,
+            quorum_met: true,
+        }],
     })
 }
 
@@ -228,6 +276,10 @@ fn average(values: impl Iterator<Item = f64>) -> Option<f64> {
     }
 
     (count > 0).then(|| sum / count as f64)
+}
+
+fn strike_id(point: &IvSmilePoint) -> String {
+    point.strike.to_string()
 }
 
 fn rejected(policy_id: String, reason: IvRejectReason) -> IvPolicyError {

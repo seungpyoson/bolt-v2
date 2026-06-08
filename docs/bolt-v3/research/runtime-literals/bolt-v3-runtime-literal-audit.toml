@@ -9519,3 +9519,43 @@ literal = '''"underlying_selectors"'''
 context = '''"underlying_selectors".to_string(),'''
 classification = "iv_nt_custom_data_metadata_key"
 reason = "IV aggregate-greeks live binding uses this NT custom-data metadata field name to pass TOML-owned underlying selector values; selector values and source lifecycle remain config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"derived_input_policies"'''
+context = '''"derived_input_policies",'''
+classification = "iv_config_schema_literal"
+reason = "This is the typed IV profile schema family name used for duplicate-policy validation diagnostics; policy values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "string"
+literal = '''"linear"'''
+context = '''method: "linear".to_string(),'''
+classification = "iv_policy_algorithm_literal"
+reason = "This is the stable provenance label for the interpolation method applied by typed IV policy code; the policy selection and inputs remain config/query-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "string"
+literal = '''"mean"'''
+context = '''projection_kind: "mean".to_string(),'''
+classification = "iv_policy_algorithm_literal"
+reason = "This is the stable provenance label for the projection kind applied by typed IV policy code; the policy selection and inputs remain config/query-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "string"
+literal = '''"nearest_extrapolation"'''
+context = '''method: "nearest_extrapolation".to_string(),'''
+classification = "iv_policy_algorithm_literal"
+reason = "This is the stable provenance label for interpolation fallback when policy permits nearest-point extrapolation; the policy decision remains typed and config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/raw_access.rs"
+kind = "string"
+literal = '''"retained"'''
+context = '''retention_result: "retained".to_string(),'''
+classification = "iv_raw_audit_provenance_literal"
+reason = "This is the stable provenance result label for an audit-authorized raw IV payload read; raw retention policy and access authorization remain config-owned."

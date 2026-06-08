@@ -172,6 +172,7 @@ impl IvRuntimeEngine {
                 state.set_fallback_policies(profile.fallback_policies.clone());
                 state.set_quorum_policies(profile.quorum_policies.clone());
                 state.set_helper_policies(profile.helper_policies.clone());
+                state.set_derived_input_policies(profile.derived_input_policies.clone());
                 state.set_derived_inputs(profile.derived_inputs.clone());
                 state.set_current_subscription_generations(current_generations_from_profile(
                     profile,
@@ -772,6 +773,7 @@ fn query_state_from_profile(profile: &IvProfile) -> IvQueryState {
         .with_fallback_policies(profile.fallback_policies.clone())
         .with_quorum_policies(profile.quorum_policies.clone())
         .with_helper_policies(profile.helper_policies.clone())
+        .with_derived_input_policies(profile.derived_input_policies.clone())
         .with_derived_inputs(profile.derived_inputs.clone())
         .with_current_subscription_generations(current_generations_from_profile(profile))
 }

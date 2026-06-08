@@ -19,6 +19,7 @@ max_smiles = 2
 max_surfaces = 2
 max_source_health_events = 2
 derived_inputs = []
+derived_input_policies = []
 
 [profiles.audit_policy]
 enabled_raw_products = ["option_greeks"]
@@ -167,6 +168,7 @@ fn full_profile_toml_maps_to_typed_iv_config_without_defaults() {
         config.profiles[0].helper_policies[0].helper_policy_id,
         "configured-helper-policy"
     );
+    assert!(config.profiles[0].derived_input_policies.is_empty());
     assert!(config.profiles[0].derived_inputs.is_empty());
     assert_eq!(config.profiles[0].sources[0].subscription_generation, 7);
     assert_eq!(

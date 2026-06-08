@@ -4,16 +4,60 @@ use super::{
     error::IvRejectReason, health::IvSourceHealthState, time::UnixNanos, types::IvSourceKind,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IvPolicyDecision {
-    Projection,
-    Interpolation,
-    Fallback,
-    Quorum,
-    Helper,
-    RawAudit,
-    Rejection,
+    ProjectionDecision {
+        policy_id: String,
+        input_product_ids: Vec<String>,
+        projection_kind: String,
+        max_projection_input_skew_ns: u64,
+        accepted_input_ids: Vec<String>,
+        rejected_input_ids: Vec<String>,
+    },
+    InterpolationDecision {
+        policy_id: String,
+        input_point_ids: Vec<String>,
+        method: String,
+        minimum_points: usize,
+        allow_extrapolation: bool,
+        accepted_range: Option<String>,
+        rejected_range: Option<String>,
+    },
+    FallbackDecision {
+        policy_id: String,
+        candidate_order: Vec<String>,
+        accepted_candidate: Option<String>,
+        rejected_candidates: Vec<String>,
+    },
+    QuorumDecision {
+        policy_id: String,
+        participating_sources: Vec<String>,
+        rejected_sources: Vec<String>,
+        agreement_band: f64,
+        quorum_met: bool,
+    },
+    HelperDecision {
+        helper_policy_id: String,
+        helper_symbol: String,
+        input_event_ids: Vec<String>,
+        output_validated: bool,
+        rejection_reason: Option<IvRejectReason>,
+    },
+    RawAuditDecision {
+        audit_handle_id: String,
+        raw_event_id: String,
+        payload_kind: String,
+        access_purpose: String,
+        retention_result: String,
+    },
+    RejectionDecision {
+        reject_reason: IvRejectReason,
+        failed_field: Option<String>,
+        policy_id: Option<String>,
+        source_health_state: IvSourceHealthState,
+        subscription_generation: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,7 +69,7 @@ pub struct IvHelperIdentity {
     pub engine_mapping: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IvProvenance {
     pub profile_id: String,
     pub source_id: String,

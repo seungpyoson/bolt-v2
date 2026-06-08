@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -74,7 +76,7 @@ impl IvDerivedInputField {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IvDerivedInputSourceKind {
     QuerySupplied,
@@ -102,6 +104,31 @@ pub struct IvTimedInput<T> {
     pub ts_ns: UnixNanos,
     pub source_kind: IvDerivedInputSourceKind,
     pub expires_at_ns: Option<UnixNanos>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IvDerivedProfileSourceRef {
+    pub source_id: String,
+    pub selector_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IvDerivedInputFieldPolicy {
+    pub field: IvDerivedInputField,
+    pub allowed_source_kinds: BTreeSet<IvDerivedInputSourceKind>,
+    pub profile_source_ref: Option<IvDerivedProfileSourceRef>,
+    pub operator_number: Option<IvTimedInput<f64>>,
+    pub operator_side: Option<IvTimedInput<IvOptionSide>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IvDerivedInputPolicy {
+    pub input_policy_id: String,
+    pub helper_policy_ref: String,
+    pub field_policies: Vec<IvDerivedInputFieldPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -210,6 +237,7 @@ pub fn derive_iv(
         helper_policy_id: policy.helper_policy_id.clone(),
         engine_mapping: "derived_iv".to_string(),
     };
+    let input_event_ids = inputs.input_event_ids.clone();
     let provenance = IvProvenance {
         profile_id: inputs.profile_id.clone(),
         source_id: inputs.source_id.clone(),
@@ -220,9 +248,15 @@ pub fn derive_iv(
         nt_symbol: policy.nt_helper_symbol.nt_symbol().to_string(),
         raw_event_id: None,
         payload_kind: None,
-        input_event_ids: inputs.input_event_ids.clone(),
+        input_event_ids: input_event_ids.clone(),
         helper_identity: Some(helper_identity.clone()),
-        policy_decisions: vec![IvPolicyDecision::Helper],
+        policy_decisions: vec![IvPolicyDecision::HelperDecision {
+            helper_policy_id: policy.helper_policy_id.clone(),
+            helper_symbol: policy.nt_helper_symbol.nt_symbol().to_string(),
+            input_event_ids,
+            output_validated: true,
+            rejection_reason: None,
+        }],
         transformation_steps: Vec::new(),
         ts_event_ns: inputs.as_of_ns,
         ts_init_ns: None,
@@ -256,6 +290,198 @@ pub fn derive_iv(
         helper_identity,
         provenance,
     })
+}
+
+pub fn resolve_derived_input_policy(
+    policy: &IvDerivedInputPolicy,
+    mut request: IvDerivedInputSet,
+    profile_inputs: &[IvDerivedInputSet],
+) -> Result<IvDerivedInputSet, IvDeriveError> {
+    for field in IvDerivedInputField::required_fields() {
+        let field_policy = policy
+            .field_policies
+            .iter()
+            .find(|field_policy| field_policy.field == field);
+        match field {
+            IvDerivedInputField::OptionPrice
+            | IvDerivedInputField::UnderlyingPrice
+            | IvDerivedInputField::Strike
+            | IvDerivedInputField::TimeToExpiryYears
+            | IvDerivedInputField::Rate
+            | IvDerivedInputField::Carry => {
+                resolve_number_field(field, field_policy, &mut request, profile_inputs)?;
+            }
+            IvDerivedInputField::OptionSide => {
+                resolve_side_field(field_policy, &mut request, profile_inputs)?;
+            }
+        }
+    }
+
+    Ok(request)
+}
+
+fn resolve_number_field(
+    field: IvDerivedInputField,
+    field_policy: Option<&IvDerivedInputFieldPolicy>,
+    request: &mut IvDerivedInputSet,
+    profile_inputs: &[IvDerivedInputSet],
+) -> Result<(), IvDeriveError> {
+    if let Some(input) = number_field(request, field) {
+        validate_allowed_source_kind(field_policy, field, input.source_kind)?;
+        return Ok(());
+    }
+
+    let Some(field_policy) = field_policy else {
+        return Err(IvDeriveError::MissingInput { field });
+    };
+
+    if let Some(input) = field_policy.operator_number {
+        validate_allowed_source_kind(Some(field_policy), field, input.source_kind)?;
+        set_number_field(request, field, input);
+        return Ok(());
+    }
+
+    if let Some(source_ref) = &field_policy.profile_source_ref
+        && let Some((input, event_ids)) =
+            profile_number_field(profile_inputs, request, source_ref, field)
+    {
+        validate_allowed_source_kind(Some(field_policy), field, input.source_kind)?;
+        set_number_field(request, field, input);
+        merge_input_event_ids(&mut request.input_event_ids, event_ids);
+        return Ok(());
+    }
+
+    Err(IvDeriveError::MissingInput { field })
+}
+
+fn resolve_side_field(
+    field_policy: Option<&IvDerivedInputFieldPolicy>,
+    request: &mut IvDerivedInputSet,
+    profile_inputs: &[IvDerivedInputSet],
+) -> Result<(), IvDeriveError> {
+    let field = IvDerivedInputField::OptionSide;
+    if let Some(input) = request.option_side {
+        validate_allowed_source_kind(field_policy, field, input.source_kind)?;
+        return Ok(());
+    }
+
+    let Some(field_policy) = field_policy else {
+        return Err(IvDeriveError::MissingInput { field });
+    };
+
+    if let Some(input) = field_policy.operator_side {
+        validate_allowed_source_kind(Some(field_policy), field, input.source_kind)?;
+        request.option_side = Some(input);
+        return Ok(());
+    }
+
+    if let Some(source_ref) = &field_policy.profile_source_ref
+        && let Some((input, event_ids)) = profile_side_field(profile_inputs, request, source_ref)
+    {
+        validate_allowed_source_kind(Some(field_policy), field, input.source_kind)?;
+        request.option_side = Some(input);
+        merge_input_event_ids(&mut request.input_event_ids, event_ids);
+        return Ok(());
+    }
+
+    Err(IvDeriveError::MissingInput { field })
+}
+
+fn number_field(
+    inputs: &IvDerivedInputSet,
+    field: IvDerivedInputField,
+) -> Option<IvTimedInput<f64>> {
+    match field {
+        IvDerivedInputField::OptionPrice => inputs.option_price,
+        IvDerivedInputField::UnderlyingPrice => inputs.underlying_price,
+        IvDerivedInputField::Strike => inputs.strike,
+        IvDerivedInputField::TimeToExpiryYears => inputs.time_to_expiry_years,
+        IvDerivedInputField::Rate => inputs.rate,
+        IvDerivedInputField::Carry => inputs.carry,
+        IvDerivedInputField::OptionSide => None,
+    }
+}
+
+fn set_number_field(
+    inputs: &mut IvDerivedInputSet,
+    field: IvDerivedInputField,
+    input: IvTimedInput<f64>,
+) {
+    match field {
+        IvDerivedInputField::OptionPrice => inputs.option_price = Some(input),
+        IvDerivedInputField::UnderlyingPrice => inputs.underlying_price = Some(input),
+        IvDerivedInputField::Strike => inputs.strike = Some(input),
+        IvDerivedInputField::TimeToExpiryYears => inputs.time_to_expiry_years = Some(input),
+        IvDerivedInputField::Rate => inputs.rate = Some(input),
+        IvDerivedInputField::Carry => inputs.carry = Some(input),
+        IvDerivedInputField::OptionSide => {}
+    }
+}
+
+fn profile_number_field(
+    profile_inputs: &[IvDerivedInputSet],
+    request: &IvDerivedInputSet,
+    source_ref: &IvDerivedProfileSourceRef,
+    field: IvDerivedInputField,
+) -> Option<(IvTimedInput<f64>, Vec<String>)> {
+    profile_inputs
+        .iter()
+        .find(|candidate| profile_source_matches(candidate, request, source_ref))
+        .and_then(|candidate| {
+            number_field(candidate, field).map(|input| (input, candidate.input_event_ids.clone()))
+        })
+}
+
+fn profile_side_field(
+    profile_inputs: &[IvDerivedInputSet],
+    request: &IvDerivedInputSet,
+    source_ref: &IvDerivedProfileSourceRef,
+) -> Option<(IvTimedInput<IvOptionSide>, Vec<String>)> {
+    profile_inputs
+        .iter()
+        .find(|candidate| profile_source_matches(candidate, request, source_ref))
+        .and_then(|candidate| {
+            candidate
+                .option_side
+                .map(|input| (input, candidate.input_event_ids.clone()))
+        })
+}
+
+fn profile_source_matches(
+    candidate: &IvDerivedInputSet,
+    request: &IvDerivedInputSet,
+    source_ref: &IvDerivedProfileSourceRef,
+) -> bool {
+    candidate.profile_id == request.profile_id
+        && candidate.instrument_id == request.instrument_id
+        && candidate.source_id == source_ref.source_id
+        && candidate.selector_fingerprint == source_ref.selector_fingerprint
+}
+
+fn validate_allowed_source_kind(
+    field_policy: Option<&IvDerivedInputFieldPolicy>,
+    field: IvDerivedInputField,
+    source_kind: IvDerivedInputSourceKind,
+) -> Result<(), IvDeriveError> {
+    if field_policy.is_some_and(|field_policy| {
+        !field_policy.allowed_source_kinds.is_empty()
+            && !field_policy.allowed_source_kinds.contains(&source_kind)
+    }) {
+        return Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::InvalidDerivedInput,
+            field: field.as_str().to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn merge_input_event_ids(target: &mut Vec<String>, event_ids: Vec<String>) {
+    for event_id in event_ids {
+        if !target.contains(&event_id) {
+            target.push(event_id);
+        }
+    }
 }
 
 struct ResolvedDerivedInputs {

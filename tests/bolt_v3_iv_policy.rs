@@ -113,10 +113,17 @@ fn interpolation_policy_records_decision_and_rejects_unconfigured_extrapolation(
     )
     .unwrap();
     assert_eq!(output.value, 0.25);
-    assert!(
-        output
-            .policy_decisions
-            .contains(&IvPolicyDecision::Interpolation)
+    assert_eq!(
+        output.policy_decisions,
+        vec![IvPolicyDecision::InterpolationDecision {
+            policy_id: "configured-interpolation".to_string(),
+            input_point_ids: vec!["90".to_string(), "100".to_string()],
+            method: "linear".to_string(),
+            minimum_points: 2,
+            allow_extrapolation: false,
+            accepted_range: Some("90..100".to_string()),
+            rejected_range: None,
+        }]
     );
 
     assert!(matches!(
@@ -163,10 +170,14 @@ fn fallback_and_quorum_policies_record_typed_decisions() {
     )
     .unwrap();
     assert_eq!(fallback.value, 0.31);
-    assert!(
-        fallback
-            .policy_decisions
-            .contains(&IvPolicyDecision::Fallback)
+    assert_eq!(
+        fallback.policy_decisions,
+        vec![IvPolicyDecision::FallbackDecision {
+            policy_id: "configured-fallback".to_string(),
+            candidate_order: vec!["primary".to_string(), "backup".to_string()],
+            accepted_candidate: Some("backup".to_string()),
+            rejected_candidates: vec!["primary".to_string()],
+        }]
     );
 
     let quorum = resolve_quorum(
@@ -181,7 +192,16 @@ fn fallback_and_quorum_policies_record_typed_decisions() {
         ],
     )
     .unwrap();
-    assert!(quorum.policy_decisions.contains(&IvPolicyDecision::Quorum));
+    assert_eq!(
+        quorum.policy_decisions,
+        vec![IvPolicyDecision::QuorumDecision {
+            policy_id: "configured-quorum".to_string(),
+            participating_sources: vec!["source-a".to_string(), "source-b".to_string()],
+            rejected_sources: Vec::new(),
+            agreement_band: 0.05,
+            quorum_met: true,
+        }]
+    );
 
     assert!(matches!(
         resolve_quorum(

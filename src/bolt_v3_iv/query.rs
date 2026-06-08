@@ -7,14 +7,17 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     authz::IvSelectorAuthorization,
-    derive::{IvDerivedInputSet, IvDerivedOutput, IvHelperPolicy, derive_iv, select_helper_policy},
+    derive::{
+        IvDerivedInputPolicy, IvDerivedInputSet, IvDerivedOutput, IvHelperPolicy, derive_iv,
+        resolve_derived_input_policy, select_helper_policy,
+    },
     health::IvSourceHealth,
     ingest::{IvIngestEvent, IvRawEvent},
     policy::{
         IvFallbackPolicy, IvInterpolationPolicy, IvPolicyInput, IvProjectionPolicy, IvQuorumPolicy,
         project_scalar,
     },
-    provenance::{IvPolicyDecision, IvProvenance},
+    provenance::IvProvenance,
     selector::IvSelector,
     store::{
         IvAggregateGreeks, IvEvidence, IvGreeksPoint, IvPoint, IvRetentionPolicy, IvSmile, IvStore,
@@ -96,6 +99,7 @@ pub struct IvQueryState {
     fallback_policies: Vec<IvFallbackPolicy>,
     quorum_policies: Vec<IvQuorumPolicy>,
     helper_policies: Vec<IvHelperPolicy>,
+    derived_input_policies: Vec<IvDerivedInputPolicy>,
     derived_inputs: Vec<IvDerivedInputSet>,
     current_subscription_generations: BTreeMap<String, u64>,
 }
@@ -122,6 +126,7 @@ impl IvQueryState {
             fallback_policies: Vec::new(),
             quorum_policies: Vec::new(),
             helper_policies: Vec::new(),
+            derived_input_policies: Vec::new(),
             derived_inputs: Vec::new(),
             current_subscription_generations: BTreeMap::new(),
         }
@@ -137,6 +142,14 @@ impl IvQueryState {
 
     pub fn with_helper_policies(mut self, helper_policies: Vec<IvHelperPolicy>) -> Self {
         self.helper_policies = helper_policies;
+        self
+    }
+
+    pub fn with_derived_input_policies(
+        mut self,
+        derived_input_policies: Vec<IvDerivedInputPolicy>,
+    ) -> Self {
+        self.derived_input_policies = derived_input_policies;
         self
     }
 
@@ -314,6 +327,13 @@ impl IvQueryStateHandle {
             .helper_policies = helper_policies;
     }
 
+    pub fn set_derived_input_policies(&self, derived_input_policies: Vec<IvDerivedInputPolicy>) {
+        self.inner
+            .write()
+            .expect("IV query state lock poisoned")
+            .derived_input_policies = derived_input_policies;
+    }
+
     pub fn set_interpolation_policies(&self, interpolation_policies: Vec<IvInterpolationPolicy>) {
         self.inner
             .write()
@@ -422,6 +442,15 @@ impl IvQueryHandle {
 
     pub fn with_helper_policies(self, helper_policies: Vec<IvHelperPolicy>) -> Self {
         self.state.set_helper_policies(helper_policies);
+        self
+    }
+
+    pub fn with_derived_input_policies(
+        self,
+        derived_input_policies: Vec<IvDerivedInputPolicy>,
+    ) -> Self {
+        self.state
+            .set_derived_input_policies(derived_input_policies);
         self
     }
 
@@ -724,9 +753,7 @@ impl IvQueryHandle {
             .provenance()
             .cloned()
             .ok_or(IvQueryError::UnsupportedProductKind)?;
-        provenance
-            .policy_decisions
-            .push(IvPolicyDecision::Projection);
+        provenance.policy_decisions.extend(output.policy_decisions);
         provenance.ts_event_ns = as_of_ns;
 
         Ok(IvQueryProduct::ProjectedScalarIv(IvProjectedScalarIv {
@@ -760,6 +787,16 @@ impl IvQueryHandle {
             })
             .cloned()
             .ok_or(IvQueryError::DerivedInputNotFound)?;
+        let inputs = if let Some(input_policy) = state
+            .derived_input_policies
+            .iter()
+            .find(|input_policy| input_policy.helper_policy_ref == helper_policy_id)
+        {
+            resolve_derived_input_policy(input_policy, inputs, &state.derived_inputs)
+                .map_err(|_| IvQueryError::DerivationRejected)?
+        } else {
+            inputs
+        };
         derive_iv(policy, inputs)
             .map(Box::new)
             .map(IvQueryProduct::DerivedIv)

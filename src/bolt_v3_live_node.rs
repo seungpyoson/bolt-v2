@@ -108,8 +108,8 @@ use crate::{
         },
         selector::IvSelector,
         subscription::{
-            IvRuntimeOperation, IvSubscriptionError, IvSubscriptionPlan, plan_profile_start,
-            plan_profile_stop,
+            IvRuntimeOperation, IvSubscriptionError, IvSubscriptionPlan, plan_profile_reload,
+            plan_profile_start, plan_profile_stop,
         },
         time::UnixNanos,
         types::IvSourceKind,
@@ -166,6 +166,7 @@ pub struct BoltV3StrategyFreeReferenceCacheEvidence {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IvEngineLifecyclePlan {
     pub start_plans: Vec<IvSubscriptionPlan>,
+    pub reload_plans: Vec<IvSubscriptionPlan>,
     pub stop_plans: Vec<IvSubscriptionPlan>,
 }
 
@@ -175,11 +176,13 @@ pub fn plan_iv_engine_lifecycle(
     let Some(iv) = &root.iv else {
         return Ok(IvEngineLifecyclePlan {
             start_plans: Vec::new(),
+            reload_plans: Vec::new(),
             stop_plans: Vec::new(),
         });
     };
 
     let mut start_plans = Vec::new();
+    let reload_plans = Vec::new();
     let mut stop_plans = Vec::new();
     for profile in &iv.profiles {
         let subscription_config = profile.subscription_config();
@@ -189,8 +192,78 @@ pub fn plan_iv_engine_lifecycle(
 
     Ok(IvEngineLifecyclePlan {
         start_plans,
+        reload_plans,
         stop_plans,
     })
+}
+
+pub fn plan_iv_engine_reload_lifecycle(
+    current_root: &BoltV3RootConfig,
+    next_root: &BoltV3RootConfig,
+) -> Result<IvEngineLifecyclePlan, IvSubscriptionError> {
+    let current_profiles = current_root.iv.as_ref().map(|iv| &iv.profiles);
+    let next_profiles = next_root.iv.as_ref().map(|iv| &iv.profiles);
+    let mut start_plans = Vec::new();
+    let mut reload_plans = Vec::new();
+    let mut stop_plans = Vec::new();
+
+    match (current_profiles, next_profiles) {
+        (None, None) => {}
+        (None, Some(next_profiles)) => {
+            for profile in next_profiles {
+                start_plans.extend(plan_profile_start(&profile.subscription_config())?);
+            }
+        }
+        (Some(current_profiles), None) => {
+            for profile in current_profiles {
+                stop_plans.extend(plan_profile_stop(&profile.subscription_config())?);
+            }
+        }
+        (Some(current_profiles), Some(next_profiles)) => {
+            let current_by_id = current_profiles
+                .iter()
+                .map(|profile| (&profile.profile_id, profile))
+                .collect::<BTreeMap<_, _>>();
+            let next_by_id = next_profiles
+                .iter()
+                .map(|profile| (&profile.profile_id, profile))
+                .collect::<BTreeMap<_, _>>();
+
+            for current_profile in current_profiles {
+                if let Some(next_profile) = next_by_id.get(&current_profile.profile_id) {
+                    reload_plans.extend(plan_profile_reload(
+                        &current_profile.subscription_config(),
+                        &next_profile.subscription_config(),
+                    )?);
+                } else {
+                    stop_plans.extend(plan_profile_stop(&current_profile.subscription_config())?);
+                }
+            }
+
+            for next_profile in next_profiles {
+                if !current_by_id.contains_key(&next_profile.profile_id) {
+                    start_plans.extend(plan_profile_start(&next_profile.subscription_config())?);
+                }
+            }
+        }
+    }
+
+    Ok(IvEngineLifecyclePlan {
+        start_plans,
+        reload_plans,
+        stop_plans,
+    })
+}
+
+fn iv_subscription_plan_uses_current_clients(operation: IvRuntimeOperation) -> bool {
+    matches!(
+        operation,
+        IvRuntimeOperation::UnsubscribeOptionGreeks
+            | IvRuntimeOperation::UnsubscribeOptionChain
+            | IvRuntimeOperation::UnsubscribeCustomData
+            | IvRuntimeOperation::UnsubscribeAggregateGreeks
+            | IvRuntimeOperation::RemoveSource
+    )
 }
 
 pub struct BoltV3IvRuntimeEventBindings {
@@ -1841,6 +1914,104 @@ impl BoltV3LiveNodeRuntime {
                 },
             )
         })
+    }
+
+    pub fn reload_iv_engine_lifecycle(
+        &mut self,
+        current_root: &BoltV3RootConfig,
+        next_root: &BoltV3RootConfig,
+    ) -> Result<(), BoltV3LiveNodeError> {
+        let lifecycle =
+            plan_iv_engine_reload_lifecycle(current_root, next_root).map_err(|error| {
+                BoltV3LiveNodeError::StrategyRegistration(
+                    BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                        message: format!("bolt-v3 IV lifecycle reload planning failed: {error:?}"),
+                    },
+                )
+            })?;
+
+        self.iv_event_bindings = None;
+        if let Some(next_iv) = next_root.iv.as_ref() {
+            if let Some(iv_runtime) = self.iv_runtime.as_mut() {
+                iv_runtime.apply_iv_root_reload(next_iv).map_err(|error| {
+                    BoltV3LiveNodeError::StrategyRegistration(
+                        BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                            message: format!(
+                                "bolt-v3 IV lifecycle reload state update failed: {error:?}"
+                            ),
+                        },
+                    )
+                })?;
+            } else {
+                self.iv_runtime = Some(IvRuntimeEngine::from_iv_root(next_iv).map_err(|error| {
+                    BoltV3LiveNodeError::StrategyRegistration(
+                        BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                            message: format!(
+                                "bolt-v3 IV runtime engine reload construction failed: {error:?}"
+                            ),
+                        },
+                    )
+                })?);
+            }
+        }
+
+        let current_client_plans = lifecycle
+            .stop_plans
+            .iter()
+            .chain(
+                lifecycle
+                    .reload_plans
+                    .iter()
+                    .filter(|plan| iv_subscription_plan_uses_current_clients(plan.operation)),
+            )
+            .cloned()
+            .collect::<Vec<_>>();
+        let next_client_plans = lifecycle
+            .reload_plans
+            .iter()
+            .filter(|plan| !iv_subscription_plan_uses_current_clients(plan.operation))
+            .chain(lifecycle.start_plans.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut outcomes = {
+            let mut adapter = NtIvRuntimeBindingAdapter::new(
+                &mut self.node,
+                &current_root.nautilus.data_engine.external_clients,
+            );
+            apply_subscription_plans(&mut adapter, &current_client_plans)
+        };
+        outcomes.extend({
+            let mut adapter = NtIvRuntimeBindingAdapter::new(
+                &mut self.node,
+                &next_root.nautilus.data_engine.external_clients,
+            );
+            apply_subscription_plans(&mut adapter, &next_client_plans)
+        });
+
+        if let Some(iv_runtime) = self.iv_runtime.as_ref() {
+            iv_runtime.apply_plan_outcomes(&outcomes).map_err(|error| {
+                BoltV3LiveNodeError::StrategyRegistration(
+                    BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                        message: format!(
+                            "bolt-v3 IV lifecycle reload outcome update failed: {error:?}"
+                        ),
+                    },
+                )
+            })?;
+        }
+
+        if let (Some(next_iv), Some(iv_runtime)) = (next_root.iv.as_ref(), self.iv_runtime.as_ref())
+        {
+            self.iv_event_bindings = Some(
+                wire_bolt_v3_iv_runtime_event_bindings(next_iv, iv_runtime)
+                    .map_err(BoltV3LiveNodeError::StrategyRegistration)?,
+            );
+        } else {
+            self.iv_runtime = None;
+        }
+
+        Ok(())
     }
 
     pub fn registered_data_client_ids(&self) -> Vec<ClientId> {
@@ -4030,6 +4201,7 @@ fallback_policies = []
 quorum_policies = []
 helper_policies = []
 derived_inputs = []
+derived_input_policies = []
 
 [profiles.audit_policy]
 enabled_raw_products = ["option_greeks"]
@@ -4124,6 +4296,7 @@ fallback_policies = []
 quorum_policies = []
 helper_policies = []
 derived_inputs = []
+derived_input_policies = []
 
 [profiles.audit_policy]
 enabled_raw_products = ["option_greeks"]
@@ -4218,6 +4391,7 @@ fallback_policies = []
 quorum_policies = []
 helper_policies = []
 derived_inputs = []
+derived_input_policies = []
 
 [profiles.audit_policy]
 enabled_raw_products = ["option_greeks"]
@@ -4316,6 +4490,7 @@ fallback_policies = []
 quorum_policies = []
 helper_policies = []
 derived_inputs = []
+derived_input_policies = []
 
 [profiles.audit_policy]
 enabled_raw_products = ["aggregate_greeks"]

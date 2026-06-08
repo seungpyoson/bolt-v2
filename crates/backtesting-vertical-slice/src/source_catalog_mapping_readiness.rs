@@ -246,32 +246,32 @@ pub fn evaluate_source_catalog_mapping_readiness(
         blockers.push(SourceCatalogMappingReadinessBlocker::DuplicateMappingEntries);
     }
 
-    if let Some(entry) = observed_entry {
-        if table_entries.len() == 1 {
-            let observed_nt_data_types = entry
-                .candidate_nt_data_classes
+    if let Some(entry) = observed_entry
+        && table_entries.len() == 1
+    {
+        let observed_nt_data_types = entry
+            .candidate_nt_data_classes
+            .iter()
+            .map(|value| value.trim())
+            .collect::<Vec<_>>();
+        if !required_nt_data_type_values.iter().all(|required| {
+            observed_nt_data_types
                 .iter()
-                .map(|value| value.trim())
-                .collect::<Vec<_>>();
-            if !required_nt_data_type_values.iter().all(|required| {
-                observed_nt_data_types
-                    .iter()
-                    .any(|observed| observed == required)
-            }) {
-                blockers.push(SourceCatalogMappingReadinessBlocker::RequiredNtDataTypeMissing);
-            }
-            if !allowed_current_bte_statuses
-                .iter()
-                .any(|status| status.trim() == entry.current_bte_status.trim())
-            {
-                blockers.push(SourceCatalogMappingReadinessBlocker::CurrentBteStatusNotAllowed);
-            }
-            if !allowed_parquet_catalog_statuses
-                .iter()
-                .any(|status| status.trim() == entry.parquet_catalog_status.trim())
-            {
-                blockers.push(SourceCatalogMappingReadinessBlocker::ParquetCatalogStatusNotAllowed);
-            }
+                .any(|observed| observed == required)
+        }) {
+            blockers.push(SourceCatalogMappingReadinessBlocker::RequiredNtDataTypeMissing);
+        }
+        if !allowed_current_bte_statuses
+            .iter()
+            .any(|status| status.trim() == entry.current_bte_status.trim())
+        {
+            blockers.push(SourceCatalogMappingReadinessBlocker::CurrentBteStatusNotAllowed);
+        }
+        if !allowed_parquet_catalog_statuses
+            .iter()
+            .any(|status| status.trim() == entry.parquet_catalog_status.trim())
+        {
+            blockers.push(SourceCatalogMappingReadinessBlocker::ParquetCatalogStatusNotAllowed);
         }
     }
 

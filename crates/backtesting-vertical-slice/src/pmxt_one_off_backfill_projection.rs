@@ -11,9 +11,10 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use arrow::array::{
-    Array, BinaryArray, Decimal64Array, Decimal128Array, LargeBinaryArray, LargeStringArray,
-    RecordBatch, StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
-    TimestampNanosecondArray, TimestampSecondArray,
+    Array, BinaryArray, BinaryViewArray, Decimal64Array, Decimal128Array, FixedSizeBinaryArray,
+    LargeBinaryArray, LargeStringArray, RecordBatch, StringArray, StringViewArray,
+    TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+    TimestampSecondArray,
 };
 use nautilus_backtest::result::BacktestResult;
 use nautilus_core::UnixNanos;
@@ -37,7 +38,7 @@ use nautilus_polymarket::{
     },
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use ustr::Ustr;
 
@@ -52,7 +53,7 @@ use crate::{
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
     },
-    run_manifest::{BacktestingRunManifest, MarketStructureFixture},
+    run_manifest::{BacktestingRunManifest, MarketStructureFixture, parse_manifest_toml},
     runner::{
         iterations_mismatch, market_structure_label, nt_extension_surface_claim_limits,
         result_contract_warnings, run_nt_backtest_node, run_purpose_label,
@@ -87,7 +88,8 @@ pub struct PmxtSelectedSourceProjectionSpec {
     pub schema: PmxtSelectedSourceSchema,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PmxtSelectedSourceSchema {
     pub timestamp_received_column: String,
     pub timestamp_column: String,
@@ -253,6 +255,149 @@ pub struct PmxtOneOffArtifactRootRun {
     pub completed: PmxtOneOffCompletedConversionProjection,
     pub contract_output: PmxtOneOffBacktestContractOutput,
     pub result_contract_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PmxtOneOffArtifactRootRunTomlSpec {
+    pub selected_source: PmxtSelectedSourceProjectionTomlSpec,
+    pub output_dir: PathBuf,
+    pub catalog_root: PathBuf,
+    pub fingerprint: ConversionFingerprint,
+    pub manifest_path: PathBuf,
+    pub normalized_schema_version: String,
+    pub direct_s3_catalog_access_proven: bool,
+    pub acceptance_mode: AcceptanceMode,
+    pub accepted_by: String,
+    pub accepted_at: String,
+    pub artifact_uris: ResultArtifactUris,
+    pub created_at: String,
+    pub claim_limits: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PmxtSelectedSourceProjectionTomlSpec {
+    pub source_binding: String,
+    pub usage_scope: SourceProofUsageScope,
+    pub selected_condition_id: String,
+    pub selected_token_id: String,
+    pub gamma_markets_json_path: PathBuf,
+    pub selected_source_parquet_path: PathBuf,
+    pub selected_source_report_path: PathBuf,
+    pub schema: PmxtSelectedSourceSchema,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PmxtOneOffArtifactRootRunArtifact {
+    pub output_dir: PathBuf,
+    pub result_contract_path: PathBuf,
+    pub result_contract_hash: String,
+    pub conversion_manifest_hash: String,
+    pub catalog_hash: String,
+    pub selected_source_parquet_hash: String,
+    pub event_count_ledger_hash: String,
+    pub selected_asset_ids_hash: String,
+    pub projected_l2_rows: u64,
+    pub nt_iterations: usize,
+}
+
+pub fn write_pmxt_one_off_l2_artifact_root_run_from_spec_file(
+    spec_path: &Path,
+) -> Result<PmxtOneOffArtifactRootRunArtifact> {
+    let spec_text = fs::read_to_string(spec_path).with_context(|| {
+        format!(
+            "read PMXT one-off artifact-root spec {}",
+            spec_path.display()
+        )
+    })?;
+    let spec: PmxtOneOffArtifactRootRunTomlSpec =
+        toml::from_str(&spec_text).with_context(|| {
+            format!(
+                "parse PMXT one-off artifact-root spec {}",
+                spec_path.display()
+            )
+        })?;
+    write_pmxt_one_off_l2_artifact_root_run_from_toml_spec(spec)
+}
+
+pub fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec(
+    spec: PmxtOneOffArtifactRootRunTomlSpec,
+) -> Result<PmxtOneOffArtifactRootRunArtifact> {
+    let gamma_markets_bytes = fs::read(&spec.selected_source.gamma_markets_json_path)
+        .with_context(|| {
+            format!(
+                "read PMXT Gamma metadata {}",
+                spec.selected_source.gamma_markets_json_path.display()
+            )
+        })?;
+    let gamma_markets: Vec<GammaMarket> = serde_json::from_slice(&gamma_markets_bytes)
+        .with_context(|| {
+            format!(
+                "parse PMXT Gamma metadata {}",
+                spec.selected_source.gamma_markets_json_path.display()
+            )
+        })?;
+    let manifest_text = fs::read_to_string(&spec.manifest_path).with_context(|| {
+        format!(
+            "read PMXT one-off manifest {}",
+            spec.manifest_path.display()
+        )
+    })?;
+    let manifest = parse_manifest_toml(&manifest_text).with_context(|| {
+        format!(
+            "parse PMXT one-off manifest {}",
+            spec.manifest_path.display()
+        )
+    })?;
+    ensure!(
+        manifest.catalog_input.catalog_path == spec.catalog_root.display().to_string(),
+        "PMXT one-off manifest catalog_path {:?} must match spec catalog_root {:?}",
+        manifest.catalog_input.catalog_path,
+        spec.catalog_root.display().to_string()
+    );
+    let output_catalog_uri = format!("file://{}", spec.catalog_root.display());
+    let execution_catalog_uri = spec.catalog_root.display().to_string();
+    let manifest_hash = manifest.manifest_hash();
+    let run = write_pmxt_one_off_l2_artifact_root_run(PmxtOneOffArtifactRootRunSpec {
+        selected_source: PmxtSelectedSourceProjectionSpec {
+            source_binding: spec.selected_source.source_binding,
+            usage_scope: spec.selected_source.usage_scope,
+            selected_condition_id: spec.selected_source.selected_condition_id,
+            selected_token_id: spec.selected_source.selected_token_id,
+            gamma_markets,
+            selected_source_parquet_path: spec.selected_source.selected_source_parquet_path,
+            selected_source_report_path: spec.selected_source.selected_source_report_path,
+            schema: spec.selected_source.schema,
+        },
+        output_dir: spec.output_dir.clone(),
+        catalog_root: spec.catalog_root,
+        fingerprint: spec.fingerprint,
+        manifest,
+        manifest_hash,
+        normalized_schema_version: spec.normalized_schema_version,
+        output_catalog_uri,
+        execution_catalog_uri,
+        direct_s3_catalog_access_proven: spec.direct_s3_catalog_access_proven,
+        acceptance_mode: spec.acceptance_mode,
+        accepted_by: spec.accepted_by,
+        accepted_at: spec.accepted_at,
+        artifact_uris: spec.artifact_uris,
+        created_at: spec.created_at,
+        claim_limits: spec.claim_limits,
+    })?;
+    Ok(PmxtOneOffArtifactRootRunArtifact {
+        output_dir: spec.output_dir,
+        result_contract_hash: sha256_file(&run.result_contract_path)?,
+        result_contract_path: run.result_contract_path,
+        conversion_manifest_hash: run.completed.conversion_manifest_hash,
+        catalog_hash: run.completed.catalog_projection.catalog_hash,
+        selected_source_parquet_hash: run.selected_projection.selected_source_parquet_hash,
+        event_count_ledger_hash: run.selected_projection.event_count_ledger_hash,
+        selected_asset_ids_hash: run.selected_projection.selected_asset_ids_hash,
+        projected_l2_rows: run.selected_projection.projected_l2_rows,
+        nt_iterations: run.contract_output.nt_result.iterations,
+    })
 }
 
 pub fn project_pmxt_selected_source_parquet_to_nt(
@@ -1000,20 +1145,21 @@ pub fn write_pmxt_one_off_l2_artifact_root_run(
         completed_at: spec.created_at.clone(),
     })
     .context("write PMXT one-off conversion artifacts")?;
-    let contract_output = run_pmxt_one_off_l2_backtest_contract(PmxtOneOffBacktestContractSpec {
-        completed: &completed,
-        manifest: &spec.manifest,
-        manifest_hash: &spec.manifest_hash,
-        acceptance_mode: spec.acceptance_mode,
-        accepted_by: &spec.accepted_by,
-        accepted_at: &spec.accepted_at,
-        event_count_ledger_hash: &selected_projection.event_count_ledger_hash,
-        selected_asset_ids_hash: &selected_projection.selected_asset_ids_hash,
-        artifact_uris: spec.artifact_uris,
-        created_at: &spec.created_at,
-        claim_limits: spec.claim_limits,
-    })
-    .context("run PMXT one-off L2 backtest contract")?;
+    let mut contract_output =
+        run_pmxt_one_off_l2_backtest_contract(PmxtOneOffBacktestContractSpec {
+            completed: &completed,
+            manifest: &spec.manifest,
+            manifest_hash: &spec.manifest_hash,
+            acceptance_mode: spec.acceptance_mode,
+            accepted_by: &spec.accepted_by,
+            accepted_at: &spec.accepted_at,
+            event_count_ledger_hash: &selected_projection.event_count_ledger_hash,
+            selected_asset_ids_hash: &selected_projection.selected_asset_ids_hash,
+            artifact_uris: spec.artifact_uris,
+            created_at: &spec.created_at,
+            claim_limits: spec.claim_limits,
+        })
+        .context("run PMXT one-off L2 backtest contract")?;
     fs::create_dir_all(&spec.output_dir).with_context(|| {
         format!(
             "create PMXT one-off artifact output dir {}",
@@ -1021,8 +1167,9 @@ pub fn write_pmxt_one_off_l2_artifact_root_run(
         )
     })?;
     let result_contract_path = spec.output_dir.join(PMXT_ONE_OFF_RESULT_CONTRACT_FILE);
-    write_json_pretty_idempotent(&result_contract_path, &contract_output.contract)
-        .with_context(|| format!("write {}", result_contract_path.display()))?;
+    contract_output.contract =
+        write_result_contract_idempotent(&result_contract_path, &contract_output.contract)
+            .with_context(|| format!("write {}", result_contract_path.display()))?;
 
     Ok(PmxtOneOffArtifactRootRun {
         selected_projection,
@@ -1032,18 +1179,31 @@ pub fn write_pmxt_one_off_l2_artifact_root_run(
     })
 }
 
-fn write_json_pretty_idempotent<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let bytes = serde_json::to_vec_pretty(value).context("serialize PMXT one-off artifact")?;
+fn write_result_contract_idempotent(
+    path: &Path,
+    contract: &BacktestResultContract,
+) -> Result<BacktestResultContract> {
+    let bytes = serde_json::to_vec_pretty(contract).context("serialize PMXT result contract")?;
     if path.exists() {
-        let existing = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        let existing = read_json_artifact::<BacktestResultContract>(path)?;
+        let mut normalized = contract.clone();
+        normalized.nt_result.machine_id = existing.nt_result.machine_id.clone();
+        normalized.nt_result.instance_id = existing.nt_result.instance_id.clone();
+        normalized.nt_result.elapsed_time_secs = existing.nt_result.elapsed_time_secs;
         ensure!(
-            existing == bytes,
-            "existing PMXT one-off artifact {} differs from newly generated content",
+            existing == normalized,
+            "existing PMXT one-off result contract {} differs from newly generated stable content",
             path.display()
         );
-        return Ok(());
+        return Ok(existing);
     }
-    fs::write(path, bytes).with_context(|| format!("write {}", path.display()))
+    fs::write(path, bytes).with_context(|| format!("write {}", path.display()))?;
+    Ok(contract.clone())
+}
+
+fn read_json_artifact<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
 fn binary_option_l2_metadata(instrument: &InstrumentAny) -> Result<(InstrumentId, u8, u8)> {
@@ -1177,17 +1337,31 @@ fn required_market_string(batch: &RecordBatch, column: &str, row: usize) -> Resu
     if let Some(strings) = values.as_any().downcast_ref::<LargeStringArray>() {
         return Ok(strings.value(row).to_string());
     }
+    if let Some(strings) = values.as_any().downcast_ref::<StringViewArray>() {
+        return Ok(strings.value(row).to_string());
+    }
     if let Some(bytes) = values.as_any().downcast_ref::<BinaryArray>() {
-        return std::str::from_utf8(bytes.value(row))
-            .map(str::to_string)
-            .with_context(|| format!("decode binary market column {column:?} row {row}"));
+        return Ok(market_bytes_to_string(bytes.value(row)));
     }
     if let Some(bytes) = values.as_any().downcast_ref::<LargeBinaryArray>() {
-        return std::str::from_utf8(bytes.value(row))
-            .map(str::to_string)
-            .with_context(|| format!("decode large binary market column {column:?} row {row}"));
+        return Ok(market_bytes_to_string(bytes.value(row)));
     }
-    bail!("selected-source market column {column:?} is not Utf8/LargeUtf8/Binary/LargeBinary")
+    if let Some(bytes) = values.as_any().downcast_ref::<BinaryViewArray>() {
+        return Ok(market_bytes_to_string(bytes.value(row)));
+    }
+    if let Some(bytes) = values.as_any().downcast_ref::<FixedSizeBinaryArray>() {
+        return Ok(market_bytes_to_string(bytes.value(row)));
+    }
+    bail!(
+        "selected-source market column {column:?} is not Utf8/LargeUtf8/Utf8View/Binary/LargeBinary/BinaryView/FixedSizeBinary"
+    )
+}
+
+fn market_bytes_to_string(bytes: &[u8]) -> String {
+    std::str::from_utf8(bytes).map_or_else(
+        |_| format!("0x{}", hex::encode(bytes)),
+        std::string::ToString::to_string,
+    )
 }
 
 fn required_string(batch: &RecordBatch, column: &str, row: usize) -> Result<String> {
@@ -1206,7 +1380,10 @@ fn optional_string(batch: &RecordBatch, column: &str, row: usize) -> Result<Opti
     if let Some(strings) = values.as_any().downcast_ref::<LargeStringArray>() {
         return Ok(Some(strings.value(row).to_string()));
     }
-    bail!("selected-source column {column:?} is not Utf8 or LargeUtf8")
+    if let Some(strings) = values.as_any().downcast_ref::<StringViewArray>() {
+        return Ok(Some(strings.value(row).to_string()));
+    }
+    bail!("selected-source column {column:?} is not Utf8, LargeUtf8, or Utf8View")
 }
 
 fn required_decimal_string(batch: &RecordBatch, column: &str, row: usize) -> Result<String> {
@@ -1241,7 +1418,10 @@ fn optional_decimal_string(
     if let Some(strings) = values.as_any().downcast_ref::<LargeStringArray>() {
         return Ok(Some(strings.value(row).to_string()));
     }
-    bail!("selected-source column {column:?} is not Decimal128/Decimal64/Utf8/LargeUtf8")
+    if let Some(strings) = values.as_any().downcast_ref::<StringViewArray>() {
+        return Ok(Some(strings.value(row).to_string()));
+    }
+    bail!("selected-source column {column:?} is not Decimal128/Decimal64/Utf8/LargeUtf8/Utf8View")
 }
 
 fn decimal_to_string(value: i128, scale: i8) -> Result<String> {

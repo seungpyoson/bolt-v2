@@ -1052,29 +1052,42 @@ mod tests {
 
     #[test]
     fn price_feed_frame_maps_to_reference_price_update() {
+        const ASSET: &str = "BTC";
+        const SOURCE_ID: &str = "polyresearch_primary";
+        const PROVIDER_INSTRUMENT: &str = "BTC/USD";
+        const FRAME_OBSERVED_TS_SEC: u64 = 1_774_672_588;
+        const EXPECTED_OBSERVED_TS_MS: u64 = 1_774_672_588_000;
+        const RECEIVED_TS_MS: u64 = 1_774_672_589_123;
+        const EXPECTED_PRICE: f64 = 66_300.25;
+        const EXPECTED_BID: f64 = 66_299.5;
+        const EXPECTED_ASK: f64 = 66_301.0;
+
         let subscription = PolyResearchReferenceSubscription {
-            asset: "BTC".to_string(),
-            source_id: "polyresearch_primary".to_string(),
-            symbol: "BTC/USD".to_string(),
+            asset: ASSET.to_string(),
+            source_id: SOURCE_ID.to_string(),
+            symbol: PROVIDER_INSTRUMENT.to_string(),
         };
+        let frame = format!(
+            r#"{{"type":"price_feed","feed":"{PROVIDER_INSTRUMENT}","timestamp":{FRAME_OBSERVED_TS_SEC},"data":{{"feed":"{PROVIDER_INSTRUMENT}","price":{EXPECTED_PRICE},"bid":{EXPECTED_BID},"ask":{EXPECTED_ASK},"timestamp":{FRAME_OBSERVED_TS_SEC}}}}}"#
+        );
 
-        let update = polyresearch_reference_update_from_price_frame(
-            &subscription,
-            r#"{"type":"price_feed","feed":"BTC/USD","timestamp":1774672588,"data":{"feed":"BTC/USD","price":66300.25,"bid":66299.5,"ask":66301.0,"timestamp":1774672588}}"#,
-            1774672589123,
-        )
-        .expect("valid PRR price_feed frame should parse")
-        .expect("matching PRR price_feed frame should emit an update");
+        let update =
+            polyresearch_reference_update_from_price_frame(&subscription, &frame, RECEIVED_TS_MS)
+                .expect("valid PRR price_feed frame should parse")
+                .expect("matching PRR price_feed frame should emit an update");
 
-        assert_eq!(update.asset(), "BTC");
-        assert_eq!(update.source_id(), "polyresearch_primary");
+        assert_eq!(update.asset(), ASSET);
+        assert_eq!(update.source_id(), SOURCE_ID);
         assert_eq!(update.provider(), REFERENCE_PRICE_PROVIDER_KEY);
-        assert_eq!(update.provider_instrument(), "BTC/USD");
-        assert_eq!(update.price(), 66300.25);
-        assert_eq!(update.bid(), Some(66299.5));
-        assert_eq!(update.ask(), Some(66301.0));
-        assert_eq!(update.observed_ts_ms(), 1774672588000);
-        assert_eq!(update.received_ts_ms(), 1774672589123);
+        assert_eq!(update.provider_instrument(), PROVIDER_INSTRUMENT);
+        assert_eq!(update.price(), EXPECTED_PRICE);
+        let quote = update
+            .to_reference_quote()
+            .expect("PRR reference update should convert to quote");
+        assert_eq!(quote.bid(), Some(EXPECTED_BID));
+        assert_eq!(quote.ask(), Some(EXPECTED_ASK));
+        assert_eq!(update.observed_ts_ms(), EXPECTED_OBSERVED_TS_MS);
+        assert_eq!(update.received_ts_ms(), RECEIVED_TS_MS);
     }
 }
 

@@ -15,7 +15,7 @@ log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true
 execution_client_id = "polymarket_main"
-realized_volatility_surface_id = "binary_oracle_xrp_rv_surface"
+realized_volatility_surface_id = "okx_xrp_usdt_midpoint_rv"
 
 [target]
 configured_target_id = "binary_oracle_xrp_target"

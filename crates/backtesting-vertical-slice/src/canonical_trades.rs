@@ -1048,7 +1048,7 @@ mod tests {
         AcceptanceMode, AcceptanceScope, EvidenceState, FixtureType, IngestManifestObjectRecord,
         L2ReplayEvidence, LicenseScope, NtMappingStatus, RequiredCheck, RequiredChecks,
         SourceCandidateClass, SourceProofClaimLimit, SourceProofReport, SourceProofStatus,
-        SourceSelectionStatus, TimeRange,
+        SourceProofUsageScope, SourceSelectionStatus, TimeRange,
     };
 
     fn accepted_dataset() -> AcceptedDataset {
@@ -1093,6 +1093,7 @@ mod tests {
             evidence_state: EvidenceState::OwnerArchiveBackfillable,
             source_candidate_class: SourceCandidateClass::OfficialFree,
             source_selection_status: SourceSelectionStatus::AcceptedLowerFidelity,
+            usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
             official_free_gap_ref: None,
             paid_vendor_gap_ref: None,
             fixture_type: FixtureType::PerpsSpot,

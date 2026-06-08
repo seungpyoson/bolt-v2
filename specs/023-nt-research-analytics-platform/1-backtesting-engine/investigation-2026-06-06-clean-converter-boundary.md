@@ -41,9 +41,9 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - source-proof acceptance now requires structured `acceptance_scope` facts (`planned_objects`, `completed_objects`, `failed_objects`, `skipped_objects`, `accepted_bytes`, and `selector_scope_violations`) instead of accepting prose-only completeness evidence; failed objects, selector-scope violations, inconsistent object accounting, skipped objects without a gap policy, and selected objects whose bytes exceed accepted bytes fail before canonical conversion
 - non-L2 source-proof acceptance now requires structured `claim_limits` rows backing every `forbidden_claims` entry, so trade-replay or weaker data cannot rely on unstructured prose to block execution-quality, order-book, coverage, or fidelity claims
 - source-proof required checks now support `not_applicable` only when a structured `claim_limits` row binds the same `evidence_ref`; this is generic schema behavior, not a Binance/Bybit branch
-- `SourceProofReport` now carries first-class generic source-selection evidence before provider selection: `source_candidate_class`, `source_selection_status`, `official_free_gap_ref`, `paid_vendor_gap_ref`, `cost_ref`, `retention_freshness` and `cost` required checks, and thin `l2_replay_evidence` pointers. Paid/vendor candidates require a recorded official/free gap, forward-capture candidates also require paid/vendor gap evidence, non-selected candidates cannot be accepted for canonical backfill input, `L2_REPLAY` requires order-book delta or sufficient snapshot-cadence evidence, and pending/rejected reports cannot carry acceptance provenance. This closes `BACKTESTING_ENGINE-015` without adding venue/provider constants or storing heavy raw/catalog/result payloads in the proof.
+- `SourceProofReport` now carries first-class generic source-selection evidence before provider selection: `source_candidate_class`, `source_selection_status`, `usage_scope`, `official_free_gap_ref`, `paid_vendor_gap_ref`, `cost_ref`, `retention_freshness` and `cost` required checks, and thin `l2_replay_evidence` pointers. Paid/vendor candidates require a recorded official/free gap, forward-capture candidates also require paid/vendor gap evidence, non-selected candidates cannot be accepted for canonical backfill input, `one_off_backfill_data` cannot be accepted as canonical source-proof input, `L2_REPLAY` requires order-book delta or sufficient snapshot-cadence evidence, and pending/rejected reports cannot carry acceptance provenance. This closes `BACKTESTING_ENGINE-015` without adding venue/provider constants or storing heavy raw/catalog/result payloads in the proof.
 - BTE-022 status is now recorded in `reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json`: pinned NT provides the required `ParquetDataCatalog`, `BacktestNode`, `OrderBookDelta`/`OrderBookDepth10`/`TradeTick`, and Polymarket instrument/parser surfaces; the isolated BTE slice now has TDD-proven manifest/data-config mapping for `OrderBookDelta` and configured `instrument_ids`, NT-native `BinaryOption`/`OrderBookDelta`/`TradeTick` catalog write/read/logical-hash coverage, NT-native BinaryOption L2 `BacktestNode` consumption with `BookType::L2_MBP` and exact OrderBookDelta iteration counts, a generic TOML/ledger-driven first-proof selector over configured event-family roles and row budgets, machine-checked `nautilus-polymarket` public provider/parser surface reuse, L2 result-contract validation for `event_count_ledger_hash` plus `selected_asset_ids_hash`, and generic runner input wiring that refuses L2Replay result construction without selector provenance. It still lacks PMXT raw-row-to-NT projection, instrument metadata binding, and BacktestNode proof over a selected source-backed PMXT catalog.
-- PMXT Polymarket row-to-NT draft contract is now recorded in `reference/source-proof-pmxt-polymarket-row-to-nt-contract.2026-06-08.json`: `book`, `price_change`, `last_trade_price`, and `tick_size_change` rows line up with pinned NT Polymarket parser/data surfaces, but price-change implementation, mixed `timestamp_received` policy proof, selected trade-id policy tests, and tick-size-change catalog representation remain unresolved before broad backfill.
+- PMXT Polymarket row-to-NT draft contract is now recorded in `reference/source-proof-pmxt-polymarket-row-to-nt-contract.2026-06-08.json`: `book`, `price_change`, `last_trade_price`, and `tick_size_change` rows line up with pinned NT Polymarket parser/data surfaces, but price-change implementation, mixed `timestamp_received` policy proof, selected trade-id policy tests, and tick-size-change catalog representation remain unresolved before even the bounded one-off selected-source catalog proof.
 - PMXT Polymarket parser field-use audit is now recorded in
   `reference/source-proof-pmxt-polymarket-nt-parser-field-use.2026-06-08.json`:
   pinned NT declares `PolymarketQuote.hash`, but `parse_book_deltas` and
@@ -120,10 +120,11 @@ Go for the local BNBUSDC vertical-slice path after this fix:
   `64,877,467` scanned source rows, `4` selected rows, one selected asset, and
   `selected_asset_ids_hash`
   `edc5e3c70031056cf544d2cf581c5fe2ee3122886090ae513d6321a34c99d966`.
-  This is a one-off proof staging artifact only. The Rust slicer took `218.96s`
-  wall time over the one-hour sample, so it must not become the broad backfill
-  method; broader PMXT backfill needs a predicate-pushed/materialized source
-  selection path or provider-native partitioning before acceptance.
+  This is a one-off proof staging artifact only with `usage_scope =
+  one_off_backfill_data`. The Rust slicer took `218.96s` wall time over the
+  one-hour sample, so it must not become a broad backfill method. Broad PMXT
+  history is out of scope unless a separate source-proofed plan is explicitly
+  authorized.
 - Current BTE implementation audit after selecting that policy: the source-proof
   and claim-limit governance pieces exist, and the isolated crate now has
   TDD-proven manifest/data-config support for `OrderBookDelta`, configured
@@ -1546,10 +1547,11 @@ Midpoint table-family coverage audit:
   It closes only the planning evaluation task, not source selection or broad
   backfill authorization. The result is: Binance official public archive remains
   lower-fidelity trade replay while Tardis Binance L2 is a pending paid/vendor
-  candidate; PMXT Polymarket remains the highest current binary-option L2
-  candidate but still needs NT mapping and source selection proof; Kalshi
-  official bars/trades cannot be final while the PMXT Kalshi L2 orderbook
-  archive candidate is unaccepted; and Hyperliquid HIP-4 historical
+  candidate; PMXT Polymarket is now scoped only to one-off selected-source
+  bootstrap/projection evidence and must not block durable Polymarket source
+  selection; PMXT Kalshi is likewise one-off evidence rather than a standing
+  blocker for official Kalshi lower-fidelity claim-limited paths; and
+  Hyperliquid HIP-4 historical
   execution-quality replay remains unproven because current outcomeMeta/current
   book probes and generic Hyperliquid L2 metadata do not bind exact historical
   outcome replay coverage. The artifact also records slow-backfill controls:
@@ -1561,8 +1563,8 @@ Midpoint table-family coverage audit:
   `specs/023-nt-research-analytics-platform/reference/source-proof-cost-cut-levers-status.backtesting-engine-028.2026-06-08.json`.
   It closes only the planning-control task, not source selection, NT mapping, or
   broad backfill authorization. The approved levers are coverage-ledger gating
-  before payload download, a one-object PMXT Polymarket proof cap before
-  tranche expansion, source-proof acceptance before conversion, NT-native
+  before payload download, a one-object PMXT Polymarket proof cap with
+  `usage_scope = one_off_backfill_data`, source-proof acceptance before conversion, NT-native
   catalog projection/read-back as the expansion gate, bounded validation
   queries, and lifecycle placement after proof. It explicitly forbids treating
   cheaper lower-fidelity data, venue/provider hardcodes, local prototypes,
@@ -1579,17 +1581,17 @@ Midpoint table-family coverage audit:
   `catalog_projection.rs` has NT-native fixture proof for `BinaryOption`,
   `OrderBookDelta`, and `TradeTick` catalog write/read/logical-hash. Other data
   classes must continue to fail closed until typed projection and catalog
-  read-back proof exist. PMXT Polymarket remains a candidate for
-  `OrderBookDelta` and `TradeTick`, but the artifact requires BTE to reuse the
-  pinned NT Polymarket parser/provider for instruments instead of inventing a
-  custom BinaryOption mapper. Current dependency wiring matters: root `bolt-v2`
-  pins `nautilus-polymarket`, but the isolated
-  `crates/backtesting-vertical-slice` workspace does not depend on it yet, so
-  BTE cannot claim machine-checked reuse until that boundary is approved and
-  proved. Kalshi official history remains lower-fidelity `Bar` or `TradeTick`
-  candidate only; PMXT Kalshi L2 now has a bounded sample
-  schema proving `orderbook_snapshot` and `orderbook_delta` rows, but still
-  needs source-backed BinaryOption fields, timestamp policy, and NT catalog
+  read-back proof exist. PMXT Polymarket is only a one-off selected-source
+  input for proving `OrderBookDelta` and `TradeTick` catalog plumbing; the
+  durable path still requires BTE to reuse the pinned NT Polymarket
+  parser/provider for instruments instead of inventing a custom BinaryOption
+  mapper. Current dependency wiring now machine-checks the isolated
+  `crates/backtesting-vertical-slice` boundary against `nautilus-polymarket`
+  public surfaces, but selected PMXT raw-row-to-NT projection and catalog
+  read-back remain unproven. Kalshi official history remains lower-fidelity
+  `Bar` or `TradeTick` candidate only; PMXT Kalshi L2 is one-off evidence, not
+  a standing blocker, and would still need source-backed BinaryOption fields,
+  timestamp policy, and NT catalog
   read-back before any mapping claim; HIP-4 remains metadata-only until exact
   historical outcome replay coverage and checked BinaryOption fields are
   source-backed.

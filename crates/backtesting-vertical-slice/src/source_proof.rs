@@ -176,6 +176,18 @@ pub enum SourceSelectionStatus {
     ForwardCapturePending,
 }
 
+/// Source-proof use boundary before a candidate can become canonical input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceProofUsageScope {
+    CanonicalBackfillInput,
+    OneOffBackfillData,
+}
+
+fn default_source_proof_usage_scope() -> SourceProofUsageScope {
+    SourceProofUsageScope::CanonicalBackfillInput
+}
+
 /// Market-structure fixture family the proof belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -504,6 +516,8 @@ pub struct SourceProofReport {
     pub evidence_state: EvidenceState,
     pub source_candidate_class: SourceCandidateClass,
     pub source_selection_status: SourceSelectionStatus,
+    #[serde(default = "default_source_proof_usage_scope")]
+    pub usage_scope: SourceProofUsageScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub official_free_gap_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -621,6 +635,8 @@ pub enum AcceptanceError {
     EvidenceStateNotBackfillable(EvidenceState),
     /// Source selection status is not eligible for acceptance.
     SourceSelectionNotAccepted(SourceSelectionStatus),
+    /// One-off bootstrap/backfill data cannot be promoted into canonical input.
+    OneOffBackfillDataNotCanonical,
     /// The source proof disagrees with the configured source-binding metadata.
     SourceBindingMismatch {
         field: &'static str,
@@ -748,6 +764,12 @@ impl std::fmt::Display for AcceptanceError {
                 write!(
                     f,
                     "source_selection_status {status:?} is not accepted for canonical source proof"
+                )
+            }
+            Self::OneOffBackfillDataNotCanonical => {
+                write!(
+                    f,
+                    "one_off_backfill_data source proofs cannot be accepted as canonical source proof input"
                 )
             }
             Self::SourceBindingMismatch {
@@ -1402,6 +1424,10 @@ fn validate_acceptance_provenance_shape(proof: &SourceProofReport) -> Result<(),
 }
 
 fn validate_source_selection(proof: &SourceProofReport) -> Result<(), AcceptanceError> {
+    if proof.usage_scope == SourceProofUsageScope::OneOffBackfillData {
+        return Err(AcceptanceError::OneOffBackfillDataNotCanonical);
+    }
+
     match proof.source_selection_status {
         SourceSelectionStatus::AcceptedForRequiredFidelity
         | SourceSelectionStatus::AcceptedLowerFidelity => {}
@@ -1856,6 +1882,7 @@ mod tests {
             evidence_state: EvidenceState::OwnerArchiveBackfillable,
             source_candidate_class: SourceCandidateClass::OfficialFree,
             source_selection_status: SourceSelectionStatus::AcceptedLowerFidelity,
+            usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
             official_free_gap_ref: None,
             paid_vendor_gap_ref: None,
             fixture_type: FixtureType::PerpsSpot,
@@ -2194,6 +2221,16 @@ table_families = ["signals"]
             err,
             AcceptanceError::SourceSelectionNotAccepted(SourceSelectionStatus::PendingMoreProof)
         );
+    }
+
+    #[test]
+    fn one_off_backfill_data_cannot_be_accepted_as_canonical_source_proof() {
+        let mut proof = candidate_proof();
+        proof.usage_scope = SourceProofUsageScope::OneOffBackfillData;
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert_eq!(err, AcceptanceError::OneOffBackfillDataNotCanonical);
     }
 
     #[test]

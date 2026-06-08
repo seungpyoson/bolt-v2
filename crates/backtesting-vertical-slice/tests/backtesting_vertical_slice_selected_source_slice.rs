@@ -53,6 +53,7 @@ fn selected_source_slice_writes_only_selector_assets_and_configured_columns() {
         report["selector_report_sha256"],
         sha256_bytes(&selector_bytes)
     );
+    assert_eq!(report["usage_scope"], "one_off_backfill_data");
 
     let (columns, rows) = read_selected_rows(&artifact.output_parquet_path);
     assert_eq!(columns, vec!["asset", "event_type", "payload"]);
@@ -160,6 +161,7 @@ selector_report_path = "{}"
 output_parquet_path = "{}"
 report_path = "{}"
 asset_id_column = "asset"
+usage_scope = "one_off_backfill_data"
 projected_columns = ["asset", "event_type", "payload"]
 "#,
             source_path.display(),

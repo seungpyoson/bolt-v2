@@ -152,14 +152,15 @@
       "fixture_type": "binary-option",
       "current_fixture_source_binding": "polymarket-parquet-archive-index",
       "current_fixture_fidelity": "L2_REPLAY",
-      "highest_fidelity_candidate_status": "official_free_l2_candidate_pending_nt_mapping_and_selection",
+      "highest_fidelity_candidate_status": "one_off_l2_bootstrap_data_pending_nt_projection",
       "official_or_free_candidates": [
         {
           "source_binding": "polymarket-parquet-archive-index",
           "source_family": "official_or_free_public_archive",
           "candidate_fidelity": "L2_REPLAY",
-          "classification": "PENDING_MORE_PROOF",
-          "reason": "Existing fixture proof classifies PMXT Polymarket as L2_REPLAY, but selection remains blocked until sample-to-NT catalog mapping, coverage, storage, and final source-proof acceptance pass."
+          "classification": "ONE_OFF_BACKFILL_DATA_ONLY",
+          "usage_scope": "one_off_backfill_data",
+          "reason": "PMXT Polymarket is retained only as bounded selected-source/bootstrap evidence. It must not be promoted into durable broad source selection; reusable Polymarket instrument and parser behavior must come from pinned NT nautilus-polymarket surfaces."
         }
       ],
       "paid_or_vendor_candidates": [
@@ -169,10 +170,10 @@
           "source_family": "paid_vendor_prediction_market_history",
           "candidate_fidelity": "L2_REPLAY",
           "classification": "PENDING_MORE_PROOF",
-          "reason": "Paid Polymarket alternatives are fallback candidates only if free/public PMXT proof fails required coverage, license, schema, or NT mapping checks."
+          "reason": "Paid Polymarket alternatives are separate durable-history candidates only if a broad historical L2 replay requirement is explicitly accepted; they are not unlocked by one-off PMXT bootstrap evidence."
         }
       ],
-      "selection_guard": "Keep PMXT Polymarket as the highest current binary-option candidate, but do not select or backfill broadly until BTE-022 and BTE-027 pass."
+      "selection_guard": "Do not select PMXT Polymarket as a durable broad backfill source. Use it only for explicitly configured one-off selected-source proof data; durable Polymarket catalog/backtest paths must reuse pinned NT Polymarket provider/parser surfaces and pass separate source-proof acceptance."
     },
     {
       "fixture_type": "binary-option",
@@ -191,12 +192,13 @@
           "source_binding": "pmxt-kalshi-orderbook-archive",
           "source_family": "official_or_free_public_archive",
           "candidate_fidelity": "L2_REPLAY",
-          "classification": "PENDING_MORE_PROOF",
-          "reason": "The current PMXT root and Kalshi index evidence proves a free hourly Kalshi orderbook Parquet archive candidate with CC BY 4.0 attribution terms and bounded byte-scale evidence. A bounded sample schema is now recorded separately, but source-backed BinaryOption instrument fields, timestamp policy, NT catalog mapping, coverage, storage, and source-proof acceptance remain pending."
+          "classification": "ONE_OFF_BACKFILL_DATA_ONLY",
+          "usage_scope": "one_off_backfill_data",
+          "reason": "The PMXT Kalshi archive is evidence for bounded one-off backfill/projection experiments only. It is not selected as a reusable durable Kalshi L2 source without a separate source-proofed plan."
         }
       ],
       "paid_or_vendor_candidates": [],
-      "selection_guard": "Do not select Kalshi official bars/trades as final while PMXT Kalshi L2 remains unaccepted; accept lower-fidelity Kalshi only through explicit claim limits after the L2 candidate is accepted, rejected, or scoped out."
+      "selection_guard": "Do not treat PMXT Kalshi as a standing blocker or durable source candidate. Official Kalshi lower-fidelity paths may proceed only through explicit claim limits; any one-off PMXT Kalshi use needs its own bounded proof artifact."
     },
     {
       "fixture_type": "binary-option",

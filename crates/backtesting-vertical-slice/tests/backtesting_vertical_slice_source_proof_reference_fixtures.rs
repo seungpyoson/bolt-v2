@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, fs, path::PathBuf};
 
 use backtesting_vertical_slice::source_proof::{
     CheckOutcome, FixtureType, NtMappingStatus, SourceCandidateClass, SourceProofFidelityClass,
-    SourceProofReport, SourceProofStatus, SourceSelectionStatus,
+    SourceProofReport, SourceProofStatus, SourceProofUsageScope, SourceSelectionStatus,
 };
 use serde_json::Value;
 
@@ -122,6 +122,32 @@ fn assert_sample_evidence_is_inspected(path: &PathBuf, report: &SourceProofRepor
         report.required_checks.schema.outcome,
         CheckOutcome::Passed,
         "fixture report {path:?} must pass schema sample inspection before provider selection"
+    );
+}
+
+fn assert_one_off_usage_scope_is_bounded(path: &PathBuf, report: &SourceProofReport) {
+    if report.usage_scope != SourceProofUsageScope::OneOffBackfillData {
+        return;
+    }
+
+    assert_eq!(
+        report.status,
+        SourceProofStatus::Pending,
+        "one-off fixture report {path:?} must remain pending and outside canonical acceptance"
+    );
+    assert!(
+        report.forbidden_claims.iter().any(|claim| {
+            claim.contains("canonical") || claim.contains("broad") || claim.contains("production")
+        }),
+        "one-off fixture report {path:?} must forbid broad/canonical promotion"
+    );
+    assert!(
+        report.claim_limits.iter().any(|limit| {
+            limit.claim.contains("canonical")
+                || limit.claim.contains("broad")
+                || limit.claim.contains("production")
+        }),
+        "one-off fixture report {path:?} must bind broad/canonical limits to a claim-limit record"
     );
 }
 
@@ -276,10 +302,23 @@ fn reference_fixtures_include_unselected_binary_option_source_proof() {
 
     for (path, value, report) in binary_option_reports {
         assert_unselected_official_free_candidate(path, report);
+        assert_one_off_usage_scope_is_bounded(path, report);
         assert_sample_evidence_is_inspected(path, report);
         assert_nt_mapping_evidence_is_bounded(path, report);
         assert_no_heavy_payloads(path, value);
     }
+}
+
+#[test]
+fn reference_fixtures_include_bounded_one_off_source_proof_scope() {
+    let reports = reference_source_proof_reports();
+
+    assert!(
+        reports
+            .iter()
+            .any(|(_, _, report)| report.usage_scope == SourceProofUsageScope::OneOffBackfillData),
+        "reference fixtures must include an explicit one-off backfill-data scope before any one-off source is used as evidence"
+    );
 }
 
 #[test]

@@ -25,6 +25,12 @@ use crate::first_proof_selector::{FirstProofSelectorReport, FirstProofSelectorSt
 
 pub const SELECTED_SOURCE_SLICE_REPORT_SCHEMA_VERSION: &str = "selected-source-slice-report.v1";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectedSourceSliceUsageScope {
+    OneOffBackfillData,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SelectedSourceSliceSpec {
@@ -33,6 +39,7 @@ pub struct SelectedSourceSliceSpec {
     pub output_parquet_path: PathBuf,
     pub report_path: PathBuf,
     pub asset_id_column: String,
+    pub usage_scope: SelectedSourceSliceUsageScope,
     pub projected_columns: Vec<String>,
 }
 
@@ -46,6 +53,7 @@ pub struct SelectedSourceSliceReport {
     pub selector_report_sha256: String,
     pub output_parquet_path: String,
     pub asset_id_column: String,
+    pub usage_scope: SelectedSourceSliceUsageScope,
     pub projected_columns: Vec<String>,
     pub source_rows: u64,
     pub selected_rows: u64,
@@ -63,6 +71,7 @@ pub struct SelectedSourceSliceArtifact {
     pub output_parquet_sha256: String,
     pub report_hash: String,
     pub report_bytes: u64,
+    pub usage_scope: SelectedSourceSliceUsageScope,
     pub source_rows: u64,
     pub selected_rows: u64,
     pub selected_asset_count: u64,
@@ -227,6 +236,7 @@ pub fn write_selected_source_slice(
         selector_report_sha256,
         output_parquet_path: spec.output_parquet_path.display().to_string(),
         asset_id_column: spec.asset_id_column.clone(),
+        usage_scope: spec.usage_scope,
         projected_columns: spec.projected_columns.clone(),
         source_rows,
         selected_rows,
@@ -247,6 +257,7 @@ pub fn write_selected_source_slice(
         output_parquet_sha256: report.output_parquet_sha256,
         report_hash,
         report_bytes: report_bytes.len() as u64,
+        usage_scope: report.usage_scope,
         source_rows,
         selected_rows,
         selected_asset_count: report.selected_asset_count,

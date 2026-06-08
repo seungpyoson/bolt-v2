@@ -683,8 +683,8 @@ mod tests {
             AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
             IngestManifestObjectRecord, L2ReplayEvidence, LicenseScope, NtMappingStatus,
             RequiredCheck, RequiredChecks, SourceCandidateClass, SourceProofClaimLimit,
-            SourceProofReport, SourceProofStatus, SourceSelectionStatus, TimeRange,
-            select_accepted_dataset,
+            SourceProofReport, SourceProofStatus, SourceProofUsageScope, SourceSelectionStatus,
+            TimeRange, select_accepted_dataset,
         },
     };
 
@@ -749,6 +749,7 @@ mod tests {
             evidence_state: EvidenceState::OwnerArchiveBackfillable,
             source_candidate_class: SourceCandidateClass::OfficialFree,
             source_selection_status: SourceSelectionStatus::AcceptedLowerFidelity,
+            usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
             official_free_gap_ref: None,
             paid_vendor_gap_ref: None,
             fixture_type: FixtureType::PerpsSpot,

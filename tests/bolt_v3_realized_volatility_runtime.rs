@@ -4,6 +4,7 @@ use bolt_v2::{
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolEngineConfig, RealizedVolObservation,
         RealizedVolSampleKind, RealizedVolSourceClass, RealizedVolSourceConfig,
+        RealizedVolSourceRejectReason,
     },
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
 };
@@ -100,6 +101,81 @@ fn runtime_publishes_snapshot_by_surface_id_for_multiple_consumers() {
     assert!(snapshot.ready);
     assert_eq!(pricing_consumer, monitoring_consumer);
     assert_eq!(pricing_consumer.surface_id, SURFACE_A);
+}
+
+#[test]
+fn runtime_refresh_ignores_stale_and_equal_explicit_refresh_timestamps() {
+    let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([(
+        SURFACE_A.to_string(),
+        config(SURFACE_A, SOURCE_A, "<INSTRUMENT_A>.<DATA_CLIENT_ID>"),
+    )]))
+    .expect("runtime should build");
+
+    for (index, price) in [100.0, 101.0, 102.0, 103.0].iter().enumerate() {
+        assert!(runtime.observe(observation(SOURCE_A, *price, (index as u64 + 1) * 1_000)));
+    }
+    let first = runtime
+        .refresh_surface_at(SURFACE_A, 4_000)
+        .expect("first refresh should publish");
+    let equal = runtime
+        .refresh_surface_at(SURFACE_A, 4_000)
+        .expect("equal refresh should return current snapshot");
+    let stale = runtime
+        .refresh_surface_at(SURFACE_A, 3_000)
+        .expect("stale refresh should return current snapshot");
+
+    assert_eq!(first.as_of_ms, 4_000);
+    assert_eq!(equal, first);
+    assert_eq!(stale, first);
+    assert_eq!(runtime.snapshot(SURFACE_A), Some(first));
+}
+
+#[test]
+fn runtime_direct_observe_wrong_sample_kind_rejects_without_republishing_snapshot() {
+    let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([(
+        SURFACE_A.to_string(),
+        config(SURFACE_A, SOURCE_A, "<INSTRUMENT_A>.<DATA_CLIENT_ID>"),
+    )]))
+    .expect("runtime should build");
+
+    for (index, price) in [100.0, 101.0, 102.0, 103.0].iter().enumerate() {
+        assert!(runtime.observe(observation(SOURCE_A, *price, (index as u64 + 1) * 1_000)));
+    }
+    let published = runtime
+        .refresh_surface_at(SURFACE_A, 4_000)
+        .expect("ready snapshot should publish");
+
+    assert!(!runtime.observe(RealizedVolObservation {
+        sample_kind: RealizedVolSampleKind::Trade,
+        price: 104.0,
+        event_ts_ms: 5_000,
+        recv_ts_ms: 5_000,
+        ..observation(SOURCE_A, 104.0, 5_000)
+    }));
+    assert_eq!(
+        runtime.snapshot(SURFACE_A),
+        Some(published),
+        "direct rejected observations must not publish a new snapshot"
+    );
+
+    let refreshed = runtime
+        .refresh_surface_at(SURFACE_A, 5_000)
+        .expect("explicit refresh should expose rejection diagnostics");
+    let diagnostic = refreshed
+        .source_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source_id == SOURCE_A)
+        .expect("configured source should remain diagnostic-visible");
+    assert_eq!(
+        diagnostic.last_rejected_reason,
+        Some(RealizedVolSourceRejectReason::SampleKindMismatch)
+    );
+    assert_eq!(
+        diagnostic
+            .rejection_counters
+            .get(&RealizedVolSourceRejectReason::SampleKindMismatch),
+        Some(&1)
+    );
 }
 
 #[test]

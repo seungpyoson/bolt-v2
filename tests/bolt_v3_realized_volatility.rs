@@ -1,9 +1,10 @@
 use bolt_v2::bolt_v3_realized_volatility::{
-    RealizedVolAggregation, RealizedVolBlockReason, RealizedVolEngine, RealizedVolEngineConfig,
-    RealizedVolJumpConfig, RealizedVolJumpPolicy, RealizedVolNoiseConfig, RealizedVolNoiseMethod,
-    RealizedVolObservation, RealizedVolPricingComponent, RealizedVolSampleKind,
-    RealizedVolSnapshot, RealizedVolSourceClass, RealizedVolSourceConfig,
-    RealizedVolSourceRejectReason, RealizedVolSourceStatus,
+    RealizedVolAggregation, RealizedVolBlockReason, RealizedVolCoarserGridPolicy,
+    RealizedVolEngine, RealizedVolEngineConfig, RealizedVolJumpConfig, RealizedVolJumpPolicy,
+    RealizedVolNoiseConfig, RealizedVolNoiseMethod, RealizedVolObservation,
+    RealizedVolPricingComponent, RealizedVolSampleKind, RealizedVolSnapshot,
+    RealizedVolSourceClass, RealizedVolSourceConfig, RealizedVolSourceRejectReason,
+    RealizedVolSourceStatus,
 };
 
 const SURFACE_ID: &str = "<surface_id>";
@@ -249,6 +250,62 @@ fn subsampled_rv_uses_deterministic_offset_grids_not_raw_tick_thinning() {
     assert!(
         actual > 0.0,
         "offset-grid subsampling should not collapse this path to zero"
+    );
+}
+
+#[test]
+fn coarser_grid_policy_selects_coarse_only_component() {
+    let mut cfg = config(&[SOURCE_A]);
+    cfg.estimator.noise = RealizedVolNoiseConfig {
+        method: RealizedVolNoiseMethod::CoarserGrid {
+            coarse_sampling_interval_ms: 2_000,
+            policy: RealizedVolCoarserGridPolicy::CoarseOnly,
+        },
+    };
+    cfg.estimator.pricing_component = RealizedVolPricingComponent::NoiseRobust;
+    let mut engine = RealizedVolEngine::from_config(cfg).unwrap();
+    observe_path(&mut engine, SOURCE_A, &[100.0, 100.0, 110.0, 110.0]);
+
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    let expected_coarse = ((110.0_f64 / 100.0).ln().powi(2) / 2.0 * 31_536_000.0).sqrt();
+    let noise_robust = snapshot
+        .noise_robust_annualized_realized_vol_decimal
+        .expect("coarse-only RV should be present");
+    assert_close(noise_robust, expected_coarse, 1e-9);
+    assert_close(
+        snapshot.annualized_realized_vol_decimal.unwrap(),
+        expected_coarse,
+        1e-9,
+    );
+}
+
+#[test]
+fn coarser_grid_min_base_coarse_uses_lower_component() {
+    let mut cfg = config(&[SOURCE_A]);
+    cfg.estimator.noise = RealizedVolNoiseConfig {
+        method: RealizedVolNoiseMethod::CoarserGrid {
+            coarse_sampling_interval_ms: 2_000,
+            policy: RealizedVolCoarserGridPolicy::MinBaseCoarse,
+        },
+    };
+    cfg.estimator.pricing_component = RealizedVolPricingComponent::NoiseRobust;
+    let mut engine = RealizedVolEngine::from_config(cfg).unwrap();
+    observe_path(&mut engine, SOURCE_A, &[100.0, 100.0, 110.0, 110.0]);
+
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    let expected_base = ((110.0_f64 / 100.0).ln().powi(2) / 3.0 * 31_536_000.0).sqrt();
+    let noise_robust = snapshot
+        .noise_robust_annualized_realized_vol_decimal
+        .expect("min-base-coarse RV should be present");
+    assert_close(noise_robust, expected_base, 1e-9);
+    assert_close(
+        snapshot.annualized_realized_vol_decimal.unwrap(),
+        expected_base,
+        1e-9,
     );
 }
 

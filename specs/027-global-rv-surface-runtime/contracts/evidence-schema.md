@@ -78,9 +78,6 @@ Each source diagnostic must include:
 - `source_class`
 - `sample_kind`
 - `status`
-- `last_event_ts_ms`
-- `last_recv_ts_ms`
-- `last_accepted_ts_ms`
 - `last_rejected_reason`
 - `rejection_counters`
 - `annualized_realized_volatility_decimal`

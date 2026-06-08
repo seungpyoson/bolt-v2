@@ -79,7 +79,7 @@ Must include:
 - `sources_used`
 - `source_diagnostics`
 - `blocked_reasons`
-- `aggregation_method`
+- `aggregation`
 - `config_fingerprint`
 
 ## Operations

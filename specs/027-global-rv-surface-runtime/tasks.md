@@ -102,7 +102,7 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 - [ ] T061 RED: Add engine test `subsampled_rv_requires_min_ready_subsamples`.
 - [ ] T062 RED: Add engine tests `subsampled_offset_grid_coverage_uses_offset_grid_denominator`, `subsampled_offsets_are_distinct_for_valid_collision_free_config`, and `subsampled_evidence_records_actual_offsets_used`.
 - [ ] T063 RED: Add config test `subsamples_greater_than_sampling_interval_is_rejected_or_collision_semantics_are_explicit`.
-- [ ] T064 RED: Add engine tests `coarser_grid_rv_policy_selects_base_coarse_or_min_base_coarse`, `min_base_coarse_returns_base_when_base_is_lower`, and `min_base_coarse_returns_coarse_when_coarse_is_lower`.
+- [ ] T064 RED: Add engine tests `coarser_grid_policy_selects_coarse_only_component`, `coarser_grid_min_base_coarse_uses_lower_component`, and min-base/coarse boundary coverage.
 - [ ] T065 RED: Add config validation tests for `noise_robust_method`, `subsamples`, `min_ready_subsamples`, `coarse_sampling_interval_ms`, and `coarser_grid_policy`.
 - [ ] T066 GREEN: Implement `noise_robust_method = "none"` as current fixed-grid behavior.
 - [ ] T067 GREEN: Implement `noise_robust_method = "coarser_grid"` per horizon.

@@ -54,14 +54,14 @@ specs/027-global-rv-surface-runtime/
 ```text
 src/
 ├── bolt_v3_realized_volatility.rs          # RV math, estimates, snapshots, source evaluation
-├── bolt_v3_realized_volatility_runtime.rs  # new runtime-level surface service and subscription routing
+├── bolt_v3_realized_volatility_runtime.rs  # runtime-level surface service and subscription routing
 ├── bolt_v3_config.rs                       # TOML schema extensions
 ├── bolt_v3_validate.rs                     # root validation for sources, horizons, methods, clients
 ├── bolt_v3_decision_evidence.rs            # evidence schema/version updates
 ├── bolt_v3_taker_pricing.rs                # snapshot consumer only
 ├── strategies/
 │   ├── registry.rs                         # build context exposes global snapshot/runtime handle
-│   └── binary_oracle_edge_taker/           # remove RV engine ownership; consume snapshots only
+│   └── binary_oracle_edge_taker/           # no RV engine ownership; consumes snapshots only
 └── lib.rs                                  # export runtime module
 
 tests/

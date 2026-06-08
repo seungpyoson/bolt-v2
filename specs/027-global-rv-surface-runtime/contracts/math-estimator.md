@@ -19,7 +19,7 @@ For a horizon with window `W`, sampling interval `dt`, and annualization basis `
 2. Fill grid prices by LOCF from accepted observations, respecting source age and inter-sample gap constraints.
 3. Compute log returns `r_i = ln(p_i / p_{i-1})` for positive finite adjacent prices.
 4. Compute realized variance `RV = sum_i r_i^2`.
-5. Annualize as `annualized_rv = RV * A / horizon_seconds`.
+5. Annualize as `annualized_rv = RV * A / elapsed_grid_return_seconds`, where `elapsed_grid_return_seconds` is the sum of elapsed time across valid adjacent grid-return pairs. It is not necessarily the full configured `window_ms`.
 6. Annualized realized volatility is `sqrt(annualized_rv)`.
 
 Coverage ratio:
@@ -75,8 +75,7 @@ Compute the same base estimator using `coarse_sampling_interval_ms`. Emit both b
 
 Final value depends on `coarser_grid_policy`:
 
-- `base`: use base fixed-grid estimate.
-- `coarse`: use coarser estimate.
+- `coarse_only`: use coarser estimate.
 - `min_base_coarse`: use `min(base, coarse)` for noise suppression while retaining both in evidence.
 
 ### subsampled
@@ -85,10 +84,10 @@ For `k = subsamples`:
 
 1. Create `k` deterministic offset grids within the same horizon.
 2. For each `j` in `0..k`, offset `j` starts at `window_start + floor(j * sampling_interval_ms / k)`. Distinct integer millisecond offsets are required unless TOML explicitly enables offset-collision reporting.
-3. Compute base fixed-grid RV for each offset grid.
-4. Each offset grid computes coverage against its own expected return count after the offset start.
-5. The subsampled estimate is the arithmetic mean of ready offset-grid RVs.
-6. Reject unless `ready_offset_grid_count >= min_ready_subsamples`.
+3. The base fixed-grid path enforces the source-level coverage gate before subsampling.
+4. Compute fixed-grid RV for each offset lane that has at least two grid prices.
+5. The subsampled estimate is the arithmetic mean of ready offset-lane RVs.
+6. Reject unless `ready_offset_lane_count >= min_ready_subsamples`.
 
 Evidence must include base fixed-grid RV and subsampled RV in PR #615. Per-offset counts, offset timestamps, and coverage ratios are future evidence extensions if needed by operators.
 
@@ -103,7 +102,7 @@ For returns `r_1..r_n` where `n >= 2`:
 - Continuous variance: `continuous_var = min(RV, BV)`.
 - Jump variance: `jump_var = max(RV - continuous_var, 0)`.
 
-Annualize continuous and jump components using the same horizon annualization basis. The identity `measured_variance = continuous_variance + jump_variance` is enforced on the pre-annualized variance scale before any square-root conversion. Convert variance components to volatility components by square root after annualization.
+Annualize continuous and jump components using the same horizon annualization basis. The identity `measured_variance = continuous_variance + jump_variance` is enforced per source on the pre-annualized variance scale before any square-root conversion. Convert variance components to volatility components by square root after annualization. Surface-level component fields are independently aggregated marginal components across ready sources; they do not claim `surface_measured^2 = surface_continuous^2 + surface_jump^2` after cross-source aggregation.
 
 Rules:
 

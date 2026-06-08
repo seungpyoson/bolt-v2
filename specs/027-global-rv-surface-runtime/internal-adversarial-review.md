@@ -117,3 +117,69 @@ Ask Claude, Gemini, Grok, and GLM to challenge these exact questions:
 ## Internal Recommendation
 
 Run external adversarial reviews before implementation. If any reviewer finds a substantive issue, update the spec/plan/tasks/contracts first, then re-review. Do not implement from this branch until the plan has unanimous approval or a model is explicitly skipped after more than two consecutive relay failures.
+
+## Current-State Follow-Up Audit - 2026-06-09
+
+Scope reviewed after implementation and post-fix approval comments:
+
+- `specs/027-global-rv-surface-runtime/contracts/evidence-schema.md`
+- `specs/027-global-rv-surface-runtime/contracts/math-estimator.md`
+- `specs/027-global-rv-surface-runtime/contracts/runtime-api.md`
+- `specs/027-global-rv-surface-runtime/tasks.md`
+- `tests/bolt_v3_realized_volatility.rs`
+- `tests/bolt_v3_realized_volatility_runtime.rs`
+- `.specify/feature.json`
+- `AGENTS.md`
+
+### F1 - Active Speckit pointer cannot be moved to feature 027
+
+Risk: The `speckit-plan` workflow says the active agent context should point at the generated plan, but this repository's current source-fence gate requires `.specify/feature.json` and `AGENTS.md` to keep pointing at `specs/023-nt-order-intent-layer/plan.md`.
+
+Disposition: Resolved by preserving the CI-required active pointer and keeping feature 027 artifacts under `specs/027-global-rv-surface-runtime/`.
+
+Evidence:
+
+- `just source-fence` fails when the active pointer is changed to feature 027.
+- `just source-fence` passes again after restoring the feature 023 pointer.
+
+### F2 - Contract docs drifted from Rust evidence/runtime names
+
+Risk: External consumers could implement against fields that the Rust structs do not emit.
+
+Disposition: Resolved.
+
+Evidence:
+
+- Removed non-emitted source diagnostic timestamp fields from `contracts/evidence-schema.md`.
+- Changed runtime snapshot contract from `aggregation_method` to `aggregation`.
+
+### F3 - Math contract overstated coarser/subsampled/jump identities
+
+Risk: Reviewers and future implementers could believe unsupported policies or identities are guaranteed.
+
+Disposition: Resolved.
+
+Evidence:
+
+- `coarser_grid_policy` now names `coarse_only` and `min_base_coarse`.
+- Annualization now names elapsed grid-return seconds rather than full-window seconds.
+- Subsampled RV now documents base coverage first, then ready offset lanes with at least two grid prices.
+- Jump identity is explicitly per source; surface-level component fields are independently aggregated marginals.
+
+### F4 - Residual test gaps from approval comment
+
+Risk: Previous PR comment listed coverage gaps while still approving.
+
+Disposition: Partially resolved with direct focused tests.
+
+Evidence:
+
+- Added `coarser_grid_policy_selects_coarse_only_component`.
+- Added `coarser_grid_min_base_coarse_uses_lower_component`.
+- Added `runtime_refresh_ignores_stale_and_equal_explicit_refresh_timestamps`.
+- Added `runtime_direct_observe_wrong_sample_kind_rejects_without_republishing_snapshot`.
+- Focused checks pass: `cargo test --locked --test bolt_v3_realized_volatility`, `cargo test --locked --test bolt_v3_realized_volatility_runtime`, `cargo fmt --check`, `git diff --check`, and `just source-fence`.
+
+### Current Verdict
+
+Proceed to external re-review on the updated diff before claiming goal completion. The remaining approval requirement is current-source adversarial review/approval from Claude, Gemini, Grok, and GLM, or an explicit failure-rule skip where allowed by the task contract.

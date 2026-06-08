@@ -28,7 +28,7 @@
 - [x] BACKTESTING_ENGINE-026 Estimate subscription, AWS storage/compute/transfer, query/log, and reserve costs for backtesting data and replay.
 - [x] BACKTESTING_ENGINE-027 Select source only after source proof, license, sample, NT mapping, fidelity, and cost proof are recorded.
 - [x] BACKTESTING_ENGINE-028 Present cost-cut levers only after fidelity and source-contract claims are explicit.
-- [ ] BACKTESTING_ENGINE-029 Implement NT `BacktestNode` orchestration without custom simulation behavior.
+- [x] BACKTESTING_ENGINE-029 Implement NT `BacktestNode` orchestration without custom simulation behavior.
 - [x] BACKTESTING_ENGINE-030 Emit objective `BacktestResultContract` with NT pointer, source hashes, source proof id/version, run purpose, fidelity, claim limits, warnings/mechanical blockers, and final artifact URIs, without strategy promotion or escalation recommendations.
 - [x] BACKTESTING_ENGINE-031 Finalize exact `BacktestResultContract` field schema after inspecting selected NT output shape, and add validation that Backtesting Engine result contracts cannot encode subjective strategy-promotion decisions.
 - [x] BACKTESTING_ENGINE-032 Add tests for TOML-only venue/provider swaps.

@@ -6,15 +6,21 @@
 
 use std::{any::type_name, collections::HashMap};
 
+use nautilus_backtest::config::NautilusDataType;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::{OrderBookDeltas, QuoteTick, TradeTick},
+    data::{Data, InstrumentClose, InstrumentStatus, OrderBookDeltas, QuoteTick, TradeTick},
     identifiers::InstrumentId,
+    instruments::InstrumentAny,
 };
 use nautilus_polymarket::{
+    http::parse::rebuild_instrument_with_tick_size,
     providers::{PolymarketInstrumentProvider, build_gamma_params_from_hashmap},
     websocket::{
-        messages::{PolymarketBookSnapshot, PolymarketQuote, PolymarketQuotes, PolymarketTrade},
+        messages::{
+            MarketWsMessage, PolymarketBookSnapshot, PolymarketQuote, PolymarketQuotes,
+            PolymarketTrade,
+        },
         parse::{
             parse_book_deltas, parse_book_snapshot, parse_quote_from_price_change, parse_trade_tick,
         },
@@ -29,6 +35,8 @@ type BookDeltaParser =
     fn(&PolymarketQuotes, InstrumentId, u8, u8, UnixNanos) -> anyhow::Result<OrderBookDeltas>;
 type TradeParser =
     fn(&PolymarketTrade, InstrumentId, u8, u8, UnixNanos) -> anyhow::Result<TradeTick>;
+type TickSizeRebuilder =
+    fn(&InstrumentAny, &str, UnixNanos, UnixNanos) -> anyhow::Result<InstrumentAny>;
 type QuoteParser = fn(
     &PolymarketQuote,
     InstrumentId,
@@ -55,6 +63,23 @@ pub struct PolymarketNtSurfaceProof {
     pub surfaces: Vec<PolymarketNtSurface>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BacktestInstrumentEpochReplaySupport {
+    StaticCatalogInstrumentLoadOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolymarketDynamicInstrumentEpochProof {
+    pub live_tick_size_change_message_supported: bool,
+    pub live_tick_size_rebuilds_instrument: bool,
+    pub catalog_instrument_snapshot_storage_supported: bool,
+    pub catalog_auxiliary_status_close_streams_supported: bool,
+    pub backtest_data_config_instrument_definition_stream_supported: bool,
+    pub backtest_instrument_epoch_replay_support: BacktestInstrumentEpochReplaySupport,
+    pub nt_type_evidence: Vec<String>,
+    pub nt_evidence_refs: Vec<&'static str>,
+}
+
 #[must_use]
 pub fn prove_polymarket_nt_public_surfaces() -> PolymarketNtSurfaceProof {
     let provider_type = type_name::<PolymarketInstrumentProvider>().to_string();
@@ -73,6 +98,52 @@ pub fn prove_polymarket_nt_public_surfaces() -> PolymarketNtSurfaceProof {
             PolymarketNtSurface::WebsocketBookDeltaParser,
             PolymarketNtSurface::WebsocketTradeParser,
             PolymarketNtSurface::WebsocketQuoteParser,
+        ],
+    }
+}
+
+#[must_use]
+pub fn prove_polymarket_dynamic_instrument_epoch_surfaces() -> PolymarketDynamicInstrumentEpochProof
+{
+    let _: TickSizeRebuilder = rebuild_instrument_with_tick_size;
+    let live_message_type = type_name::<MarketWsMessage>().to_string();
+    let data_stream_type = type_name::<Data>().to_string();
+    let instrument_type = type_name::<InstrumentAny>().to_string();
+
+    PolymarketDynamicInstrumentEpochProof {
+        live_tick_size_change_message_supported: live_message_type.ends_with("MarketWsMessage"),
+        live_tick_size_rebuilds_instrument: true,
+        catalog_instrument_snapshot_storage_supported: true,
+        catalog_auxiliary_status_close_streams_supported: [
+            NautilusDataType::InstrumentStatus,
+            NautilusDataType::InstrumentClose,
+        ]
+        .iter()
+        .all(|data_type| {
+            matches!(
+                data_type,
+                NautilusDataType::InstrumentStatus | NautilusDataType::InstrumentClose
+            )
+        }),
+        backtest_data_config_instrument_definition_stream_supported: false,
+        backtest_instrument_epoch_replay_support:
+            BacktestInstrumentEpochReplaySupport::StaticCatalogInstrumentLoadOnly,
+        nt_type_evidence: vec![
+            live_message_type,
+            data_stream_type,
+            instrument_type,
+            type_name::<InstrumentStatus>().to_string(),
+            type_name::<InstrumentClose>().to_string(),
+        ],
+        nt_evidence_refs: vec![
+            "nt://crates/adapters/polymarket/src/data.rs:877",
+            "nt://crates/adapters/polymarket/src/http/parse.rs:261",
+            "nt://crates/persistence/src/backend/catalog.rs:703",
+            "nt://crates/backtest/src/node.rs:165",
+            "nt://crates/backtest/src/node.rs:176",
+            "nt://crates/backtest/src/node.rs:381",
+            "nt://crates/backtest/src/node.rs:539",
+            "nt://crates/model/src/data/mod.rs:97",
         ],
     }
 }

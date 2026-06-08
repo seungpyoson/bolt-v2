@@ -2151,3 +2151,47 @@ Current conclusion:
   acceptance still needs either NT-native dynamic instrument-epoch replay proof
   or an accepted bounded-exclusion policy plus durable source proof and
   coverage/cost/storage evidence.
+
+## 2026-06-09 compile-checked NT tick-size surface checkpoint
+
+Root cause addressed:
+
+- The tick-size status artifact had source-line evidence for NT live
+  Polymarket tick-size changes and BacktestNode static catalog instrument
+  loading, but the BTE proof crate only compile-checked parser/provider reuse.
+- That left the dynamic instrument-epoch decision less durable than the other
+  NT-use claims: future dependency changes could alter public surfaces without
+  a focused BTE test noticing the boundary.
+
+Change:
+
+- `polymarket_nt_surface_proof` now exposes
+  `prove_polymarket_dynamic_instrument_epoch_surfaces`.
+- The proof compile-checks NT live tick-size rebuild access through
+  `rebuild_instrument_with_tick_size`, records `InstrumentStatus` and
+  `InstrumentClose` as BacktestDataConfig auxiliary streams, and records the
+  current decision as `StaticCatalogInstrumentLoadOnly`.
+- The proof intentionally records
+  `backtest_data_config_instrument_definition_stream_supported = false` because
+  pinned NT `BacktestDataConfig` dispatches `Data` streams and the standard
+  `Data` enum does not include timed `InstrumentAny` definition updates.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_polymarket_nt_surface bte_records_nt_dynamic_tick_size_backtest_surface_boundary -- --nocapture`
+  failed because the dynamic instrument-epoch proof API did not exist.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_polymarket_nt_surface -- --nocapture`
+  passed 2 Polymarket NT surface tests.
+
+Current conclusion:
+
+- We are using the NT surfaces that exist for this boundary: live
+  Polymarket tick-size rebuilds, NT parser/provider surfaces, NT instrument
+  storage, and BacktestDataConfig auxiliary status/close streams.
+- We are not claiming a surface NT does not currently expose through
+  BacktestDataConfig: timed `InstrumentAny` instrument-definition replay.
+- This still does not close `BACKTESTING_ENGINE-022`; it strengthens the
+  evidence for why broad PMXT/Polymarket L2 acceptance needs either a proven
+  NT-native dynamic epoch path or a bounded exclusion policy.

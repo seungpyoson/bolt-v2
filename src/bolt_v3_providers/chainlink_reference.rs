@@ -1020,11 +1020,13 @@ mod tests {
             &path_with_query,
             1_700_000_000_000,
         ));
+        let user_agent_header = USER_AGENT.to_string();
 
         assert!(
             headers
                 .iter()
-                .any(|(key, value)| key == USER_AGENT && value == NAUTILUS_USER_AGENT)
+                .any(|(key, value)| key == &user_agent_header
+                    && value.as_str() == NAUTILUS_USER_AGENT)
         );
         assert!(
             headers

@@ -917,6 +917,7 @@ mod tests {
     const TEST_BENCHMARK_PRICE: f64 = 66_300.25;
     const TEST_BID_PRICE: f64 = 66_299.50;
     const TEST_ASK_PRICE: f64 = 66_301.00;
+    const TEST_PRICE_TOLERANCE: f64 = 1e-6;
 
     fn fixture_config() -> ChainlinkReferencePriceClientConfig {
         ChainlinkReferencePriceClientConfig {
@@ -1168,7 +1169,11 @@ mod tests {
         assert_eq!(update.source_id(), TEST_SOURCE_ID);
         assert_eq!(update.provider(), REFERENCE_PRICE_PROVIDER_KEY);
         assert_eq!(update.provider_instrument(), TEST_INSTRUMENT_ID);
-        assert_eq!(update.price(), TEST_BENCHMARK_PRICE);
+        assert!(
+            (update.price() - TEST_BENCHMARK_PRICE).abs() < TEST_PRICE_TOLERANCE,
+            "benchmark price should round-trip, got {}",
+            update.price()
+        );
         assert_eq!(
             update.observed_ts_ms(),
             u64::from(TEST_OBSERVATIONS_SECONDS) * 1_000

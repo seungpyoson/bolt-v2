@@ -33,7 +33,7 @@
 //! future archetype can introduce its own message contract without
 //! reaching back into core validation.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::{Deserialize, Deserializer};
@@ -50,6 +50,7 @@ use crate::{
     },
     bolt_v3_config::{
         BoltV3StrategyConfig, DECISION_REFERENCE_GATE_ROLE, LoadedStrategy, RESOLUTION_GATE_ROLE,
+        realized_volatility_engine_config,
     },
     bolt_v3_order_intent::{NtOrderTemplateConfig, check_nt_order_template_config},
     bolt_v3_position_contract::{
@@ -111,10 +112,6 @@ pub struct RuntimeParametersBlock {
     pub book_impact_cap_bps: u64,
     pub risk_lambda: f64,
     pub exit_hysteresis_bps: i64,
-    pub vol_window_secs: u64,
-    pub vol_gap_reset_secs: u64,
-    pub vol_min_observations: u64,
-    pub vol_bridge_valid_secs: u64,
     pub trade_flow_window_secs: u64,
     pub trade_flow_max_samples: u64,
     pub spike_guard_return_threshold: f64,
@@ -140,10 +137,6 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             book_impact_cap_bps: u64,
             risk_lambda: f64,
             exit_hysteresis_bps: i64,
-            vol_window_secs: u64,
-            vol_gap_reset_secs: u64,
-            vol_min_observations: u64,
-            vol_bridge_valid_secs: u64,
             trade_flow_window_secs: u64,
             trade_flow_max_samples: u64,
             spike_guard_return_threshold: f64,
@@ -200,10 +193,6 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             book_impact_cap_bps: wire.book_impact_cap_bps,
             risk_lambda: wire.risk_lambda,
             exit_hysteresis_bps: wire.exit_hysteresis_bps,
-            vol_window_secs: wire.vol_window_secs,
-            vol_gap_reset_secs: wire.vol_gap_reset_secs,
-            vol_min_observations: wire.vol_min_observations,
-            vol_bridge_valid_secs: wire.vol_bridge_valid_secs,
             trade_flow_window_secs: wire.trade_flow_window_secs,
             trade_flow_max_samples: wire.trade_flow_max_samples,
             spike_guard_return_threshold: wire.spike_guard_return_threshold,
@@ -418,12 +407,26 @@ pub fn register_runtime_strategy(
                 ),
             )
         })?;
+    let realized_volatility_surfaces = realized_volatility_surface_engine_configs(context.loaded)
+        .map_err(|message| {
+        BoltV3StrategyRegistrationError::Binding {
+            strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
+            strategy_archetype: context
+                .strategy
+                .config
+                .strategy_archetype
+                .as_str()
+                .to_string(),
+            message,
+        }
+    })?;
     let build_context = StrategyBuildContext::new(
         fee_provider,
         context.decision_evidence.clone(),
         context.submit_admission.clone(),
         execution_venue,
-    );
+    )
+    .with_realized_volatility_surfaces(realized_volatility_surfaces);
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry
@@ -434,6 +437,27 @@ pub fn register_runtime_strategy(
             node.kernel().trader(),
         )
         .map_err(|error| binding_message(&context, error.to_string()))
+}
+
+fn realized_volatility_surface_engine_configs(
+    loaded: &crate::bolt_v3_config::LoadedBoltV3Config,
+) -> Result<BTreeMap<String, crate::bolt_v3_realized_volatility::RealizedVolEngineConfig>, String> {
+    loaded
+        .root
+        .realized_volatility_surfaces
+        .as_ref()
+        .into_iter()
+        .flat_map(|surfaces| surfaces.iter())
+        .map(|(surface_id, surface)| {
+            realized_volatility_engine_config(surface_id, surface)
+                .map(|config| (surface_id.clone(), config))
+                .map_err(|error| {
+                    format!(
+                        "realized_volatility_surfaces.{surface_id} could not build engine config: {error}"
+                    )
+                })
+        })
+        .collect()
 }
 
 pub fn raw_taker_config(
@@ -466,6 +490,14 @@ pub fn raw_taker_config(
             ),
         })?;
     let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
+    let realized_volatility_surface_id = strategy
+        .config
+        .realized_volatility_surface_id
+        .as_deref()
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: "config.realized_volatility_surface_id is required".to_string(),
+        })?;
     let reference_data = configured_reference_data(strategy)?;
     let signal_data = configured_signal_data(strategy)?;
     validate_configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
@@ -656,6 +688,11 @@ pub fn raw_taker_config(
         "signal_instrument_id",
         signal_data.instrument_id.to_string(),
     );
+    insert_string(
+        &mut table,
+        "realized_volatility_surface_id",
+        realized_volatility_surface_id.to_string(),
+    );
     if let Some(resolution_data) = resolution_data {
         insert_string(
             &mut table,
@@ -721,30 +758,6 @@ pub fn raw_taker_config(
         "exit_hysteresis_bps",
         parameters.runtime.exit_hysteresis_bps,
     );
-    insert_u64(
-        &mut table,
-        strategy_instance_id,
-        "vol_window_secs",
-        parameters.runtime.vol_window_secs,
-    )?;
-    insert_u64(
-        &mut table,
-        strategy_instance_id,
-        "vol_gap_reset_secs",
-        parameters.runtime.vol_gap_reset_secs,
-    )?;
-    insert_u64(
-        &mut table,
-        strategy_instance_id,
-        "vol_min_observations",
-        parameters.runtime.vol_min_observations,
-    )?;
-    insert_u64(
-        &mut table,
-        strategy_instance_id,
-        "vol_bridge_valid_secs",
-        parameters.runtime.vol_bridge_valid_secs,
-    )?;
     insert_u64(
         &mut table,
         strategy_instance_id,

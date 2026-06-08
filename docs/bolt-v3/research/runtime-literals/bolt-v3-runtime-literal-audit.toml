@@ -631,38 +631,6 @@ reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TO
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"vol_bridge_valid_secs"'''
-context = '''"vol_bridge_valid_secs",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"vol_gap_reset_secs"'''
-context = '''"vol_gap_reset_secs",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"vol_min_observations"'''
-context = '''"vol_min_observations",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"vol_window_secs"'''
-context = '''"vol_window_secs",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
 literal = '''"warmup_tick_count"'''
 context = '''"warmup_tick_count",'''
 classification = "strategy_runtime_schema_field"
@@ -719,10 +687,10 @@ reason = "This domain separator pins the config-bundle checksum format used to b
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''6'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 6;'''
+literal = '''8'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 8;'''
 classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v6 adds execution_client_id to submit-admission decisions so approval-limit evidence is auditable by execution client; it is part of the audit-record contract, not an operator runtime value."
+reason = "This is the decision-evidence JSONL envelope schema version. v8 adds realized-volatility source diagnostic config-state fields so disabled and non-quorum sources are auditable without TOML side-channel context; it is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -2581,30 +2549,6 @@ classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_volatility.rs"
-kind = "number"
-literal = '''0'''
-context = '''const INITIAL_COUNTER_USIZE: usize = 0;'''
-classification = "strategy_state_invariant"
-reason = "This is a named initial counter invariant for the realized-volatility estimator's accumulation loop, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_volatility.rs"
-kind = "number"
-literal = '''0'''
-context = '''const INITIAL_COUNTER_U64: u64 = 0;'''
-classification = "strategy_state_invariant"
-reason = "This is a named initial counter invariant for the realized-volatility estimator's accumulation loop, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_volatility.rs"
-kind = "number"
-literal = '''1'''
-context = '''const COUNTER_INCREMENT: usize = 1;'''
-classification = "strategy_state_invariant"
-reason = "This is a named counter increment invariant for the realized-volatility estimator's accumulation loop, not an operator runtime value."
-
-[[allowed]]
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''0.0'''
@@ -2691,14 +2635,6 @@ literal = '''0.398_942_3'''
 context = '''const NORMAL_CDF_DENSITY_SCALE: f64 = 0.398_942_3;'''
 classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_volatility.rs"
-kind = "number"
-literal = '''1'''
-context = '''const MIN_OBSERVATION_COUNT: u64 = 1;'''
-classification = "strategy_state_invariant"
-reason = "This is the named minimum observation count needed for realized-volatility math, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -8421,3 +8357,701 @@ literal = '''"{}"'''
 context = '''println!("{}", serde_json::to_string_pretty(&artifact_json(written))?);'''
 classification = "operator_artifact_cli_output_template"
 reason = "This prints the redacted operator artifact JSON object assembled from fixed output-field names and non-secret derived metadata."
+
+# Realized-volatility surface implementation literals.
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"realized_volatility_surface_id"'''
+context = '''"realized_volatility_surface_id",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the taker strategy runtime config schema field name that selects the TOML-owned realized-volatility surface; the value is copied from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"upper_quantile"'''
+context = '''RealizedVolAggregation::UpperQuantile { .. } => "upper_quantile",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility aggregation evidence label emitted with strategy input evidence; it records engine provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"invalid_config"'''
+context = '''RealizedVolBlockReason::InvalidConfig => "invalid_config",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility blocker evidence label emitted from engine diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"quorum_not_ready"'''
+context = '''RealizedVolBlockReason::QuorumNotReady => "quorum_not_ready",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility blocker evidence label emitted from engine diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"source_stale"'''
+context = '''RealizedVolBlockReason::SourceStale => "source_stale",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility blocker evidence label emitted from engine diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"coverage_below_minimum"'''
+context = '''RealizedVolBlockReason::CoverageBelowMinimum => "coverage_below_minimum",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility blocker evidence label emitted from engine diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"inter_sample_gap_exceeded"'''
+context = '''RealizedVolBlockReason::InterSampleGapExceeded => "inter_sample_gap_exceeded",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility blocker evidence label emitted from engine diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"source_class_mismatch"'''
+context = '''RealizedVolBlockReason::SourceClassMismatch => "source_class_mismatch",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility blocker evidence label emitted from engine diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"sample_kind_mismatch"'''
+context = '''RealizedVolBlockReason::SampleKindMismatch => "sample_kind_mismatch",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility blocker evidence label emitted from engine diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"cross_source_dispersion"'''
+context = '''RealizedVolBlockReason::CrossSourceDispersion => "cross_source_dispersion",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility blocker evidence label emitted from engine diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"annualization_basis_invalid"'''
+context = '''RealizedVolBlockReason::AnnualizationBasisInvalid => "annualization_basis_invalid",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility blocker evidence label emitted from engine diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"not_warm"'''
+context = '''RealizedVolBlockReason::NotWarm => "not_warm",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility blocker evidence label emitted from engine diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"spot_quote"'''
+context = '''RealizedVolSourceClass::SpotQuote => "spot_quote",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility source-class evidence label emitted from source diagnostics; it records provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"trade"'''
+context = '''RealizedVolSourceClass::Trade => "trade",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility source-class evidence label emitted from source diagnostics; it records provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"mark"'''
+context = '''RealizedVolSourceClass::Mark => "mark",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility source-class evidence label emitted from source diagnostics; it records provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"index"'''
+context = '''RealizedVolSourceClass::Index => "index",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility source-class evidence label emitted from source diagnostics; it records provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"midpoint"'''
+context = '''RealizedVolSampleKind::Midpoint => "midpoint",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility sample-kind evidence label emitted from source diagnostics; it records provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"trade"'''
+context = '''RealizedVolSampleKind::Trade => "trade",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility sample-kind evidence label emitted from source diagnostics; it records provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"mark"'''
+context = '''RealizedVolSampleKind::Mark => "mark",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility sample-kind evidence label emitted from source diagnostics; it records provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"index"'''
+context = '''RealizedVolSampleKind::Index => "index",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility sample-kind evidence label emitted from source diagnostics; it records provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"ready"'''
+context = '''RealizedVolSourceStatus::Ready => "ready",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility source-status evidence label emitted from source diagnostics; it records readiness provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"blocked"'''
+context = '''RealizedVolSourceStatus::Blocked => "blocked",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility source-status evidence label emitted from source diagnostics; it records per-source readiness provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"diagnostic_only"'''
+context = '''RealizedVolSourceStatus::DiagnosticOnly => "diagnostic_only",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility source-status evidence label emitted from source diagnostics for disabled or non-quorum sources; it records provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"waiting"'''
+context = '''RealizedVolSourceStatus::Waiting => "waiting",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility source-status evidence label emitted from source diagnostics; it records readiness provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"disabled_source"'''
+context = '''RealizedVolSourceRejectReason::DisabledSource => "disabled_source",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility rejection-reason evidence label emitted from source diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"invalid_price"'''
+context = '''RealizedVolSourceRejectReason::InvalidPrice => "invalid_price",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility rejection-reason evidence label emitted from source diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"source_class_mismatch"'''
+context = '''RealizedVolSourceRejectReason::SourceClassMismatch => "source_class_mismatch",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility rejection-reason evidence label emitted from source diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"sample_kind_mismatch"'''
+context = '''RealizedVolSourceRejectReason::SampleKindMismatch => "sample_kind_mismatch",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility rejection-reason evidence label emitted from source diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"event_time_regression"'''
+context = '''RealizedVolSourceRejectReason::EventTimeRegression => "event_time_regression",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility rejection-reason evidence label emitted from source diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"duplicate_timestamp"'''
+context = '''RealizedVolSourceRejectReason::DuplicateTimestamp => "duplicate_timestamp",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility rejection-reason evidence label emitted from source diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"stale_same_event_update"'''
+context = '''RealizedVolSourceRejectReason::StaleSameEventUpdate => "stale_same_event_update",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility rejection-reason evidence label emitted from source diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"receive_before_event"'''
+context = '''RealizedVolSourceRejectReason::ReceiveBeforeEvent => "receive_before_event",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility rejection-reason evidence label emitted from source diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"event_receive_lag_exceeded"'''
+context = '''RealizedVolSourceRejectReason::EventReceiveLagExceeded => "event_receive_lag_exceeded",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility rejection-reason evidence label emitted from source diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''1'''
+context = '''const COUNTER_INCREMENT_U64: u64 = 1;'''
+classification = "realized_volatility_counter_step"
+reason = "Increment-by-one step for an internal realized-volatility rejection counter; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''2'''
+context = '''.windows(2)'''
+classification = "realized_volatility_two_sample_arity"
+reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''1'''
+context = '''.map(|pair| pair[1].0.saturating_sub(pair[0].0))'''
+classification = "realized_volatility_two_sample_arity"
+reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''0'''
+context = '''.map(|pair| pair[1].0.saturating_sub(pair[0].0))'''
+classification = "realized_volatility_two_sample_arity"
+reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''0'''
+context = '''let mut index = 0;'''
+classification = "realized_volatility_scan_index_initial_value"
+reason = "Initial zero cursor for scanning ordered source observations into the fixed RV grid; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''1'''
+context = '''index += 1;'''
+classification = "realized_volatility_counter_step"
+reason = "Increment-by-one step for an internal realized-volatility counter or scan cursor; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''2'''
+context = '''if grid.len() < 2 {'''
+classification = "realized_volatility_two_sample_arity"
+reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''0'''
+context = '''let mut elapsed_ms = 0;'''
+classification = "realized_volatility_accumulator_initial_value"
+reason = "Initial zero accumulator for elapsed milliseconds while summing fixed-grid log returns; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''2'''
+context = '''for pair in grid.windows(2) {'''
+classification = "realized_volatility_two_sample_arity"
+reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''1'''
+context = '''let dt = pair[1].0.saturating_sub(pair[0].0);'''
+classification = "realized_volatility_two_sample_arity"
+reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''0'''
+context = '''let dt = pair[1].0.saturating_sub(pair[0].0);'''
+classification = "realized_volatility_two_sample_arity"
+reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''1'''
+context = '''let log_return = (pair[1].1 / pair[0].1).ln();'''
+classification = "realized_volatility_two_sample_arity"
+reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''0'''
+context = '''let log_return = (pair[1].1 / pair[0].1).ln();'''
+classification = "realized_volatility_two_sample_arity"
+reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''1'''
+context = '''.is_some_and(|first| values.iter().any(|value| value.1 != first.1))'''
+classification = "realized_volatility_ready_value_tuple_field_index"
+reason = "Internal tuple field index for source id/class/kind/RV values produced by the RV engine; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''2'''
+context = '''.is_some_and(|first| values.iter().any(|value| value.2 != first.2))'''
+classification = "realized_volatility_ready_value_tuple_field_index"
+reason = "Internal tuple field index for source id/class/kind/RV values produced by the RV engine; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''3'''
+context = '''let mut sorted = values.iter().map(|value| value.3).collect::<Vec<_>>();'''
+classification = "realized_volatility_ready_value_tuple_field_index"
+reason = "Internal tuple field index for source id/class/kind/RV values produced by the RV engine; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''1'''
+context = '''.saturating_sub(1)'''
+classification = "realized_volatility_vector_index_bound"
+reason = "Zero-based vector index bound used for quantile and dispersion calculations over already computed RV values; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''1'''
+context = '''.min(sorted.len().saturating_sub(1));'''
+classification = "realized_volatility_vector_index_bound"
+reason = "Zero-based vector index bound used for quantile and dispersion calculations over already computed RV values; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''2'''
+context = '''if values.len() < 2 {'''
+classification = "realized_volatility_two_sample_arity"
+reason = "Two-sample arity or adjacent-pair index used to compute inter-sample gaps, log returns, and dispersion prerequisites; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''1'''
+context = '''let range = sorted[sorted.len() - 1] - sorted[0];'''
+classification = "realized_volatility_vector_index_bound"
+reason = "Zero-based vector index bound used for quantile and dispersion calculations over already computed RV values; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''0'''
+context = '''let range = sorted[sorted.len() - 1] - sorted[0];'''
+classification = "realized_volatility_vector_index_bound"
+reason = "Zero-based vector index bound used for quantile and dispersion calculations over already computed RV values; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"sampling_interval_ms={}"'''
+context = '''"sampling_interval_ms={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"min_ready_sources={}"'''
+context = '''"min_ready_sources={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"max_source_age_ms={}"'''
+context = '''"max_source_age_ms={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"max_event_receive_lag_ms={}"'''
+context = '''"max_event_receive_lag_ms={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"max_inter_sample_gap_ms={}"'''
+context = '''"max_inter_sample_gap_ms={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"min_coverage_ratio={}"'''
+context = '''"min_coverage_ratio={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"max_cross_source_dispersion={}"'''
+context = '''"max_cross_source_dispersion={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"seconds_per_annum={}"'''
+context = '''"seconds_per_annum={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"aggregation.quantile={}"'''
+context = '''"aggregation.quantile={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"source.data_client_id={}"'''
+context = '''"source.data_client_id={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"source.instrument_id={}"'''
+context = '''"source.instrument_id={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"source.source_class={}"'''
+context = '''"source.source_class={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"source.sample_kind={}"'''
+context = '''"source.sample_kind={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"source.counts_toward_quorum={}"'''
+context = '''"source.counts_toward_quorum={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"source.canonical_quote_asset={}"'''
+context = '''"source.canonical_quote_asset={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"spot_quote"'''
+context = '''RealizedVolSourceClass::SpotQuote => "spot_quote",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable source-class enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"trade"'''
+context = '''RealizedVolSourceClass::Trade => "trade",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable source-class enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"mark"'''
+context = '''RealizedVolSourceClass::Mark => "mark",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable source-class enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"index"'''
+context = '''RealizedVolSourceClass::Index => "index",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable source-class enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"midpoint"'''
+context = '''RealizedVolSampleKind::Midpoint => "midpoint",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable sample-kind enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"trade"'''
+context = '''RealizedVolSampleKind::Trade => "trade",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable sample-kind enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"mark"'''
+context = '''RealizedVolSampleKind::Mark => "mark",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable sample-kind enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"index"'''
+context = '''RealizedVolSampleKind::Index => "index",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable sample-kind enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''0usize'''
+context = '''let mut enabled_quorum_sources = 0usize;'''
+classification = "realized_volatility_validation_counter"
+reason = "Internal enabled-source quorum counter initialization/increment used while validating TOML-owned RV source bindings; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"{source_context}.source_id duplicate source_id `{}`"'''
+context = '''"{source_context}.source_id duplicate source_id `{}`",'''
+classification = "realized_volatility_config_diagnostic_template"
+reason = "Fail-closed realized-volatility config validation diagnostic; the referenced values come from bolt-v3 TOML and validation state."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''1'''
+context = '''enabled_quorum_sources += 1;'''
+classification = "realized_volatility_validation_counter"
+reason = "Internal enabled-source quorum counter initialization/increment used while validating TOML-owned RV source bindings; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"{context}.policy.min_ready_sources {} exceeds enabled quorum source count {}"'''
+context = '''"{context}.policy.min_ready_sources {} exceeds enabled quorum source count {}",'''
+classification = "realized_volatility_config_diagnostic_template"
+reason = "Fail-closed realized-volatility config validation diagnostic; the referenced values come from bolt-v3 TOML and validation state."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''0usize'''
+context = '''let mut enabled_quorum_sources = 0usize;'''
+classification = "realized_volatility_validation_counter"
+reason = "Internal enabled-source quorum counter initialization used while validating TOML-owned RV engine config; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''1'''
+context = '''enabled_quorum_sources += 1;'''
+classification = "realized_volatility_validation_counter"
+reason = "Internal enabled-source quorum counter increment used while validating TOML-owned RV engine config; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"min_ready_sources exceeds enabled quorum source count"'''
+context = '''return Err("min_ready_sources exceeds enabled quorum source count".to_string());'''
+classification = "realized_volatility_config_diagnostic_template"
+reason = "Fail-closed realized-volatility engine config validation diagnostic; the threshold and eligible source count come from TOML-owned RV config."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"{context}: realized_volatility_surface_id `{surface_id}` references realized_volatility_surfaces.{surface_id}.canonical_base_asset `{}`, but target.underlying_asset is `{}`"'''
+context = '''"{context}: realized_volatility_surface_id `{surface_id}` references realized_volatility_surfaces.{surface_id}.canonical_base_asset `{}`, but target.underlying_asset is `{}`",'''
+classification = "realized_volatility_config_diagnostic_template"
+reason = "Fail-closed realized-volatility config validation diagnostic proving strategy target asset and selected surface asset agree; referenced values come from bolt-v3 TOML and target parsing state."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"realized_volatility_surface_id"'''
+context = '''const REALIZED_VOLATILITY_SURFACE_ID_FIELD: &str = "realized_volatility_surface_id";'''
+classification = "strategy_runtime_schema_field"
+reason = "Taker strategy runtime config schema field name used to parse or reject legacy realized-volatility fields; runtime values remain supplied by bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"missing_realized_volatility_surface"'''
+context = '''"missing_realized_volatility_surface",'''
+classification = "strategy_runtime_diagnostic"
+reason = "Diagnostic code emitted when taker runtime config omits the required surfaced realized-volatility selector; it is not an operator runtime value."

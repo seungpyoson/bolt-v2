@@ -1425,8 +1425,9 @@ fn post_only_exit_submission_price_uses_passive_book_price() {
     strategy.config.exit_order.is_post_only = true;
     set_active_books_best_prices(&mut strategy, 0.43, 0.51);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     let instrument_id = selected_entry_instrument(&strategy);
     let open_position = materialize_configured_position(
         &mut strategy,
@@ -1455,8 +1456,9 @@ fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used()
     strategy.config.exit_order.is_quote_quantity = true;
     strategy.config.exit_hysteresis_bps = 1_000_000;
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     let instrument_id = selected_entry_instrument(&strategy);
     let open_position = materialize_configured_position(
         &mut strategy,
@@ -2877,8 +2879,9 @@ fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
         ManagedPositionOrigin::StrategyEntry,
     );
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(2.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
 
     let decision = strategy.exit_submission_decision_at(1_200);
 

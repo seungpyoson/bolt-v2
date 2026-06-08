@@ -344,6 +344,45 @@ symbol = "BTC"
 }
 
 #[test]
+fn reference_current_price_validation_rejects_disabled_source_with_missing_client() {
+    let messages = validate_reference_current_price(
+        r#"
+[reference_current_price]
+asset = "BTC"
+sources = ["chainlink_primary", "polyresearch_backup"]
+min_valid_sources = 1
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.chainlink_primary]
+provider = "chainlink_ws"
+enabled = true
+required = false
+client_id = "chainlink_reference"
+instrument_id = "BTC-USD.CHAINLINK"
+
+[reference_current_price.source.polyresearch_backup]
+provider = "polyresearch_ws"
+enabled = false
+required = false
+client_id = "missing_polyresearch_reference"
+symbol = "BTC/USD"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("reference_current_price.source.polyresearch_backup.client_id")
+                && message.contains("missing_polyresearch_reference")
+        }),
+        "disabled reference_current_price.source with missing client should fail validation, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn reference_current_price_validation_rejects_blank_asset() {
     let messages = validate_reference_current_price(
         r#"

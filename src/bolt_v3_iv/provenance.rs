@@ -61,6 +61,7 @@ pub enum IvPolicyDecision {
         raw_event_id: String,
         payload_kind: String,
         access_purpose: String,
+        source_eligibility: Vec<String>,
         retention_result: String,
     },
     RejectionDecision {

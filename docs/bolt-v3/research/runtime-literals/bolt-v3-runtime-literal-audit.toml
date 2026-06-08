@@ -9465,28 +9465,76 @@ classification = "iv_config_schema_literal"
 reason = "This is the typed IV profile schema family name used for duplicate-policy validation diagnostics; policy values remain TOML-owned."
 
 [[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{context}.quorum_policies.{}.minimum_sources cannot exceed eligible_sources"'''
+context = '''"{context}.quorum_policies.{}.minimum_sources cannot exceed eligible_sources",'''
+classification = "iv_config_schema_literal"
+reason = "This is a typed IV profile validation diagnostic for quorum source-eligibility consistency; source IDs and policy thresholds remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/derive.rs"
+kind = "string"
+literal = '''"{}:{}:{}:{}"'''
+context = '''"{}:{}:{}:{}",'''
+classification = "iv_helper_contract_literal"
+reason = "This is a stable helper input-set provenance ID format assembled from runtime profile/source/instrument/timestamp values; the values remain query/runtime-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "number"
+literal = '''0'''
+context = '''basis: inputs[0].basis.clone(),'''
+classification = "iv_policy_algorithm_literal"
+reason = "IV projection records the common basis from the first already-validated input after non-empty and same-basis checks; policy values remain typed/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "number"
+literal = '''0'''
+context = '''convention: inputs[0].convention.clone(),'''
+classification = "iv_policy_algorithm_literal"
+reason = "IV projection records the common convention from the first already-validated input after non-empty and same-convention checks; policy values remain typed/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "string"
+literal = '''"candidate_not_eligible"'''
+context = '''reason: "candidate_not_eligible".to_string(),'''
+classification = "iv_policy_algorithm_literal"
+reason = "This is a stable fallback provenance reason for skipped candidates before the accepted configured candidate; candidate ordering and eligibility remain typed/config-owned."
+
+[[allowed]]
 path = "src/bolt_v3_iv/policy.rs"
 kind = "string"
 literal = '''"linear"'''
-context = '''method: "linear".to_string(),'''
+context = '''Self::Linear => "linear",'''
 classification = "iv_policy_algorithm_literal"
-reason = "This is the stable provenance label for the interpolation method applied by typed IV policy code; the policy selection and inputs remain config/query-owned."
+reason = "This is the stable serde/provenance label for the typed linear interpolation method; policy selection and inputs remain config/query-owned."
 
 [[allowed]]
 path = "src/bolt_v3_iv/policy.rs"
 kind = "string"
 literal = '''"mean"'''
-context = '''projection_kind: "mean".to_string(),'''
+context = '''Self::Mean => "mean",'''
 classification = "iv_policy_algorithm_literal"
-reason = "This is the stable provenance label for the projection kind applied by typed IV policy code; the policy selection and inputs remain config/query-owned."
+reason = "This is the stable serde/provenance label for the typed mean projection kind; policy selection and inputs remain config/query-owned."
 
 [[allowed]]
 path = "src/bolt_v3_iv/policy.rs"
 kind = "string"
-literal = '''"nearest_extrapolation"'''
-context = '''method: "nearest_extrapolation".to_string(),'''
+literal = '''"nearest"'''
+context = '''Self::Nearest => "nearest",'''
 classification = "iv_policy_algorithm_literal"
-reason = "This is the stable provenance label for interpolation fallback when policy permits nearest-point extrapolation; the policy decision remains typed and config-owned."
+reason = "This is the stable serde/provenance label for the typed nearest extrapolation policy; policy selection and inputs remain config/query-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "string"
+literal = '''"reject"'''
+context = '''Self::Reject => "reject",'''
+classification = "iv_policy_algorithm_literal"
+reason = "This is the stable serde/provenance label for the typed extrapolation-rejection policy; policy selection and inputs remain config/query-owned."
 
 [[allowed]]
 path = "src/bolt_v3_iv/raw_access.rs"

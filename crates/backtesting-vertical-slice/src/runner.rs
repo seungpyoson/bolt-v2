@@ -38,7 +38,7 @@ use super::{
     run_manifest::{
         BacktestingRunManifest, NtSurfaceClassification, STRATEGY_HURST_VPIN_DIRECTIONAL,
     },
-    source_proof::AcceptedDataset,
+    source_proof::{AcceptedDataset, SourceProofFidelityClass},
 };
 
 /// Strategy parameter key for the bar type.
@@ -102,8 +102,32 @@ pub struct BacktestRunInputs<'a> {
     pub canonical_artifact_path: &'a Path,
     /// Local catalog projection root.
     pub catalog_root: &'a Path,
+    pub selector_provenance: Option<BacktestSelectorProvenance<'a>>,
     pub created_at: &'a str,
     pub artifact_uris: ResultArtifactUris,
+}
+
+/// Source-selector provenance that must bind any L2 replay result contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BacktestSelectorProvenance<'a> {
+    pub event_count_ledger_hash: &'a str,
+    pub selected_asset_ids_hash: &'a str,
+}
+
+fn selector_provenance_hashes<'a>(
+    fidelity_class: SourceProofFidelityClass,
+    provenance: Option<BacktestSelectorProvenance<'a>>,
+) -> Result<(Option<&'a str>, Option<&'a str>)> {
+    if fidelity_class == SourceProofFidelityClass::L2Replay && provenance.is_none() {
+        bail!("L2 replay result contract requires selector provenance");
+    }
+    Ok(match provenance {
+        Some(provenance) => (
+            Some(provenance.event_count_ledger_hash),
+            Some(provenance.selected_asset_ids_hash),
+        ),
+        None => (None, None),
+    })
 }
 
 /// All artifacts produced by an end-to-end run.
@@ -340,6 +364,8 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     let warnings = result_contract_warnings(&nt_result);
     let mut claim_limits = inputs.accepted.result_contract_claim_limits();
     claim_limits.extend(nt_extension_surface_claim_limits(inputs.manifest)?);
+    let (event_count_ledger_hash, selected_asset_ids_hash) =
+        selector_provenance_hashes(canonical_table.fidelity_class, inputs.selector_provenance)?;
     let contract = build_result_contract(ResultContractInputs {
         run_id: &inputs.manifest.run_id,
         source_proof_id: &inputs.accepted.source_proof_id,
@@ -356,8 +382,8 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         conversion_checkpoint_hash: &conversion_checkpoint_hash,
         catalog_hash: &projection.catalog_hash,
         catalog_metadata_hash: &conversion_catalog_metadata_hash,
-        event_count_ledger_hash: None,
-        selected_asset_ids_hash: None,
+        event_count_ledger_hash,
+        selected_asset_ids_hash,
         strategy: &inputs.manifest.strategy,
         run_purpose: run_purpose_label(inputs.manifest),
         market_structure_fixture: market_structure_label(inputs.manifest),
@@ -600,10 +626,11 @@ mod tests {
     };
 
     use super::{
-        assert_read_back_matches, expected_iterations, iterations_mismatch,
-        time_window_excludes_all_data,
+        BacktestSelectorProvenance, assert_read_back_matches, expected_iterations,
+        iterations_mismatch, selector_provenance_hashes, time_window_excludes_all_data,
     };
     use crate::canonical_trades::{CanonicalTradeRow, TradeAggressorSide};
+    use crate::source_proof::SourceProofFidelityClass;
 
     const TEST_INSTRUMENT: &str = "BTCUSDT.BYBIT";
 
@@ -737,6 +764,31 @@ mod tests {
     #[test]
     fn iterations_matching_expected_is_admitted() {
         assert!(iterations_mismatch(3, 3).is_none());
+    }
+
+    #[test]
+    fn l2_run_contract_provenance_requires_selector_hashes() {
+        let err = selector_provenance_hashes(SourceProofFidelityClass::L2Replay, None).unwrap_err();
+        assert!(
+            err.to_string().contains("selector provenance"),
+            "unexpected error: {err}"
+        );
+
+        let hashes = selector_provenance_hashes(
+            SourceProofFidelityClass::L2Replay,
+            Some(BacktestSelectorProvenance {
+                event_count_ledger_hash: "eventledgerabc",
+                selected_asset_ids_hash: "selectedassetsabc",
+            }),
+        )
+        .expect("selector provenance");
+        assert_eq!(hashes, (Some("eventledgerabc"), Some("selectedassetsabc")));
+
+        assert_eq!(
+            selector_provenance_hashes(SourceProofFidelityClass::TradeReplay, None)
+                .expect("trade replay selector provenance"),
+            (None, None)
+        );
     }
 
     fn windowed_rows() -> Vec<CanonicalTradeRow> {

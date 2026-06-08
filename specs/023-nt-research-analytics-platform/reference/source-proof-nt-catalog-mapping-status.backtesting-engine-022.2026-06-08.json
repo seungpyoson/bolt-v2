@@ -135,22 +135,27 @@
     "claim_limits": [
       "Does not prove PMXT raw parquet row decoding.",
       "Does not prove source-backed selected PMXT universe projection.",
-      "Does not wire a concrete PMXT selector report into a BacktestResultContract yet.",
+      "Does not wire a concrete PMXT selector report artifact into a source-backed completed run yet.",
       "Does not prove BacktestNode consumes a verified PMXT L2 catalog.",
       "Does not authorize broad PMXT backfill."
     ]
   },
   "bounded_l2_result_contract_status": {
-    "status": "tdd_proven_schema_requires_l2_selector_hashes",
+    "status": "tdd_proven_schema_and_runner_require_l2_selector_hashes",
     "evidence": [
       "RED just bte-test result_contract::tests::l2_result_contract_requires_event_count_ledger_hash failed because an L2Replay contract without selector provenance still validated.",
       "GREEN just bte-test result_contract::tests::l2_result_contract_requires_event_count_ledger_hash passed after L2Replay contracts required event_count_ledger_hash.",
       "RED just bte-test result_contract::tests::l2_result_contract_requires_and_binds_selected_asset_ids_hash failed because an L2Replay contract with only event_count_ledger_hash still validated.",
-      "GREEN just bte-test result_contract::tests::l2_result_contract_requires_and_binds_selected_asset_ids_hash passed after L2Replay contracts required selected_asset_ids_hash and serialized both selector hashes."
+      "GREEN just bte-test result_contract::tests::l2_result_contract_requires_and_binds_selected_asset_ids_hash passed after L2Replay contracts required selected_asset_ids_hash and serialized both selector hashes.",
+      "RED just bte-test runner::tests::l2_run_contract_provenance_requires_selector_hashes failed with unresolved BacktestSelectorProvenance and selector_provenance_hashes.",
+      "GREEN just bte-test runner::tests::l2_run_contract_provenance_requires_selector_hashes passed after runner inputs gained generic selector provenance and L2Replay run-contract construction refused missing selector hashes.",
+      "just bte-test runner::tests:: backtesting_vertical_slice_end_to_end result_contract::tests:: passed 35 focused runner/end-to-end/result-contract tests.",
+      "just bte-fmt-check passed.",
+      "just bte-clippy passed."
     ],
     "claim_limits": [
       "Does not prove PMXT source-backed catalog projection.",
-      "Does not prove a concrete PMXT selector report is threaded into a completed run.",
+      "Does not prove a concrete PMXT selector report artifact is threaded into a source-backed completed run.",
       "Does not prove BacktestNode consumes a verified PMXT L2 catalog.",
       "Does not authorize broad PMXT backfill."
     ]
@@ -190,7 +195,7 @@
   },
   "non_hardcoding_decision": "Bybit, Binance, Polymarket, Kalshi, and Hyperliquid remain source-binding examples. The next mapping work must be data-family driven: source schema plus registry binding plus NT data class, with no runtime venue or instrument constants in production code.",
   "next_required_evidence": [
-    "Thread a concrete configured first-proof selector report into the bounded PMXT run inputs and completed result contract without venue or asset constants.",
+    "Thread a concrete configured first-proof selector report artifact into the bounded PMXT source-backed run without venue or asset constants.",
     "Machine-checked BTE crate proof that nautilus-polymarket parser/provider is reused for Polymarket instruments and token-id joins.",
     "TDD proof for the selected PMXT historical TradeId path because pinned NT's build_polymarket_trade_id helper is crate-private; either mirror the pinned format with provenance or expose it upstream before claiming direct NT helper reuse.",
     "Generic PMXT order-book projection contract from source event types to NT OrderBookDelta/TradeTick, including snapshot flags, side/action rules, timestamps, trade ids, and first-proof tick-size claim limits.",

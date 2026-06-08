@@ -131,7 +131,7 @@
     {
       "area": "result contract",
       "required_shape": "Bind source proof, object hash, event-count ledger hash, selected_asset_ids_hash, converter identity/version, conversion manifest/checkpoint hash, logical catalog hash, NT revision, and claim limits.",
-      "current_status": "TDD-proven schema validation requires event_count_ledger_hash and selected_asset_ids_hash for L2Replay result contracts; actual PMXT selector-report-to-run wiring remains pending."
+      "current_status": "TDD-proven schema validation requires event_count_ledger_hash and selected_asset_ids_hash for L2Replay result contracts; runner inputs now expose generic selector provenance and refuse L2Replay result construction without it; actual PMXT selector-report-to-run wiring remains pending."
     }
   ],
   "required_red_green_tests_before_acceptance": [
@@ -168,7 +168,12 @@
     "RED just bte-test result_contract::tests::l2_result_contract_requires_event_count_ledger_hash failed because an L2Replay contract without selector provenance still validated.",
     "GREEN just bte-test result_contract::tests::l2_result_contract_requires_event_count_ledger_hash passed after L2Replay contracts required event_count_ledger_hash.",
     "RED just bte-test result_contract::tests::l2_result_contract_requires_and_binds_selected_asset_ids_hash failed because an L2Replay contract with only event_count_ledger_hash still validated.",
-    "GREEN just bte-test result_contract::tests::l2_result_contract_requires_and_binds_selected_asset_ids_hash passed after L2Replay contracts required selected_asset_ids_hash and serialized both selector hashes."
+    "GREEN just bte-test result_contract::tests::l2_result_contract_requires_and_binds_selected_asset_ids_hash passed after L2Replay contracts required selected_asset_ids_hash and serialized both selector hashes.",
+    "RED just bte-test runner::tests::l2_run_contract_provenance_requires_selector_hashes failed with unresolved BacktestSelectorProvenance and selector_provenance_hashes.",
+    "GREEN just bte-test runner::tests::l2_run_contract_provenance_requires_selector_hashes passed after runner inputs gained generic selector provenance and L2Replay run-contract construction refused missing selector hashes.",
+    "just bte-test runner::tests:: backtesting_vertical_slice_end_to_end result_contract::tests:: passed 35 focused runner/end-to-end/result-contract tests.",
+    "just bte-fmt-check passed after runner selector-provenance wiring.",
+    "just bte-clippy passed after runner selector-provenance wiring."
   ],
   "still_blocking_broad_backfill": [
     "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven.",

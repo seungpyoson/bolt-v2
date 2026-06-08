@@ -705,6 +705,7 @@ pub fn run_from_run_spec(
         converter: &spec.converter,
         canonical_artifact_path: &canonical_path,
         catalog_root: &catalog_root,
+        selector_provenance: None,
         created_at: &spec.created_at_utc,
         artifact_uris,
     })?;

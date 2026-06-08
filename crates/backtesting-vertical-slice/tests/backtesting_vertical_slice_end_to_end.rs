@@ -320,6 +320,7 @@ fn accepted_data_flows_through_to_objective_result_contract() {
         converter: &converter_config(),
         canonical_artifact_path: &canonical_path,
         catalog_root: &catalog_root,
+        selector_provenance: None,
         created_at: "2026-06-02T00:00:00Z",
         artifact_uris: ResultArtifactUris {
             source_proof_uri: "s3://bolt-parquet/nt-research-analytics/source-proofs/p.json"
@@ -470,6 +471,7 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
         converter: &converter_config(),
         canonical_artifact_path: &full_canonical,
         catalog_root: &full_catalog,
+        selector_provenance: None,
         created_at: "2026-06-02T00:00:00Z",
         artifact_uris: ResultArtifactUris {
             source_proof_uri: "s3://bolt-parquet/nt-research-analytics/source-proofs/p.json"
@@ -514,6 +516,7 @@ fn partial_time_window_gate_admits_only_in_window_trades() {
         converter: &converter_config(),
         canonical_artifact_path: &canonical_path,
         catalog_root: &catalog_root,
+        selector_provenance: None,
         created_at: "2026-06-02T00:00:00Z",
         artifact_uris: ResultArtifactUris {
             source_proof_uri: "s3://bolt-parquet/nt-research-analytics/source-proofs/p.json"

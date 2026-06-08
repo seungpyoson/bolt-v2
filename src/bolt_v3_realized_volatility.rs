@@ -90,6 +90,32 @@ pub struct RealizedVolSnapshot {
     pub config_fingerprint: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ValidRealizedVol(f64);
+
+impl ValidRealizedVol {
+    pub fn new(value: f64) -> Option<Self> {
+        if value.is_finite() && value >= ZERO_F64 {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct ReadyRealizedVol(ValidRealizedVol);
+
+impl ReadyRealizedVol {
+    pub fn get(self) -> f64 {
+        self.0.get()
+    }
+}
+
 impl RealizedVolSnapshot {
     pub fn invalid_config(
         surface_id: &str,
@@ -111,6 +137,16 @@ impl RealizedVolSnapshot {
             seconds_per_annum,
             config_fingerprint: config_fingerprint.to_string(),
         }
+    }
+
+    pub fn ready_realized_vol(&self) -> Option<ReadyRealizedVol> {
+        if !self.ready || !self.blocked_reasons.is_empty() {
+            return None;
+        }
+
+        self.annualized_realized_vol_decimal
+            .and_then(ValidRealizedVol::new)
+            .map(ReadyRealizedVol)
     }
 }
 
@@ -137,6 +173,8 @@ pub struct RealizedVolSourceDiagnostic {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RealizedVolSourceStatus {
     Ready,
+    Blocked,
+    DiagnosticOnly,
     Waiting,
     Rejected,
 }
@@ -285,9 +323,6 @@ impl RealizedVolEngine {
                         value,
                     ));
                 }
-                (true, _, true, _, Some(reason)) => {
-                    blockers.insert(reason);
-                }
                 _ => {}
             }
             diagnostics.push(diagnostic);
@@ -371,6 +406,8 @@ fn validate_config(config: &RealizedVolEngineConfig) -> Result<(), String> {
         RealizedVolAggregation::UpperQuantile { .. } => {}
     }
     let mut ids = BTreeSet::new();
+    let mut enabled_quorum_sources = 0usize;
+    let mut quorum_contract: Option<(RealizedVolSourceClass, RealizedVolSampleKind)> = None;
     for source in &config.sources {
         if source.source_id.trim().is_empty() {
             return Err("source_id must be non-empty".to_string());
@@ -378,6 +415,24 @@ fn validate_config(config: &RealizedVolEngineConfig) -> Result<(), String> {
         if !ids.insert(source.source_id.clone()) {
             return Err(format!("duplicate source_id `{}`", source.source_id));
         }
+        if source.enabled && source.counts_toward_quorum {
+            enabled_quorum_sources += 1;
+            match quorum_contract {
+                Some((source_class, sample_kind))
+                    if source.source_class != source_class || source.sample_kind != sample_kind =>
+                {
+                    return Err(
+                        "enabled quorum-counting sources must share source_class and sample_kind"
+                            .to_string(),
+                    );
+                }
+                Some(_) => {}
+                None => quorum_contract = Some((source.source_class, source.sample_kind)),
+            }
+        }
+    }
+    if config.min_ready_sources > enabled_quorum_sources {
+        return Err("min_ready_sources exceeds enabled quorum source count".to_string());
     }
     Ok(())
 }
@@ -479,13 +534,7 @@ fn source_diagnostic(
         sample_kind: state.config.sample_kind,
         enabled: state.config.enabled,
         counts_toward_quorum: state.config.counts_toward_quorum,
-        status: if computation.rv.is_some() {
-            RealizedVolSourceStatus::Ready
-        } else if state.last_rejected_reason.is_some() {
-            RealizedVolSourceStatus::Rejected
-        } else {
-            RealizedVolSourceStatus::Waiting
-        },
+        status: source_status(&state.config, &state.samples, &computation),
         annualized_realized_vol_decimal: computation.rv,
         first_sample_ts_ms: window_samples.first().map(|sample| sample.event_ts_ms),
         last_sample_ts_ms: samples.last().map(|sample| sample.event_ts_ms),
@@ -497,6 +546,23 @@ fn source_diagnostic(
         rejection_counters: state.rejection_counters.clone(),
         block_reason: rejection_block_reason.or(computation.block_reason),
     }
+}
+
+fn source_status(
+    config: &RealizedVolSourceConfig,
+    samples: &VecDeque<RealizedVolObservation>,
+    computation: &SourceComputation,
+) -> RealizedVolSourceStatus {
+    if !config.enabled || !config.counts_toward_quorum {
+        return RealizedVolSourceStatus::DiagnosticOnly;
+    }
+    if computation.rv.is_some() {
+        return RealizedVolSourceStatus::Ready;
+    }
+    if samples.is_empty() {
+        return RealizedVolSourceStatus::Waiting;
+    }
+    RealizedVolSourceStatus::Blocked
 }
 
 fn grid_prices(
@@ -591,9 +657,9 @@ fn compute_rv(
     let elapsed_seconds = elapsed_ms as f64 / MILLIS_PER_SECOND_F64;
     let variance = (sum / elapsed_seconds) * config.seconds_per_annum;
     let rv = variance.sqrt();
-    if rv.is_finite() && rv >= ZERO_F64 {
+    if let Some(rv) = ValidRealizedVol::new(rv) {
         SourceComputation {
-            rv: Some(rv),
+            rv: Some(rv.get()),
             block_reason: None,
         }
     } else {

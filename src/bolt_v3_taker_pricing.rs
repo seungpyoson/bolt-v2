@@ -13,8 +13,8 @@ use crate::bolt_v3_realized_volatility::RealizedVolAggregation;
 use crate::{
     bolt_v3_market_families::{self, FairProbabilityInputs},
     bolt_v3_numeric::{
-        MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64, clamp_probability, is_non_negative_finite,
-        is_positive_finite, sanitize_probability,
+        MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64, clamp_probability, is_positive_finite,
+        sanitize_probability,
     },
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_taker_signal::{
@@ -266,7 +266,8 @@ impl TakerPricingState {
 
     fn current_surfaced_realized_vol_at(&self, surface_id: &str, now_ms: u64) -> Option<f64> {
         self.current_surfaced_realized_vol_snapshot_at(surface_id, now_ms)
-            .and_then(|snapshot| snapshot.annualized_realized_vol_decimal)
+            .and_then(|snapshot| snapshot.ready_realized_vol())
+            .map(|realized_vol| realized_vol.get())
     }
 
     fn current_surfaced_realized_vol_snapshot_at(
@@ -277,10 +278,7 @@ impl TakerPricingState {
         let snapshot = self.latest_realized_vol_snapshot.as_ref()?;
         if snapshot.surface_id != surface_id
             || snapshot.as_of_ms > now_ms
-            || !snapshot.ready
-            || !snapshot
-                .annualized_realized_vol_decimal
-                .is_some_and(is_non_negative_finite)
+            || snapshot.ready_realized_vol().is_none()
         {
             return None;
         }
@@ -295,7 +293,7 @@ impl TakerPricingState {
         realized_vol: f64,
         ready_ts_ms: u64,
     ) {
-        if !is_non_negative_finite(realized_vol) {
+        if crate::bolt_v3_realized_volatility::ValidRealizedVol::new(realized_vol).is_none() {
             return;
         }
         self.observe_realized_vol_snapshot(RealizedVolSnapshot {
@@ -351,9 +349,7 @@ impl TakerPricingState {
             blocked_by.push(TakerPricingBlockReason::SecondsToExpiryMissing);
         }
 
-        let realized_vol = self
-            .current_realized_vol_for_config_at(config, request.now_ms)
-            .filter(|value| is_non_negative_finite(*value));
+        let realized_vol = self.current_realized_vol_for_config_at(config, request.now_ms);
         if realized_vol.is_none() {
             blocked_by.push(TakerPricingBlockReason::RealizedVolNotReady);
         }

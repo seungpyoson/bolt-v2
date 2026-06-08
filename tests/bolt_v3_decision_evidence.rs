@@ -60,7 +60,7 @@ fn realized_volatility_source_diagnostic_evidence_exports_config_participation()
         sample_kind: RealizedVolSampleKind::Midpoint,
         enabled: false,
         counts_toward_quorum: false,
-        status: RealizedVolSourceStatus::Rejected,
+        status: RealizedVolSourceStatus::DiagnosticOnly,
         annualized_realized_vol_decimal: None,
         first_sample_ts_ms: None,
         last_sample_ts_ms: None,
@@ -79,7 +79,7 @@ fn realized_volatility_source_diagnostic_evidence_exports_config_participation()
     assert_eq!(evidence.source_id, "<SOURCE_ID_B>");
     assert!(!evidence.enabled);
     assert!(!evidence.counts_toward_quorum);
-    assert_eq!(evidence.status, "rejected");
+    assert_eq!(evidence.status, "diagnostic_only");
     assert_eq!(
         evidence.rejection_counters.get("disabled_source").copied(),
         Some(2)

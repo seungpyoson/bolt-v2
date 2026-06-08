@@ -2899,9 +2899,7 @@ impl BinaryOracleEdgeTaker {
             .interval_open
             .filter(|value| is_positive_finite(*value))?;
         let seconds_to_expiry = self.current_position_seconds_to_expiry_at(now_ms)?;
-        let realized_vol = self
-            .current_realized_vol_at(now_ms)
-            .filter(|value| is_non_negative_finite(*value))?;
+        let realized_vol = self.current_realized_vol_at(now_ms)?;
         bolt_v3_market_families::fair_probability_up_for_family(
             &self.config.rotating_market_family,
             &FairProbabilityInputs {
@@ -2932,9 +2930,7 @@ impl BinaryOracleEdgeTaker {
             open_position.seconds_to_expiry_at_selection,
             now_ms,
         )?;
-        let realized_vol = self
-            .current_realized_vol_at(now_ms)
-            .filter(|value| is_non_negative_finite(*value))?;
+        let realized_vol = self.current_realized_vol_at(now_ms)?;
         let fair_probability_up = bolt_v3_market_families::fair_probability_up_for_family(
             &self.config.rotating_market_family,
             &FairProbabilityInputs {
@@ -3725,12 +3721,9 @@ impl BinaryOracleEdgeTaker {
             .spot_price()
             .filter(|value| is_positive_finite(*value))
             .ok_or_else(|| anyhow::anyhow!("entry strategy input evidence requires spot price"))?;
-        let realized_volatility = self
-            .current_realized_vol_at(now_ms)
-            .filter(|value| is_non_negative_finite(*value))
-            .ok_or_else(|| {
-                anyhow::anyhow!("entry strategy input evidence requires realized volatility")
-            })?;
+        let realized_volatility = self.current_realized_vol_at(now_ms).ok_or_else(|| {
+            anyhow::anyhow!("entry strategy input evidence requires realized volatility")
+        })?;
         let seconds_to_market_end = self.current_seconds_to_expiry_at(now_ms).ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires seconds to market end")
         })?;

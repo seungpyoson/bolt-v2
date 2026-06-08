@@ -107,7 +107,6 @@ The RV engine accepts only observations that pass RV-specific validation:
 - source enabled
 - positive finite price
 - event time must not regress per source
-- an exact duplicate `(event_ts_ms, recv_ts_ms)` for a source is rejected
 - a same-`event_ts_ms` update with a larger `recv_ts_ms` replaces the prior
   same-event sample for that source and does not create a realized-return
   interval by itself
@@ -147,8 +146,10 @@ a sufficiently covered flat source. Readiness requires:
 `source_class` and `sample_kind` are part of the source contract. Quote, trade,
 mark, and index observations do not share one estimator contract. The initial
 runtime contract aggregates only quorum-counting sources with the same
-`source_class` and `sample_kind`. Diagnostic sources may be recorded, but they do
-not satisfy quorum unless their class and sample kind match the surface policy.
+`source_class` and `sample_kind`. Root validation rejects a surface whose enabled
+quorum-counting sources mix source classes or sample kinds. Disabled and
+non-quorum diagnostic sources may be recorded with different contracts, but they
+do not satisfy quorum, class checks, kind checks, aggregation, or dispersion.
 
 ### RV-008 Per-Source RV Before Aggregation
 
@@ -164,9 +165,11 @@ uses the nearest-rank rule over sorted ready per-source RV values and must be in
 `[0.5, 1.0]`, so operator config cannot select below-median aggregation. If
 cross-source dispersion exceeds the configured threshold, the snapshot is not
 ready and emits `CrossSourceDispersion`. Dispersion is defined as
-`(max_ready_source_rv - min_ready_source_rv) / aggregate_rv`. A zero aggregate
-has zero dispersion only when all ready source RVs are also zero; a non-finite or
-negative aggregate is not ready.
+`(max_ready_source_rv - min_ready_source_rv) / aggregate_rv`. If
+`aggregate_rv == 0.0` and every ready source RV is also zero, dispersion is zero.
+If `aggregate_rv == 0.0` and any ready source RV is positive, the snapshot
+blocks with `CrossSourceDispersion`. A non-finite or negative aggregate is not
+ready.
 
 Initial outlier handling has no return winsorization. The engine filters only
 invalid observations and stale/misaligned source intervals. A high isolated
@@ -196,7 +199,8 @@ dispersion threshold, the aggregate blocks rather than removing the high return.
 Pricing and strategy code consume this snapshot instead of peeking into engine
 internals.
 
-The closed `RealizedVolBlockReason` set is:
+The closed reason-label vocabulary used by surface blockers and source
+diagnostics is:
 
 - `InvalidConfig`
 - `QuorumNotReady`
@@ -209,14 +213,34 @@ The closed `RealizedVolBlockReason` set is:
 - `AnnualizationBasisInvalid`
 - `NotWarm`
 
+`RealizedVolSnapshot.blocked_reasons` uses only the surface-level subset:
+
+- `InvalidConfig`
+- `QuorumNotReady`
+- `SourceClassMismatch`
+- `SampleKindMismatch`
+- `CrossSourceDispersion`
+- `AnnualizationBasisInvalid`
+
+Source-level readiness reasons (`SourceStale`, `CoverageBelowMinimum`,
+`InterSampleGapExceeded`, and `NotWarm`) appear only in per-source diagnostics.
+When quorum is short, the snapshot-level blocker is `QuorumNotReady` and source
+diagnostics explain why individual sources did or did not contribute.
+
 ### RV-011 Pricing Boundary
 
 `TakerPricingState` may consume `RealizedVolSnapshot`, but it does not own
 multi-source RV source selection, quorum, dispersion, source readiness, or RV
-sampling. It blocks on snapshot blockers and otherwise passes
-`annualized_realized_vol_decimal` into market-family fair-probability inputs. A
-missing or not-ready snapshot must block pricing; it must not fall back to a
-strategy-owned internal RV estimator.
+sampling. A missing or not-ready snapshot must block pricing; it must not fall
+back to a strategy-owned internal RV estimator.
+
+RV consumers must not validate raw snapshot numeric fields independently. The
+engine exposes a centralized valid-RV contract: source computation may create a
+finite non-negative RV value, and strategy/pricing/probability/evidence
+consumers obtain RV only through a ready-snapshot accessor that verifies
+`snapshot.ready`, empty snapshot blockers, and the finite non-negative numeric
+contract. This accessor is the only path that treats `0.0` as valid RV for
+consumer logic.
 
 ### RV-012 Strategy Boundary
 
@@ -236,7 +260,9 @@ Entry/exit decision evidence must include the RV snapshot fields needed to prove
 which sources contributed, which sources were rejected, why the snapshot was or
 was not ready, what annualization and aggregation policy produced the value, and
 which config fingerprint governed the snapshot. Decimal evidence fields must use
-deterministic non-locale formatting.
+deterministic non-locale formatting. When a snapshot is blocked, aggregate RV
+evidence fields must be absent or empty; source diagnostics and surface blockers
+explain the blocked state.
 
 ## Acceptance Criteria
 
@@ -253,3 +279,5 @@ deterministic non-locale formatting.
   readiness, fail-closed, or aggregation logic.
 - Evidence tests prove admitted and blocked decisions contain audit-grade RV
   snapshot fields.
+- Evidence version tests fail when the payload shape changes without a schema
+  version update.

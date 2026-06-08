@@ -115,21 +115,45 @@ fn fixed_grid_coverage_is_required_before_source_is_ready() {
     let snapshot = engine.snapshot_at(4_000);
 
     assert!(!snapshot.ready);
-    assert!(
-        snapshot
-            .blocked_reasons
-            .contains(&RealizedVolBlockReason::CoverageBelowMinimum)
-    );
-    assert!(
-        snapshot
-            .blocked_reasons
-            .contains(&RealizedVolBlockReason::QuorumNotReady)
+    assert_eq!(
+        snapshot.blocked_reasons,
+        vec![RealizedVolBlockReason::QuorumNotReady]
     );
     assert_eq!(
         snapshot.source_diagnostics[0].status,
-        RealizedVolSourceStatus::Waiting
+        RealizedVolSourceStatus::Blocked
+    );
+    assert_eq!(
+        snapshot.source_diagnostics[0].block_reason,
+        Some(RealizedVolBlockReason::CoverageBelowMinimum)
     );
     assert!(snapshot.source_diagnostics[0].coverage_ratio < 0.75);
+}
+
+#[test]
+fn source_level_readiness_failures_do_not_block_satisfied_quorum() {
+    let mut cfg = config(&[SOURCE_A, SOURCE_B]);
+    cfg.min_ready_sources = 1;
+    let mut engine = RealizedVolEngine::from_config(cfg).unwrap();
+    observe_path(&mut engine, SOURCE_A, &[100.0, 101.0, 102.0, 103.0]);
+    assert!(engine.observe(observation(SOURCE_B, 100.0, 1_000)));
+    assert!(engine.observe(observation(SOURCE_B, 104.0, 4_000)));
+
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    assert!(snapshot.blocked_reasons.is_empty());
+    assert_eq!(snapshot.sources_used, vec![SOURCE_A.to_string()]);
+    let blocked_diagnostic = snapshot
+        .source_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source_id == SOURCE_B)
+        .expect("non-ready source should remain diagnostic-visible");
+    assert_eq!(blocked_diagnostic.status, RealizedVolSourceStatus::Blocked);
+    assert_eq!(
+        blocked_diagnostic.block_reason,
+        Some(RealizedVolBlockReason::CoverageBelowMinimum)
+    );
 }
 
 #[test]
@@ -190,7 +214,7 @@ fn disabled_configured_source_rejections_remain_auditable_without_quorum_partici
         .iter()
         .find(|diagnostic| diagnostic.source_id == SOURCE_B)
         .expect("disabled configured source should remain visible in diagnostics");
-    assert_eq!(disabled.status, RealizedVolSourceStatus::Rejected);
+    assert_eq!(disabled.status, RealizedVolSourceStatus::DiagnosticOnly);
     assert_eq!(
         disabled.last_rejected_reason,
         Some(RealizedVolSourceRejectReason::DisabledSource)
@@ -223,7 +247,7 @@ fn disabled_source_diagnostic_exports_config_participation_without_observations(
         .expect("disabled configured source should remain visible in diagnostics");
     assert!(!disabled.enabled);
     assert!(!disabled.counts_toward_quorum);
-    assert_eq!(disabled.status, RealizedVolSourceStatus::Waiting);
+    assert_eq!(disabled.status, RealizedVolSourceStatus::DiagnosticOnly);
     assert_eq!(disabled.last_rejected_reason, None);
 }
 
@@ -282,6 +306,36 @@ fn flat_valid_source_publishes_zero_realized_volatility() {
 
     assert!(snapshot.ready);
     assert_eq!(snapshot.annualized_realized_vol_decimal, Some(0.0));
+    assert_eq!(snapshot.ready_realized_vol().map(|rv| rv.get()), Some(0.0));
+}
+
+#[test]
+fn ready_realized_vol_accessor_requires_snapshot_readiness() {
+    let mut snapshot = RealizedVolSnapshot::invalid_config(
+        SURFACE_ID,
+        4_000,
+        RealizedVolAggregation::UpperQuantile { quantile: 1.0 },
+        31_536_000.0,
+        "<config_fingerprint>",
+    );
+    snapshot.annualized_realized_vol_decimal = Some(0.0);
+
+    assert_eq!(snapshot.ready_realized_vol(), None);
+
+    snapshot.ready = true;
+    assert_eq!(snapshot.ready_realized_vol(), None);
+}
+
+#[test]
+fn valid_realized_vol_rejects_negative_and_non_finite_values() {
+    use bolt_v2::bolt_v3_realized_volatility::ValidRealizedVol;
+
+    assert_eq!(ValidRealizedVol::new(0.0).map(|rv| rv.get()), Some(0.0));
+    assert_eq!(ValidRealizedVol::new(1.0).map(|rv| rv.get()), Some(1.0));
+    assert_eq!(ValidRealizedVol::new(-1.0), None);
+    assert_eq!(ValidRealizedVol::new(f64::NAN), None);
+    assert_eq!(ValidRealizedVol::new(f64::INFINITY), None);
+    assert_eq!(ValidRealizedVol::new(f64::NEG_INFINITY), None);
 }
 
 #[test]
@@ -377,6 +431,21 @@ fn engine_config_validation_matches_root_policy_bounds() {
         .expect_err("engine constructor must reject NaN coverage ratios");
     assert!(
         error.contains("min_coverage_ratio"),
+        "unexpected validation error: {error}"
+    );
+}
+
+#[test]
+fn engine_config_validation_rejects_mixed_enabled_quorum_source_contracts() {
+    let mut mixed_contracts = config(&[SOURCE_A, SOURCE_B]);
+    mixed_contracts.sources[1].source_class = RealizedVolSourceClass::Trade;
+    mixed_contracts.sources[1].sample_kind = RealizedVolSampleKind::Trade;
+
+    let error = RealizedVolEngine::from_config(mixed_contracts)
+        .expect_err("enabled quorum-counting sources must share one class/kind contract");
+
+    assert!(
+        error.contains("source_class") || error.contains("sample_kind"),
         "unexpected validation error: {error}"
     );
 }

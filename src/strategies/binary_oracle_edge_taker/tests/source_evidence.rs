@@ -152,7 +152,7 @@ fn surfaced_realized_volatility_forwards_disabled_source_observations_for_audit(
         .expect("disabled source diagnostic should exist");
     assert_eq!(
         disabled_diagnostic.status,
-        crate::bolt_v3_realized_volatility::RealizedVolSourceStatus::Rejected
+        crate::bolt_v3_realized_volatility::RealizedVolSourceStatus::DiagnosticOnly
     );
     assert_eq!(
         disabled_diagnostic.last_rejected_reason,
@@ -238,20 +238,28 @@ fn surfaced_realized_volatility_refresh_blocks_when_source_goes_stale() {
         .as_ref()
         .expect("RV refresh should publish a pricing snapshot");
     assert_eq!(snapshot.as_of_ms, 4_501);
+    assert_eq!(
+        snapshot.blocked_reasons,
+        vec![crate::bolt_v3_realized_volatility::RealizedVolBlockReason::QuorumNotReady]
+    );
+    let diagnostic = snapshot
+        .source_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source_id == TEST_SOURCE_ID)
+        .expect("stale source diagnostic should exist");
     assert!(
-        snapshot
-            .blocked_reasons
-            .contains(&crate::bolt_v3_realized_volatility::RealizedVolBlockReason::SourceStale)
-            || snapshot
-                .blocked_reasons
-                .contains(&crate::bolt_v3_realized_volatility::RealizedVolBlockReason::NotWarm),
-        "expected stale-source fail-closed blocker, got {:?}",
-        snapshot.blocked_reasons
+        matches!(
+            diagnostic.block_reason,
+            Some(crate::bolt_v3_realized_volatility::RealizedVolBlockReason::SourceStale)
+                | Some(crate::bolt_v3_realized_volatility::RealizedVolBlockReason::NotWarm)
+        ),
+        "expected stale-source diagnostic blocker, got {:?}",
+        diagnostic.block_reason
     );
 }
 
 #[test]
-fn surfaced_realized_volatility_quote_and_trade_sources_can_share_instrument() {
+fn surfaced_realized_volatility_quote_and_trade_sources_can_share_instrument_for_diagnostics() {
     let mut engine_config = test_realized_volatility_engine_config();
     engine_config.sources.push(
         crate::bolt_v3_realized_volatility::RealizedVolSourceConfig {
@@ -261,7 +269,7 @@ fn surfaced_realized_volatility_quote_and_trade_sources_can_share_instrument() {
             source_class: crate::bolt_v3_realized_volatility::RealizedVolSourceClass::Trade,
             sample_kind: crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Trade,
             enabled: true,
-            counts_toward_quorum: true,
+            counts_toward_quorum: false,
             canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
         },
     );
@@ -291,6 +299,10 @@ fn surfaced_realized_volatility_quote_and_trade_sources_can_share_instrument() {
         .expect("trade source diagnostic should exist");
     assert_eq!(quote_diagnostic.raw_sample_count, 1);
     assert_eq!(trade_diagnostic.raw_sample_count, 1);
+    assert_eq!(
+        trade_diagnostic.status,
+        crate::bolt_v3_realized_volatility::RealizedVolSourceStatus::DiagnosticOnly
+    );
 }
 
 #[test]
@@ -897,6 +909,7 @@ fn strategy_input_evidence_records_realized_volatility_not_ready_pricing_block()
     };
     assert_eq!(snapshot.realized_volatility_surface_id, TEST_SURFACE_ID);
     assert_eq!(snapshot.realized_volatility_as_of_ms, Some(1_200));
+    assert_eq!(snapshot.realized_volatility, "");
     assert_eq!(snapshot.realized_volatility_annualized_decimal, "");
     assert_eq!(
         snapshot.realized_volatility_blockers,

@@ -268,6 +268,8 @@ fn realized_volatility_source_status_evidence_label(
 ) -> &'static str {
     match status {
         RealizedVolSourceStatus::Ready => "ready",
+        RealizedVolSourceStatus::Blocked => "blocked",
+        RealizedVolSourceStatus::DiagnosticOnly => "diagnostic_only",
         RealizedVolSourceStatus::Waiting => "waiting",
         RealizedVolSourceStatus::Rejected => "rejected",
     }

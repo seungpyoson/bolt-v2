@@ -268,6 +268,11 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
         let mut seen_source_instrument_clients: BTreeMap<String, (String, String)> =
             BTreeMap::new();
         let mut enabled_quorum_sources = 0usize;
+        let mut quorum_source_contract: Option<(
+            RealizedVolatilitySourceClassBlock,
+            RealizedVolatilitySampleKindBlock,
+            String,
+        )> = None;
         for (index, source) in surface.sources.iter().enumerate() {
             let source_context = format!("{context}.sources[{index}]");
             if source.source_id.trim().is_empty() {
@@ -336,6 +341,28 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
             }
             if source.enabled && source.counts_toward_quorum {
                 enabled_quorum_sources += 1;
+                match quorum_source_contract.as_ref() {
+                    Some((source_class, sample_kind, existing_context))
+                        if source.source_class != *source_class
+                            || source.sample_kind != *sample_kind =>
+                    {
+                        errors.push(format!(
+                            "{source_context}.source_class/sample_kind {:?}/{:?} must match enabled quorum source contract {:?}/{:?} established by {existing_context}",
+                            source.source_class,
+                            source.sample_kind,
+                            source_class,
+                            sample_kind,
+                        ));
+                    }
+                    Some(_) => {}
+                    None => {
+                        quorum_source_contract = Some((
+                            source.source_class,
+                            source.sample_kind,
+                            source_context.clone(),
+                        ));
+                    }
+                }
             }
         }
 

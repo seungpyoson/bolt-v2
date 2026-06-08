@@ -271,6 +271,23 @@ fn realized_volatility_validation_rejects_mismatched_source_sample_pair() {
 }
 
 #[test]
+fn realized_volatility_validation_rejects_mixed_enabled_quorum_source_contracts() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources.push(RealizedVolatilitySourceBlock {
+                source_id: "<SOURCE_ID_B>".to_string(),
+                source_class: RealizedVolatilitySourceClassBlock::Trade,
+                sample_kind: RealizedVolatilitySampleKindBlock::Trade,
+                ..surface.sources[0].clone()
+            });
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+        },
+        "source_class",
+    );
+}
+
+#[test]
 fn realized_volatility_validation_rejects_strategy_missing_surface_reference() {
     assert_realized_volatility_validation_error(
         |loaded| {

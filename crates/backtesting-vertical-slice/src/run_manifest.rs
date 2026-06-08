@@ -1339,10 +1339,7 @@ impl BacktestingRunManifest {
                 self.manifest_schema_version.as_str(),
             ),
             ("run_id", self.run_id.as_str()),
-            (
-                "target_bolt_v2_branch",
-                self.target_bolt_v2_branch.as_str(),
-            ),
+            ("target_bolt_v2_branch", self.target_bolt_v2_branch.as_str()),
             ("target_bolt_v2_ref", self.target_bolt_v2_ref.as_str()),
             ("resolved_nt_version", self.resolved_nt_version.as_str()),
             ("venue_binding_key", self.venue_binding_key.as_str()),
@@ -2797,22 +2794,18 @@ mod tests {
             manifest.target_bolt_v2_branch = "release/backtesting".to_string();
         });
         assert_hash_changes("target_bolt_v2_ref", |manifest| {
-            manifest.target_bolt_v2_ref =
-                "refs/heads/release/backtesting".to_string();
+            manifest.target_bolt_v2_ref = "refs/heads/release/backtesting".to_string();
         });
         assert_hash_changes("resolved_nt_version", |manifest| {
-            manifest.resolved_nt_version =
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+            manifest.resolved_nt_version = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
         });
         assert_hash_changes("strategy_config_hash", |manifest| {
             manifest.strategy_config_hash =
-                "2222222222222222222222222222222222222222222222222222222222222222"
-                    .to_string();
+                "2222222222222222222222222222222222222222222222222222222222222222".to_string();
         });
         assert_hash_changes("catalog_hash", |manifest| {
             manifest.catalog_hash =
-                "3333333333333333333333333333333333333333333333333333333333333333"
-                    .to_string();
+                "3333333333333333333333333333333333333333333333333333333333333333".to_string();
         });
         assert_hash_changes("execution_model", |manifest| {
             manifest.execution_model = "alternate_nt_execution_model".to_string();
@@ -2873,7 +2866,10 @@ mod tests {
         }
 
         let parsed = parse_manifest_toml(&text).expect("parse manifest with currentness fields");
-        assert_eq!(parsed.manifest_schema_version, manifest.manifest_schema_version);
+        assert_eq!(
+            parsed.manifest_schema_version,
+            manifest.manifest_schema_version
+        );
         assert_eq!(parsed.target_bolt_v2_branch, manifest.target_bolt_v2_branch);
         assert_eq!(parsed.target_bolt_v2_ref, manifest.target_bolt_v2_ref);
         assert_eq!(parsed.resolved_nt_version, manifest.resolved_nt_version);

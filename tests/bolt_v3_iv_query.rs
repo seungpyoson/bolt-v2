@@ -692,7 +692,7 @@ fn derived_iv_outputs_are_retained_by_profile_memory_bounds() {
             .unwrap();
     }
 
-    handle.enforce_retention(&IvRetentionPolicy {
+    handle.state_handle().enforce_retention(&IvRetentionPolicy {
         max_raw_events: 2,
         max_indexed_points: 2,
         max_smiles: 2,

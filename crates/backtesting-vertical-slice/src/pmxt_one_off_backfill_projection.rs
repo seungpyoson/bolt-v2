@@ -15,6 +15,7 @@ use arrow::array::{
     RecordBatch, StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
     TimestampNanosecondArray, TimestampSecondArray,
 };
+use nautilus_backtest::result::BacktestResult;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{OrderBookDelta, TradeTick},
@@ -47,8 +48,16 @@ use crate::{
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionFingerprint, ConversionManifest,
         ConversionOutputState, inspect_conversion_output, write_completed_conversion_artifacts,
     },
+    result_contract::{
+        BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
+    },
+    run_manifest::{BacktestingRunManifest, MarketStructureFixture},
+    runner::{
+        iterations_mismatch, market_structure_label, nt_extension_surface_claim_limits,
+        result_contract_warnings, run_nt_backtest_node, run_purpose_label,
+    },
     selected_source_slice::{SelectedSourceSliceReport, SelectedSourceSliceUsageScope},
-    source_proof::SourceProofUsageScope,
+    source_proof::{AcceptanceMode, SourceProofFidelityClass, SourceProofUsageScope},
 };
 
 /// NautilusTrader data type written by the PMXT one-off L2 projection.
@@ -191,6 +200,27 @@ pub struct PmxtOneOffCompletedConversionProjection {
     pub conversion_checkpoint_hash: String,
     pub conversion_manifest_hash: String,
     pub conversion_catalog_metadata_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PmxtOneOffBacktestContractSpec<'a> {
+    pub completed: &'a PmxtOneOffCompletedConversionProjection,
+    pub manifest: &'a BacktestingRunManifest,
+    pub manifest_hash: &'a str,
+    pub acceptance_mode: AcceptanceMode,
+    pub accepted_by: &'a str,
+    pub accepted_at: &'a str,
+    pub event_count_ledger_hash: &'a str,
+    pub selected_asset_ids_hash: &'a str,
+    pub artifact_uris: ResultArtifactUris,
+    pub created_at: &'a str,
+    pub claim_limits: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct PmxtOneOffBacktestContractOutput {
+    pub nt_result: BacktestResult,
+    pub contract: BacktestResultContract,
 }
 
 pub fn project_pmxt_selected_source_parquet_to_nt(
@@ -721,6 +751,149 @@ fn reuse_completed_pmxt_one_off_conversion_projection(
 fn read_conversion_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+}
+
+pub fn run_pmxt_one_off_l2_backtest_contract(
+    spec: PmxtOneOffBacktestContractSpec<'_>,
+) -> Result<PmxtOneOffBacktestContractOutput> {
+    let completed = spec.completed;
+    ensure!(
+        completed.catalog_projection.usage_scope == SourceProofUsageScope::OneOffBackfillData,
+        "PMXT one-off result contract only accepts one_off_backfill_data usage_scope"
+    );
+    ensure!(
+        completed.conversion_manifest.nt_data_type == NT_DATA_TYPE_ORDER_BOOK_DELTA,
+        "PMXT one-off result contract requires OrderBookDelta conversion output"
+    );
+    ensure!(
+        completed.conversion_catalog_metadata.nt_data_type == NT_DATA_TYPE_ORDER_BOOK_DELTA,
+        "PMXT one-off catalog metadata must describe OrderBookDelta"
+    );
+    ensure!(
+        completed.conversion_manifest.catalog_hash == completed.catalog_projection.catalog_hash,
+        "PMXT one-off conversion manifest catalog_hash does not match catalog projection"
+    );
+    ensure!(
+        completed.conversion_catalog_metadata.catalog_hash
+            == completed.catalog_projection.catalog_hash,
+        "PMXT one-off catalog metadata catalog_hash does not match catalog projection"
+    );
+    ensure!(
+        completed.conversion_catalog_metadata_hash
+            == completed
+                .conversion_catalog_metadata
+                .content_hash()
+                .context("hash PMXT one-off catalog metadata")?,
+        "PMXT one-off catalog metadata hash does not match completed projection"
+    );
+    ensure!(
+        !spec.manifest_hash.trim().is_empty(),
+        "PMXT one-off result contract missing manifest_hash"
+    );
+    ensure!(
+        !spec.accepted_by.trim().is_empty(),
+        "PMXT one-off result contract missing accepted_by"
+    );
+    ensure!(
+        !spec.accepted_at.trim().is_empty(),
+        "PMXT one-off result contract missing accepted_at"
+    );
+    ensure!(
+        !spec.created_at.trim().is_empty(),
+        "PMXT one-off result contract missing created_at"
+    );
+    ensure!(
+        !spec.event_count_ledger_hash.trim().is_empty(),
+        "PMXT one-off L2 result contract requires event_count_ledger_hash"
+    );
+    ensure!(
+        !spec.selected_asset_ids_hash.trim().is_empty(),
+        "PMXT one-off L2 result contract requires selected_asset_ids_hash"
+    );
+    let manifest_catalog_root = spec.manifest.catalog_input.catalog_path.as_str();
+    let catalog_root = completed
+        .catalog_projection
+        .catalog_root
+        .to_str()
+        .context("PMXT one-off catalog root is not valid UTF-8")?;
+    ensure!(
+        manifest_catalog_root == catalog_root,
+        "PMXT one-off manifest catalog_path {manifest_catalog_root:?} does not match verified catalog root {catalog_root:?}"
+    );
+    ensure!(
+        spec.manifest.catalog_input.data_type == NT_DATA_TYPE_ORDER_BOOK_DELTA,
+        "PMXT one-off manifest catalog_input.data_type must be OrderBookDelta"
+    );
+    ensure!(
+        spec.manifest.catalog_input.nt_instrument_id
+            == completed.catalog_projection.nt_instrument_id,
+        "PMXT one-off manifest instrument does not match conversion output"
+    );
+    ensure!(
+        spec.manifest.market_structure_fixture == MarketStructureFixture::BinaryOption,
+        "PMXT one-off result contract requires binary-option market structure"
+    );
+    ensure!(
+        spec.manifest.source_proof_id == completed.conversion_manifest.fingerprint.source_proof_id,
+        "PMXT one-off manifest source_proof_id does not match conversion fingerprint"
+    );
+    ensure!(
+        spec.manifest.source_proof_version
+            == completed
+                .conversion_manifest
+                .fingerprint
+                .source_proof_version,
+        "PMXT one-off manifest source_proof_version does not match conversion fingerprint"
+    );
+
+    let nt_result =
+        run_nt_backtest_node(spec.manifest).context("run PMXT one-off L2 BacktestNode")?;
+    let expected_iterations = usize::try_from(completed.catalog_projection.order_book_delta_count)
+        .context("PMXT one-off OrderBookDelta count does not fit usize")?;
+    if let Some(reason) = iterations_mismatch(nt_result.iterations, expected_iterations) {
+        bail!("PMXT one-off BacktestNode did not consume verified L2 catalog: {reason}");
+    }
+
+    let mut claim_limits = spec.claim_limits;
+    claim_limits.extend(nt_extension_surface_claim_limits(spec.manifest)?);
+    let fingerprint = &completed.conversion_manifest.fingerprint;
+    let contract = build_result_contract(ResultContractInputs {
+        run_id: &spec.manifest.run_id,
+        source_proof_id: &fingerprint.source_proof_id,
+        source_proof_version: fingerprint.source_proof_version,
+        manifest_hash: spec.manifest_hash,
+        acceptance_mode: spec.acceptance_mode,
+        accepted_by: spec.accepted_by,
+        accepted_at: spec.accepted_at,
+        accepted_object_sha256: &fingerprint.accepted_object_sha256,
+        converter_identity: &fingerprint.converter_identity,
+        converter_version: &fingerprint.converter_version,
+        converter_config_hash: &fingerprint.converter_config_hash,
+        conversion_manifest_hash: &completed.conversion_manifest_hash,
+        conversion_checkpoint_hash: &completed.conversion_checkpoint_hash,
+        catalog_hash: &completed.catalog_projection.catalog_hash,
+        catalog_metadata_hash: &completed.conversion_catalog_metadata_hash,
+        event_count_ledger_hash: Some(spec.event_count_ledger_hash),
+        selected_asset_ids_hash: Some(spec.selected_asset_ids_hash),
+        strategy: &spec.manifest.strategy,
+        run_purpose: run_purpose_label(spec.manifest),
+        market_structure_fixture: market_structure_label(spec.manifest),
+        fidelity_class: SourceProofFidelityClass::L2Replay,
+        claim_limits,
+        warnings: result_contract_warnings(&nt_result),
+        mechanical_blockers: Vec::new(),
+        nt_result: &nt_result,
+        artifact_uris: spec.artifact_uris,
+        created_at: spec.created_at,
+    })
+    .map_err(|error| {
+        anyhow::anyhow!("PMXT one-off result contract construction failed: {error}")
+    })?;
+
+    Ok(PmxtOneOffBacktestContractOutput {
+        nt_result,
+        contract,
+    })
 }
 
 fn binary_option_l2_metadata(instrument: &InstrumentAny) -> Result<(InstrumentId, u8, u8)> {

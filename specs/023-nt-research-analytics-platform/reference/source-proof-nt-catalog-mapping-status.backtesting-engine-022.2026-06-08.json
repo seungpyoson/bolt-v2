@@ -56,10 +56,6 @@
   ],
   "bolt_current_limitations": [
     {
-      "limitation": "The isolated BTE crate does not currently depend on nautilus-polymarket, so reuse of NT Polymarket parser/provider is documented but not machine-checked in the BTE crate.",
-      "evidence": "repo://crates/backtesting-vertical-slice/Cargo.toml:41 current NT dependency block lists nautilus-backtest/core/model/persistence/trading; rg found no nautilus-polymarket dependency in this Cargo.toml."
-    },
-    {
       "limitation": "Pinned NT's historical Polymarket build_polymarket_trade_id helper is pub(crate), so BTE cannot directly call it through nautilus-polymarket even after the dependency is added.",
       "evidence": "nt://crates/adapters/polymarket/src/http/data_api.rs:55"
     },
@@ -150,7 +146,7 @@
     ]
   },
   "bounded_l2_result_contract_status": {
-    "status": "tdd_proven_schema_and_runner_require_l2_selector_hashes",
+    "status": "tdd_proven_schema_runner_and_pmxt_one_off_l2_contract_binding",
     "evidence": [
       "RED just bte-test result_contract::tests::l2_result_contract_requires_event_count_ledger_hash failed because an L2Replay contract without selector provenance still validated.",
       "GREEN just bte-test result_contract::tests::l2_result_contract_requires_event_count_ledger_hash passed after L2Replay contracts required event_count_ledger_hash.",
@@ -160,12 +156,13 @@
       "GREEN just bte-test runner::tests::l2_run_contract_provenance_requires_selector_hashes passed after runner inputs gained generic selector provenance and L2Replay run-contract construction refused missing selector hashes.",
       "just bte-test runner::tests:: backtesting_vertical_slice_end_to_end result_contract::tests:: passed 35 focused runner/end-to-end/result-contract tests.",
       "just bte-fmt-check passed.",
-      "just bte-clippy passed."
+      "just bte-clippy passed.",
+      "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_provenance failed because the PMXT one-off BacktestNode/result-contract API was absent.",
+      "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_provenance passed after the PMXT helper ran BacktestNode over the verified OrderBookDelta catalog and built a BacktestResultContract binding conversion, selector, catalog, catalog metadata, NT revision, and claim-limit provenance."
     ],
     "claim_limits": [
       "Does not prove PMXT TradeTick catalog projection.",
-      "Does not prove a concrete PMXT selector report artifact is threaded into a source-backed completed run.",
-      "Does not prove BacktestResultContract binding for the verified PMXT L2 catalog.",
+      "Does not prove a concrete generated PMXT selected-source parquet and selector report artifact are threaded into an artifact_root result-contract artifact.",
       "Does not authorize broad PMXT backfill."
     ]
   },
@@ -182,7 +179,7 @@
     "claim_limits": [
       "Does not prove PMXT BinaryOption catalog projection.",
       "Does not prove PMXT TradeTick read-back.",
-      "Does not prove BacktestResultContract binding for the verified PMXT L2 catalog.",
+      "Does not prove concrete generated PMXT artifact-root result-contract writing.",
       "Does not authorize broad PMXT backfill."
     ]
   },
@@ -197,7 +194,7 @@
     "claim_limits": [
       "Does not prove PMXT TradeTick row decoding.",
       "Does not prove pinned NT's crate-private historical trade-id helper can be reused directly.",
-      "Does not prove BacktestResultContract binding for the verified PMXT L2 catalog.",
+      "Does not prove concrete generated PMXT artifact-root result-contract writing.",
       "Does not authorize broad PMXT backfill."
     ]
   },
@@ -214,7 +211,7 @@
     "claim_limits": [
       "Does not prove PMXT TradeTick row decoding.",
       "Does not prove pinned NT's crate-private historical trade-id helper can be reused directly.",
-      "Does not prove BacktestResultContract binding for the verified PMXT L2 catalog.",
+      "Does not prove concrete generated PMXT artifact-root result-contract writing.",
       "Does not authorize broad PMXT backfill."
     ]
   },
@@ -225,23 +222,21 @@
       "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_metadata passed after the PMXT one-off wrapper wrote conversion checkpoint, manifest, catalog metadata, and logical catalog hash through the generic conversion boundary.",
       "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output failed because the PMXT wrapper required a clean output directory.",
       "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output passed after matching completed output was reused with manifest/data-type/instrument/row-count/catalog-uri checks.",
-      "rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 6 focused PMXT one-off projection tests."
+      "rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 7 focused PMXT one-off projection tests."
     ],
     "claim_limits": [
       "Proves a PMXT one-off L2 conversion wrapper over an in-test selected projection, not a concrete artifact_root run over the generated selected-source parquet.",
       "Does not prove PMXT TradeTick row decoding.",
-      "Does not prove BacktestResultContract binding for the verified PMXT L2 catalog.",
+      "Does not prove concrete generated PMXT artifact-root result-contract writing.",
       "Does not authorize broad PMXT backfill."
     ]
   },
   "non_hardcoding_decision": "Bybit, Binance, Polymarket, Kalshi, and Hyperliquid remain source-binding examples. The next mapping work must be data-family driven: source schema plus registry binding plus NT data class, with no runtime venue or instrument constants in production code.",
   "next_required_evidence": [
     "Thread the concrete configured first-proof selector report artifact into the bounded PMXT source-backed run without venue or asset constants.",
-    "Machine-checked BTE crate proof that nautilus-polymarket parser/provider is reused for Polymarket instruments and token-id joins.",
     "TDD proof for the selected PMXT historical TradeId path because pinned NT's build_polymarket_trade_id helper is crate-private; either mirror the pinned format with provenance or expose it upstream before claiming direct NT helper reuse.",
     "Generic PMXT TradeTick projection contract from source last_trade_price events to NT TradeTick, including trade ids and first-proof tick-size claim limits.",
-    "Concrete selected PMXT artifact-root run that threads selector report, selected-source parquet, conversion manifest/checkpoint/catalog metadata, and BacktestResultContract provenance together.",
-    "BacktestResultContract binding proof for the selected source-backed PMXT catalog path.",
+    "Concrete selected PMXT artifact-root run that threads selector report, selected-source parquet, conversion manifest/checkpoint/catalog metadata, and BacktestResultContract artifact writing together.",
     "Coverage ledger using timestamp_received as the archive-hour coverage axis before any expanded tranche.",
     "Separate dynamic tick-size replay proof before full PMXT Polymarket L2 acceptance or broad backfill."
   ],

@@ -107,9 +107,9 @@
     },
     {
       "prompt_requirement": "result contract provenance binds the run",
-      "bounded_first_proof_status": "existing_trade_contract_shape_proven_new_l2_bindings_unproven",
-      "evidence": "Existing result contracts bind accepted proof and logical catalog evidence for the trade path; bounded PMXT must also bind selected_asset_ids_hash, event_count_ledger_hash, converter identity, NT revision, and first-proof claim limits.",
-      "required_before_acceptance": "BacktestResultContract must preserve PMXT source proof id/version, accepted object hash, selected universe hash, conversion manifest/checkpoint hash, logical catalog hash, NT revision, and claim limits."
+      "bounded_first_proof_status": "pmxt_one_off_l2_contract_binding_tdd_proven_for_test_path",
+      "evidence": "Existing result contracts bind accepted proof and logical catalog evidence for the trade path. PMXT one-off L2 now has a TDD-proven BacktestNode/result-contract helper that binds source proof id/version, accepted object hash, selected_asset_ids_hash, event_count_ledger_hash, converter identity/version/config hash, conversion manifest/checkpoint hash, logical catalog hash, catalog metadata hash, NT revision, and first-proof claim limits.",
+      "required_before_acceptance": "Thread the concrete selected-source artifact and selector report under artifact_root into this PMXT one-off result-contract path and write the accepted result-contract artifact."
     }
   ],
   "nt_use_matrix_delta": [
@@ -176,7 +176,7 @@
     {
       "area": "result contract",
       "required_shape": "Bind source proof, object hash, event-count ledger hash, selected_asset_ids_hash, converter identity/version, conversion manifest/checkpoint hash, logical catalog hash, NT revision, and claim limits.",
-      "current_status": "TDD-proven schema validation requires event_count_ledger_hash and selected_asset_ids_hash for L2Replay result contracts; runner inputs now expose generic selector provenance and refuse L2Replay result construction without it; actual PMXT selector-report-to-run wiring remains pending."
+      "current_status": "TDD-proven schema validation requires event_count_ledger_hash and selected_asset_ids_hash for L2Replay result contracts; runner inputs expose generic selector provenance and refuse L2Replay result construction without it. PMXT one-off L2 now runs BacktestNode through a manifest over the verified catalog and builds a result contract binding selector, conversion, catalog, catalog-metadata, NT revision, and claim-limit provenance. Concrete selected-source artifact_root wiring remains pending."
     }
   ],
   "required_red_green_tests_before_acceptance": [
@@ -236,7 +236,9 @@
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_metadata passed after PMXT one-off L2 projection wrote conversion checkpoint, manifest, catalog metadata, and logical catalog hash through the generic conversion boundary.",
     "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output failed because the PMXT wrapper required a clean output directory.",
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output passed after matching completed output was reused with manifest/data-type/instrument/row-count/catalog-uri checks.",
-    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 6 focused PMXT one-off projection tests."
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_provenance failed because the PMXT one-off BacktestNode/result-contract API was absent.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_provenance passed after the helper ran BacktestNode over the verified OrderBookDelta catalog and built a BacktestResultContract binding conversion, selector, catalog, catalog metadata, NT revision, and claim-limit provenance.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 7 focused PMXT one-off projection tests."
   ],
   "still_blocking_broad_backfill": [
     "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven.",

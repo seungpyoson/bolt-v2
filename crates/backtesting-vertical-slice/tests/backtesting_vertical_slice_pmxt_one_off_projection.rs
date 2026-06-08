@@ -9,14 +9,22 @@ use backtesting_vertical_slice::{
         ConversionFingerprint, ConversionOutputState, inspect_conversion_output,
     },
     pmxt_one_off_backfill_projection::{
-        PmxtBookLevel, PmxtOneOffConversionProjectionSpec, PmxtOneOffProjectionRequest,
-        PmxtOneOffSelectedRow, PmxtOneOffSnapshotRow, PmxtOneOffTickSide, PmxtPriceChangeRow,
-        PmxtSelectedSourceProjectionSpec, PmxtSelectedSourceSchema,
-        project_pmxt_one_off_rows_to_nt, project_pmxt_selected_source_parquet_to_nt,
+        PmxtBookLevel, PmxtOneOffBacktestContractSpec, PmxtOneOffConversionProjectionSpec,
+        PmxtOneOffProjectionRequest, PmxtOneOffSelectedRow, PmxtOneOffSnapshotRow,
+        PmxtOneOffTickSide, PmxtPriceChangeRow, PmxtSelectedSourceProjectionSpec,
+        PmxtSelectedSourceSchema, project_pmxt_one_off_rows_to_nt,
+        project_pmxt_selected_source_parquet_to_nt, run_pmxt_one_off_l2_backtest_contract,
         write_pmxt_one_off_conversion_projection, write_pmxt_one_off_projection_to_catalog,
     },
+    result_contract::ResultArtifactUris,
+    run_manifest::{
+        BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE, ManifestArtifactStore,
+        ManifestCatalogInput, ManifestVenueConfig, MarketStructureFixture, RunPurpose,
+        STRATEGY_HURST_VPIN_DIRECTIONAL, STRATEGY_PARAM_BAR_TYPE, STRATEGY_PARAM_TRADE_SIZE,
+        StrategySource, StrategySourceKind,
+    },
     selected_source_slice::{SelectedSourceSliceReport, SelectedSourceSliceUsageScope},
-    source_proof::SourceProofUsageScope,
+    source_proof::{AcceptanceMode, SourceProofFidelityClass, SourceProofUsageScope},
 };
 use nautilus_backtest::{
     config::{BacktestDataConfig, BacktestRunConfig, BacktestVenueConfig, NautilusDataType},
@@ -33,7 +41,7 @@ use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use nautilus_polymarket::http::models::GammaMarket;
 use parquet::arrow::ArrowWriter;
 use sha2::{Digest, Sha256};
-use std::{fs::File, sync::Arc};
+use std::{collections::BTreeMap, fs::File, sync::Arc};
 use ustr::Ustr;
 
 #[test]
@@ -350,6 +358,98 @@ fn pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output() {
     );
 }
 
+#[test]
+fn pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_provenance() {
+    let projection = pmxt_projection_fixture();
+    let output_dir = tempfile::TempDir::new().expect("output dir");
+    let catalog_root = output_dir.path().join("nt-catalog");
+    let fingerprint = pmxt_conversion_fingerprint();
+    let completed = write_pmxt_one_off_conversion_projection(PmxtOneOffConversionProjectionSpec {
+        output_dir: output_dir.path().to_path_buf(),
+        catalog_root: catalog_root.clone(),
+        projection: projection.clone(),
+        fingerprint: fingerprint.clone(),
+        normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
+        output_catalog_uri: catalog_root.display().to_string(),
+        execution_catalog_uri: catalog_root.display().to_string(),
+        direct_s3_catalog_access_proven: false,
+        completed_at: "2026-06-08T00:00:00Z".to_string(),
+    })
+    .expect("write PMXT one-off conversion projection");
+    let manifest = pmxt_l2_manifest(&projection, &catalog_root);
+    let manifest_hash = manifest.manifest_hash();
+    let artifact_uris = pmxt_result_artifact_uris(output_dir.path());
+
+    let output = run_pmxt_one_off_l2_backtest_contract(PmxtOneOffBacktestContractSpec {
+        completed: &completed,
+        manifest: &manifest,
+        manifest_hash: &manifest_hash,
+        acceptance_mode: AcceptanceMode::Manual,
+        accepted_by: "source-proof-reviewer",
+        accepted_at: "2026-06-08T00:00:00Z",
+        event_count_ledger_hash: "event-count-ledger-hash",
+        selected_asset_ids_hash: "selected-assets-hash",
+        artifact_uris,
+        created_at: "2026-06-08T00:00:00Z",
+        claim_limits: vec![
+            "one-off PMXT L2 sample only".to_string(),
+            "no dynamic tick-size replay claim".to_string(),
+            "no expanded coverage claim".to_string(),
+        ],
+    })
+    .expect("run PMXT one-off L2 BacktestNode and build result contract");
+
+    assert_eq!(
+        output.nt_result.iterations,
+        projection.order_book_deltas.len()
+    );
+    assert_eq!(
+        output.contract.fidelity_class,
+        SourceProofFidelityClass::L2Replay
+    );
+    assert_eq!(output.contract.source_proof_id, fingerprint.source_proof_id);
+    assert_eq!(
+        output.contract.source_proof_version,
+        fingerprint.source_proof_version
+    );
+    assert_eq!(
+        output.contract.accepted_object_sha256,
+        fingerprint.accepted_object_sha256
+    );
+    assert_eq!(
+        output.contract.converter_identity,
+        fingerprint.converter_identity
+    );
+    assert_eq!(
+        output.contract.conversion_manifest_hash,
+        completed.conversion_manifest_hash
+    );
+    assert_eq!(
+        output.contract.conversion_checkpoint_hash,
+        completed.conversion_checkpoint_hash
+    );
+    assert_eq!(
+        output.contract.catalog_hash,
+        completed.catalog_projection.catalog_hash
+    );
+    assert_eq!(
+        output.contract.catalog_metadata_hash,
+        completed.conversion_catalog_metadata_hash
+    );
+    assert_eq!(
+        output.contract.event_count_ledger_hash.as_deref(),
+        Some("event-count-ledger-hash")
+    );
+    assert_eq!(
+        output.contract.selected_asset_ids_hash.as_deref(),
+        Some("selected-assets-hash")
+    );
+    assert_eq!(
+        output.contract.nt_result.run_config_id.as_deref(),
+        Some("pmxt-one-off-l2-contract-proof")
+    );
+}
+
 fn gamma_markets() -> Vec<GammaMarket> {
     serde_json::from_str(
         r#"[{
@@ -445,6 +545,111 @@ fn pmxt_conversion_fingerprint() -> ConversionFingerprint {
         converter_version: "1".to_string(),
         converter_config_hash: "7c5ff8475a73c3aaf3e64cc09d803ff34de9cbc51345978406125fcc5147879a"
             .to_string(),
+    }
+}
+
+fn pmxt_l2_manifest(
+    projection: &backtesting_vertical_slice::pmxt_one_off_backfill_projection::PmxtOneOffNtProjection,
+    catalog_root: &std::path::Path,
+) -> BacktestingRunManifest {
+    let instrument_id = binary_option_instrument_id(&projection.instrument);
+    let (venue_name, settlement_currency) =
+        binary_option_venue_and_currency(&projection.instrument);
+    BacktestingRunManifest {
+        run_id: "pmxt-one-off-l2-contract-proof".to_string(),
+        market_structure_fixture: MarketStructureFixture::BinaryOption,
+        venue_binding_key: "synthetic-pmxt-one-off-source".to_string(),
+        run_purpose: RunPurpose::Audit,
+        source_proof_id: "source-proof-pmxt-one-off".to_string(),
+        source_proof_version: 1,
+        pins_non_latest_proof: false,
+        proof_pin_reason_code: None,
+        proof_pin_reason_detail: None,
+        strategy: StrategySource {
+            source_kind: StrategySourceKind::CompiledRustRegistry,
+            registry_key: STRATEGY_HURST_VPIN_DIRECTIONAL.to_string(),
+            parameters: BTreeMap::from([
+                (STRATEGY_PARAM_TRADE_SIZE.to_string(), "1".to_string()),
+                (
+                    STRATEGY_PARAM_BAR_TYPE.to_string(),
+                    format!("{instrument_id}-1-MINUTE-LAST-EXTERNAL"),
+                ),
+            ]),
+            typed_config_uri: None,
+            typed_config_hash: None,
+            promotion_package_uri: None,
+            promotion_package_hash: None,
+        },
+        venue: ManifestVenueConfig {
+            nt_venue: venue_name,
+            oms_type: "NETTING".to_string(),
+            account_type: "CASH".to_string(),
+            book_type: "L2_MBP".to_string(),
+            starting_balances: vec![format!("1_000_000 {settlement_currency}")],
+            routing: false,
+            frozen_account: false,
+            reject_stop_orders: true,
+            support_gtd_orders: true,
+            support_contingent_orders: true,
+            use_position_ids: true,
+            use_random_ids: false,
+            use_reduce_only: true,
+            bar_execution: true,
+            bar_adaptive_high_low_ordering: false,
+            trade_execution: true,
+            use_market_order_acks: false,
+            liquidity_consumption: false,
+            allow_cash_borrowing: false,
+            queue_position: false,
+            oto_trigger_mode: "PARTIAL".to_string(),
+            base_currency: "NONE".to_string(),
+            default_leverage: "1".to_string(),
+            price_protection_points: 0,
+            leverages: None,
+            margin_model: None,
+            modules: None,
+            fill_model: None,
+            latency_model: None,
+            fee_model: None,
+            settlement_prices: None,
+        },
+        catalog_input: ManifestCatalogInput {
+            catalog_path: catalog_root.display().to_string(),
+            catalog_fs_protocol: CATALOG_FS_PROTOCOL_NONE.to_string(),
+            catalog_fs_storage_options: BTreeMap::new(),
+            catalog_fs_rust_storage_options: BTreeMap::new(),
+            data_type: "OrderBookDelta".to_string(),
+            nt_instrument_id: instrument_id.to_string(),
+            instrument_ids: None,
+            start_time: None,
+            end_time: None,
+            filter_expr: None,
+            client_id: None,
+            metadata: None,
+            bar_spec: None,
+            bar_types: None,
+            optimize_file_loading: None,
+        },
+        artifact_root: "file:///tmp/pmxt-one-off-l2-contract-proof".to_string(),
+        output_prefix: "file:///tmp/pmxt-one-off-l2-contract-proof/backtests/run".to_string(),
+        artifact_store: ManifestArtifactStore {
+            storage_options: BTreeMap::new(),
+            rust_storage_options: BTreeMap::new(),
+            ssm_parameters: None,
+        },
+        start_time: None,
+        end_time: None,
+    }
+}
+
+fn pmxt_result_artifact_uris(output_dir: &std::path::Path) -> ResultArtifactUris {
+    let uri = |file_name: &str| format!("file://{}", output_dir.join(file_name).display());
+    ResultArtifactUris {
+        source_proof_uri: uri("accepted-source-proof.json"),
+        canonical_table_uri: uri("selected-source.parquet"),
+        nt_catalog_uri: format!("file://{}", output_dir.join("nt-catalog").display()),
+        catalog_metadata_uri: uri(CATALOG_METADATA_FILE),
+        result_contract_uri: uri("backtest-result-contract.json"),
     }
 }
 

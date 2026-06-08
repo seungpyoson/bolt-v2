@@ -19,6 +19,7 @@ pub enum IvBoundUnit {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IvNumericBounds {
     pub finite_required: bool,
     pub positive_required: bool,
@@ -76,6 +77,7 @@ impl IvNumericBounds {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IvConventionBounds {
     pub allowed_conventions: BTreeSet<IvConvention>,
 }

@@ -1,12 +1,25 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::{
+    config::{IvProfile, IvRootConfig, IvSourceNtProvenance},
     error::IvRejectReason,
     health::{IvSourceHealth, IvSourceHealthState},
+    ingest::{
+        IvAggregateGreeksPayload, IvBasisValue, IvCustomIvPayload, IvGreekValues, IvIngestEvent,
+        IvOptionChainQuotePayload, IvOptionChainSlicePayload, IvOptionChainStrikePayload,
+        IvOptionGreeksPayload, IvRawEvent, IvRawPayload,
+    },
+    query::{IvQueryState, IvQueryStateHandle},
+    selector::IvSelector,
+    store::{IvRetentionPolicy, IvStore, IvStoreError},
     subscription::{IvRuntimeOperation, IvSubscriptionPlan},
+    time::UnixNanos,
+    types::{IvBasis, IvConvention, IvSourceKind},
 };
+use nautilus_model::data::{CustomData, HasTsInit};
 
 pub trait IvRuntimeBindingAdapter {
     fn apply_subscription_plan(
@@ -41,6 +54,852 @@ pub struct IvRuntimePlanOutcome {
     pub plan: IvSubscriptionPlan,
     pub source_health: IvSourceHealth,
     pub error: Option<IvRuntimeBindingError>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IvRuntimeEngine {
+    profile_states: BTreeMap<String, IvQueryStateHandle>,
+    retention_policies: BTreeMap<String, IvRetentionPolicy>,
+    profile_sources: BTreeMap<String, BTreeMap<String, IvRuntimeSourceConfig>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct IvRuntimeSourceConfig {
+    source_kind: IvSourceKind,
+    selector_fingerprint: String,
+    subscription_generation: u64,
+    accepted_conventions: BTreeSet<String>,
+    nt_provenance: IvSourceNtProvenance,
+    selector: IvSelector,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IvRuntimeEngineError {
+    DuplicateProfileId {
+        profile_id: String,
+    },
+    UnknownProfileId {
+        profile_id: String,
+    },
+    IngestRejected {
+        profile_id: String,
+        source_id: String,
+        reason: IvRejectReason,
+    },
+    Store(IvStoreError),
+}
+
+impl IvRuntimeEngine {
+    pub fn from_iv_root(root: &IvRootConfig) -> Result<Self, IvRuntimeEngineError> {
+        let mut profile_states = BTreeMap::new();
+        let mut retention_policies = BTreeMap::new();
+        let mut profile_sources = BTreeMap::new();
+        for profile in &root.profiles {
+            let state = query_state_from_profile(profile);
+            if profile_states
+                .insert(profile.profile_id.clone(), IvQueryStateHandle::new(state))
+                .is_some()
+            {
+                return Err(IvRuntimeEngineError::DuplicateProfileId {
+                    profile_id: profile.profile_id.clone(),
+                });
+            }
+            retention_policies.insert(
+                profile.profile_id.clone(),
+                retention_policy_from_profile(profile),
+            );
+            profile_sources.insert(
+                profile.profile_id.clone(),
+                runtime_sources_from_profile(profile),
+            );
+        }
+
+        Ok(Self {
+            profile_states,
+            retention_policies,
+            profile_sources,
+        })
+    }
+
+    pub fn apply_iv_root_reload(
+        &mut self,
+        root: &IvRootConfig,
+    ) -> Result<(), IvRuntimeEngineError> {
+        let mut next_profile_ids = BTreeSet::new();
+        for profile in &root.profiles {
+            if !next_profile_ids.insert(profile.profile_id.clone()) {
+                return Err(IvRuntimeEngineError::DuplicateProfileId {
+                    profile_id: profile.profile_id.clone(),
+                });
+            }
+        }
+
+        let previous_profile_sources = self.profile_sources.clone();
+        for profile in &root.profiles {
+            let next_sources = runtime_sources_from_profile(profile);
+            if let Some(state) = self.profile_states.get(&profile.profile_id) {
+                if let Some(previous_sources) = previous_profile_sources.get(&profile.profile_id) {
+                    state.mark_sources_removed(
+                        &profile.profile_id,
+                        &removed_source_generations(previous_sources, &next_sources),
+                    );
+                }
+                state.set_projection_policies(profile.projection_policies.clone());
+                state.set_interpolation_policies(profile.interpolation_policies.clone());
+                state.set_fallback_policies(profile.fallback_policies.clone());
+                state.set_quorum_policies(profile.quorum_policies.clone());
+                state.set_helper_policies(profile.helper_policies.clone());
+                state.set_derived_inputs(profile.derived_inputs.clone());
+                state.set_current_subscription_generations(current_generations_from_profile(
+                    profile,
+                ));
+            } else {
+                self.profile_states.insert(
+                    profile.profile_id.clone(),
+                    IvQueryStateHandle::new(query_state_from_profile(profile)),
+                );
+            }
+
+            self.retention_policies.insert(
+                profile.profile_id.clone(),
+                retention_policy_from_profile(profile),
+            );
+            self.profile_sources
+                .insert(profile.profile_id.clone(), next_sources);
+        }
+
+        for (profile_id, previous_sources) in &previous_profile_sources {
+            if next_profile_ids.contains(profile_id) {
+                continue;
+            }
+            if let Some(state) = self.profile_states.get(profile_id) {
+                state.mark_sources_removed(
+                    profile_id,
+                    &source_generations_from_runtime_sources(previous_sources),
+                );
+                state.set_current_subscription_generations(BTreeMap::new());
+            }
+        }
+
+        self.retention_policies
+            .retain(|profile_id, _| next_profile_ids.contains(profile_id));
+        self.profile_sources
+            .retain(|profile_id, _| next_profile_ids.contains(profile_id));
+        self.profile_states
+            .retain(|profile_id, _| next_profile_ids.contains(profile_id));
+
+        Ok(())
+    }
+
+    pub fn state_for_profile(&self, profile_id: &str) -> Option<IvQueryStateHandle> {
+        self.profile_states.get(profile_id).cloned()
+    }
+
+    pub fn source_health(&self, profile_id: &str, source_id: &str) -> Option<IvSourceHealth> {
+        self.profile_states
+            .get(profile_id)
+            .and_then(|state| state.source_health_for(profile_id, source_id))
+    }
+
+    pub fn source_nt_provenance(
+        &self,
+        profile_id: &str,
+        source_id: &str,
+    ) -> Option<IvSourceNtProvenance> {
+        self.profile_sources
+            .get(profile_id)
+            .and_then(|sources| sources.get(source_id))
+            .map(|source| source.nt_provenance.clone())
+    }
+
+    pub fn ingest_nt_option_greeks(
+        &self,
+        profile_id: &str,
+        source_id: &str,
+        option_greeks: &nautilus_model::data::OptionGreeks,
+        received_ts_ns: UnixNanos,
+    ) -> Result<IvRawEvent, IvRuntimeEngineError> {
+        let source = self.runtime_source_config(profile_id, source_id)?;
+        let ts_event_ns = UnixNanos::new(option_greeks.ts_event.as_u64());
+        if source.source_kind != IvSourceKind::OptionGreeks
+            || !source.selector_matches_option_greeks(&option_greeks.instrument_id.to_string())
+        {
+            return Err(self.reject_runtime_source_event(
+                profile_id,
+                source_id,
+                source,
+                ts_event_ns,
+                IvRejectReason::SelectorProductMismatch,
+                false,
+            ));
+        }
+        if !source.accepts_nt_greeks_convention(option_greeks.convention) {
+            return Err(self.reject_runtime_source_event(
+                profile_id,
+                source_id,
+                source,
+                ts_event_ns,
+                IvRejectReason::UnsupportedConvention,
+                false,
+            ));
+        }
+        self.ingest_event(IvIngestEvent {
+            profile_id: profile_id.to_string(),
+            source_id: source_id.to_string(),
+            source_kind: source.source_kind,
+            selector_fingerprint: source.selector_fingerprint.clone(),
+            nt_revision: source.nt_provenance.nt_revision.clone(),
+            nt_evidence_path: source.nt_provenance.nt_evidence_path.clone(),
+            nt_symbol: source.nt_provenance.nt_symbol.clone(),
+            ts_event_ns,
+            ts_init_ns: Some(UnixNanos::new(option_greeks.ts_init.as_u64())),
+            received_ts_ns,
+            subscription_generation: source.subscription_generation,
+            source_health_state: IvSourceHealthState::Active,
+            payload: IvRawPayload::OptionGreeks(IvOptionGreeksPayload {
+                instrument_id: option_greeks.instrument_id.to_string(),
+                convention: IvConvention::Named(format!("{:?}", option_greeks.convention)),
+                basis_values: option_greeks_basis_values(option_greeks),
+                greeks: IvGreekValues {
+                    delta: Some(option_greeks.greeks.delta),
+                    gamma: Some(option_greeks.greeks.gamma),
+                    vega: Some(option_greeks.greeks.vega),
+                    theta: Some(option_greeks.greeks.theta),
+                    rho: Some(option_greeks.greeks.rho),
+                },
+                underlying_price: option_greeks.underlying_price,
+                open_interest: option_greeks.open_interest,
+            }),
+        })
+    }
+
+    pub fn ingest_nt_option_chain_slice(
+        &self,
+        profile_id: &str,
+        source_id: &str,
+        option_chain: &nautilus_model::data::OptionChainSlice,
+        received_ts_ns: UnixNanos,
+    ) -> Result<IvRawEvent, IvRuntimeEngineError> {
+        let source = self.runtime_source_config(profile_id, source_id)?;
+        let ts_event_ns = UnixNanos::new(option_chain.ts_event.as_u64());
+        if source.source_kind != IvSourceKind::OptionChain
+            || !source.selector_matches_option_chain(&option_chain.series_id.to_string())
+        {
+            return Err(self.reject_runtime_source_event(
+                profile_id,
+                source_id,
+                source,
+                ts_event_ns,
+                IvRejectReason::SelectorProductMismatch,
+                false,
+            ));
+        }
+        if !option_chain_conventions_supported(source, option_chain) {
+            return Err(self.reject_runtime_source_event(
+                profile_id,
+                source_id,
+                source,
+                ts_event_ns,
+                IvRejectReason::UnsupportedConvention,
+                false,
+            ));
+        }
+        self.ingest_event(IvIngestEvent {
+            profile_id: profile_id.to_string(),
+            source_id: source_id.to_string(),
+            source_kind: source.source_kind,
+            selector_fingerprint: source.selector_fingerprint.clone(),
+            nt_revision: source.nt_provenance.nt_revision.clone(),
+            nt_evidence_path: source.nt_provenance.nt_evidence_path.clone(),
+            nt_symbol: source.nt_provenance.nt_symbol.clone(),
+            ts_event_ns,
+            ts_init_ns: Some(UnixNanos::new(option_chain.ts_init.as_u64())),
+            received_ts_ns,
+            subscription_generation: source.subscription_generation,
+            source_health_state: IvSourceHealthState::Active,
+            payload: IvRawPayload::OptionChainSlice(IvOptionChainSlicePayload {
+                series_id: option_chain.series_id.to_string(),
+                surface_selector: source.selector_fingerprint.clone(),
+                atm_strike: option_chain.atm_strike.map(|strike| strike.as_f64()),
+                calls: option_chain
+                    .calls
+                    .iter()
+                    .map(|(strike, data)| option_chain_strike_payload(strike.as_f64(), data))
+                    .collect(),
+                puts: option_chain
+                    .puts
+                    .iter()
+                    .map(|(strike, data)| option_chain_strike_payload(strike.as_f64(), data))
+                    .collect(),
+            }),
+        })
+    }
+
+    pub fn ingest_nt_aggregate_greeks_custom_data(
+        &self,
+        profile_id: &str,
+        source_id: &str,
+        custom_data: &CustomData,
+        received_ts_ns: UnixNanos,
+    ) -> Result<IvRawEvent, IvRuntimeEngineError> {
+        let source = self.runtime_source_config(profile_id, source_id)?;
+        let ts_event_ns = UnixNanos::new(custom_data.data.ts_event().as_u64());
+        let IvSelector::SourceAggregateGreeks {
+            aggregate_key,
+            underlying_selectors,
+            delta_field,
+            gamma_field,
+            vega_field,
+            theta_field,
+            rho_field,
+            ..
+        } = &source.selector
+        else {
+            return Err(self.reject_runtime_source_event(
+                profile_id,
+                source_id,
+                source,
+                ts_event_ns,
+                IvRejectReason::SelectorProductMismatch,
+                false,
+            ));
+        };
+        if source.source_kind != IvSourceKind::AggregateGreeks
+            || custom_data.data_type.type_name() != aggregate_key
+        {
+            return Err(self.reject_runtime_source_event(
+                profile_id,
+                source_id,
+                source,
+                ts_event_ns,
+                IvRejectReason::SelectorProductMismatch,
+                false,
+            ));
+        }
+        let payload = custom_data_json_value(custom_data).map_err(|reason| {
+            self.reject_runtime_source_event(
+                profile_id,
+                source_id,
+                source,
+                ts_event_ns,
+                reason,
+                false,
+            )
+        })?;
+        let greeks = IvGreekValues {
+            delta: Some(
+                custom_data_field_f64(&payload, delta_field).map_err(|reason| {
+                    self.reject_runtime_source_event(
+                        profile_id,
+                        source_id,
+                        source,
+                        ts_event_ns,
+                        reason,
+                        false,
+                    )
+                })?,
+            ),
+            gamma: Some(
+                custom_data_field_f64(&payload, gamma_field).map_err(|reason| {
+                    self.reject_runtime_source_event(
+                        profile_id,
+                        source_id,
+                        source,
+                        ts_event_ns,
+                        reason,
+                        false,
+                    )
+                })?,
+            ),
+            vega: Some(
+                custom_data_field_f64(&payload, vega_field).map_err(|reason| {
+                    self.reject_runtime_source_event(
+                        profile_id,
+                        source_id,
+                        source,
+                        ts_event_ns,
+                        reason,
+                        false,
+                    )
+                })?,
+            ),
+            theta: Some(
+                custom_data_field_f64(&payload, theta_field).map_err(|reason| {
+                    self.reject_runtime_source_event(
+                        profile_id,
+                        source_id,
+                        source,
+                        ts_event_ns,
+                        reason,
+                        false,
+                    )
+                })?,
+            ),
+            rho: Some(
+                custom_data_field_f64(&payload, rho_field).map_err(|reason| {
+                    self.reject_runtime_source_event(
+                        profile_id,
+                        source_id,
+                        source,
+                        ts_event_ns,
+                        reason,
+                        false,
+                    )
+                })?,
+            ),
+        };
+
+        self.ingest_event(IvIngestEvent {
+            profile_id: profile_id.to_string(),
+            source_id: source_id.to_string(),
+            source_kind: source.source_kind,
+            selector_fingerprint: source.selector_fingerprint.clone(),
+            nt_revision: source.nt_provenance.nt_revision.clone(),
+            nt_evidence_path: source.nt_provenance.nt_evidence_path.clone(),
+            nt_symbol: source.nt_provenance.nt_symbol.clone(),
+            ts_event_ns,
+            ts_init_ns: Some(UnixNanos::new(custom_data.ts_init().as_u64())),
+            received_ts_ns,
+            subscription_generation: source.subscription_generation,
+            source_health_state: IvSourceHealthState::Active,
+            payload: IvRawPayload::AggregateGreeks(IvAggregateGreeksPayload {
+                aggregate_key: aggregate_key.clone(),
+                underlying_selectors: underlying_selectors.clone(),
+                greeks,
+                nt_custom_data_json: Some(payload),
+            }),
+        })
+    }
+
+    pub fn ingest_nt_custom_iv_data(
+        &self,
+        profile_id: &str,
+        source_id: &str,
+        custom_data: &CustomData,
+        received_ts_ns: UnixNanos,
+    ) -> Result<IvRawEvent, IvRuntimeEngineError> {
+        let source = self.runtime_source_config(profile_id, source_id)?;
+        let ts_event_ns = UnixNanos::new(custom_data.data.ts_event().as_u64());
+        let IvSelector::SourceCustomImpliedVolatility {
+            custom_iv_data_type,
+            custom_iv_data_fields,
+            ..
+        } = &source.selector
+        else {
+            return Err(self.reject_runtime_source_event(
+                profile_id,
+                source_id,
+                source,
+                ts_event_ns,
+                IvRejectReason::SelectorProductMismatch,
+                false,
+            ));
+        };
+        if source.source_kind != IvSourceKind::CustomImpliedVolatility
+            || custom_data.data_type.type_name() != custom_iv_data_type
+        {
+            return Err(self.reject_runtime_source_event(
+                profile_id,
+                source_id,
+                source,
+                ts_event_ns,
+                IvRejectReason::SelectorProductMismatch,
+                false,
+            ));
+        }
+        let Some(value_field) = custom_iv_data_fields.first() else {
+            return Err(self.reject_runtime_source_event(
+                profile_id,
+                source_id,
+                source,
+                ts_event_ns,
+                IvRejectReason::InvalidIvValue,
+                false,
+            ));
+        };
+        let payload = custom_data_json_value(custom_data).map_err(|reason| {
+            self.reject_runtime_source_event(
+                profile_id,
+                source_id,
+                source,
+                ts_event_ns,
+                reason,
+                false,
+            )
+        })?;
+        let value = custom_data_field_f64(&payload, value_field).map_err(|reason| {
+            self.reject_runtime_source_event(
+                profile_id,
+                source_id,
+                source,
+                ts_event_ns,
+                reason,
+                false,
+            )
+        })?;
+
+        self.ingest_event(IvIngestEvent {
+            profile_id: profile_id.to_string(),
+            source_id: source_id.to_string(),
+            source_kind: source.source_kind,
+            selector_fingerprint: source.selector_fingerprint.clone(),
+            nt_revision: source.nt_provenance.nt_revision.clone(),
+            nt_evidence_path: source.nt_provenance.nt_evidence_path.clone(),
+            nt_symbol: source.nt_provenance.nt_symbol.clone(),
+            ts_event_ns,
+            ts_init_ns: Some(UnixNanos::new(custom_data.ts_init().as_u64())),
+            received_ts_ns,
+            subscription_generation: source.subscription_generation,
+            source_health_state: IvSourceHealthState::Active,
+            payload: IvRawPayload::CustomImpliedVolatility(IvCustomIvPayload {
+                iv_evidence_kind: custom_iv_data_type.clone(),
+                value,
+                nt_custom_data_json: Some(payload),
+            }),
+        })
+    }
+
+    pub fn ingest_event(&self, event: IvIngestEvent) -> Result<IvRawEvent, IvRuntimeEngineError> {
+        let profile_id = event.profile_id.clone();
+        let state = self.profile_states.get(&profile_id).ok_or_else(|| {
+            IvRuntimeEngineError::UnknownProfileId {
+                profile_id: profile_id.clone(),
+            }
+        })?;
+        self.validate_ingest_event(&event)?;
+        let event_for_error = event.clone();
+        let ingest_result = state.ingest_event(event);
+        if let Some(policy) = self.retention_policies.get(&profile_id) {
+            state.enforce_retention(policy);
+        }
+        match ingest_result {
+            Ok(raw_event) => Ok(raw_event),
+            Err(IvStoreError::MissingIvBasis) => Err(self.reject_ingest_event(
+                &event_for_error,
+                event_for_error.subscription_generation,
+                IvRejectReason::MissingIvBasis,
+                false,
+            )),
+            Err(error) => Err(IvRuntimeEngineError::Store(error)),
+        }
+    }
+
+    fn validate_ingest_event(&self, event: &IvIngestEvent) -> Result<(), IvRuntimeEngineError> {
+        let Some(profile_sources) = self.profile_sources.get(&event.profile_id) else {
+            return Err(IvRuntimeEngineError::UnknownProfileId {
+                profile_id: event.profile_id.clone(),
+            });
+        };
+        let Some(source) = profile_sources.get(&event.source_id) else {
+            return Err(self.reject_ingest_event(
+                event,
+                event.subscription_generation,
+                IvRejectReason::SourceNotConfigured,
+                true,
+            ));
+        };
+        if source.source_kind != event.source_kind {
+            return Err(self.reject_ingest_event(
+                event,
+                source.subscription_generation,
+                IvRejectReason::UnsupportedSourceKind,
+                false,
+            ));
+        }
+        if source.selector_fingerprint != event.selector_fingerprint {
+            return Err(self.reject_ingest_event(
+                event,
+                source.subscription_generation,
+                IvRejectReason::SelectorProductMismatch,
+                false,
+            ));
+        }
+        if source.subscription_generation != event.subscription_generation {
+            return Err(self.reject_ingest_event(
+                event,
+                source.subscription_generation,
+                IvRejectReason::StaleData,
+                false,
+            ));
+        }
+        Ok(())
+    }
+
+    fn runtime_source_config(
+        &self,
+        profile_id: &str,
+        source_id: &str,
+    ) -> Result<&IvRuntimeSourceConfig, IvRuntimeEngineError> {
+        let profile_sources = self.profile_sources.get(profile_id).ok_or_else(|| {
+            IvRuntimeEngineError::UnknownProfileId {
+                profile_id: profile_id.to_string(),
+            }
+        })?;
+        profile_sources
+            .get(source_id)
+            .ok_or_else(|| IvRuntimeEngineError::IngestRejected {
+                profile_id: profile_id.to_string(),
+                source_id: source_id.to_string(),
+                reason: IvRejectReason::SourceNotConfigured,
+            })
+    }
+
+    fn reject_ingest_event(
+        &self,
+        event: &IvIngestEvent,
+        health_generation: u64,
+        reason: IvRejectReason,
+        mark_rejected: bool,
+    ) -> IvRuntimeEngineError {
+        if let Some(state) = self.profile_states.get(&event.profile_id) {
+            state.record_source_rejection(
+                event.profile_id.clone(),
+                event.source_id.clone(),
+                health_generation,
+                event.ts_event_ns,
+                reason,
+                mark_rejected,
+            );
+        }
+        IvRuntimeEngineError::IngestRejected {
+            profile_id: event.profile_id.clone(),
+            source_id: event.source_id.clone(),
+            reason,
+        }
+    }
+
+    fn reject_runtime_source_event(
+        &self,
+        profile_id: &str,
+        source_id: &str,
+        source: &IvRuntimeSourceConfig,
+        ts_event_ns: UnixNanos,
+        reason: IvRejectReason,
+        mark_rejected: bool,
+    ) -> IvRuntimeEngineError {
+        if let Some(state) = self.profile_states.get(profile_id) {
+            state.record_source_rejection(
+                profile_id.to_string(),
+                source_id.to_string(),
+                source.subscription_generation,
+                ts_event_ns,
+                reason,
+                mark_rejected,
+            );
+        }
+        IvRuntimeEngineError::IngestRejected {
+            profile_id: profile_id.to_string(),
+            source_id: source_id.to_string(),
+            reason,
+        }
+    }
+
+    pub fn apply_plan_outcomes(
+        &self,
+        outcomes: &[IvRuntimePlanOutcome],
+    ) -> Result<(), IvRuntimeEngineError> {
+        for outcome in outcomes {
+            let state = self
+                .profile_states
+                .get(&outcome.plan.profile_id)
+                .ok_or_else(|| IvRuntimeEngineError::UnknownProfileId {
+                    profile_id: outcome.plan.profile_id.clone(),
+                })?;
+            state.upsert_source_health(outcome.source_health.clone());
+            if let Some(policy) = self.retention_policies.get(&outcome.plan.profile_id) {
+                state.enforce_retention(policy);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn query_state_from_profile(profile: &IvProfile) -> IvQueryState {
+    IvQueryState::new(IvStore::empty())
+        .with_projection_policies(profile.projection_policies.clone())
+        .with_interpolation_policies(profile.interpolation_policies.clone())
+        .with_fallback_policies(profile.fallback_policies.clone())
+        .with_quorum_policies(profile.quorum_policies.clone())
+        .with_helper_policies(profile.helper_policies.clone())
+        .with_derived_inputs(profile.derived_inputs.clone())
+        .with_current_subscription_generations(current_generations_from_profile(profile))
+}
+
+fn current_generations_from_profile(profile: &IvProfile) -> BTreeMap<String, u64> {
+    profile
+        .sources
+        .iter()
+        .map(|source| (source.source_id.clone(), source.subscription_generation))
+        .collect()
+}
+
+fn retention_policy_from_profile(profile: &IvProfile) -> IvRetentionPolicy {
+    IvRetentionPolicy {
+        max_raw_events: profile.max_raw_events,
+        max_indexed_points: profile.max_indexed_points,
+        max_smiles: profile.max_smiles,
+        max_surfaces: profile.max_surfaces,
+        max_source_health_events: profile.max_source_health_events,
+    }
+}
+
+fn runtime_sources_from_profile(profile: &IvProfile) -> BTreeMap<String, IvRuntimeSourceConfig> {
+    profile
+        .sources
+        .iter()
+        .map(|source| {
+            (
+                source.source_id.clone(),
+                IvRuntimeSourceConfig {
+                    source_kind: source.source_kind,
+                    selector_fingerprint: source.selector_fingerprint.clone(),
+                    subscription_generation: source.subscription_generation,
+                    accepted_conventions: source.accepted_conventions.clone(),
+                    nt_provenance: source.nt_provenance.clone(),
+                    selector: source.selector.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn source_generations_from_runtime_sources(
+    sources: &BTreeMap<String, IvRuntimeSourceConfig>,
+) -> BTreeMap<String, u64> {
+    sources
+        .iter()
+        .map(|(source_id, source)| (source_id.clone(), source.subscription_generation))
+        .collect()
+}
+
+fn removed_source_generations(
+    previous_sources: &BTreeMap<String, IvRuntimeSourceConfig>,
+    next_sources: &BTreeMap<String, IvRuntimeSourceConfig>,
+) -> BTreeMap<String, u64> {
+    previous_sources
+        .iter()
+        .filter(|(source_id, _)| !next_sources.contains_key(*source_id))
+        .map(|(source_id, source)| (source_id.clone(), source.subscription_generation))
+        .collect()
+}
+
+impl IvRuntimeSourceConfig {
+    fn accepts_nt_greeks_convention(
+        &self,
+        convention: nautilus_model::enums::GreeksConvention,
+    ) -> bool {
+        let debug_name = format!("{convention:?}");
+        let display_name = convention.to_string();
+        self.accepted_conventions.contains(&debug_name)
+            || self.accepted_conventions.contains(&display_name)
+    }
+
+    fn selector_matches_option_greeks(&self, instrument_id: &str) -> bool {
+        match &self.selector {
+            IvSelector::SourceOptionGreeks { instrument_ids, .. } => instrument_ids
+                .iter()
+                .any(|configured| configured == instrument_id),
+            _ => false,
+        }
+    }
+
+    fn selector_matches_option_chain(&self, series_id: &str) -> bool {
+        match &self.selector {
+            IvSelector::SourceOptionChain { series_ids, .. } => {
+                series_ids.iter().any(|configured| configured == series_id)
+            }
+            _ => false,
+        }
+    }
+}
+
+fn option_chain_conventions_supported(
+    source: &IvRuntimeSourceConfig,
+    option_chain: &nautilus_model::data::OptionChainSlice,
+) -> bool {
+    option_chain
+        .calls
+        .values()
+        .chain(option_chain.puts.values())
+        .filter_map(|strike| strike.greeks.as_ref())
+        .all(|greeks| source.accepts_nt_greeks_convention(greeks.convention))
+}
+
+fn custom_data_json_value(custom_data: &CustomData) -> Result<Value, IvRejectReason> {
+    let text = custom_data
+        .data
+        .to_json()
+        .map_err(|_| IvRejectReason::InvalidIvValue)?;
+    serde_json::from_str::<Value>(&text).map_err(|_| IvRejectReason::InvalidIvValue)
+}
+
+fn custom_data_field_f64(payload: &Value, field_name: &str) -> Result<f64, IvRejectReason> {
+    let Some(value) = payload.get(field_name).and_then(Value::as_f64) else {
+        return Err(IvRejectReason::InvalidIvValue);
+    };
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(IvRejectReason::InvalidIvValue)
+    }
+}
+
+fn option_greeks_basis_values(
+    option_greeks: &nautilus_model::data::OptionGreeks,
+) -> Vec<IvBasisValue> {
+    let mut basis_values = Vec::new();
+    if let Some(iv) = option_greeks.mark_iv {
+        basis_values.push(IvBasisValue {
+            basis: IvBasis::Mark,
+            iv,
+        });
+    }
+    if let Some(iv) = option_greeks.bid_iv {
+        basis_values.push(IvBasisValue {
+            basis: IvBasis::Bid,
+            iv,
+        });
+    }
+    if let Some(iv) = option_greeks.ask_iv {
+        basis_values.push(IvBasisValue {
+            basis: IvBasis::Ask,
+            iv,
+        });
+    }
+    basis_values
+}
+
+fn option_chain_strike_payload(
+    strike: f64,
+    data: &nautilus_model::data::OptionStrikeData,
+) -> IvOptionChainStrikePayload {
+    IvOptionChainStrikePayload {
+        strike,
+        quote: IvOptionChainQuotePayload {
+            instrument_id: data.quote.instrument_id.to_string(),
+            bid_price: Some(data.quote.bid_price.as_f64()),
+            ask_price: Some(data.quote.ask_price.as_f64()),
+            bid_size: Some(data.quote.bid_size.as_f64()),
+            ask_size: Some(data.quote.ask_size.as_f64()),
+            ts_event_ns: UnixNanos::new(data.quote.ts_event.as_u64()),
+            ts_init_ns: Some(UnixNanos::new(data.quote.ts_init.as_u64())),
+        },
+        greeks: data.greeks.map(|greeks| IvOptionGreeksPayload {
+            instrument_id: greeks.instrument_id.to_string(),
+            convention: IvConvention::Named(format!("{:?}", greeks.convention)),
+            basis_values: option_greeks_basis_values(&greeks),
+            greeks: IvGreekValues {
+                delta: Some(greeks.greeks.delta),
+                gamma: Some(greeks.greeks.gamma),
+                vega: Some(greeks.greeks.vega),
+                theta: Some(greeks.greeks.theta),
+                rho: Some(greeks.greeks.rho),
+            },
+            underlying_price: greeks.underlying_price,
+            open_interest: greeks.open_interest,
+        }),
+    }
 }
 
 pub fn apply_subscription_plans<A: IvRuntimeBindingAdapter>(

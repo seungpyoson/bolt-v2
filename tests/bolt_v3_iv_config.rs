@@ -18,6 +18,56 @@ max_indexed_points = 2
 max_smiles = 2
 max_surfaces = 2
 max_source_health_events = 2
+derived_inputs = []
+
+[profiles.audit_policy]
+enabled_raw_products = ["option_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["configured-greeks-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[[profiles.projection_policies]]
+policy_id = "configured-projection-policy"
+projection_kind = "mean"
+minimum_points = 1
+max_projection_input_skew_ns = 10
+
+[[profiles.interpolation_policies]]
+policy_id = "configured-interpolation-policy"
+allow_extrapolation = false
+minimum_points = 2
+
+[[profiles.fallback_policies]]
+policy_id = "configured-fallback-policy"
+ordered_candidate_ids = ["configured-primary-candidate", "configured-backup-candidate"]
+
+[[profiles.quorum_policies]]
+policy_id = "configured-quorum-policy"
+minimum_sources = 2
+agreement_band = 0.05
+
+[[profiles.helper_policies]]
+helper_policy_id = "configured-helper-policy"
+nt_helper_symbol = "imply_vol_and_greeks"
+parameter_signature = "configured-helper-signature"
+max_input_timestamp_skew_ns = 10
+max_operator_input_age_ns = 100
+
+[profiles.helper_policies.output_bounds]
+finite_required = true
+positive_required = true
+inclusive_min = 0.0
+inclusive_max = 5.0
+exclusive_min = 0.0
+exclusive_max = 6.0
+unit = "unitless"
+
+[profiles.helper_policies.output_bounds.allowed_conventions]
+allowed_conventions = []
 
 [profiles.selector_authorization]
 authorization_mode = "profile_wide"
@@ -30,7 +80,13 @@ source_id = "configured-greeks-source"
 selector_fingerprint = "configured-greeks-selector"
 source_kind = "option_greeks"
 client_id = "configured-client"
+subscription_generation = 7
 accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
 
 [profiles.sources.selector]
 selector_kind = "source_option_greeks"
@@ -47,7 +103,13 @@ source_id = "configured-chain-source"
 selector_fingerprint = "configured-chain-selector"
 source_kind = "option_chain"
 client_id = "configured-client"
+subscription_generation = 8
 accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionChain"
 
 [profiles.sources.selector]
 selector_kind = "source_option_chain"
@@ -77,6 +139,43 @@ fn full_profile_toml_maps_to_typed_iv_config_without_defaults() {
     assert_eq!(
         config.profiles[0].selector_authorization.authorization_mode,
         IvAuthorizationMode::ProfileWide
+    );
+    assert_eq!(
+        config.profiles[0]
+            .audit_policy
+            .authorized_audit_handles
+            .len(),
+        1
+    );
+    assert_eq!(
+        config.profiles[0].projection_policies[0].policy_id,
+        "configured-projection-policy"
+    );
+    assert_eq!(
+        config.profiles[0].interpolation_policies[0].policy_id,
+        "configured-interpolation-policy"
+    );
+    assert_eq!(
+        config.profiles[0].fallback_policies[0].policy_id,
+        "configured-fallback-policy"
+    );
+    assert_eq!(
+        config.profiles[0].quorum_policies[0].policy_id,
+        "configured-quorum-policy"
+    );
+    assert_eq!(
+        config.profiles[0].helper_policies[0].helper_policy_id,
+        "configured-helper-policy"
+    );
+    assert!(config.profiles[0].derived_inputs.is_empty());
+    assert_eq!(config.profiles[0].sources[0].subscription_generation, 7);
+    assert_eq!(
+        config.profiles[0].sources[0].nt_provenance.nt_revision,
+        "configured-nt-revision"
+    );
+    assert_eq!(
+        config.profiles[0].sources[0].nt_provenance.nt_symbol,
+        "ConfiguredOptionGreeks"
     );
     assert_eq!(config.profiles[0].sources.len(), 2);
     assert_eq!(
@@ -128,6 +227,58 @@ fn unknown_schema_version_rejects_before_subscription_planning() {
         load_iv_config_from_toml(&invalid),
         Err(IvConfigError::Validation(messages))
             if messages.iter().any(|message| message.contains("iv.schema_version"))
+    ));
+}
+
+#[test]
+fn selector_scoped_source_health_authorization_can_scope_by_source_id() {
+    let toml = valid_iv_toml()
+        .replace(
+            "authorization_mode = \"profile_wide\"",
+            "authorization_mode = \"selector_scoped\"",
+        )
+        .replace(
+            "allowed_product_kinds = [\"iv_point\", \"source_health\"]",
+            "allowed_product_kinds = [\"source_health\"]",
+        )
+        .replace(
+            "allowed_source_ids = []",
+            "allowed_source_ids = [\"configured-greeks-source\"]",
+        );
+
+    let config = load_iv_config_from_toml(&toml).unwrap();
+
+    assert_eq!(
+        config.profiles[0].selector_authorization.authorization_mode,
+        IvAuthorizationMode::SelectorScoped
+    );
+}
+
+#[test]
+fn unknown_nested_audit_policy_fields_reject_at_parse() {
+    let invalid = valid_iv_toml().replacen(
+        "access_purposes = [\"configured-replay-purpose\"]",
+        "access_purposes = [\"configured-replay-purpose\"]\nunknown_policy_field = \"bad\"",
+        1,
+    );
+
+    assert!(matches!(
+        load_iv_config_from_toml(&invalid),
+        Err(IvConfigError::Parse(message)) if message.contains("unknown_policy_field")
+    ));
+}
+
+#[test]
+fn unknown_projection_policy_fields_reject_at_parse() {
+    let invalid = valid_iv_toml().replacen(
+        "max_projection_input_skew_ns = 10",
+        "max_projection_input_skew_ns = 10\nunknown_projection_field = \"bad\"",
+        1,
+    );
+
+    assert!(matches!(
+        load_iv_config_from_toml(&invalid),
+        Err(IvConfigError::Parse(message)) if message.contains("unknown_projection_field")
     ));
 }
 
@@ -188,4 +339,187 @@ fn selector_scoped_authorization_rejects_unknown_selector_fingerprint() {
         message.contains("selector_authorization.allowed_selector_fingerprints")
             && message.contains("missing-selector")
     }));
+}
+
+#[test]
+fn duplicate_option_greeks_nt_topics_reject_before_runtime_binding() {
+    let duplicate_source = r#"
+[[profiles.sources]]
+source_id = "configured-duplicate-greeks-source"
+selector_fingerprint = "configured-duplicate-greeks-selector"
+source_kind = "option_greeks"
+client_id = "configured-backup-client"
+subscription_generation = 9
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredDuplicateOptionGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["configured-instrument"]
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-backup-value"
+
+[profiles.sources.params]
+configured_source_param = "configured-backup-value"
+
+"#;
+    let invalid = valid_iv_toml().replace(
+        "[[profiles.sources]]\nsource_id = \"configured-chain-source\"",
+        &format!("{duplicate_source}[[profiles.sources]]\nsource_id = \"configured-chain-source\""),
+    );
+
+    let error = load_iv_config_from_toml(&invalid)
+        .expect_err("duplicate option-greeks NT topics must reject at config validation");
+    let IvConfigError::Validation(errors) = error else {
+        panic!("expected validation error for duplicate NT option topic");
+    };
+    assert!(
+        errors.iter().any(|message| {
+            message.contains("option_greeks")
+                && message.contains("configured-instrument")
+                && message.contains("configured-duplicate-greeks-source")
+        }),
+        "validation errors should identify duplicate option topic source: {errors:?}"
+    );
+}
+
+#[test]
+fn duplicate_custom_data_nt_topics_reject_before_runtime_binding() {
+    let duplicate_custom_sources = r#"
+[[profiles.sources]]
+source_id = "configured-aggregate-source-a"
+selector_fingerprint = "configured-aggregate-selector-a"
+source_kind = "aggregate_greeks"
+client_id = "configured-client"
+subscription_generation = 9
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredAggregateGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_aggregate_greeks"
+aggregate_key = "configured-aggregate-topic"
+underlying_selectors = ["configured-underlying-selector"]
+delta_field = "configured-delta"
+gamma_field = "configured-gamma"
+vega_field = "configured-vega"
+theta_field = "configured-theta"
+rho_field = "configured-rho"
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-aggregate-a"
+
+[profiles.sources.params]
+configured_source_param = "configured-aggregate-a"
+
+[[profiles.sources]]
+source_id = "configured-aggregate-source-b"
+selector_fingerprint = "configured-aggregate-selector-b"
+source_kind = "aggregate_greeks"
+client_id = "configured-client"
+subscription_generation = 10
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredAggregateGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_aggregate_greeks"
+aggregate_key = "configured-aggregate-topic"
+underlying_selectors = ["configured-underlying-selector"]
+delta_field = "configured-delta"
+gamma_field = "configured-gamma"
+vega_field = "configured-vega"
+theta_field = "configured-theta"
+rho_field = "configured-rho"
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-aggregate-b"
+
+[profiles.sources.params]
+configured_source_param = "configured-aggregate-b"
+
+[[profiles.sources]]
+source_id = "configured-custom-source-a"
+selector_fingerprint = "configured-custom-selector-a"
+source_kind = "custom_implied_volatility"
+client_id = "configured-client"
+subscription_generation = 11
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredCustomIv"
+
+[profiles.sources.selector]
+selector_kind = "source_custom_implied_volatility"
+custom_iv_data_type = "configured-custom-topic"
+custom_iv_data_fields = ["configured-value"]
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-custom-a"
+
+[profiles.sources.params]
+configured_source_param = "configured-custom-a"
+
+[[profiles.sources]]
+source_id = "configured-custom-source-b"
+selector_fingerprint = "configured-custom-selector-b"
+source_kind = "custom_implied_volatility"
+client_id = "configured-client"
+subscription_generation = 12
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredCustomIv"
+
+[profiles.sources.selector]
+selector_kind = "source_custom_implied_volatility"
+custom_iv_data_type = "configured-custom-topic"
+custom_iv_data_fields = ["configured-value"]
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-custom-b"
+
+[profiles.sources.params]
+configured_source_param = "configured-custom-b"
+
+"#;
+    let invalid = valid_iv_toml().replace(
+        "[[profiles.sources]]\nsource_id = \"configured-chain-source\"",
+        &format!(
+            "{duplicate_custom_sources}[[profiles.sources]]\nsource_id = \"configured-chain-source\""
+        ),
+    );
+
+    let error = load_iv_config_from_toml(&invalid)
+        .expect_err("duplicate custom-data NT topics must reject at config validation");
+    let IvConfigError::Validation(errors) = error else {
+        panic!("expected validation error for duplicate custom-data NT topics");
+    };
+    assert!(
+        errors
+            .iter()
+            .any(|message| message.contains("configured-aggregate-topic")),
+        "validation errors should identify duplicate aggregate topic: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|message| message.contains("configured-custom-topic")),
+        "validation errors should identify duplicate custom-IV topic: {errors:?}"
+    );
 }

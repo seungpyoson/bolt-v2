@@ -20,6 +20,11 @@ pub enum IvSelector {
     SourceAggregateGreeks {
         aggregate_key: String,
         underlying_selectors: Vec<String>,
+        delta_field: String,
+        gamma_field: String,
+        vega_field: String,
+        theta_field: String,
+        rho_field: String,
         nt_params: toml::Value,
     },
     SourceCustomImpliedVolatility {

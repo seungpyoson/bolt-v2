@@ -8359,6 +8359,54 @@ reason = "This is a compile-time Cargo environment variable emitted by build.rs 
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
+literal = '''"source params"'''
+context = '''insert_toml_params(&mut params, source_params, "source params")?;'''
+classification = "iv_nt_binding_diagnostic_label"
+reason = "The live IV NT binding adapter labels TOML param conversion errors; the source params themselves remain profile-owned TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"selector nt_params"'''
+context = '''insert_toml_params(&mut params, selector_nt_params, "selector nt_params")?;'''
+classification = "iv_nt_binding_diagnostic_label"
+reason = "The live IV NT binding adapter labels selector NT-param conversion errors; the NT params themselves remain selector-owned TOML values."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"snapshot_interval_ms"'''
+context = '''.and_then(|params| params.get_u64("snapshot_interval_ms"));'''
+classification = "iv_nt_command_param_key"
+reason = "This is the NT option-chain command parameter key read from profile-owned TOML params before constructing the NT subscribe command."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"atm_percent:"'''
+context = '''if let Some(pct) = strike_range_policy.strip_prefix("atm_percent:") {'''
+classification = "iv_nt_strike_range_policy_token"
+reason = "This is a typed parser token for converting profile-owned strike_range_policy TOML into NT StrikeRange::AtmPercent; the percentage remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"atm_relative:"'''
+context = '''if let Some(relative) = strike_range_policy.strip_prefix("atm_relative:") {'''
+classification = "iv_nt_strike_range_policy_token"
+reason = "This is a typed parser token for converting profile-owned strike_range_policy TOML into NT StrikeRange::AtmRelative; the strike counts remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"fixed:"'''
+context = '''if let Some(fixed) = strike_range_policy.strip_prefix("fixed:") {'''
+classification = "iv_nt_strike_range_policy_token"
+reason = "This is a typed parser token for converting profile-owned strike_range_policy TOML into NT StrikeRange::Fixed; the strike values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
 literal = '''"bolt-v3 strategy-free controlled-start timeout sum overflowed \
                  config-owned nautilus timeout fields"'''
 context = '''"bolt-v3 strategy-free controlled-start timeout sum overflowed \'''
@@ -8922,14 +8970,6 @@ reason = "IV config parsing uses schema field names, version tags, and internal 
 
 [[allowed]]
 path = "src/bolt_v3_iv/config.rs"
-kind = "number"
-literal = '''0'''
-context = '''subscription_generation: 0,'''
-classification = "iv_config_schema_literal"
-reason = "IV config parsing uses schema field names, version tags, and internal generation sentinels to validate TOML; operator runtime values are supplied by TOML, not this literal."
-
-[[allowed]]
-path = "src/bolt_v3_iv/config.rs"
 kind = "string"
 literal = '''"max_raw_events"'''
 context = '''"max_raw_events",'''
@@ -8971,10 +9011,122 @@ reason = "IV config parsing uses schema field names, version tags, and internal 
 [[allowed]]
 path = "src/bolt_v3_iv/config.rs"
 kind = "string"
+literal = '''"interpolation_policies"'''
+context = '''"interpolation_policies",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses typed profile-owned policy family names for validation diagnostics; operator policy values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"fallback_policies"'''
+context = '''"fallback_policies",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses typed profile-owned policy family names for validation diagnostics; operator policy values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"quorum_policies"'''
+context = '''"quorum_policies",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses typed profile-owned policy family names for validation diagnostics; operator policy values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"helper_policies"'''
+context = '''"helper_policies",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses typed profile-owned policy family names for validation diagnostics; operator policy values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''if !policy.agreement_band.is_finite() || policy.agreement_band <= 0.0 {'''
+classification = "iv_policy_validation_bound"
+reason = "Zero is the fail-closed positivity boundary for profile-owned quorum agreement-band validation; the actual agreement band is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
 literal = '''"{source_context}.selector_fingerprint is duplicated"'''
 context = '''"{source_context}.selector_fingerprint is duplicated"'''
 classification = "iv_config_schema_literal"
 reason = "IV config parsing uses schema field names, version tags, and internal generation sentinels to validate TOML; operator runtime values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{audit_context}.audit_retention.max_events cannot exceed max_raw_events"'''
+context = '''"{audit_context}.audit_retention.max_events cannot exceed max_raw_events"'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing emits fail-closed diagnostics for profile-owned audit retention bounds; operator values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{policy_context}.{} is duplicated"'''
+context = '''"{policy_context}.{} is duplicated",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing emits fail-closed diagnostics for duplicate profile-owned projection policy ids; operator values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/health.rs"
+kind = "string"
+literal = '''"configured"'''
+context = '''Self::Configured => "configured",'''
+classification = "iv_source_health_state_label"
+reason = "IV source-health state names are fixed serde-compatible labels used to compare TOML/query filters with typed states; source behavior remains config/runtime-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/health.rs"
+kind = "string"
+literal = '''"subscribing"'''
+context = '''Self::Subscribing => "subscribing",'''
+classification = "iv_source_health_state_label"
+reason = "IV source-health state names are fixed serde-compatible labels used to compare TOML/query filters with typed states; source behavior remains config/runtime-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/health.rs"
+kind = "string"
+literal = '''"active"'''
+context = '''Self::Active => "active",'''
+classification = "iv_source_health_state_label"
+reason = "IV source-health state names are fixed serde-compatible labels used to compare TOML/query filters with typed states; source behavior remains config/runtime-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/health.rs"
+kind = "string"
+literal = '''"stale"'''
+context = '''Self::Stale => "stale",'''
+classification = "iv_source_health_state_label"
+reason = "IV source-health state names are fixed serde-compatible labels used to compare TOML/query filters with typed states; source behavior remains config/runtime-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/health.rs"
+kind = "string"
+literal = '''"unsubscribing"'''
+context = '''Self::Unsubscribing => "unsubscribing",'''
+classification = "iv_source_health_state_label"
+reason = "IV source-health state names are fixed serde-compatible labels used to compare TOML/query filters with typed states; source behavior remains config/runtime-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/health.rs"
+kind = "string"
+literal = '''"removed"'''
+context = '''Self::Removed => "removed",'''
+classification = "iv_source_health_state_label"
+reason = "IV source-health state names are fixed serde-compatible labels used to compare TOML/query filters with typed states; source behavior remains config/runtime-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/health.rs"
+kind = "string"
+literal = '''"subscription_failed"'''
+context = '''Self::SubscriptionFailed => "subscription_failed",'''
+classification = "iv_source_health_state_label"
+reason = "IV source-health state names are fixed serde-compatible labels used to compare TOML/query filters with typed states; source behavior remains config/runtime-owned."
 
 [[allowed]]
 path = "src/bolt_v3_iv/derive.rs"
@@ -9185,6 +9337,22 @@ classification = "iv_source_health_counter_literal"
 reason = "IV runtime initializes source-health reject counters from observed binding errors; this count is computed state, not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "number"
+literal = '''0'''
+context = '''const INITIAL_REJECT_COUNT: u64 = 0;'''
+classification = "iv_source_health_counter_literal"
+reason = "IV query state initializes source-health reject counters from observed rejected events; this count is computed state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "number"
+literal = '''1'''
+context = '''const REJECT_COUNT_INCREMENT: u64 = 1;'''
+classification = "iv_source_health_counter_literal"
+reason = "IV query state increments source-health reject counters from observed rejected events; this count is computed state, not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_iv/store.rs"
 kind = "number"
 literal = '''1'''
@@ -9199,6 +9367,22 @@ literal = '''0'''
 context = '''items.drain(0..remove_count);'''
 classification = "iv_store_counter_literal"
 reason = "IV store uses internal sequence and drain-index sentinels for bounded in-memory retention; retention limits come from config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/store.rs"
+kind = "string"
+literal = '''"call"'''
+context = '''const OPTION_CHAIN_CALL_SIDE_LABEL: &str = "call";'''
+classification = "iv_option_chain_side_label"
+reason = "This stable side label is derived from NT OptionChainSlice calls when building strategy-safe smile views from preserved raw option-chain data; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/store.rs"
+kind = "string"
+literal = '''"put"'''
+context = '''const OPTION_CHAIN_PUT_SIDE_LABEL: &str = "put";'''
+classification = "iv_option_chain_side_label"
+reason = "This stable side label is derived from NT OptionChainSlice puts when building strategy-safe smile views from preserved raw option-chain data; it is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_strategy_registration.rs"
@@ -9223,3 +9407,11 @@ literal = '''1'''
 context = '''key.0, key.1'''
 classification = "iv_registration_diagnostic_literal"
 reason = "IV strategy registration uses tuple-field indices and diagnostic templates while wiring config-owned query handles; this is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"underlying_selectors"'''
+context = '''"underlying_selectors".to_string(),'''
+classification = "iv_nt_custom_data_metadata_key"
+reason = "IV aggregate-greeks live binding uses this NT custom-data metadata field name to pass TOML-owned underlying selector values; selector values and source lifecycle remain config-owned."

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bolt_v2::bolt_v3_iv::{
     authz::{IvAuthorizationMode, IvSelectorAuthorization},
@@ -7,9 +7,9 @@ use bolt_v2::bolt_v3_iv::{
         IvDerivedInputSet, IvDerivedInputSourceKind, IvHelperPolicy, IvNtHelperSymbol,
         IvOptionSide, IvTimedInput,
     },
-    health::IvSourceHealthState,
+    health::{IvSourceHealth, IvSourceHealthState},
     ingest::{IvBasisValue, IvGreekValues, IvIngestEvent, IvOptionGreeksPayload, IvRawPayload},
-    policy::IvProjectionPolicy,
+    policy::{IvProjectionKind, IvProjectionPolicy},
     query::{
         IvProductQuery, IvQuery, IvQueryError, IvQueryHandle, IvQueryProduct, IvRawPayloadQuery,
     },
@@ -53,6 +53,21 @@ fn greeks_event(source_id: &str, selector_fingerprint: &str, ts: u64, iv: f64) -
     }
 }
 
+fn greeks_event_with_source_state(
+    source_id: &str,
+    selector_fingerprint: &str,
+    ts: u64,
+    iv: f64,
+    source_health_state: IvSourceHealthState,
+    subscription_generation: u64,
+) -> IvIngestEvent {
+    IvIngestEvent {
+        source_health_state,
+        subscription_generation,
+        ..greeks_event(source_id, selector_fingerprint, ts, iv)
+    }
+}
+
 fn profile_wide_authorization() -> IvSelectorAuthorization {
     IvSelectorAuthorization {
         authorization_mode: IvAuthorizationMode::ProfileWide,
@@ -61,6 +76,7 @@ fn profile_wide_authorization() -> IvSelectorAuthorization {
             IvProductKind::IvPoint,
             IvProductKind::ProjectedScalarIv,
             IvProductKind::DerivedIv,
+            IvProductKind::SourceHealth,
         ]),
         allowed_selector_fingerprints: BTreeSet::new(),
         allowed_source_ids: BTreeSet::new(),
@@ -74,6 +90,16 @@ fn selector_scoped_authorization() -> IvSelectorAuthorization {
         allowed_product_kinds: BTreeSet::from([IvProductKind::IvPoint]),
         allowed_selector_fingerprints: BTreeSet::from(["configured-allowed-selector".to_string()]),
         allowed_source_ids: BTreeSet::from(["configured-allowed-source".to_string()]),
+    }
+}
+
+fn selector_scoped_source_health_authorization() -> IvSelectorAuthorization {
+    IvSelectorAuthorization {
+        authorization_mode: IvAuthorizationMode::SelectorScoped,
+        strategy_id: "configured-strategy".to_string(),
+        allowed_product_kinds: BTreeSet::from([IvProductKind::SourceHealth]),
+        allowed_selector_fingerprints: BTreeSet::new(),
+        allowed_source_ids: BTreeSet::from(["configured-active-source".to_string()]),
     }
 }
 
@@ -174,6 +200,20 @@ fn complete_inputs() -> IvDerivedInputSet {
     }
 }
 
+fn source_health(source_id: &str, state: IvSourceHealthState) -> IvSourceHealth {
+    IvSourceHealth {
+        profile_id: "configured-profile".to_string(),
+        source_id: source_id.to_string(),
+        subscription_state: state,
+        last_event_ts_ns: Some(UnixNanos::new(2_000)),
+        last_reject_reason: None,
+        reject_counts: BTreeMap::new(),
+        stale_state: false,
+        retention_state: false,
+        subscription_generation: 1,
+    }
+}
+
 #[test]
 fn profile_wide_strategy_query_returns_strategy_safe_iv_point() {
     let mut store = IvStore::empty();
@@ -230,6 +270,50 @@ fn selector_scoped_strategy_query_requires_matching_source_and_selector() {
 }
 
 #[test]
+fn strategy_query_rejects_products_from_non_current_source_state() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event_with_source_state(
+            "configured-source",
+            "configured-selector-fingerprint",
+            2_000,
+            0.42,
+            IvSourceHealthState::Stale,
+            1,
+        ))
+        .unwrap();
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store);
+
+    assert_eq!(
+        handle.query(&point_query(None, 2_000)),
+        Err(IvQueryError::ProductNotFound)
+    );
+}
+
+#[test]
+fn strategy_query_rejects_products_when_current_source_health_is_stale() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event(
+            "configured-source",
+            "configured-selector-fingerprint",
+            2_000,
+            0.42,
+        ))
+        .unwrap();
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_source_health(vec![source_health(
+            "configured-source",
+            IvSourceHealthState::Stale,
+        )]);
+
+    assert_eq!(
+        handle.query(&point_query(None, 2_000)),
+        Err(IvQueryError::ProductNotFound)
+    );
+}
+
+#[test]
 fn strategy_query_handle_rejects_raw_payload_requests() {
     let mut store = IvStore::empty();
     let raw = store
@@ -266,6 +350,8 @@ fn projected_scalar_query_uses_configured_projection_policy() {
     let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
         .with_projection_policies(vec![IvProjectionPolicy {
             policy_id: "configured-projection-policy".to_string(),
+            projection_kind: IvProjectionKind::Mean,
+            minimum_points: 1,
             max_projection_input_skew_ns: 10,
         }]);
 
@@ -294,6 +380,75 @@ fn projected_scalar_query_uses_configured_projection_policy() {
         "configured-selector-fingerprint"
     );
     assert_eq!(projected.value, 0.42);
+}
+
+#[test]
+fn source_health_query_applies_configured_state_filter() {
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_source_health(vec![
+        source_health("configured-active-source", IvSourceHealthState::Active),
+        source_health("configured-stale-source", IvSourceHealthState::Stale),
+    ]);
+
+    let product = handle
+        .query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::SourceHealth,
+            selector: IvSelector::SourceHealthQuery {
+                source_filter: None,
+                state_filter: vec!["stale".to_string()],
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::SourceHealth(health) = product else {
+        panic!("expected source health product");
+    };
+    assert_eq!(health.source_id, "configured-stale-source");
+    assert_eq!(health.subscription_state, IvSourceHealthState::Stale);
+}
+
+#[test]
+fn selector_scoped_source_health_query_uses_allowed_source_ids() {
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        selector_scoped_source_health_authorization(),
+        IvStore::empty(),
+    )
+    .with_source_health(vec![
+        source_health("configured-active-source", IvSourceHealthState::Active),
+        source_health("configured-denied-source", IvSourceHealthState::Active),
+    ]);
+
+    assert!(matches!(
+        handle.query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::SourceHealth,
+            selector: IvSelector::SourceHealthQuery {
+                source_filter: Some("configured-active-source".to_string()),
+                state_filter: vec!["active".to_string()],
+            },
+        })),
+        Ok(IvQueryProduct::SourceHealth(_))
+    ));
+    assert_eq!(
+        handle.query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::SourceHealth,
+            selector: IvSelector::SourceHealthQuery {
+                source_filter: Some("configured-denied-source".to_string()),
+                state_filter: vec!["active".to_string()],
+            },
+        })),
+        Err(IvQueryError::StrategyNotAuthorized)
+    );
 }
 
 #[test]

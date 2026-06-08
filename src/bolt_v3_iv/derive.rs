@@ -26,6 +26,7 @@ impl IvNtHelperSymbol {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IvHelperPolicy {
     pub helper_policy_id: String,
     pub nt_helper_symbol: IvNtHelperSymbol,
@@ -95,6 +96,7 @@ impl IvOptionSide {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IvTimedInput<T> {
     pub value: T,
     pub ts_ns: UnixNanos,
@@ -103,6 +105,7 @@ pub struct IvTimedInput<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IvDerivedInputSet {
     pub profile_id: String,
     pub source_id: String,

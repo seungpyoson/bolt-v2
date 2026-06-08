@@ -249,10 +249,10 @@ Strategy-boundary decisions for US6: strategies receive IV access only through `
 |---|---|---|
 | `T119` | `quickstart.md` was updated to the implemented `[iv]` TOML schema. | Complete |
 | `T120` | `contracts/iv-engine-api.md` was updated with final public query, registration, and lifecycle type names. | Complete |
-| `T121` | This section records RED/GREEN and verification outcomes through the latest local head. | Complete |
+| `T121` | This section records RED/GREEN and verification outcomes through the latest local head, including the post-review custom-data raw-preservation and fail-closed runtime/config fixes. | Complete |
 | `T122` | `overlap-ledger.md` was refreshed at head `ebd1a09d790ee6b242a9de49189bcfb7e361dd6e`; no open overlap PRs/issues were found to close. | Complete |
-| `T123` | Focused IV and config test commands below passed after the final query-route change. | Complete |
-| `T124` | Formatter, clippy, and source-fence gates below passed after the final query-route change. | Complete |
+| `T123` | Focused IV and config test commands below passed after the final query-route, post-review raw-preservation, and fail-closed runtime/config changes. | Complete |
+| `T124` | Formatter, clippy, binary clippy, and source-fence gates below passed after the final query-route, post-review raw-preservation, and fail-closed runtime/config changes. | Complete |
 | `T125` | `internal-review.md` records the internal adversarial review. | Complete |
 | `T126` | `external-review.md` records that external reviews were not requested because there is no PR/CI-green exact head and the user did not request a PR. | Complete |
 | `T127` | `external-review.md` records that no post-approval rerun was applicable because there was no external approval in this no-PR workflow. | Complete |
@@ -264,10 +264,29 @@ Strategy-boundary decisions for US6: strategies receive IV access only through `
 |---|---|---|
 | `cargo test --locked --test bolt_v3_iv_query` | RED | Failed before the final query-route fix with missing projection/helper handle methods and missing projected/derived product variants. |
 | `cargo test --locked --test bolt_v3_iv_query` | GREEN | 5 tests passed: profile-wide point query, selector-scoped auth, raw rejection, projected scalar IV, and derived IV. |
+| `cargo test --locked --test bolt_v3_iv_live_integration runtime_custom_data_ingest_preserves_original_json_in_raw_payloads` | RED | Failed before the raw-preservation fix because aggregate/custom-IV raw payload variants did not expose preserved NT custom-data JSON. |
+| `cargo test --locked --test bolt_v3_iv_live_integration runtime_custom_data_ingest_preserves_original_json_in_raw_payloads` | GREEN | Passed after runtime custom-data ingest stored serialized NT custom-data JSON on aggregate/custom-IV raw payload variants. |
+| `cargo test --locked --test bolt_v3_iv_live_integration runtime_nt_option_greeks_rejects_unaccepted_convention` | RED | Failed before the convention fix because runtime source config did not carry or enforce `accepted_conventions`. |
+| `cargo test --locked --test bolt_v3_iv_live_integration runtime_nt_option_greeks_rejects_unaccepted_convention` | GREEN | Passed after NT greeks convention names were checked against the configured source convention set and source health recorded `UnsupportedConvention`. |
+| `cargo test --locked --test bolt_v3_iv_live_integration runtime_nt_option_greeks_rejects_missing_iv_basis` | RED | Failed before the missing-basis fix because greeks with no mark/bid/ask IV were accepted as successful no-op indexing. |
+| `cargo test --locked --test bolt_v3_iv_live_integration runtime_nt_option_greeks_rejects_missing_iv_basis` | GREEN | Passed after store indexing returned `MissingIvBasis`, preserved raw evidence, and runtime recorded typed source health. |
+| `cargo test --locked --test bolt_v3_iv_live_integration runtime_engine_enforces_retention_after_failed_indexing_ingest` | RED | Failed before the retention fix because runtime state exposed no raw-event count evidence and failed store indexing skipped retention enforcement. |
+| `cargo test --locked --test bolt_v3_iv_live_integration runtime_engine_enforces_retention_after_failed_indexing_ingest` | GREEN | Passed after runtime enforced profile retention after both successful and failed store ingestion. |
+| `cargo test --locked --test bolt_v3_iv_store raw_payload_access_rejects_audit_as_of_before_event_receipt` | RED | Failed before the audit fix because `saturating_sub` made audit requests before receipt look age-zero. |
+| `cargo test --locked --test bolt_v3_iv_store raw_payload_access_rejects_audit_as_of_before_event_receipt` | GREEN | Passed after raw audit access rejected `as_of_ns < received_ts_ns` with `RetentionMiss`. |
+| `cargo test --locked --test bolt_v3_iv_config duplicate_custom_data_nt_topics_reject_before_runtime_binding` | RED | Failed before the config fix because duplicate aggregate/custom-IV custom-data topics loaded successfully. |
+| `cargo test --locked --test bolt_v3_iv_config duplicate_custom_data_nt_topics_reject_before_runtime_binding` | GREEN | Passed after effective NT topic uniqueness validation covered aggregate greeks and custom implied-volatility custom data. |
+| `cargo test --locked --test bolt_v3_iv_subscription runtime_engine_reload_updates_configured_source_generations` | RED | Failed before the reload fix because `IvRuntimeEngine` had no root-reload API. |
+| `cargo test --locked --test bolt_v3_iv_subscription runtime_engine_reload_updates_configured_source_generations` | GREEN | Passed after `apply_iv_root_reload` refreshed runtime sources, policies, retention, derived inputs, and current generations while preserving query states. |
+| `cargo test --locked --test bolt_v3_iv_subscription` | PASS | 15 subscription tests passed after adding coverage for reloaded-generation stale handles and removed-profile handle invalidation. |
+| `cargo test --locked --test bolt_v3_iv_live_integration --test bolt_v3_iv_subscription --test bolt_v3_iv_config --test bolt_v3_iv_store` | PASS | 49 affected config/live/store/subscription tests passed after the fail-closed runtime/config fixes. |
+| `cargo test --locked --test bolt_v3_iv_live_integration --test bolt_v3_iv_ingest` | PASS | 17 live integration tests and 4 ingest tests passed after the custom-data raw-preservation and fail-closed runtime/config fixes. |
 | `cargo test --locked bolt_v3_iv` | PASS | Filtered command compiled the crate graph and all matching test binaries; all filtered binaries exited 0. |
-| `cargo test --locked --test bolt_v3_iv_capability --test bolt_v3_iv_config --test bolt_v3_iv_live_integration --test bolt_v3_iv_subscription --test bolt_v3_iv_ingest --test bolt_v3_iv_store --test bolt_v3_iv_query --test bolt_v3_iv_policy --test bolt_v3_iv_derive --test bolt_v3_iv_source_fence --test config_parsing` | PASS | 45 IV tests and 191 `config_parsing` tests passed. |
+| `cargo test --locked --test bolt_v3_iv_capability --test bolt_v3_iv_config --test bolt_v3_iv_live_integration --test bolt_v3_iv_subscription --test bolt_v3_iv_ingest --test bolt_v3_iv_store --test bolt_v3_iv_query --test bolt_v3_iv_policy --test bolt_v3_iv_derive --test bolt_v3_iv_source_fence --test config_parsing` | PASS | 83 IV tests and 191 `config_parsing` tests passed after the post-review raw-preservation and fail-closed runtime/config fixes. |
 | `cargo fmt --check` | PASS | Formatter check exited 0 after the final edits. |
 | `cargo clippy --locked --lib -- -D warnings` | PASS | Clippy initially rejected a large `IvQueryProduct::DerivedIv` enum variant; after boxing the derived output, clippy exited 0. |
+| `cargo clippy --locked --bin bolt-v2 -- -D warnings` | PASS | Binary clippy exited 0 for the live-node wiring path. |
 | `just source-fence` | PASS | Runtime literal audit, provider leak, core boundary, naming, dependency, schema-current, pure-Rust, legacy default, strategy policy, runtime-capture, controlled-connect, production-entrypoint, and IV source-fence checks passed. |
+| `cargo test --locked` | PASS | Full local test suite exited 0 after internal review fixes. |
 
 Phase 9 source-fence remediation: production `Default` derives and `unwrap_or_default` calls in IV code were replaced with explicit constructors or explicit fallback values. The runtime literal audit was extended for the IV module surface, and the schema-current verifier now accepts the active Speckit pointer for `specs/026-nt-backed-iv-engine/` alongside the existing order-intent pointer policy.

@@ -84,6 +84,8 @@ The strategy-facing `IvQueryHandle` rejects raw-payload product kinds. Full raw 
 
 Raw payload retrieval also requires the owning profile's `IvAuditPolicy` to authorize the raw product kind, source, audit handle, access purpose, and audit retention boundary.
 
+For NT custom-data backed aggregate greeks and custom implied-volatility sources, the preserved raw payload includes the serialized custom-data JSON in addition to the typed indexed fields. Strategy-facing products still expose only typed products and provenance references.
+
 ## Registration And Lifecycle Types
 
 Strategy registration exposes IV access through:
@@ -158,7 +160,8 @@ Runtime binding:
 - maps aggregate-greeks sources to NT greeks topic subscription operations
 - maps custom-implied-volatility sources to ledger-classified NT custom-data subscription operations
 - routes incoming NT events into raw preservation before indexing or projection
-- records subscription failures, unsupported mappings, and stale generations in `IvSourceHealth`
+- records subscription failures, unsupported mappings, stale generations, unsupported conventions, missing IV basis, and malformed custom data in `IvSourceHealth`
+- applies IV root reloads to the existing runtime query state so new subscription generations can satisfy current queries, old generations and removed profiles/sources cannot, and registered strategy handles do not need to be recreated
 
 ## Capability Ledger Contract
 

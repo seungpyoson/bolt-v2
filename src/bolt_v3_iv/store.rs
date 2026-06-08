@@ -1,15 +1,21 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::{
     error::IvRejectReason,
     ingest::{
         IvAggregateGreeksPayload, IvCustomIvPayload, IvIngestEvent, IvOptionChainSlicePayload,
-        IvOptionGreeksPayload, IvRawEvent, IvRawPayload, preserve_raw_event,
+        IvOptionChainStrikePayload, IvOptionGreeksPayload, IvRawEvent, IvRawPayload,
+        preserve_raw_event,
     },
     provenance::{IvProvenance, validate_iv_provenance},
     time::UnixNanos,
     types::{IvBasis, IvConvention},
 };
+
+const OPTION_CHAIN_CALL_SIDE_LABEL: &str = "call";
+const OPTION_CHAIN_PUT_SIDE_LABEL: &str = "put";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IvPoint {
@@ -98,6 +104,7 @@ pub struct IvRetentionPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IvStoreError {
     PayloadKindMismatch,
+    MissingIvBasis,
     InvalidIvValue,
     ProvenanceIncomplete,
 }
@@ -111,6 +118,15 @@ pub struct IvStore {
     aggregate_greeks: Vec<IvAggregateGreeks>,
     iv_evidence: Vec<IvEvidence>,
     next_ingest_sequence: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IvStoreIndexCheckpoint {
+    iv_points: usize,
+    greeks_points: usize,
+    smiles: usize,
+    aggregate_greeks: usize,
+    iv_evidence: usize,
 }
 
 impl IvStore {
@@ -133,8 +149,12 @@ impl IvStore {
 
         self.next_ingest_sequence += 1;
         let raw_event = preserve_raw_event(event, self.next_ingest_sequence);
-        self.index_raw_event(&raw_event)?;
         self.raw_events.push(raw_event.clone());
+        let checkpoint = self.index_checkpoint();
+        if let Err(error) = self.index_raw_event(&raw_event) {
+            self.rollback_indexes(checkpoint);
+            return Err(error);
+        }
         Ok(raw_event)
     }
 
@@ -245,11 +265,32 @@ impl IvStore {
         }
     }
 
+    fn index_checkpoint(&self) -> IvStoreIndexCheckpoint {
+        IvStoreIndexCheckpoint {
+            iv_points: self.iv_points.len(),
+            greeks_points: self.greeks_points.len(),
+            smiles: self.smiles.len(),
+            aggregate_greeks: self.aggregate_greeks.len(),
+            iv_evidence: self.iv_evidence.len(),
+        }
+    }
+
+    fn rollback_indexes(&mut self, checkpoint: IvStoreIndexCheckpoint) {
+        self.iv_points.truncate(checkpoint.iv_points);
+        self.greeks_points.truncate(checkpoint.greeks_points);
+        self.smiles.truncate(checkpoint.smiles);
+        self.aggregate_greeks.truncate(checkpoint.aggregate_greeks);
+        self.iv_evidence.truncate(checkpoint.iv_evidence);
+    }
+
     fn index_option_greeks(
         &mut self,
         raw_event: &IvRawEvent,
         payload: &IvOptionGreeksPayload,
     ) -> Result<(), IvStoreError> {
+        if payload.basis_values.is_empty() {
+            return Err(IvStoreError::MissingIvBasis);
+        }
         for basis_value in &payload.basis_values {
             if !valid_iv(basis_value.iv) {
                 return Err(IvStoreError::InvalidIvValue);
@@ -283,29 +324,62 @@ impl IvStore {
         raw_event: &IvRawEvent,
         payload: &IvOptionChainSlicePayload,
     ) -> Result<(), IvStoreError> {
-        if payload.points.iter().any(|point| !valid_iv(point.iv)) {
-            return Err(IvStoreError::InvalidIvValue);
+        self.index_option_chain_side(
+            raw_event,
+            payload,
+            OPTION_CHAIN_CALL_SIDE_LABEL,
+            &payload.calls,
+        )?;
+        self.index_option_chain_side(
+            raw_event,
+            payload,
+            OPTION_CHAIN_PUT_SIDE_LABEL,
+            &payload.puts,
+        )?;
+        Ok(())
+    }
+
+    fn index_option_chain_side(
+        &mut self,
+        raw_event: &IvRawEvent,
+        payload: &IvOptionChainSlicePayload,
+        side: &str,
+        strikes: &[IvOptionChainStrikePayload],
+    ) -> Result<(), IvStoreError> {
+        let mut points_by_basis = BTreeMap::<IvBasis, Vec<IvSmilePoint>>::new();
+        for strike in strikes {
+            let Some(greeks) = &strike.greeks else {
+                continue;
+            };
+            for basis_value in &greeks.basis_values {
+                if !valid_iv(basis_value.iv) {
+                    return Err(IvStoreError::InvalidIvValue);
+                }
+                points_by_basis
+                    .entry(basis_value.basis)
+                    .or_insert_with(empty_iv_smile_points)
+                    .push(IvSmilePoint {
+                        strike: strike.strike,
+                        iv: basis_value.iv,
+                    });
+            }
         }
 
-        self.smiles.push(IvSmile {
-            profile_id: raw_event.profile_id.clone(),
-            source_id: raw_event.source_id.clone(),
-            surface_selector: payload.surface_selector.clone(),
-            series_id: payload.series_id.clone(),
-            side: payload.side.clone(),
-            basis: payload.basis,
-            points_by_strike: payload
-                .points
-                .iter()
-                .map(|point| IvSmilePoint {
-                    strike: point.strike,
-                    iv: point.iv,
-                })
-                .collect(),
-            atm_strike: payload.points.first().map(|point| point.strike),
-            ts_event_ns: raw_event.provenance.ts_event_ns,
-            provenance: raw_event.provenance.clone(),
-        });
+        for (basis, mut points_by_strike) in points_by_basis {
+            points_by_strike.sort_by(|left, right| left.strike.total_cmp(&right.strike));
+            self.smiles.push(IvSmile {
+                profile_id: raw_event.profile_id.clone(),
+                source_id: raw_event.source_id.clone(),
+                surface_selector: payload.surface_selector.clone(),
+                series_id: payload.series_id.clone(),
+                side: side.to_string(),
+                basis,
+                points_by_strike,
+                atm_strike: payload.atm_strike,
+                ts_event_ns: raw_event.provenance.ts_event_ns,
+                provenance: raw_event.provenance.clone(),
+            });
+        }
 
         Ok(())
     }
@@ -354,6 +428,10 @@ fn valid_iv(value: f64) -> bool {
     value.is_finite() && value.is_sign_positive()
 }
 
+fn empty_iv_smile_points() -> Vec<IvSmilePoint> {
+    Vec::new()
+}
+
 fn truncate_front<T>(items: &mut Vec<T>, max_len: usize) {
     if items.len() > max_len {
         let remove_count = items.len() - max_len;
@@ -365,7 +443,19 @@ impl From<IvRejectReason> for IvStoreError {
     fn from(reason: IvRejectReason) -> Self {
         match reason {
             IvRejectReason::ProvenanceIncomplete => Self::ProvenanceIncomplete,
+            IvRejectReason::MissingIvBasis => Self::MissingIvBasis,
             _ => Self::InvalidIvValue,
+        }
+    }
+}
+
+impl IvStoreError {
+    pub fn reject_reason(&self) -> IvRejectReason {
+        match self {
+            Self::PayloadKindMismatch => IvRejectReason::PayloadKindMismatch,
+            Self::MissingIvBasis => IvRejectReason::MissingIvBasis,
+            Self::InvalidIvValue => IvRejectReason::InvalidIvValue,
+            Self::ProvenanceIncomplete => IvRejectReason::ProvenanceIncomplete,
         }
     }
 }

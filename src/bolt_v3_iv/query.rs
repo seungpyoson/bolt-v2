@@ -1,17 +1,31 @@
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, RwLock},
+};
+
 use serde::{Deserialize, Serialize};
 
 use super::{
     authz::IvSelectorAuthorization,
     derive::{IvDerivedInputSet, IvDerivedOutput, IvHelperPolicy, derive_iv, select_helper_policy},
     health::IvSourceHealth,
-    ingest::IvRawEvent,
-    policy::{IvPolicyInput, IvProjectionPolicy, project_scalar},
+    ingest::{IvIngestEvent, IvRawEvent},
+    policy::{
+        IvFallbackPolicy, IvInterpolationPolicy, IvPolicyInput, IvProjectionPolicy, IvQuorumPolicy,
+        project_scalar,
+    },
     provenance::{IvPolicyDecision, IvProvenance},
     selector::IvSelector,
-    store::{IvAggregateGreeks, IvEvidence, IvGreeksPoint, IvPoint, IvSmile, IvStore, IvSurface},
+    store::{
+        IvAggregateGreeks, IvEvidence, IvGreeksPoint, IvPoint, IvRetentionPolicy, IvSmile, IvStore,
+        IvStoreError, IvSurface,
+    },
     time::UnixNanos,
     types::IvProductKind,
 };
+
+const INITIAL_REJECT_COUNT: u64 = 0;
+const REJECT_COUNT_INCREMENT: u64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum IvQuery {
@@ -74,36 +88,43 @@ pub enum IvQueryError {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct IvQueryHandle {
-    profile_id: String,
-    authorization: IvSelectorAuthorization,
+pub struct IvQueryState {
     store: IvStore,
     source_health: Vec<IvSourceHealth>,
     projection_policies: Vec<IvProjectionPolicy>,
+    interpolation_policies: Vec<IvInterpolationPolicy>,
+    fallback_policies: Vec<IvFallbackPolicy>,
+    quorum_policies: Vec<IvQuorumPolicy>,
     helper_policies: Vec<IvHelperPolicy>,
     derived_inputs: Vec<IvDerivedInputSet>,
+    current_subscription_generations: BTreeMap<String, u64>,
 }
 
-impl IvQueryHandle {
-    pub fn new(
-        profile_id: impl Into<String>,
-        authorization: IvSelectorAuthorization,
-        store: IvStore,
-    ) -> Self {
+#[derive(Debug, Clone)]
+pub struct IvQueryStateHandle {
+    inner: Arc<RwLock<IvQueryState>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IvQueryHandle {
+    profile_id: String,
+    authorization: IvSelectorAuthorization,
+    state: IvQueryStateHandle,
+}
+
+impl IvQueryState {
+    pub fn new(store: IvStore) -> Self {
         Self {
-            profile_id: profile_id.into(),
-            authorization,
             store,
             source_health: Vec::new(),
             projection_policies: Vec::new(),
+            interpolation_policies: Vec::new(),
+            fallback_policies: Vec::new(),
+            quorum_policies: Vec::new(),
             helper_policies: Vec::new(),
             derived_inputs: Vec::new(),
+            current_subscription_generations: BTreeMap::new(),
         }
-    }
-
-    pub fn with_source_health(mut self, source_health: Vec<IvSourceHealth>) -> Self {
-        self.source_health = source_health;
-        self
     }
 
     pub fn with_projection_policies(
@@ -119,9 +140,326 @@ impl IvQueryHandle {
         self
     }
 
+    pub fn with_interpolation_policies(
+        mut self,
+        interpolation_policies: Vec<IvInterpolationPolicy>,
+    ) -> Self {
+        self.interpolation_policies = interpolation_policies;
+        self
+    }
+
+    pub fn with_fallback_policies(mut self, fallback_policies: Vec<IvFallbackPolicy>) -> Self {
+        self.fallback_policies = fallback_policies;
+        self
+    }
+
+    pub fn with_quorum_policies(mut self, quorum_policies: Vec<IvQuorumPolicy>) -> Self {
+        self.quorum_policies = quorum_policies;
+        self
+    }
+
     pub fn with_derived_inputs(mut self, derived_inputs: Vec<IvDerivedInputSet>) -> Self {
         self.derived_inputs = derived_inputs;
         self
+    }
+
+    pub fn with_source_health(mut self, source_health: Vec<IvSourceHealth>) -> Self {
+        self.source_health = source_health;
+        self
+    }
+
+    pub fn with_current_subscription_generations(
+        mut self,
+        current_subscription_generations: BTreeMap<String, u64>,
+    ) -> Self {
+        self.current_subscription_generations = current_subscription_generations;
+        self
+    }
+}
+
+impl IvQueryStateHandle {
+    pub fn new(state: IvQueryState) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(state)),
+        }
+    }
+
+    pub fn snapshot(&self) -> IvQueryState {
+        self.inner
+            .read()
+            .expect("IV query state lock poisoned")
+            .clone()
+    }
+
+    pub fn ingest_event(&self, event: IvIngestEvent) -> Result<IvRawEvent, IvStoreError> {
+        self.inner
+            .write()
+            .expect("IV query state lock poisoned")
+            .store
+            .ingest_event(event)
+    }
+
+    pub fn raw_event_count(&self) -> usize {
+        self.inner
+            .read()
+            .expect("IV query state lock poisoned")
+            .store
+            .raw_events()
+            .len()
+    }
+
+    pub fn replace_source_health(&self, source_health: Vec<IvSourceHealth>) {
+        self.inner
+            .write()
+            .expect("IV query state lock poisoned")
+            .source_health = source_health;
+    }
+
+    pub fn upsert_source_health(&self, source_health: IvSourceHealth) {
+        let mut state = self.inner.write().expect("IV query state lock poisoned");
+        if state
+            .current_subscription_generations
+            .get(&source_health.source_id)
+            .is_some_and(|current_generation| {
+                source_health.subscription_generation != *current_generation
+            })
+        {
+            return;
+        }
+        if let Some(existing) = state.source_health.iter_mut().find(|existing| {
+            existing.profile_id == source_health.profile_id
+                && existing.source_id == source_health.source_id
+        }) {
+            if existing.subscription_generation > source_health.subscription_generation {
+                return;
+            }
+            *existing = source_health;
+        } else {
+            state.source_health.push(source_health);
+        }
+    }
+
+    pub fn record_source_rejection(
+        &self,
+        profile_id: String,
+        source_id: String,
+        subscription_generation: u64,
+        last_event_ts_ns: super::time::UnixNanos,
+        reject_reason: super::error::IvRejectReason,
+        mark_rejected: bool,
+    ) {
+        let mut state = self.inner.write().expect("IV query state lock poisoned");
+        if let Some(existing) = state.source_health.iter_mut().find(|existing| {
+            existing.profile_id == profile_id
+                && existing.source_id == source_id
+                && existing.subscription_generation == subscription_generation
+        }) {
+            existing.last_event_ts_ns = Some(last_event_ts_ns);
+            existing.last_reject_reason = Some(reject_reason);
+            *existing
+                .reject_counts
+                .entry(reject_reason)
+                .or_insert(INITIAL_REJECT_COUNT) += REJECT_COUNT_INCREMENT;
+            if mark_rejected {
+                existing.subscription_state = super::health::IvSourceHealthState::Rejected;
+            }
+            return;
+        }
+
+        let mut reject_counts = BTreeMap::new();
+        reject_counts.insert(reject_reason, REJECT_COUNT_INCREMENT);
+        state.source_health.push(IvSourceHealth {
+            profile_id,
+            source_id,
+            subscription_state: super::health::IvSourceHealthState::Rejected,
+            last_event_ts_ns: Some(last_event_ts_ns),
+            last_reject_reason: Some(reject_reason),
+            reject_counts,
+            stale_state: false,
+            retention_state: false,
+            subscription_generation,
+        });
+    }
+
+    pub fn source_health_for(&self, profile_id: &str, source_id: &str) -> Option<IvSourceHealth> {
+        self.inner
+            .read()
+            .expect("IV query state lock poisoned")
+            .source_health
+            .iter()
+            .find(|health| health.profile_id == profile_id && health.source_id == source_id)
+            .cloned()
+    }
+
+    pub fn enforce_retention(&self, policy: &IvRetentionPolicy) {
+        let mut state = self.inner.write().expect("IV query state lock poisoned");
+        state.store.enforce_retention(policy);
+        if state.source_health.len() > policy.max_source_health_events {
+            let retained_start = state.source_health.len() - policy.max_source_health_events;
+            state.source_health.drain(..retained_start);
+        }
+    }
+
+    pub fn set_projection_policies(&self, projection_policies: Vec<IvProjectionPolicy>) {
+        self.inner
+            .write()
+            .expect("IV query state lock poisoned")
+            .projection_policies = projection_policies;
+    }
+
+    pub fn set_helper_policies(&self, helper_policies: Vec<IvHelperPolicy>) {
+        self.inner
+            .write()
+            .expect("IV query state lock poisoned")
+            .helper_policies = helper_policies;
+    }
+
+    pub fn set_interpolation_policies(&self, interpolation_policies: Vec<IvInterpolationPolicy>) {
+        self.inner
+            .write()
+            .expect("IV query state lock poisoned")
+            .interpolation_policies = interpolation_policies;
+    }
+
+    pub fn set_fallback_policies(&self, fallback_policies: Vec<IvFallbackPolicy>) {
+        self.inner
+            .write()
+            .expect("IV query state lock poisoned")
+            .fallback_policies = fallback_policies;
+    }
+
+    pub fn set_quorum_policies(&self, quorum_policies: Vec<IvQuorumPolicy>) {
+        self.inner
+            .write()
+            .expect("IV query state lock poisoned")
+            .quorum_policies = quorum_policies;
+    }
+
+    pub fn set_derived_inputs(&self, derived_inputs: Vec<IvDerivedInputSet>) {
+        self.inner
+            .write()
+            .expect("IV query state lock poisoned")
+            .derived_inputs = derived_inputs;
+    }
+
+    pub fn set_current_subscription_generations(
+        &self,
+        current_subscription_generations: BTreeMap<String, u64>,
+    ) {
+        self.inner
+            .write()
+            .expect("IV query state lock poisoned")
+            .current_subscription_generations = current_subscription_generations;
+    }
+
+    pub fn mark_sources_removed(
+        &self,
+        profile_id: &str,
+        source_generations: &BTreeMap<String, u64>,
+    ) {
+        let mut state = self.inner.write().expect("IV query state lock poisoned");
+        for (source_id, subscription_generation) in source_generations {
+            let removed_health = IvSourceHealth {
+                profile_id: profile_id.to_string(),
+                source_id: source_id.clone(),
+                subscription_state: super::health::IvSourceHealthState::Removed,
+                last_event_ts_ns: None,
+                last_reject_reason: None,
+                reject_counts: BTreeMap::new(),
+                stale_state: false,
+                retention_state: false,
+                subscription_generation: *subscription_generation,
+            };
+            if let Some(existing) = state
+                .source_health
+                .iter_mut()
+                .find(|health| health.profile_id == profile_id && health.source_id == *source_id)
+            {
+                if existing.subscription_generation <= *subscription_generation {
+                    *existing = removed_health;
+                }
+            } else {
+                state.source_health.push(removed_health);
+            }
+        }
+    }
+}
+
+impl IvQueryHandle {
+    pub fn new(
+        profile_id: impl Into<String>,
+        authorization: IvSelectorAuthorization,
+        store: IvStore,
+    ) -> Self {
+        Self::from_state(
+            profile_id,
+            authorization,
+            IvQueryStateHandle::new(IvQueryState::new(store)),
+        )
+    }
+
+    pub fn from_state(
+        profile_id: impl Into<String>,
+        authorization: IvSelectorAuthorization,
+        state: IvQueryStateHandle,
+    ) -> Self {
+        Self {
+            profile_id: profile_id.into(),
+            authorization,
+            state,
+        }
+    }
+
+    pub fn with_source_health(self, source_health: Vec<IvSourceHealth>) -> Self {
+        self.state.replace_source_health(source_health);
+        self
+    }
+
+    pub fn with_projection_policies(self, projection_policies: Vec<IvProjectionPolicy>) -> Self {
+        self.state.set_projection_policies(projection_policies);
+        self
+    }
+
+    pub fn with_helper_policies(self, helper_policies: Vec<IvHelperPolicy>) -> Self {
+        self.state.set_helper_policies(helper_policies);
+        self
+    }
+
+    pub fn with_interpolation_policies(
+        self,
+        interpolation_policies: Vec<IvInterpolationPolicy>,
+    ) -> Self {
+        self.state
+            .set_interpolation_policies(interpolation_policies);
+        self
+    }
+
+    pub fn with_fallback_policies(self, fallback_policies: Vec<IvFallbackPolicy>) -> Self {
+        self.state.set_fallback_policies(fallback_policies);
+        self
+    }
+
+    pub fn with_quorum_policies(self, quorum_policies: Vec<IvQuorumPolicy>) -> Self {
+        self.state.set_quorum_policies(quorum_policies);
+        self
+    }
+
+    pub fn with_derived_inputs(self, derived_inputs: Vec<IvDerivedInputSet>) -> Self {
+        self.state.set_derived_inputs(derived_inputs);
+        self
+    }
+
+    pub fn with_current_subscription_generations(
+        self,
+        current_subscription_generations: BTreeMap<String, u64>,
+    ) -> Self {
+        self.state
+            .set_current_subscription_generations(current_subscription_generations);
+        self
+    }
+
+    pub fn state_handle(&self) -> IvQueryStateHandle {
+        self.state.clone()
     }
 
     pub fn authorization(&self) -> &IvSelectorAuthorization {
@@ -151,7 +489,11 @@ impl IvQueryHandle {
             return Err(IvQueryError::ProductKindMismatch);
         }
 
-        let product = self.find_product(query)?;
+        let state = self.state.snapshot();
+        let product = self.find_product(query, &state)?;
+        if !product_satisfies_current_state(&product, &state) {
+            return Err(IvQueryError::ProductNotFound);
+        }
         let source_id = product.source_id();
         let selector_fingerprint = product.selector_fingerprint();
         if !self.authorization.authorizes(
@@ -166,7 +508,11 @@ impl IvQueryHandle {
         Ok(product)
     }
 
-    fn find_product(&self, query: &IvProductQuery) -> Result<IvQueryProduct, IvQueryError> {
+    fn find_product(
+        &self,
+        query: &IvProductQuery,
+        state: &IvQueryState,
+    ) -> Result<IvQueryProduct, IvQueryError> {
         match (&query.product_kind, &query.selector) {
             (
                 IvProductKind::IvPoint,
@@ -176,7 +522,7 @@ impl IvQueryHandle {
                     as_of_ns,
                     source_filter,
                 },
-            ) => self
+            ) => state
                 .store
                 .iv_points()
                 .iter()
@@ -198,7 +544,7 @@ impl IvQueryHandle {
                     as_of_ns,
                     source_filter,
                 },
-            ) => self
+            ) => state
                 .store
                 .greeks_points()
                 .iter()
@@ -220,7 +566,7 @@ impl IvQueryHandle {
                     basis,
                     as_of_ns,
                 },
-            ) => self
+            ) => state
                 .store
                 .smiles()
                 .iter()
@@ -241,7 +587,7 @@ impl IvQueryHandle {
                     basis,
                     as_of_ns,
                 },
-            ) => self
+            ) => state
                 .store
                 .smiles()
                 .iter()
@@ -251,7 +597,7 @@ impl IvQueryHandle {
                         && smile.basis == *basis
                         && smile.ts_event_ns == *as_of_ns
                     {
-                        self.store.surface(
+                        state.store.surface(
                             &smile.surface_selector,
                             &smile.source_id,
                             *basis,
@@ -270,7 +616,7 @@ impl IvQueryHandle {
                     underlying_selectors,
                     as_of_ns,
                 },
-            ) => self
+            ) => state
                 .store
                 .aggregate_greeks()
                 .iter()
@@ -290,7 +636,7 @@ impl IvQueryHandle {
                     source_filter,
                     as_of_ns,
                 },
-            ) => self
+            ) => state
                 .store
                 .iv_evidence()
                 .iter()
@@ -303,17 +649,23 @@ impl IvQueryHandle {
                 .cloned()
                 .map(IvQueryProduct::CustomIvEvidence)
                 .ok_or(IvQueryError::ProductNotFound),
-            (IvProductKind::SourceHealth, IvSelector::SourceHealthQuery { source_filter, .. }) => {
-                self.source_health
-                    .iter()
-                    .find(|health| {
-                        health.profile_id == query.profile_id
-                            && source_matches(&health.source_id, source_filter)
-                    })
-                    .cloned()
-                    .map(IvQueryProduct::SourceHealth)
-                    .ok_or(IvQueryError::ProductNotFound)
-            }
+            (
+                IvProductKind::SourceHealth,
+                IvSelector::SourceHealthQuery {
+                    source_filter,
+                    state_filter,
+                },
+            ) => state
+                .source_health
+                .iter()
+                .find(|health| {
+                    health.profile_id == query.profile_id
+                        && source_matches(&health.source_id, source_filter)
+                        && source_health_state_matches(health, state_filter)
+                })
+                .cloned()
+                .map(IvQueryProduct::SourceHealth)
+                .ok_or(IvQueryError::ProductNotFound),
             (
                 IvProductKind::ProjectedScalarIv,
                 IvSelector::ProjectedScalarIvQuery {
@@ -321,7 +673,13 @@ impl IvQueryHandle {
                     projection_policy_id,
                     as_of_ns,
                 },
-            ) => self.project_scalar_query(query, input_selector, projection_policy_id, *as_of_ns),
+            ) => self.project_scalar_query(
+                query,
+                state,
+                input_selector,
+                projection_policy_id,
+                *as_of_ns,
+            ),
             (
                 IvProductKind::DerivedIv,
                 IvSelector::DerivedIvQuery {
@@ -329,7 +687,7 @@ impl IvQueryHandle {
                     helper_policy_id,
                     as_of_ns,
                 },
-            ) => self.derived_iv_query(query, instrument_id, helper_policy_id, *as_of_ns),
+            ) => self.derived_iv_query(query, state, instrument_id, helper_policy_id, *as_of_ns),
             _ => Err(IvQueryError::ProductKindMismatch),
         }
     }
@@ -337,6 +695,7 @@ impl IvQueryHandle {
     fn project_scalar_query(
         &self,
         query: &IvProductQuery,
+        state: &IvQueryState,
         input_selector: &IvSelector,
         projection_policy_id: &str,
         as_of_ns: UnixNanos,
@@ -344,17 +703,20 @@ impl IvQueryHandle {
         if matches!(input_selector, IvSelector::ProjectedScalarIvQuery { .. }) {
             return Err(IvQueryError::UnsupportedProductKind);
         }
-        let policy = self
+        let policy = state
             .projection_policies
             .iter()
             .find(|policy| policy.policy_id == projection_policy_id)
             .ok_or(IvQueryError::ProjectionPolicyNotFound)?;
-        let input_product = self.find_product(&IvProductQuery {
-            strategy_id: query.strategy_id.clone(),
-            profile_id: query.profile_id.clone(),
-            product_kind: input_selector.product_kind(),
-            selector: input_selector.clone(),
-        })?;
+        let input_product = self.find_product(
+            &IvProductQuery {
+                strategy_id: query.strategy_id.clone(),
+                profile_id: query.profile_id.clone(),
+                product_kind: input_selector.product_kind(),
+                selector: input_selector.clone(),
+            },
+            state,
+        )?;
         let inputs = projection_inputs(&input_product)?;
         let output =
             project_scalar(policy, &inputs).map_err(|_| IvQueryError::ProjectionRejected)?;
@@ -381,13 +743,14 @@ impl IvQueryHandle {
     fn derived_iv_query(
         &self,
         query: &IvProductQuery,
+        state: &IvQueryState,
         instrument_id: &str,
         helper_policy_id: &str,
         as_of_ns: UnixNanos,
     ) -> Result<IvQueryProduct, IvQueryError> {
-        let policy = select_helper_policy(&self.helper_policies, helper_policy_id)
+        let policy = select_helper_policy(&state.helper_policies, helper_policy_id)
             .map_err(|_| IvQueryError::HelperPolicyNotFound)?;
-        let inputs = self
+        let inputs = state
             .derived_inputs
             .iter()
             .find(|inputs| {
@@ -508,6 +871,44 @@ fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQ
 
 fn source_matches(actual: &str, filter: &Option<String>) -> bool {
     filter.as_ref().is_none_or(|expected| actual == expected)
+}
+
+fn source_health_state_matches(health: &IvSourceHealth, state_filter: &[String]) -> bool {
+    state_filter.is_empty()
+        || state_filter
+            .iter()
+            .any(|expected| expected == health.subscription_state.as_str())
+}
+
+fn product_satisfies_current_state(product: &IvQueryProduct, state: &IvQueryState) -> bool {
+    if matches!(product, IvQueryProduct::SourceHealth(_)) {
+        return true;
+    }
+
+    let Some(provenance) = product.provenance() else {
+        return false;
+    };
+    if !provenance.source_health_state.can_satisfy_current_query() {
+        return false;
+    }
+    if !state.current_subscription_generations.is_empty() {
+        let Some(current_generation) = state
+            .current_subscription_generations
+            .get(&provenance.source_id)
+        else {
+            return false;
+        };
+        if *current_generation != provenance.subscription_generation {
+            return false;
+        }
+    }
+    if let Some(current_health) = state.source_health.iter().find(|health| {
+        health.profile_id == provenance.profile_id && health.source_id == provenance.source_id
+    }) {
+        return current_health.can_satisfy_current_query()
+            && current_health.subscription_generation == provenance.subscription_generation;
+    }
+    true
 }
 
 fn selector_supports_product_kind(selector: &IvSelector, product_kind: IvProductKind) -> bool {

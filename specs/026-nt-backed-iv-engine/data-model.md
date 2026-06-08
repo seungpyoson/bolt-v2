@@ -92,6 +92,7 @@ Fields:
 - `selector_fingerprint`
 - `client_id`
 - `source_kind`
+- `accepted_conventions`
 - `selector`
 - `nt_params`
 
@@ -101,7 +102,10 @@ Validation:
 - Selector fingerprints are unique within a profile and non-empty.
 - Source kind is a known enum from the capability ledger.
 - Selector is a typed `IvSelector` variant compatible with the source kind.
+- NT option-greeks and nested option-chain greeks whose convention is not in `accepted_conventions` reject with typed source health.
+- Option-greeks events with no mark, bid, or ask IV basis preserve raw evidence but reject indexed IV products with `MissingIvBasis`.
 - Numeric bounds are positive where required.
+- Effective NT topics are unique within a profile for option greeks, option chains, aggregate greeks custom data, and custom implied-volatility custom data.
 - Source product exposure is controlled by the owning profile's `enabled_products`; source configs do not declare a second product allow-list.
 - Source config does not carry strategy authorization outside its owning profile.
 
@@ -113,7 +117,7 @@ Variants:
 
 - `SourceOptionGreeksSelector`: `instrument_ids`, `nt_params`
 - `SourceOptionChainSelector`: `series_ids`, `strike_range_policy`, `nt_params`
-- `SourceAggregateGreeksSelector`: `aggregate_key`, `underlying_selectors`, `nt_params`
+- `SourceAggregateGreeksSelector`: `aggregate_key`, `underlying_selectors`, `delta_field`, `gamma_field`, `vega_field`, `theta_field`, `rho_field`, `nt_params`
 - `SourceCustomImpliedVolatilitySelector`: `custom_iv_data_type`, `custom_iv_data_fields`, `nt_params`
 - `PointQuerySelector`: `instrument_ids`, `basis`, `as_of_ns`, `source_filter`
 - `SmileQuerySelector`: `series_id`, `side`, `basis`, `as_of_ns`
@@ -184,7 +188,7 @@ Validation:
 - Every operation maps to one configured profile and source.
 - Start, stop, reload, unsubscribe, and source removal operations are represented.
 - No operation contains hardcoded instrument, venue, asset, cadence, source, or strategy values.
-- Reload increments `subscription_generation`; stale generations cannot satisfy current queries.
+- Reload updates shared runtime source state and `subscription_generation`; stale generations and removed profiles/sources cannot satisfy current queries through existing strategy handles.
 
 ## IvRuntimeBinding
 
@@ -225,6 +229,7 @@ Fields:
 Validation:
 
 - Payload kind must match the source kind or an allowed NT publication for that source.
+- Aggregate-greeks and custom-implied-volatility custom-data payloads retain the serialized NT custom-data JSON alongside the typed indexed fields.
 - Raw payload is retained within configured bounds.
 - Removed or stale sources cannot satisfy current queries.
 
@@ -366,6 +371,7 @@ Fields:
 Validation:
 
 - Raw NT aggregate greeks payload is preserved before indexing.
+- The preserved raw payload includes the original serialized NT custom-data JSON so adapter-specific fields remain available to audit/replay.
 - Selector and provenance identify the configured aggregate source.
 - Missing or malformed values reject indexing without discarding the raw event.
 
@@ -427,6 +433,7 @@ Fields:
 Validation:
 
 - Evidence kind must not be mislabeled as an option-chain point.
+- The preserved raw payload includes the original serialized NT custom-data JSON so adapter-specific evidence fields are not discarded.
 - Projection into IV requires explicit configured policy.
 
 ## IvHelperPolicy

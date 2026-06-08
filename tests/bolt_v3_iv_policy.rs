@@ -2,8 +2,8 @@ use bolt_v2::bolt_v3_iv::{
     error::IvRejectReason,
     policy::{
         IvFallbackCandidate, IvFallbackPolicy, IvInterpolationPolicy, IvPolicyError, IvPolicyInput,
-        IvProjectionPolicy, IvQuorumPolicy, interpolate_smile, project_scalar, resolve_fallback,
-        resolve_quorum,
+        IvProjectionKind, IvProjectionPolicy, IvQuorumPolicy, interpolate_smile, project_scalar,
+        resolve_fallback, resolve_quorum,
     },
     provenance::IvPolicyDecision,
     store::IvSmilePoint,
@@ -22,11 +22,31 @@ fn input(product_id: &str, value: f64, ts: u64) -> IvPolicyInput {
 fn projection_policy_rejects_inputs_outside_configured_skew() {
     let policy = IvProjectionPolicy {
         policy_id: "configured-projection".to_string(),
+        projection_kind: IvProjectionKind::Mean,
+        minimum_points: 1,
         max_projection_input_skew_ns: 5,
     };
 
     assert_eq!(
         project_scalar(&policy, &[input("a", 0.2, 1_000), input("b", 0.3, 1_020)]),
+        Err(IvPolicyError::Rejected {
+            reason: IvRejectReason::ProjectionRejected,
+            policy_id: "configured-projection".to_string(),
+        })
+    );
+}
+
+#[test]
+fn projection_policy_rejects_when_minimum_input_count_is_not_met() {
+    let policy = IvProjectionPolicy {
+        policy_id: "configured-projection".to_string(),
+        projection_kind: IvProjectionKind::Mean,
+        minimum_points: 2,
+        max_projection_input_skew_ns: 5,
+    };
+
+    assert_eq!(
+        project_scalar(&policy, &[input("a", 0.2, 1_000)]),
         Err(IvPolicyError::Rejected {
             reason: IvRejectReason::ProjectionRejected,
             policy_id: "configured-projection".to_string(),

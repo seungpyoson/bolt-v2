@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::{
     health::IvSourceHealthState,
@@ -52,19 +53,31 @@ pub struct IvOptionGreeksPayload {
     pub open_interest: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct IvOptionChainPoint {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IvOptionChainQuotePayload {
+    pub instrument_id: String,
+    pub bid_price: Option<f64>,
+    pub ask_price: Option<f64>,
+    pub bid_size: Option<f64>,
+    pub ask_size: Option<f64>,
+    pub ts_event_ns: UnixNanos,
+    pub ts_init_ns: Option<UnixNanos>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IvOptionChainStrikePayload {
     pub strike: f64,
-    pub iv: f64,
+    pub quote: IvOptionChainQuotePayload,
+    pub greeks: Option<IvOptionGreeksPayload>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IvOptionChainSlicePayload {
     pub series_id: String,
     pub surface_selector: String,
-    pub side: String,
-    pub basis: IvBasis,
-    pub points: Vec<IvOptionChainPoint>,
+    pub atm_strike: Option<f64>,
+    pub calls: Vec<IvOptionChainStrikePayload>,
+    pub puts: Vec<IvOptionChainStrikePayload>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -72,12 +85,14 @@ pub struct IvAggregateGreeksPayload {
     pub aggregate_key: String,
     pub underlying_selectors: Vec<String>,
     pub greeks: IvGreekValues,
+    pub nt_custom_data_json: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IvCustomIvPayload {
     pub iv_evidence_kind: String,
     pub value: f64,
+    pub nt_custom_data_json: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

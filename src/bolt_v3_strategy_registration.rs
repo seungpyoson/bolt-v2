@@ -8,7 +8,7 @@ use crate::bolt_v3_config::{
     BoltV3RootConfig, LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey,
 };
 use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter;
-use crate::bolt_v3_iv::{query::IvQueryHandle, store::IvStore};
+use crate::bolt_v3_iv::{query::IvQueryHandle, runtime::IvRuntimeEngine, store::IvStore};
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 use nautilus_live::node::LiveNode;
@@ -49,7 +49,7 @@ pub struct BoltV3StrategyRegistrationSummary {
     pub registered: Vec<BoltV3RegisteredStrategy>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct BoltV3IvQueryHandleRegistry {
     handles: BTreeMap<(String, String), IvQueryHandle>,
 }
@@ -137,6 +137,11 @@ pub fn build_iv_query_handle_registry_for_root(
     let mut handles = BTreeMap::new();
     for profile in &iv.profiles {
         for authorization in profile.strategy_authorizations() {
+            let current_generations = profile
+                .sources
+                .iter()
+                .map(|source| (source.source_id.clone(), source.subscription_generation))
+                .collect();
             let key = (
                 authorization.strategy_id.clone(),
                 profile.profile_id.clone(),
@@ -144,7 +149,59 @@ pub fn build_iv_query_handle_registry_for_root(
             if handles
                 .insert(
                     key.clone(),
-                    IvQueryHandle::new(&profile.profile_id, authorization, store.clone()),
+                    IvQueryHandle::new(&profile.profile_id, authorization, store.clone())
+                        .with_projection_policies(profile.projection_policies.clone())
+                        .with_interpolation_policies(profile.interpolation_policies.clone())
+                        .with_fallback_policies(profile.fallback_policies.clone())
+                        .with_quorum_policies(profile.quorum_policies.clone())
+                        .with_helper_policies(profile.helper_policies.clone())
+                        .with_derived_inputs(profile.derived_inputs.clone())
+                        .with_current_subscription_generations(current_generations),
+                )
+                .is_some()
+            {
+                return Err(BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                    message: format!(
+                        "duplicate IV query handle for strategy {} profile {}",
+                        key.0, key.1
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(BoltV3IvQueryHandleRegistry { handles })
+}
+
+pub fn build_iv_query_handle_registry_for_runtime(
+    root: &BoltV3RootConfig,
+    runtime: &IvRuntimeEngine,
+) -> Result<BoltV3IvQueryHandleRegistry, BoltV3StrategyRegistrationError> {
+    let Some(iv) = &root.iv else {
+        return Ok(BoltV3IvQueryHandleRegistry::empty());
+    };
+
+    let mut handles = BTreeMap::new();
+    for profile in &iv.profiles {
+        let state = runtime
+            .state_for_profile(&profile.profile_id)
+            .ok_or_else(
+                || BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                    message: format!(
+                        "missing IV runtime state for profile {}",
+                        profile.profile_id
+                    ),
+                },
+            )?;
+        for authorization in profile.strategy_authorizations() {
+            let key = (
+                authorization.strategy_id.clone(),
+                profile.profile_id.clone(),
+            );
+            if handles
+                .insert(
+                    key.clone(),
+                    IvQueryHandle::from_state(&profile.profile_id, authorization, state.clone()),
                 )
                 .is_some()
             {
@@ -165,27 +222,37 @@ pub fn build_iv_query_handle_registry(
     loaded: &LoadedBoltV3Config,
     store: IvStore,
 ) -> Result<BoltV3IvQueryHandleRegistry, BoltV3StrategyRegistrationError> {
+    validate_iv_strategy_references(loaded)?;
     let registry = build_iv_query_handle_registry_for_root(&loaded.root, store)?;
-    if registry.handles.is_empty() {
-        return Ok(registry);
-    }
 
+    Ok(registry)
+}
+
+pub fn validate_iv_strategy_references(
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), BoltV3StrategyRegistrationError> {
+    let Some(iv) = &loaded.root.iv else {
+        return Ok(());
+    };
     let configured_strategy_ids = loaded
         .strategies
         .iter()
         .map(|strategy| strategy.config.strategy_instance_id.as_str())
         .collect::<BTreeSet<_>>();
-    for (strategy_id, profile_id) in registry.handles.keys() {
-        if !configured_strategy_ids.contains(strategy_id.as_str()) {
-            return Err(BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
-                message: format!(
-                    "iv profile {profile_id} references unknown strategy {strategy_id}"
-                ),
-            });
+    for profile in &iv.profiles {
+        for strategy_id in &profile.strategy_ids {
+            if !configured_strategy_ids.contains(strategy_id.as_str()) {
+                return Err(BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                    message: format!(
+                        "iv profile {} references unknown strategy {}",
+                        profile.profile_id, strategy_id
+                    ),
+                });
+            }
         }
     }
 
-    Ok(registry)
+    Ok(())
 }
 
 pub fn register_bolt_v3_strategies_on_node_with_bindings(
@@ -196,11 +263,60 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
-    let mut summary = BoltV3StrategyRegistrationSummary::empty();
+    validate_iv_strategy_references(loaded)?;
     if loaded.strategies.is_empty() {
-        return Ok(summary);
+        return Ok(BoltV3StrategyRegistrationSummary::empty());
     }
     let iv_query_handles = Arc::new(build_iv_query_handle_registry(loaded, IvStore::empty())?);
+    register_bolt_v3_strategies_on_node_with_handle_registry(
+        node,
+        loaded,
+        resolved,
+        bindings,
+        submit_admission,
+        decision_evidence,
+        iv_query_handles,
+    )
+}
+
+pub fn register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    bindings: &[StrategyRuntimeBinding],
+    submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    iv_runtime: &IvRuntimeEngine,
+) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
+    validate_iv_strategy_references(loaded)?;
+    if loaded.strategies.is_empty() {
+        return Ok(BoltV3StrategyRegistrationSummary::empty());
+    }
+    let iv_query_handles = Arc::new(build_iv_query_handle_registry_for_runtime(
+        &loaded.root,
+        iv_runtime,
+    )?);
+    register_bolt_v3_strategies_on_node_with_handle_registry(
+        node,
+        loaded,
+        resolved,
+        bindings,
+        submit_admission,
+        decision_evidence,
+        iv_query_handles,
+    )
+}
+
+fn register_bolt_v3_strategies_on_node_with_handle_registry(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    bindings: &[StrategyRuntimeBinding],
+    submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
+) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
+    let mut summary = BoltV3StrategyRegistrationSummary::empty();
 
     for strategy in &loaded.strategies {
         let binding = bindings

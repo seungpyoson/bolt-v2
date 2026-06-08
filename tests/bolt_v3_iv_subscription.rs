@@ -1,13 +1,30 @@
 use bolt_v2::bolt_v3_iv::{
+    config::load_iv_config_from_toml,
+    error::IvRejectReason,
     health::IvSourceHealthState,
-    runtime::{IvRuntimeBindingAdapter, apply_subscription_plans},
+    ingest::{IvBasisValue, IvGreekValues, IvIngestEvent, IvOptionGreeksPayload, IvRawPayload},
+    query::{IvProductQuery, IvQuery, IvQueryError, IvQueryHandle, IvQueryProduct},
+    runtime::{
+        IvRuntimeBindingAdapter, IvRuntimeEngine, IvRuntimeEngineError, apply_subscription_plans,
+    },
     selector::IvSelector,
     subscription::{
         IvNtSubscriptionKind, IvProfileSubscriptionConfig, IvRuntimeOperation,
         IvSourceSubscriptionConfig, IvSubscriptionLifecycle, IvSubscriptionPlan,
         plan_profile_reload, plan_profile_start,
     },
+    types::IvProductKind,
     types::IvSourceKind,
+};
+use std::{collections::BTreeMap, str::FromStr};
+
+use bolt_v2::bolt_v3_iv::{time::UnixNanos, types::IvBasis, types::IvConvention};
+use nautilus_core::UnixNanos as NtUnixNanos;
+use nautilus_model::{
+    data::{OptionChainSlice, OptionGreekValues, OptionGreeks, OptionStrikeData, QuoteTick},
+    enums::GreeksConvention,
+    identifiers::{InstrumentId, OptionSeriesId},
+    types::{Price, Quantity},
 };
 
 fn profile_id() -> String {
@@ -52,6 +69,304 @@ impl IvRuntimeBindingAdapter for RecordingRuntimeAdapter {
         self.applied.push(plan.clone());
         Ok(())
     }
+}
+
+fn greeks_ingest_event(source_id: &str, subscription_generation: u64) -> IvIngestEvent {
+    IvIngestEvent {
+        profile_id: "iv-profile".to_string(),
+        source_id: source_id.to_string(),
+        source_kind: IvSourceKind::OptionGreeks,
+        selector_fingerprint: "greeks-selector".to_string(),
+        nt_revision: "configured-nt-revision".to_string(),
+        nt_evidence_path: "configured/nt/evidence/path.rs".to_string(),
+        nt_symbol: "ConfiguredNtSymbol".to_string(),
+        ts_event_ns: UnixNanos::new(2_000),
+        ts_init_ns: Some(UnixNanos::new(1_900)),
+        received_ts_ns: UnixNanos::new(2_100),
+        subscription_generation,
+        source_health_state: IvSourceHealthState::Active,
+        payload: IvRawPayload::OptionGreeks(IvOptionGreeksPayload {
+            instrument_id: "configured-option-instrument".to_string(),
+            convention: IvConvention::Named("configured-convention".to_string()),
+            basis_values: vec![IvBasisValue {
+                basis: IvBasis::Mark,
+                iv: 0.44,
+            }],
+            greeks: IvGreekValues {
+                delta: Some(0.5),
+                gamma: Some(0.03),
+                vega: Some(0.14),
+                theta: None,
+                rho: None,
+            },
+            underlying_price: Some(102.0),
+            open_interest: Some(2200.0),
+        }),
+    }
+}
+
+fn configured_runtime_config() -> bolt_v2::bolt_v3_iv::config::IvRootConfig {
+    load_iv_config_from_toml(
+        r#"
+schema_version = 1
+
+[[profiles]]
+profile_id = "iv-profile"
+strategy_ids = ["configured-strategy"]
+enabled_products = ["iv_point", "smile", "source_health"]
+max_raw_events = 2
+max_indexed_points = 4
+max_smiles = 2
+max_surfaces = 2
+max_source_health_events = 2
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+
+[profiles.audit_policy]
+enabled_raw_products = ["option_greeks", "option_chain_slice"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["greeks-source", "chain-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[profiles.selector_authorization]
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["iv_point", "smile", "source_health"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[profiles.sources]]
+source_id = "greeks-source"
+selector_fingerprint = "greeks-selector"
+source_kind = "option_greeks"
+client_id = "configured-client"
+subscription_generation = 7
+accepted_conventions = ["BlackScholes"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["BTC-20240101-50000-C.DERIBIT"]
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "greeks-value"
+
+[profiles.sources.params]
+configured_source_param = "greeks-source-value"
+
+[[profiles.sources]]
+source_id = "chain-source"
+selector_fingerprint = "chain-selector"
+source_kind = "option_chain"
+client_id = "configured-client"
+subscription_generation = 7
+accepted_conventions = ["BlackScholes"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionChain"
+
+[profiles.sources.selector]
+selector_kind = "source_option_chain"
+series_ids = ["DERIBIT:BTC:BTC:2024-01-01T00:00:00Z"]
+strike_range_policy = "configured-strike-range-policy"
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "chain-value"
+
+[profiles.sources.params]
+configured_source_param = "chain-source-value"
+"#,
+    )
+    .unwrap()
+}
+
+#[test]
+fn runtime_engine_carries_configured_source_nt_provenance() {
+    let config = configured_runtime_config();
+    let engine = IvRuntimeEngine::from_iv_root(&config).unwrap();
+
+    let provenance = engine
+        .source_nt_provenance("iv-profile", "greeks-source")
+        .unwrap();
+
+    assert_eq!(provenance.nt_revision, "configured-nt-revision");
+    assert_eq!(
+        provenance.nt_evidence_path,
+        "configured/nt/evidence/path.rs"
+    );
+    assert_eq!(provenance.nt_symbol, "ConfiguredOptionGreeks");
+}
+
+#[test]
+fn runtime_engine_ingests_nt_option_greeks_as_queryable_iv_point() {
+    let config = configured_runtime_config();
+    let engine = IvRuntimeEngine::from_iv_root(&config).unwrap();
+    let nt_greeks = OptionGreeks {
+        instrument_id: InstrumentId::from("BTC-20240101-50000-C.DERIBIT"),
+        convention: GreeksConvention::BlackScholes,
+        greeks: OptionGreekValues {
+            delta: 0.51,
+            gamma: 0.02,
+            vega: 0.13,
+            theta: -0.04,
+            rho: 0.01,
+        },
+        mark_iv: Some(0.44),
+        bid_iv: Some(0.43),
+        ask_iv: Some(0.45),
+        underlying_price: Some(102.0),
+        open_interest: Some(2200.0),
+        ts_event: NtUnixNanos::from(2_000),
+        ts_init: NtUnixNanos::from(1_900),
+    };
+
+    let raw = engine
+        .ingest_nt_option_greeks(
+            "iv-profile",
+            "greeks-source",
+            &nt_greeks,
+            UnixNanos::new(2_100),
+        )
+        .unwrap();
+
+    assert_eq!(raw.provenance.nt_revision, "configured-nt-revision");
+    assert_eq!(raw.provenance.nt_symbol, "ConfiguredOptionGreeks");
+    assert_eq!(raw.provenance.ts_event_ns, UnixNanos::new(2_000));
+    let IvRawPayload::OptionGreeks(payload) = &raw.payload else {
+        panic!("expected option greeks payload");
+    };
+    assert_eq!(payload.instrument_id, "BTC-20240101-50000-C.DERIBIT");
+    assert_eq!(payload.basis_values.len(), 3);
+    let handle = IvQueryHandle::from_state(
+        "iv-profile",
+        config.profiles[0].strategy_authorizations()[0].clone(),
+        engine.state_for_profile("iv-profile").unwrap(),
+    );
+    let product = handle
+        .query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "iv-profile".to_string(),
+            product_kind: IvProductKind::IvPoint,
+            selector: IvSelector::PointQuery {
+                instrument_ids: vec!["BTC-20240101-50000-C.DERIBIT".to_string()],
+                basis: IvBasis::Mark,
+                as_of_ns: UnixNanos::new(2_000),
+                source_filter: Some("greeks-source".to_string()),
+            },
+        }))
+        .unwrap();
+    let IvQueryProduct::IvPoint(point) = product else {
+        panic!("expected IV point");
+    };
+    assert_eq!(point.iv, 0.44);
+    assert_eq!(point.provenance.nt_symbol, "ConfiguredOptionGreeks");
+}
+
+#[test]
+fn runtime_engine_ingests_nt_option_chain_slice_as_queryable_smile() {
+    let config = configured_runtime_config();
+    let engine = IvRuntimeEngine::from_iv_root(&config).unwrap();
+    let option_id = InstrumentId::from("BTC-20240101-50000-C.DERIBIT");
+    let quote = QuoteTick::new(
+        option_id,
+        Price::new(4.1, 1),
+        Price::new(4.3, 1),
+        Quantity::new(12.0, 1),
+        Quantity::new(13.0, 1),
+        NtUnixNanos::from(2_000),
+        NtUnixNanos::from(1_900),
+    );
+    let greeks = OptionGreeks {
+        instrument_id: option_id,
+        convention: GreeksConvention::BlackScholes,
+        greeks: OptionGreekValues {
+            delta: 0.51,
+            gamma: 0.02,
+            vega: 0.13,
+            theta: -0.04,
+            rho: 0.01,
+        },
+        mark_iv: Some(0.55),
+        bid_iv: None,
+        ask_iv: None,
+        underlying_price: Some(102.0),
+        open_interest: Some(2200.0),
+        ts_event: NtUnixNanos::from(2_000),
+        ts_init: NtUnixNanos::from(1_900),
+    };
+    let mut calls = BTreeMap::new();
+    calls.insert(
+        Price::new(100.0, 1),
+        OptionStrikeData {
+            quote,
+            greeks: Some(greeks),
+        },
+    );
+    let nt_chain = OptionChainSlice {
+        series_id: OptionSeriesId::from_str("DERIBIT:BTC:BTC:2024-01-01").unwrap(),
+        atm_strike: Some(Price::new(100.0, 1)),
+        calls,
+        puts: BTreeMap::new(),
+        ts_event: NtUnixNanos::from(2_000),
+        ts_init: NtUnixNanos::from(1_900),
+    };
+
+    let raw = engine
+        .ingest_nt_option_chain_slice(
+            "iv-profile",
+            "chain-source",
+            &nt_chain,
+            UnixNanos::new(2_100),
+        )
+        .unwrap();
+
+    assert_eq!(raw.provenance.nt_symbol, "ConfiguredOptionChain");
+    let IvRawPayload::OptionChainSlice(payload) = &raw.payload else {
+        panic!("expected option-chain payload");
+    };
+    assert_eq!(payload.atm_strike, Some(100.0));
+    assert_eq!(payload.calls[0].quote.bid_price, Some(4.1));
+    assert_eq!(
+        payload.calls[0].greeks.as_ref().unwrap().basis_values[0].iv,
+        0.55
+    );
+    let handle = IvQueryHandle::from_state(
+        "iv-profile",
+        config.profiles[0].strategy_authorizations()[0].clone(),
+        engine.state_for_profile("iv-profile").unwrap(),
+    );
+    let product = handle
+        .query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "iv-profile".to_string(),
+            product_kind: IvProductKind::Smile,
+            selector: IvSelector::SmileQuery {
+                series_id: "DERIBIT:BTC:BTC:2024-01-01T00:00:00Z".to_string(),
+                side: Some("call".to_string()),
+                basis: IvBasis::Mark,
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        }))
+        .unwrap();
+    let IvQueryProduct::Smile(smile) = product else {
+        panic!("expected smile");
+    };
+    assert_eq!(smile.atm_strike, Some(100.0));
+    assert_eq!(smile.points_by_strike[0].iv, 0.55);
+    assert_eq!(smile.provenance.nt_symbol, "ConfiguredOptionChain");
 }
 
 #[test]
@@ -152,6 +467,11 @@ fn aggregate_greeks_sources_plan_topic_subscribe_operations() {
     let selector = IvSelector::SourceAggregateGreeks {
         aggregate_key: "configured-aggregate-key".to_string(),
         underlying_selectors: vec!["configured-underlying-selector".to_string()],
+        delta_field: "configured-delta-field".to_string(),
+        gamma_field: "configured-gamma-field".to_string(),
+        vega_field: "configured-vega-field".to_string(),
+        theta_field: "configured-theta-field".to_string(),
+        rho_field: "configured-rho-field".to_string(),
         nt_params: toml::toml! {
             configured_nt_param = "aggregate-value"
         }
@@ -226,6 +546,368 @@ fn custom_implied_volatility_sources_plan_custom_data_subscribe_operations() {
             params,
             subscription_generation: 10,
         }]
+    );
+}
+
+#[test]
+fn runtime_engine_applies_subscription_outcomes_to_queryable_source_health() {
+    let config = load_iv_config_from_toml(
+        r#"
+schema_version = 1
+
+[[profiles]]
+profile_id = "iv-profile"
+strategy_ids = ["configured-strategy"]
+enabled_products = ["source_health"]
+max_raw_events = 2
+max_indexed_points = 2
+max_smiles = 2
+max_surfaces = 2
+max_source_health_events = 2
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+
+[profiles.audit_policy]
+enabled_raw_products = ["option_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["greeks-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[profiles.selector_authorization]
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["source_health"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[profiles.sources]]
+source_id = "greeks-source"
+selector_fingerprint = "greeks-selector"
+source_kind = "option_greeks"
+client_id = "configured-client"
+subscription_generation = 7
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["configured-instrument-a"]
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "greeks-value"
+
+[profiles.sources.params]
+configured_source_param = "greeks-source-value"
+"#,
+    )
+    .unwrap();
+    let engine = IvRuntimeEngine::from_iv_root(&config).unwrap();
+    let plans = plan_profile_start(&config.profiles[0].subscription_config()).unwrap();
+    let mut adapter = RecordingRuntimeAdapter::default();
+    let outcomes = apply_subscription_plans(&mut adapter, &plans);
+
+    engine.apply_plan_outcomes(&outcomes).unwrap();
+
+    let authorization = config.profiles[0].strategy_authorizations().remove(0);
+    let handle = IvQueryHandle::from_state(
+        "iv-profile",
+        authorization,
+        engine.state_for_profile("iv-profile").unwrap(),
+    );
+    let product = handle
+        .query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "iv-profile".to_string(),
+            product_kind: IvProductKind::SourceHealth,
+            selector: IvSelector::SourceHealthQuery {
+                source_filter: Some("greeks-source".to_string()),
+                state_filter: vec!["active".to_string()],
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::SourceHealth(health) = product else {
+        panic!("expected source-health product");
+    };
+    assert_eq!(health.subscription_state, IvSourceHealthState::Active);
+    assert_eq!(health.subscription_generation, 7);
+}
+
+#[test]
+fn runtime_engine_ignores_older_subscription_generation_outcomes() {
+    let config = load_iv_config_from_toml(
+        r#"
+schema_version = 1
+
+[[profiles]]
+profile_id = "iv-profile"
+strategy_ids = ["configured-strategy"]
+enabled_products = ["source_health"]
+max_raw_events = 2
+max_indexed_points = 2
+max_smiles = 2
+max_surfaces = 2
+max_source_health_events = 2
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+
+[profiles.audit_policy]
+enabled_raw_products = ["option_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["greeks-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[profiles.selector_authorization]
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["source_health"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[profiles.sources]]
+source_id = "greeks-source"
+selector_fingerprint = "greeks-selector"
+source_kind = "option_greeks"
+client_id = "configured-client"
+subscription_generation = 7
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["configured-instrument-a"]
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "greeks-value"
+
+[profiles.sources.params]
+configured_source_param = "greeks-source-value"
+"#,
+    )
+    .unwrap();
+    let engine = IvRuntimeEngine::from_iv_root(&config).unwrap();
+    let plans = plan_profile_start(&config.profiles[0].subscription_config()).unwrap();
+    let mut adapter = RecordingRuntimeAdapter::default();
+    let outcomes = apply_subscription_plans(&mut adapter, &plans);
+    engine.apply_plan_outcomes(&outcomes).unwrap();
+
+    let mut older = outcomes[0].clone();
+    older.plan.subscription_generation = 6;
+    older.source_health.subscription_generation = 6;
+    older.source_health.subscription_state = IvSourceHealthState::Stale;
+    engine.apply_plan_outcomes(&[older]).unwrap();
+
+    let authorization = config.profiles[0].strategy_authorizations().remove(0);
+    let handle = IvQueryHandle::from_state(
+        "iv-profile",
+        authorization,
+        engine.state_for_profile("iv-profile").unwrap(),
+    );
+    let product = handle
+        .query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "iv-profile".to_string(),
+            product_kind: IvProductKind::SourceHealth,
+            selector: IvSelector::SourceHealthQuery {
+                source_filter: Some("greeks-source".to_string()),
+                state_filter: vec!["active".to_string()],
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::SourceHealth(health) = product else {
+        panic!("expected source-health product");
+    };
+    assert_eq!(health.subscription_state, IvSourceHealthState::Active);
+    assert_eq!(health.subscription_generation, 7);
+}
+
+#[test]
+fn runtime_engine_rejects_unconfigured_ingest_source_before_storage() {
+    let config = configured_runtime_config();
+    let engine = IvRuntimeEngine::from_iv_root(&config).unwrap();
+
+    let error = engine
+        .ingest_event(greeks_ingest_event("missing-source", 7))
+        .expect_err("unknown source must reject before storage");
+
+    assert_eq!(
+        error,
+        IvRuntimeEngineError::IngestRejected {
+            profile_id: "iv-profile".to_string(),
+            source_id: "missing-source".to_string(),
+            reason: IvRejectReason::SourceNotConfigured,
+        }
+    );
+    let health = engine
+        .source_health("iv-profile", "missing-source")
+        .expect("unknown source rejection should be queryable as source health");
+    assert_eq!(health.subscription_state, IvSourceHealthState::Rejected);
+    assert_eq!(
+        health.last_reject_reason,
+        Some(IvRejectReason::SourceNotConfigured)
+    );
+    assert_eq!(
+        health
+            .reject_counts
+            .get(&IvRejectReason::SourceNotConfigured),
+        Some(&1)
+    );
+}
+
+#[test]
+fn runtime_engine_rejects_stale_generation_ingest_without_poisoning_active_health() {
+    let config = configured_runtime_config();
+    let engine = IvRuntimeEngine::from_iv_root(&config).unwrap();
+    let plans = plan_profile_start(&config.profiles[0].subscription_config()).unwrap();
+    let mut adapter = RecordingRuntimeAdapter::default();
+    let outcomes = apply_subscription_plans(&mut adapter, &plans);
+    engine.apply_plan_outcomes(&outcomes).unwrap();
+
+    let error = engine
+        .ingest_event(greeks_ingest_event("greeks-source", 6))
+        .expect_err("stale source generation must reject before storage");
+
+    assert_eq!(
+        error,
+        IvRuntimeEngineError::IngestRejected {
+            profile_id: "iv-profile".to_string(),
+            source_id: "greeks-source".to_string(),
+            reason: IvRejectReason::StaleData,
+        }
+    );
+    let health = engine
+        .source_health("iv-profile", "greeks-source")
+        .expect("configured source health should remain queryable");
+    assert_eq!(health.subscription_state, IvSourceHealthState::Active);
+    assert_eq!(health.subscription_generation, 7);
+    assert_eq!(health.last_reject_reason, Some(IvRejectReason::StaleData));
+    assert_eq!(
+        health.reject_counts.get(&IvRejectReason::StaleData),
+        Some(&1)
+    );
+}
+
+#[test]
+fn runtime_engine_reload_updates_configured_source_generations() {
+    let current = configured_runtime_config();
+    let mut next = current.clone();
+    next.profiles[0].sources[0].subscription_generation = 8;
+    let mut engine = IvRuntimeEngine::from_iv_root(&current).unwrap();
+
+    engine.apply_iv_root_reload(&next).unwrap();
+
+    let stale_error = engine
+        .ingest_event(greeks_ingest_event("greeks-source", 7))
+        .expect_err("old generation must reject after IV root reload");
+    assert_eq!(
+        stale_error,
+        IvRuntimeEngineError::IngestRejected {
+            profile_id: "iv-profile".to_string(),
+            source_id: "greeks-source".to_string(),
+            reason: IvRejectReason::StaleData,
+        }
+    );
+
+    engine
+        .ingest_event(greeks_ingest_event("greeks-source", 8))
+        .expect("new generation must ingest after IV root reload");
+}
+
+#[test]
+fn runtime_engine_reload_invalidates_existing_handles_for_old_source_health() {
+    let current = configured_runtime_config();
+    let mut next = current.clone();
+    next.profiles[0].sources[0].subscription_generation = 8;
+    let mut engine = IvRuntimeEngine::from_iv_root(&current).unwrap();
+    let start_plans = plan_profile_start(&current.profiles[0].subscription_config()).unwrap();
+    let mut adapter = RecordingRuntimeAdapter::default();
+    let start_outcomes = apply_subscription_plans(&mut adapter, &start_plans);
+    engine.apply_plan_outcomes(&start_outcomes).unwrap();
+    engine
+        .ingest_event(greeks_ingest_event("greeks-source", 7))
+        .unwrap();
+    let handle = IvQueryHandle::from_state(
+        "iv-profile",
+        current.profiles[0].strategy_authorizations()[0].clone(),
+        engine.state_for_profile("iv-profile").unwrap(),
+    );
+
+    engine.apply_iv_root_reload(&next).unwrap();
+
+    assert_eq!(
+        handle.query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "iv-profile".to_string(),
+            product_kind: IvProductKind::IvPoint,
+            selector: IvSelector::PointQuery {
+                instrument_ids: vec!["configured-option-instrument".to_string()],
+                basis: IvBasis::Mark,
+                as_of_ns: UnixNanos::new(2_000),
+                source_filter: Some("greeks-source".to_string()),
+            },
+        })),
+        Err(IvQueryError::ProductNotFound)
+    );
+}
+
+#[test]
+fn runtime_engine_reload_invalidates_existing_handles_for_removed_profiles() {
+    let mut current = configured_runtime_config();
+    let mut retained_profile = current.profiles[0].clone();
+    retained_profile.profile_id = "retained-profile".to_string();
+    current.profiles.push(retained_profile);
+    let mut next = current.clone();
+    next.profiles
+        .retain(|profile| profile.profile_id == "retained-profile");
+    let mut engine = IvRuntimeEngine::from_iv_root(&current).unwrap();
+    engine
+        .ingest_event(greeks_ingest_event("greeks-source", 7))
+        .unwrap();
+    let handle = IvQueryHandle::from_state(
+        "iv-profile",
+        current.profiles[0].strategy_authorizations()[0].clone(),
+        engine.state_for_profile("iv-profile").unwrap(),
+    );
+
+    engine.apply_iv_root_reload(&next).unwrap();
+
+    assert!(engine.state_for_profile("iv-profile").is_none());
+    assert_eq!(
+        handle.query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "iv-profile".to_string(),
+            product_kind: IvProductKind::IvPoint,
+            selector: IvSelector::PointQuery {
+                instrument_ids: vec!["configured-option-instrument".to_string()],
+                basis: IvBasis::Mark,
+                as_of_ns: UnixNanos::new(2_000),
+                source_filter: Some("greeks-source".to_string()),
+            },
+        })),
+        Err(IvQueryError::ProductNotFound)
     );
 }
 

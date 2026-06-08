@@ -42,6 +42,19 @@ impl IvSourceHealthState {
     pub fn can_satisfy_current_query(self) -> bool {
         self == Self::Active
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Configured => "configured",
+            Self::Subscribing => "subscribing",
+            Self::Active => "active",
+            Self::Stale => "stale",
+            Self::Unsubscribing => "unsubscribing",
+            Self::Removed => "removed",
+            Self::SubscriptionFailed => "subscription_failed",
+            Self::Rejected => "rejected",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

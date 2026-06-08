@@ -26,12 +26,22 @@ pub enum IvPolicyError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IvProjectionKind {
+    Mean,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IvProjectionPolicy {
     pub policy_id: String,
+    pub projection_kind: IvProjectionKind,
+    pub minimum_points: usize,
     pub max_projection_input_skew_ns: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IvInterpolationPolicy {
     pub policy_id: String,
     pub allow_extrapolation: bool,
@@ -39,6 +49,7 @@ pub struct IvInterpolationPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IvFallbackPolicy {
     pub policy_id: String,
     pub ordered_candidate_ids: Vec<String>,
@@ -52,6 +63,7 @@ pub struct IvFallbackCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IvQuorumPolicy {
     pub policy_id: String,
     pub minimum_sources: usize,
@@ -62,17 +74,21 @@ pub fn project_scalar(
     policy: &IvProjectionPolicy,
     inputs: &[IvPolicyInput],
 ) -> Result<IvPolicyOutput, IvPolicyError> {
-    if inputs.is_empty() || input_skew(inputs) > policy.max_projection_input_skew_ns {
+    if inputs.len() < policy.minimum_points
+        || input_skew(inputs) > policy.max_projection_input_skew_ns
+    {
         return Err(rejected(
             policy.policy_id.clone(),
             IvRejectReason::ProjectionRejected,
         ));
     }
 
-    Ok(IvPolicyOutput {
-        value: average(inputs.iter().map(|input| input.value)),
-        policy_decisions: vec![IvPolicyDecision::Projection],
-    })
+    match policy.projection_kind {
+        IvProjectionKind::Mean => Ok(IvPolicyOutput {
+            value: average(inputs.iter().map(|input| input.value)),
+            policy_decisions: vec![IvPolicyDecision::Projection],
+        }),
+    }
 }
 
 pub fn interpolate_smile(

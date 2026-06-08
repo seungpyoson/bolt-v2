@@ -58,6 +58,9 @@ impl IvSelectorAuthorization {
 
         match self.authorization_mode {
             IvAuthorizationMode::ProfileWide => true,
+            IvAuthorizationMode::SelectorScoped if product_kind == IvProductKind::SourceHealth => {
+                source_id.is_some_and(|source_id| self.allowed_source_ids.contains(source_id))
+            }
             IvAuthorizationMode::SelectorScoped => self
                 .allowed_selector_fingerprints
                 .contains(selector_fingerprint),

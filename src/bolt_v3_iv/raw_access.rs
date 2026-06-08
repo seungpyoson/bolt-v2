@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
+    audit::{IvAuditPolicy, IvRawProductKind},
     ingest::IvRawPayload,
     provenance::{IvPolicyDecision, IvProvenance, validate_iv_provenance},
     store::IvStore,
+    time::UnixNanos,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -21,6 +23,7 @@ pub struct IvRawAuditRequest {
     pub role: IvRawAccessRole,
     pub audit_handle_id: String,
     pub access_purpose: String,
+    pub as_of_ns: UnixNanos,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,12 +40,15 @@ pub struct IvRawAuditAccess {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IvRawAccessError {
     StrategyRawAccessDenied,
+    AuditPolicyRejected,
+    RetentionMiss,
     RawEventNotFound { raw_event_id: String },
     ProvenanceIncomplete,
 }
 
 pub fn read_raw_event(
     store: &IvStore,
+    audit_policy: &IvAuditPolicy,
     request: &IvRawAuditRequest,
 ) -> Result<IvRawAuditAccess, IvRawAccessError> {
     if request.role == IvRawAccessRole::Strategy {
@@ -54,6 +60,46 @@ pub fn read_raw_event(
             raw_event_id: request.raw_event_id.clone(),
         }
     })?;
+    if !audit_policy.authorizes(
+        IvRawProductKind::from(raw_event.payload.payload_kind()),
+        &raw_event.source_id,
+        &request.audit_handle_id,
+        &request.access_purpose,
+    ) {
+        return Err(IvRawAccessError::AuditPolicyRejected);
+    }
+    if let Some(max_events) = audit_policy.audit_retention.max_events {
+        let retained_start = store.raw_events().len().saturating_sub(max_events);
+        let Some(position) = store
+            .raw_events()
+            .iter()
+            .position(|event| event.raw_event_id == request.raw_event_id)
+        else {
+            return Err(IvRawAccessError::RawEventNotFound {
+                raw_event_id: request.raw_event_id.clone(),
+            });
+        };
+        if position < retained_start {
+            return Err(IvRawAccessError::RetentionMiss);
+        }
+    }
+    if request.as_of_ns.get() < raw_event.received_ts_ns.get() {
+        return Err(IvRawAccessError::RetentionMiss);
+    }
+    if audit_policy
+        .audit_retention
+        .max_age_ns
+        .is_some_and(|max_age_ns| {
+            request
+                .as_of_ns
+                .get()
+                .saturating_sub(raw_event.received_ts_ns.get())
+                > max_age_ns
+        })
+    {
+        return Err(IvRawAccessError::RetentionMiss);
+    }
+
     let mut provenance = raw_event.provenance.clone();
     provenance.policy_decisions.push(IvPolicyDecision::RawAudit);
 

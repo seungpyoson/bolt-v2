@@ -2,7 +2,8 @@ use bolt_v2::bolt_v3_iv::{
     health::IvSourceHealthState,
     ingest::{
         IvAggregateGreeksPayload, IvBasisValue, IvCustomIvPayload, IvGreekValues, IvIngestEvent,
-        IvOptionChainPoint, IvOptionChainSlicePayload, IvOptionGreeksPayload, IvRawPayload,
+        IvOptionChainQuotePayload, IvOptionChainSlicePayload, IvOptionChainStrikePayload,
+        IvOptionGreeksPayload, IvRawPayload,
     },
     provenance::validate_iv_provenance,
     store::IvStore,
@@ -55,6 +56,38 @@ fn greeks_payload() -> IvOptionGreeksPayload {
         },
         underlying_price: Some(101.25),
         open_interest: Some(1200.0),
+    }
+}
+
+fn chain_greeks_payload(instrument_id: &str, mark_iv: f64) -> IvOptionGreeksPayload {
+    IvOptionGreeksPayload {
+        instrument_id: instrument_id.to_string(),
+        convention: IvConvention::Named("configured-convention".to_string()),
+        basis_values: vec![IvBasisValue {
+            basis: IvBasis::Mark,
+            iv: mark_iv,
+        }],
+        greeks: IvGreekValues {
+            delta: Some(0.51),
+            gamma: Some(0.02),
+            vega: Some(0.13),
+            theta: Some(-0.04),
+            rho: Some(0.01),
+        },
+        underlying_price: Some(101.25),
+        open_interest: Some(1200.0),
+    }
+}
+
+fn chain_quote_payload(instrument_id: &str) -> IvOptionChainQuotePayload {
+    IvOptionChainQuotePayload {
+        instrument_id: instrument_id.to_string(),
+        bid_price: Some(4.1),
+        ask_price: Some(4.3),
+        bid_size: Some(12.0),
+        ask_size: Some(13.0),
+        ts_event_ns: UnixNanos::new(950),
+        ts_init_ns: Some(UnixNanos::new(960)),
     }
 }
 
@@ -111,18 +144,20 @@ fn option_chain_slices_build_smiles_and_surface_views_without_interpolation() {
                 IvRawPayload::OptionChainSlice(IvOptionChainSlicePayload {
                     series_id: series_id.to_string(),
                     surface_selector: "configured-surface-selector".to_string(),
-                    side: "configured-side".to_string(),
-                    basis: IvBasis::Mark,
-                    points: vec![
-                        IvOptionChainPoint {
+                    atm_strike: Some(100.0),
+                    calls: vec![
+                        IvOptionChainStrikePayload {
                             strike: 90.0,
-                            iv: 0.32,
+                            quote: chain_quote_payload("configured-call-90"),
+                            greeks: Some(chain_greeks_payload("configured-call-90", 0.32)),
                         },
-                        IvOptionChainPoint {
+                        IvOptionChainStrikePayload {
                             strike: 100.0,
-                            iv: 0.35,
+                            quote: chain_quote_payload("configured-call-100"),
+                            greeks: Some(chain_greeks_payload("configured-call-100", 0.35)),
                         },
                     ],
+                    puts: Vec::new(),
                 }),
             ))
             .unwrap();
@@ -130,6 +165,17 @@ fn option_chain_slices_build_smiles_and_surface_views_without_interpolation() {
 
     assert_eq!(store.raw_events().len(), 2);
     assert_eq!(store.smiles().len(), 2);
+    let IvRawPayload::OptionChainSlice(raw_chain) = &store.raw_events()[0].payload else {
+        panic!("expected raw option-chain slice");
+    };
+    assert_eq!(raw_chain.atm_strike, Some(100.0));
+    assert_eq!(raw_chain.calls.len(), 2);
+    assert!(raw_chain.puts.is_empty());
+    assert_eq!(raw_chain.calls[0].quote.bid_price, Some(4.1));
+    assert_eq!(
+        raw_chain.calls[0].greeks.as_ref().unwrap().basis_values[0].iv,
+        0.32
+    );
 
     let first_smile = store
         .smiles()
@@ -137,6 +183,9 @@ fn option_chain_slices_build_smiles_and_surface_views_without_interpolation() {
         .find(|smile| smile.series_id == "configured-series-a")
         .unwrap();
     assert_eq!(first_smile.points_by_strike.len(), 2);
+    assert_eq!(first_smile.side, "call");
+    assert_eq!(first_smile.basis, IvBasis::Mark);
+    assert_eq!(first_smile.atm_strike, Some(100.0));
     assert_eq!(first_smile.points_by_strike[0].strike, 90.0);
     assert_eq!(first_smile.points_by_strike[0].iv, 0.32);
     validate_iv_provenance(&first_smile.provenance).unwrap();
@@ -176,6 +225,7 @@ fn aggregate_greeks_events_are_preserved_and_indexed_as_products() {
                     theta: None,
                     rho: None,
                 },
+                nt_custom_data_json: None,
             }),
         ))
         .unwrap();
@@ -200,6 +250,7 @@ fn custom_implied_volatility_events_are_preserved_as_custom_iv_evidence() {
             IvRawPayload::CustomImpliedVolatility(IvCustomIvPayload {
                 iv_evidence_kind: "configured-custom-evidence-kind".to_string(),
                 value: 0.37,
+                nt_custom_data_json: None,
             }),
         ))
         .unwrap();

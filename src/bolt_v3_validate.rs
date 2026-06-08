@@ -2305,11 +2305,10 @@ fn validate_reference_current_price(
         match provider_metadata.identifier_kind {
             ReferencePriceIdentifierKind::InstrumentId => {
                 let provider_key = source.provider.as_str();
-                if source.enabled
-                    && source
-                        .instrument_id
-                        .as_deref()
-                        .is_none_or(reference_price_field_is_blank)
+                if source
+                    .instrument_id
+                    .as_deref()
+                    .is_none_or(reference_price_field_is_blank)
                 {
                     errors.push(format!(
                         "{context}: reference_current_price.source.{source_id}.instrument_id is required for provider `{provider_key}`"
@@ -2320,8 +2319,7 @@ fn validate_reference_current_price(
                         "{context}: reference_current_price.source.{source_id}.symbol is unsupported for provider `{provider_key}`"
                     ));
                 }
-                if source.enabled
-                    && let Some(instrument_id) = source.instrument_id.as_deref()
+                if let Some(instrument_id) = source.instrument_id.as_deref()
                     && !reference_price_identifier_matches_asset(
                         instrument_id,
                         &reference_current_price.asset,
@@ -2332,9 +2330,7 @@ fn validate_reference_current_price(
                         reference_current_price.asset
                     ));
                 }
-                if source.enabled
-                    && let Some(instrument_id) = source.instrument_id.as_deref()
-                {
+                if let Some(instrument_id) = source.instrument_id.as_deref() {
                     match reference_price_provider_identifier_is_configured(
                         root,
                         source.provider.as_str(),
@@ -2352,11 +2348,10 @@ fn validate_reference_current_price(
             }
             ReferencePriceIdentifierKind::Symbol => {
                 let provider_key = source.provider.as_str();
-                if source.enabled
-                    && source
-                        .symbol
-                        .as_deref()
-                        .is_none_or(reference_price_field_is_blank)
+                if source
+                    .symbol
+                    .as_deref()
+                    .is_none_or(reference_price_field_is_blank)
                 {
                     errors.push(format!(
                         "{context}: reference_current_price.source.{source_id}.symbol is required for provider `{provider_key}`"
@@ -2367,8 +2362,7 @@ fn validate_reference_current_price(
                         "{context}: reference_current_price.source.{source_id}.instrument_id is unsupported for provider `{provider_key}`"
                     ));
                 }
-                if source.enabled
-                    && let Some(symbol) = source.symbol.as_deref()
+                if let Some(symbol) = source.symbol.as_deref()
                     && !reference_price_identifier_matches_asset(
                         symbol,
                         &reference_current_price.asset,

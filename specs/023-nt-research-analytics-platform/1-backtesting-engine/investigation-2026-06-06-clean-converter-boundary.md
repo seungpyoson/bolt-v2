@@ -1686,3 +1686,75 @@ broad historical backfill or custom simulator work:
 8. Keep unsupported NT venue/system model surfaces rejected before NT config
    construction; the declared venue placeholders must continue producing
    structured errors until real NT mappings land.
+
+## 2026-06-09 continuation checkpoint
+
+The original prompt path in the active goal,
+`/Users/spson/Downloads/prompts/backtesting.md`, is absent on disk. The current
+matching prompt is
+`/Users/spson/Downloads/New Folder With Items/prompts/backtesting.md`. Its hard
+stop still applies: do not start implementation or broad backfill unless raw
+source proof, clean output prefix, idempotency, NT mechanism, BacktestNode
+consumption, and result-contract provenance are all known.
+
+Current branch and CI state:
+
+- Worktree: `codex/bte-clean-converter-nt-use-main-reconcile`.
+- Current commit: `a9ce2baaa00fd56a81d9568374645ea752f02a66`.
+- PR: `https://github.com/seungpyoson/bolt-v2/pull/610`.
+- PR #610 is green at `a9ce2baa`: Backtester CI `bvs-test`,
+  `bvs-clippy`, `bvs-fmt`, `backtester-gate`, and main CI `fmt-check`,
+  `clippy`, `source-fence`, `nextest archive`, all nextest shards, `deny`,
+  `check-aarch64`, `gate`, `test`, CodeQL, and actionlint passed.
+- Local worktree was clean before this checkpoint update.
+
+Open task audit against `tasks.md`:
+
+- `BACKTESTING_ENGINE-006` remains open: Artifact Index producer IAM scope is
+  still not proven end to end.
+- `BACKTESTING_ENGINE-022` remains open: sample-to-NT catalog mapping is
+  proven for the accepted Binance native-trades path and for the current PMXT
+  one-off selected-source artifact, but broad PMXT source acceptance remains
+  blocked.
+- `BACKTESTING_ENGINE-039` remains open: issue dependencies still need linking
+  before implementation review.
+
+BTE-022 current root cause:
+
+- The PMXT source proof
+  `source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json`
+  has `nt_mapping_status = accepted`, but `status = pending`,
+  `source_selection_status = PENDING_MORE_PROOF`, and
+  `usage_scope = one_off_backfill_data`.
+- The still-pending checks are coverage, retention/freshness, completeness,
+  exact accepted-window cost, and artifact-root storage proof.
+- The current source-catalog mapping readiness report is correctly blocked,
+  not stale: its TOML allows only `current_bte_status = accepted` and
+  `parquet_catalog_status = proven`, while the PMXT mapping evaluation observes
+  `one_off_current_artifact_proven_broad_backfill_blocked` for both fields.
+- Therefore PMXT must remain one-off backfill evidence. It must not be promoted
+  into canonical/broad source selection by widening allowed statuses or by
+  treating the one-off artifact as durable acceptance.
+
+Dynamic tick-size status:
+
+- Pinned NT has live Polymarket tick-size-change handling and can replay
+  `InstrumentStatus` and `InstrumentClose` as data streams.
+- That is not timed `InstrumentAny` instrument-definition replay through
+  `BacktestDataConfig`. Full PMXT L2 over tick-changing assets remains blocked
+  until NT-native dynamic instrument epoch replay is proven or a separately
+  accepted bounded-exclusion policy applies.
+
+Next efficient path:
+
+1. Do not run a broad PMXT conversion/backfill.
+2. Build or refresh source-proof coverage/cost/storage evidence from indexes
+   and manifests before any raw payload download.
+3. Keep object/byte/time budgets in TOML, select by source-binding evidence
+   state and data family, and reject any record whose source proof remains
+   pending.
+4. Only after a source proof is accepted should a tranche proceed into
+   canonical normalization, NT catalog projection/read-back, BacktestNode run,
+   and result-contract binding.
+5. Old converted/catalog artifacts remain reference evidence only; do not
+   delete them without a clean verified replacement and separate approval.

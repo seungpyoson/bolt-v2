@@ -7,7 +7,7 @@
   "current_reconciliation": {
     "reconciled_at": "2026-06-09",
     "pr": "https://github.com/seungpyoson/bolt-v2/pull/610",
-    "ci_status": "green_on_pr_610_head_6aaf1bd0",
+    "ci_status": "green_on_pr_610_head_a9ce2baa",
     "scratch_artifact_status": {
       "path": "/private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08",
       "status": "stale_not_current_acceptance_evidence",
@@ -287,6 +287,7 @@
       "RED rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice selected_source_slice_uses_selector_row_groups_without_full_asset_rescan failed before selected-source accepted selector-carried source_row_groups.",
       "GREEN rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice selected_source_slice_uses_selector_row_groups_without_full_asset_rescan passed after selected-source used selector source_row_groups and avoided a full asset-column rescan.",
       "GREEN PR #610 CI on 6aaf1bd0 passed backtester-gate, bvs-test, bvs-clippy, fmt-check, main clippy, source-fence, and all nextest shards.",
+      "GREEN PR #610 CI on a9ce2baa passed backtester-gate, bvs-test, bvs-clippy, bvs-fmt, fmt-check, main clippy, source-fence, CodeQL, actionlint, deny, check-aarch64, gate, test, and all nextest shards.",
       "RED rust_verification cargo test --test backtesting_vertical_slice_backfill_coverage coverage_ledger_rejects_completed_manifest_without_coverage_axis failed because a completed backfill manifest could be accepted without proving its coverage time axis.",
       "GREEN rust_verification cargo test --test backtesting_vertical_slice_backfill_coverage coverage_ledger passed after backfill coverage manifests required a non-empty coverage_axis for acceptance and records preserved the configured axis.",
       "RED rust_verification cargo test --test backtesting_vertical_slice_backfill_preflight backfill_preflight_selects_bounded_canonical_ready_record_without_source_constants failed because selected preflight records did not expose coverage_axis.",

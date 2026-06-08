@@ -5,9 +5,9 @@
   "recorded_at": "2026-06-08",
   "decision": "Do not start broad PMXT backfill. PMXT may proceed only as one-off backfill evidence after the chosen selected-source sample is converted into NT-native data classes, written to ParquetDataCatalog under the artifact root, queried back, consumed by BacktestNode, and bound to a result contract.",
   "current_reconciliation": {
-    "reconciled_at": "2026-06-08",
+    "reconciled_at": "2026-06-09",
     "pr": "https://github.com/seungpyoson/bolt-v2/pull/610",
-    "ci_status": "green_on_pr_610_head_ddf3a24e",
+    "ci_status": "green_on_pr_610_head_6aaf1bd0",
     "scratch_artifact_status": {
       "path": "/private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08",
       "status": "stale_not_current_acceptance_evidence",
@@ -282,7 +282,7 @@
       "GREEN rust_verification cargo test --test backtesting_vertical_slice_first_proof_selector first_proof_event_count_ledger_scans_configured_parquet_columns passed after event-count ledger rows carried source_row_groups from Parquet row-group metadata.",
       "RED rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice selected_source_slice_uses_selector_row_groups_without_full_asset_rescan failed before selected-source accepted selector-carried source_row_groups.",
       "GREEN rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice selected_source_slice_uses_selector_row_groups_without_full_asset_rescan passed after selected-source used selector source_row_groups and avoided a full asset-column rescan.",
-      "GREEN PR #610 CI on d79f574c passed backtester-gate, bvs-test, bvs-clippy, fmt-check, main clippy, source-fence, and all nextest shards.",
+      "GREEN PR #610 CI on 6aaf1bd0 passed backtester-gate, bvs-test, bvs-clippy, fmt-check, main clippy, source-fence, and all nextest shards.",
       "RED rust_verification cargo test --test backtesting_vertical_slice_backfill_coverage coverage_ledger_rejects_completed_manifest_without_coverage_axis failed because a completed backfill manifest could be accepted without proving its coverage time axis.",
       "GREEN rust_verification cargo test --test backtesting_vertical_slice_backfill_coverage coverage_ledger passed after backfill coverage manifests required a non-empty coverage_axis for acceptance and records preserved the configured axis.",
       "RED rust_verification cargo test --test backtesting_vertical_slice_backfill_preflight backfill_preflight_selects_bounded_canonical_ready_record_without_source_constants failed because selected preflight records did not expose coverage_axis.",
@@ -304,6 +304,28 @@
     ]
   },
   "non_hardcoding_decision": "Bybit, Binance, Polymarket, Kalshi, and Hyperliquid remain source-binding examples. The next mapping work must be data-family driven: source schema plus registry binding plus NT data class, with no runtime venue or instrument constants in production code.",
+  "old_artifact_recommendation": {
+    "recommendation": "keep_as_historical_reference_only",
+    "current_stale_scratch_path": "/private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08",
+    "reason": "The old mixed PMXT scratch artifact still uses the removed [catalog_input] schema and fails the current artifact-root run. It must not be resumed, promoted, or cited as current acceptance evidence.",
+    "current_one_off_evidence_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/backtests/pmxt-run",
+    "current_one_off_result_contract_hash": "1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe",
+    "delete_policy": "Do not delete historical scratch artifacts as part of BTE-022; archive or delete only after a separately approved cleanup."
+  },
+  "remaining_blockers": [
+    {
+      "blocker": "expanded_tranche_coverage_and_cost_unproven",
+      "required_evidence": "A concrete PMXT coverage ledger using coverage_axis=timestamp_received as the archive-hour axis before any expanded tranche or broad backfill."
+    },
+    {
+      "blocker": "dynamic_tick_size_replay_unproven",
+      "required_evidence": "A separate NT BacktestNode/catalog proof that tick_size_change epochs can be represented without custom simulation behavior before full PMXT Polymarket L2 acceptance."
+    },
+    {
+      "blocker": "durable_source_selection_unproven",
+      "required_evidence": "A source-proof acceptance record for any durable Polymarket source. The bounded PMXT sample remains one-off evidence only."
+    }
+  ],
   "next_required_evidence": [
     "Archive or promote only the refreshed one-off PMXT L2+TradeTick artifact if needed; do not generalize PMXT from this bounded sample.",
     "Record expanded-tranche coverage and cost evidence before any PMXT broad backfill discussion.",

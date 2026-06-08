@@ -10,12 +10,12 @@
     "current_found_path_bytes": 6229
   },
   "current_reconciliation": {
-    "reconciled_at": "2026-06-08",
+    "reconciled_at": "2026-06-09",
     "pr": "https://github.com/seungpyoson/bolt-v2/pull/610",
-    "ci_status": "green_on_pr_610_head_ddf3a24e",
+    "ci_status": "green_on_pr_610_head_6aaf1bd0",
     "ci_evidence": [
-      "GitHub Actions for PR #610 head ddf3a24e completed successfully on 2026-06-08.",
-      "Passed workflows were CI, Backtester CI, and actionlint."
+      "GitHub Actions for PR #610 head 6aaf1bd0 completed successfully on 2026-06-08 UTC.",
+      "Passed checks included CI, Backtester CI, actionlint, and CodeQL."
     ],
     "scratch_artifact_status": {
       "path": "/private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08",
@@ -273,7 +273,7 @@
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_first_proof_selector first_proof_event_count_ledger_scans_configured_parquet_columns passed after event-count ledger rows carried source_row_groups from Parquet row-group metadata.",
     "RED rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice selected_source_slice_uses_selector_row_groups_without_full_asset_rescan failed before selected-source accepted selector-carried source_row_groups.",
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice selected_source_slice_uses_selector_row_groups_without_full_asset_rescan passed after selected-source used selector source_row_groups and avoided a full asset-column rescan.",
-    "GREEN PR #610 CI on d79f574c passed backtester-gate, bvs-test, bvs-clippy, fmt-check, main clippy, source-fence, and all nextest shards.",
+    "GREEN PR #610 CI on 6aaf1bd0 passed backtester-gate, bvs-test, bvs-clippy, fmt-check, main clippy, source-fence, and all nextest shards.",
     "RED rust_verification cargo test --test backtesting_vertical_slice_backfill_coverage coverage_ledger_rejects_completed_manifest_without_coverage_axis failed because a completed backfill manifest could be accepted without proving its coverage time axis.",
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_backfill_coverage coverage_ledger passed after backfill coverage manifests required a non-empty coverage_axis for acceptance and records preserved the configured axis.",
     "RED rust_verification cargo test --test backtesting_vertical_slice_backfill_preflight backfill_preflight_selects_bounded_canonical_ready_record_without_source_constants failed because selected preflight records did not expose coverage_axis.",

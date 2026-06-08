@@ -1,0 +1,61 @@
+{
+  "schema_version": "artifact-index-commit-proof.v1",
+  "proof_id": "backtesting-engine-006-iam-scope-20260608-ca7445ca",
+  "artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca",
+  "artifact_protocol": "s3",
+  "artifact_kind": "backtests",
+  "producer_project": "backtesting-engine",
+  "writer_id": "backtesting-engine",
+  "storage_option_keys": [
+    "access_key_id",
+    "conditional_put",
+    "region",
+    "secret_access_key"
+  ],
+  "event_uris": [
+    "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca/artifact-index/v1/events/kind=backtests/artifact_id=backtesting-engine-006-iam-scope-20260608-ca7445ca-artifact-a/hash=f635e607d812845e6fb20f2d5c80fab2bb3c88168697ce6eab9c7f5a355e102a.json",
+    "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca/artifact-index/v1/events/kind=backtests/artifact_id=backtesting-engine-006-iam-scope-20260608-ca7445ca-artifact-b/hash=6504068325218d3f3f3784d6836bc7c834919cdbeed9c66d85451935e466b411.json"
+  ],
+  "snapshot_uris": [
+    "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca/artifact-index/v1/snapshots/kind=backtests/snapshot_id=backtesting-engine-006-iam-scope-20260608-ca7445ca-snapshot-a/manifest.json",
+    "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca/artifact-index/v1/snapshots/kind=backtests/snapshot_id=backtesting-engine-006-iam-scope-20260608-ca7445ca-snapshot-b/manifest.json"
+  ],
+  "latest_pointer_uri": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca/artifact-index/v1/pointers/kind=backtests/latest.json",
+  "audit_epoch_uris": [
+    "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca/artifact-index/v1/audit/epochs/backtesting-engine-006-iam-scope-20260608-ca7445ca-epoch-a.json",
+    "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca/artifact-index/v1/audit/epochs/backtesting-engine-006-iam-scope-20260608-ca7445ca-epoch-b.json"
+  ],
+  "first_pointer_precondition": "if_none_match_any",
+  "second_pointer_precondition": {
+    "if_match": {
+      "etag": "\"8ed4a78a7223e80d42316e8bf9cefbce\""
+    }
+  },
+  "prior_pointer_etag_observed": true,
+  "final_pointer_etag_observed": true,
+  "event_create_only_proven": true,
+  "snapshot_create_only_proven": true,
+  "audit_epoch_create_only_proven": true,
+  "latest_pointer_create_only_proven": true,
+  "latest_pointer_update_if_match_proven": true,
+  "stale_etag_update_rejected": true,
+  "latest_pointer_readback_proven": true,
+  "snapshot_readback_proven": true,
+  "resolved_snapshot_id": "backtesting-engine-006-iam-scope-20260608-ca7445ca-snapshot-b",
+  "final_snapshot_id": "backtesting-engine-006-iam-scope-20260608-ca7445ca-snapshot-b",
+  "final_snapshot_content_hash": "58af8627e14b3bc896fa727738be52f9abb29b3512c00da1bd729dcef04ef9b6",
+  "persisted_final_snapshot_json_sha256": "7b54d8514b40ed28e44371ae805c5ddacede79e6bf27c0fe5cbcabad5f067ae2",
+  "direct_s3_commit_proven": true,
+  "producer_iam_scope_proven": false,
+  "producer_iam_scope_denied_kinds": [
+    "research_analytics"
+  ],
+  "producer_iam_scope_denied_write_attempts": 3,
+  "producer_iam_scope_denied_write_rejections": 0,
+  "producer_iam_scope_violation_count": 3,
+  "producer_iam_scope_violation_uris": [
+    "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca/artifact-index/v1/events/kind=research_analytics/artifact_id=backtesting-engine-006-iam-scope-20260608-ca7445ca-denied-research_analytics/hash=02ad9e4dc3cdc1119d57b9a0109040f0e1e46e10c914a9ca6428fe6ada1d8748.json",
+    "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca/artifact-index/v1/snapshots/kind=research_analytics/snapshot_id=backtesting-engine-006-iam-scope-20260608-ca7445ca-denied-research_analytics/manifest.json",
+    "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca/artifact-index/v1/pointers/kind=research_analytics/latest.json"
+  ]
+}

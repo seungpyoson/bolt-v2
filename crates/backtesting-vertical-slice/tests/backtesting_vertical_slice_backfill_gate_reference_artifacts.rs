@@ -1,4 +1,6 @@
 use backtesting_vertical_slice::{
+    artifact_index::ArtifactKind,
+    artifact_index_commit_proof::ArtifactIndexCommitProofReport,
     backfill_accepted_tranche::{
         BackfillAcceptedTrancheManifest, evaluate_backfill_accepted_tranche,
     },
@@ -6,9 +8,9 @@ use backtesting_vertical_slice::{
         BackfillExecutionPlan, BackfillExecutionRunBinding, evaluate_backfill_execution_plan,
     },
     backfill_execution_readiness::{
-        BackfillExecutionReadinessInput, BackfillExecutionReadinessReport,
-        BackfillExecutionReadinessStatus, BackfillExecutionReadinessSupportedDataPath,
-        evaluate_backfill_execution_readiness,
+        BackfillExecutionReadinessBlocker, BackfillExecutionReadinessInput,
+        BackfillExecutionReadinessReport, BackfillExecutionReadinessStatus,
+        BackfillExecutionReadinessSupportedDataPath, evaluate_backfill_execution_readiness,
     },
     backfill_source_proof_scope::{
         BackfillSourceProofScopeReport, evaluate_backfill_source_proof_scope,
@@ -67,6 +69,24 @@ const BLOCKED_SOURCE_CATALOG_MAPPING_READINESS_REPORT: &str = include_str!(
 );
 const EXECUTION_READINESS_REPORT: &str = include_str!(
     "../../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-readiness/backfill-execution-readiness-report.json"
+);
+const ARTIFACT_INDEX_COMMIT_STATUS: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof-status.backtesting-engine-006.2026-06-08.json"
+);
+const ARTIFACT_INDEX_DIRECT_S3_PROOF_REPORT: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/artifact-index-commit-proof-report.backtesting-engine-006-direct-s3.2026-06-08.json"
+);
+const ARTIFACT_INDEX_DIRECT_S3_PROOF_REPORT_BYTES: &[u8] = include_bytes!(
+    "../../../specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/artifact-index-commit-proof-report.backtesting-engine-006-direct-s3.2026-06-08.json"
+);
+const ARTIFACT_INDEX_IAM_SCOPE_PROOF_REPORT: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/artifact-index-commit-proof-report.backtesting-engine-006-iam-scope.2026-06-08.json"
+);
+const ARTIFACT_INDEX_IAM_SCOPE_PROOF_REPORT_BYTES: &[u8] = include_bytes!(
+    "../../../specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/artifact-index-commit-proof-report.backtesting-engine-006-iam-scope.2026-06-08.json"
+);
+const ARTIFACT_INDEX_REQUIRED_EXECUTION_READINESS_REPORT: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-readiness-artifact-index-required/backfill-execution-readiness-report.json"
 );
 
 #[test]
@@ -168,6 +188,54 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
     assert_eq!(readiness, expected_readiness);
     assert_eq!(readiness.status, BackfillExecutionReadinessStatus::Ready);
     assert!(readiness.blockers.is_empty());
+
+    let artifact_index_proof: ArtifactIndexCommitProofReport =
+        serde_json::from_str(ARTIFACT_INDEX_IAM_SCOPE_PROOF_REPORT)
+            .expect("Artifact Index IAM-scope proof report parses");
+    let expected_artifact_index_required_readiness: BackfillExecutionReadinessReport =
+        serde_json::from_str(ARTIFACT_INDEX_REQUIRED_EXECUTION_READINESS_REPORT)
+            .expect("Artifact Index-required execution readiness parses");
+    let artifact_index_required_readiness =
+        evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+            readiness_id: "binance-bnbusdc-2026-03-01-artifact-index-required-readiness",
+            accepted_tranche_manifest_hash: &accepted_tranche_manifest_hash,
+            tranche: &actual_tranche,
+            execution_plan_hash: &execution_plan_hash,
+            plan: &actual_plan,
+            required_table_family: &actual_plan.table_family,
+            required_nt_data_type: "TradeTick",
+            supported_data_paths: vec![BackfillExecutionReadinessSupportedDataPath {
+                table_family: actual_plan.table_family.clone(),
+                nt_data_type: "TradeTick".to_string(),
+            }],
+            artifact_index_commit_required: true,
+            required_artifact_index_kind: Some(ArtifactKind::Backtests),
+            artifact_index_commit_proof_report_hash: Some(&sha256_hex(
+                ARTIFACT_INDEX_IAM_SCOPE_PROOF_REPORT_BYTES,
+            )),
+            artifact_index_commit_proof_report: Some(&artifact_index_proof),
+            source_selection_readiness_required: false,
+            source_selection_readiness_report_hash: None,
+            source_selection_readiness_report: None,
+            source_catalog_mapping_readiness_required: true,
+            source_catalog_mapping_readiness_report_hash: Some(
+                &source_catalog_mapping_readiness_hash,
+            ),
+            source_catalog_mapping_readiness_report: Some(&actual_catalog_mapping_readiness),
+        });
+
+    assert_eq!(
+        artifact_index_required_readiness,
+        expected_artifact_index_required_readiness
+    );
+    assert_eq!(
+        artifact_index_required_readiness.status,
+        BackfillExecutionReadinessStatus::Blocked
+    );
+    assert_eq!(
+        artifact_index_required_readiness.blockers,
+        vec![BackfillExecutionReadinessBlocker::ArtifactIndexProducerIamScopeUnproven]
+    );
 }
 
 #[test]
@@ -200,6 +268,43 @@ fn blocked_canonical_source_catalog_mapping_reference_artifact_matches_generic_e
         SourceCatalogMappingReadinessStatus::Blocked
     );
     assert!(!actual_blocked_readiness.blockers.is_empty());
+}
+
+#[test]
+fn artifact_index_commit_status_references_committed_proof_reports() {
+    let status: serde_json::Value =
+        serde_json::from_str(ARTIFACT_INDEX_COMMIT_STATUS).expect("Artifact Index status parses");
+    let direct_s3_proof: ArtifactIndexCommitProofReport =
+        serde_json::from_str(ARTIFACT_INDEX_DIRECT_S3_PROOF_REPORT)
+            .expect("direct S3 proof report parses");
+    let iam_scope_proof: ArtifactIndexCommitProofReport =
+        serde_json::from_str(ARTIFACT_INDEX_IAM_SCOPE_PROOF_REPORT)
+            .expect("IAM-scope proof report parses");
+
+    assert!(direct_s3_proof.direct_s3_commit_proven);
+    assert!(direct_s3_proof.event_create_only_proven);
+    assert!(direct_s3_proof.latest_pointer_update_if_match_proven);
+    assert!(!iam_scope_proof.producer_iam_scope_proven);
+    assert_eq!(iam_scope_proof.producer_iam_scope_denied_write_attempts, 3);
+    assert_eq!(
+        iam_scope_proof.producer_iam_scope_denied_write_rejections,
+        0
+    );
+    assert_eq!(iam_scope_proof.producer_iam_scope_violation_count, 3);
+
+    assert_eq!(
+        status["store_commit_mechanics"]["report_content_hash"]
+            .as_str()
+            .expect("store commit proof hash is a string"),
+        sha256_hex(ARTIFACT_INDEX_DIRECT_S3_PROOF_REPORT_BYTES)
+    );
+    assert_eq!(
+        status["producer_iam_scope"]["report_content_hash"]
+            .as_str()
+            .expect("producer IAM proof hash is a string"),
+        sha256_hex(ARTIFACT_INDEX_IAM_SCOPE_PROOF_REPORT_BYTES)
+    );
+    assert_eq!(status["bte_006_can_close"].as_bool(), Some(false));
 }
 
 fn source_proof_scope_hash(report: &BackfillSourceProofScopeReport) -> String {

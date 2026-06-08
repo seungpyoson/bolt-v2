@@ -30,16 +30,6 @@ instrument_id = "ADA-USD.CHAINLINK"
 report_schema_version = 3
 report_decimal_scale = 18
 price_precision = 8
-
-[clients.polyresearch_reference]
-venue = "POLYRESEARCH_REFERENCE_PRICE"
-
-[clients.polyresearch_reference.data]
-websocket_endpoint = "wss://example.polyresearch.com/reference"
-transport_backend = "sockudo"
-
-[clients.polyresearch_reference.secrets]
-api_key_ssm_parameter = "/bolt/polyresearch/api-key"
 "#;
     toml::from_str(&format!("{fixture}\n{reference_price_fixture_additions}"))
         .expect("root fixture with reference clients should parse")

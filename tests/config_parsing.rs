@@ -33,6 +33,15 @@ const SHIPPED_BINARY_ORACLE_STRATEGY_FILES: &[&str] = &[
     "config/strategies/binary_oracle_doge.toml",
 ];
 
+const SHIPPED_REFERENCE_PRICE_SOURCES: &[(&str, &str, &str)] = &[
+    ("BTC", "BTC-USD.CHAINLINK", "BTC/USD"),
+    ("ETH", "ETH-USD.CHAINLINK", "ETH/USD"),
+    ("SOL", "SOL-USD.CHAINLINK", "SOL/USD"),
+    ("BNB", "BNB-USD.CHAINLINK", "BNB/USD"),
+    ("XRP", "XRP-USD.CHAINLINK", "XRP/USD"),
+    ("DOGE", "DOGE-USD.CHAINLINK", "DOGE/USD"),
+];
+
 #[test]
 fn shipped_polymarket_secrets_use_eu_west_2_registry_paths() {
     use bolt_v2::bolt_v3_config::load_bolt_v3_config;
@@ -70,6 +79,84 @@ fn shipped_polymarket_secrets_use_eu_west_2_registry_paths() {
                 "{relative_path} clients.polymarket_main.secrets.{field} must use the eu-west-2 registry path"
             );
         }
+    }
+}
+
+#[test]
+fn shipped_reference_current_price_can_select_chainlink_or_prr_websockets() {
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+
+    let loaded = load_bolt_v3_config(&support::repo_path("config/root.toml"))
+        .expect("shipped root config should load");
+
+    assert_eq!(
+        loaded
+            .root
+            .clients
+            .get("chainlink_reference")
+            .expect("shipped root must declare Chainlink current-price websocket client")
+            .venue
+            .as_str(),
+        "CHAINLINK_REFERENCE_PRICE"
+    );
+    assert_eq!(
+        loaded
+            .root
+            .clients
+            .get("polyresearch_reference")
+            .expect("shipped root must declare PRR current-price websocket client")
+            .venue
+            .as_str(),
+        "POLYRESEARCH_REFERENCE_PRICE"
+    );
+
+    for (asset, chainlink_instrument, prr_symbol) in SHIPPED_REFERENCE_PRICE_SOURCES {
+        let strategy = loaded
+            .strategies
+            .iter()
+            .find(|strategy| {
+                strategy
+                    .config
+                    .reference_current_price
+                    .as_ref()
+                    .is_some_and(|reference| reference.asset == *asset)
+            })
+            .unwrap_or_else(|| {
+                panic!("shipped config must include {asset} reference_current_price")
+            });
+        let reference = strategy
+            .config
+            .reference_current_price
+            .as_ref()
+            .expect("strategy should declare reference_current_price");
+
+        assert_eq!(
+            reference.source_order,
+            ["chainlink_primary", "polyresearch_backup"],
+            "{asset} must expose Chainlink and PRR current-price sources in order"
+        );
+        assert_eq!(reference.min_valid_sources, 1);
+
+        let chainlink = reference
+            .sources
+            .get("chainlink_primary")
+            .expect("Chainlink current-price source must be configured");
+        assert_eq!(chainlink.provider.as_str(), "chainlink_ws");
+        assert_eq!(chainlink.client_id.as_str(), "chainlink_reference");
+        assert_eq!(
+            chainlink.instrument_id.as_deref(),
+            Some(*chainlink_instrument)
+        );
+        assert!(!chainlink.required);
+
+        let prr = reference
+            .sources
+            .get("polyresearch_backup")
+            .expect("PRR current-price source must be configured");
+        assert_eq!(prr.provider.as_str(), "polyresearch_ws");
+        assert_eq!(prr.client_id.as_str(), "polyresearch_reference");
+        assert_eq!(prr.symbol.as_deref(), Some(*prr_symbol));
+        assert!(!prr.required);
     }
 }
 

@@ -561,6 +561,7 @@ mod tests {
             "/bolt/polymarket/api-passphrase" => Ok("polymarket-passphrase".to_string()),
             "/bolt/testnet/chainlink/api-key" => Ok("chainlink-api-key".to_string()),
             "/bolt/testnet/chainlink/api-secret" => Ok("chainlink-api-secret".to_string()),
+            "/bolt/polyresearch/api-key" => Ok("polyresearch-api-key".to_string()),
             _ => {
                 Err("unexpected SSM path requested by reference-current-price health fake resolver")
             }
@@ -592,9 +593,12 @@ mod tests {
         let plan = reference_current_price_health_plan(&loaded)
             .expect("reference_current_price health plan should build");
 
-        assert_eq!(plan.client_keys, vec!["chainlink_reference"]);
+        assert_eq!(
+            plan.client_keys,
+            vec!["chainlink_reference", "polyresearch_reference"]
+        );
         assert_eq!(plan.observation_timeout_ms, 2000);
-        assert_eq!(plan.targets.len(), 1);
+        assert_eq!(plan.targets.len(), 2);
         let target = &plan.targets[0];
         assert_eq!(target.strategy_instance_id, "configured_updown_main");
         assert_eq!(target.source_id, "chainlink_primary");
@@ -602,7 +606,15 @@ mod tests {
         assert_eq!(target.provider, "chainlink_ws");
         assert_eq!(target.client_key, "chainlink_reference");
         assert_eq!(target.provider_instrument, "BTC-USD.CHAINLINK");
-        assert!(target.required);
+        assert!(!target.required);
+        let target = &plan.targets[1];
+        assert_eq!(target.strategy_instance_id, "configured_updown_main");
+        assert_eq!(target.source_id, "polyresearch_backup");
+        assert_eq!(target.asset, "BTC");
+        assert_eq!(target.provider, "polyresearch_ws");
+        assert_eq!(target.client_key, "polyresearch_reference");
+        assert_eq!(target.provider_instrument, "BTC/USD");
+        assert!(!target.required);
     }
 
     #[test]
@@ -615,7 +627,7 @@ mod tests {
         let subscriptions = reference_current_price_health_subscriptions(&plan)
             .expect("reference_current_price health subscriptions should build");
 
-        assert_eq!(subscriptions.len(), 1);
+        assert_eq!(subscriptions.len(), 2);
         let subscription = &subscriptions[0];
         assert_eq!(subscription.source_id, "chainlink_primary");
         assert_eq!(subscription.provider, "chainlink_ws");
@@ -645,6 +657,36 @@ mod tests {
         assert_eq!(
             subscription.params.get_str(REFERENCE_PRICE_SYMBOL_PARAM),
             None
+        );
+        let subscription = &subscriptions[1];
+        assert_eq!(subscription.source_id, "polyresearch_backup");
+        assert_eq!(subscription.provider, "polyresearch_ws");
+        assert_eq!(
+            subscription.client_id,
+            ClientId::from("polyresearch_reference")
+        );
+        let metadata = subscription
+            .data_type
+            .metadata()
+            .expect("reference-current-price data type should carry metadata");
+        assert_eq!(metadata.get_str(REFERENCE_PRICE_ASSET_PARAM), Some("BTC"));
+        assert_eq!(
+            metadata.get_str(REFERENCE_PRICE_SOURCE_KEY_PARAM),
+            Some("polyresearch_backup")
+        );
+        assert_eq!(
+            metadata.get_str(REFERENCE_PRICE_PROVIDER_PARAM),
+            Some("polyresearch_ws")
+        );
+        assert_eq!(
+            subscription
+                .params
+                .get_str(REFERENCE_PRICE_INSTRUMENT_ID_PARAM),
+            None
+        );
+        assert_eq!(
+            subscription.params.get_str(REFERENCE_PRICE_SYMBOL_PARAM),
+            Some("BTC/USD")
         );
     }
 
@@ -703,7 +745,7 @@ mod tests {
             "polyresearch_backup",
             "polyresearch_ws",
             "polyresearch_reference",
-            "BTC",
+            "BTC/USD",
         ))
         .expect("backup health subscription should build");
         let primary_key = ReferenceCurrentPriceHealthObservationKey::from_subscription(&primary);
@@ -759,7 +801,7 @@ mod tests {
             source_id: "polyresearch_backup".to_string(),
             asset: "BTC".to_string(),
             provider: "polyresearch_ws".to_string(),
-            provider_instrument: "BTC".to_string(),
+            provider_instrument: "BTC/USD".to_string(),
             status: SOURCE_UPDATE_OBSERVATION_STATUS_TIMED_OUT.to_string(),
             reason: SOURCE_UPDATE_OBSERVATION_REASON_TIMED_OUT.to_string(),
             observed_ts_ms: None,
@@ -798,10 +840,18 @@ mod tests {
             loaded,
         };
 
-        assert_eq!(health_run.plan.client_keys, vec!["chainlink_reference"]);
+        assert_eq!(
+            health_run.plan.client_keys,
+            vec!["chainlink_reference", "polyresearch_reference"]
+        );
         assert_eq!(
             sorted_strings(health_run.runtime.registered_data_client_ids()),
-            vec!["chainlink_reference", "okx_data", "polymarket_main"],
+            vec![
+                "chainlink_reference",
+                "okx_data",
+                "polymarket_main",
+                "polyresearch_reference"
+            ],
             "health must prepare all strategy-bound transport data clients"
         );
         assert_eq!(

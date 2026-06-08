@@ -251,3 +251,21 @@ idle_timeout_ms = 10000
 [clients.chainlink_reference.secrets]
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+
+[clients.polyresearch_reference]
+venue = "POLYRESEARCH_REFERENCE_PRICE"
+
+[clients.polyresearch_reference.data]
+websocket_endpoint = "wss://ws.polynode.dev/ws"
+transport_backend = "sockudo"
+heartbeat_secs = 5
+heartbeat_message = "{\"action\":\"ping\"}"
+reconnect_timeout_ms = 5000
+reconnect_delay_initial_ms = 250
+reconnect_delay_max_ms = 5000
+reconnect_backoff_factor = 1.5
+reconnect_jitter_ms = 100
+idle_timeout_ms = 10000
+
+[clients.polyresearch_reference.secrets]
+api_key_ssm_parameter = "/bolt/polyresearch/api-key"

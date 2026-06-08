@@ -194,8 +194,33 @@ mod tests {
     // terminology from submit-admission construction and its call sites.
     // Re-derived again after merging current main's trade-flow extraction into
     // the #579 retired-gate removal head.
+    // Re-derived again after moving surfaced realized-volatility bindings and
+    // source forwarding into the strategy source set.
+    // Re-derived again after spelling the realized-volatility binding insertion
+    // as an explicit entry match to satisfy both clippy and source-fence.
+    // Re-derived again after refreshing surfaced realized-volatility snapshots
+    // before entry/exit pricing so stale sources block instead of freezing RV.
+    // Re-derived again after preserving signal-data bindings in surfaced RV
+    // mode while keeping legacy strategy-owned RV knobs rejected.
+    // Re-derived again after forwarding duplicate stream bindings to every
+    // configured surfaced realized-volatility source ID.
+    // Re-derived again after accepting zero-RV surfaced snapshots and exporting
+    // unknown-source surfaced RV rejection counters in strategy input evidence.
+    // Re-derived again after allowing zero-RV strategy evidence/position paths
+    // and adding disabled-source surfaced RV diagnostics coverage.
+    // Re-derived again after removing the strategy-owned internal realized
+    // volatility estimator and requiring surfaced RV for taker pricing.
+    // Re-derived again after recording RV-not-ready pricing blocks in strategy
+    // input evidence and forwarding disabled surfaced RV sources for audit
+    // without subscribing disabled-only source bindings.
+    // Re-derived again after fail-closing rejected surfaced RV engine configs
+    // without retaining source bindings.
+    // Re-derived again after root-level surfaced RV readiness redesign moved
+    // raw RV validation behind the shared ready snapshot accessor.
+    // Re-derived again after removing the dead strategy evidence fallback RV
+    // parameter.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "e059376f430b66d5c437b816d093c992ed8ef1f007168c983df09737bfac45c4";
+        "75aff2714d20f79d01b50690ed3f807574a75dcf88b39555621391d6ee8755df";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

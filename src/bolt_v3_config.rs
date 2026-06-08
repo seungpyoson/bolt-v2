@@ -20,8 +20,14 @@ use nautilus_model::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::bolt_v3_iv::config::IvRootConfig;
-use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
+use crate::{
+    bolt_v3_iv::config::IvRootConfig,
+    bolt_v3_realized_volatility::{
+        RealizedVolAggregation, RealizedVolEngineConfig, RealizedVolSampleKind,
+        RealizedVolSourceClass, RealizedVolSourceConfig,
+    },
+    bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies},
+};
 
 pub const TEST_DOUBLE_PROVIDER_KIND: &str = "test_double";
 // The `chainlink_data_streams` provider-kind literal is owned by the provider
@@ -69,6 +75,7 @@ pub struct BoltV3RootConfig {
     pub persistence: PersistenceBlock,
     pub aws: AwsBlock,
     pub clients: BTreeMap<String, ClientBlock>,
+    pub realized_volatility_surfaces: Option<BTreeMap<String, RealizedVolatilitySurfaceBlock>>,
     pub gate_providers: Option<BTreeMap<String, GateProviderBlock>>,
     pub iv: Option<IvRootConfig>,
 }
@@ -271,6 +278,68 @@ pub struct GateProviderFreshnessBlock {
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct RealizedVolatilitySurfaceBlock {
+    pub canonical_base_asset: String,
+    pub canonical_quote_asset: String,
+    pub policy: RealizedVolatilityPolicyBlock,
+    pub sources: Vec<RealizedVolatilitySourceBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RealizedVolatilityPolicyBlock {
+    pub window_ms: u64,
+    pub sampling_interval_ms: u64,
+    pub min_ready_sources: usize,
+    pub max_source_age_ms: u64,
+    pub max_event_receive_lag_ms: u64,
+    pub max_inter_sample_gap_ms: u64,
+    pub min_coverage_ratio: f64,
+    pub max_cross_source_dispersion: f64,
+    pub seconds_per_annum: f64,
+    pub aggregation: RealizedVolatilityAggregationBlock,
+    pub upper_quantile: f64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RealizedVolatilityAggregationBlock {
+    UpperQuantile,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RealizedVolatilitySourceBlock {
+    pub source_id: String,
+    pub data_client_id: ClientId,
+    pub instrument_id: InstrumentId,
+    pub source_class: RealizedVolatilitySourceClassBlock,
+    pub sample_kind: RealizedVolatilitySampleKindBlock,
+    pub enabled: bool,
+    pub counts_toward_quorum: bool,
+    pub canonical_quote_asset: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RealizedVolatilitySourceClassBlock {
+    SpotQuote,
+    Trade,
+    Mark,
+    Index,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RealizedVolatilitySampleKindBlock {
+    Midpoint,
+    Trade,
+    Mark,
+    Index,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ClientBlock {
     pub venue: Venue,
     pub data: Option<toml::Value>,
@@ -371,6 +440,7 @@ pub struct BoltV3StrategyConfig {
     /// matching family validator and inside the family planner; the
     /// strategy envelope itself is target-shape-neutral.
     pub target: toml::Value,
+    pub realized_volatility_surface_id: Option<String>,
     pub reference_data: BTreeMap<String, ReferenceDataBlock>,
     pub signal_data: BTreeMap<String, ReferenceDataBlock>,
     /// Optional live resolution-strike (price-to-beat) data source. Mirrors the
@@ -397,6 +467,58 @@ impl StrategyArchetypeKey {
 pub struct ReferenceDataBlock {
     pub data_client_id: ClientId,
     pub instrument_id: InstrumentId,
+}
+
+pub fn realized_volatility_engine_config(
+    surface_id: &str,
+    surface: &RealizedVolatilitySurfaceBlock,
+) -> Result<RealizedVolEngineConfig, String> {
+    let aggregation = match surface.policy.aggregation {
+        RealizedVolatilityAggregationBlock::UpperQuantile => {
+            RealizedVolAggregation::UpperQuantile {
+                quantile: surface.policy.upper_quantile,
+            }
+        }
+    };
+    Ok(RealizedVolEngineConfig {
+        surface_id: surface_id.to_string(),
+        window_ms: surface.policy.window_ms,
+        sampling_interval_ms: surface.policy.sampling_interval_ms,
+        min_ready_sources: surface.policy.min_ready_sources,
+        max_source_age_ms: surface.policy.max_source_age_ms,
+        max_event_receive_lag_ms: surface.policy.max_event_receive_lag_ms,
+        max_inter_sample_gap_ms: surface.policy.max_inter_sample_gap_ms,
+        min_coverage_ratio: surface.policy.min_coverage_ratio,
+        max_cross_source_dispersion: surface.policy.max_cross_source_dispersion,
+        seconds_per_annum: surface.policy.seconds_per_annum,
+        aggregation,
+        sources: surface
+            .sources
+            .iter()
+            .map(|source| RealizedVolSourceConfig {
+                source_id: source.source_id.clone(),
+                data_client_id: source.data_client_id.to_string(),
+                instrument_id: source.instrument_id.to_string(),
+                source_class: match source.source_class {
+                    RealizedVolatilitySourceClassBlock::SpotQuote => {
+                        RealizedVolSourceClass::SpotQuote
+                    }
+                    RealizedVolatilitySourceClassBlock::Trade => RealizedVolSourceClass::Trade,
+                    RealizedVolatilitySourceClassBlock::Mark => RealizedVolSourceClass::Mark,
+                    RealizedVolatilitySourceClassBlock::Index => RealizedVolSourceClass::Index,
+                },
+                sample_kind: match source.sample_kind {
+                    RealizedVolatilitySampleKindBlock::Midpoint => RealizedVolSampleKind::Midpoint,
+                    RealizedVolatilitySampleKindBlock::Trade => RealizedVolSampleKind::Trade,
+                    RealizedVolatilitySampleKindBlock::Mark => RealizedVolSampleKind::Mark,
+                    RealizedVolatilitySampleKindBlock::Index => RealizedVolSampleKind::Index,
+                },
+                enabled: source.enabled,
+                counts_toward_quorum: source.counts_toward_quorum,
+                canonical_quote_asset: source.canonical_quote_asset.clone(),
+            })
+            .collect(),
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -572,6 +694,46 @@ mod tests {
         include_str!("../tests/fixtures/bolt_v3/strategies/binary_oracle.toml")
     }
 
+    fn root_toml_with_realized_volatility_surface(upper_quantile: f64) -> String {
+        format!(
+            r#"{}
+
+[clients."<DATA_CLIENT_ID>"]
+venue = "<DATA_CLIENT_VENUE>"
+
+[clients."<DATA_CLIENT_ID>".data]
+
+[realized_volatility_surfaces."<surface_id>"]
+canonical_base_asset = "<BASE_ASSET>"
+canonical_quote_asset = "<QUOTE_ASSET>"
+
+[realized_volatility_surfaces."<surface_id>".policy]
+window_ms = 4000
+sampling_interval_ms = 1000
+min_ready_sources = 1
+max_source_age_ms = 500
+max_event_receive_lag_ms = 250
+max_inter_sample_gap_ms = 2000
+min_coverage_ratio = 0.75
+max_cross_source_dispersion = 0.50
+seconds_per_annum = 31536000.0
+aggregation = "upper_quantile"
+upper_quantile = {upper_quantile}
+
+[[realized_volatility_surfaces."<surface_id>".sources]]
+source_id = "<SOURCE_ID_A>"
+data_client_id = "<DATA_CLIENT_ID>"
+instrument_id = "<INSTRUMENT_ID_A>.<DATA_CLIENT_ID>"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "<QUOTE_ASSET>"
+"#,
+            minimal_root_toml()
+        )
+    }
+
     #[test]
     fn parses_minimal_root_block() {
         let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
@@ -583,6 +745,77 @@ mod tests {
         assert_eq!(polymarket.venue, Venue::from("POLYMARKET"));
         assert!(polymarket.execution.is_some());
         assert!(!root.clients.contains_key("binance_reference"));
+    }
+
+    #[test]
+    fn parses_realized_volatility_surfaces_from_root_config() {
+        let raw = root_toml_with_realized_volatility_surface(1.0);
+
+        let config: BoltV3RootConfig = toml::from_str(&raw).expect("root config should parse");
+        let surface = config
+            .realized_volatility_surfaces
+            .as_ref()
+            .and_then(|surfaces| surfaces.get("<surface_id>"))
+            .unwrap();
+        assert_eq!(
+            surface.policy.aggregation,
+            RealizedVolatilityAggregationBlock::UpperQuantile
+        );
+        assert_eq!(surface.sources[0].source_id, "<SOURCE_ID_A>");
+    }
+
+    #[test]
+    fn realized_volatility_engine_config_carries_toml_upper_quantile() {
+        let raw = root_toml_with_realized_volatility_surface(0.75);
+        let config: BoltV3RootConfig = toml::from_str(&raw).expect("root config should parse");
+        let surface = config
+            .realized_volatility_surfaces
+            .as_ref()
+            .and_then(|surfaces| surfaces.get("<surface_id>"))
+            .unwrap();
+
+        let engine_config = realized_volatility_engine_config("<surface_id>", surface)
+            .expect("validated surface should map to engine config");
+
+        assert_eq!(
+            engine_config.aggregation,
+            crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
+                quantile: 0.75
+            }
+        );
+    }
+
+    #[test]
+    fn realized_volatility_engine_config_carries_source_binding_fields() {
+        let raw = root_toml_with_realized_volatility_surface(1.0);
+        let config: BoltV3RootConfig = toml::from_str(&raw).expect("root config should parse");
+        let surface = config
+            .realized_volatility_surfaces
+            .as_ref()
+            .and_then(|surfaces| surfaces.get("<surface_id>"))
+            .unwrap();
+
+        let engine_config = realized_volatility_engine_config("<surface_id>", surface)
+            .expect("validated surface should map to engine config");
+
+        let source = engine_config
+            .sources
+            .first()
+            .expect("fixture should include source");
+        let parsed_source = &surface.sources[0];
+        assert_eq!(source.source_id, parsed_source.source_id);
+        assert_eq!(
+            source.data_client_id,
+            parsed_source.data_client_id.to_string()
+        );
+        assert_eq!(
+            source.instrument_id,
+            parsed_source.instrument_id.to_string()
+        );
+        assert_eq!(
+            source.canonical_quote_asset,
+            parsed_source.canonical_quote_asset
+        );
     }
 
     #[test]

@@ -50,10 +50,12 @@ use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
     ClientBlock, DataClientReadinessProbeQuoteTargetSource, GATE_PROVIDER_CAPABILITIES,
     GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, KillSwitchConfigBlock,
-    LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock, RiskBlock,
+    LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock,
+    RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceClassBlock, RiskBlock,
     SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
+use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 
 #[derive(Debug)]
 pub struct BoltV3ValidationError {
@@ -169,6 +171,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_clients_block(&root.clients));
+    errors.extend(validate_realized_volatility_surfaces(root));
     if let Some(gate_providers) = &root.gate_providers {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));
     }
@@ -178,6 +181,227 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(crate::bolt_v3_providers::validate_resolution_oracle_client_consistency(root));
 
     errors
+}
+
+fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let Some(realized_volatility_surfaces) = root.realized_volatility_surfaces.as_ref() else {
+        return errors;
+    };
+
+    for (surface_id, surface) in realized_volatility_surfaces {
+        let context = format!("realized_volatility_surfaces.{surface_id}");
+        if surface_id.trim().is_empty() {
+            errors.push("realized_volatility_surfaces contains an empty surface id".to_string());
+        }
+        if surface.canonical_base_asset.trim().is_empty() {
+            errors.push(format!("{context}.canonical_base_asset must be non-empty"));
+        }
+        if surface.canonical_quote_asset.trim().is_empty() {
+            errors.push(format!("{context}.canonical_quote_asset must be non-empty"));
+        }
+        if surface.sources.is_empty() {
+            errors.push(format!(
+                "{context}.sources must contain at least one source"
+            ));
+        }
+
+        let policy = &surface.policy;
+        for (field, value) in [
+            (stringify!(window_ms), policy.window_ms),
+            (
+                stringify!(sampling_interval_ms),
+                policy.sampling_interval_ms,
+            ),
+            (
+                stringify!(min_ready_sources),
+                policy.min_ready_sources as u64,
+            ),
+            (stringify!(max_source_age_ms), policy.max_source_age_ms),
+            (
+                stringify!(max_event_receive_lag_ms),
+                policy.max_event_receive_lag_ms,
+            ),
+            (
+                stringify!(max_inter_sample_gap_ms),
+                policy.max_inter_sample_gap_ms,
+            ),
+        ] {
+            if value == u64::MIN {
+                errors.push(format!(
+                    "{context}.policy.{field} must be a positive integer"
+                ));
+            }
+        }
+        if policy.window_ms < policy.sampling_interval_ms {
+            errors.push(format!(
+                "{context}.policy.{} {} must be greater than or equal to policy.{} {}",
+                stringify!(window_ms),
+                policy.window_ms,
+                stringify!(sampling_interval_ms),
+                policy.sampling_interval_ms,
+            ));
+        }
+        if !is_positive_finite(policy.min_coverage_ratio) || policy.min_coverage_ratio > UNIT_F64 {
+            errors.push(format!(
+                "{context}.policy.min_coverage_ratio must be finite and in (0, 1]"
+            ));
+        }
+        if !policy.max_cross_source_dispersion.is_finite()
+            || policy.max_cross_source_dispersion < ZERO_F64
+        {
+            errors.push(format!(
+                "{context}.policy.max_cross_source_dispersion must be finite and non-negative"
+            ));
+        }
+        if !is_positive_finite(policy.seconds_per_annum) {
+            errors.push(format!(
+                "{context}.policy.seconds_per_annum must be positive finite"
+            ));
+        }
+        if !policy.upper_quantile.is_finite()
+            || !(HALF_F64..=UNIT_F64).contains(&policy.upper_quantile)
+        {
+            errors.push(format!(
+                "{context}.policy.upper_quantile must be finite and in [0.5, 1.0]"
+            ));
+        }
+
+        let mut seen_source_ids = BTreeSet::new();
+        let mut seen_source_instrument_clients: BTreeMap<String, (String, String)> =
+            BTreeMap::new();
+        let mut enabled_quorum_sources = 0usize;
+        let mut quorum_source_contract: Option<(
+            RealizedVolatilitySourceClassBlock,
+            RealizedVolatilitySampleKindBlock,
+            String,
+        )> = None;
+        for (index, source) in surface.sources.iter().enumerate() {
+            let source_context = format!("{context}.sources[{index}]");
+            if source.source_id.trim().is_empty() {
+                errors.push(format!("{source_context}.source_id must be non-empty"));
+            } else if !seen_source_ids.insert(source.source_id.as_str()) {
+                errors.push(format!(
+                    "{source_context}.source_id duplicate source_id `{}`",
+                    source.source_id
+                ));
+            }
+
+            match root.clients.get(source.data_client_id.as_str()) {
+                None => errors.push(format!(
+                    "{source_context}.data_client_id `{}` does not match any [clients.<id>] block",
+                    source.data_client_id
+                )),
+                Some(client) => {
+                    if client.data.is_none() {
+                        errors.push(format!(
+                            "{source_context}.data_client_id `{}` must reference a data-capable client (the referenced client has no [data] block)",
+                            source.data_client_id
+                        ));
+                    }
+                }
+            }
+
+            let source_base_asset = instrument_base_asset(&source.instrument_id);
+            if source_base_asset != surface.canonical_base_asset {
+                errors.push(format!(
+                    "{source_context}.instrument_id `{}` resolves to base asset `{source_base_asset}`, which must match {context}.canonical_base_asset `{}`",
+                    source.instrument_id, surface.canonical_base_asset,
+                ));
+            }
+            let instrument_key = source.instrument_id.to_string();
+            let data_client_id = source.data_client_id.to_string();
+            match seen_source_instrument_clients.get(&instrument_key) {
+                Some((existing_data_client_id, existing_context))
+                    if existing_data_client_id != &data_client_id =>
+                {
+                    errors.push(format!(
+                        "{source_context}.instrument_id `{}` with data_client_id `{data_client_id}` is also used by {existing_context} with distinct data_client_id `{existing_data_client_id}`; realized_volatility_surfaces source events do not carry data_client_id, so same-instrument RV sources must share one data client",
+                        source.instrument_id,
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    seen_source_instrument_clients
+                        .insert(instrument_key, (data_client_id, source_context.clone()));
+                }
+            }
+
+            if source.canonical_quote_asset != surface.canonical_quote_asset {
+                errors.push(format!(
+                    "{source_context}.canonical_quote_asset `{}` must match {context}.canonical_quote_asset `{}`",
+                    source.canonical_quote_asset, surface.canonical_quote_asset
+                ));
+            }
+            if !realized_volatility_source_pair_supported(source.source_class, source.sample_kind) {
+                errors.push(format!(
+                    "{source_context}.{} {:?} with {} {:?} is not supported by the taker realized-volatility router",
+                    stringify!(source_class),
+                    source.source_class,
+                    stringify!(sample_kind),
+                    source.sample_kind,
+                ));
+            }
+            if source.enabled && source.counts_toward_quorum {
+                enabled_quorum_sources += 1;
+                match quorum_source_contract.as_ref() {
+                    Some((source_class, sample_kind, existing_context))
+                        if source.source_class != *source_class
+                            || source.sample_kind != *sample_kind =>
+                    {
+                        errors.push(format!(
+                            "{source_context}.source_class/sample_kind {:?}/{:?} must match enabled quorum source contract {:?}/{:?} established by {existing_context}",
+                            source.source_class,
+                            source.sample_kind,
+                            source_class,
+                            sample_kind,
+                        ));
+                    }
+                    Some(_) => {}
+                    None => {
+                        quorum_source_contract = Some((
+                            source.source_class,
+                            source.sample_kind,
+                            source_context.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        if policy.min_ready_sources > enabled_quorum_sources {
+            errors.push(format!(
+                "{context}.policy.min_ready_sources {} exceeds enabled quorum source count {}",
+                policy.min_ready_sources, enabled_quorum_sources
+            ));
+        }
+    }
+
+    errors
+}
+
+fn realized_volatility_source_pair_supported(
+    source_class: RealizedVolatilitySourceClassBlock,
+    sample_kind: RealizedVolatilitySampleKindBlock,
+) -> bool {
+    matches!(
+        (source_class, sample_kind),
+        (
+            RealizedVolatilitySourceClassBlock::SpotQuote,
+            RealizedVolatilitySampleKindBlock::Midpoint,
+        ) | (
+            RealizedVolatilitySourceClassBlock::Trade,
+            RealizedVolatilitySampleKindBlock::Trade,
+        ) | (
+            RealizedVolatilitySourceClassBlock::Index,
+            RealizedVolatilitySampleKindBlock::Index,
+        )
+    )
+}
+
+fn instrument_base_asset(instrument_id: &InstrumentId) -> &str {
+    let symbol = instrument_id.symbol.as_str();
+    symbol.split_once('-').map_or(symbol, |(asset, _)| asset)
 }
 
 fn validate_gate_providers(
@@ -1458,6 +1682,41 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             errors.push(format!(
                 "{context}: order_id_tag `{}` is already used by another listed strategy",
                 strategy.order_id_tag
+            ));
+        }
+
+        match &strategy.realized_volatility_surface_id {
+            None => errors.push(format!(
+                "{context}: {} is required",
+                stringify!(realized_volatility_surface_id),
+            )),
+            Some(surface_id)
+                if !root
+                    .realized_volatility_surfaces
+                    .as_ref()
+                    .is_some_and(|surfaces| surfaces.contains_key(surface_id)) =>
+            {
+                errors.push(format!(
+                    "{context}: {} `{surface_id}` references missing {}.{surface_id}",
+                    stringify!(realized_volatility_surface_id),
+                    stringify!(realized_volatility_surfaces),
+                ));
+            }
+            _ => {}
+        }
+
+        if let Some(surface_id) = &strategy.realized_volatility_surface_id
+            && let Some(surface) = root
+                .realized_volatility_surfaces
+                .as_ref()
+                .and_then(|surfaces| surfaces.get(surface_id))
+            && let Ok(target) =
+                crate::bolt_v3_market_families::target_runtime_fields_from_target(&strategy.target)
+            && target.underlying_asset != surface.canonical_base_asset
+        {
+            errors.push(format!(
+                "{context}: realized_volatility_surface_id `{surface_id}` references realized_volatility_surfaces.{surface_id}.canonical_base_asset `{}`, but target.underlying_asset is `{}`",
+                surface.canonical_base_asset, target.underlying_asset,
             ));
         }
 

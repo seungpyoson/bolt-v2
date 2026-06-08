@@ -8207,6 +8207,14 @@ reason = "Rejected legacy PolyResearch WebSocket authentication query-key name; 
 [[allowed]]
 path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
+literal = '''"price_feed"'''
+context = '''const POLYRESEARCH_PRICE_FEED_FRAME_TYPE: &str = "price_feed";'''
+classification = "provider_protocol_field"
+reason = "PolyResearch reference-price WebSocket frame type for price updates; configured source symbols still select the runtime instrument."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
 literal = '''"key"'''
 context = '''const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "key";'''
 classification = "provider_protocol_field"

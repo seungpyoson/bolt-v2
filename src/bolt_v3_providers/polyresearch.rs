@@ -5,7 +5,7 @@
 //! credential as separate SSM values, then constructs the credentialed URL once
 //! at the provider edge.
 
-use std::{any::Any, cell::RefCell, rc::Rc, sync::Arc};
+use std::{any::Any, cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
 use nautilus_common::{
     cache::CacheView,
@@ -30,11 +30,13 @@ use crate::{
         ProviderSecretRequirement, ProviderSecretResolveContext, ProviderSsmPathReference,
         ResolvedClientSecrets, SsmSecretResolver,
     },
+    bolt_v3_reference_price::{ReferencePriceUpdate, ReferenceQuoteProvenance},
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
 };
 
 const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "key";
 const POLYRESEARCH_LEGACY_API_KEY_QUERY_FIELD: &str = "apiKey";
+const POLYRESEARCH_PRICE_FEED_FRAME_TYPE: &str = "price_feed";
 pub const KEY: &str = "POLYRESEARCH_REFERENCE_PRICE";
 pub const REFERENCE_PRICE_PROVIDER_KEY: &str = "polyresearch_ws";
 pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];
@@ -227,6 +229,76 @@ impl DataClient for PolyResearchReferencePriceClient {
         self.connected = false;
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PolyResearchReferenceSubscription {
+    pub(crate) asset: String,
+    pub(crate) source_id: String,
+    pub(crate) symbol: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PolyResearchPriceFrame {
+    r#type: String,
+    feed: Option<String>,
+    timestamp: Option<u64>,
+    data: Option<PolyResearchPriceData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PolyResearchPriceData {
+    feed: String,
+    price: f64,
+    bid: Option<f64>,
+    ask: Option<f64>,
+    timestamp: u64,
+}
+
+pub(crate) fn polyresearch_reference_update_from_price_frame(
+    subscription: &PolyResearchReferenceSubscription,
+    frame: &str,
+    received_ts_ms: u64,
+) -> Result<Option<ReferencePriceUpdate>, String> {
+    let parsed = serde_json::from_str::<PolyResearchPriceFrame>(frame)
+        .map_err(|error| format!("invalid PolyResearch price frame JSON: {error}"))?;
+    if parsed.r#type != POLYRESEARCH_PRICE_FEED_FRAME_TYPE {
+        return Ok(None);
+    }
+
+    let data = parsed
+        .data
+        .ok_or_else(|| "PolyResearch price_feed frame missing data".to_string())?;
+    if parsed.feed.as_deref().is_some_and(|feed| feed != data.feed) {
+        return Err("PolyResearch price_feed top-level feed does not match data.feed".to_string());
+    }
+    if data.feed != subscription.symbol {
+        return Ok(None);
+    }
+    if parsed
+        .timestamp
+        .is_some_and(|timestamp| timestamp != data.timestamp)
+    {
+        return Err(
+            "PolyResearch price_feed top-level timestamp does not match data.timestamp".to_string(),
+        );
+    }
+
+    let observed_ts_ms = u64::try_from(Duration::from_secs(data.timestamp).as_millis())
+        .map_err(|_| "PolyResearch price_feed timestamp overflows milliseconds".to_string())?;
+    ReferencePriceUpdate::try_new_with_provenance(
+        subscription.asset.as_str(),
+        subscription.source_id.as_str(),
+        REFERENCE_PRICE_PROVIDER_KEY,
+        subscription.symbol.as_str(),
+        data.price,
+        data.bid,
+        data.ask,
+        observed_ts_ms,
+        received_ts_ms,
+        ReferenceQuoteProvenance::empty(),
+    )
+    .map(Some)
 }
 
 pub struct PolyResearchAuthConfig {

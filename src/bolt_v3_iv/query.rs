@@ -8,9 +8,10 @@ use serde::{Deserialize, Serialize};
 use super::{
     authz::IvSelectorAuthorization,
     derive::{
-        IvDerivedInputPolicy, IvDerivedInputSet, IvDerivedOutput, IvHelperPolicy, derive_iv,
-        resolve_derived_input_policy, select_helper_policy,
+        IvDeriveError, IvDerivedInputPolicy, IvDerivedInputSet, IvDerivedOutput, IvHelperPolicy,
+        derive_iv, resolve_derived_input_policy, select_helper_policy,
     },
+    error::IvRejectReason,
     health::IvSourceHealth,
     ingest::{IvIngestEvent, IvRawEvent},
     policy::{
@@ -101,6 +102,7 @@ pub struct IvQueryState {
     helper_policies: Vec<IvHelperPolicy>,
     derived_input_policies: Vec<IvDerivedInputPolicy>,
     derived_inputs: Vec<IvDerivedInputSet>,
+    derived_outputs: Vec<IvDerivedOutput>,
     current_subscription_generations: BTreeMap<String, u64>,
 }
 
@@ -128,6 +130,7 @@ impl IvQueryState {
             helper_policies: Vec::new(),
             derived_input_policies: Vec::new(),
             derived_inputs: Vec::new(),
+            derived_outputs: Vec::new(),
             current_subscription_generations: BTreeMap::new(),
         }
     }
@@ -307,10 +310,27 @@ impl IvQueryStateHandle {
     pub fn enforce_retention(&self, policy: &IvRetentionPolicy) {
         let mut state = self.inner.write().expect("IV query state lock poisoned");
         state.store.enforce_retention(policy);
+        truncate_front(&mut state.derived_outputs, policy.max_derived_points);
         if state.source_health.len() > policy.max_source_health_events {
             let retained_start = state.source_health.len() - policy.max_source_health_events;
             state.source_health.drain(..retained_start);
         }
+    }
+
+    pub fn derived_outputs(&self) -> Vec<IvDerivedOutput> {
+        self.inner
+            .read()
+            .expect("IV query state lock poisoned")
+            .derived_outputs
+            .clone()
+    }
+
+    pub fn record_derived_output(&self, output: IvDerivedOutput) {
+        self.inner
+            .write()
+            .expect("IV query state lock poisoned")
+            .derived_outputs
+            .push(output);
     }
 
     pub fn set_projection_policies(&self, projection_policies: Vec<IvProjectionPolicy>) {
@@ -532,6 +552,10 @@ impl IvQueryHandle {
             selector_fingerprint,
         ) {
             return Err(IvQueryError::StrategyNotAuthorized);
+        }
+
+        if let IvQueryProduct::DerivedIv(derived) = &product {
+            self.state.record_derived_output((**derived).clone());
         }
 
         Ok(product)
@@ -792,15 +816,35 @@ impl IvQueryHandle {
             .iter()
             .find(|input_policy| input_policy.helper_policy_ref == helper_policy_id)
         {
-            resolve_derived_input_policy(input_policy, inputs, &state.derived_inputs)
-                .map_err(|_| IvQueryError::DerivationRejected)?
+            match resolve_derived_input_policy(input_policy, inputs.clone(), &state.derived_inputs)
+            {
+                Ok(inputs) => inputs,
+                Err(error) => {
+                    self.record_derived_rejection(&inputs, derive_reject_reason(&error));
+                    return Err(IvQueryError::DerivationRejected);
+                }
+            }
         } else {
             inputs
         };
-        derive_iv(policy, inputs)
-            .map(Box::new)
-            .map(IvQueryProduct::DerivedIv)
-            .map_err(|_| IvQueryError::DerivationRejected)
+        match derive_iv(policy, inputs.clone()) {
+            Ok(output) => Ok(IvQueryProduct::DerivedIv(Box::new(output))),
+            Err(error) => {
+                self.record_derived_rejection(&inputs, derive_reject_reason(&error));
+                Err(IvQueryError::DerivationRejected)
+            }
+        }
+    }
+
+    fn record_derived_rejection(&self, inputs: &IvDerivedInputSet, reject_reason: IvRejectReason) {
+        self.state.record_source_rejection(
+            inputs.profile_id.clone(),
+            inputs.source_id.clone(),
+            inputs.subscription_generation,
+            inputs.as_of_ns,
+            reject_reason,
+            true,
+        );
     }
 
     pub fn raw_event(&self, _raw_event_id: &str) -> Result<&IvRawEvent, IvQueryError> {
@@ -976,4 +1020,19 @@ fn selector_supports_product_kind(selector: &IvSelector, product_kind: IvProduct
     selector.product_kind() == product_kind
         || (product_kind == IvProductKind::IvGreeksPoint
             && matches!(selector, IvSelector::PointQuery { .. }))
+}
+
+fn derive_reject_reason(error: &IvDeriveError) -> IvRejectReason {
+    match error {
+        IvDeriveError::HelperPolicyNotFound { .. } => IvRejectReason::HelperNotConfigured,
+        IvDeriveError::MissingInput { .. } => IvRejectReason::MissingDerivedInput,
+        IvDeriveError::Rejected { reason, .. } => *reason,
+    }
+}
+
+fn truncate_front<T>(values: &mut Vec<T>, max_len: usize) {
+    if values.len() > max_len {
+        let retained_start = values.len() - max_len;
+        values.drain(..retained_start);
+    }
 }

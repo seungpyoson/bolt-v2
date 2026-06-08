@@ -32,6 +32,7 @@ pub struct IvProfile {
     pub max_indexed_points: usize,
     pub max_smiles: usize,
     pub max_surfaces: usize,
+    pub max_derived_points: usize,
     pub max_source_health_events: usize,
     pub audit_policy: IvAuditPolicy,
     pub projection_policies: Vec<IvProjectionPolicy>,
@@ -178,6 +179,12 @@ fn validate_profile(profile: &IvProfile) -> Vec<String> {
         &profile_context,
         "max_surfaces",
         profile.max_surfaces,
+    );
+    validate_positive_bound(
+        &mut errors,
+        &profile_context,
+        "max_derived_points",
+        profile.max_derived_points,
     );
     validate_positive_bound(
         &mut errors,

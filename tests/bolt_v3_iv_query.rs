@@ -8,6 +8,7 @@ use bolt_v2::bolt_v3_iv::{
         IvDerivedInputSourceKind, IvDerivedProfileSourceRef, IvHelperOutput, IvHelperPolicy,
         IvNtHelperSymbol, IvOptionSide, IvTimedInput,
     },
+    error::IvRejectReason,
     health::{IvSourceHealth, IvSourceHealthState},
     ingest::{IvBasisValue, IvGreekValues, IvIngestEvent, IvOptionGreeksPayload, IvRawPayload},
     policy::{IvProjectionKind, IvProjectionPolicy},
@@ -15,7 +16,7 @@ use bolt_v2::bolt_v3_iv::{
         IvProductQuery, IvQuery, IvQueryError, IvQueryHandle, IvQueryProduct, IvRawPayloadQuery,
     },
     selector::IvSelector,
-    store::IvStore,
+    store::{IvRetentionPolicy, IvStore},
     time::UnixNanos,
     types::{IvBasis, IvConvention, IvProductKind, IvSourceKind},
 };
@@ -619,4 +620,88 @@ fn derived_iv_query_resolves_profile_owned_input_policy_before_helper_call() {
             .iter()
             .any(|event_id| { event_id == "configured-underlying-event" })
     );
+}
+
+#[test]
+fn derived_iv_helper_output_rejection_updates_source_health() {
+    let mut helper = helper_policy();
+    helper.output_bounds.inclusive_max = Some(0.10);
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_helper_policies(vec![helper])
+    .with_derived_inputs(vec![complete_inputs()]);
+
+    assert_eq!(
+        handle.query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::DerivedIv,
+            selector: IvSelector::DerivedIvQuery {
+                instrument_id: "configured-option-instrument".to_string(),
+                helper_policy_id: "configured-helper-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        })),
+        Err(IvQueryError::DerivationRejected)
+    );
+
+    let health = handle
+        .state_handle()
+        .source_health_for("configured-profile", "configured-source")
+        .unwrap();
+    assert_eq!(
+        health.last_reject_reason,
+        Some(IvRejectReason::InvalidIvValue)
+    );
+    assert_eq!(
+        health.reject_counts.get(&IvRejectReason::InvalidIvValue),
+        Some(&1)
+    );
+}
+
+#[test]
+fn derived_iv_outputs_are_retained_by_profile_memory_bounds() {
+    let mut first_inputs = complete_inputs();
+    first_inputs.as_of_ns = UnixNanos::new(2_000);
+    let mut second_inputs = complete_inputs();
+    second_inputs.as_of_ns = UnixNanos::new(2_010);
+
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_helper_policies(vec![helper_policy()])
+    .with_derived_inputs(vec![first_inputs, second_inputs]);
+
+    for as_of_ns in [UnixNanos::new(2_000), UnixNanos::new(2_010)] {
+        handle
+            .query(&IvQuery::Product(IvProductQuery {
+                strategy_id: "configured-strategy".to_string(),
+                profile_id: "configured-profile".to_string(),
+                product_kind: IvProductKind::DerivedIv,
+                selector: IvSelector::DerivedIvQuery {
+                    instrument_id: "configured-option-instrument".to_string(),
+                    helper_policy_id: "configured-helper-policy".to_string(),
+                    as_of_ns,
+                },
+            }))
+            .unwrap();
+    }
+
+    handle.enforce_retention(&IvRetentionPolicy {
+        max_raw_events: 2,
+        max_indexed_points: 2,
+        max_smiles: 2,
+        max_surfaces: 2,
+        max_derived_points: 1,
+        max_source_health_events: 2,
+    });
+
+    let retained = handle.state_handle().derived_outputs();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].point.ts_event_ns, UnixNanos::new(2_010));
 }

@@ -9027,6 +9027,14 @@ reason = "IV config parsing uses schema field names, version tags, and internal 
 [[allowed]]
 path = "src/bolt_v3_iv/config.rs"
 kind = "string"
+literal = '''"max_derived_points"'''
+context = '''"max_derived_points",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses schema field names, version tags, and internal generation sentinels to validate TOML; operator runtime values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
 literal = '''"max_source_health_events"'''
 context = '''"max_source_health_events",'''
 classification = "iv_config_schema_literal"

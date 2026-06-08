@@ -17,6 +17,7 @@ max_raw_events = 2
 max_indexed_points = 2
 max_smiles = 2
 max_surfaces = 2
+max_derived_points = 2
 max_source_health_events = 2
 derived_inputs = []
 
@@ -199,6 +200,7 @@ fn full_profile_toml_maps_to_typed_iv_config_without_defaults() {
         config.profiles[0].selector_authorization.authorization_mode,
         IvAuthorizationMode::ProfileWide
     );
+    assert_eq!(config.profiles[0].max_derived_points, 2);
     assert_eq!(
         config.profiles[0]
             .audit_policy
@@ -363,20 +365,35 @@ fn selector_source_product_mismatch_rejects_with_exact_field() {
 
 #[test]
 fn numeric_bounds_and_empty_selectors_reject() {
-    let invalid = valid_iv_toml()
-        .replace("max_raw_events = 2", "max_raw_events = 0")
-        .replace(
-            "instrument_ids = [\"configured-instrument\"]",
-            "instrument_ids = []",
-        );
+    let invalid = [
+        "max_raw_events",
+        "max_indexed_points",
+        "max_smiles",
+        "max_surfaces",
+        "max_derived_points",
+        "max_source_health_events",
+    ]
+    .into_iter()
+    .fold(valid_iv_toml().to_string(), |toml, field| {
+        toml.replace(&format!("{field} = 2"), &format!("{field} = 0"))
+    })
+    .replace(
+        "instrument_ids = [\"configured-instrument\"]",
+        "instrument_ids = []",
+    );
     let config: IvRootConfig = toml::from_str(&invalid).unwrap();
     let errors = validate_iv_root_config(&config);
 
-    assert!(
-        errors
-            .iter()
-            .any(|message| message.contains("max_raw_events"))
-    );
+    for field in [
+        "max_raw_events",
+        "max_indexed_points",
+        "max_smiles",
+        "max_surfaces",
+        "max_derived_points",
+        "max_source_health_events",
+    ] {
+        assert!(errors.iter().any(|message| message.contains(field)));
+    }
     assert!(
         errors
             .iter()

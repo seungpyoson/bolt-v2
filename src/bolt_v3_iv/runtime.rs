@@ -792,6 +792,7 @@ fn retention_policy_from_profile(profile: &IvProfile) -> IvRetentionPolicy {
         max_indexed_points: profile.max_indexed_points,
         max_smiles: profile.max_smiles,
         max_surfaces: profile.max_surfaces,
+        max_derived_points: profile.max_derived_points,
         max_source_health_events: profile.max_source_health_events,
     }
 }

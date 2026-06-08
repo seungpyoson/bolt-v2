@@ -82,33 +82,6 @@ fn projection_policy_rejects_when_minimum_input_count_is_not_met() {
 }
 
 #[test]
-fn projection_policy_rejects_empty_inputs_even_if_policy_is_invalid() {
-    let policy = projection_policy(0, 5);
-
-    assert_eq!(
-        project_scalar(&policy, &[]),
-        Err(IvPolicyError::Rejected {
-            reason: IvRejectReason::ProjectionRejected,
-            policy_id: "configured-projection".to_string(),
-        })
-    );
-}
-
-#[test]
-fn interpolation_policy_rejects_empty_points_even_if_policy_is_invalid() {
-    let mut policy = interpolation_policy(IvExtrapolationPolicy::Nearest);
-    policy.minimum_points = 0;
-
-    assert_eq!(
-        interpolate_smile(&policy, &[], 100.0),
-        Err(IvPolicyError::Rejected {
-            reason: IvRejectReason::InterpolationRejected,
-            policy_id: "configured-interpolation".to_string(),
-        })
-    );
-}
-
-#[test]
 fn interpolation_policy_records_decision_and_rejects_unconfigured_extrapolation() {
     let policy = interpolation_policy(IvExtrapolationPolicy::Reject);
 

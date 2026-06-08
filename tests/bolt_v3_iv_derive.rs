@@ -10,7 +10,7 @@ use bolt_v2::bolt_v3_iv::{
     },
     error::IvRejectReason,
     health::IvSourceHealthState,
-    provenance::IvPolicyDecision,
+    provenance::{IvPolicyDecision, validate_iv_provenance},
     time::UnixNanos,
     types::{IvBasis, IvConvention, IvSourceKind},
 };
@@ -160,6 +160,7 @@ fn complete_inputs_derive_iv_with_nt_helper_and_helper_provenance() {
             rejection_reason: None,
         }]
     );
+    validate_iv_provenance(&output.provenance).unwrap();
 }
 
 #[test]

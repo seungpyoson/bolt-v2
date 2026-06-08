@@ -107,6 +107,7 @@ max_raw_events = 4
 max_indexed_points = 4
 max_smiles = 4
 max_surfaces = 4
+max_derived_points = 4
 max_source_health_events = 4
 interpolation_policies = []
 fallback_policies = []
@@ -383,6 +384,7 @@ max_raw_events = 4
 max_indexed_points = 4
 max_smiles = 4
 max_surfaces = 4
+max_derived_points = 4
 max_source_health_events = 4
 projection_policies = []
 interpolation_policies = []
@@ -988,6 +990,7 @@ fn source_health_and_retention_eviction_keep_current_views_bounded() {
         max_indexed_points: 2,
         max_smiles: 2,
         max_surfaces: 2,
+        max_derived_points: 2,
         max_source_health_events: 2,
     });
 
@@ -1016,6 +1019,7 @@ max_raw_events = 2
 max_indexed_points = 2
 max_smiles = 2
 max_surfaces = 2
+max_derived_points = 2
 max_source_health_events = 2
 interpolation_policies = []
 fallback_policies = []
@@ -1102,6 +1106,7 @@ max_raw_events = 2
 max_indexed_points = 2
 max_smiles = 2
 max_surfaces = 2
+max_derived_points = 2
 max_source_health_events = 2
 interpolation_policies = []
 fallback_policies = []
@@ -1251,6 +1256,7 @@ max_raw_events = 2
 max_indexed_points = 2
 max_smiles = 2
 max_surfaces = 2
+max_derived_points = 2
 max_source_health_events = 2
 interpolation_policies = []
 fallback_policies = []
@@ -1358,6 +1364,7 @@ max_raw_events = 2
 max_indexed_points = 2
 max_smiles = 2
 max_surfaces = 2
+max_derived_points = 2
 max_source_health_events = 2
 interpolation_policies = []
 fallback_policies = []
@@ -1481,6 +1488,7 @@ max_raw_events = 2
 max_indexed_points = 2
 max_smiles = 2
 max_surfaces = 2
+max_derived_points = 2
 max_source_health_events = 2
 projection_policies = []
 interpolation_policies = []
@@ -1574,6 +1582,7 @@ max_raw_events = 2
 max_indexed_points = 2
 max_smiles = 2
 max_surfaces = 2
+max_derived_points = 2
 max_source_health_events = 2
 interpolation_policies = []
 fallback_policies = []
@@ -1667,6 +1676,7 @@ max_raw_events = 2
 max_indexed_points = 2
 max_smiles = 2
 max_surfaces = 2
+max_derived_points = 2
 max_source_health_events = 2
 interpolation_policies = []
 fallback_policies = []

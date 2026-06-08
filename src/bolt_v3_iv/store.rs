@@ -98,6 +98,7 @@ pub struct IvRetentionPolicy {
     pub max_indexed_points: usize,
     pub max_smiles: usize,
     pub max_surfaces: usize,
+    pub max_derived_points: usize,
     pub max_source_health_events: usize,
 }
 

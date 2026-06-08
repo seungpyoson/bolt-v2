@@ -28,6 +28,7 @@ max_raw_events = operator_positive_integer
 max_indexed_points = operator_positive_integer
 max_smiles = operator_positive_integer
 max_surfaces = operator_positive_integer
+max_derived_points = operator_positive_integer
 max_source_health_events = operator_positive_integer
 interpolation_policies = []
 fallback_policies = []

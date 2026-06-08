@@ -178,11 +178,29 @@ pub fn validate_iv_provenance(provenance: &IvProvenance) -> Result<(), IvRejectR
         return Err(IvRejectReason::ProvenanceIncomplete);
     }
 
-    if provenance.raw_event_id.as_deref().is_none_or(str::is_empty)
-        || provenance.payload_kind.as_deref().is_none_or(str::is_empty)
-    {
-        return Err(IvRejectReason::ProvenanceIncomplete);
+    match (
+        provenance.raw_event_id.as_deref(),
+        provenance.payload_kind.as_deref(),
+    ) {
+        (Some(raw_event_id), Some(payload_kind))
+            if !raw_event_id.trim().is_empty() && !payload_kind.trim().is_empty() =>
+        {
+            Ok(())
+        }
+        (None, None) => {
+            if provenance.input_event_ids.is_empty() || provenance.policy_decisions.is_empty() {
+                return Err(IvRejectReason::ProvenanceIncomplete);
+            }
+            if provenance.helper_identity.is_some()
+                && !provenance
+                    .policy_decisions
+                    .iter()
+                    .any(|decision| matches!(decision, IvPolicyDecision::HelperDecision { .. }))
+            {
+                return Err(IvRejectReason::ProvenanceIncomplete);
+            }
+            Ok(())
+        }
+        _ => Err(IvRejectReason::ProvenanceIncomplete),
     }
-
-    Ok(())
 }

@@ -2,7 +2,7 @@
   "schema_version": "source-catalog-mapping-readiness-report.v1",
   "readiness_id": "polymarket-parquet-archive-index-canonical-source-catalog-mapping-readiness",
   "status": "blocked",
-  "catalog_mapping_evaluation_hash": "9d54fedb07b78267b7e1c4d65785eed0b95123da59aecbaf0098759aa6a0f36a",
+  "catalog_mapping_evaluation_hash": "86493b0b706307253f821cccaa25671fafd5e77306598ec614977559fc646013",
   "source_binding": "polymarket-parquet-archive-index",
   "required_table_family": "order_book_snapshot_deltas",
   "required_nt_data_types": [
@@ -21,8 +21,8 @@
     "OrderBookDelta",
     "TradeTick"
   ],
-  "observed_current_bte_status": "pending",
-  "observed_parquet_catalog_status": "prototype_only_not_accepted",
+  "observed_current_bte_status": "one_off_current_artifact_proven_broad_backfill_blocked",
+  "observed_parquet_catalog_status": "one_off_current_artifact_proven_broad_backfill_blocked",
   "nt_catalog_mapping_proven": false,
   "blockers": [
     "current_bte_status_not_allowed",

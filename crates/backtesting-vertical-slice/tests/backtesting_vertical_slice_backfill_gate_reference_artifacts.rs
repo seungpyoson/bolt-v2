@@ -129,6 +129,34 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
 
     let mapping_evaluation: SourceCatalogMappingEvaluation =
         serde_json::from_str(CATALOG_MAPPING_EVALUATION).expect("mapping evaluation parses");
+    assert!(
+        mapping_evaluation
+            .current_bte_manifest_exposure
+            .accepted_data_classes
+            .iter()
+            .any(|data_class| data_class == "TradeTick")
+    );
+    assert!(
+        mapping_evaluation
+            .current_bte_manifest_exposure
+            .accepted_data_classes
+            .iter()
+            .any(|data_class| data_class == "OrderBookDelta")
+    );
+    assert!(
+        !mapping_evaluation
+            .current_bte_manifest_exposure
+            .rejected_for_now
+            .iter()
+            .any(|data_class| data_class == "OrderBookDelta")
+    );
+    assert!(
+        mapping_evaluation
+            .current_bte_manifest_exposure
+            .rejected_for_now
+            .iter()
+            .any(|data_class| data_class == "QuoteTick")
+    );
     let expected_catalog_mapping_readiness: SourceCatalogMappingReadinessReport =
         serde_json::from_str(SOURCE_CATALOG_MAPPING_READINESS_REPORT)
             .expect("source catalog-mapping readiness parses");
@@ -314,7 +342,14 @@ fn source_proof_scope_hash(report: &BackfillSourceProofScopeReport) -> String {
 
 #[derive(Debug, Deserialize)]
 struct SourceCatalogMappingEvaluation {
+    current_bte_manifest_exposure: CurrentBteManifestExposure,
     source_sample_mapping_status: Vec<SourceCatalogMappingStatusEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurrentBteManifestExposure {
+    accepted_data_classes: Vec<String>,
+    rejected_for_now: Vec<String>,
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

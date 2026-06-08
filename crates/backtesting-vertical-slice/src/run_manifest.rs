@@ -1657,6 +1657,8 @@ fn catalog_input_to_nt_data_config(
     let data_type = match input.data_type.as_str() {
         "TradeTick" => NautilusDataType::TradeTick,
         "OrderBookDelta" => NautilusDataType::OrderBookDelta,
+        "InstrumentStatus" => NautilusDataType::InstrumentStatus,
+        "InstrumentClose" => NautilusDataType::InstrumentClose,
         other => {
             return Err(ManifestError::UnsupportedDataType {
                 data_type: other.to_string(),
@@ -1933,7 +1935,7 @@ fn ensure_unsupported_nt_catalog_query_surfaces_absent(
 
 fn ensure_supported_data_type(value: &str) -> Result<(), ManifestError> {
     match value {
-        "TradeTick" | "OrderBookDelta" => Ok(()),
+        "TradeTick" | "OrderBookDelta" | "InstrumentStatus" | "InstrumentClose" => Ok(()),
         other => Err(ManifestError::UnsupportedDataType {
             data_type: other.to_string(),
         }),
@@ -2163,6 +2165,8 @@ fn ensure_data_type_matches_fidelity(
     match (data_type, fidelity_class) {
         ("TradeTick", SourceProofFidelityClass::TradeReplay) => Ok(()),
         ("OrderBookDelta", SourceProofFidelityClass::L2Replay) => Ok(()),
+        ("InstrumentStatus" | "InstrumentClose", SourceProofFidelityClass::TradeReplay)
+        | ("InstrumentStatus" | "InstrumentClose", SourceProofFidelityClass::L2Replay) => Ok(()),
         (data_type, fidelity_class) => Err(ManifestError::DataTypeFidelityMismatch {
             data_type: data_type.to_string(),
             fidelity_class,
@@ -2176,6 +2180,15 @@ fn ensure_catalog_inputs_match_fidelity(
 ) -> Result<(), ManifestError> {
     match fidelity_class {
         SourceProofFidelityClass::TradeReplay => {
+            if !inputs.iter().any(|input| input.data_type == "TradeTick") {
+                return Err(ManifestError::DataTypeFidelityMismatch {
+                    data_type: inputs
+                        .first()
+                        .map(|input| input.data_type.clone())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    fidelity_class,
+                });
+            }
             for input in inputs {
                 ensure_data_type_matches_fidelity(&input.data_type, fidelity_class)?;
             }
@@ -2196,7 +2209,7 @@ fn ensure_catalog_inputs_match_fidelity(
             }
             for input in inputs {
                 match input.data_type.as_str() {
-                    "OrderBookDelta" | "TradeTick" => {}
+                    "OrderBookDelta" | "TradeTick" | "InstrumentStatus" | "InstrumentClose" => {}
                     other => {
                         return Err(ManifestError::DataTypeFidelityMismatch {
                             data_type: other.to_string(),
@@ -3631,6 +3644,75 @@ mod tests {
         assert_eq!(run.data().len(), 2);
         assert_eq!(run.data()[0].data_type(), NautilusDataType::OrderBookDelta);
         assert_eq!(run.data()[1].data_type(), NautilusDataType::TradeTick);
+    }
+
+    #[test]
+    fn l2_replay_manifest_maps_nt_status_and_close_catalog_inputs_as_auxiliary_streams() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let mut status_input = manifest.catalog_inputs[0].clone();
+        status_input.data_type = "InstrumentStatus".to_string();
+        let mut close_input = manifest.catalog_inputs[0].clone();
+        close_input.data_type = "InstrumentClose".to_string();
+        manifest.catalog_inputs.push(status_input);
+        manifest.catalog_inputs.push(close_input);
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
+
+        manifest
+            .validate(&accepted)
+            .expect("L2Replay should allow NT status and close auxiliary streams");
+        let run = manifest.to_nt_run_config().expect("run config");
+
+        assert_eq!(run.data().len(), 3);
+        assert_eq!(run.data()[0].data_type(), NautilusDataType::OrderBookDelta);
+        assert_eq!(
+            run.data()[1].data_type(),
+            NautilusDataType::InstrumentStatus
+        );
+        assert_eq!(run.data()[2].data_type(), NautilusDataType::InstrumentClose);
+    }
+
+    #[test]
+    fn trade_replay_manifest_maps_nt_status_and_close_catalog_inputs_as_auxiliary_streams() {
+        let mut manifest = valid_manifest();
+        let mut status_input = manifest.catalog_inputs[0].clone();
+        status_input.data_type = "InstrumentStatus".to_string();
+        let mut close_input = manifest.catalog_inputs[0].clone();
+        close_input.data_type = "InstrumentClose".to_string();
+        manifest.catalog_inputs.push(status_input);
+        manifest.catalog_inputs.push(close_input);
+
+        manifest
+            .validate(&accepted_dataset())
+            .expect("TradeReplay should allow NT status and close auxiliary streams");
+        let run = manifest.to_nt_run_config().expect("run config");
+
+        assert_eq!(run.data().len(), 3);
+        assert_eq!(run.data()[0].data_type(), NautilusDataType::TradeTick);
+        assert_eq!(
+            run.data()[1].data_type(),
+            NautilusDataType::InstrumentStatus
+        );
+        assert_eq!(run.data()[2].data_type(), NautilusDataType::InstrumentClose);
+    }
+
+    #[test]
+    fn trade_replay_rejects_auxiliary_catalog_inputs_without_trade_ticks() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "InstrumentStatus".to_string();
+        let mut close_input = manifest.catalog_inputs[0].clone();
+        close_input.data_type = "InstrumentClose".to_string();
+        manifest.catalog_inputs.push(close_input);
+
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::DataTypeFidelityMismatch {
+                data_type: "InstrumentStatus".to_string(),
+                fidelity_class: SourceProofFidelityClass::TradeReplay,
+            }
+        );
     }
 
     #[test]

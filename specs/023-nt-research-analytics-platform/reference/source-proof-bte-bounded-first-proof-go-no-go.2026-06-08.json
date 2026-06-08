@@ -192,8 +192,8 @@
     },
     {
       "area": "manifest data config",
-      "required_shape": "Data-family driven support for multiple NT data configs, at minimum OrderBookDelta and TradeTick for L2Replay, without replacing existing TradeTick path.",
-      "current_status": "TDD-proven for OrderBookDelta data config, configured instrument_ids, and multiple configured [[catalog_inputs]] mapping into multiple NT BacktestDataConfig entries. Full broad source-selection/catalog acceptance remains pending outside the bounded PMXT one-off path."
+      "required_shape": "Data-family driven support for multiple NT data configs, at minimum OrderBookDelta and TradeTick for L2Replay plus NT-supported InstrumentStatus/InstrumentClose auxiliary streams, without replacing existing TradeTick path.",
+      "current_status": "TDD-proven for OrderBookDelta data config, configured instrument_ids, multiple configured [[catalog_inputs]] mapping into multiple NT BacktestDataConfig entries, and InstrumentStatus/InstrumentClose auxiliary streams. Auxiliary streams cannot satisfy the primary TradeReplay/L2Replay market-data requirement. Full broad source-selection/catalog acceptance remains pending outside the bounded PMXT one-off path."
     },
     {
       "area": "catalog projection",
@@ -207,7 +207,7 @@
     },
     {
       "area": "NT parser/provider reuse",
-      "required_shape": "Add pinned nautilus-polymarket dependency to the isolated BTE crate and call public NT Polymarket parser/provider APIs for instruments, snapshots, deltas, and trades."
+      "required_shape": "Keep the pinned nautilus-polymarket dependency in the isolated BTE crate and call public NT Polymarket parser/provider APIs for instruments, snapshots, deltas, and trades."
     },
     {
       "area": "trade id",
@@ -238,6 +238,9 @@
     "GREEN just bte-test run_manifest::tests::l2_replay_accepts_order_book_delta_data_config passed after mapping OrderBookDelta into NT BacktestDataConfig.",
     "RED just bte-test run_manifest::tests::data_config_maps_configured_multi_instrument_ids failed with UnsupportedNtSurface for catalog_input.instrument_ids.",
     "GREEN just bte-test run_manifest::tests::data_config_maps_configured_multi_instrument_ids passed after mapping configured instrument_ids into NT BacktestDataConfig.",
+    "RED python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked nt_status_and_close_catalog_inputs_as_auxiliary_streams failed with UnsupportedDataType for InstrumentStatus.",
+    "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked nt_status_and_close_catalog_inputs_as_auxiliary_streams passed after mapping InstrumentStatus and InstrumentClose into NT BacktestDataConfig as auxiliary streams for TradeReplay and L2Replay.",
+    "The branch adds regression coverage that auxiliary InstrumentStatus/InstrumentClose inputs cannot satisfy TradeReplay without a primary TradeTick; PR CI is the broad gate for this commit.",
     "just bte-test run_manifest::tests:: passed 65 focused manifest tests.",
     "just bte-fmt-check passed.",
     "RED just bte-test catalog_projection::tests::binary_option_l2_catalog_records_round_trip_through_nt_catalog failed because logical_catalog_hash rejected InstrumentAny::BinaryOption after NT catalog write/read succeeded.",
@@ -323,7 +326,7 @@
     "GREEN rerun of /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/artifact-root-run.toml preserved result_contract_hash 1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe and nt_iterations 104."
   ],
   "still_blocking_broad_backfill": [
-    "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven.",
+    "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven; InstrumentStatus/InstrumentClose replay support is not timed InstrumentAny instrument-definition replay.",
     "One-hour bounded sample does not prove one-year PMXT coverage, gaps, retention, throughput, or cost.",
     "Pending PMXT source proof has not passed storage, coverage, completeness, cost, and broad accepted NT mapping checks.",
     "A concrete manifest-only PMXT coverage-axis ledger now exists at /private/tmp/bte-pmxt-coverage-ledger-20260609/ledger-output/backfill-coverage-ledger.json, but both records are rejected because source_proof_status remains pending; this proves the efficient coverage-axis path, not broad source acceptance.",

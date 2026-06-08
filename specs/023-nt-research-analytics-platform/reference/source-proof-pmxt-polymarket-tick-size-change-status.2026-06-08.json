@@ -6,7 +6,7 @@
   "recorded_at_utc": "2026-06-08T00:00:00Z",
   "scope": {
     "question": "Can PMXT tick_size_change rows be represented in NT catalog/backtest without custom simulation behavior?",
-    "answer": "Pinned NT has live Polymarket tick-size-change handling and catalog support for multiple InstrumentAny snapshots, but BacktestNode loads instruments up front and standard BacktestDataConfig data streams flow through BacktestEngine::add_data as Data enum items. Data does not include InstrumentAny. Dynamic in-run instrument-definition replay is therefore unproven for this BTE path.",
+    "answer": "Pinned NT has live Polymarket tick-size-change handling, catalog support for multiple InstrumentAny snapshots, and BacktestDataConfig support for InstrumentStatus/InstrumentClose auxiliary streams. BacktestNode loads instruments up front and standard BacktestDataConfig data streams flow through BacktestEngine::add_data as Data enum items. Data does not include InstrumentAny. Dynamic in-run instrument-definition replay is therefore unproven for this BTE path.",
     "not_implementation": true,
     "not_catalog_readback_proof": true,
     "not_source_selection": true
@@ -98,6 +98,11 @@
     "max_changes_per_asset": 2,
     "max_distinct_transitions_per_asset": 1
   },
+  "bte_manifest_surface_evidence": [
+    "BTE now maps NT InstrumentStatus and InstrumentClose BacktestDataConfig classes as auxiliary catalog streams for TradeReplay and L2Replay.",
+    "InstrumentStatus and InstrumentClose are Data enum replay items, not InstrumentAny instrument-definition updates, so this does not close tick_size_change epoch replay.",
+    "The branch adds regression coverage that auxiliary InstrumentStatus/InstrumentClose inputs cannot satisfy TradeReplay without a primary TradeTick; PR CI is the broad gate for this commit."
+  ],
   "policy_implications": [
     {
       "policy": "do_not_ignore_tick_size_change_for_l2_replay",
@@ -128,7 +133,7 @@
   ],
   "required_green_tests_when_implementation_starts": [
     "Write and query multiple BinaryOption snapshots for one instrument id through ParquetDataCatalog and prove returned order/ts_init.",
-    "Prove BacktestNode either cannot replay dynamic InstrumentAny updates or prove a supported NT-native mechanism for applying tick-size epochs during the run.",
+    "Prove BacktestNode either cannot replay dynamic InstrumentAny updates or prove a supported NT-native mechanism for applying tick-size epochs during the run; InstrumentStatus/InstrumentClose auxiliary streams are not sufficient evidence.",
     "If first proof excludes tick-changing assets, assert the exclusion is source-proof-bound and appears as a result-contract claim limit.",
     "If tick-size changes are included, prove post-change book deltas are not consumed until a source snapshot rebuilds the book epoch.",
     "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_projection_rejects_ignored_tick_size_change_rows failed because tick_size_change in ignored_event_types was silently skipped.",
@@ -139,6 +144,6 @@
     "first_proof_exclusion_policy_can_close": true,
     "bte_022_can_close": false,
     "broad_backfill_allowed": false,
-    "next_required_evidence": "TDD implementation proof for the configured first-proof selector, NT catalog read-back, and BacktestNode run over selected unaffected instruments. Dynamic tick-size replay remains a separate blocker for full L2 acceptance."
+    "next_required_evidence": "Prove BacktestNode either cannot replay dynamic InstrumentAny updates or prove a supported NT-native mechanism for applying tick-size epochs during the run. The configured first-proof selector, NT catalog read-back, and BacktestNode run over selected unaffected instruments are bounded one-off evidence only; dynamic tick-size replay remains a separate blocker for full L2 acceptance."
   }
 }

@@ -54,11 +54,11 @@
       "evidence": "nt://crates/persistence/src/backend/catalog.rs:2084"
     },
     {
-      "capability": "BacktestDataConfig/NautilusDataType includes OrderBookDelta and OrderBookDepth10 in addition to TradeTick.",
+      "capability": "BacktestDataConfig/NautilusDataType includes OrderBookDelta, OrderBookDepth10, InstrumentStatus, and InstrumentClose in addition to TradeTick.",
       "evidence": "nt://crates/backtest/src/config.rs:50"
     },
     {
-      "capability": "BacktestNode dispatches ParquetDataCatalog queries for TradeTick, OrderBookDelta, and OrderBookDepth10.",
+      "capability": "BacktestNode dispatches ParquetDataCatalog queries for TradeTick, OrderBookDelta, OrderBookDepth10, InstrumentStatus, and InstrumentClose.",
       "evidence": "nt://crates/backtest/src/node.rs:539"
     },
     {
@@ -92,7 +92,7 @@
       "evidence": "nt://crates/adapters/polymarket/src/http/data_api.rs:55"
     },
     {
-      "limitation": "The manifest/data-config path now maps TradeTick and OrderBookDelta plus configured instrument_ids, but this proves only NT data-config construction, not PMXT source-row projection or BacktestNode consumption of a verified PMXT L2 catalog.",
+      "limitation": "The manifest/data-config path now maps TradeTick, OrderBookDelta, InstrumentStatus, and InstrumentClose plus configured instrument_ids. InstrumentStatus and InstrumentClose are auxiliary catalog streams and do not prove timed InstrumentAny instrument-definition replay, PMXT source-row projection, or BacktestNode consumption of a verified broad PMXT L2 catalog.",
       "evidence": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1448, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1524, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1762, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1991"
     },
     {
@@ -206,12 +206,15 @@
     ]
   },
   "bounded_l2_manifest_mapping_status": {
-    "status": "tdd_proven_for_order_book_delta_and_configured_instrument_ids",
+    "status": "tdd_proven_for_order_book_delta_configured_instrument_ids_and_nt_status_close_auxiliary_streams",
     "evidence": [
       "RED just bte-test run_manifest::tests::l2_replay_accepts_order_book_delta_data_config failed with UnsupportedDataType for OrderBookDelta.",
       "GREEN just bte-test run_manifest::tests::l2_replay_accepts_order_book_delta_data_config passed after mapping OrderBookDelta to NautilusDataType::OrderBookDelta and L2Replay.",
       "RED just bte-test run_manifest::tests::data_config_maps_configured_multi_instrument_ids failed with UnsupportedNtSurface for catalog_input.instrument_ids.",
       "GREEN just bte-test run_manifest::tests::data_config_maps_configured_multi_instrument_ids passed after mapping configured instrument_ids into BacktestDataConfig.",
+      "RED python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked nt_status_and_close_catalog_inputs_as_auxiliary_streams failed with UnsupportedDataType for InstrumentStatus.",
+      "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked nt_status_and_close_catalog_inputs_as_auxiliary_streams passed after mapping InstrumentStatus and InstrumentClose to NT BacktestDataConfig as auxiliary streams for TradeReplay and L2Replay.",
+      "The branch adds regression coverage that auxiliary InstrumentStatus/InstrumentClose inputs cannot satisfy TradeReplay without a primary TradeTick; PR CI is the broad gate for this commit.",
       "just bte-test run_manifest::tests:: passed 65 focused manifest tests.",
       "just bte-fmt-check passed."
     ],
@@ -323,7 +326,7 @@
     },
     {
       "blocker": "dynamic_tick_size_replay_unproven",
-      "required_evidence": "A separate NT BacktestNode/catalog proof that tick_size_change epochs can be represented without custom simulation behavior before full PMXT Polymarket L2 acceptance. Current guard only proves the one-off selected-source projection cannot silently ignore configured non-ignorable tick_size_change rows."
+      "required_evidence": "A separate NT BacktestNode/catalog proof that tick_size_change epochs can be represented without custom simulation behavior before full PMXT Polymarket L2 acceptance. InstrumentStatus/InstrumentClose replay support is not InstrumentAny replay; current guards only prove auxiliary status/close data-config mapping and that the one-off selected-source projection cannot silently ignore configured non-ignorable tick_size_change rows."
     },
     {
       "blocker": "durable_source_selection_unproven",

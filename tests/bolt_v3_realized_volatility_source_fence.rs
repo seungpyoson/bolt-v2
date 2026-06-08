@@ -2,6 +2,9 @@ use std::{fs, path::Path};
 
 const FORBIDDEN_STRATEGY_RV_TERMS: &[&str] = &[
     "CrossSourceDispersion",
+    "RealizedVolEngine",
+    "RealizedVolSurfaceRuntime",
+    "realized_vol_engine",
     "min_ready_sources",
     "max_cross_source_dispersion",
     "upper_quantile",
@@ -13,6 +16,7 @@ const RV_AGNOSTIC_ARTIFACTS: &[&str] = &[
     "specs/026-realized-volatility-surfaces/plan.md",
     "specs/026-realized-volatility-surfaces/implementation-prompt.md",
     "src/bolt_v3_realized_volatility.rs",
+    "src/bolt_v3_realized_volatility_runtime.rs",
     "tests/bolt_v3_realized_volatility.rs",
 ];
 

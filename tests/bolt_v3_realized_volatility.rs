@@ -1,7 +1,9 @@
 use bolt_v2::bolt_v3_realized_volatility::{
     RealizedVolAggregation, RealizedVolBlockReason, RealizedVolEngine, RealizedVolEngineConfig,
-    RealizedVolObservation, RealizedVolSampleKind, RealizedVolSnapshot, RealizedVolSourceClass,
-    RealizedVolSourceConfig, RealizedVolSourceRejectReason, RealizedVolSourceStatus,
+    RealizedVolJumpConfig, RealizedVolJumpPolicy, RealizedVolNoiseConfig, RealizedVolNoiseMethod,
+    RealizedVolObservation, RealizedVolPricingComponent, RealizedVolSampleKind,
+    RealizedVolSnapshot, RealizedVolSourceClass, RealizedVolSourceConfig,
+    RealizedVolSourceRejectReason, RealizedVolSourceStatus,
 };
 
 const SURFACE_ID: &str = "<surface_id>";
@@ -34,6 +36,7 @@ fn config(source_ids: &[&str]) -> RealizedVolEngineConfig {
         max_cross_source_dispersion: 0.50,
         seconds_per_annum: 31_536_000.0,
         aggregation: RealizedVolAggregation::UpperQuantile { quantile: 1.0 },
+        estimator: bolt_v2::bolt_v3_realized_volatility::RealizedVolEstimatorConfig::measured(),
         sources: source_ids
             .iter()
             .map(|source_id| source(source_id))
@@ -57,6 +60,15 @@ fn observe_path(engine: &mut RealizedVolEngine, source_id: &str, prices: &[f64])
         let ts_ms = (index as u64 + 1) * 1_000;
         assert!(engine.observe(observation(source_id, *price, ts_ms)));
     }
+}
+
+fn ready_rv_for_prices(prices: &[f64]) -> f64 {
+    let mut engine = RealizedVolEngine::from_config(config(&[SOURCE_A])).unwrap();
+    observe_path(&mut engine, SOURCE_A, prices);
+    engine
+        .snapshot_at(4_000)
+        .annualized_realized_vol_decimal
+        .expect("price path should publish ready RV")
 }
 
 #[test]
@@ -103,6 +115,91 @@ fn cross_source_dispersion_blocks_instead_of_publishing_low_rv() {
         snapshot
             .blocked_reasons
             .contains(&RealizedVolBlockReason::CrossSourceDispersion)
+    );
+}
+
+#[test]
+fn median_aggregation_ignores_one_extreme_ready_source_when_quorum_satisfied() {
+    let mut cfg = config(&[SOURCE_A, SOURCE_B, "<SOURCE_ID_C>"]);
+    cfg.aggregation = RealizedVolAggregation::Median;
+    cfg.max_cross_source_dispersion = 10_000.0;
+    let expected_mid = ready_rv_for_prices(&[100.0, 101.0, 102.0, 103.0]);
+    let mut engine = RealizedVolEngine::from_config(cfg).unwrap();
+    observe_path(&mut engine, SOURCE_A, &[100.0, 100.1, 100.2, 100.3]);
+    observe_path(&mut engine, SOURCE_B, &[100.0, 101.0, 102.0, 103.0]);
+    observe_path(&mut engine, "<SOURCE_ID_C>", &[100.0, 125.0, 75.0, 150.0]);
+
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    let actual = snapshot.annualized_realized_vol_decimal.unwrap();
+    assert!(
+        (actual - expected_mid).abs() < 1e-9,
+        "median aggregation should use middle contributor; expected {expected_mid}, got {actual}"
+    );
+}
+
+#[test]
+fn jump_separation_publishes_continuous_and_jump_components() {
+    let mut cfg = config(&[SOURCE_A]);
+    cfg.estimator.jump = RealizedVolJumpConfig {
+        policy: RealizedVolJumpPolicy::Separate,
+    };
+    let mut engine = RealizedVolEngine::from_config(cfg).unwrap();
+    observe_path(&mut engine, SOURCE_A, &[100.0, 100.2, 140.0, 140.2]);
+
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    assert!(snapshot.measured_annualized_realized_vol_decimal.unwrap() > 0.0);
+    assert!(
+        snapshot.jump_annualized_realized_vol_decimal.unwrap() > 0.0,
+        "large isolated return should be reported as jump component"
+    );
+    assert!(
+        snapshot.continuous_annualized_realized_vol_decimal.unwrap()
+            < snapshot.measured_annualized_realized_vol_decimal.unwrap(),
+        "continuous component should not equal measured RV when a jump is separated"
+    );
+}
+
+#[test]
+fn subsampled_rv_reduces_alternating_midpoint_bounce_vs_base_grid() {
+    let mut base_cfg = config(&[SOURCE_A]);
+    base_cfg.max_source_age_ms = 1_000;
+    let mut robust_cfg = base_cfg.clone();
+    robust_cfg.estimator.noise = RealizedVolNoiseConfig {
+        method: RealizedVolNoiseMethod::Subsampled {
+            subsamples: 2,
+            min_ready_subsamples: 2,
+        },
+    };
+    let mut base = RealizedVolEngine::from_config(base_cfg).unwrap();
+    let mut robust = RealizedVolEngine::from_config(robust_cfg).unwrap();
+    for (ts_ms, price) in [
+        (1_000, 100.0),
+        (2_000, 101.0),
+        (3_000, 100.0),
+        (4_000, 101.0),
+    ] {
+        let observation = observation(SOURCE_A, price, ts_ms);
+        assert!(base.observe(observation.clone()));
+        assert!(robust.observe(observation));
+    }
+
+    let base_snapshot = base.snapshot_at(4_000);
+    let robust_snapshot = robust.snapshot_at(4_000);
+
+    assert!(base_snapshot.ready);
+    assert!(robust_snapshot.ready);
+    assert!(
+        robust_snapshot
+            .noise_robust_annualized_realized_vol_decimal
+            .unwrap()
+            < base_snapshot
+                .measured_annualized_realized_vol_decimal
+                .unwrap(),
+        "subsampled RV should reduce deterministic bid/ask bounce"
     );
 }
 
@@ -460,6 +557,18 @@ fn engine_config_validation_matches_root_policy_bounds() {
     assert!(
         error.contains("min_coverage_ratio"),
         "unexpected validation error: {error}"
+    );
+}
+
+#[test]
+fn forecast_pricing_component_is_rejected_until_forecast_policy_is_enabled() {
+    let mut cfg = config(&[SOURCE_A]);
+    cfg.estimator.pricing_component = RealizedVolPricingComponent::Forecast;
+
+    let err = RealizedVolEngine::from_config(cfg).unwrap_err();
+    assert!(
+        err.contains("forecast RV is not enabled"),
+        "unexpected validation error: {err}"
     );
 }
 

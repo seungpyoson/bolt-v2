@@ -26,6 +26,60 @@ pub struct ArtifactIndexProducerIamStatement {
     pub resources: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactIndexProducerIamProvisioningPlanSpec {
+    pub artifact_root: String,
+    pub artifact_kind: ArtifactKind,
+    #[serde(default)]
+    pub proof_artifact_roots: Vec<String>,
+    pub ssm_parameter_prefix: String,
+    #[serde(default)]
+    pub denied_artifact_kinds: Vec<ArtifactKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactIndexProducerIamProvisioningPlan {
+    pub artifact_kind: ArtifactKind,
+    pub ssm_parameter_paths: ArtifactIndexProducerSsmParameterPaths,
+    pub policy: ArtifactIndexProducerIamPolicy,
+    pub proof_denied_artifact_kinds: Vec<ArtifactKind>,
+    pub expected_denied_write_attempts: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactIndexProducerSsmParameterPaths {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
+}
+
+pub fn artifact_index_producer_iam_provisioning_plan(
+    spec: ArtifactIndexProducerIamProvisioningPlanSpec,
+) -> Result<ArtifactIndexProducerIamProvisioningPlan, ArtifactIndexIamPolicyError> {
+    validate_denied_kinds(spec.artifact_kind, &spec.denied_artifact_kinds)?;
+    let ssm_prefix = validate_ssm_parameter_prefix(&spec.ssm_parameter_prefix)?;
+    let proof_roots: Vec<&str> = spec
+        .proof_artifact_roots
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let policy =
+        artifact_index_producer_iam_policy(&spec.artifact_root, spec.artifact_kind, &proof_roots)?;
+    let kind_path = spec.artifact_kind.as_str();
+    Ok(ArtifactIndexProducerIamProvisioningPlan {
+        artifact_kind: spec.artifact_kind,
+        ssm_parameter_paths: ArtifactIndexProducerSsmParameterPaths {
+            access_key_id: format!("{ssm_prefix}/{kind_path}/access-key-id"),
+            secret_access_key: format!("{ssm_prefix}/{kind_path}/secret-access-key"),
+            session_token: None,
+        },
+        policy,
+        expected_denied_write_attempts: spec.denied_artifact_kinds.len() * 3,
+        proof_denied_artifact_kinds: spec.denied_artifact_kinds,
+    })
+}
+
 pub fn artifact_index_producer_iam_policy(
     artifact_root: &str,
     artifact_kind: ArtifactKind,
@@ -69,6 +123,59 @@ fn producer_statement(
             s3_root.resource_arn("artifact-index/v1/audit/epochs/*"),
         ],
     })
+}
+
+fn validate_denied_kinds(
+    artifact_kind: ArtifactKind,
+    denied_artifact_kinds: &[ArtifactKind],
+) -> Result<(), ArtifactIndexIamPolicyError> {
+    if denied_artifact_kinds.contains(&artifact_kind) {
+        Err(
+            ArtifactIndexIamPolicyError::DeniedArtifactKindIncludesProducerKind {
+                artifact_kind,
+            },
+        )
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_ssm_parameter_prefix(
+    prefix: &str,
+) -> Result<String, ArtifactIndexIamPolicyError> {
+    let whitespace_trimmed = prefix.trim();
+    if whitespace_trimmed != prefix {
+        return Err(ArtifactIndexIamPolicyError::InvalidSsmParameterPrefix {
+            prefix: prefix.to_string(),
+            reason: "SSM parameter prefix contains leading or trailing whitespace",
+        });
+    }
+    let trimmed = whitespace_trimmed.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err(ArtifactIndexIamPolicyError::InvalidSsmParameterPrefix {
+            prefix: prefix.to_string(),
+            reason: "SSM parameter prefix is empty",
+        });
+    }
+    if !trimmed.starts_with('/') {
+        return Err(ArtifactIndexIamPolicyError::InvalidSsmParameterPrefix {
+            prefix: prefix.to_string(),
+            reason: "expected absolute SSM parameter prefix starting with /",
+        });
+    }
+    if trimmed.contains(char::is_whitespace) {
+        return Err(ArtifactIndexIamPolicyError::InvalidSsmParameterPrefix {
+            prefix: prefix.to_string(),
+            reason: "SSM parameter prefix contains whitespace",
+        });
+    }
+    if trimmed.contains('*') {
+        return Err(ArtifactIndexIamPolicyError::InvalidSsmParameterPrefix {
+            prefix: prefix.to_string(),
+            reason: "SSM parameter prefix cannot contain wildcard characters",
+        });
+    }
+    Ok(trimmed.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +238,13 @@ pub enum ArtifactIndexIamPolicyError {
         field: &'static str,
         artifact_root: String,
     },
+    InvalidSsmParameterPrefix {
+        prefix: String,
+        reason: &'static str,
+    },
+    DeniedArtifactKindIncludesProducerKind {
+        artifact_kind: ArtifactKind,
+    },
 }
 
 impl fmt::Display for ArtifactIndexIamPolicyError {
@@ -147,6 +261,16 @@ impl fmt::Display for ArtifactIndexIamPolicyError {
                 artifact_root,
             } => {
                 write!(f, "{field} is empty in artifact_root {artifact_root}")
+            }
+            Self::InvalidSsmParameterPrefix { prefix, reason } => {
+                write!(f, "{reason}: {prefix}")
+            }
+            Self::DeniedArtifactKindIncludesProducerKind { artifact_kind } => {
+                write!(
+                    f,
+                    "denied_artifact_kinds cannot include producer artifact_kind {}",
+                    artifact_kind.as_str()
+                )
             }
         }
     }

@@ -3,6 +3,7 @@
   "task_id": "BACKTESTING_ENGINE-006",
   "status": "open_iam_scope_unproven",
   "recorded_at": "2026-06-08",
+  "reconciled_at": "2026-06-09",
   "decision": "Do not rely on Artifact Index producer commits for broad backfill until per-kind producer IAM scope is proven, or an approved coordinator/table format is selected.",
   "store_commit_mechanics": {
     "status": "proven",
@@ -35,8 +36,11 @@
   },
   "repo_side_progress": {
     "per_kind_policy_generator": "crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs",
+    "per_kind_provisioning_plan": "crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs::artifact_index_producer_iam_provisioning_plan",
     "policy_test": "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_artifact_index_iam_policy.rs",
+    "provisioning_plan_test": "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_artifact_index_iam_policy.rs::producer_iam_provisioning_plan_binds_policy_ssm_paths_and_denied_probe_kinds",
     "policy_shape": "The generated policy allows S3 GetObject/PutObject only for the configured Artifact Index kind's events, snapshots, latest pointer, and audit epoch paths under the configured artifact_root and optional proof roots.",
+    "provisioning_plan_shape": "The generated provisioning plan binds one Artifact Index kind to one SSM parameter namespace, one per-kind IAM policy, explicit denied_artifact_kinds for proof probing, and the expected denied write attempt count.",
     "runtime_secret_source": "SSM parameter names only; no credential values are stored in repo artifacts."
   },
   "backfill_safety_impact": {
@@ -47,7 +51,7 @@
   },
   "next_required_evidence": [
     "Explicit approval for AWS security mutation if per-kind IAM is the selected path.",
-    "Provision one producer identity and SSM parameter set per top-level Artifact Index kind using the generated policy.",
+    "Provision one producer identity and SSM parameter set per top-level Artifact Index kind using the generated provisioning plan and policy.",
     "Rerun artifact_index_commit_proof with denied_artifact_kinds configured so denied event, snapshot, and latest-pointer writes are rejected by permissions.",
     "If per-kind IAM is not acceptable, select and prove an approved commit coordinator or table format before relying on Artifact Index commits."
   ],

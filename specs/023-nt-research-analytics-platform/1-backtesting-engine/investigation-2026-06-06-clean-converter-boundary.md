@@ -1898,3 +1898,37 @@ Current conclusion:
 - The efficient path is still to keep PMXT as a one-off evidence source while
   durable Polymarket source selection and dynamic tick-size replay are proven
   separately.
+
+## 2026-06-09 Artifact Index IAM provisioning-plan checkpoint
+
+Root cause addressed:
+
+- `BACKTESTING_ENGINE-006` already had direct S3 commit mechanics proof, but
+  the IAM-scope proof used the broad generic SSM binding
+  `/bolt/artifact-store/s3/*`.
+- That proof showed denied-kind writes were not rejected:
+  three denied writes were attempted, zero were rejected, and three violations
+  were recorded.
+- The repo had a per-kind policy generator, but no typed contract binding the
+  producer kind, SSM parameter namespace, generated policy, denied proof kinds,
+  and expected denied-write count into one reviewable provisioning shape.
+
+Change:
+
+- `artifact_index_producer_iam_provisioning_plan` now builds a deterministic
+  per-kind plan from `ArtifactKind`, `artifact_root`, optional proof roots, an
+  SSM parameter prefix, and explicit `denied_artifact_kinds`.
+- The plan records only SSM parameter paths, never credential values.
+- The plan rejects relative or wildcard SSM prefixes and rejects a proof where
+  the producer kind is listed as its own denied kind.
+
+Current conclusion:
+
+- This makes the repo-side IAM/proof contract machine-checkable before any AWS
+  mutation.
+- It does not prove AWS enforcement and does not close
+  `BACKTESTING_ENGINE-006`.
+- The task can close only after an approved per-kind producer identity and SSM
+  parameter set are provisioned, and a real `artifact_index_commit_proof` run
+  shows denied-kind event, snapshot, and latest-pointer writes rejected by
+  permissions.

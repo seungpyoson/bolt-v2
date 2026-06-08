@@ -179,7 +179,7 @@ PRR is a provider implementation, not a generic architecture constraint.
 Current repo evidence:
 
 - `src/bolt_v3_providers/polyresearch.rs` owns PRR provider registration and credential redaction.
-- `polyresearch_websocket_url` appends `apiKey` exactly once and rejects endpoints already containing `apiKey`.
+- `polyresearch_websocket_url` appends `key` exactly once and rejects endpoints already containing `key` or legacy credential query `apiKey`.
 - `POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS` currently allows BTC, ETH, SOL, XRP.
 - Prior local plan evidence records a secret-safe live PRR probe showing JSON text frames with key set `price,symbol,ts`, symbols `BTC/USD`, `ETH/USD`, `SOL/USD`, `XRP/USD`, no initial subscribe message, and no application heartbeat required over the probe window.
 

@@ -1,7 +1,7 @@
 //! PolyResearch reference-price WebSocket authentication helpers and provider
 //! binding.
 //!
-//! PRR auth is a query parameter named `apiKey`. Bolt keeps the endpoint and
+//! PRR auth is a query parameter named `key`. Bolt keeps the endpoint and
 //! credential as separate SSM values, then constructs the credentialed URL once
 //! at the provider edge.
 
@@ -33,7 +33,8 @@ use crate::{
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
 };
 
-const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "apiKey";
+const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "key";
+const POLYRESEARCH_LEGACY_API_KEY_QUERY_FIELD: &str = "apiKey";
 pub const KEY: &str = "POLYRESEARCH_REFERENCE_PRICE";
 pub const REFERENCE_PRICE_PROVIDER_KEY: &str = "polyresearch_ws";
 pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];
@@ -236,12 +237,9 @@ pub struct PolyResearchAuthConfig {
 pub fn polyresearch_websocket_url(config: &PolyResearchAuthConfig) -> Result<Url, String> {
     validate_secret_field("api_key", &config.api_key)?;
     let mut url = validate_websocket_endpoint(&config.websocket_endpoint)?;
-    if url
-        .query_pairs()
-        .any(|(key, _)| key.eq_ignore_ascii_case(POLYRESEARCH_API_KEY_QUERY_FIELD))
-    {
+    if let Some(field) = polyresearch_credential_query_field(&url) {
         return Err(format!(
-            "polyresearch websocket_endpoint must not contain `{POLYRESEARCH_API_KEY_QUERY_FIELD}`; configure api_key separately"
+            "polyresearch websocket_endpoint must not contain credential query `{field}`; configure api_key separately"
         ));
     }
     url.query_pairs_mut()
@@ -288,12 +286,10 @@ fn validate_data_bounds(key: &str, data: &PolyResearchReferencePriceDataConfig) 
         errors.push(format!("clients.{key}.data.websocket_endpoint: {message}"));
     }
     if let Ok(url) = Url::parse(&data.websocket_endpoint)
-        && url
-            .query_pairs()
-            .any(|(field, _)| field.eq_ignore_ascii_case(POLYRESEARCH_API_KEY_QUERY_FIELD))
+        && let Some(field) = polyresearch_credential_query_field(&url)
     {
         errors.push(format!(
-            "clients.{key}.data.websocket_endpoint must not contain `{POLYRESEARCH_API_KEY_QUERY_FIELD}`; configure api_key separately"
+            "clients.{key}.data.websocket_endpoint must not contain credential query `{field}`; configure api_key separately"
         ));
     }
     validate_positive_optional_u64(
@@ -332,6 +328,18 @@ fn validate_data_bounds(key: &str, data: &PolyResearchReferencePriceDataConfig) 
         &mut errors,
     );
     errors
+}
+
+fn polyresearch_credential_query_field(url: &Url) -> Option<&'static str> {
+    for (field, _) in url.query_pairs() {
+        if field.eq_ignore_ascii_case(POLYRESEARCH_API_KEY_QUERY_FIELD) {
+            return Some(POLYRESEARCH_API_KEY_QUERY_FIELD);
+        }
+        if field.eq_ignore_ascii_case(POLYRESEARCH_LEGACY_API_KEY_QUERY_FIELD) {
+            return Some(POLYRESEARCH_LEGACY_API_KEY_QUERY_FIELD);
+        }
+    }
+    None
 }
 
 fn validate_positive_optional_u64(field: &str, value: Option<u64>, errors: &mut Vec<String>) {

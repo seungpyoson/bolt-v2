@@ -196,7 +196,8 @@
       "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source_report_chain passed after result-contract reruns preserved the existing artifact only when all stable fields matched.",
       "GREEN rust_verification cargo run --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-one-off-artifact-root-run-2026-06-08/spec.toml produced result_contract_hash 443a9748ad878984a4959ed840a1132f27c52575d70354af1b5e290cd50d4f19, catalog_hash 2a49db95fe31a87896bcb3989ec99abd6b1b805173732c4f27bf2ab523d1868c, projected_l2_rows 4, and nt_iterations 103.",
       "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/artifact-root-run.toml produced result_contract_hash 1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe, conversion_manifest_hash 5fd0361cefa1a5c3750ab36e9fd2f837ebce0af707ea707d41451eb5c6d0b8f1, catalog_hash 3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236, selected_source_parquet_hash 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, event_count_ledger_hash 985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a, selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110, catalog_nt_data_types [OrderBookDelta, TradeTick], catalog_rows_by_nt_data_type {OrderBookDelta: 103, TradeTick: 1}, and nt_iterations 104.",
-      "GREEN rerun of /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/artifact-root-run.toml preserved result_contract_hash 1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe and nt_iterations 104."
+      "GREEN rerun of /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/artifact-root-run.toml preserved result_contract_hash 1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe and nt_iterations 104.",
+      "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_projection_rejects_ignored_tick_size_change_rows failed because tick_size_change in ignored_event_types was silently skipped; GREEN passed after PmxtSelectedSourceSchema rejected ignored_event_types that overlap forbidden_ignored_event_types before decoding."
     ],
     "claim_limits": [
       "PMXT TradeTick projection/catalog read-back and mixed artifact-root metadata binding are proven only for one-off selected-source rows.",
@@ -319,7 +320,7 @@
     },
     {
       "blocker": "dynamic_tick_size_replay_unproven",
-      "required_evidence": "A separate NT BacktestNode/catalog proof that tick_size_change epochs can be represented without custom simulation behavior before full PMXT Polymarket L2 acceptance."
+      "required_evidence": "A separate NT BacktestNode/catalog proof that tick_size_change epochs can be represented without custom simulation behavior before full PMXT Polymarket L2 acceptance. Current guard only proves the one-off selected-source projection cannot silently ignore configured non-ignorable tick_size_change rows."
     },
     {
       "blocker": "durable_source_selection_unproven",

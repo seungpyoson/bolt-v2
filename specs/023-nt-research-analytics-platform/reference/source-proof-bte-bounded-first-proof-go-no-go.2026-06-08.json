@@ -142,7 +142,7 @@
     {
       "prompt_requirement": "BacktestNode consumes exactly the verified catalog",
       "bounded_first_proof_status": "concrete_pmxt_one_off_l2_trade_tick_artifact_root_written",
-      "evidence": "NT BacktestNode queries OrderBookDelta and TradeTick from ParquetDataCatalog, validates L2_MBP venues have order-book data, sorts the merged streams by ts_init, and completed 104 iterations from the verified current PMXT catalog. The PMXT one-off artifact-root writer validates selected-source and selector report hashes, projects selected PMXT rows to ParquetDataCatalog, and binds catalog hash 3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236 with catalog_nt_data_types [OrderBookDelta, TradeTick] and catalog_rows_by_nt_data_type {OrderBookDelta: 103, TradeTick: 1}.",
+      "evidence": "NT BacktestNode queries OrderBookDelta and TradeTick from ParquetDataCatalog, validates L2_MBP venues have order-book data, sorts the merged streams by ts_init, and completed 104 iterations from the verified current PMXT catalog. The PMXT one-off artifact-root writer validates selected-source and selector report hashes, projects selected PMXT rows to ParquetDataCatalog, and binds catalog hash 3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236 with catalog_nt_data_types [OrderBookDelta, TradeTick] and catalog_rows_by_nt_data_type {OrderBookDelta: 103, TradeTick: 1}. The selected-source projection schema rejects configs that try to silently ignore configured non-ignorable event types such as tick_size_change.",
       "required_before_acceptance": "Treat this as one-off PMXT L2+TradeTick evidence only; expanded coverage and dynamic tick-size replay remain separate gates."
     },
     {

@@ -120,6 +120,7 @@ pub struct PmxtSelectedSourceSchema {
     #[serde(default)]
     pub fee_rate_bps_column: Option<String>,
     pub ignored_event_types: Vec<String>,
+    pub forbidden_ignored_event_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -495,6 +496,7 @@ pub fn project_pmxt_selected_source_parquet_to_nt(
         !selector_report.event_count_ledger_hash.trim().is_empty(),
         "selector report event_count_ledger_hash must not be empty"
     );
+    ensure_ignored_event_types_are_allowed(&spec.schema)?;
 
     let decoded = decode_selected_source_rows(&spec, &report)?;
     let projected_l2_rows = decoded.rows.len() as u64;
@@ -551,6 +553,18 @@ fn read_selected_source_selector_report(
         "selector report status must be selected for PMXT one-off projection"
     );
     Ok(selector_report)
+}
+
+fn ensure_ignored_event_types_are_allowed(schema: &PmxtSelectedSourceSchema) -> Result<()> {
+    for ignored_event_type in &schema.ignored_event_types {
+        for forbidden_event_type in &schema.forbidden_ignored_event_types {
+            ensure!(
+                ignored_event_type != forbidden_event_type,
+                "PMXT selected-source event_type {ignored_event_type:?} cannot be ignored"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn decode_selected_source_rows(

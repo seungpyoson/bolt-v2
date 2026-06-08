@@ -453,6 +453,41 @@ fn pmxt_selected_source_parquet_projects_fixed_size_binary_market_column() {
 }
 
 #[test]
+fn pmxt_selected_source_projection_rejects_ignored_tick_size_change_rows() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let selected_parquet_path = dir.path().join("selected-source.parquet");
+    let selector_report_path = dir.path().join("first-proof-selector-report.json");
+    let selected_report_path = dir.path().join("selected-source-report.json");
+    write_pmxt_selected_source_with_tick_size_change_fixture(&selected_parquet_path);
+    write_selector_report_fixture(&selector_report_path);
+    write_selected_source_report_with_selector(
+        &selected_report_path,
+        &selected_parquet_path,
+        &selector_report_path,
+        4,
+    );
+
+    let mut schema = pmxt_selected_source_schema();
+    schema
+        .ignored_event_types
+        .push("tick_size_change".to_string());
+
+    let error = project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
+        source_binding: "synthetic-pmxt-one-off-source".to_string(),
+        usage_scope: SourceProofUsageScope::OneOffBackfillData,
+        selected_condition_id: "0xcondition".to_string(),
+        selected_token_id: "token-a".to_string(),
+        gamma_markets: gamma_markets(),
+        selected_source_parquet_path: selected_parquet_path,
+        selected_source_report_path: selected_report_path,
+        schema,
+    })
+    .expect_err("tick_size_change rows must not be silently ignored");
+
+    assert!(error.to_string().contains("cannot be ignored"), "{error:#}");
+}
+
+#[test]
 fn pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_metadata() {
     let projection = pmxt_projection_fixture();
     let output_dir = tempfile::TempDir::new().expect("output dir");
@@ -1031,6 +1066,7 @@ sell_side = "SELL"
 book_event_type = "book"
 price_change_event_type = "price_change"
 ignored_event_types = ["last_trade_price"]
+forbidden_ignored_event_types = ["tick_size_change"]
 
 [fingerprint]
 source_proof_id = "source-proof-pmxt-one-off"
@@ -1390,6 +1426,7 @@ fn pmxt_selected_source_schema() -> PmxtSelectedSourceSchema {
         transaction_hash_column: None,
         fee_rate_bps_column: None,
         ignored_event_types: vec!["last_trade_price".to_string()],
+        forbidden_ignored_event_types: vec!["tick_size_change".to_string()],
     }
 }
 
@@ -1413,6 +1450,114 @@ fn write_pmxt_selected_source_fixture(path: &std::path::Path) {
             Some(b"0xcondition".as_slice()),
         ])) as ArrayRef,
     );
+}
+
+fn write_pmxt_selected_source_with_tick_size_change_fixture(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "timestamp_received",
+            DataType::Timestamp(TimeUnit::Nanosecond, Some("+00:00".into())),
+            false,
+        ),
+        Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, Some("+00:00".into())),
+            false,
+        ),
+        Field::new("market", DataType::Binary, false),
+        Field::new("event_type", DataType::Utf8, false),
+        Field::new("asset_id", DataType::Utf8, false),
+        Field::new("bids", DataType::Utf8, true),
+        Field::new("asks", DataType::Utf8, true),
+        Field::new("price", DataType::Decimal128(9, 4), true),
+        Field::new("size", DataType::Decimal128(18, 6), true),
+        Field::new("side", DataType::Utf8, true),
+        Field::new("best_bid", DataType::Decimal128(9, 4), true),
+        Field::new("best_ask", DataType::Decimal128(9, 4), true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(
+                TimestampNanosecondArray::from(vec![
+                    1_772_023_200_223_000_000,
+                    1_772_023_200_556_000_000,
+                    1_772_023_200_600_000_000,
+                    1_772_023_200_656_000_000,
+                ])
+                .with_timezone_utc(),
+            ) as ArrayRef,
+            Arc::new(
+                TimestampNanosecondArray::from(vec![
+                    1_772_023_200_123_000_000,
+                    1_772_023_200_456_000_000,
+                    1_772_023_200_500_000_000,
+                    1_772_023_200_556_000_000,
+                ])
+                .with_timezone_utc(),
+            ) as ArrayRef,
+            Arc::new(BinaryArray::from(vec![
+                Some(b"0xcondition".as_slice()),
+                Some(b"0xcondition".as_slice()),
+                Some(b"0xcondition".as_slice()),
+                Some(b"0xcondition".as_slice()),
+            ])) as ArrayRef,
+            Arc::new(StringArray::from(vec![
+                "book",
+                "price_change",
+                "tick_size_change",
+                "last_trade_price",
+            ])) as ArrayRef,
+            Arc::new(StringArray::from(vec![
+                "token-a", "token-a", "token-a", "token-a",
+            ])) as ArrayRef,
+            Arc::new(StringArray::from(vec![
+                Some(r#"[["0.49","10.000000"]]"#),
+                None,
+                None,
+                None,
+            ])) as ArrayRef,
+            Arc::new(StringArray::from(vec![
+                Some(r#"[["0.50","11.000000"]]"#),
+                None,
+                None,
+                None,
+            ])) as ArrayRef,
+            Arc::new(
+                Decimal128Array::from(vec![None, Some(4900), Some(100), Some(4900)])
+                    .with_precision_and_scale(9, 4)
+                    .expect("price decimal"),
+            ) as ArrayRef,
+            Arc::new(
+                Decimal128Array::from(vec![None, Some(12_000_000), None, Some(2_000_000)])
+                    .with_precision_and_scale(18, 6)
+                    .expect("size decimal"),
+            ) as ArrayRef,
+            Arc::new(StringArray::from(vec![
+                None,
+                Some("BUY"),
+                None,
+                Some("SELL"),
+            ])) as ArrayRef,
+            Arc::new(
+                Decimal128Array::from(vec![None, Some(4900), None, None])
+                    .with_precision_and_scale(9, 4)
+                    .expect("best bid decimal"),
+            ) as ArrayRef,
+            Arc::new(
+                Decimal128Array::from(vec![None, Some(5000), None, None])
+                    .with_precision_and_scale(9, 4)
+                    .expect("best ask decimal"),
+            ) as ArrayRef,
+        ],
+    )
+    .expect("selected-source batch with tick-size change");
+    let file = File::create(path).expect("create selected source parquet");
+    let mut writer = ArrowWriter::try_new(file, schema, None).expect("parquet writer");
+    writer
+        .write(&batch)
+        .expect("write selected source parquet with tick-size change");
+    writer.close().expect("close selected source parquet");
 }
 
 fn write_pmxt_selected_source_binary_view_fixture(path: &std::path::Path) {

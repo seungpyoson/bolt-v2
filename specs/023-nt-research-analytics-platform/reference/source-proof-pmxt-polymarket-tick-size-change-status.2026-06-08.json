@@ -117,7 +117,7 @@
     {
       "policy": "exclude_tick_changing_assets_from_first_one_object_l2_proof",
       "decision": "accepted_for_bounded_first_proof_only",
-      "reason": "A bounded proof can choose an unaffected instrument universe to prove OrderBookDelta/TradeTick catalog plumbing, but this cannot close full PMXT Polymarket L2 source acceptance.",
+      "reason": "A bounded proof can choose an unaffected instrument universe to prove OrderBookDelta/TradeTick catalog plumbing, but this cannot close full PMXT Polymarket L2 source acceptance. The selected-source projection schema now rejects any config that tries to put tick_size_change in ignored_event_types.",
       "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json"
     },
     {
@@ -130,7 +130,9 @@
     "Write and query multiple BinaryOption snapshots for one instrument id through ParquetDataCatalog and prove returned order/ts_init.",
     "Prove BacktestNode either cannot replay dynamic InstrumentAny updates or prove a supported NT-native mechanism for applying tick-size epochs during the run.",
     "If first proof excludes tick-changing assets, assert the exclusion is source-proof-bound and appears as a result-contract claim limit.",
-    "If tick-size changes are included, prove post-change book deltas are not consumed until a source snapshot rebuilds the book epoch."
+    "If tick-size changes are included, prove post-change book deltas are not consumed until a source snapshot rebuilds the book epoch.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_projection_rejects_ignored_tick_size_change_rows failed because tick_size_change in ignored_event_types was silently skipped.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_projection_rejects_ignored_tick_size_change_rows passed after the selected-source schema rejected ignored_event_types that overlap forbidden_ignored_event_types."
   ],
   "current_decision": {
     "tick_size_change_policy_can_close": false,

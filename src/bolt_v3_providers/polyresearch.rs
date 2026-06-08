@@ -187,6 +187,7 @@ impl DataClientFactory for PolyResearchReferencePriceClientFactory {
             config: config.clone(),
             subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
             websocket: None,
+            outbound: None,
             data_sender: get_data_event_sender(),
             connected: false,
         }))
@@ -207,8 +208,28 @@ struct PolyResearchReferencePriceClient {
     config: PolyResearchReferencePriceClientConfig,
     subscriptions: Arc<Mutex<BTreeMap<String, PolyResearchReferenceSubscription>>>,
     websocket: Option<WebSocketClient>,
+    outbound: Option<PolyResearchReferenceOutboundHandle>,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     connected: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PolyResearchReferenceOutboundHandle {
+    sender: tokio::sync::mpsc::UnboundedSender<PolyResearchReferenceOutboundCommand>,
+}
+
+impl PolyResearchReferenceOutboundHandle {
+    #[cfg(test)]
+    fn from_sender(
+        sender: tokio::sync::mpsc::UnboundedSender<PolyResearchReferenceOutboundCommand>,
+    ) -> Self {
+        Self { sender }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PolyResearchReferenceOutboundCommand {
+    SendText(String),
 }
 
 impl PolyResearchReferencePriceClient {
@@ -859,6 +880,7 @@ mod tests {
                 config: fixture_config(),
                 subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
                 websocket: None,
+                outbound: None,
                 data_sender,
                 connected: false,
             },
@@ -944,38 +966,11 @@ mod tests {
     fn subscribe_custom_data_records_prr_reference_subscription() {
         let (mut client, _data_receiver) = fixture_client();
 
-        let mut params = Params::new();
-        params.insert(
-            REFERENCE_PRICE_ASSET_PARAM.to_string(),
-            serde_json::json!("BTC"),
-        );
-        params.insert(
-            REFERENCE_PRICE_SOURCE_KEY_PARAM.to_string(),
-            serde_json::json!("polyresearch_primary"),
-        );
-        params.insert(
-            REFERENCE_PRICE_PROVIDER_PARAM.to_string(),
-            serde_json::json!(REFERENCE_PRICE_PROVIDER_KEY),
-        );
-        params.insert(
-            REFERENCE_PRICE_SYMBOL_PARAM.to_string(),
-            serde_json::json!("BTC/USD"),
-        );
-
         client
-            .subscribe(SubscribeCustomData::new(
-                Some(ClientId::from("polyresearch_reference")),
-                None,
-                ReferencePriceUpdate::data_type_for(
-                    "BTC",
-                    "polyresearch_primary",
-                    REFERENCE_PRICE_PROVIDER_KEY,
-                )
-                .expect("reference price data type should build"),
-                UUID4::new(),
-                UnixNanos::default(),
-                None,
-                Some(params),
+            .subscribe(reference_price_subscribe_cmd(
+                "BTC",
+                "polyresearch_primary",
+                "BTC/USD",
             ))
             .expect("PRR reference subscription should be accepted");
 
@@ -989,6 +984,36 @@ mod tests {
         assert_eq!(subscription.asset, "BTC");
         assert_eq!(subscription.source_id, "polyresearch_primary");
         assert_eq!(subscription.symbol, "BTC/USD");
+    }
+
+    #[test]
+    fn subscribe_custom_data_sends_prr_provider_subscribe_frame() {
+        let (mut client, _data_receiver) = fixture_client();
+        let (outbound_sender, mut outbound_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
+        client.outbound = Some(PolyResearchReferenceOutboundHandle::from_sender(
+            outbound_sender,
+        ));
+        assert!(client.outbound.is_some());
+
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                "BTC",
+                "polyresearch_primary",
+                "BTC/USD",
+            ))
+            .expect("PRR reference subscription should be accepted");
+
+        let outbound_command = outbound_receiver
+            .try_recv()
+            .expect("PRR subscription should send a provider subscribe frame");
+        assert_eq!(
+            outbound_command,
+            PolyResearchReferenceOutboundCommand::SendText(
+                r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["BTC/USD"]}}"#
+                    .to_string()
+            )
+        );
     }
 
     #[test]
@@ -1089,6 +1114,41 @@ mod tests {
         assert_eq!(quote.ask(), Some(EXPECTED_ASK));
         assert_eq!(update.observed_ts_ms(), EXPECTED_OBSERVED_TS_MS);
         assert_eq!(update.received_ts_ms(), RECEIVED_TS_MS);
+    }
+
+    fn reference_price_subscribe_cmd(
+        asset: &str,
+        source_id: &str,
+        symbol: &str,
+    ) -> SubscribeCustomData {
+        let mut params = Params::new();
+        params.insert(
+            REFERENCE_PRICE_ASSET_PARAM.to_string(),
+            serde_json::json!(asset),
+        );
+        params.insert(
+            REFERENCE_PRICE_SOURCE_KEY_PARAM.to_string(),
+            serde_json::json!(source_id),
+        );
+        params.insert(
+            REFERENCE_PRICE_PROVIDER_PARAM.to_string(),
+            serde_json::json!(REFERENCE_PRICE_PROVIDER_KEY),
+        );
+        params.insert(
+            REFERENCE_PRICE_SYMBOL_PARAM.to_string(),
+            serde_json::json!(symbol),
+        );
+
+        SubscribeCustomData::new(
+            Some(ClientId::from("polyresearch_reference")),
+            None,
+            ReferencePriceUpdate::data_type_for(asset, source_id, REFERENCE_PRICE_PROVIDER_KEY)
+                .expect("reference price data type should build"),
+            UUID4::new(),
+            UnixNanos::default(),
+            None,
+            Some(params),
+        )
     }
 }
 

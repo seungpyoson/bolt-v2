@@ -62,127 +62,135 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 
 - [ ] T034 RED: Add root-config validation test `surface_source_references_existing_public_client_and_instrument`.
 - [ ] T035 RED: Add config test `production_surfaces_use_all_available_public_sources_or_explain_single_source`.
-- [ ] T036 RED: Add runtime test `deduplicates_physical_subscriptions_and_fans_out_to_multiple_sources`.
-- [ ] T037 RED: Add runtime test `two_available_venue_sources_contribute_to_one_surface_snapshot`.
-- [ ] T038 RED: Add runtime test `disabled_source_is_audited_but_not_subscribed`.
-- [ ] T039 RED: Add runtime test `enabled_non_quorum_source_with_live_observations_remains_diagnostic_only`.
-- [ ] T040 GREEN: Implement `RealizedVolSourceRoute` and `PhysicalSubscriptionKey` in the runtime module.
-- [ ] T041 GREEN: Move RV subscription request generation out of strategy subscription methods.
-- [ ] T042 GREEN: Implement observation fan-out from one physical stream to every configured source route.
-- [ ] T043 GREEN: Extend root validation to reject source client/instrument drift before runtime starts.
-- [ ] T044 GREEN: Update `config/root.toml` surfaces to include all available configured venue/source mappings per asset or `single_source_explanation` where only one source is actually available.
-- [ ] T045 GREEN: Keep strategy TOMLs limited to `realized_volatility_surface_id` selectors.
-- [ ] T046 REFACTOR: Ensure no asset, token, venue, provider, timeout, or subscription policy is hardcoded in Rust.
+- [ ] T036 RED: Add config test `unsupported_mark_source_class_sample_kind_is_rejected_until_runtime_routing_exists`.
+- [ ] T037 RED: Add runtime test `deduplicates_physical_subscriptions_and_fans_out_to_multiple_sources`.
+- [ ] T038 RED: Add runtime test `two_available_venue_sources_contribute_to_one_surface_snapshot`.
+- [ ] T039 RED: Add runtime test `disabled_source_is_audited_but_not_subscribed`.
+- [ ] T040 RED: Add runtime test `enabled_non_quorum_source_with_live_observations_remains_diagnostic_only`.
+- [ ] T041 GREEN: Implement `RealizedVolSourceRoute` and `PhysicalSubscriptionKey` in the runtime module.
+- [ ] T042 GREEN: Move RV subscription request generation out of strategy subscription methods.
+- [ ] T043 GREEN: Implement observation fan-out from one physical stream to every configured source route.
+- [ ] T044 GREEN: Extend root validation to reject source client/instrument drift before runtime starts.
+- [ ] T045 GREEN: Update `config/root.toml` surfaces to include all available configured venue/source mappings per asset or `single_source_explanation` where only one source is actually available.
+- [ ] T046 GREEN: Keep strategy TOMLs limited to `realized_volatility_surface_id` selectors.
+- [ ] T047 REFACTOR: Ensure no asset, token, venue, provider, timeout, or subscription policy is hardcoded in Rust.
 
 ## Phase 6: Multi-Horizon RV
 
 **Goal**: Replace single-window brittleness with auditable short/medium/long horizon estimates.
 
-- [ ] T047 RED: Add engine test `multi_horizon_source_requires_required_horizons_only`.
-- [ ] T048 RED: Add engine test `optional_long_horizon_missing_does_not_block_surface_when_policy_allows`.
-- [ ] T049 RED: Add engine test `weighted_blend_normalizes_ready_required_horizon_weights`.
-- [ ] T050 RED: Add engine test `max_floor_uses_primary_and_floor_horizon_role_bindings`.
-- [ ] T051 RED: Add engine test `short_with_long_floor_uses_floor_multiplier_and_named_horizons`.
-- [ ] T052 RED: Add engine test `coverage_ratio_uses_valid_return_count_over_expected_return_count`.
-- [ ] T053 RED: Add config validation tests for horizon uniqueness, positive windows, window >= interval, coverage bounds, positive total required weight, role bindings, and `floor_multiplier` bounds.
-- [ ] T054 GREEN: Add horizon config structs to `src/bolt_v3_config.rs` and validation in `src/bolt_v3_validate.rs`.
-- [ ] T055 GREEN: Extend `src/bolt_v3_realized_volatility.rs` to compute per-horizon fixed-grid RV per source.
-- [ ] T056 GREEN: Implement final horizon policies `weighted_blend`, `max_floor`, and `short_with_long_floor`.
-- [ ] T057 GREEN: Publish per-horizon estimates in `RealizedVolSnapshot` and diagnostics.
-- [ ] T058 REFACTOR: Keep `ReadyRealizedVol` as the only consumer-facing numeric contract.
+- [ ] T048 RED: Add engine test `multi_horizon_source_requires_required_horizons_only`.
+- [ ] T049 RED: Add engine test `optional_long_horizon_missing_does_not_block_surface_when_policy_allows`.
+- [ ] T050 RED: Add engine test `weighted_blend_normalizes_ready_required_horizon_weights`.
+- [ ] T051 RED: Add engine test `max_floor_uses_primary_and_floor_horizon_role_bindings`.
+- [ ] T052 RED: Add engine test `short_with_long_floor_uses_floor_multiplier_and_named_horizons`.
+- [ ] T053 RED: Add engine test `coverage_ratio_uses_valid_return_count_over_expected_return_count`.
+- [ ] T054 RED: Add config validation tests for horizon uniqueness, positive windows, window >= interval, coverage bounds, positive total required weight, role bindings, and `floor_multiplier` bounds.
+- [ ] T055 GREEN: Add horizon config structs to `src/bolt_v3_config.rs` and validation in `src/bolt_v3_validate.rs`.
+- [ ] T056 GREEN: Extend `src/bolt_v3_realized_volatility.rs` to compute per-horizon fixed-grid RV per source.
+- [ ] T057 GREEN: Implement final horizon policies `weighted_blend`, `max_floor`, and `short_with_long_floor`.
+- [ ] T058 GREEN: Publish per-horizon estimates in `RealizedVolSnapshot` and diagnostics.
+- [ ] T059 REFACTOR: Keep `ReadyRealizedVol` as the only consumer-facing numeric contract.
 
 ## Phase 7: Microstructure-Noise Robustness
 
 **Goal**: Reduce false high-frequency volatility from quote midpoint bounce without hiding the base estimate.
 
-- [ ] T059 RED: Add engine test `subsampled_rv_reduces_alternating_bid_ask_bounce_vs_base_grid`.
-- [ ] T060 RED: Add engine test `subsampled_rv_requires_min_ready_subsamples`.
-- [ ] T061 RED: Add engine test `subsampled_offset_grid_coverage_uses_offset_grid_denominator`.
-- [ ] T062 RED: Add engine test `coarser_grid_rv_policy_selects_base_coarse_or_min_base_coarse`.
-- [ ] T063 RED: Add config validation tests for `noise_robust_method`, `subsamples`, `min_ready_subsamples`, `coarse_sampling_interval_ms`, and `coarser_grid_horizon_policy`.
-- [ ] T064 GREEN: Implement `noise_robust_method = "none"` as current fixed-grid behavior.
-- [ ] T065 GREEN: Implement `noise_robust_method = "coarser_grid"` per horizon.
-- [ ] T066 GREEN: Implement `noise_robust_method = "subsampled"` per horizon with deterministic offset grids.
-- [ ] T067 GREEN: Emit base fixed-grid RV and noise-robust RV separately in diagnostics/evidence.
-- [ ] T068 REFACTOR: Keep all noise-robust parameters TOML-owned and engine-owned.
+- [ ] T060 RED: Add engine test `subsampled_rv_reduces_alternating_bid_ask_bounce_vs_base_grid`.
+- [ ] T061 RED: Add engine test `subsampled_rv_requires_min_ready_subsamples`.
+- [ ] T062 RED: Add engine test `subsampled_offset_grid_coverage_uses_offset_grid_denominator`.
+- [ ] T063 RED: Add config test `subsamples_greater_than_sampling_interval_is_rejected_or_collision_semantics_are_explicit`.
+- [ ] T064 RED: Add engine test `coarser_grid_rv_policy_selects_base_coarse_or_min_base_coarse`.
+- [ ] T065 RED: Add config validation tests for `noise_robust_method`, `subsamples`, `min_ready_subsamples`, `coarse_sampling_interval_ms`, and `coarser_grid_horizon_policy`.
+- [ ] T066 GREEN: Implement `noise_robust_method = "none"` as current fixed-grid behavior.
+- [ ] T067 GREEN: Implement `noise_robust_method = "coarser_grid"` per horizon.
+- [ ] T068 GREEN: Implement `noise_robust_method = "subsampled"` per horizon with deterministic offset grids.
+- [ ] T069 GREEN: Emit base fixed-grid RV and noise-robust RV separately in diagnostics/evidence.
+- [ ] T070 REFACTOR: Keep all noise-robust parameters TOML-owned and engine-owned.
 
 ## Phase 8: Jump Separation
 
 **Goal**: Separate jump component from continuous RV instead of deleting jumps.
 
-- [ ] T069 RED: Add engine test `single_large_jump_increases_jump_component_without_erasing_measured_rv`.
-- [ ] T070 RED: Add engine test `flat_source_publishes_zero_continuous_and_zero_jump_rv`.
-- [ ] T071 RED: Add engine test `jump_separation_with_fewer_than_two_returns_is_diagnostic_only`.
-- [ ] T072 RED: Add evidence test `jump_component_is_serialized_separately_from_final_rv`.
-- [ ] T073 RED: Add config validation tests for jump policy and threshold bounds.
-- [ ] T074 GREEN: Implement `jump_policy = "none"` as measured RV passthrough.
-- [ ] T075 GREEN: Implement `jump_policy = "separate"` using finite-sample-corrected bipower variation.
-- [ ] T076 GREEN: Emit measured, continuous, and jump annualized RV components per horizon/source/surface.
-- [ ] T077 REFACTOR: Do not suppress real jumps silently; pricing selection must be explicit in config/evidence.
+- [ ] T071 RED: Add engine test `single_large_jump_increases_jump_component_without_erasing_measured_rv`.
+- [ ] T072 RED: Add engine test `flat_source_publishes_zero_continuous_and_zero_jump_rv`.
+- [ ] T073 RED: Add engine test `jump_separation_with_fewer_than_two_returns_is_diagnostic_only`.
+- [ ] T074 RED: Add engine test `measured_variance_equals_continuous_variance_plus_jump_variance_before_sqrt`.
+- [ ] T075 RED: Add evidence test `jump_component_is_serialized_separately_from_final_rv`.
+- [ ] T076 RED: Add config validation tests for jump policy and threshold bounds.
+- [ ] T077 GREEN: Implement `jump_policy = "none"` as measured RV passthrough.
+- [ ] T078 GREEN: Implement `jump_policy = "separate"` using finite-sample-corrected bipower variation.
+- [ ] T079 GREEN: Emit measured, continuous, and jump annualized RV components per horizon/source/surface.
+- [ ] T080 REFACTOR: Do not suppress real jumps silently; pricing selection must be explicit in config/evidence.
 
 ## Phase 9: Robust Cross-Source Aggregation
 
 **Goal**: Make multi-venue RV useful by protecting against one bad feed while preserving fail-closed dispersion behavior.
 
-- [ ] T078 RED: Add engine test `median_aggregation_ignores_one_extreme_ready_source_when_quorum_satisfied`.
-- [ ] T079 RED: Add engine test `trimmed_mean_requires_enough_ready_sources_for_trim_policy`.
-- [ ] T080 RED: Add engine test `mad_dispersion_blocks_when_ready_sources_disagree_too_much`.
-- [ ] T081 RED: Add engine test `raw_mad_threshold_is_used_without_normal_scaling`.
-- [ ] T082 RED: Add engine test `upper_quantile_guard_uses_guard_weight_and_upper_quantile_value`.
-- [ ] T083 RED: Add engine test `source_level_not_warm_does_not_block_satisfied_partial_quorum` to preserve PR #609 fix.
-- [ ] T084 RED: Add boundary tests for exactly `min_ready_sources`, one below `min_ready_sources`, and each aggregation method.
-- [ ] T085 GREEN: Extend aggregation config with `median`, `trimmed_mean`, `median_with_upper_quantile_guard`, `guard_weight`, and `trim_fraction`.
-- [ ] T086 GREEN: Implement MAD dispersion diagnostics and blocker.
-- [ ] T087 GREEN: Keep source-level blockers out of surface blockers when quorum is satisfied.
-- [ ] T088 GREEN: Preserve unknown-source, disabled-source, and non-quorum diagnostics.
-- [ ] T089 REFACTOR: Ensure aggregation never pretends correlated sources are independent; evidence must list sources used.
+- [ ] T081 RED: Add engine test `median_aggregation_ignores_one_extreme_ready_source_when_quorum_satisfied`.
+- [ ] T082 RED: Add engine test `trimmed_mean_requires_enough_ready_sources_for_trim_policy`.
+- [ ] T083 RED: Add engine test `mad_dispersion_blocks_when_ready_sources_disagree_too_much`.
+- [ ] T084 RED: Add engine test `raw_mad_threshold_is_used_without_normal_scaling`.
+- [ ] T085 RED: Add engine test `upper_quantile_guard_uses_guard_weight_and_upper_quantile_value`.
+- [ ] T086 RED: Add engine test `source_level_not_warm_does_not_block_satisfied_partial_quorum` to preserve PR #609 fix.
+- [ ] T087 RED: Add boundary tests for exactly `min_ready_sources`, one below `min_ready_sources`, and each aggregation method.
+- [ ] T088 GREEN: Extend aggregation config with `median`, `trimmed_mean`, `median_with_upper_quantile_guard`, `guard_weight`, and `trim_fraction`.
+- [ ] T089 GREEN: Implement MAD dispersion diagnostics and blocker.
+- [ ] T090 GREEN: Keep source-level blockers out of surface blockers when quorum is satisfied.
+- [ ] T091 GREEN: Preserve unknown-source, disabled-source, and non-quorum diagnostics.
+- [ ] T092 REFACTOR: Ensure aggregation never pretends correlated sources are independent; evidence must list sources used.
 
 ## Phase 10: Optional Forecast RV
 
 **Goal**: Optionally forecast future volatility from realized components without introducing opaque model risk.
 
-- [ ] T090 RED: Add engine test `forecast_none_uses_measured_or_blended_rv_as_final`.
-- [ ] T091 RED: Add engine test `ewma_forecast_advances_only_on_refresh_with_new_ready_component`.
-- [ ] T092 RED: Add engine test `ewma_forecast_cold_starts_from_current_component_after_restart`.
-- [ ] T093 RED: Add engine test `har_lite_blends_short_medium_long_horizons_with_toml_weights`.
-- [ ] T094 RED: Add config validation tests for forecast method, EWMA alpha, HAR weights, and referenced horizon roles.
-- [ ] T095 GREEN: Implement `forecast_method = "none"`.
-- [ ] T096 GREEN: Implement `forecast_method = "ewma"` with per-surface serialized refresh state and TOML-owned alpha.
-- [ ] T097 GREEN: Implement `forecast_method = "har_lite"` using TOML-owned horizon weights.
-- [ ] T098 GREEN: Add evidence fields showing forecast method, inputs, weights, cold-start flag, previous forecast, and final consumed RV component.
-- [ ] T099 REFACTOR: Keep forecast code deterministic, explainable, and free of ML/model-serving dependencies.
+- [ ] T093 RED: Add engine test `forecast_none_uses_measured_or_blended_rv_as_final`.
+- [ ] T094 RED: Add engine test `ewma_forecast_advances_only_on_refresh_with_new_ready_component`.
+- [ ] T095 RED: Add engine test `ewma_forecast_does_not_advance_on_observation_without_refresh`.
+- [ ] T096 RED: Add engine test `ewma_forecast_cold_starts_from_current_component_after_restart`.
+- [ ] T097 RED: Add engine test `forecast_state_resets_when_config_fingerprint_changes`.
+- [ ] T098 RED: Add engine test `forecast_state_is_independent_per_surface_id`.
+- [ ] T099 RED: Add engine test `har_lite_blends_short_medium_long_horizons_with_toml_weights`.
+- [ ] T100 RED: Add engine test `har_lite_blocks_when_any_role_horizon_is_not_ready`.
+- [ ] T101 RED: Add engine test `final_ready_realized_vol_equals_configured_pricing_component`.
+- [ ] T102 RED: Add config validation tests for forecast method, EWMA alpha, HAR weights, referenced horizon roles, non-negative HAR weights, and positive HAR weight sum.
+- [ ] T103 GREEN: Implement `forecast_method = "none"`.
+- [ ] T104 GREEN: Implement `forecast_method = "ewma"` with per-surface serialized refresh state and TOML-owned alpha.
+- [ ] T105 GREEN: Implement `forecast_method = "har_lite"` using TOML-owned horizon weights.
+- [ ] T106 GREEN: Add evidence fields showing forecast method, inputs, weights, cold-start flag, previous forecast, and final consumed RV component.
+- [ ] T107 REFACTOR: Keep forecast code deterministic, explainable, and free of ML/model-serving dependencies.
 
 ## Phase 11: Evidence, Diagnostics, and Compatibility
 
-- [ ] T100 RED: Add decision-evidence round-trip test for the new runtime robust RV fields.
-- [ ] T101 RED: Add stale-schema rejection test for v8 once feature 027 targets v9.
-- [ ] T102 RED: Add runtime test `unknown_source_diagnostics_are_bounded_and_evictions_are_reported`.
-- [ ] T103 RED: Add combined-mode determinism test for `subsampled + jump_separate + ewma`.
-- [ ] T104 RED: Add surface ID hygiene tests for empty, whitespace, duplicate, and case-sensitive IDs.
-- [ ] T105 GREEN: Bump evidence schema from v8 to v9 unless main has advanced, then bump by one from current main.
-- [ ] T106 GREEN: Update serializers/deserializers for runtime/horizon/noise/jump/forecast fields.
-- [ ] T107 GREEN: Implement bounded unknown-source diagnostic capacity and deterministic eviction reporting.
-- [ ] T108 GREEN: Update evidence fixtures and docs for runtime/horizon/noise/jump/forecast fields.
-- [ ] T109 GREEN: Update runtime literal audit for any new enum labels or schema fields.
-- [ ] T110 GREEN: Update source-integrity golden digest after source changes.
+- [ ] T108 RED: Add decision-evidence round-trip test for the new runtime robust RV fields.
+- [ ] T109 RED: Add stale-schema rejection test by reading the current evidence version on `main`, then asserting the feature branch rejects the previous version and bumps by exactly one.
+- [ ] T110 RED: Add runtime test `unknown_source_diagnostics_are_bounded_and_evictions_are_reported`.
+- [ ] T111 RED: Add combined-mode determinism test for `subsampled + jump_separate + ewma`.
+- [ ] T112 RED: Add surface ID hygiene tests for empty, whitespace, duplicate, and case-sensitive IDs.
+- [ ] T113 GREEN: Bump evidence schema from current `main` by exactly one version.
+- [ ] T114 GREEN: Update serializers/deserializers for runtime/horizon/noise/jump/forecast fields.
+- [ ] T115 GREEN: Implement bounded unknown-source diagnostic capacity and deterministic eviction reporting.
+- [ ] T116 GREEN: Update evidence fixtures and docs for runtime/horizon/noise/jump/forecast fields.
+- [ ] T117 GREEN: Update runtime literal audit for any new enum labels or schema fields.
+- [ ] T118 GREEN: Update source-integrity golden digest after source changes.
 
 ## Phase 12: Final Verification and PR Closure
 
-- [ ] T111 Push all implementation commits and wait for exact PR-head CI.
-- [ ] T112 Confirm GitHub CI green for fmt, clippy, deny, source-fence, nextest shards, source integrity, CodeQL, actionlint, and gate.
-- [ ] T113 Run relay review on the final pushed diff only after CI is green; instruct reviewers not to run local cargo tests if CI passed.
-- [ ] T114 Address any remaining review findings with TDD commits.
-- [ ] T115 Update issue #614 with final scope mapping: global runtime, multi-venue, and math robustness.
-- [ ] T116 Prepare PR description that explicitly states no strategy-owned RV path remains and names any accepted remaining scope.
-- [ ] T117 Merge only after CI green, review findings resolved or waived, and no uncommitted/unpushed work remains.
+- [ ] T119 Push all implementation commits and wait for exact PR-head CI.
+- [ ] T120 Confirm GitHub CI green for fmt, clippy, deny, source-fence, nextest shards, source integrity, CodeQL, actionlint, and gate.
+- [ ] T121 Run relay review on the final pushed diff only after CI is green; instruct reviewers not to run local cargo tests if CI passed.
+- [ ] T122 Address any remaining review findings with TDD commits.
+- [ ] T123 Update issue #614 with final scope mapping: global runtime, multi-venue, and math robustness.
+- [ ] T124 Prepare PR description that explicitly states no strategy-owned RV path remains and names any accepted remaining scope.
+- [ ] T125 Merge only after CI green, review findings resolved or waived, and no uncommitted/unpushed work remains.
 
 ## Dependency Notes
 
 - T006-T013 must complete before T014 or any implementation task.
 - T014-T020 must complete before runtime implementation so source fences fail first.
 - T021-T033 must complete before multi-venue wiring because route ownership belongs to the global runtime.
-- T034-T046 must complete before robust cross-source aggregation can be trusted.
-- T047-T058 must complete before noise, jump, and forecast work because those build on horizon estimates.
-- T059-T089 can proceed in parallel by module once the horizon model is stable.
-- T090-T099 are optional only if the approved plan explicitly disables forecast mode; otherwise they are in scope.
-- T111-T117 require exact PR-head CI evidence, not inference from local tests.
+- T034-T047 must complete before robust cross-source aggregation can be trusted.
+- T048-T059 must complete before noise, jump, and forecast work because those build on horizon estimates.
+- T060-T092 can proceed in parallel by module once the horizon model is stable.
+- T093-T107 are optional only if the approved plan explicitly disables forecast mode; otherwise they are in scope.
+- T119-T125 require exact PR-head CI evidence, not inference from local tests.

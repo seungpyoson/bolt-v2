@@ -12,7 +12,10 @@ use backtesting_vertical_slice::{
     },
     selected_source_slice::write_selected_source_slice_from_spec_file,
 };
-use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
+use parquet::{
+    arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
+    file::properties::WriterProperties,
+};
 use sha2::{Digest, Sha256};
 
 #[test]
@@ -37,6 +40,8 @@ fn selected_source_slice_writes_only_selector_assets_and_configured_columns() {
 
     assert_eq!(artifact.output_parquet_path, output_path);
     assert_eq!(artifact.source_rows, 4);
+    assert_eq!(artifact.source_row_groups, 2);
+    assert_eq!(artifact.projected_row_groups, 1);
     assert_eq!(artifact.selected_rows, 2);
     assert_eq!(artifact.selected_asset_count, 1);
     assert_eq!(artifact.selected_asset_ids_hash, "selected-assets-hash");
@@ -54,6 +59,8 @@ fn selected_source_slice_writes_only_selector_assets_and_configured_columns() {
         sha256_bytes(&selector_bytes)
     );
     assert_eq!(report["usage_scope"], "one_off_backfill_data");
+    assert_eq!(report["source_row_groups"], 2);
+    assert_eq!(report["projected_row_groups"], 1);
 
     let (columns, rows) = read_selected_rows(&artifact.output_parquet_path);
     assert_eq!(columns, vec!["asset", "event_type", "payload"]);
@@ -126,6 +133,7 @@ fn write_selector_report(path: &std::path::Path) -> Vec<u8> {
         selection: FirstProofSelection {
             required_event_families: vec!["book".to_string()],
             excluded_event_families: vec!["tick_size_change".to_string()],
+            candidate_asset_ids: Vec::new(),
             row_budget: 10,
             max_selected_assets: 1,
         },
@@ -184,31 +192,34 @@ fn write_source_parquet(path: &std::path::Path) {
         schema.clone(),
         vec![
             Arc::new(StringArray::from(vec![
-                "asset-b", "asset-a", "asset-a", "asset-b",
+                "asset-b", "asset-b", "asset-a", "asset-a",
             ])) as ArrayRef,
             Arc::new(StringArray::from(vec![
                 "book",
-                "book",
                 "price_change",
+                "book",
                 "price_change",
             ])) as ArrayRef,
             Arc::new(StringArray::from(vec![
                 "payload-b-book",
+                "payload-b-price",
                 "payload-a-book",
                 "payload-a-price",
-                "payload-b-price",
             ])) as ArrayRef,
             Arc::new(StringArray::from(vec![
                 "ignored-b1",
+                "ignored-b2",
                 "ignored-a1",
                 "ignored-a2",
-                "ignored-b2",
             ])) as ArrayRef,
         ],
     )
     .expect("record batch");
     let file = File::create(path).expect("create source parquet");
-    let mut writer = ArrowWriter::try_new(file, schema, None).expect("parquet writer");
+    let props = WriterProperties::builder()
+        .set_max_row_group_row_count(Some(2))
+        .build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).expect("parquet writer");
     writer.write(&batch).expect("write batch");
     writer.close().expect("close parquet");
 }

@@ -34,6 +34,8 @@ fn main() -> Result<()> {
     println!("report_hash = {}", artifact.report_hash);
     println!("report_bytes = {}", artifact.report_bytes);
     println!("source_rows = {}", artifact.source_rows);
+    println!("source_row_groups = {}", artifact.source_row_groups);
+    println!("projected_row_groups = {}", artifact.projected_row_groups);
     println!("selected_rows = {}", artifact.selected_rows);
     println!("selected_asset_count = {}", artifact.selected_asset_count);
     println!(

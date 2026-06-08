@@ -29,6 +29,8 @@ pub const FIRST_PROOF_SELECTOR_REPORT_FILE: &str = "first-proof-selector-report.
 pub struct FirstProofSelection {
     pub required_event_families: Vec<String>,
     pub excluded_event_families: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_asset_ids: Vec<String>,
     pub row_budget: u64,
     pub max_selected_assets: u64,
 }
@@ -245,6 +247,11 @@ pub fn evaluate_first_proof_selector(
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
+    let candidate_asset_ids = selection
+        .candidate_asset_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
     let mut counts_by_asset = BTreeMap::<String, BTreeMap<String, u64>>::new();
     for count in event_counts {
         let asset_counts = counts_by_asset.entry(count.asset_id.clone()).or_default();
@@ -260,6 +267,10 @@ pub fn evaluate_first_proof_selector(
     let mut eligible = counts_by_asset
         .iter()
         .filter_map(|(asset_id, counts)| {
+            if !candidate_asset_ids.is_empty() && !candidate_asset_ids.contains(asset_id.as_str()) {
+                return None;
+            }
+
             let excluded_rows = counts
                 .iter()
                 .filter(|(event_family, rows)| {

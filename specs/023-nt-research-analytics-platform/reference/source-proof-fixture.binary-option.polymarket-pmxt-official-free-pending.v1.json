@@ -69,9 +69,9 @@
     {
       "id": "binary-option-pmxt-source-proof-claim-limit-004",
       "severity": "blocking",
-      "claim": "No accepted BinaryOption instrument mapping until activation, expiration, increments, precision, outcome label, and metadata are source-backed.",
-      "reason": "Pinned NT Polymarket parser inspection shows the non-custom BinaryOption mapping path, but the selected PMXT token currently has no matching source-backed GammaMarket response for NT's parser.",
-      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json status=blocked_missing_source_backed_gamma_market"
+      "claim": "No accepted BinaryOption catalog input until the NT parser output is written to and read back from the catalog.",
+      "reason": "The selected one-off PMXT token now has source-backed GammaMarket metadata accepted by NT's Polymarket parser, but source-backed BinaryOption catalog projection and read-back are still pending.",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json status=accepted"
     },
     {
       "id": "binary-option-pmxt-source-proof-claim-limit-005",
@@ -100,8 +100,8 @@
       "evidence_ref": "timestamp_received is exporter ingest/archive-hour axis; timestamp is upstream event timestamp per PMXT v2 docs and sample inspection"
     },
     "instrument_universe": {
-      "outcome": "pending",
-      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json status=blocked_missing_source_backed_gamma_market"
+      "outcome": "passed",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json status=accepted selected_token_nt_def_count=1"
     },
     "coverage": {
       "outcome": "pending",
@@ -121,7 +121,7 @@
     },
     "nt_mapping": {
       "outcome": "pending",
-      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json status=blocked_missing_source_backed_gamma_market; pending selected PMXT OrderBookDelta/TradeTick projection and ParquetDataCatalog read-back"
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json status=accepted; pending selected PMXT OrderBookDelta/TradeTick projection and ParquetDataCatalog read-back"
     },
     "cost": {
       "outcome": "pending",

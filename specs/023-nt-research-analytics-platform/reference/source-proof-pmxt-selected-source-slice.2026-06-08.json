@@ -1,23 +1,43 @@
 {
-  "schema_version": "source-proof-pmxt-selected-source-slice.v1",
+  "schema_version": "source-proof-pmxt-selected-source-slice.v2",
   "created_date": "2026-06-08",
   "purpose": "One-off bounded PMXT selected-source staging before NT catalog projection proof.",
   "usage_scope": "one_off_backfill_data",
   "source": {
     "local_path": "/private/tmp/polymarket-may20-one.parquet",
     "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
-    "source_rows": 64877467
+    "source_rows": 64877467,
+    "source_row_groups": 62
+  },
+  "metadata_candidate_probe": {
+    "method": "Rank existing event-count ledger candidates by replay rows, then probe only the smallest row-count candidates for source-backed Polymarket CLOB/Gamma metadata.",
+    "candidate_probe_count": 40,
+    "gamma_backed_candidate_count": 6,
+    "selected_reason": "Smallest replay-row candidate among source-backed Gamma metadata candidates.",
+    "selected_condition_id": "0x92889d49761307073d461289d01208c3b19292d17da937c0f57501c7b7efa50d",
+    "selected_asset_id": "73895424095742155573626958367283533358717984717096075221396743226794070701077",
+    "gamma_backed_candidate_asset_ids": [
+      "73895424095742155573626958367283533358717984717096075221396743226794070701077",
+      "43628795712486515833828470752867039200350376777314237956256694829779429130222",
+      "49444756644707500998425362003350300889304966604464917505823446083561306410717",
+      "93645472426873845959841350724010926189006909810584484349935259903268657129023",
+      "31623217819038603813783350826187730431369952540273671534916386825104775476271",
+      "3591592734621538900250105906480402152414999010955894949082670586294455191149"
+    ]
   },
   "selector": {
-    "report_path": "/private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector/first-proof-selector-report.json",
-    "report_sha256": "647f0cee89becb46b7051992dd7fea25ca08be3b551bd6873cd21be2ebd7b524",
+    "spec_path": "/private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector-gamma-candidates.toml",
+    "report_path": "/private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector-gamma-candidates/first-proof-selector-report.json",
+    "report_sha256": "3e64cc09d803ff34de9cbc51345978406125fcc5147879a7c5ff8475a73c3aaf",
+    "content_hash": "75eb9d2b6238f343b838b06d48830ab125b50fccc1d91b4c557bf2ab9ecdae1f",
     "status": "selected",
+    "eligible_assets": 6,
     "selected_asset_count": 1,
-    "selected_asset_ids_hash": "edc5e3c70031056cf544d2cf581c5fe2ee3122886090ae513d6321a34c99d966",
+    "selected_asset_ids_hash": "1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110",
     "selected_assets": [
       {
-        "asset_id": "101573629105061692824394189329292260077476973116785474086922405861943493792845",
-        "replay_rows": 4
+        "asset_id": "73895424095742155573626958367283533358717984717096075221396743226794070701077",
+        "replay_rows": 5
       }
     ],
     "selection": {
@@ -29,25 +49,35 @@
       "excluded_event_families": [
         "tick_size_change"
       ],
+      "candidate_asset_ids_source": "metadata_candidate_probe.gamma_backed_candidate_asset_ids",
       "row_budget": 1000,
       "max_selected_assets": 1
     }
   },
   "selected_source_slice": {
-    "spec_path": "/private/tmp/bte-pmxt-selected-source-slice-2026-06-08.toml",
+    "spec_path": "/private/tmp/bte-pmxt-selected-source-slice-gamma-backed-2026-06-08.toml",
     "usage_scope": "one_off_backfill_data",
-    "output_parquet_path": "/private/tmp/bte-pmxt-selected-source-slice-2026-06-08/selected-source.parquet",
-    "report_path": "/private/tmp/bte-pmxt-selected-source-slice-2026-06-08/selected-source-report.json",
-    "output_parquet_sha256": "a0890b3d87b913010325a7e1c4988bfab0654d3fe532ea5caa94494b6582e79e",
-    "report_hash": "97b8f3c642c28faed2d742750f84d6c32cbfec08b873951ae55218a1932c5e10",
-    "report_bytes": 1152,
-    "selected_rows": 4,
+    "output_parquet_path": "/private/tmp/bte-pmxt-selected-source-slice-gamma-backed-2026-06-08/selected-source.parquet",
+    "report_path": "/private/tmp/bte-pmxt-selected-source-slice-gamma-backed-2026-06-08/selected-source-report.json",
+    "output_parquet_sha256": "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e",
+    "report_file_sha256": "686e17e81d578cb2c460691ddca9620b9256761e53dfc3b3d3ad27a1cca884d4",
+    "report_hash": "aceed296f0287abca7ea0e23ba0d18a4d6c9b934b5b71bb6950e7c5edc62f5a9",
+    "report_bytes": 1280,
+    "source_rows": 64877467,
+    "source_row_groups": 62,
+    "projected_row_groups": 1,
+    "selected_rows": 5,
     "selected_asset_count": 1,
     "event_types": [
       "book",
       "last_trade_price",
       "price_change"
     ],
+    "event_type_rows": {
+      "book": 1,
+      "last_trade_price": 1,
+      "price_change": 3
+    },
     "projected_columns": [
       "timestamp_received",
       "timestamp",
@@ -68,27 +98,32 @@
     ]
   },
   "performance_evidence": {
-    "command": "/usr/bin/time -p python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin selected_source_slice -- --spec /private/tmp/bte-pmxt-selected-source-slice-2026-06-08.toml",
-    "wall_seconds": 218.96,
-    "user_seconds": 167.19,
-    "sys_seconds": 2.45,
-    "finding": "The generic Rust Arrow row slicer is acceptable for one-off bounded proof staging once, but too slow to become the broad PMXT backfill selection method."
+    "command": "/usr/bin/time -p python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin selected_source_slice -- --spec /private/tmp/bte-pmxt-selected-source-slice-gamma-backed-2026-06-08.toml",
+    "wall_seconds": 30.31,
+    "user_seconds": 27.96,
+    "sys_seconds": 1.07,
+    "previous_full_projection_wall_seconds": 218.96,
+    "finding": "The selected-source slicer now scans only the asset column to locate matching row groups, then projects full columns for 1 of 62 row groups. This keeps PMXT as one-off proof data and avoids repeating the previous full-column scan."
+  },
+  "metadata_gate_ref": {
+    "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json",
+    "status": "accepted",
+    "nt_parser_surface": "nautilus_polymarket::http::parse::parse_gamma_market"
   },
   "verification": [
-    "DuckDB read-back of selected-source.parquet returned rows=4, assets=1, event_types='book, last_trade_price, price_change'.",
+    "DuckDB read-back of selected-source.parquet returned rows=5, assets=1, event_types='book, last_trade_price, price_change'.",
+    "DuckDB event-family count returned book=1, last_trade_price=1, price_change=3.",
     "DuckDB DESCRIBE of selected-source.parquet showed the projected PMXT columns retained for NT projection proof.",
-    "The selected-source report binds source_parquet_sha256, selector_report_sha256, output_parquet_sha256, selected_rows, selected_asset_count, and selected_asset_ids_hash."
+    "The selected-source report binds source_parquet_sha256, selector_report_sha256, output_parquet_sha256, selected_rows, selected_asset_count, selected_asset_ids_hash, source_row_groups, and projected_row_groups."
   ],
   "claim_limits": [
     "This artifact does not prove PMXT raw-row-to-NT projection.",
-    "This artifact does not carry the source-backed GammaMarket metadata required by NT's Polymarket BinaryOption parser.",
     "This artifact does not prove NT ParquetDataCatalog read-back.",
     "This artifact does not prove BacktestNode consumption of a PMXT source-backed catalog.",
     "This artifact must not be used as evidence that broad PMXT backfill is efficient."
   ],
   "next_required_steps": [
-    "Acquire or stage source-backed GammaMarket metadata for the selected condition/token and rerun source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json.",
-    "Only after the metadata gate passes, implement selected PMXT row-to-NT projection using nautilus-polymarket public parser/provider surfaces.",
+    "Implement selected PMXT row-to-NT projection using nautilus-polymarket public parser/provider surfaces.",
     "Write selected BinaryOption, OrderBookDelta, and TradeTick data into NT ParquetDataCatalog.",
     "Query the selected NT catalog back and bind logical catalog hash plus selected-source hashes.",
     "Run BacktestNode against exactly the selected source-backed NT catalog."

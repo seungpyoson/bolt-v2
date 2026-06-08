@@ -17,6 +17,7 @@ fn first_proof_selector_uses_configured_event_roles_without_asset_constants() {
             "execution".to_string(),
         ],
         excluded_event_families: vec!["instrument_epoch".to_string()],
+        candidate_asset_ids: Vec::new(),
         row_budget: 10,
         max_selected_assets: 2,
     };
@@ -61,6 +62,42 @@ fn first_proof_selector_uses_configured_event_roles_without_asset_constants() {
     assert_eq!(
         report.selected_asset_ids_hash,
         second.selected_asset_ids_hash
+    );
+}
+
+#[test]
+fn first_proof_selector_honors_configured_candidate_universe() {
+    let selection = FirstProofSelection {
+        required_event_families: vec![
+            "snapshot".to_string(),
+            "update".to_string(),
+            "execution".to_string(),
+        ],
+        excluded_event_families: vec!["instrument_epoch".to_string()],
+        candidate_asset_ids: vec!["asset-two".to_string()],
+        row_budget: 10,
+        max_selected_assets: 1,
+    };
+    let event_counts = vec![
+        count("asset-one", "snapshot", 1),
+        count("asset-one", "update", 1),
+        count("asset-one", "execution", 1),
+        count("asset-two", "snapshot", 1),
+        count("asset-two", "update", 3),
+        count("asset-two", "execution", 1),
+    ];
+
+    let report = evaluate_first_proof_selector("bounded-l2-first-proof", &event_counts, &selection);
+
+    assert_eq!(report.status, FirstProofSelectorStatus::Selected);
+    assert_eq!(report.eligible_assets, 1);
+    assert_eq!(
+        report
+            .selected_assets
+            .iter()
+            .map(|asset| (asset.asset_id.as_str(), asset.replay_rows))
+            .collect::<Vec<_>>(),
+        vec![("asset-two", 5)]
     );
 }
 

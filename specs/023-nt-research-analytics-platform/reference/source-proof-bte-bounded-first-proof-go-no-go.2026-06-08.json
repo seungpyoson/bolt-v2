@@ -35,7 +35,7 @@
     ]
   },
   "bounded_first_proof_selector_artifacts": {
-    "status": "concrete_pmxt_selector_artifact_generated_but_not_catalog_projected",
+    "status": "concrete_pmxt_gamma_backed_selector_artifact_generated_but_not_catalog_projected",
     "local_artifact_root": "/private/tmp/bte-pmxt-first-proof-selector-2026-06-08",
     "source_object_uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
     "source_object_sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
@@ -44,25 +44,28 @@
     "event_count_ledger_file_sha256": "de29c2edd18f4a23d24c42a90ad379b7ec602ea83fd997fd5eecb0fa7256fee3",
     "source_rows": 64877467,
     "event_count_rows": 91786,
-    "selector_report_path": "/private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector/first-proof-selector-report.json",
-    "selector_report_content_hash": "f8315f9eaaa9207b6eaeeac604019d8aa11af0e69eb2505f1f1fa1848e72153c",
-    "selector_report_file_sha256": "647f0cee89becb46b7051992dd7fea25ca08be3b551bd6873cd21be2ebd7b524",
+    "selector_report_path": "/private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector-gamma-candidates/first-proof-selector-report.json",
+    "selector_report_content_hash": "75eb9d2b6238f343b838b06d48830ab125b50fccc1d91b4c557bf2ab9ecdae1f",
+    "selector_report_file_sha256": "3e64cc09d803ff34de9cbc51345978406125fcc5147879a7c5ff8475a73c3aaf",
     "selector_status": "selected",
     "total_assets": 71593,
-    "eligible_assets": 451,
+    "eligible_assets": 6,
     "selected_asset_count": 1,
-    "selected_asset_ids_hash": "edc5e3c70031056cf544d2cf581c5fe2ee3122886090ae513d6321a34c99d966",
+    "selected_asset_ids_hash": "1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110",
     "event_count_ledger_hash": "9491b9fe73ba1bf75024fc113f6bf918866b952db9e81d262cc1fcaf0367dd2e",
     "selected_assets": [
       {
-        "asset_id": "101573629105061692824394189329292260077476973116785474086922405861943493792845",
-        "replay_rows": 4
+        "asset_id": "73895424095742155573626958367283533358717984717096075221396743226794070701077",
+        "replay_rows": 5
       }
     ],
     "scan_efficiency_evidence": {
       "debug_projected_borrowed_count_scan_seconds": "55.23",
       "previous_debug_projected_allocating_scan_seconds": "88.30",
-      "selector_report_generation_seconds": "2.27"
+      "selector_report_generation_seconds": "2.27",
+      "metadata_backed_selector_generation_seconds": "2.44",
+      "selected_source_slice_row_group_pruned_seconds": "30.31",
+      "projected_row_groups": "1 of 62"
     },
     "claim_limits": [
       "This proves PMXT source event-count scanning and selector report generation only.",
@@ -218,7 +221,9 @@
     "RED rust_verification cargo test first_proof_selector_cli_writes_artifact_from_config_owned_spec failed because CARGO_BIN_EXE_first_proof_selector was absent.",
     "GREEN rust_verification cargo test first_proof_selector_cli_writes_artifact_from_config_owned_spec passed after adding the first_proof_selector CLI.",
     "Timed bounded PMXT event-count scan generated /private/tmp/bte-pmxt-first-proof-selector-2026-06-08/event-count-ledger.json from the 64,877,467-row one-hour sample in 55.23s debug runtime after parquet projection and borrowed-row counting.",
-    "Timed selector report generation produced /private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector/first-proof-selector-report.json in 2.27s debug runtime with 451 eligible assets and selected_asset_ids_hash edc5e3c70031056cf544d2cf581c5fe2ee3122886090ae513d6321a34c99d966."
+    "Timed selector report generation produced /private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector/first-proof-selector-report.json in 2.27s debug runtime with 451 event-family eligible assets before metadata gating.",
+    "Metadata-backed selector report /private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector-gamma-candidates/first-proof-selector-report.json selected 1 asset from 6 Gamma-backed candidates, selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110, file_sha256 3e64cc09d803ff34de9cbc51345978406125fcc5147879a7c5ff8475a73c3aaf.",
+    "Row-group-pruned selected-source staging produced 5 rows in 30.31s and projected 1 of 62 source row groups."
   ],
   "still_blocking_broad_backfill": [
     "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven.",

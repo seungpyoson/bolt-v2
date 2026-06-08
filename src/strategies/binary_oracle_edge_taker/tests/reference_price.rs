@@ -20,6 +20,11 @@ const CHAINLINK_REFERENCE_PROVIDER: &str = "chainlink_ws";
 const CHAINLINK_REFERENCE_INSTRUMENT: &str = "BTC-USD.CHAINLINK_REFERENCE";
 const POLYRESEARCH_REFERENCE_PROVIDER: &str = "polyresearch_ws";
 const POLYRESEARCH_REFERENCE_SYMBOL: &str = "BTC";
+const CHAINLINK_PRIMARY_SOURCE_ID: &str = "chainlink_primary";
+const POLYRESEARCH_BACKUP_SOURCE_ID: &str = "polyresearch_backup";
+const TEST_REFERENCE_CURRENT_PRICE: f64 = 66_300.25;
+const TEST_REFERENCE_OBSERVED_TS_MS: u64 = 1_200;
+const TEST_REFERENCE_RECEIVED_TS_MS: u64 = 1_250;
 
 fn reference_provider(key: &str) -> ReferencePriceProvider {
     ReferencePriceProvider::new(key).expect("test provider key should be valid")
@@ -59,22 +64,28 @@ fn custom_reference_price_update_does_not_mutate_price_to_beat() {
     assert_eq!(strategy.active.price_to_beat, None);
 
     let update = reference_price_update(
-        "chainlink_primary",
-        "chainlink_ws",
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
         CHAINLINK_REFERENCE_INSTRUMENT,
-        66_300.25,
-        1_200,
-        1_250,
+        TEST_REFERENCE_CURRENT_PRICE,
+        TEST_REFERENCE_OBSERVED_TS_MS,
+        TEST_REFERENCE_RECEIVED_TS_MS,
     );
 
     DataActor::on_data(&mut strategy, &update).expect("custom reference price should be handled");
 
-    assert_eq!(strategy.active.reference_current_price, Some(66_300.25));
+    assert_eq!(
+        strategy.active.reference_current_price,
+        Some(TEST_REFERENCE_CURRENT_PRICE)
+    );
     assert_eq!(
         strategy.active.reference_current_price_source_id.as_deref(),
-        Some("chainlink_primary")
+        Some(CHAINLINK_PRIMARY_SOURCE_ID)
     );
-    assert_eq!(strategy.active.reference_current_price_ts_ms, Some(1_200));
+    assert_eq!(
+        strategy.active.reference_current_price_ts_ms,
+        Some(TEST_REFERENCE_OBSERVED_TS_MS)
+    );
     assert_eq!(strategy.active.price_to_beat, None);
 }
 
@@ -88,24 +99,28 @@ fn selected_reference_current_price_feeds_entry_pricing_spot() {
     let _cache = register_test_strategy(&mut strategy);
 
     let update = reference_price_update(
-        "chainlink_primary",
+        CHAINLINK_PRIMARY_SOURCE_ID,
         CHAINLINK_REFERENCE_PROVIDER,
         CHAINLINK_REFERENCE_INSTRUMENT,
-        66_300.25,
-        1_200,
-        1_250,
+        TEST_REFERENCE_CURRENT_PRICE,
+        TEST_REFERENCE_OBSERVED_TS_MS,
+        TEST_REFERENCE_RECEIVED_TS_MS,
     );
 
     DataActor::on_data(&mut strategy, &update)
         .expect("custom reference current price should be handled");
 
     let inputs = strategy
-        .current_entry_pricing_inputs_at(1_200)
+        .current_entry_pricing_inputs_at(TEST_REFERENCE_OBSERVED_TS_MS)
         .expect("selected reference current price should supply entry spot");
-    assert_eq!(inputs.spot_price, 66_300.25);
+    assert_eq!(inputs.spot_price, TEST_REFERENCE_CURRENT_PRICE);
     assert_eq!(
         strategy.pricing.fast_spot,
-        Some(fast_spot("chainlink_primary", 66_300.25, 1_200))
+        Some(fast_spot(
+            CHAINLINK_PRIMARY_SOURCE_ID,
+            TEST_REFERENCE_CURRENT_PRICE,
+            TEST_REFERENCE_OBSERVED_TS_MS
+        ))
     );
 }
 
@@ -121,7 +136,7 @@ fn reference_price_sources_subscribe_as_custom_data_on_start_and_unsubscribe_on_
     assert_reference_price_subscription(
         &strategy.reference_price_subscribe_events[0],
         REFERENCE_PRICE_SUBSCRIBE_ACTION,
-        "chainlink_primary",
+        CHAINLINK_PRIMARY_SOURCE_ID,
         CHAINLINK_REFERENCE_PROVIDER,
         "chainlink_reference",
         Some("BTC-USD.CHAINLINK_REFERENCE"),
@@ -130,7 +145,7 @@ fn reference_price_sources_subscribe_as_custom_data_on_start_and_unsubscribe_on_
     assert_reference_price_subscription(
         &strategy.reference_price_subscribe_events[1],
         REFERENCE_PRICE_SUBSCRIBE_ACTION,
-        "polyresearch_backup",
+        POLYRESEARCH_BACKUP_SOURCE_ID,
         POLYRESEARCH_REFERENCE_PROVIDER,
         "polyresearch_reference",
         None,
@@ -143,7 +158,7 @@ fn reference_price_sources_subscribe_as_custom_data_on_start_and_unsubscribe_on_
     assert_reference_price_subscription(
         &strategy.reference_price_subscribe_events[2],
         REFERENCE_PRICE_UNSUBSCRIBE_ACTION,
-        "chainlink_primary",
+        CHAINLINK_PRIMARY_SOURCE_ID,
         CHAINLINK_REFERENCE_PROVIDER,
         "chainlink_reference",
         Some("BTC-USD.CHAINLINK_REFERENCE"),
@@ -152,7 +167,7 @@ fn reference_price_sources_subscribe_as_custom_data_on_start_and_unsubscribe_on_
     assert_reference_price_subscription(
         &strategy.reference_price_subscribe_events[3],
         REFERENCE_PRICE_UNSUBSCRIBE_ACTION,
-        "polyresearch_backup",
+        POLYRESEARCH_BACKUP_SOURCE_ID,
         POLYRESEARCH_REFERENCE_PROVIDER,
         "polyresearch_reference",
         None,
@@ -166,7 +181,7 @@ fn non_winning_reference_price_source_updates_health_without_trading_state() {
     let mut reference_price = reference_price_config();
     reference_price
         .sources
-        .get_mut("chainlink_primary")
+        .get_mut(CHAINLINK_PRIMARY_SOURCE_ID)
         .expect("chainlink source should exist")
         .required = false;
     strategy.config.reference_current_price = Some(reference_price);
@@ -175,23 +190,26 @@ fn non_winning_reference_price_source_updates_health_without_trading_state() {
     let _cache = register_test_strategy(&mut strategy);
 
     let backup = reference_price_update(
-        "polyresearch_backup",
+        POLYRESEARCH_BACKUP_SOURCE_ID,
         POLYRESEARCH_REFERENCE_PROVIDER,
         POLYRESEARCH_REFERENCE_SYMBOL,
-        66_300.25,
+        TEST_REFERENCE_CURRENT_PRICE,
         1_100,
         1_110,
     );
     DataActor::on_data(&mut strategy, &backup).expect("backup quote should be handled");
 
-    assert_eq!(strategy.active.reference_current_price, Some(66_300.25));
+    assert_eq!(
+        strategy.active.reference_current_price,
+        Some(TEST_REFERENCE_CURRENT_PRICE)
+    );
     assert_eq!(
         strategy.active.reference_current_price_source_id.as_deref(),
-        Some("polyresearch_backup")
+        Some(POLYRESEARCH_BACKUP_SOURCE_ID)
     );
 
     let later_primary = reference_price_update(
-        "chainlink_primary",
+        CHAINLINK_PRIMARY_SOURCE_ID,
         CHAINLINK_REFERENCE_PROVIDER,
         CHAINLINK_REFERENCE_INSTRUMENT,
         66_500.00,
@@ -200,21 +218,24 @@ fn non_winning_reference_price_source_updates_health_without_trading_state() {
     );
     DataActor::on_data(&mut strategy, &later_primary).expect("primary quote should be handled");
 
-    assert_eq!(strategy.active.reference_current_price, Some(66_300.25));
+    assert_eq!(
+        strategy.active.reference_current_price,
+        Some(TEST_REFERENCE_CURRENT_PRICE)
+    );
     assert_eq!(
         strategy.active.reference_current_price_source_id.as_deref(),
-        Some("polyresearch_backup")
+        Some(POLYRESEARCH_BACKUP_SOURCE_ID)
     );
     assert_eq!(
         strategy
             .reference_price_source_health
-            .get("chainlink_primary")
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
             .map(|health| health.status()),
         Some(ReferencePriceSourceStatus::Available)
     );
 
     let backup_update = reference_price_update(
-        "polyresearch_backup",
+        POLYRESEARCH_BACKUP_SOURCE_ID,
         POLYRESEARCH_REFERENCE_PROVIDER,
         POLYRESEARCH_REFERENCE_SYMBOL,
         66_301.25,
@@ -227,7 +248,7 @@ fn non_winning_reference_price_source_updates_health_without_trading_state() {
     assert_eq!(strategy.active.reference_current_price, Some(66_301.25));
     assert_eq!(
         strategy.active.reference_current_price_source_id.as_deref(),
-        Some("polyresearch_backup")
+        Some(POLYRESEARCH_BACKUP_SOURCE_ID)
     );
 }
 
@@ -237,7 +258,7 @@ fn reference_price_interval_transition_clears_stale_quotes_and_health() {
     let mut reference_price = reference_price_config();
     reference_price
         .sources
-        .get_mut("chainlink_primary")
+        .get_mut(CHAINLINK_PRIMARY_SOURCE_ID)
         .expect("chainlink source should exist")
         .required = false;
     strategy.config.reference_current_price = Some(reference_price);
@@ -246,10 +267,10 @@ fn reference_price_interval_transition_clears_stale_quotes_and_health() {
     let _cache = register_test_strategy(&mut strategy);
 
     let first_interval_primary = reference_price_update(
-        "chainlink_primary",
+        CHAINLINK_PRIMARY_SOURCE_ID,
         CHAINLINK_REFERENCE_PROVIDER,
         CHAINLINK_REFERENCE_INSTRUMENT,
-        66_300.25,
+        TEST_REFERENCE_CURRENT_PRICE,
         1_100,
         1_110,
     );
@@ -259,12 +280,12 @@ fn reference_price_interval_transition_clears_stale_quotes_and_health() {
     assert!(
         strategy
             .reference_price_quotes
-            .contains_key("chainlink_primary")
+            .contains_key(CHAINLINK_PRIMARY_SOURCE_ID)
     );
     assert_eq!(
         strategy
             .reference_price_source_health
-            .get("chainlink_primary")
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
             .map(|health| health.status()),
         Some(ReferencePriceSourceStatus::Available)
     );
@@ -272,7 +293,7 @@ fn reference_price_interval_transition_clears_stale_quotes_and_health() {
     strategy.active =
         ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-2", 1_200), 0);
     let second_interval_backup = reference_price_update(
-        "polyresearch_backup",
+        POLYRESEARCH_BACKUP_SOURCE_ID,
         POLYRESEARCH_REFERENCE_PROVIDER,
         POLYRESEARCH_REFERENCE_SYMBOL,
         66_500.25,
@@ -285,18 +306,18 @@ fn reference_price_interval_transition_clears_stale_quotes_and_health() {
     assert!(
         !strategy
             .reference_price_quotes
-            .contains_key("chainlink_primary")
+            .contains_key(CHAINLINK_PRIMARY_SOURCE_ID)
     );
     assert_eq!(
         strategy
             .reference_price_source_health
-            .get("chainlink_primary")
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
             .map(|health| health.status()),
         Some(ReferencePriceSourceStatus::Silent)
     );
     assert_eq!(
         strategy.active.reference_current_price_source_id.as_deref(),
-        Some("polyresearch_backup")
+        Some(POLYRESEARCH_BACKUP_SOURCE_ID)
     );
 }
 
@@ -306,7 +327,7 @@ fn reference_price_update_with_wrong_provider_does_not_satisfy_source() {
     let mut reference_price = reference_price_config();
     reference_price
         .sources
-        .get_mut("chainlink_primary")
+        .get_mut(CHAINLINK_PRIMARY_SOURCE_ID)
         .expect("chainlink source should exist")
         .required = false;
     strategy.config.reference_current_price = Some(reference_price);
@@ -316,9 +337,9 @@ fn reference_price_update_with_wrong_provider_does_not_satisfy_source() {
 
     let wrong_provider = ReferencePriceUpdate::try_new(
         "BTC",
-        "chainlink_primary",
+        CHAINLINK_PRIMARY_SOURCE_ID,
         POLYRESEARCH_REFERENCE_PROVIDER,
-        66_300.25,
+        TEST_REFERENCE_CURRENT_PRICE,
         None,
         None,
         1_100,
@@ -334,7 +355,7 @@ fn reference_price_update_with_wrong_provider_does_not_satisfy_source() {
     assert_eq!(
         strategy
             .reference_price_source_health
-            .get("chainlink_primary")
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
             .map(|health| health.status()),
         Some(ReferencePriceSourceStatus::MalformedFrame)
     );
@@ -350,10 +371,10 @@ fn reference_price_update_with_wrong_provider_instrument_does_not_satisfy_source
 
     let wrong_instrument = ReferencePriceUpdate::try_new_with_provenance(
         "BTC",
-        "chainlink_primary",
+        CHAINLINK_PRIMARY_SOURCE_ID,
         CHAINLINK_REFERENCE_PROVIDER,
         "ETH-USD.CHAINLINK_REFERENCE",
-        66_300.25,
+        TEST_REFERENCE_CURRENT_PRICE,
         None,
         None,
         1_100,
@@ -371,7 +392,7 @@ fn reference_price_update_with_wrong_provider_instrument_does_not_satisfy_source
     assert_eq!(
         strategy
             .reference_price_source_health
-            .get("chainlink_primary")
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
             .map(|health| health.status()),
         Some(ReferencePriceSourceStatus::MalformedFrame)
     );
@@ -383,7 +404,7 @@ fn stale_block_marks_reference_price_source_stale() {
     let mut reference_price = reference_price_config();
     reference_price
         .sources
-        .get_mut("chainlink_primary")
+        .get_mut(CHAINLINK_PRIMARY_SOURCE_ID)
         .expect("chainlink source should exist")
         .required = false;
     reference_price.max_source_age_ms = 50;
@@ -393,7 +414,7 @@ fn stale_block_marks_reference_price_source_stale() {
     let _cache = register_test_strategy(&mut strategy);
 
     let stale_primary = reference_price_update(
-        "chainlink_primary",
+        CHAINLINK_PRIMARY_SOURCE_ID,
         CHAINLINK_REFERENCE_PROVIDER,
         CHAINLINK_REFERENCE_INSTRUMENT,
         100.0,
@@ -406,14 +427,14 @@ fn stale_block_marks_reference_price_source_stale() {
     assert_eq!(
         strategy
             .reference_price_source_health
-            .get("chainlink_primary")
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
             .map(|health| health.status()),
         Some(ReferencePriceSourceStatus::Stale)
     );
     assert_eq!(
         strategy
             .reference_price_source_health
-            .get("polyresearch_backup")
+            .get(POLYRESEARCH_BACKUP_SOURCE_ID)
             .map(|health| health.status()),
         Some(ReferencePriceSourceStatus::Silent)
     );
@@ -425,7 +446,7 @@ fn drift_block_marks_reference_price_sources_unavailable() {
     let mut reference_price = reference_price_config();
     reference_price
         .sources
-        .get_mut("chainlink_primary")
+        .get_mut(CHAINLINK_PRIMARY_SOURCE_ID)
         .expect("chainlink source should exist")
         .required = false;
     reference_price.min_valid_sources = 2;
@@ -437,7 +458,7 @@ fn drift_block_marks_reference_price_sources_unavailable() {
     let _cache = register_test_strategy(&mut strategy);
 
     let primary = reference_price_update(
-        "chainlink_primary",
+        CHAINLINK_PRIMARY_SOURCE_ID,
         CHAINLINK_REFERENCE_PROVIDER,
         CHAINLINK_REFERENCE_INSTRUMENT,
         100.0,
@@ -447,7 +468,7 @@ fn drift_block_marks_reference_price_sources_unavailable() {
     DataActor::on_data(&mut strategy, &primary).expect("primary quote should be handled");
 
     let backup = reference_price_update(
-        "polyresearch_backup",
+        POLYRESEARCH_BACKUP_SOURCE_ID,
         POLYRESEARCH_REFERENCE_PROVIDER,
         POLYRESEARCH_REFERENCE_SYMBOL,
         101.0,
@@ -460,14 +481,14 @@ fn drift_block_marks_reference_price_sources_unavailable() {
     assert_eq!(
         strategy
             .reference_price_source_health
-            .get("chainlink_primary")
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
             .map(|health| health.status()),
         Some(ReferencePriceSourceStatus::DriftExceeded)
     );
     assert_eq!(
         strategy
             .reference_price_source_health
-            .get("polyresearch_backup")
+            .get(POLYRESEARCH_BACKUP_SOURCE_ID)
             .map(|health| health.status()),
         Some(ReferencePriceSourceStatus::DriftExceeded)
     );
@@ -476,7 +497,7 @@ fn drift_block_marks_reference_price_sources_unavailable() {
 fn reference_price_config() -> ReferencePriceBlock {
     let mut sources = BTreeMap::new();
     sources.insert(
-        "chainlink_primary".to_string(),
+        CHAINLINK_PRIMARY_SOURCE_ID.to_string(),
         ReferencePriceSourceBlock {
             provider: reference_provider(CHAINLINK_REFERENCE_PROVIDER),
             enabled: true,
@@ -487,7 +508,7 @@ fn reference_price_config() -> ReferencePriceBlock {
         },
     );
     sources.insert(
-        "polyresearch_backup".to_string(),
+        POLYRESEARCH_BACKUP_SOURCE_ID.to_string(),
         ReferencePriceSourceBlock {
             provider: reference_provider(POLYRESEARCH_REFERENCE_PROVIDER),
             enabled: true,
@@ -500,8 +521,8 @@ fn reference_price_config() -> ReferencePriceBlock {
     ReferencePriceBlock {
         asset: "BTC".to_string(),
         source_order: vec![
-            "chainlink_primary".to_string(),
-            "polyresearch_backup".to_string(),
+            CHAINLINK_PRIMARY_SOURCE_ID.to_string(),
+            POLYRESEARCH_BACKUP_SOURCE_ID.to_string(),
         ],
         min_valid_sources: 1,
         selection_policy: ReferencePriceSelectionPolicy::FirstValidPerInterval,

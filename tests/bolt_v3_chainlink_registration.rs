@@ -19,7 +19,6 @@ use nautilus_model::identifiers::ClientId;
 const CHAINLINK_CLIENT_KEY: &str = "chainlink_strike";
 const CHAINLINK_API_KEY_SSM_PATH: &str = "/bolt/chainlink_strike/api_key";
 const CHAINLINK_API_SECRET_SSM_PATH: &str = "/bolt/chainlink_strike/api_secret";
-const TEST_FEED_ID: &str = "0x000362205e10b3a147d02792eccee483dca6c7b44ecce7012cb8c6e0b68b3ae9";
 
 fn chainlink_client_toml() -> String {
     format!(
@@ -30,13 +29,6 @@ venue = "CHAINLINK_DATA_STREAMS"
 rest_base_url = "https://api.example.com/"
 report_endpoint_path = "/api/v1/reports/bulk"
 http_timeout_secs = 5
-
-[[data.feed_bindings]]
-feed_id = "{TEST_FEED_ID}"
-instrument_id = "BTC-USD-UP.BOLT"
-report_schema_version = 3
-report_decimal_scale = 18
-price_precision = 2
 
 [secrets]
 api_key_ssm_parameter = "{CHAINLINK_API_KEY_SSM_PATH}"

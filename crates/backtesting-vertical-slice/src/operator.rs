@@ -494,6 +494,8 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         conversion_checkpoint_hash: &inputs.conversion_checkpoint_hash,
         catalog_hash: &actual_catalog_hash,
         catalog_metadata_hash: &conversion_catalog_metadata_hash,
+        event_count_ledger_hash: None,
+        selected_asset_ids_hash: None,
         strategy: &inputs.manifest.strategy,
         run_purpose: run_purpose_label(&inputs.manifest),
         market_structure_fixture: market_structure_label(&inputs.manifest),

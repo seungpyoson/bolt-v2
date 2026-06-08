@@ -130,7 +130,8 @@
     },
     {
       "area": "result contract",
-      "required_shape": "Bind source proof, object hash, event-count ledger hash, selected_asset_ids_hash, converter identity/version, conversion manifest/checkpoint hash, logical catalog hash, NT revision, and claim limits."
+      "required_shape": "Bind source proof, object hash, event-count ledger hash, selected_asset_ids_hash, converter identity/version, conversion manifest/checkpoint hash, logical catalog hash, NT revision, and claim limits.",
+      "current_status": "TDD-proven schema validation requires event_count_ledger_hash and selected_asset_ids_hash for L2Replay result contracts; actual PMXT selector-report-to-run wiring remains pending."
     }
   ],
   "required_red_green_tests_before_acceptance": [
@@ -163,7 +164,11 @@
     "RED just bte-test first_proof_selector_writer_is_config_and_ledger_driven_and_idempotent failed with the explicit unimplemented writer error.",
     "GREEN just bte-test first_proof_selector_writer_is_config_and_ledger_driven_and_idempotent passed after TOML spec parsing, JSON event-count ledger parsing, idempotent report writing, event_count_ledger_hash, and selected_asset_ids_hash support.",
     "just bte-test first_proof_selector passed 2 focused selector tests.",
-    "just bte-fmt-check passed after first-proof selector changes."
+    "just bte-fmt-check passed after first-proof selector changes.",
+    "RED just bte-test result_contract::tests::l2_result_contract_requires_event_count_ledger_hash failed because an L2Replay contract without selector provenance still validated.",
+    "GREEN just bte-test result_contract::tests::l2_result_contract_requires_event_count_ledger_hash passed after L2Replay contracts required event_count_ledger_hash.",
+    "RED just bte-test result_contract::tests::l2_result_contract_requires_and_binds_selected_asset_ids_hash failed because an L2Replay contract with only event_count_ledger_hash still validated.",
+    "GREEN just bte-test result_contract::tests::l2_result_contract_requires_and_binds_selected_asset_ids_hash passed after L2Replay contracts required selected_asset_ids_hash and serialized both selector hashes."
   ],
   "still_blocking_broad_backfill": [
     "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven.",

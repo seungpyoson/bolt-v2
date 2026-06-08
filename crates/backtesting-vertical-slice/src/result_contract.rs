@@ -146,6 +146,10 @@ pub struct BacktestResultContract {
     pub conversion_checkpoint_hash: String,
     pub catalog_hash: String,
     pub catalog_metadata_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_count_ledger_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_asset_ids_hash: Option<String>,
     pub strategy_config_hash: String,
     pub run_purpose: String,
     pub market_structure_fixture: String,
@@ -255,6 +259,22 @@ impl BacktestResultContract {
         if self.claim_limits.is_empty() {
             return Err(ResultContractError::MissingField("claim_limits"));
         }
+        if self.fidelity_class == SourceProofFidelityClass::L2Replay
+            && self
+                .event_count_ledger_hash
+                .as_deref()
+                .is_none_or(|hash| hash.trim().is_empty())
+        {
+            return Err(ResultContractError::MissingField("event_count_ledger_hash"));
+        }
+        if self.fidelity_class == SourceProofFidelityClass::L2Replay
+            && self
+                .selected_asset_ids_hash
+                .as_deref()
+                .is_none_or(|hash| hash.trim().is_empty())
+        {
+            return Err(ResultContractError::MissingField("selected_asset_ids_hash"));
+        }
         self.assert_objective()
     }
 
@@ -313,6 +333,8 @@ pub struct ResultContractInputs<'a> {
     pub conversion_checkpoint_hash: &'a str,
     pub catalog_hash: &'a str,
     pub catalog_metadata_hash: &'a str,
+    pub event_count_ledger_hash: Option<&'a str>,
+    pub selected_asset_ids_hash: Option<&'a str>,
     pub strategy: &'a StrategySource,
     pub run_purpose: &'a str,
     pub market_structure_fixture: &'a str,
@@ -354,6 +376,8 @@ pub fn build_result_contract(
         conversion_checkpoint_hash: inputs.conversion_checkpoint_hash.to_string(),
         catalog_hash: inputs.catalog_hash.to_string(),
         catalog_metadata_hash: inputs.catalog_metadata_hash.to_string(),
+        event_count_ledger_hash: inputs.event_count_ledger_hash.map(str::to_string),
+        selected_asset_ids_hash: inputs.selected_asset_ids_hash.map(str::to_string),
         strategy_config_hash: strategy_config_hash(inputs.strategy),
         run_purpose: inputs.run_purpose.to_string(),
         market_structure_fixture: inputs.market_structure_fixture.to_string(),
@@ -409,6 +433,8 @@ mod tests {
             conversion_checkpoint_hash: "conversioncheckpointabc".to_string(),
             catalog_hash: "abc123".to_string(),
             catalog_metadata_hash: "metahashabc".to_string(),
+            event_count_ledger_hash: None,
+            selected_asset_ids_hash: None,
             strategy_config_hash: "def456".to_string(),
             run_purpose: "normal".to_string(),
             market_structure_fixture: "perps-spot".to_string(),
@@ -591,6 +617,40 @@ features = ["streaming", "examples"]
         assert_eq!(
             c.validate().unwrap_err(),
             ResultContractError::MissingField("claim_limits")
+        );
+    }
+
+    #[test]
+    fn l2_result_contract_requires_event_count_ledger_hash() {
+        let mut c = contract();
+        c.fidelity_class = SourceProofFidelityClass::L2Replay;
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("event_count_ledger_hash")
+        );
+    }
+
+    #[test]
+    fn l2_result_contract_requires_and_binds_selected_asset_ids_hash() {
+        let mut c = contract();
+        c.fidelity_class = SourceProofFidelityClass::L2Replay;
+        c.event_count_ledger_hash = Some("eventledgerabc".to_string());
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("selected_asset_ids_hash")
+        );
+
+        c.selected_asset_ids_hash = Some("selectedassetsabc".to_string());
+        c.validate()
+            .expect("L2 contract with selector hashes is complete");
+        let json = serde_json::to_value(&c).expect("serialize");
+        assert_eq!(
+            json.get("event_count_ledger_hash").and_then(|v| v.as_str()),
+            Some("eventledgerabc")
+        );
+        assert_eq!(
+            json.get("selected_asset_ids_hash").and_then(|v| v.as_str()),
+            Some("selectedassetsabc")
         );
     }
 

@@ -150,7 +150,7 @@ selector_fingerprint = "greeks-selector"
 source_kind = "option_greeks"
 client_id = "configured-client"
 subscription_generation = 7
-accepted_conventions = ["BlackScholes"]
+accepted_conventions = ["BLACK_SCHOLES"]
 
 [profiles.sources.nt_provenance]
 nt_revision = "configured-nt-revision"
@@ -173,7 +173,7 @@ selector_fingerprint = "chain-selector"
 source_kind = "option_chain"
 client_id = "configured-client"
 subscription_generation = 7
-accepted_conventions = ["BlackScholes"]
+accepted_conventions = ["BLACK_SCHOLES"]
 
 [profiles.sources.nt_provenance]
 nt_revision = "configured-nt-revision"

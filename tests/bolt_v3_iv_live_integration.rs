@@ -149,7 +149,7 @@ selector_fingerprint = "configured-greeks-selector"
 source_kind = "option_greeks"
 client_id = "configured-client"
 subscription_generation = 7
-accepted_conventions = ["BlackScholes"]
+accepted_conventions = ["BLACK_SCHOLES"]
 
 [iv.profiles.sources.nt_provenance]
 nt_revision = "configured-nt-revision"
@@ -172,7 +172,7 @@ selector_fingerprint = "configured-chain-selector"
 source_kind = "option_chain"
 client_id = "configured-client"
 subscription_generation = 7
-accepted_conventions = ["BlackScholes"]
+accepted_conventions = ["BLACK_SCHOLES"]
 
 [iv.profiles.sources.nt_provenance]
 nt_revision = "configured-nt-revision"
@@ -601,7 +601,7 @@ fn live_iv_event_bindings_route_nt_option_greeks_into_strategy_handle() {
 fn runtime_nt_option_greeks_rejects_unaccepted_convention() {
     let mut parsed = live_event_router_root_config();
     parsed.iv.as_mut().unwrap().profiles[0].sources[0].accepted_conventions =
-        BTreeSet::from(["PriceAdjusted".to_string()]);
+        BTreeSet::from(["PRICE_ADJUSTED".to_string()]);
     let engine = IvRuntimeEngine::from_iv_root(parsed.iv.as_ref().unwrap()).unwrap();
     let error = engine
         .ingest_nt_option_greeks(
@@ -632,7 +632,7 @@ fn runtime_nt_option_greeks_rejects_unaccepted_convention() {
 fn runtime_nt_option_greeks_rejects_missing_iv_basis() {
     let mut parsed = live_event_router_root_config();
     parsed.iv.as_mut().unwrap().profiles[0].sources[0].accepted_conventions =
-        BTreeSet::from(["BlackScholes".to_string()]);
+        BTreeSet::from(["BLACK_SCHOLES".to_string()]);
     let engine = IvRuntimeEngine::from_iv_root(parsed.iv.as_ref().unwrap()).unwrap();
     let mut greeks = configured_nt_option_greeks();
     greeks.mark_iv = None;
@@ -668,7 +668,7 @@ fn runtime_nt_option_greeks_rejects_missing_iv_basis() {
 fn runtime_nt_option_greeks_rejects_zero_iv_in_source_health() {
     let mut parsed = live_event_router_root_config();
     parsed.iv.as_mut().unwrap().profiles[0].sources[0].accepted_conventions =
-        BTreeSet::from(["BlackScholes".to_string()]);
+        BTreeSet::from(["BLACK_SCHOLES".to_string()]);
     let engine = IvRuntimeEngine::from_iv_root(parsed.iv.as_ref().unwrap()).unwrap();
     let mut greeks = configured_nt_option_greeks();
     greeks.mark_iv = Some(0.0);
@@ -708,7 +708,7 @@ fn runtime_nt_option_greeks_rejects_zero_iv_in_source_health() {
 fn runtime_nt_option_chain_rejects_missing_iv_basis() {
     let mut parsed = live_event_router_root_config();
     parsed.iv.as_mut().unwrap().profiles[0].sources[1].accepted_conventions =
-        BTreeSet::from(["BlackScholes".to_string()]);
+        BTreeSet::from(["BLACK_SCHOLES".to_string()]);
     let engine = IvRuntimeEngine::from_iv_root(parsed.iv.as_ref().unwrap()).unwrap();
     let mut chain = configured_nt_option_chain_slice();
     for strike in chain.calls.values_mut() {

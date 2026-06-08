@@ -286,7 +286,9 @@ impl IvRuntimeEngine {
             source_health_state: IvSourceHealthState::Active,
             payload: IvRawPayload::OptionGreeks(IvOptionGreeksPayload {
                 instrument_id: option_greeks.instrument_id.to_string(),
-                convention: IvConvention::Named(format!("{:?}", option_greeks.convention)),
+                convention: IvConvention::Named(nt_greeks_convention_name(
+                    option_greeks.convention,
+                )),
                 basis_values: option_greeks_basis_values(option_greeks),
                 greeks: IvGreekValues {
                     delta: Some(option_greeks.greeks.delta),
@@ -842,10 +844,8 @@ impl IvRuntimeSourceConfig {
         &self,
         convention: nautilus_model::enums::GreeksConvention,
     ) -> bool {
-        let debug_name = format!("{convention:?}");
-        let display_name = convention.to_string();
-        self.accepted_conventions.contains(&debug_name)
-            || self.accepted_conventions.contains(&display_name)
+        self.accepted_conventions
+            .contains(&nt_greeks_convention_name(convention))
     }
 
     fn selector_matches_option_greeks(&self, instrument_id: &str) -> bool {
@@ -923,6 +923,10 @@ fn option_greeks_basis_values(
     basis_values
 }
 
+fn nt_greeks_convention_name(convention: nautilus_model::enums::GreeksConvention) -> String {
+    convention.to_string()
+}
+
 fn option_chain_strike_payload(
     strike: f64,
     data: &nautilus_model::data::OptionStrikeData,
@@ -940,7 +944,7 @@ fn option_chain_strike_payload(
         },
         greeks: data.greeks.map(|greeks| IvOptionGreeksPayload {
             instrument_id: greeks.instrument_id.to_string(),
-            convention: IvConvention::Named(format!("{:?}", greeks.convention)),
+            convention: IvConvention::Named(nt_greeks_convention_name(greeks.convention)),
             basis_values: option_greeks_basis_values(&greeks),
             greeks: IvGreekValues {
                 delta: Some(greeks.greeks.delta),

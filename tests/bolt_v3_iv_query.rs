@@ -12,6 +12,7 @@ use bolt_v2::bolt_v3_iv::{
     health::{IvSourceHealth, IvSourceHealthState},
     ingest::{IvBasisValue, IvGreekValues, IvIngestEvent, IvOptionGreeksPayload, IvRawPayload},
     policy::{IvProjectionKind, IvProjectionPolicy},
+    provenance::IvPolicyDecision,
     query::{
         IvProductQuery, IvQuery, IvQueryError, IvQueryHandle, IvQueryProduct, IvRawPayloadQuery,
     },
@@ -455,6 +456,12 @@ fn projected_scalar_query_uses_configured_projection_policy() {
         "configured-selector-fingerprint"
     );
     assert_eq!(projected.value, 0.42);
+    let Some(IvPolicyDecision::ProjectionDecision { convention, .. }) =
+        projected.provenance.policy_decisions.last()
+    else {
+        panic!("expected projection policy decision");
+    };
+    assert_eq!(convention, "configured-convention");
 }
 
 #[test]

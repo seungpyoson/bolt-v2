@@ -25,7 +25,7 @@ use super::{
         IvStoreError, IvSurface,
     },
     time::UnixNanos,
-    types::IvProductKind,
+    types::{IvConvention, IvProductKind},
 };
 
 const INITIAL_REJECT_COUNT: u64 = 0;
@@ -903,7 +903,7 @@ fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQ
             source_id: point.source_id.clone(),
             selector_fingerprint: point.provenance.selector_fingerprint.clone(),
             basis: format!("{:?}", point.basis),
-            convention: format!("{:?}", point.convention),
+            convention: iv_convention_name(&point.convention),
             value: point.iv,
             ts_event_ns: point.ts_event_ns,
         }],
@@ -912,7 +912,7 @@ fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQ
             source_id: point.point.source_id.clone(),
             selector_fingerprint: point.point.provenance.selector_fingerprint.clone(),
             basis: format!("{:?}", point.point.basis),
-            convention: format!("{:?}", point.point.convention),
+            convention: iv_convention_name(&point.point.convention),
             value: point.point.iv,
             ts_event_ns: point.point.ts_event_ns,
         }],
@@ -958,7 +958,7 @@ fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQ
             source_id: derived.point.source_id.clone(),
             selector_fingerprint: derived.point.provenance.selector_fingerprint.clone(),
             basis: format!("{:?}", derived.point.basis),
-            convention: format!("{:?}", derived.point.convention),
+            convention: iv_convention_name(&derived.point.convention),
             value: derived.point.iv,
             ts_event_ns: derived.point.ts_event_ns,
         }],
@@ -971,6 +971,12 @@ fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQ
         Err(IvQueryError::ProductNotFound)
     } else {
         Ok(inputs)
+    }
+}
+
+fn iv_convention_name(convention: &IvConvention) -> String {
+    match convention {
+        IvConvention::Named(name) => name.clone(),
     }
 }
 

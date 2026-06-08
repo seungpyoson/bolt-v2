@@ -23,7 +23,14 @@ fn strategy_with_reference_current_price(reference_current_price: &str) -> Strin
 
 fn root_fixture() -> BoltV3RootConfig {
     let fixture = support::repo_text("tests/fixtures/bolt_v3/root.toml");
-    let backup_reference_client = r#"
+    let reference_price_fixture_additions = r#"
+[[chainlink_data_streams.feed_bindings]]
+feed_id = "0x00047da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+instrument_id = "ADA-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
 [clients.polyresearch_reference]
 venue = "POLYRESEARCH_REFERENCE_PRICE"
 
@@ -34,7 +41,7 @@ transport_backend = "sockudo"
 [clients.polyresearch_reference.secrets]
 api_key_ssm_parameter = "/bolt/polyresearch/api-key"
 "#;
-    toml::from_str(&format!("{fixture}\n{backup_reference_client}"))
+    toml::from_str(&format!("{fixture}\n{reference_price_fixture_additions}"))
         .expect("root fixture with reference clients should parse")
 }
 

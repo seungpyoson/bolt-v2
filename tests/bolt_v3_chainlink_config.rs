@@ -51,8 +51,7 @@ api_secret_ssm_parameter = "/bolt/chainlink_strike/api_secret"
 }
 
 fn fixture_root_with_client_feed_bindings_moved_to_shared_catalog() -> String {
-    let mut root_value: toml::Value = toml::from_str(include_str!("fixtures/bolt_v3/root.toml"))
-        .expect("fixture root TOML should parse as generic TOML");
+    let mut root_value = fixture_root_value();
     let root = root_value
         .as_table_mut()
         .expect("fixture root must be a TOML table");
@@ -76,6 +75,37 @@ fn fixture_root_with_client_feed_bindings_moved_to_shared_catalog() -> String {
     toml::to_string(&root_value).expect("mutated fixture should serialize")
 }
 
+fn fixture_root_with_dual_client_and_shared_feed_bindings() -> String {
+    let mut root_value = fixture_root_value();
+    let feed_bindings = root_value
+        .get("clients")
+        .and_then(toml::Value::as_table)
+        .and_then(|clients| clients.get("chainlink_strike"))
+        .and_then(toml::Value::as_table)
+        .and_then(|client| client.get("data"))
+        .and_then(toml::Value::as_table)
+        .and_then(|data| data.get("feed_bindings"))
+        .cloned()
+        .expect("fixture must declare client-local chainlink feed_bindings");
+    let root = root_value
+        .as_table_mut()
+        .expect("fixture root must be a TOML table");
+
+    let mut catalog = toml::map::Map::new();
+    catalog.insert("feed_bindings".to_string(), feed_bindings);
+    root.insert(
+        "chainlink_data_streams".to_string(),
+        toml::Value::Table(catalog),
+    );
+
+    toml::to_string(&root_value).expect("mutated fixture should serialize")
+}
+
+fn fixture_root_value() -> toml::Value {
+    toml::from_str(include_str!("fixtures/bolt_v3/root.toml"))
+        .expect("fixture root TOML should parse as generic TOML")
+}
+
 #[test]
 fn chainlink_reference_current_price_uses_shared_feed_catalog() {
     let root_toml = fixture_root_with_client_feed_bindings_moved_to_shared_catalog();
@@ -87,6 +117,23 @@ fn chainlink_reference_current_price_uses_shared_feed_catalog() {
     assert!(
         errors.is_empty(),
         "root-owned Chainlink feed catalog should validate cleanly: {errors:?}"
+    );
+}
+
+#[test]
+fn chainlink_feed_bindings_reject_dual_root_and_client_local_catalogs() {
+    let root_toml = fixture_root_with_dual_client_and_shared_feed_bindings();
+    let root: BoltV3RootConfig =
+        toml::from_str(&root_toml).expect("root-owned Chainlink feed catalog should parse");
+
+    let errors = validate_root_only(&root);
+
+    assert!(
+        errors.iter().any(|error| {
+            error.contains("chainlink_data_streams.feed_bindings")
+                && error.contains("clients.chainlink_strike.data.feed_bindings")
+        }),
+        "root-owned catalog must reject legacy client-local feed_bindings: {errors:?}"
     );
 }
 

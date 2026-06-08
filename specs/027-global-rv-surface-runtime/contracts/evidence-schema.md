@@ -6,7 +6,9 @@ Evidence must prove which global RV surface was consumed, why it was ready or bl
 
 ## Versioning
 
-Adding global runtime provenance, multi-horizon estimates, noise-robust estimates, jump components, or forecast components requires a decision-evidence schema version bump.
+The baseline after PR #609 is decision-evidence schema v8. Feature 027 must bump the schema to v9 unless another intervening merged change has already advanced the version, in which case feature 027 bumps from that new baseline by exactly one version.
+
+Adding global runtime provenance, multi-horizon estimates, noise-robust estimates, jump components, or forecast components requires the v9 decision-evidence schema change.
 
 Consumers must tolerate unknown fields for forward compatibility, but the schema version must signal every material format change.
 
@@ -18,10 +20,15 @@ Every decision evidence snapshot that references RV must include:
 - `realized_volatility_runtime_as_of_ms`
 - `realized_volatility_ready`
 - `realized_volatility_final_annualized_decimal`
+- `realized_volatility_pricing_component`
 - `realized_volatility_measured_annualized_decimal`
+- `realized_volatility_noise_robust_annualized_decimal`
 - `realized_volatility_continuous_annualized_decimal`
 - `realized_volatility_jump_annualized_decimal`
 - `realized_volatility_forecast_annualized_decimal`
+- `realized_volatility_forecast_cold_start`
+- `realized_volatility_forecast_previous_decimal`
+- `realized_volatility_forecast_alpha`
 - `realized_volatility_seconds_per_annum`
 - `realized_volatility_estimator_method`
 - `realized_volatility_noise_robust_method`
@@ -49,10 +56,14 @@ Each horizon estimate must include:
 - `ready`
 - `coverage_ratio`
 - `sample_count`
+- `expected_return_count`
+- `valid_return_count`
 - `base_fixed_grid_rv_decimal`
 - `noise_robust_rv_decimal`
 - `continuous_rv_decimal`
 - `jump_rv_decimal`
+- `ready_subsample_count`
+- `attempted_subsample_count`
 - `block_reason`
 
 Rules:
@@ -121,10 +132,10 @@ Rules:
 Evidence must state which RV component pricing consumed:
 
 - `measured`
+- `noise_robust`
 - `continuous`
 - `jump_adjusted`
 - `forecast`
-- `weighted_blend`
 
 The consumed component must correspond to the final `ReadyRealizedVol` value returned by the runtime accessor. Consumers must not recompute or substitute another component locally.
 
@@ -136,11 +147,14 @@ Unknown source rejection counters must be bounded and emitted as:
 - `count`
 - `first_seen_ms`
 - `last_seen_ms`
+- `evicted_count`
+- `capacity`
 
 Rules:
 
 - Unknown source diagnostics must not grow without a TOML-owned or hardcoded-safe maximum cardinality.
 - Eviction policy must be deterministic and documented.
+- Evidence must report aggregate evictions so dropped unknown IDs remain auditable at a count level.
 
 ## Backward Compatibility
 

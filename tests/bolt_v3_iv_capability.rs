@@ -148,7 +148,7 @@ fn whole_checkout_sweep_includes_all_fr054_terms() {
         write_source(
             root,
             &format!("crates/model/src/generated/candidate_{index}.rs"),
-            &format!("/// discovered {term} surface\npub struct Candidate{index};\n"),
+            &format!("/// discovered {term} surface\npub struct OptionCandidate{index};\n"),
         );
     }
 
@@ -191,4 +191,18 @@ fn ledger_rejects_unclassified_candidates_and_loads_fixture() {
             .is_some_and(|classification| classification == CapabilityClassification::Supported)
     );
     fixture.validate_candidates(&fixture.surfaces).unwrap();
+}
+
+#[test]
+fn capability_ledger_classifies_whole_cargo_resolved_nt_checkout() {
+    let metadata = cargo_metadata_json();
+    let lock_text = fs::read_to_string(repo_path("Cargo.lock")).unwrap();
+    let evidence = resolve_nt_cargo_evidence(&metadata, &lock_text).unwrap();
+    let candidates = scan_whole_checkout_candidates(&evidence.resolved_checkout_path).unwrap();
+    let fixture = load_capability_ledger_fixture(&repo_path(
+        "tests/fixtures/bolt_v3_iv/capability-ledger.toml",
+    ))
+    .unwrap();
+
+    fixture.validate_candidates(&candidates).unwrap();
 }

@@ -27,6 +27,17 @@ pub const REQUIRED_CANDIDATE_SWEEP_TERMS: [&str; 18] = [
     "vol",
 ];
 
+const CAPABILITY_ANCHOR_TERMS: [&str; 8] = [
+    "option",
+    "options",
+    "greeks",
+    "implied",
+    "iv",
+    "volatility",
+    "smile",
+    "vol",
+];
+
 const REQUIRED_SEED_FAMILIES: [SeedFamily; 8] = [
     SeedFamily::ModelData,
     SeedFamily::DataActorSubscription,
@@ -79,6 +90,13 @@ pub struct IvCapabilityCandidate {
 pub struct IvCapabilityLedger {
     pub surfaces: Vec<IvCapabilityCandidate>,
     pub classifications: BTreeMap<String, CapabilityClassification>,
+    pub classification_rules: Vec<IvCapabilityClassificationRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IvCapabilityClassificationRule {
+    pub surface_id_prefix: String,
+    pub classification: CapabilityClassification,
 }
 
 impl IvCapabilityLedger {
@@ -86,11 +104,17 @@ impl IvCapabilityLedger {
         Self {
             surfaces: Vec::new(),
             classifications: BTreeMap::new(),
+            classification_rules: Vec::new(),
         }
     }
 
     pub fn classification_for(&self, surface_id: &str) -> Option<CapabilityClassification> {
-        self.classifications.get(surface_id).copied()
+        self.classifications.get(surface_id).copied().or_else(|| {
+            self.classification_rules
+                .iter()
+                .find(|rule| surface_id.starts_with(&rule.surface_id_prefix))
+                .map(|rule| rule.classification)
+        })
     }
 
     pub fn validate_candidates(
@@ -98,7 +122,7 @@ impl IvCapabilityLedger {
         candidates: &[IvCapabilityCandidate],
     ) -> Result<(), IvCapabilityError> {
         for candidate in candidates {
-            if !self.classifications.contains_key(&candidate.surface_id) {
+            if self.classification_for(&candidate.surface_id).is_none() {
                 return Err(IvCapabilityError::UnclassifiedCandidate {
                     surface_id: candidate.surface_id.clone(),
                 });
@@ -157,6 +181,8 @@ struct CargoMetadataPackage {
 #[derive(Debug, Deserialize)]
 struct FixtureLedger {
     surfaces: Vec<FixtureSurface>,
+    #[serde(default)]
+    classification_rules: Vec<IvCapabilityClassificationRule>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -261,6 +287,7 @@ pub fn load_capability_ledger_fixture(
     Ok(IvCapabilityLedger {
         surfaces,
         classifications,
+        classification_rules: fixture.classification_rules,
     })
 }
 
@@ -367,18 +394,17 @@ fn scan_candidates(root: &Path) -> Result<Vec<IvCapabilityCandidate>, IvCapabili
     for file in files {
         let text = fs::read_to_string(&file)?;
         let relative_path = relative_path(root, &file);
-        let matched_terms = matched_terms(&relative_path, &text);
-
-        if matched_terms.is_empty() {
-            continue;
-        }
-
         let seed_family = classify_seed_family(&relative_path, &text);
-        for symbol in public_symbols(&text) {
+        for public_symbol in public_symbols(&text) {
+            let matched_terms = matched_terms(&relative_path, &public_symbol.evidence);
+            if matched_terms.is_empty() || !has_capability_anchor(&matched_terms) {
+                continue;
+            }
+
             candidates.push(IvCapabilityCandidate {
-                surface_id: surface_id(&relative_path, &symbol),
+                surface_id: surface_id(&relative_path, &public_symbol.symbol),
                 evidence_path: relative_path.clone(),
-                symbol,
+                symbol: public_symbol.symbol,
                 matched_terms: matched_terms.clone(),
                 seed_family,
             });
@@ -386,6 +412,12 @@ fn scan_candidates(root: &Path) -> Result<Vec<IvCapabilityCandidate>, IvCapabili
     }
 
     Ok(candidates)
+}
+
+fn has_capability_anchor(matched_terms: &BTreeSet<String>) -> bool {
+    CAPABILITY_ANCHOR_TERMS
+        .iter()
+        .any(|term| matched_terms.contains(*term))
 }
 
 fn collect_rust_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), IvCapabilityError> {
@@ -429,7 +461,43 @@ fn term_matches(haystack: &str, term: &str) -> bool {
             || haystack.contains("custom-data");
     }
 
+    if matches!(term, "option" | "options") {
+        return option_identifier_term_matches(haystack, term);
+    }
+
+    if matches!(term, "iv" | "vol") {
+        return identifier_term_matches(haystack, term);
+    }
+
     haystack.contains(term)
+}
+
+fn option_identifier_term_matches(haystack: &str, term: &str) -> bool {
+    haystack
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .filter(|token| !token.is_empty())
+        .any(|token| {
+            !token.starts_with("optional")
+                && ((token != term && token.starts_with(term))
+                    || token.ends_with(term)
+                    || token.contains(&format!("_{term}_")))
+        })
+}
+
+fn identifier_term_matches(haystack: &str, term: &str) -> bool {
+    haystack
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .filter(|token| !token.is_empty())
+        .any(|token| {
+            token == term
+                || token
+                    .strip_prefix(term)
+                    .is_some_and(|suffix| suffix.starts_with('_'))
+                || token
+                    .strip_suffix(term)
+                    .is_some_and(|prefix| prefix.ends_with('_'))
+                || token.contains(&format!("_{term}_"))
+        })
 }
 
 fn classify_seed_family(relative_path: &str, text: &str) -> Option<SeedFamily> {
@@ -465,7 +533,13 @@ fn classify_seed_family(relative_path: &str, text: &str) -> Option<SeedFamily> {
     }
 }
 
-fn public_symbols(text: &str) -> Vec<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublicSymbol {
+    symbol: String,
+    evidence: String,
+}
+
+fn public_symbols(text: &str) -> Vec<PublicSymbol> {
     let prefixes = [
         "pub struct ",
         "pub enum ",
@@ -477,15 +551,36 @@ fn public_symbols(text: &str) -> Vec<String> {
         "pub mod ",
     ];
     let mut symbols = Vec::new();
+    let mut context = Vec::new();
 
     for line in text.lines() {
         let line = line.trim_start();
+        if line.starts_with("///")
+            || line.starts_with("//!")
+            || line.starts_with("#[")
+            || line.starts_with("#!")
+        {
+            context.push(line);
+            continue;
+        }
+
         for prefix in prefixes {
             if let Some(rest) = line.strip_prefix(prefix)
                 && let Some(symbol) = symbol_token(rest)
             {
-                symbols.push(symbol);
+                let mut evidence = context.join("\n");
+                if !evidence.is_empty() {
+                    evidence.push('\n');
+                }
+                evidence.push_str(&symbol);
+                symbols.push(PublicSymbol { symbol, evidence });
+                context.clear();
+                continue;
             }
+        }
+
+        if !line.is_empty() {
+            context.clear();
         }
     }
 

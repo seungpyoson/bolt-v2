@@ -74,7 +74,8 @@ pub fn project_scalar(
     policy: &IvProjectionPolicy,
     inputs: &[IvPolicyInput],
 ) -> Result<IvPolicyOutput, IvPolicyError> {
-    if inputs.len() < policy.minimum_points
+    if inputs.is_empty()
+        || inputs.len() < policy.minimum_points
         || input_skew(inputs) > policy.max_projection_input_skew_ns
     {
         return Err(rejected(
@@ -85,7 +86,9 @@ pub fn project_scalar(
 
     match policy.projection_kind {
         IvProjectionKind::Mean => Ok(IvPolicyOutput {
-            value: average(inputs.iter().map(|input| input.value)),
+            value: average(inputs.iter().map(|input| input.value)).ok_or_else(|| {
+                rejected(policy.policy_id.clone(), IvRejectReason::ProjectionRejected)
+            })?,
             policy_decisions: vec![IvPolicyDecision::Projection],
         }),
     }
@@ -96,7 +99,7 @@ pub fn interpolate_smile(
     points: &[IvSmilePoint],
     strike: f64,
 ) -> Result<IvPolicyOutput, IvPolicyError> {
-    if points.len() < policy.minimum_points {
+    if points.is_empty() || points.len() < policy.minimum_points {
         return Err(rejected(
             policy.policy_id.clone(),
             IvRejectReason::InterpolationRejected,
@@ -175,7 +178,7 @@ pub fn resolve_quorum(
     policy: &IvQuorumPolicy,
     inputs: &[IvPolicyInput],
 ) -> Result<IvPolicyOutput, IvPolicyError> {
-    if inputs.len() < policy.minimum_sources {
+    if inputs.is_empty() || inputs.len() < policy.minimum_sources {
         return Err(rejected(
             policy.policy_id.clone(),
             IvRejectReason::QuorumNotMet,
@@ -199,7 +202,8 @@ pub fn resolve_quorum(
     }
 
     Ok(IvPolicyOutput {
-        value: average(inputs.iter().map(|input| input.value)),
+        value: average(inputs.iter().map(|input| input.value))
+            .ok_or_else(|| rejected(policy.policy_id.clone(), IvRejectReason::QuorumNotMet))?,
         policy_decisions: vec![IvPolicyDecision::Quorum],
     })
 }
@@ -214,7 +218,7 @@ fn input_skew(inputs: &[IvPolicyInput]) -> u64 {
     }
 }
 
-fn average(values: impl Iterator<Item = f64>) -> f64 {
+fn average(values: impl Iterator<Item = f64>) -> Option<f64> {
     let mut sum = 0.0;
     let mut count = 0_u64;
 
@@ -223,7 +227,7 @@ fn average(values: impl Iterator<Item = f64>) -> f64 {
         count += 1;
     }
 
-    sum / count as f64
+    (count > 0).then(|| sum / count as f64)
 }
 
 fn rejected(policy_id: String, reason: IvRejectReason) -> IvPolicyError {

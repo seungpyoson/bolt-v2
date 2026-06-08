@@ -69,3 +69,147 @@ symbol = "register_custom_data"
 matched_terms = ["custom data"]
 seed_family = "custom_data"
 classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.analysis."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.backtest."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.cli."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.common.src.actor.data_actor."
+classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.common.src.cache.refs."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.common.src.cache."
+classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.common.src.greeks."
+classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.common.src.lib."
+classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.common.src.live."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.common.src.messages.data."
+classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.common.src.msgbus."
+classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.common.src.python."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.core."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.data.src.aggregation."
+classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.data.src.client."
+classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.data.src.engine."
+classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.data.src.lib."
+classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.data.src.option_chains."
+classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.data.src.python."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.event_store."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.execution."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.indicators."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.infrastructure."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.model.src.data."
+classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.model.src.defi."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.model.src.enums."
+classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.model.src.identifiers."
+classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.model.src.instruments.stubs."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.model.src.instruments."
+classification = "supported"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.model.src.python."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.persistence."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.portfolio."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.plugin."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.trading.src.examples."
+classification = "excluded"

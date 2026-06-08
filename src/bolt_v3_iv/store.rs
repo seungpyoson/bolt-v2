@@ -142,6 +142,8 @@ impl IvStore {
         }
     }
 
+    /// Preserves the raw event before indexing. An `Err` means indexed products were rolled
+    /// back, but the raw event remains available for audit and replay.
     pub fn ingest_event(&mut self, event: IvIngestEvent) -> Result<IvRawEvent, IvStoreError> {
         if !event.payload.matches_source_kind(event.source_kind) {
             return Err(IvStoreError::PayloadKindMismatch);

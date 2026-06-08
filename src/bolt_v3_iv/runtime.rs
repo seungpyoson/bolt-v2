@@ -606,13 +606,15 @@ impl IvRuntimeEngine {
         }
         match ingest_result {
             Ok(raw_event) => Ok(raw_event),
-            Err(IvStoreError::MissingIvBasis) => Err(self.reject_ingest_event(
-                &event_for_error,
-                event_for_error.subscription_generation,
-                IvRejectReason::MissingIvBasis,
-                false,
-            )),
-            Err(error) => Err(IvRuntimeEngineError::Store(error)),
+            Err(error) => {
+                let reason = error.reject_reason();
+                Err(self.reject_ingest_event(
+                    &event_for_error,
+                    event_for_error.subscription_generation,
+                    reason,
+                    false,
+                ))
+            }
         }
     }
 

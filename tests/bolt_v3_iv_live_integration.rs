@@ -648,6 +648,46 @@ fn runtime_nt_option_greeks_rejects_missing_iv_basis() {
 }
 
 #[test]
+fn runtime_nt_option_greeks_rejects_zero_iv_in_source_health() {
+    let mut parsed = live_event_router_root_config();
+    parsed.iv.as_mut().unwrap().profiles[0].sources[0].accepted_conventions =
+        BTreeSet::from(["BlackScholes".to_string()]);
+    let engine = IvRuntimeEngine::from_iv_root(parsed.iv.as_ref().unwrap()).unwrap();
+    let mut greeks = configured_nt_option_greeks();
+    greeks.mark_iv = Some(0.0);
+    greeks.bid_iv = None;
+    greeks.ask_iv = None;
+
+    let error = engine
+        .ingest_nt_option_greeks(
+            "configured-profile",
+            "configured-greeks-source",
+            &greeks,
+            UnixNanos::new(2_100),
+        )
+        .expect_err("zero IV must reject typed indexing and update health");
+
+    assert!(matches!(
+        error,
+        IvRuntimeEngineError::IngestRejected {
+            reason: IvRejectReason::InvalidIvValue,
+            ..
+        }
+    ));
+    let health = engine
+        .source_health("configured-profile", "configured-greeks-source")
+        .expect("invalid-IV rejection should be recorded in source health");
+    assert_eq!(
+        health.last_reject_reason,
+        Some(IvRejectReason::InvalidIvValue)
+    );
+    assert_eq!(
+        health.reject_counts.get(&IvRejectReason::InvalidIvValue),
+        Some(&1)
+    );
+}
+
+#[test]
 fn runtime_nt_option_chain_rejects_missing_iv_basis() {
     let mut parsed = live_event_router_root_config();
     parsed.iv.as_mut().unwrap().profiles[0].sources[1].accepted_conventions =
@@ -1431,7 +1471,10 @@ configured_source_param = "configured-value"
         payload.basis_values[0].iv = f64::NAN;
         assert!(matches!(
             engine.ingest_event(event),
-            Err(IvRuntimeEngineError::Store(_))
+            Err(IvRuntimeEngineError::IngestRejected {
+                reason: IvRejectReason::InvalidIvValue,
+                ..
+            })
         ));
     }
 

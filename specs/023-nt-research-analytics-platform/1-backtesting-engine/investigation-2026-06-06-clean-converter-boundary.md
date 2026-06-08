@@ -2320,3 +2320,57 @@ Current conclusion:
   PMXT/Polymarket L2 backfill still needs durable accepted source proof,
   expanded coverage/cost/storage evidence, and dynamic tick-size replay proof
   or an accepted bounded-exclusion policy.
+
+## 2026-06-09 PMXT broad-backfill efficiency checkpoint
+
+Root cause addressed:
+
+- The previous slow PMXT backfill path treated large hourly Parquet objects as
+  work payloads before source acceptance and bounded execution budgets were
+  proven.
+- PMXT v2's current public docs describe one hourly Parquet object per UTC
+  hour, sorted by `(market, asset_id, timestamp_received)`, with fast
+  predicates only for exact `market`, exact `asset_id`, and
+  `timestamp_received` ranges. The current archive index shows recent hourly
+  PMXT Polymarket objects in the hundreds of MB.
+- The current one-off proof is already better than the old path: the event
+  count ledger and selector carry `source_row_groups`, and
+  `selected_source_slice` calls `with_row_groups(...)`, projecting 1 of 62
+  row groups for the selected proof.
+- The remaining inefficiency is explicit and bounded: the event-count ledger
+  still performs a full two-column scan for the one-hour object, and
+  `selected_source_slice` still computes `source_parquet_sha256` by reading the
+  whole source file before row-group projection. That is acceptable only for a
+  bounded proof, not for broad backfill.
+
+NT/source split:
+
+- Pinned NT provides the right live Polymarket and backtest surfaces:
+  `PolymarketDataClient` handles WebSocket book snapshots, `price_change`,
+  `last_trade_price`, `tick_size_change`, Gamma instruments, and NT
+  `OrderBookDelta`/`TradeTick` emission; `ParquetDataCatalog` and
+  `BacktestNode` remain the catalog/backtest path.
+- Pinned NT does not provide a batch historical PMXT/Polymarket L2 archive
+  fetcher, and standard `BacktestDataConfig` still does not expose timed
+  `InstrumentAny` definition replay.
+- Therefore the right boundary is unchanged: NT owns model/catalog/backtest
+  semantics; Bolt owns source-proof gating, provenance, and raw historical L2
+  adapters where NT has no source reader.
+
+New evidence:
+
+- Added
+  `reference/source-proof-pmxt-broad-backfill-efficiency-status.2026-06-09.json`.
+- Updated the BTE-022 status artifact with blocker
+  `broad_backfill_efficiency_unproven`.
+
+Current conclusion:
+
+- Do not start broad PMXT/Polymarket payload download, full-object hashing,
+  conversion, catalog projection, or BacktestNode runs.
+- Broad backfill can proceed only after durable source proof acceptance,
+  manifest/index-only coverage/cost/storage evidence, accepted object hashes,
+  row-group or predicate metadata, explicit byte/row/time budgets, and dynamic
+  tick-size replay or a source-proof-bound exclusion policy are proven.
+- This does not close `BACKTESTING_ENGINE-022`; it makes the slow-backfill
+  non-repeat condition machine-readable.

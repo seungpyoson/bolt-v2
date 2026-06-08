@@ -383,11 +383,16 @@
     {
       "blocker": "durable_source_selection_unproven",
       "required_evidence": "A source-proof acceptance record for any durable Polymarket source. The bounded PMXT sample remains one-off evidence only."
+    },
+    {
+      "blocker": "broad_backfill_efficiency_unproven",
+      "required_evidence": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-broad-backfill-efficiency-status.2026-06-09.json records the systematic slow-backfill root cause: broad payload work must not start until source acceptance, manifest/index-only coverage and cost, accepted object hashes, row-group/predicate metadata, byte/row/time budgets, and tick-size replay or bounded-exclusion policy are proven."
     }
   ],
   "next_required_evidence": [
     "Archive or promote only the refreshed one-off PMXT L2+TradeTick artifact if needed; do not generalize PMXT from this bounded sample.",
     "Use the committed PMXT coverage-ledger status only as rejected/current evidence; do not treat it as accepted PMXT coverage.",
+    "Use the committed PMXT broad-backfill efficiency status as a guardrail: no broad payload download, full-object hash, conversion, catalog projection, or BacktestNode run before manifest/index-only acceptance and bounded execution budgets are proven.",
     "Record accepted expanded-tranche coverage and cost evidence before any PMXT broad backfill discussion.",
     "Accept a durable Polymarket source proof before any PMXT coverage ledger can authorize canonical-ready backfill.",
     "Separate dynamic tick-size replay proof before full PMXT Polymarket L2 acceptance or broad backfill."

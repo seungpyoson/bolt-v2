@@ -1,0 +1,122 @@
+{
+  "schema_version": "source-proof-pmxt-broad-backfill-efficiency-status.v1",
+  "created_date": "2026-06-09",
+  "verified_at_utc": "2026-06-08T21:58:21Z",
+  "source_binding": "polymarket-parquet-archive-index",
+  "table_family": "order_book_snapshot_deltas",
+  "status": "open_broad_backfill_efficiency_unproven_bounded_one_off_guardrails_present",
+  "decision": "Do not start broad PMXT/Polymarket L2 backfill. The current code proves a bounded one-off selected-source path and records several fail-fast guardrails, but broad backfill still lacks accepted source proof, accepted expanded coverage/cost/storage evidence, and a dynamic tick-size replay or bounded-exclusion policy.",
+  "root_cause": {
+    "previous_slow_backfill_failure_mode": "Large hourly PMXT Parquet objects were treated as payloads to scan, hash, or stage before the acceptance gates proved a bounded source/window/instrument scope.",
+    "why_repeating_it_is_unsafe": [
+      "PMXT v2 hourly objects are hundreds of MB and can contain tens of millions of rows, so full-object work scales poorly across broad windows.",
+      "The accepted source proof is still pending; payload work before source acceptance can produce expensive artifacts that cannot become canonical.",
+      "Standard pinned NT BacktestNode catalog replay does not currently expose timed InstrumentAny instrument-definition replay, so full L2 over tick-size-changing assets would overclaim correctness."
+    ],
+    "current_bounded_improvement": "The current one-off selector path records source_row_groups in the event-count ledger and selector report, then selected_source_slice projects only the selector row groups with ParquetRecordBatchReaderBuilder.with_row_groups.",
+    "remaining_efficiency_gap": "The one-off selected-source stage still computes source_parquet_sha256 by reading the full source file, and first_proof_event_count_ledger still performs a full two-column scan of the accepted one-hour source object. That is acceptable for a bounded proof, not for broad backfill."
+  },
+  "external_source_evidence": {
+    "polymarket_official_api": {
+      "docs_uri": "https://docs.polymarket.com/api-reference/introduction",
+      "observed_2026_06_09": "Official Polymarket APIs include Gamma, Data, and CLOB. Gamma/Data are public; CLOB has public orderbook/pricing endpoints and trading endpoints that require authentication.",
+      "historical_l2_limit": "The official prices-history endpoint returns price history with t/p pairs and minute fidelity, not full historical L2 order book replay.",
+      "market_channel_uri": "https://docs.polymarket.com/api-reference/wss/market",
+      "market_channel_event_families": [
+        "book",
+        "price_change",
+        "last_trade_price",
+        "tick_size_change",
+        "best_bid_ask",
+        "new_market",
+        "market_resolved"
+      ]
+    },
+    "pmxt_archive": {
+      "docs_uri": "https://archive.pmxt.dev/docs/v2-data-overview",
+      "index_uri": "https://archive.pmxt.dev/Polymarket/v2",
+      "observed_2026_06_09": "PMXT v2 is an hourly Parquet archive of Polymarket CLOB market WebSocket events from every live asset.",
+      "documented_sort_order": "(market, asset_id, timestamp_received)",
+      "documented_fast_predicates": [
+        "exact match on market",
+        "exact match on asset_id",
+        "time ranges on timestamp_received"
+      ],
+      "documented_row_group_rows": 1048576,
+      "documented_event_types": [
+        "book",
+        "price_change",
+        "last_trade_price",
+        "tick_size_change"
+      ],
+      "current_index_sample": "2026-06-08 hourly objects listed around 451.5 MB to 603.6 MB.",
+      "license": "CC BY 4.0 with attribution per PMXT docs"
+    }
+  },
+  "nt_surface_evidence": {
+    "pinned_nt_revision": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+    "local_sources": [
+      {
+        "path": "nt://crates/adapters/polymarket/src/data.rs",
+        "evidence": "PolymarketDataClient is a live market data client: it handles WebSocket book snapshots, price_change deltas, last_trade_price TradeTicks, tick_size_change instrument rebuilds, and Gamma instrument discovery."
+      },
+      {
+        "path": "nt://crates/adapters/polymarket/src/http/data_api.rs",
+        "evidence": "PolymarketDataApiHttpClient fetches public historical trades and converts them to TradeTick, with an offset ceiling warning; it is not a full historical L2 order book archive reader."
+      },
+      {
+        "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json",
+        "evidence": "Pinned NT live Polymarket emits rebuilt instruments for tick-size changes, but standard BacktestNode catalog replay does not expose timed InstrumentAny replay."
+      }
+    ],
+    "current_split": "Use NT for model types, Polymarket parser/provider surfaces, ParquetDataCatalog, and BacktestNode. Keep Bolt-owned code limited to source-proof gating, artifact provenance, and raw historical source adapters where NT has no batch source reader."
+  },
+  "repo_code_evidence": {
+    "bounded_row_group_projection": [
+      {
+        "path": "repo://crates/backtesting-vertical-slice/src/selected_source_slice.rs",
+        "evidence": "selector_source_row_groups requires selected_assets[].source_row_groups, validates bounds against Parquet metadata, and selected_source_slice builds the reader with with_row_groups(matching_row_groups.row_groups)."
+      },
+      {
+        "path": "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_selected_source_slice.rs",
+        "evidence": "selected_source_slice_uses_selector_row_groups_without_full_asset_rescan proves the selected-source stage succeeds when the non-selected row group contains an unscannable null asset value."
+      },
+      {
+        "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-source-slice.2026-06-08.json",
+        "evidence": "The refreshed one-off report records source_row_groups=62, projected_row_groups=1, selected_rows=5, selected_asset_count=1."
+      }
+    ],
+    "bounded_full_object_work": [
+      {
+        "path": "repo://crates/backtesting-vertical-slice/src/first_proof_selector.rs",
+        "evidence": "build_first_proof_event_count_ledger_from_parquet projects only asset_id and event_family columns but reads all row groups to build event counts and source_row_groups."
+      },
+      {
+        "path": "repo://crates/backtesting-vertical-slice/src/selected_source_slice.rs",
+        "evidence": "write_selected_source_slice computes source_parquet_sha256 with sha256_file before row-group projection, which reads the full source file."
+      }
+    ],
+    "no_download_coverage_gate": [
+      {
+        "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-coverage-ledger-status.2026-06-09.json",
+        "evidence": "The committed coverage ledger status proves source-proof metadata and coverage_axis can be derived without payload download, but both PMXT records remain rejected because source_proof_status is pending."
+      }
+    ]
+  },
+  "required_before_any_broad_backfill": [
+    "Accept a durable Polymarket SourceProofReport for the exact source/window/table_family.",
+    "Keep the first gate manifest/index-only: coverage, freshness, completeness, bytes, object count, and cost must be recorded before payload download.",
+    "Replace broad full-object hashing in planning/projection with accepted object hashes from staging or Artifact Index records; full payload reads belong only inside bounded accepted tranches.",
+    "Carry object-level row-group or predicate metadata from the accepted source proof into the execution plan so selected-source projection does not rediscover it by rescanning payloads.",
+    "Set explicit object byte, row count, projected row-group count, and wall-time budgets in the accepted tranche plan.",
+    "Prove dynamic tick-size replay through NT BacktestNode/catalog, or accept a source-proof-bound no-tick-size-change exclusion policy before full L2 replay claims.",
+    "Use GitHub CI as the broad verification gate for committed changes; avoid broad local cargo test runs as the default verification path."
+  ],
+  "claim_limits": [
+    "This artifact does not accept PMXT as a durable source.",
+    "This artifact does not authorize broad PMXT/Polymarket backfill.",
+    "This artifact does not prove expanded coverage, exact broad cost, or production throughput.",
+    "This artifact does not prove dynamic tick-size replay."
+  ],
+  "bte_022_can_close": false
+}

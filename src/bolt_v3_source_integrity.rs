@@ -239,8 +239,10 @@ mod tests {
     // fail closed without evicting fresh same-interval quotes.
     // Re-derived again after #606 normalized the stale replay guard to the
     // Clippy-preferred equivalent expression.
+    // Re-derived again after #606 constrained PolyResearch reference-current
+    // price support to BTC, ETH, SOL, and XRP.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "f224b0c0e073ddf189196beab25dc502ea7c350dd8bc13f54656f92a70c6d109";
+        "9f5d60c81b6fbe29e3f5571f2baf7530e6ac40923348dcceb9358e82dfa9c554";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

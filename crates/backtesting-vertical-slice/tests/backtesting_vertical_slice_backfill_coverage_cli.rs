@@ -17,6 +17,7 @@ fn coverage_ledger_cli_writes_artifact_from_config_owned_spec() {
             "source_proof_version": 1,
             "write_mode": "s3_staging",
             "canonical_s3_write": false,
+            "coverage_axis": "synthetic_archive_hour",
             "completed_objects": 13,
             "completed_bytes": 3_900,
             "errors": []
@@ -70,4 +71,8 @@ source_proof_status = "accepted"
     assert_eq!(ledger.summary.accepted_records, 1);
     assert_eq!(ledger.summary.accepted_objects, 13);
     assert_eq!(ledger.summary.accepted_bytes, 3_900);
+    assert_eq!(
+        ledger.records[0].coverage_axis.as_deref(),
+        Some("synthetic_archive_hour")
+    );
 }

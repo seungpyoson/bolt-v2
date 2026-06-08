@@ -5,7 +5,9 @@ use serde::Serialize;
 
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
-    bolt_v3_live_node::build_bolt_v3_strategy_free_data_client_probe_live_node,
+    bolt_v3_live_node::{
+        BoltV3LiveNodeRuntime, build_bolt_v3_strategy_free_data_client_probe_live_node,
+    },
 };
 
 const SOURCE_UPDATE_OBSERVATION_STATUS: &str = "not_collected";
@@ -50,6 +52,17 @@ pub struct ReferenceCurrentPriceHealthReport {
     pub targets: Vec<ReferenceCurrentPriceHealthTarget>,
     pub clients: Vec<ReferenceCurrentPriceHealthClientReport>,
     pub source_update_observation: ReferenceCurrentPriceSourceUpdateObservation,
+}
+
+pub struct ReferenceCurrentPriceHealthRun {
+    plan: ReferenceCurrentPriceHealthPlan,
+    probes: Vec<ReferenceCurrentPriceHealthProbe>,
+}
+
+struct ReferenceCurrentPriceHealthProbe {
+    client_key: String,
+    runtime: BoltV3LiveNodeRuntime,
+    scoped_loaded: LoadedBoltV3Config,
 }
 
 pub fn reference_current_price_health_plan(
@@ -101,18 +114,35 @@ pub fn reference_current_price_health_plan(
     })
 }
 
-pub async fn run_reference_current_price_health(
+pub fn prepare_reference_current_price_health_run(
     loaded: &LoadedBoltV3Config,
-) -> Result<ReferenceCurrentPriceHealthReport> {
+) -> Result<ReferenceCurrentPriceHealthRun> {
     let plan = reference_current_price_health_plan(loaded)?;
-    let mut clients = Vec::new();
+    let mut probes = Vec::new();
 
     for client_key in &plan.client_keys {
-        let (mut runtime, scoped_loaded) =
+        let (runtime, scoped_loaded) =
             build_bolt_v3_strategy_free_data_client_probe_live_node(loaded, client_key)?;
-        let registered_data_client_ids = sorted_strings(runtime.registered_data_client_ids());
-        let registered_exec_client_ids = sorted_strings(runtime.registered_exec_client_ids());
-        let registered_strategy_ids = sorted_strings(runtime.registered_strategy_ids());
+        probes.push(ReferenceCurrentPriceHealthProbe {
+            client_key: client_key.clone(),
+            runtime,
+            scoped_loaded,
+        });
+    }
+
+    Ok(ReferenceCurrentPriceHealthRun { plan, probes })
+}
+
+pub async fn run_prepared_reference_current_price_health(
+    health_run: &mut ReferenceCurrentPriceHealthRun,
+) -> Result<ReferenceCurrentPriceHealthReport> {
+    let mut clients = Vec::new();
+
+    for probe in &mut health_run.probes {
+        let client_key = probe.client_key.as_str();
+        let registered_data_client_ids = sorted_strings(probe.runtime.registered_data_client_ids());
+        let registered_exec_client_ids = sorted_strings(probe.runtime.registered_exec_client_ids());
+        let registered_strategy_ids = sorted_strings(probe.runtime.registered_strategy_ids());
         if !registered_exec_client_ids.is_empty() {
             return Err(anyhow::anyhow!(
                 "reference_current_price health registered execution clients for `{client_key}`: {}",
@@ -126,18 +156,20 @@ pub async fn run_reference_current_price_health(
             ));
         }
 
-        let connect = runtime
-            .connect_registered_clients(&scoped_loaded)
+        let connect = probe
+            .runtime
+            .connect_registered_clients(&probe.scoped_loaded)
             .await
             .map_err(|error| anyhow::anyhow!("client `{client_key}` connect failed: {error}"));
-        let disconnect = runtime
-            .disconnect_registered_clients(&scoped_loaded)
+        let disconnect = probe
+            .runtime
+            .disconnect_registered_clients(&probe.scoped_loaded)
             .await
             .map_err(|error| anyhow::anyhow!("client `{client_key}` disconnect failed: {error}"));
 
         match (connect, disconnect) {
             (Ok(()), Ok(())) => clients.push(ReferenceCurrentPriceHealthClientReport {
-                client_key: client_key.clone(),
+                client_key: probe.client_key.clone(),
                 registered_data_client_ids,
                 registered_exec_client_ids,
                 registered_strategy_ids,
@@ -153,7 +185,7 @@ pub async fn run_reference_current_price_health(
     }
 
     Ok(ReferenceCurrentPriceHealthReport {
-        targets: plan.targets,
+        targets: health_run.plan.targets.clone(),
         clients,
         source_update_observation: ReferenceCurrentPriceSourceUpdateObservation {
             status: SOURCE_UPDATE_OBSERVATION_STATUS.to_string(),

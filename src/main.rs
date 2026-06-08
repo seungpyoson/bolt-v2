@@ -14,7 +14,9 @@ use bolt_v2::{
         ProviderProductSubmitProofArtifactRequest, binding_for_provider_key,
         sync_clob_v2_balance_allowance_cache_from_configured_account,
     },
-    bolt_v3_reference_price_health::run_reference_current_price_health,
+    bolt_v3_reference_price_health::{
+        prepare_reference_current_price_health_run, run_prepared_reference_current_price_health,
+    },
     bolt_v3_secrets::{
         check_no_forbidden_credential_env_vars, resolve_bolt_v3_client_secrets,
         resolve_bolt_v3_secrets,
@@ -160,11 +162,13 @@ fn run_reference_current_price_health_command(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let loaded = load_bolt_v3_config(&config)?;
     check_no_forbidden_credential_env_vars(&loaded.root)?;
+    let mut health_run = prepare_reference_current_price_health_run(&loaded)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     let local = tokio::task::LocalSet::new();
-    let report = runtime.block_on(local.run_until(run_reference_current_price_health(&loaded)))?;
+    let report = runtime
+        .block_on(local.run_until(run_prepared_reference_current_price_health(&mut health_run)))?;
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::to_value(report)?)?

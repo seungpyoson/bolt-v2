@@ -47,6 +47,36 @@ fn main_runs_bolt_v3_runner_inside_local_set() {
 }
 
 #[test]
+fn reference_current_price_health_prepares_probe_nodes_before_tokio_runtime() {
+    let source = include_str!("../src/main.rs");
+    let function_start = source
+        .find("fn run_reference_current_price_health_command(")
+        .expect("production entrypoint must define the reference-current-price health command");
+    let function = &source[function_start..];
+    let prepare_health = function
+        .find("let mut health_run = prepare_reference_current_price_health_run(&loaded)?;")
+        .expect(
+            "reference-current-price health must resolve SSM and build probe LiveNodes before Tokio",
+        );
+    let build_runtime = function
+        .find("let runtime = tokio::runtime::Builder::new_multi_thread()")
+        .expect("reference-current-price health must build a Tokio runtime");
+
+    assert!(
+        prepare_health < build_runtime,
+        "reference-current-price health must not construct SSM-backed probe LiveNodes inside Tokio"
+    );
+    assert!(
+        function.contains("run_prepared_reference_current_price_health(&mut health_run)"),
+        "reference-current-price health must only connect/disconnect prepared probe LiveNodes inside Tokio"
+    );
+    assert!(
+        !function.contains("run_reference_current_price_health(&loaded)"),
+        "reference-current-price health must not pass the full loaded config into the async runtime"
+    );
+}
+
+#[test]
 fn bolt_v3_production_path_cannot_load_legacy_config_defaults() {
     let production_sources = [
         ("src/main.rs", include_str!("../src/main.rs")),

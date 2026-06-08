@@ -1869,6 +1869,22 @@ classification = "gate_provider_schema_field"
 reason = "This is the Chainlink feed-binding table key in root gate provider TOML; feed values remain TOML-owned."
 
 [[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = '''"feed_bindings"'''
+context = '''if table.contains_key("feed_bindings") {'''
+classification = "provider_schema_field"
+reason = "This checks for the rejected legacy client-local Chainlink feed-binding table key before adapter mapping; feed values remain root TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink.rs"
+kind = "string"
+literal = '''"feed_bindings"'''
+context = '''"feed_bindings".to_string(),'''
+classification = "provider_schema_field"
+reason = "This inserts the root-owned Chainlink feed-binding table key into the internal provider config assembled for adapter mapping; feed values remain root TOML-owned."
+
+[[allowed]]
 path = "src/bolt_v3_validate.rs"
 kind = "string"
 literal = '''"endpoint_id"'''
@@ -8184,9 +8200,17 @@ reason = "Sentinel placeholder: a resolution-strike unsubscribe event carries no
 path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
 literal = '''"apiKey"'''
-context = '''const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "apiKey";'''
+context = '''const POLYRESEARCH_LEGACY_API_KEY_QUERY_FIELD: &str = "apiKey";'''
 classification = "provider_protocol_field"
-reason = "PolyResearch WebSocket authentication query-key name proven by secret-safe live handshake evidence; this is a provider protocol field, not an operator runtime value."
+reason = "Rejected legacy PolyResearch WebSocket authentication query-key name; the live helper appends source-proven `key` instead and fails closed on pre-credentialed legacy URLs."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"key"'''
+context = '''const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "key";'''
+classification = "provider_protocol_field"
+reason = "PolyResearch WebSocket authentication query-key name proven by authoritative PolyNode docs; this is a provider protocol field, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polyresearch.rs"

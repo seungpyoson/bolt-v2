@@ -54,7 +54,9 @@ use crate::bolt_v3_config::{
     SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
-use crate::bolt_v3_providers::{ReferencePriceIdentifierKind, reference_price_provider_metadata};
+use crate::bolt_v3_providers::{
+    RESOLUTION_ORACLE_VENUE_KEY, ReferencePriceIdentifierKind, reference_price_provider_metadata,
+};
 
 #[derive(Debug)]
 pub struct BoltV3ValidationError {
@@ -1196,7 +1198,9 @@ fn validate_clients_block(root: &BoltV3RootConfig) -> Vec<String> {
         return errors;
     }
     for (key, client) in clients {
-        errors.extend(validate_no_dual_chainlink_feed_catalog(root, key, client));
+        errors.extend(validate_root_owned_chainlink_feed_catalog(
+            root, key, client,
+        ));
         let validation_client = client_with_root_chainlink_feed_catalog(root, client);
         let client = validation_client.as_ref().unwrap_or(client);
         errors.extend(crate::bolt_v3_providers::validate_client_block(key, client));
@@ -1206,14 +1210,12 @@ fn validate_clients_block(root: &BoltV3RootConfig) -> Vec<String> {
     errors
 }
 
-fn validate_no_dual_chainlink_feed_catalog(
+fn validate_root_owned_chainlink_feed_catalog(
     root: &BoltV3RootConfig,
     key: &str,
     client: &ClientBlock,
 ) -> Vec<String> {
-    if root.chainlink_data_streams.is_none()
-        || client.venue.as_str() != CHAINLINK_DATA_STREAMS_PROVIDER_KIND
-    {
+    if client.venue.as_str() != RESOLUTION_ORACLE_VENUE_KEY || client.data.is_none() {
         return Vec::new();
     }
     let has_client_feed_bindings = client
@@ -1221,12 +1223,18 @@ fn validate_no_dual_chainlink_feed_catalog(
         .as_ref()
         .and_then(toml::Value::as_table)
         .is_some_and(|data| data.contains_key(CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD));
-    if !has_client_feed_bindings {
-        return Vec::new();
+    let mut errors = Vec::new();
+    if has_client_feed_bindings {
+        errors.push(format!(
+            "chainlink_data_streams.feed_bindings is root-owned; clients.{key}.data.feed_bindings must be removed so feed bindings have one configured path"
+        ));
     }
-    vec![format!(
-        "chainlink_data_streams.feed_bindings is root-owned; clients.{key}.data.feed_bindings must be removed so Chainlink Data Streams feed bindings have one configured path"
-    )]
+    if root.chainlink_data_streams.is_none() {
+        errors.push(format!(
+            "chainlink_data_streams.feed_bindings must be configured for clients.{key}; clients.{key}.data.feed_bindings is not supported"
+        ));
+    }
+    errors
 }
 
 fn client_with_root_chainlink_feed_catalog(
@@ -1234,7 +1242,7 @@ fn client_with_root_chainlink_feed_catalog(
     client: &ClientBlock,
 ) -> Option<ClientBlock> {
     let catalog = root.chainlink_data_streams.as_ref()?;
-    if client.venue.as_str() != CHAINLINK_DATA_STREAMS_PROVIDER_KIND {
+    if client.venue.as_str() != RESOLUTION_ORACLE_VENUE_KEY {
         return None;
     }
     let data = client.data.as_ref()?.as_table()?;

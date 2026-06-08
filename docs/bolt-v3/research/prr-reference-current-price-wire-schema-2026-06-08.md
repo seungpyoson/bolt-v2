@@ -79,10 +79,9 @@ client:
 
 PRR parsing is source-proven and approved for implementation.
 
-The current local helper and tests use the query parameter name `apiKey`. The
-authoritative docs prove the parameter name is `key`. The first TDD
-implementation slice must therefore change PRR URL construction tests to expect
-`key` before changing production code.
+The local helper and tests now use the source-proven query parameter name
+`key`. Runtime URL construction must append `key` exactly once, reject endpoints
+already containing `key`, and reject the legacy credential query `apiKey`.
 
 ## Stop Conditions
 

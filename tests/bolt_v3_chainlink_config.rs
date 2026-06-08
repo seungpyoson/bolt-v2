@@ -3,8 +3,8 @@
 //! These guard the product boundary that the per-provider module
 //! `bolt_v3_providers::chainlink` owns the concrete shape of a
 //! `[clients.<id>.data]` Chainlink Data Streams strike block and its
-//! `feed_bindings`, including:
-//!   1. A well-formed `[data]` block (with `feed_bindings`) parses into the
+//! root-owned `chainlink_data_streams.feed_bindings`, including:
+//!   1. A well-formed internal `[data]` block (after root catalog injection) parses into the
 //!      provider `ChainlinkDataConfig` and validates clean.
 //!   2. Unknown / missing fields are rejected (`deny_unknown_fields` on the
 //!      block, plus per-feed-binding field requirements through
@@ -50,53 +50,44 @@ api_secret_ssm_parameter = "/bolt/chainlink_strike/api_secret"
     )
 }
 
-fn fixture_root_with_client_feed_bindings_moved_to_shared_catalog() -> String {
-    let mut root_value = fixture_root_value();
-    let root = root_value
+fn shared_catalog_feed_bindings(root: &toml::Value) -> toml::Value {
+    root.get("chainlink_data_streams")
+        .and_then(|catalog| catalog.get("feed_bindings"))
+        .cloned()
+        .expect("fixture must declare root-owned chainlink feed_bindings")
+}
+
+fn insert_client_feed_bindings(root_value: &mut toml::Value, feed_bindings: toml::Value) {
+    let data = root_value
         .as_table_mut()
-        .expect("fixture root must be a TOML table");
-    let feed_bindings = root
+        .expect("fixture root must be a TOML table")
         .get_mut("clients")
         .and_then(toml::Value::as_table_mut)
         .and_then(|clients| clients.get_mut("chainlink_strike"))
         .and_then(toml::Value::as_table_mut)
         .and_then(|client| client.get_mut("data"))
         .and_then(toml::Value::as_table_mut)
-        .and_then(|data| data.remove("feed_bindings"))
-        .expect("fixture must declare client-local chainlink feed_bindings");
+        .expect("fixture must declare clients.chainlink_strike.data");
+    data.insert("feed_bindings".to_string(), feed_bindings);
+}
 
-    let mut catalog = toml::map::Map::new();
-    catalog.insert("feed_bindings".to_string(), feed_bindings);
-    root.insert(
-        "chainlink_data_streams".to_string(),
-        toml::Value::Table(catalog),
-    );
+fn fixture_root_with_client_local_feed_bindings_only() -> String {
+    let mut root_value = fixture_root_value();
+    let feed_bindings = shared_catalog_feed_bindings(&root_value);
+    root_value
+        .as_table_mut()
+        .expect("fixture root must be a TOML table")
+        .remove("chainlink_data_streams")
+        .expect("fixture must declare root-owned chainlink feed_bindings");
+    insert_client_feed_bindings(&mut root_value, feed_bindings);
 
     toml::to_string(&root_value).expect("mutated fixture should serialize")
 }
 
 fn fixture_root_with_dual_client_and_shared_feed_bindings() -> String {
     let mut root_value = fixture_root_value();
-    let feed_bindings = root_value
-        .get("clients")
-        .and_then(toml::Value::as_table)
-        .and_then(|clients| clients.get("chainlink_strike"))
-        .and_then(toml::Value::as_table)
-        .and_then(|client| client.get("data"))
-        .and_then(toml::Value::as_table)
-        .and_then(|data| data.get("feed_bindings"))
-        .cloned()
-        .expect("fixture must declare client-local chainlink feed_bindings");
-    let root = root_value
-        .as_table_mut()
-        .expect("fixture root must be a TOML table");
-
-    let mut catalog = toml::map::Map::new();
-    catalog.insert("feed_bindings".to_string(), feed_bindings);
-    root.insert(
-        "chainlink_data_streams".to_string(),
-        toml::Value::Table(catalog),
-    );
+    let feed_bindings = shared_catalog_feed_bindings(&root_value);
+    insert_client_feed_bindings(&mut root_value, feed_bindings);
 
     toml::to_string(&root_value).expect("mutated fixture should serialize")
 }
@@ -108,7 +99,7 @@ fn fixture_root_value() -> toml::Value {
 
 #[test]
 fn chainlink_reference_current_price_uses_shared_feed_catalog() {
-    let root_toml = fixture_root_with_client_feed_bindings_moved_to_shared_catalog();
+    let root_toml = include_str!("fixtures/bolt_v3/root.toml");
     let root: BoltV3RootConfig =
         toml::from_str(&root_toml).expect("root-owned Chainlink feed catalog should parse");
 
@@ -134,6 +125,23 @@ fn chainlink_feed_bindings_reject_dual_root_and_client_local_catalogs() {
                 && error.contains("clients.chainlink_strike.data.feed_bindings")
         }),
         "root-owned catalog must reject legacy client-local feed_bindings: {errors:?}"
+    );
+}
+
+#[test]
+fn chainlink_feed_bindings_reject_legacy_client_local_catalogs_without_shared_catalog() {
+    let root_toml = fixture_root_with_client_local_feed_bindings_only();
+    let root: BoltV3RootConfig =
+        toml::from_str(&root_toml).expect("legacy Chainlink feed catalog fixture should parse");
+
+    let errors = validate_root_only(&root);
+
+    assert!(
+        errors.iter().any(|error| {
+            error.contains("chainlink_data_streams.feed_bindings")
+                && error.contains("clients.chainlink_strike.data.feed_bindings")
+        }),
+        "legacy client-local catalog must be rejected even without a root catalog: {errors:?}"
     );
 }
 

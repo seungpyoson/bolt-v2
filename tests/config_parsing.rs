@@ -334,7 +334,7 @@ fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() 
 }
 
 #[test]
-fn shipped_chainlink_strike_client_pins_each_asset_feed_binding() {
+fn shipped_chainlink_shared_catalog_pins_each_asset_feed_binding() {
     // Drift guard for the LIVE strike feed bindings. The validFrom/feed_id/schema
     // decode checks cannot detect a cross-asset substitution (a feed_id is always
     // internally consistent with its own report), so a copy-paste swap pointing
@@ -356,17 +356,26 @@ fn shipped_chainlink_strike_client_pins_each_asset_feed_binding() {
         .expect("root config should be readable");
     let parsed = toml::from_str::<toml::Value>(&source).expect("root TOML should parse");
     let feed_bindings = parsed
+        .get("chainlink_data_streams")
+        .and_then(|value| value.get("feed_bindings"))
+        .and_then(toml::Value::as_array)
+        .expect("root config should declare live root-owned Chainlink feed bindings");
+
+    let client_has_feed_bindings = parsed
         .get("clients")
         .and_then(|value| value.get("chainlink_strike"))
         .and_then(|value| value.get("data"))
         .and_then(|value| value.get("feed_bindings"))
-        .and_then(toml::Value::as_array)
-        .expect("root config should declare live chainlink_strike feed bindings");
+        .is_some();
+    assert!(
+        !client_has_feed_bindings,
+        "config/root.toml must not keep legacy clients.chainlink_strike.data.feed_bindings"
+    );
 
     assert_eq!(
         feed_bindings.len(),
         expected.len(),
-        "the live chainlink_strike client must ship exactly one feed binding per supported asset"
+        "the live root-owned Chainlink catalog must ship exactly one feed binding per supported asset"
     );
 
     let mut seen_feed_ids = std::collections::HashSet::new();
@@ -381,7 +390,7 @@ fn shipped_chainlink_strike_client_pins_each_asset_feed_binding() {
             .expect("feed binding should declare feed_id");
         assert_eq!(
             actual_instrument, *instrument_id,
-            "live chainlink_strike feed bindings must stay in the pinned per-asset order"
+            "live root-owned Chainlink feed bindings must stay in the pinned per-asset order"
         );
         assert_eq!(
             actual_feed, *feed_id,

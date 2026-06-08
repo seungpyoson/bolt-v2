@@ -1,0 +1,163 @@
+{
+  "schema_version": "source-proof-evidence.v1",
+  "evidence_id": "source-proof-pmxt-current-schema-existing-data-conversion-2026-06-09",
+  "created_at": "2026-06-09T08:55:47+09:00",
+  "branch": "codex/bte-clean-converter-nt-use-main-reconcile",
+  "bolt_v2_ref": "fb85ea0b429785818be93f659d76d420bbd8703e",
+  "purpose": "Record current-schema repeatability evidence for the bounded existing-data PMXT selected-source conversion slice.",
+  "claim": {
+    "status": "bounded_go",
+    "statement": "The selected PMXT existing-data tranche can be converted into a NautilusTrader catalog and consumed by NautilusTrader BacktestNode idempotently under the current run-manifest schema.",
+    "scope": [
+      "one_off_backfill_data",
+      "selected-source PMXT tranche only",
+      "no tick-size-change replay claim",
+      "no full PMXT L2 acceptance claim",
+      "no production S3 or distributed backfill claim"
+    ]
+  },
+  "ci": {
+    "head_sha": "fb85ea0b429785818be93f659d76d420bbd8703e",
+    "checked_with": "gh run list --commit fb85ea0b429785818be93f659d76d420bbd8703e --limit 10",
+    "checks": [
+      {
+        "name": "actionlint",
+        "run_id": 27173926832,
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Backtester CI",
+        "run_id": 27173926821,
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "CI",
+        "run_id": 27173926810,
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "CodeQL",
+        "run_id": 27173924987,
+        "status": "completed",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "source_input": {
+    "local_raw_parquet": "/private/tmp/polymarket-may20-one.parquet",
+    "raw_parquet_sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "raw_rows": 64877467,
+    "raw_row_groups": 62,
+    "selected_source_parquet": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selected-source/selected-source.parquet",
+    "selected_source_parquet_sha256": "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e",
+    "selected_rows": 5,
+    "selected_asset_count": 1,
+    "projected_row_groups": 1,
+    "selected_asset_ids_hash": "1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110",
+    "selector_excluded_event_families": [
+      "tick_size_change"
+    ]
+  },
+  "current_schema_rerun": {
+    "scratch_root": "/private/tmp/bte-pmxt-current-schema-rerun-2026-06-09",
+    "manifest_path": "/private/tmp/bte-pmxt-current-schema-rerun-2026-06-09/manifest.toml",
+    "manifest_file_sha256": "2f62dde3696625f3dff15eb2bcdd07b035349de596fd5cf738d688f92e08b011",
+    "manifest_hash": "368f0fc9ae291217683b2237c197e8e2e9e2d1bd27036cf2167535993e9f55dc",
+    "artifact_root_spec_path": "/private/tmp/bte-pmxt-current-schema-rerun-2026-06-09/artifact-root-run.toml",
+    "artifact_root_spec_file_sha256": "b4b96f45fb94a9893ff2299eb1978f08144826ab2f7636c76987eebb0a3c820e",
+    "result_contract_path": "/private/tmp/bte-pmxt-current-schema-rerun-2026-06-09/backtests/pmxt-run/backtest-result-contract.json",
+    "result_contract_file_sha256": "de7ab654dffe1d06ce2c3b2ac39d56ac29589ac8e86fe37661d458f2f6cf49ae",
+    "conversion_manifest_hash": "0257780690f5036d099ac32bea46b11ad4bf20bbe229ada1bb79d4187cc0db20",
+    "conversion_manifest_file_sha256": "4e2bf6e58f98e9a7b702aafc9206d9276996e93443a90a5407d9dd7728e3a97d",
+    "conversion_checkpoint_hash": "5898890257b110626029493cb55f15a4fb3299ef40ff7a7482a41bd62b4931ce",
+    "catalog_hash": "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236",
+    "catalog_metadata_hash": "f38fef6ceb8f3e6241072268e26ce88a3a07e23b129257f44b29787b57745346",
+    "catalog_metadata_file_sha256": "3aaa356aec496f6e1cf1b13a31ae67e2548fdb9097aa881b816f0469905d9d4e",
+    "event_count_ledger_hash": "985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a",
+    "converter_config_hash": "d01d62323e7112a30bd21ba0e647347fd779139d4c65471d9d5b782384fd3a45",
+    "strategy_config_hash": "3525b543a1bb3cbc499e7bcf7ff2e473aeff650b19fccade0d7b2e9012a62c9b",
+    "nt_version": "6e059dcbb59ac1e582132fc431a581936c216c3c"
+  },
+  "nt_catalog": {
+    "output_catalog_uri": "file:///private/tmp/bte-pmxt-current-schema-rerun-2026-06-09/backtests/pmxt-run/nt-catalog",
+    "direct_s3_catalog_access_proven": false,
+    "catalog_nt_data_types": [
+      "OrderBookDelta",
+      "TradeTick"
+    ],
+    "catalog_rows_by_nt_data_type": {
+      "OrderBookDelta": 103,
+      "TradeTick": 1
+    },
+    "canonical_rows": 103
+  },
+  "nt_backtest": {
+    "engine": "NautilusTrader BacktestNode",
+    "run_config_id": "pmxt-one-off-l2-trade-current-schema-rerun-2026-06-09",
+    "backtest_start_unix_nanos": 1779315389332000000,
+    "backtest_end_unix_nanos": 1779317875600000000,
+    "iterations": 104,
+    "total_events": 0,
+    "total_orders": 0,
+    "total_positions": 0
+  },
+  "verification": [
+    {
+      "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-current-schema-rerun-2026-06-09/artifact-root-run.toml",
+      "result": "PASS",
+      "observed": {
+        "result_contract_hash": "de7ab654dffe1d06ce2c3b2ac39d56ac29589ac8e86fe37661d458f2f6cf49ae",
+        "conversion_manifest_hash": "0257780690f5036d099ac32bea46b11ad4bf20bbe229ada1bb79d4187cc0db20",
+        "catalog_hash": "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236",
+        "selected_source_parquet_hash": "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e",
+        "nt_iterations": 104
+      }
+    },
+    {
+      "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-current-schema-rerun-2026-06-09/artifact-root-run.toml",
+      "result": "PASS",
+      "observed": {
+        "result_contract_hash": "de7ab654dffe1d06ce2c3b2ac39d56ac29589ac8e86fe37661d458f2f6cf49ae",
+        "conversion_manifest_hash": "0257780690f5036d099ac32bea46b11ad4bf20bbe229ada1bb79d4187cc0db20",
+        "catalog_hash": "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236",
+        "selected_source_parquet_hash": "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e",
+        "nt_iterations": 104
+      }
+    }
+  ],
+  "drift_found": [
+    {
+      "finding": "The older scratch artifact-root spec was missing selected_source.schema.forbidden_ignored_event_types.",
+      "impact": "It no longer parses under the current branch, which is correct because current code requires explicit forbidden-event policy."
+    },
+    {
+      "finding": "The older scratch run manifest was missing current schema fields such as manifest_schema_version, target_bolt_v2_branch, target_bolt_v2_ref, resolved_nt_version, strategy_config_hash, catalog_hash, and execution_model.",
+      "impact": "Old temp artifacts are not acceptable as durable proof inputs; current-schema specs must be generated or committed for reproducible backfill runs."
+    },
+    {
+      "finding": "The old output directory refused overwrite after the current-schema manifest changed stable contract content.",
+      "impact": "The create-only result contract guard worked as intended; current-schema proof should use a clean output prefix."
+    }
+  ],
+  "remaining_unknowns": [
+    {
+      "unknown": "Full PMXT L2 acceptance with tick-size changes.",
+      "reason": "Pinned NT BacktestNode catalog replay does not expose timed InstrumentAny replay through BacktestDataConfig for this path."
+    },
+    {
+      "unknown": "Production object-store backfill execution.",
+      "reason": "This proof used local file artifacts; direct S3 catalog access and create-only index publication remain separate evidence."
+    },
+    {
+      "unknown": "Generic accepted-tranche generation for more venues/data families.",
+      "reason": "The conversion/backtest run is source-gated and provenance-bound, but this PMXT proof is still a one-off selected-source slice."
+    }
+  ],
+  "next_backfill_action": {
+    "recommendation": "Promote the current-schema spec generation into the accepted-tranche/backfill execution path before expanding coverage.",
+    "why": "The converter/backtest path works for the bounded slice, but old hand-carried scratch specs drifted. The next robust deliverable is a source-agnostic generator that emits current-schema manifests/specs and clean output prefixes for each accepted tranche."
+  }
+}

@@ -5,18 +5,35 @@
 //! credential as separate SSM values, then constructs the credentialed URL once
 //! at the provider edge.
 
-use std::{any::Any, cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    any::Any,
+    cell::RefCell,
+    collections::BTreeMap,
+    rc::Rc,
+    sync::{Arc, Mutex},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use nautilus_common::{
     cache::CacheView,
     clients::DataClient,
     clock::Clock,
     factories::{ClientConfig, DataClientFactory},
-    messages::data::{SubscribeCustomData, UnsubscribeCustomData},
+    live::{runner::get_data_event_sender, runtime::get_runtime},
+    messages::{
+        DataEvent,
+        data::{SubscribeCustomData, UnsubscribeCustomData},
+    },
 };
 use nautilus_core::{Params, string::secret::REDACTED};
-use nautilus_model::identifiers::{ClientId, Venue};
-use nautilus_network::websocket::TransportBackend;
+use nautilus_model::{
+    data::Data,
+    identifiers::{ClientId, Venue},
+};
+use nautilus_network::{
+    transport::Message,
+    websocket::{MessageHandler, TransportBackend, WebSocketClient, WebSocketConfig},
+};
 use serde::Deserialize;
 use url::Url;
 use zeroize::Zeroizing;
@@ -166,8 +183,10 @@ impl DataClientFactory for PolyResearchReferencePriceClientFactory {
             })?;
         Ok(Box::new(PolyResearchReferencePriceClient {
             client_id: ClientId::from(name),
-            _config: config.clone(),
-            subscriptions: BTreeMap::new(),
+            config: config.clone(),
+            subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
+            websocket: None,
+            data_sender: get_data_event_sender(),
             connected: false,
         }))
     }
@@ -184,9 +203,29 @@ impl DataClientFactory for PolyResearchReferencePriceClientFactory {
 #[derive(Debug)]
 struct PolyResearchReferencePriceClient {
     client_id: ClientId,
-    _config: PolyResearchReferencePriceClientConfig,
-    subscriptions: BTreeMap<String, PolyResearchReferenceSubscription>,
+    config: PolyResearchReferencePriceClientConfig,
+    subscriptions: Arc<Mutex<BTreeMap<String, PolyResearchReferenceSubscription>>>,
+    websocket: Option<WebSocketClient>,
+    data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     connected: bool,
+}
+
+impl PolyResearchReferencePriceClient {
+    fn clear_subscriptions(&self) -> anyhow::Result<()> {
+        self.subscriptions
+            .lock()
+            .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
+            .clear();
+        Ok(())
+    }
+
+    fn spawn_disconnect(&mut self) {
+        if let Some(websocket) = self.websocket.take() {
+            get_runtime().spawn(async move {
+                websocket.disconnect().await;
+            });
+        }
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -205,20 +244,21 @@ impl DataClient for PolyResearchReferencePriceClient {
     }
 
     fn stop(&mut self) -> anyhow::Result<()> {
+        self.spawn_disconnect();
         self.connected = false;
         Ok(())
     }
 
     fn reset(&mut self) -> anyhow::Result<()> {
+        self.spawn_disconnect();
         self.connected = false;
-        self.subscriptions.clear();
-        Ok(())
+        self.clear_subscriptions()
     }
 
     fn dispose(&mut self) -> anyhow::Result<()> {
+        self.spawn_disconnect();
         self.connected = false;
-        self.subscriptions.clear();
-        Ok(())
+        self.clear_subscriptions()
     }
 
     fn is_connected(&self) -> bool {
@@ -230,11 +270,31 @@ impl DataClient for PolyResearchReferencePriceClient {
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {
+        if self.websocket.is_some() {
+            self.disconnect().await?;
+        }
+        let url = polyresearch_websocket_url(&PolyResearchAuthConfig {
+            websocket_endpoint: self.config.websocket_endpoint.clone(),
+            api_key: self.config.api_key.to_string(),
+        })
+        .map_err(anyhow::Error::msg)?;
+        let config = polyresearch_websocket_client_config(&self.config, url);
+        let message_handler = polyresearch_reference_message_handler(
+            Arc::clone(&self.subscriptions),
+            self.data_sender.clone(),
+        );
+        self.websocket = Some(
+            WebSocketClient::connect(config, Some(message_handler), None, None, vec![], None)
+                .await?,
+        );
         self.connected = true;
         Ok(())
     }
 
     async fn disconnect(&mut self) -> anyhow::Result<()> {
+        if let Some(websocket) = self.websocket.take() {
+            websocket.disconnect().await;
+        }
         self.connected = false;
         Ok(())
     }
@@ -244,6 +304,8 @@ impl DataClient for PolyResearchReferencePriceClient {
             polyresearch_reference_subscription_from_command(&cmd.data_type, cmd.params.as_ref())
                 .map_err(anyhow::Error::msg)?;
         self.subscriptions
+            .lock()
+            .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
             .insert(subscription.source_id.clone(), subscription);
         Ok(())
     }
@@ -252,7 +314,10 @@ impl DataClient for PolyResearchReferencePriceClient {
         let subscription =
             polyresearch_reference_subscription_from_command(&cmd.data_type, cmd.params.as_ref())
                 .map_err(anyhow::Error::msg)?;
-        self.subscriptions.remove(&subscription.source_id);
+        self.subscriptions
+            .lock()
+            .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
+            .remove(&subscription.source_id);
         Ok(())
     }
 }
@@ -418,6 +483,90 @@ pub(crate) fn polyresearch_reference_update_from_price_frame(
         ReferenceQuoteProvenance::empty(),
     )
     .map(Some)
+}
+
+fn polyresearch_reference_updates_from_price_frame(
+    subscriptions: &BTreeMap<String, PolyResearchReferenceSubscription>,
+    frame: &str,
+    received_ts_ms: u64,
+) -> Result<Vec<ReferencePriceUpdate>, String> {
+    let mut updates = Vec::new();
+    for subscription in subscriptions.values() {
+        if let Some(update) =
+            polyresearch_reference_update_from_price_frame(subscription, frame, received_ts_ms)?
+        {
+            updates.push(update);
+        }
+    }
+    Ok(updates)
+}
+
+fn polyresearch_reference_message_handler(
+    subscriptions: Arc<Mutex<BTreeMap<String, PolyResearchReferenceSubscription>>>,
+    data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
+) -> MessageHandler {
+    Arc::new(move |message: Message| {
+        let Some(frame) = message.as_text() else {
+            return;
+        };
+        let received_ts_ms = match current_unix_timestamp_ms() {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!("PolyResearch reference frame dropped: {error}");
+                return;
+            }
+        };
+        let updates = match subscriptions.lock() {
+            Ok(subscriptions) => polyresearch_reference_updates_from_price_frame(
+                &subscriptions,
+                frame,
+                received_ts_ms,
+            ),
+            Err(error) => Err(format!("PolyResearch subscription state poisoned: {error}")),
+        };
+        match updates {
+            Ok(updates) => {
+                for update in updates {
+                    if let Err(error) =
+                        data_sender.send(DataEvent::Data(Data::Custom(update.to_custom_data())))
+                    {
+                        log::warn!("PolyResearch reference update dropped: {error}");
+                    }
+                }
+            }
+            Err(error) => log::warn!("PolyResearch reference frame dropped: {error}"),
+        }
+    })
+}
+
+fn polyresearch_websocket_client_config(
+    config: &PolyResearchReferencePriceClientConfig,
+    url: Url,
+) -> WebSocketConfig {
+    WebSocketConfig {
+        url: url.to_string(),
+        headers: vec![],
+        heartbeat: config.heartbeat_secs,
+        heartbeat_msg: config.heartbeat_message.clone(),
+        reconnect_timeout_ms: Some(config.reconnect_timeout_ms),
+        reconnect_delay_initial_ms: Some(config.reconnect_delay_initial_ms),
+        reconnect_delay_max_ms: Some(config.reconnect_delay_max_ms),
+        reconnect_backoff_factor: Some(config.reconnect_backoff_factor),
+        reconnect_jitter_ms: Some(config.reconnect_jitter_ms),
+        reconnect_max_attempts: None,
+        idle_timeout_ms: Some(config.idle_timeout_ms),
+        backend: config.transport_backend,
+        proxy_url: None,
+    }
+}
+
+fn current_unix_timestamp_ms() -> anyhow::Result<u64> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| anyhow::anyhow!("system clock before UNIX epoch: {error}"))?
+        .as_millis();
+    u64::try_from(millis)
+        .map_err(|_| anyhow::anyhow!("system clock timestamp exceeds supported range"))
 }
 
 pub struct PolyResearchAuthConfig {
@@ -698,38 +847,102 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn connect_disconnect_update_nt_data_client_connected_state() {
-        let mut client = PolyResearchReferencePriceClient {
-            client_id: ClientId::from("polyresearch_reference"),
-            _config: fixture_config(),
-            subscriptions: BTreeMap::new(),
-            connected: false,
-        };
+    fn fixture_client() -> (
+        PolyResearchReferencePriceClient,
+        tokio::sync::mpsc::UnboundedReceiver<DataEvent>,
+    ) {
+        let (data_sender, data_receiver) = tokio::sync::mpsc::unbounded_channel();
+        (
+            PolyResearchReferencePriceClient {
+                client_id: ClientId::from("polyresearch_reference"),
+                config: fixture_config(),
+                subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
+                websocket: None,
+                data_sender,
+                connected: false,
+            },
+            data_receiver,
+        )
+    }
+
+    #[test]
+    fn start_stop_update_nt_data_client_connected_state() {
+        let (mut client, _data_receiver) = fixture_client();
 
         assert!(client.is_disconnected());
 
         client
-            .connect()
-            .await
-            .expect("polyresearch reference connect should succeed");
+            .start()
+            .expect("polyresearch reference start should succeed");
         assert!(client.is_connected());
 
         client
-            .disconnect()
-            .await
-            .expect("polyresearch reference disconnect should succeed");
+            .stop()
+            .expect("polyresearch reference stop should succeed");
         assert!(client.is_disconnected());
     }
 
     #[test]
-    fn subscribe_custom_data_records_prr_reference_subscription() {
-        let mut client = PolyResearchReferencePriceClient {
-            client_id: ClientId::from("polyresearch_reference"),
-            _config: fixture_config(),
-            subscriptions: BTreeMap::new(),
-            connected: false,
+    fn price_feed_frame_for_active_subscription_emits_custom_reference_update() {
+        let subscriptions = Arc::new(Mutex::new(BTreeMap::from([(
+            "polyresearch_primary".to_string(),
+            PolyResearchReferenceSubscription {
+                asset: "BTC".to_string(),
+                source_id: "polyresearch_primary".to_string(),
+                symbol: "BTC/USD".to_string(),
+            },
+        )])));
+        let (data_sender, mut data_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let handler = polyresearch_reference_message_handler(subscriptions, data_sender);
+
+        handler(Message::text(
+            r#"{"type":"price_feed","feed":"BTC/USD","timestamp":1774672588,"data":{"feed":"BTC/USD","price":66300.25,"bid":66299.5,"ask":66301.0,"timestamp":1774672588}}"#,
+        ));
+
+        let event = data_receiver
+            .try_recv()
+            .expect("matched PRR price_feed frame should emit one data event");
+        let DataEvent::Data(Data::Custom(custom)) = event else {
+            panic!("matched PRR price_feed frame should emit custom data, got {event:?}");
         };
+        let update = ReferencePriceUpdate::from_custom_data(&custom)
+            .expect("custom data should contain a reference price update");
+
+        assert_eq!(update.asset(), "BTC");
+        assert_eq!(update.source_id(), "polyresearch_primary");
+        assert_eq!(update.provider(), REFERENCE_PRICE_PROVIDER_KEY);
+        assert_eq!(update.provider_instrument(), "BTC/USD");
+        assert_eq!(update.price(), 66300.25);
+        assert_eq!(update.observed_ts_ms(), 1774672588000);
+    }
+
+    #[test]
+    fn price_feed_frame_for_unsubscribed_symbol_emits_no_custom_data() {
+        let subscriptions = Arc::new(Mutex::new(BTreeMap::from([(
+            "polyresearch_primary".to_string(),
+            PolyResearchReferenceSubscription {
+                asset: "BTC".to_string(),
+                source_id: "polyresearch_primary".to_string(),
+                symbol: "BTC/USD".to_string(),
+            },
+        )])));
+        let (data_sender, mut data_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let handler = polyresearch_reference_message_handler(subscriptions, data_sender);
+
+        handler(Message::text(
+            r#"{"type":"price_feed","feed":"ETH/USD","timestamp":1774672588,"data":{"feed":"ETH/USD","price":3000.25,"bid":2999.5,"ask":3001.0,"timestamp":1774672588}}"#,
+        ));
+
+        assert!(
+            data_receiver.try_recv().is_err(),
+            "unsubscribed PRR price_feed frame should not emit a data event"
+        );
+    }
+
+    #[test]
+    fn subscribe_custom_data_records_prr_reference_subscription() {
+        let (mut client, _data_receiver) = fixture_client();
+
         let mut params = Params::new();
         params.insert(
             REFERENCE_PRICE_ASSET_PARAM.to_string(),
@@ -765,13 +978,76 @@ mod tests {
             ))
             .expect("PRR reference subscription should be accepted");
 
-        let subscription = client
+        let subscriptions = client
             .subscriptions
+            .lock()
+            .expect("PRR reference subscriptions should not be poisoned");
+        let subscription = subscriptions
             .get("polyresearch_primary")
             .expect("PRR reference subscription should be recorded");
         assert_eq!(subscription.asset, "BTC");
         assert_eq!(subscription.source_id, "polyresearch_primary");
         assert_eq!(subscription.symbol, "BTC/USD");
+    }
+
+    #[test]
+    fn unsubscribe_custom_data_removes_prr_reference_subscription() {
+        let (mut client, _data_receiver) = fixture_client();
+        client
+            .subscriptions
+            .lock()
+            .expect("PRR reference subscriptions should not be poisoned")
+            .insert(
+                "polyresearch_primary".to_string(),
+                PolyResearchReferenceSubscription {
+                    asset: "BTC".to_string(),
+                    source_id: "polyresearch_primary".to_string(),
+                    symbol: "BTC/USD".to_string(),
+                },
+            );
+        let mut params = Params::new();
+        params.insert(
+            REFERENCE_PRICE_ASSET_PARAM.to_string(),
+            serde_json::json!("BTC"),
+        );
+        params.insert(
+            REFERENCE_PRICE_SOURCE_KEY_PARAM.to_string(),
+            serde_json::json!("polyresearch_primary"),
+        );
+        params.insert(
+            REFERENCE_PRICE_PROVIDER_PARAM.to_string(),
+            serde_json::json!(REFERENCE_PRICE_PROVIDER_KEY),
+        );
+        params.insert(
+            REFERENCE_PRICE_SYMBOL_PARAM.to_string(),
+            serde_json::json!("BTC/USD"),
+        );
+
+        client
+            .unsubscribe(&UnsubscribeCustomData::new(
+                Some(ClientId::from("polyresearch_reference")),
+                None,
+                ReferencePriceUpdate::data_type_for(
+                    "BTC",
+                    "polyresearch_primary",
+                    REFERENCE_PRICE_PROVIDER_KEY,
+                )
+                .expect("reference price data type should build"),
+                UUID4::new(),
+                UnixNanos::default(),
+                None,
+                Some(params),
+            ))
+            .expect("PRR reference unsubscription should be accepted");
+
+        assert!(
+            !client
+                .subscriptions
+                .lock()
+                .expect("PRR reference subscriptions should not be poisoned")
+                .contains_key("polyresearch_primary"),
+            "PRR reference unsubscription should remove the active subscription"
+        );
     }
 
     #[test]

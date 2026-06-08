@@ -202,6 +202,24 @@ fn expired_operator_rate_or_carry_inputs_reject_before_helper_invocation() {
 }
 
 #[test]
+fn operator_rate_or_carry_without_expiration_derives_when_within_age() {
+    for field in [IvDerivedInputField::Rate, IvDerivedInputField::Carry] {
+        let mut inputs = complete_inputs();
+        match field {
+            IvDerivedInputField::Rate => {
+                inputs.rate.as_mut().unwrap().expires_at_ns = None;
+            }
+            IvDerivedInputField::Carry => {
+                inputs.carry.as_mut().unwrap().expires_at_ns = None;
+            }
+            _ => unreachable!(),
+        }
+
+        assert!(derive_iv(&helper_policy(), inputs).is_ok());
+    }
+}
+
+#[test]
 fn helper_output_outside_configured_bounds_rejects() {
     let policy = IvHelperPolicy {
         output_bounds: bounds(0.10),

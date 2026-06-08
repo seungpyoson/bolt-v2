@@ -387,7 +387,7 @@ fn validate_operator_input(
 
     if input
         .expires_at_ns
-        .is_none_or(|expires_at_ns| expires_at_ns.get() < as_of_ns.get())
+        .is_some_and(|expires_at_ns| expires_at_ns.get() < as_of_ns.get())
         || as_of_ns.get().saturating_sub(input.ts_ns.get()) > policy.max_operator_input_age_ns
     {
         return Err(IvDeriveError::Rejected {

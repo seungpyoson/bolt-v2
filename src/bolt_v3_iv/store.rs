@@ -429,7 +429,7 @@ impl IvStore {
 }
 
 fn valid_iv(value: f64) -> bool {
-    value.is_finite() && value.is_sign_positive()
+    value.is_finite() && value > 0.0
 }
 
 fn empty_iv_smile_points() -> Vec<IvSmilePoint> {

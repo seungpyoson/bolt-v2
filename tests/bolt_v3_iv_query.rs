@@ -19,7 +19,16 @@ use bolt_v2::bolt_v3_iv::{
     types::{IvBasis, IvConvention, IvProductKind, IvSourceKind},
 };
 
-fn greeks_event(source_id: &str, selector_fingerprint: &str, ts: u64, iv: f64) -> IvIngestEvent {
+fn test_implied_volatility(percent_points: u32) -> f64 {
+    f64::from(percent_points) / f64::from(100_u32)
+}
+
+fn greeks_event(
+    source_id: &str,
+    selector_fingerprint: &str,
+    ts: u64,
+    implied_volatility: f64,
+) -> IvIngestEvent {
     IvIngestEvent {
         profile_id: "configured-profile".to_string(),
         source_id: source_id.to_string(),
@@ -38,7 +47,7 @@ fn greeks_event(source_id: &str, selector_fingerprint: &str, ts: u64, iv: f64) -
             convention: IvConvention::Named("configured-convention".to_string()),
             basis_values: vec![IvBasisValue {
                 basis: IvBasis::Mark,
-                iv,
+                iv: implied_volatility,
             }],
             greeks: IvGreekValues {
                 delta: Some(0.5),
@@ -57,14 +66,14 @@ fn greeks_event_with_source_state(
     source_id: &str,
     selector_fingerprint: &str,
     ts: u64,
-    iv: f64,
+    implied_volatility: f64,
     source_health_state: IvSourceHealthState,
     subscription_generation: u64,
 ) -> IvIngestEvent {
     IvIngestEvent {
         source_health_state,
         subscription_generation,
-        ..greeks_event(source_id, selector_fingerprint, ts, iv)
+        ..greeks_event(source_id, selector_fingerprint, ts, implied_volatility)
     }
 }
 
@@ -222,7 +231,7 @@ fn profile_wide_strategy_query_returns_strategy_safe_iv_point() {
             "configured-source",
             "configured-selector-fingerprint",
             2_000,
-            0.42,
+            test_implied_volatility(42),
         ))
         .unwrap();
     let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store);
@@ -234,7 +243,7 @@ fn profile_wide_strategy_query_returns_strategy_safe_iv_point() {
     };
     assert_eq!(point.profile_id, "configured-profile");
     assert_eq!(point.source_id, "configured-source");
-    assert_eq!(point.iv, 0.42);
+    assert_eq!(point.iv, test_implied_volatility(42));
     assert_eq!(point.provenance.raw_event_id, Some(raw.raw_event_id));
 }
 
@@ -246,7 +255,7 @@ fn selector_scoped_strategy_query_requires_matching_source_and_selector() {
             "configured-allowed-source",
             "configured-allowed-selector",
             2_000,
-            0.41,
+            test_implied_volatility(41),
         ))
         .unwrap();
     store
@@ -254,7 +263,7 @@ fn selector_scoped_strategy_query_requires_matching_source_and_selector() {
             "configured-denied-source",
             "configured-denied-selector",
             2_000,
-            0.43,
+            test_implied_volatility(43),
         ))
         .unwrap();
     let handle = IvQueryHandle::new("configured-profile", selector_scoped_authorization(), store);
@@ -277,7 +286,7 @@ fn strategy_query_rejects_products_from_non_current_source_state() {
             "configured-source",
             "configured-selector-fingerprint",
             2_000,
-            0.42,
+            test_implied_volatility(42),
             IvSourceHealthState::Stale,
             1,
         ))
@@ -298,7 +307,7 @@ fn strategy_query_rejects_products_when_current_source_health_is_stale() {
             "configured-source",
             "configured-selector-fingerprint",
             2_000,
-            0.42,
+            test_implied_volatility(42),
         ))
         .unwrap();
     let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
@@ -321,7 +330,7 @@ fn strategy_query_handle_rejects_raw_payload_requests() {
             "configured-source",
             "configured-selector-fingerprint",
             2_000,
-            0.42,
+            test_implied_volatility(42),
         ))
         .unwrap();
     let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store);
@@ -344,7 +353,7 @@ fn projected_scalar_query_uses_configured_projection_policy() {
             "configured-source",
             "configured-selector-fingerprint",
             2_000,
-            0.42,
+            test_implied_volatility(42),
         ))
         .unwrap();
     let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)

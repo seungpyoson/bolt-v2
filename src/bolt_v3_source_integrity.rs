@@ -208,8 +208,35 @@ mod tests {
     // in the canonical strategy source set.
     // Re-derived again by #606 after rejecting mismatched reference source
     // provider instruments before feeding reference_current_price.
+    // Re-derived again after moving surfaced realized-volatility bindings and
+    // source forwarding into the strategy source set.
+    // Re-derived again after spelling the realized-volatility binding insertion
+    // as an explicit entry match to satisfy both clippy and source-fence.
+    // Re-derived again after refreshing surfaced realized-volatility snapshots
+    // before entry/exit pricing so stale sources block instead of freezing RV.
+    // Re-derived again after preserving signal-data bindings in surfaced RV
+    // mode while keeping legacy strategy-owned RV knobs rejected.
+    // Re-derived again after forwarding duplicate stream bindings to every
+    // configured surfaced realized-volatility source ID.
+    // Re-derived again after accepting zero-RV surfaced snapshots and exporting
+    // unknown-source surfaced RV rejection counters in strategy input evidence.
+    // Re-derived again after allowing zero-RV strategy evidence/position paths
+    // and adding disabled-source surfaced RV diagnostics coverage.
+    // Re-derived again after removing the strategy-owned internal realized
+    // volatility estimator and requiring surfaced RV for taker pricing.
+    // Re-derived again after recording RV-not-ready pricing blocks in strategy
+    // input evidence and forwarding disabled surfaced RV sources for audit
+    // without subscribing disabled-only source bindings.
+    // Re-derived again after fail-closing rejected surfaced RV engine configs
+    // without retaining source bindings.
+    // Re-derived again after root-level surfaced RV readiness redesign moved
+    // raw RV validation behind the shared ready snapshot accessor.
+    // Re-derived again after removing the dead strategy evidence fallback RV
+    // parameter.
+    // Re-derived again after merging #606 reference_current_price wiring with
+    // main's surfaced realized-volatility strategy source set.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "b1e8d0820975f6baea7991ffc826c15333283f585d89ef90f86bc91234ccca49";
+        "75aff2714d20f79d01b50690ed3f807574a75dcf88b39555621391d6ee8755df";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -217,8 +244,9 @@ mod tests {
     // Re-derived again after removing a stale deleted-executor comment.
     // Re-derived again after removing vestigial retired gate arming constructor
     // terminology from submit-admission construction.
+    // Re-derived again after adding checked fee-inclusive admission arithmetic.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "4a2c6952ac4765dfef711859599e8ffa74d92a4a4d6a7f2a63e7cb2513d3b408";
+        "986e4e99c865a9b742cdaa8d0a34cc8cadfcb6633012b4915042a0ac5c9d506a";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

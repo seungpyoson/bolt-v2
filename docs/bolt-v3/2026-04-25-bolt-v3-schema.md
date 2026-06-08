@@ -977,6 +977,7 @@ log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true
 execution_client_id = "polymarket_main"
+realized_volatility_surface_id = "configured_rv_surface"
 
 [target]
 configured_target_id = "configured_updown_target"
@@ -1044,10 +1045,6 @@ reentry_cooldown_secs = 30
 book_impact_cap_bps = 50
 risk_lambda = 0.5
 exit_hysteresis_bps = 25
-vol_window_secs = 600
-vol_gap_reset_secs = 60
-vol_min_observations = 5
-vol_bridge_valid_secs = 30
 trade_flow_window_secs = 60
 trade_flow_max_samples = 2000
 spike_guard_return_threshold = 0.02
@@ -1133,6 +1130,12 @@ These fields map directly to pinned NautilusTrader strategy configuration and ar
 - type: keyed reference string (one of the keys under root `[clients.<id>]`)
 - required: yes
 - must reference a root client block that includes `[execution]`
+
+#### `realized_volatility_surface_id`
+
+- type: keyed reference string (one of the keys under root `[realized_volatility_surfaces.<id>]`)
+- required: yes
+- selects the shared TOML-owned realized-volatility surface consumed by taker pricing
 
 ### `[target]`
 
@@ -1532,10 +1535,6 @@ Runtime fields:
 - `book_impact_cap_bps`: unsigned integer; maximum allowed book-impact basis points for order construction
 - `risk_lambda`: float; sizing risk coefficient
 - `exit_hysteresis_bps`: integer; exit hysteresis threshold
-- `vol_window_secs`: unsigned integer; realized-volatility window
-- `vol_gap_reset_secs`: unsigned integer; gap that resets volatility history
-- `vol_min_observations`: unsigned integer; minimum observations before volatility is live
-- `vol_bridge_valid_secs`: unsigned integer; maximum bridge age for volatility input
 - `trade_flow_window_secs`: unsigned integer; rolling retention window for signed trade flow
 - `trade_flow_max_samples`: unsigned integer; hard cap on retained signed trades per instrument (memory bound)
 - `spike_guard_return_threshold`: float; single-step reference-spot relative-move threshold that arms the entry spike cooldown
@@ -1778,6 +1777,7 @@ log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true
 execution_client_id = "polymarket_main"
+realized_volatility_surface_id = "configured_rv_surface"
 
 [target]
 configured_target_id = "configured_updown_target"
@@ -1845,10 +1845,6 @@ reentry_cooldown_secs = 30
 book_impact_cap_bps = 50
 risk_lambda = 0.5
 exit_hysteresis_bps = 25
-vol_window_secs = 600
-vol_gap_reset_secs = 60
-vol_min_observations = 5
-vol_bridge_valid_secs = 30
 trade_flow_window_secs = 60
 trade_flow_max_samples = 2000
 spike_guard_return_threshold = 0.02

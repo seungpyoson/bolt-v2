@@ -1,22 +1,25 @@
 //! Shared taker pricing state extracted from `binary_oracle_edge_taker`.
 //!
-//! This module mirrors the current RV-based taker pricing path: reference current
-//! price and lead-venue observations warm realized volatility, then current spot/strike/
-//! expiry/config are assembled into the existing market-family fair probability.
+//! This module mirrors the current surfaced-RV taker pricing path: reference and
+//! lead-venue observations establish spot context, then a shared realized-vol
+//! snapshot plus current strike/expiry/config are assembled into the existing
+//! market-family fair probability.
 //! It deliberately does not introduce IV, maker spread logic, or submit policy.
 
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+use crate::bolt_v3_realized_volatility::RealizedVolAggregation;
 use crate::{
     bolt_v3_market_families::{self, FairProbabilityInputs},
     bolt_v3_numeric::{
         MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64, clamp_probability, is_positive_finite,
         sanitize_probability,
     },
+    bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_taker_signal::{
         ThetaScalerInputs, compute_theta_scaler, price_agreement_corr, price_gap_probability,
     },
-    bolt_v3_volatility::{RealizedVolConfig, RealizedVolEstimator},
 };
 
 const INITIAL_COUNTER_U64: u64 = u64::MIN;
@@ -28,9 +31,9 @@ pub struct FastSpotObservation {
     pub observed_ts_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TakerPricingConfig<'a> {
-    pub realized_vol: RealizedVolConfig,
+    pub realized_volatility_surface_id: String,
     pub lead_agreement_min_corr: f64,
     pub lead_jitter_max_ms: u64,
     pub spike_guard_return_threshold: f64,
@@ -55,6 +58,7 @@ pub struct TakerPricingResult {
     pub strike_price: f64,
     pub seconds_to_market_end: u64,
     pub realized_vol: f64,
+    pub realized_vol_surface_id: Option<String>,
     pub realized_vol_source_venue: Option<String>,
     pub realized_vol_source_ts_ms: Option<u64>,
     pub theta_scaled_min_edge_bps: f64,
@@ -101,9 +105,8 @@ pub struct TakerPricingState {
     pub(crate) last_reference_current_price: Option<f64>,
     pub(crate) last_reference_current_price_ts_ms: Option<u64>,
     pub(crate) fast_spot: Option<FastSpotObservation>,
-    pub(crate) realized_vol: RealizedVolEstimator,
-    pub(crate) realized_vol_source_venue: Option<String>,
-    pub(crate) realized_vol_by_venue: BTreeMap<String, RealizedVolEstimator>,
+    pub(crate) realized_volatility_surface_id: String,
+    pub(crate) latest_realized_vol_snapshot: Option<RealizedVolSnapshot>,
     pub(crate) venue_timing: BTreeMap<String, VenueTimingState>,
     pub(crate) last_lead_gap_probability: Option<f64>,
     pub(crate) last_jitter_penalty_probability: Option<f64>,
@@ -123,9 +126,8 @@ impl TakerPricingState {
             last_reference_current_price: None,
             last_reference_current_price_ts_ms: None,
             fast_spot: None,
-            realized_vol: RealizedVolEstimator::from_config(&config.realized_vol),
-            realized_vol_source_venue: None,
-            realized_vol_by_venue: BTreeMap::new(),
+            realized_volatility_surface_id: config.realized_volatility_surface_id.clone(),
+            latest_realized_vol_snapshot: None,
             venue_timing: BTreeMap::new(),
             last_lead_gap_probability: None,
             last_jitter_penalty_probability: None,
@@ -194,17 +196,6 @@ impl TakerPricingState {
             && sanitize_probability(lead_gap_probability).is_some();
 
         if eligible {
-            let selected_realized_vol = {
-                let estimator_template = self.realized_vol.empty_like();
-                let estimator = self
-                    .realized_vol_by_venue
-                    .entry(quote.venue.clone())
-                    .or_insert_with(|| estimator_template.clone());
-                let _ = estimator.observe(&quote.venue, quote.price, quote.observed_ts_ms);
-                estimator.clone()
-            };
-            self.realized_vol = selected_realized_vol;
-            self.realized_vol_source_venue = Some(quote.venue.clone());
             self.fast_spot = Some(quote.clone());
             self.last_lead_gap_probability = Some(lead_gap_probability);
             self.last_jitter_penalty_probability = Some(if config.lead_jitter_max_ms == 0 {
@@ -231,46 +222,94 @@ impl TakerPricingState {
         }
     }
 
+    pub fn observe_realized_vol_snapshot(&mut self, snapshot: RealizedVolSnapshot) {
+        if self
+            .latest_realized_vol_snapshot
+            .as_ref()
+            .is_none_or(|current| current.as_of_ms <= snapshot.as_of_ms)
+        {
+            self.latest_realized_vol_snapshot = Some(snapshot);
+        }
+    }
+
     pub(crate) fn spot_price(&self) -> Option<f64> {
         self.fast_spot.as_ref().map(|spot| spot.price)
     }
 
     pub fn current_realized_vol_at(&self, now_ms: u64) -> Option<f64> {
-        self.realized_vol.current_vol_at(now_ms)
+        self.current_surfaced_realized_vol_at(&self.realized_volatility_surface_id, now_ms)
     }
 
     pub fn current_realized_vol_source_at(&self, now_ms: u64) -> (Option<String>, Option<u64>) {
-        if self.realized_vol.current_vol_at(now_ms).is_none() {
-            return (None, None);
-        }
-
-        (
-            self.realized_vol_source_venue
-                .clone()
-                .or_else(|| self.fast_spot.as_ref().map(|spot| spot.venue.clone()))
-                .or_else(|| self.realized_vol.active_venue.clone()),
-            self.realized_vol.last_ready_ts_ms,
-        )
+        self.current_surfaced_realized_vol_snapshot_at(&self.realized_volatility_surface_id, now_ms)
+            .map_or((None, None), |snapshot| (None, Some(snapshot.as_of_ms)))
     }
 
+    fn current_realized_vol_for_config_at(
+        &self,
+        config: &TakerPricingConfig<'_>,
+        now_ms: u64,
+    ) -> Option<f64> {
+        self.current_surfaced_realized_vol_at(&config.realized_volatility_surface_id, now_ms)
+    }
+
+    fn current_realized_vol_evidence_for_config_at(
+        &self,
+        config: &TakerPricingConfig<'_>,
+        now_ms: u64,
+    ) -> (Option<String>, Option<String>, Option<u64>) {
+        let surface_id = config.realized_volatility_surface_id.as_str();
+        self.current_surfaced_realized_vol_snapshot_at(surface_id, now_ms)
+            .map_or((None, None, None), |snapshot| {
+                (Some(surface_id.to_string()), None, Some(snapshot.as_of_ms))
+            })
+    }
+
+    fn current_surfaced_realized_vol_at(&self, surface_id: &str, now_ms: u64) -> Option<f64> {
+        self.current_surfaced_realized_vol_snapshot_at(surface_id, now_ms)
+            .and_then(|snapshot| snapshot.ready_realized_vol())
+            .map(|realized_vol| realized_vol.get())
+    }
+
+    fn current_surfaced_realized_vol_snapshot_at(
+        &self,
+        surface_id: &str,
+        now_ms: u64,
+    ) -> Option<&RealizedVolSnapshot> {
+        let snapshot = self.latest_realized_vol_snapshot.as_ref()?;
+        if snapshot.surface_id != surface_id
+            || snapshot.as_of_ms > now_ms
+            || snapshot.ready_realized_vol().is_none()
+        {
+            return None;
+        }
+
+        Some(snapshot)
+    }
+
+    #[cfg(test)]
     pub fn seed_ready_realized_vol(
         &mut self,
         source_venue: Option<String>,
         realized_vol: f64,
         ready_ts_ms: u64,
     ) {
-        if !is_positive_finite(realized_vol) {
+        if crate::bolt_v3_realized_volatility::ValidRealizedVol::new(realized_vol).is_none() {
             return;
         }
-        if self
-            .realized_vol
-            .last_ready_ts_ms
-            .is_none_or(|current_ts_ms| current_ts_ms <= ready_ts_ms)
-        {
-            self.realized_vol.last_ready_vol = Some(realized_vol);
-            self.realized_vol.last_ready_ts_ms = Some(ready_ts_ms);
-            self.realized_vol_source_venue = source_venue;
-        }
+        self.observe_realized_vol_snapshot(RealizedVolSnapshot {
+            surface_id: self.realized_volatility_surface_id.clone(),
+            as_of_ms: ready_ts_ms,
+            annualized_realized_vol_decimal: Some(realized_vol),
+            ready: true,
+            sources_used: source_venue.into_iter().collect(),
+            source_diagnostics: Vec::new(),
+            unknown_source_rejections: BTreeMap::new(),
+            blocked_reasons: Vec::new(),
+            aggregate_method: RealizedVolAggregation::UpperQuantile { quantile: 1.0 },
+            seconds_per_annum: 31_536_000.0,
+            config_fingerprint: String::new(),
+        });
     }
 
     pub(crate) fn theta_scaled_min_edge_bps_for(
@@ -311,9 +350,7 @@ impl TakerPricingState {
             blocked_by.push(TakerPricingBlockReason::SecondsToExpiryMissing);
         }
 
-        let realized_vol = self
-            .current_realized_vol_at(request.now_ms)
-            .filter(|value| is_positive_finite(*value));
+        let realized_vol = self.current_realized_vol_for_config_at(config, request.now_ms);
         if realized_vol.is_none() {
             blocked_by.push(TakerPricingBlockReason::RealizedVolNotReady);
         }
@@ -364,14 +401,15 @@ impl TakerPricingState {
         ) else {
             return Err(vec![TakerPricingBlockReason::FairProbabilityUnavailable]);
         };
-        let (realized_vol_source_venue, realized_vol_source_ts_ms) =
-            self.current_realized_vol_source_at(now_ms);
+        let (realized_vol_surface_id, realized_vol_source_venue, realized_vol_source_ts_ms) =
+            self.current_realized_vol_evidence_for_config_at(config, now_ms);
 
         Ok(TakerPricingResult {
             spot_price: inputs.spot_price,
             strike_price: inputs.strike_price,
             seconds_to_market_end: inputs.seconds_to_market_end,
             realized_vol: inputs.realized_vol,
+            realized_vol_surface_id,
             realized_vol_source_venue,
             realized_vol_source_ts_ms,
             theta_scaled_min_edge_bps: inputs.theta_scaled_min_edge_bps,
@@ -430,7 +468,6 @@ impl TakerPricingState {
 mod tests {
     use super::*;
 
-    const TEST_VOL_WINDOW_SECS: u64 = 60;
     const TEST_LEAD_AGREEMENT_MIN_CORR: f64 = 0.80;
     const TEST_LEAD_JITTER_MAX_MS: u64 = 1_000;
     const TEST_SPIKE_GUARD_RETURN_THRESHOLD: f64 = 0.10;
@@ -458,17 +495,12 @@ mod tests {
         TEST_REPLACEMENT_REFERENCE_TS_MS + TEST_REFERENCE_TS_STEP_MS;
 
     fn config(
-        min_observations: u64,
-        gap_reset_secs: u64,
-        bridge_valid_secs: u64,
+        _min_observations: u64,
+        _gap_reset_secs: u64,
+        _bridge_valid_secs: u64,
     ) -> TakerPricingConfig<'static> {
         TakerPricingConfig {
-            realized_vol: RealizedVolConfig {
-                window_secs: TEST_VOL_WINDOW_SECS,
-                gap_reset_secs,
-                min_observations,
-                bridge_valid_secs,
-            },
+            realized_volatility_surface_id: "<surface_id>".to_string(),
             lead_agreement_min_corr: TEST_LEAD_AGREEMENT_MIN_CORR,
             lead_jitter_max_ms: TEST_LEAD_JITTER_MAX_MS,
             spike_guard_return_threshold: TEST_SPIKE_GUARD_RETURN_THRESHOLD,
@@ -653,50 +685,5 @@ mod tests {
 
         assert!(pricing.fast_venue_incoherent);
         assert_eq!(pricing.last_jitter_penalty_probability, Some(ZERO_F64));
-    }
-
-    #[test]
-    fn per_venue_realized_vol_state_isolated_across_lead_venue_switches() {
-        let config = config(1, 30, 10);
-        let mut pricing = TakerPricingState::from_config(&config);
-
-        observe_reference_and_signal(&mut pricing, &config, "bybit", 100.0, 1_000);
-        observe_reference_and_signal(&mut pricing, &config, "bybit", 101.0, 2_000);
-
-        assert!(pricing.current_realized_vol_at(2_000).is_some());
-        assert_eq!(
-            pricing.current_realized_vol_source_at(2_000),
-            (Some("bybit".to_string()), Some(2_000))
-        );
-
-        observe_reference_and_signal(&mut pricing, &config, "coinbase", 102.0, 3_000);
-
-        assert_eq!(pricing.current_realized_vol_at(3_000), None);
-        assert_eq!(pricing.current_realized_vol_source_at(3_000), (None, None));
-
-        observe_reference_and_signal(&mut pricing, &config, "bybit", 103.0, 4_000);
-
-        assert!(pricing.current_realized_vol_at(4_000).is_some());
-        assert_eq!(
-            pricing.current_realized_vol_source_at(4_000),
-            (Some("bybit".to_string()), Some(4_000))
-        );
-    }
-
-    #[test]
-    fn realized_vol_bridge_expires_and_gap_reset_clears_ready_state() {
-        let config = config(1, 1, 1);
-        let mut pricing = TakerPricingState::from_config(&config);
-
-        observe_reference_and_signal(&mut pricing, &config, "bybit", 100.0, 1_000);
-        observe_reference_and_signal(&mut pricing, &config, "bybit", 101.0, 1_500);
-
-        assert!(pricing.current_realized_vol_at(2_400).is_some());
-        assert_eq!(pricing.current_realized_vol_at(2_501), None);
-
-        observe_reference_and_signal(&mut pricing, &config, "bybit", 102.0, 3_000);
-
-        assert_eq!(pricing.current_realized_vol_at(3_000), None);
-        assert_eq!(pricing.current_realized_vol_source_at(3_000), (None, None));
     }
 }

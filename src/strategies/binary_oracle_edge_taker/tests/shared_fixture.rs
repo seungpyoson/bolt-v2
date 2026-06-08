@@ -53,10 +53,7 @@ pub(super) fn valid_raw_config() -> Value {
         risk_lambda = 0.5
         edge_threshold_basis_points = -20
         exit_hysteresis_bps = 5
-        vol_window_secs = 60
-        vol_gap_reset_secs = 10
-        vol_min_observations = 20
-        vol_bridge_valid_secs = 10
+        realized_volatility_surface_id = "<surface_id>"
         trade_flow_window_secs = 30
         trade_flow_max_samples = 100
         spike_guard_return_threshold = 0.05
@@ -425,6 +422,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             signal_instrument_id: Some("SIGNAL.SOURCE".to_string()),
             resolution_client_id: Some("CHAINLINK_DATA_STREAMS".to_string()),
             resolution_instrument_id: Some("RESOLUTION.SOURCE".to_string()),
+            realized_volatility_surface_id: "<surface_id>".to_string(),
             use_uuid_client_order_ids: true,
             use_hyphens_in_client_order_ids: false,
             external_order_claims: vec!["AUXILIARY.SOURCE".to_string()],
@@ -492,10 +490,6 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             risk_lambda: 0.5,
             edge_threshold_basis_points: -20,
             exit_hysteresis_bps: 5,
-            vol_window_secs: 60,
-            vol_gap_reset_secs: 10,
-            vol_min_observations: 20,
-            vol_bridge_valid_secs: 10,
             trade_flow_window_secs: 30,
             trade_flow_max_samples: 100,
             spike_guard_return_threshold: 0.05,
@@ -656,8 +650,9 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
     strategy.active.books.down.liquidity_available = Some(500.0);
     strategy.active.fast_venue_incoherent = false;
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(0.0);
     strategy.pricing.last_jitter_penalty_probability = Some(0.0);
     strategy
@@ -721,8 +716,9 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
     strategy.active.books.down.liquidity_available = Some(500.0);
     strategy.active.fast_venue_incoherent = false;
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
-    strategy.pricing.realized_vol.last_ready_vol = Some(1.5);
-    strategy.pricing.realized_vol.last_ready_ts_ms = Some(1_200);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(0.0);
     strategy.pricing.last_jitter_penalty_probability = Some(0.0);
     (strategy, fee_provider)

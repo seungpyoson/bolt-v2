@@ -787,9 +787,17 @@ fn quote_quantity_effective_price(
 }
 
 pub fn fee_inclusive_admission_notional(notional: Decimal, max_fee_bps: Decimal) -> Decimal {
-    let fee_multiplier =
-        Decimal::ONE + max_fee_bps / Decimal::from(SUBMIT_ADMISSION_BPS_DENOMINATOR);
-    notional * fee_multiplier
+    checked_fee_inclusive_admission_notional(notional, max_fee_bps)
+        .expect("fee-inclusive admission notional should fit Decimal")
+}
+
+pub(crate) fn checked_fee_inclusive_admission_notional(
+    notional: Decimal,
+    max_fee_bps: Decimal,
+) -> Option<Decimal> {
+    let fee_rate = max_fee_bps.checked_div(Decimal::from(SUBMIT_ADMISSION_BPS_DENOMINATOR))?;
+    let fee_multiplier = Decimal::ONE.checked_add(fee_rate)?;
+    notional.checked_mul(fee_multiplier)
 }
 
 /// Cap-bypass-via-rounding guard for submit paths that carry an operator

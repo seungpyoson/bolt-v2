@@ -65,10 +65,6 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             risk_lambda: f64 => Float;
             edge_threshold_basis_points: i64 => Integer;
             exit_hysteresis_bps: i64 => Integer;
-            vol_window_secs: u64 => Integer;
-            vol_gap_reset_secs: u64 => Integer;
-            vol_min_observations: u64 => Integer;
-            vol_bridge_valid_secs: u64 => Integer;
             trade_flow_window_secs: u64 => Integer;
             trade_flow_max_samples: u64 => Integer;
             spike_guard_return_threshold: f64 => Float;
@@ -155,6 +151,7 @@ macro_rules! define_config_struct {
             pub(super) resolution_client_id: Option<String>,
             pub(super) resolution_instrument_id: Option<String>,
             pub(super) reference_current_price: Option<ReferencePriceBlock>,
+            pub(super) realized_volatility_surface_id: String,
             pub(super) entry_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) exit_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
@@ -217,6 +214,7 @@ const ORDER_TRIGGER_TYPE_FIELD: &str = "trigger_type";
 const ORDER_TRIGGER_INSTRUMENT_ID_FIELD: &str = "trigger_instrument_id";
 const ORDER_TRAILING_OFFSET_FIELD: &str = "trailing_offset";
 const ORDER_TRAILING_OFFSET_TYPE_FIELD: &str = "trailing_offset_type";
+const REALIZED_VOLATILITY_SURFACE_ID_FIELD: &str = "realized_volatility_surface_id";
 
 macro_rules! match_order_field_names {
     ($( $field:ident => $field_type:ident; )+) => {
@@ -277,28 +275,20 @@ impl BinaryOracleEdgeTakerBuilder {
         for (field, value) in [
             (
                 stringify!(trade_flow_max_samples),
-                config.trade_flow_max_samples,
+                Some(config.trade_flow_max_samples),
             ),
             (
                 stringify!(trade_flow_window_secs),
-                config.trade_flow_window_secs,
+                Some(config.trade_flow_window_secs),
             ),
             (
                 stringify!(spike_guard_cooldown_secs),
-                config.spike_guard_cooldown_secs,
-            ),
-            (stringify!(vol_window_secs), config.vol_window_secs),
-            (stringify!(vol_gap_reset_secs), config.vol_gap_reset_secs),
-            (
-                stringify!(vol_min_observations),
-                config.vol_min_observations,
-            ),
-            (
-                stringify!(vol_bridge_valid_secs),
-                config.vol_bridge_valid_secs,
+                Some(config.spike_guard_cooldown_secs),
             ),
         ] {
-            anyhow::ensure!(value > u64::MIN, "{field} must be positive");
+            if let Some(value) = value {
+                anyhow::ensure!(value > u64::MIN, "{field} must be positive");
+            }
         }
         Self::ensure_configured_instrument_id_fields_parse(&config)?;
         Ok(config)
@@ -383,6 +373,7 @@ impl BinaryOracleEdgeTakerBuilder {
                     | "resolution_client_id"
                     | "resolution_instrument_id"
                     | "reference_current_price"
+                    | REALIZED_VOLATILITY_SURFACE_ID_FIELD
                     | binary_oracle_edge_taker_config_fields!(match_config_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field_prefix}.{key}"), key);
@@ -404,6 +395,13 @@ impl BinaryOracleEdgeTakerBuilder {
             errors,
         );
         Self::validate_optional_table_field(table, field_prefix, "reference_current_price", errors);
+        Self::validate_optional_string_field(
+            table,
+            field_prefix,
+            REALIZED_VOLATILITY_SURFACE_ID_FIELD,
+            errors,
+        );
+        Self::validate_required_realized_volatility_surface_id(table, field_prefix, errors);
         Self::validate_optional_instrument_id_field(
             table,
             field_prefix,
@@ -474,6 +472,21 @@ impl BinaryOracleEdgeTakerBuilder {
             errors,
         );
         Self::validate_rotating_market_family(table, field_prefix, errors);
+    }
+
+    fn validate_required_realized_volatility_surface_id(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        if !table.contains_key(REALIZED_VOLATILITY_SURFACE_ID_FIELD) {
+            Self::push_missing(
+                errors,
+                format!("{field_prefix}.{REALIZED_VOLATILITY_SURFACE_ID_FIELD}"),
+                "missing_realized_volatility_surface",
+                BinaryOracleEdgeTakerFieldType::String,
+            );
+        }
     }
 
     /// Reject an unknown `rotating_market_family` at config-parse time (P5-10).

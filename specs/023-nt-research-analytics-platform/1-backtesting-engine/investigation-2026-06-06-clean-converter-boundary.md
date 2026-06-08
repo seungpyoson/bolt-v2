@@ -2374,3 +2374,48 @@ Current conclusion:
   tick-size replay or a source-proof-bound exclusion policy are proven.
 - This does not close `BACKTESTING_ENGINE-022`; it makes the slow-backfill
   non-repeat condition machine-readable.
+
+## 2026-06-09 source-agnostic backfill boundary checkpoint
+
+What is source-agnostic today:
+
+- Generic gate/readiness modules are driven by `source_binding`,
+  `table_family`, NT data classes, source-proof status, and configured allowed
+  statuses. They do not branch on Binance, Bybit, PMXT, Polymarket, or a venue
+  name.
+- `backfill-source-bindings.v1.toml` carries concrete venue/source URI,
+  extractor, evidence-state, fixture, product-family, and table-family values.
+- The committed sample-venue guard rejects Bybit/Binance/BNBUSDC/sample venue
+  literals in generic production Rust. PMXT/Polymarket names are allowed only in
+  explicit one-off/proof modules and thin binaries.
+
+What is not source-agnostic enough yet:
+
+- The accepted-object operator path is registered for one converter:
+  `csv-native-trades-to-canonical-trades.v1`. It is systematic for accepted
+  native trade CSV/GZIP/ZIP sources with TOML-owned column and side mappings,
+  but it is not a general raw-source adapter runner.
+- PMXT L2 projection is correctly isolated as a `one_off_backfill_data` adapter.
+  It must not be promoted into a durable generic source path without accepted
+  source proof, dynamic tick-size policy, and broad-backfill efficiency proof.
+- `source_proof.rs` still has production constants for the
+  `kimchi-premium` cross-market signal family and required component roles. The
+  roles are source roles, not venue identities, but this is still source-family
+  policy in Rust and should move into registry/schema config before claiming
+  complete no-hardcode compliance.
+
+New evidence:
+
+- Added
+  `reference/source-agnostic-backfill-boundary-status.2026-06-09.json`.
+- Updated the BTE-022 status artifact with blocker
+  `source_agnostic_adapter_contract_gap`.
+
+Current conclusion:
+
+- Adding another source that matches the existing native-trade CSV adapter can
+  remain mostly TOML/source-proof/run-spec work.
+- Adding a new raw format or NT data family requires a registered adapter
+  contract and proof, not venue branches in generic readiness gates.
+- This checkpoint does not close `BACKTESTING_ENGINE-022`; it prevents the
+  incorrect claim that every future venue/data type is TOML-only today.

@@ -1,0 +1,148 @@
+{
+  "schema_version": "source-agnostic-backfill-boundary-status.v1",
+  "task_ids": [
+    "BACKTESTING_ENGINE-022"
+  ],
+  "created_at_utc": "2026-06-08T22:15:04Z",
+  "status": "generic_gates_source_agnostic_adapter_registry_gap_remains",
+  "decision": "The current BTE gate/readiness/catalog/result-contract boundary is mostly source-agnostic, but the accepted-object converter path is still a registered native-trades CSV adapter and PMXT remains a separate one-off adapter. Adding a new source is easy only when it can reuse an existing registered adapter and NT data class; adding a new raw format or data family still requires a new adapter and proof.",
+  "generic_surfaces_proven": [
+    {
+      "surface": "sample venue hardcode guard",
+      "path": "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_sample_venue_guard.rs",
+      "evidence": "The guard rejects Bybit, Binance, BNBUSDC, public_archive, Korean venue names, and other sample values in generic production Rust. PMXT/Polymarket names are allowed only in explicit one-off/proof modules and thin bins."
+    },
+    {
+      "surface": "source binding registry",
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml",
+      "evidence": "Concrete sources, venues, product families, market-structure fixtures, source URIs, extractors, evidence states, and table families are registry rows. Binance, OKX, Bybit, Deribit, Hyperliquid, Polymarket/PMXT, and Kalshi are data entries, not generic gate branches."
+    },
+    {
+      "surface": "source-proof acceptance against registry",
+      "path": "repo://crates/backtesting-vertical-slice/src/source_proof.rs",
+      "evidence": "SourceProofReport acceptance validates source_binding, venue, product_family, market_structure_fixture, evidence_state, and table_family against SourceBindingRegistry before an object can become AcceptedDataset."
+    },
+    {
+      "surface": "source-to-catalog mapping readiness",
+      "path": "repo://crates/backtesting-vertical-slice/src/source_catalog_mapping_readiness.rs",
+      "evidence": "Readiness uses configured source_binding, required_table_family, required_nt_data_types, allowed current BTE statuses, and allowed Parquet catalog statuses. It blocks on missing mapping entries, missing NT data types, source-proof mismatch, or disallowed status values without venue-specific branches."
+    },
+    {
+      "surface": "backfill binding coverage",
+      "path": "repo://crates/backtesting-vertical-slice/src/backfill_binding_coverage.rs",
+      "evidence": "Coverage counts configured source bindings and table families from TOML and ledger records; it explicitly does not infer bindings from prefixes or venue names."
+    },
+    {
+      "surface": "combined backfill readiness",
+      "path": "repo://crates/backtesting-vertical-slice/src/backfill_readiness.rs",
+      "evidence": "Readiness joins preflight, source-proof migration, binding coverage, required table family, required NT data type, and configured supported data paths. The check is table-family/NT-data-type driven, not venue driven."
+    },
+    {
+      "surface": "run manifest to NT",
+      "path": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs",
+      "evidence": "BacktestingRunManifest owns NT BacktestRunConfig, BacktestDataConfig, BacktestVenueConfig, catalog inputs, artifact_root, and result-contract provenance. It also records unsupported NT venue/query surfaces explicitly rather than silently ignoring them."
+    }
+  ],
+  "source_specific_surfaces_found": [
+    {
+      "surface": "accepted-object converter registry",
+      "path": "repo://crates/backtesting-vertical-slice/src/canonical_trades.rs",
+      "status": "registered_single_native_trade_csv_adapter",
+      "evidence": "REGISTERED_TRADE_CONVERTERS currently contains csv-native-trades-to-canonical-trades.v1. normalize_registered_trade_converter dispatches only this adapter to normalize_csv_native_trades.",
+      "impact": "A new venue whose accepted object is native trade CSV/GZIP/ZIP can reuse this path by TOML config. A new raw container, schema family, bars, L2 deltas, snapshots, or non-trade event stream cannot be added by TOML alone."
+    },
+    {
+      "surface": "accepted-object operator",
+      "path": "repo://crates/backtesting-vertical-slice/src/operator.rs",
+      "status": "trade_csv_oriented",
+      "evidence": "run_from_run_spec validates a registered trade converter, decodes CSV text from CsvGzip/CsvText/SingleCsvZip, writes canonical-trades.parquet, and projects TradeTicks. This is systematic for native trade CSV sources but not a general raw-source adapter runner."
+    },
+    {
+      "surface": "PMXT one-off projection",
+      "path": "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs",
+      "status": "intentionally_one_off",
+      "evidence": "The module requires SourceProofUsageScope::OneOffBackfillData and uses configured PMXT selected-source schema columns plus NT Polymarket parser/model surfaces. It rejects canonical usage and should not be treated as the durable generic L2 adapter."
+    },
+    {
+      "surface": "Polymarket metadata/surface proofs",
+      "path": "repo://crates/backtesting-vertical-slice/src/polymarket_metadata_gate.rs",
+      "status": "source_specific_proof_module",
+      "evidence": "Polymarket-specific proof code reuses nautilus-polymarket Gamma parser/provider surfaces for the bounded PMXT/Polymarket path. This is acceptable as source-specific proof/adaptation, not generic gate logic."
+    },
+    {
+      "surface": "kimchi-premium cross-market role constants",
+      "path": "repo://crates/backtesting-vertical-slice/src/source_proof.rs",
+      "status": "hardcoded_source_family_policy",
+      "evidence": "Production Rust contains KIMCHI_PREMIUM_SIGNAL_FAMILY and KIMCHI_REQUIRED_CROSS_MARKET_ROLES. The roles are source roles, not venue names, but they are still source-family runtime policy in code.",
+      "impact": "Do not claim the source-proof layer is fully hardcode-free until required cross-market roles move into source-proof schema/config or a registry policy row."
+    }
+  ],
+  "solutions": [
+    {
+      "solution_id": "reuse_existing_native_trade_adapter",
+      "when_valid": "A new source provides accepted native trade rows that can be decoded as configured CsvGzip, CsvText, or SingleCsvZip and mapped with CsvTradeMappingConfig.",
+      "changes_required": [
+        "Add source_binding registry row.",
+        "Add accepted SourceProofReport and accepted-object proof for the exact source/window.",
+        "Add TOML run spec with converter.identity = csv-native-trades-to-canonical-trades.v1 and configured CSV columns/side tokens.",
+        "Run source-catalog mapping readiness and execution readiness gates."
+      ],
+      "generic_gate_changes_required": false,
+      "new_rust_adapter_required": false
+    },
+    {
+      "solution_id": "add_registered_adapter_for_new_raw_format_or_data_family",
+      "when_valid": "A new source has a new raw container, schema family, or NT output family such as bars, L2 OrderBookDelta, fixed-depth snapshots, prediction-market metadata, or mixed OrderBookDelta plus TradeTick.",
+      "changes_required": [
+        "Add one adapter module with a registered converter identity/version and supported table_family -> NT data class declaration.",
+        "Keep all runtime source values, column names, side tokens, row budgets, object limits, and event-family roles in TOML/source-proof artifacts.",
+        "The adapter must accept only an AcceptedDataset or selected-source artifact chain, not raw paths directly.",
+        "The adapter must write ConversionManifest, ConversionCheckpoint, ConversionCatalogMetadata, and result-contract provenance using the existing conversion boundary.",
+        "The adapter must project to NT-native data classes and use ParquetDataCatalog plus BacktestNode where NT provides the mechanism.",
+        "Readiness must be proven by source_binding, table_family, NT data classes, source-proof status, catalog status, and bounded cost/coverage evidence."
+      ],
+      "generic_gate_changes_required": "Only add the adapter registration if the existing registry cannot describe the data family; do not add venue branches to readiness gates.",
+      "new_rust_adapter_required": true
+    },
+    {
+      "solution_id": "keep_pmxt_one_off_blocked_for_canonical_backfill",
+      "when_valid": "PMXT is used only to prove one-off Polymarket L2+TradeTick mapping and current artifact behavior.",
+      "changes_required": [
+        "Keep usage_scope = one_off_backfill_data.",
+        "Do not use PMXT coverage ledger as canonical-ready evidence while source_proof_status remains pending.",
+        "Do not start broad PMXT payload download, full-object hash, conversion, catalog projection, or BacktestNode until manifest/index-only coverage, cost, storage, dynamic tick-size policy, and accepted source proof are proven."
+      ],
+      "generic_gate_changes_required": false,
+      "new_rust_adapter_required": false
+    },
+    {
+      "solution_id": "move_cross_market_source_family_policy_to_config",
+      "when_valid": "Before claiming the source-proof layer is fully hardcode-free across research analytics and backtesting inputs.",
+      "changes_required": [
+        "Extend the source-binding or source-proof schema with configured required cross-market component roles keyed by product_category or source_binding.",
+        "Replace KIMCHI_PREMIUM_SIGNAL_FAMILY and KIMCHI_REQUIRED_CROSS_MARKET_ROLES with registry-driven validation.",
+        "Keep the venue/provider values as TOML source_binding rows and source-proof component evidence."
+      ],
+      "generic_gate_changes_required": true,
+      "new_rust_adapter_required": false
+    }
+  ],
+  "accepted_claims": [
+    "Generic BTE gate/readiness surfaces are source_binding/table_family/NT-data-type driven.",
+    "Bybit and Binance are sample/reference source rows, not generic production gate branches.",
+    "PMXT and Polymarket names are confined to explicit one-off/proof modules and test fixtures by a committed guard test.",
+    "Adding another source that matches the existing native-trade CSV adapter should require registry/source-proof/run-spec data, not generic gate code."
+  ],
+  "rejected_claims": [
+    "Adding any new venue or data type is TOML-only today.",
+    "PMXT is a durable canonical Polymarket source today.",
+    "The accepted-object operator is a general raw-source adapter runner today.",
+    "The full source-proof layer is hardcode-free today."
+  ],
+  "next_required_evidence": [
+    "Introduce or document a source-agnostic adapter registration contract before adding any non-trade-CSV durable source.",
+    "Move cross-market source-family required roles out of production Rust before claiming complete no-hardcode compliance across source proofs.",
+    "For Polymarket/PMXT, accept durable source proof plus coverage/cost/storage/dynamic-tick-size evidence before broad backfill.",
+    "Keep GitHub CI as the broad verification gate for any committed changes."
+  ]
+}

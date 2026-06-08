@@ -237,8 +237,10 @@ mod tests {
     // changed the canonical strategy test source set.
     // Re-derived again after #606 made stale reference-current-price replays
     // fail closed without evicting fresh same-interval quotes.
+    // Re-derived again after #606 normalized the stale replay guard to the
+    // Clippy-preferred equivalent expression.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "d1368d7a45665b3b5d61ac4eb3c760900f83f4bbc3b7d75988cc375ffc41c6c8";
+        "f224b0c0e073ddf189196beab25dc502ea7c350dd8bc13f54656f92a70c6d109";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

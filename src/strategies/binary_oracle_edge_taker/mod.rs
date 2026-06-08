@@ -1661,10 +1661,10 @@ impl BinaryOracleEdgeTaker {
             || quote.observed_ts_ms() > now_ms
             || now_ms.saturating_sub(quote.observed_ts_ms()) > reference_price.max_source_age_ms)
         {
-            if !self
+            if self
                 .reference_price_quotes
                 .get(quote.source_id())
-                .is_some_and(|existing| existing.observed_ts_ms() >= quote.observed_ts_ms())
+                .is_none_or(|existing| existing.observed_ts_ms() < quote.observed_ts_ms())
             {
                 self.mark_reference_price_source_status(
                     quote.source_id(),

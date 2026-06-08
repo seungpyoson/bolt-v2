@@ -233,10 +233,10 @@ mod tests {
     // raw RV validation behind the shared ready snapshot accessor.
     // Re-derived again after removing the dead strategy evidence fallback RV
     // parameter.
-    // Re-derived again after merging #606 reference_current_price wiring with
-    // main's surfaced realized-volatility strategy source set.
+    // Re-derived again after #606 named reference_current_price test fixtures
+    // changed the canonical strategy test source set.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "91957f229550e165ffb09fbe9f3d76524ae996c3db1598ed3509cd2f28a86a2d";
+        "faa1716a08cc66955a1975c570358d863b625ec0d118cd117118fb8616aa180b";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

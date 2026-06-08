@@ -57,7 +57,7 @@ use crate::bolt_v3_config::{
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
 use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 use crate::bolt_v3_providers::{
-    RESOLUTION_ORACLE_VENUE_KEY, ReferencePriceIdentifierKind, chainlink_reference,
+    REFERENCE_CATALOG_VENUE_KEY, RESOLUTION_ORACLE_VENUE_KEY, ReferencePriceIdentifierKind,
     reference_price_provider_identifier_is_configured, reference_price_provider_metadata,
 };
 
@@ -1465,7 +1465,7 @@ fn validate_root_owned_chainlink_feed_catalog(
 fn uses_root_owned_chainlink_feed_catalog(client: &ClientBlock) -> bool {
     matches!(
         client.venue.as_str(),
-        RESOLUTION_ORACLE_VENUE_KEY | chainlink_reference::KEY
+        RESOLUTION_ORACLE_VENUE_KEY | REFERENCE_CATALOG_VENUE_KEY
     )
 }
 

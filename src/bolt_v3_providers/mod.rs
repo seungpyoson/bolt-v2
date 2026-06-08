@@ -33,6 +33,7 @@ pub mod polyresearch;
 pub use chainlink::KEY as RESOLUTION_ORACLE_VENUE_KEY;
 pub use chainlink::PROVIDER_KIND as RESOLUTION_ORACLE_PROVIDER_KIND;
 pub(crate) use chainlink::STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM;
+pub use chainlink_reference::KEY as REFERENCE_CATALOG_VENUE_KEY;
 
 use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, sync::Arc};
 

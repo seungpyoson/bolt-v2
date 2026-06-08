@@ -1,5 +1,5 @@
 {
-  "schema_version": "source-proof-pmxt-selected-source-slice.v2",
+  "schema_version": "source-proof-pmxt-selected-source-slice.v3",
   "created_date": "2026-06-08",
   "purpose": "One-off bounded PMXT selected-source staging before NT catalog projection proof.",
   "usage_scope": "one_off_backfill_data",
@@ -25,11 +25,41 @@
       "3591592734621538900250105906480402152414999010955894949082670586294455191149"
     ]
   },
+  "event_count_ledger": {
+    "spec_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/event-count-ledger.toml",
+    "output_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/event-count-ledger.json",
+    "file_sha256": "538f992b836f356ed8b50815530ec270013797da27d76a65473e2a2ac95cb5c3",
+    "content_hash": "35c5c97214a8079aa4b933979a38e68635efc0068929d9aaa6ebbf95f80bcda6",
+    "bytes": 19667684,
+    "source_rows": 64877467,
+    "event_count_rows": 91786,
+    "selected_asset_event_counts": {
+      "book": {
+        "rows": 1,
+        "source_row_groups": [
+          35
+        ]
+      },
+      "last_trade_price": {
+        "rows": 1,
+        "source_row_groups": [
+          35
+        ]
+      },
+      "price_change": {
+        "rows": 3,
+        "source_row_groups": [
+          35
+        ]
+      }
+    }
+  },
   "selector": {
-    "spec_path": "/private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector-gamma-candidates.toml",
-    "report_path": "/private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector-gamma-candidates/first-proof-selector-report.json",
-    "report_sha256": "3e64cc09d803ff34de9cbc51345978406125fcc5147879a7c5ff8475a73c3aaf",
-    "content_hash": "75eb9d2b6238f343b838b06d48830ab125b50fccc1d91b4c557bf2ab9ecdae1f",
+    "spec_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selector-gamma-candidates.toml",
+    "report_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selector-gamma-candidates/first-proof-selector-report.json",
+    "report_sha256": "8bbf34e5f743ec9fdf3cbf05c23c71c75ca310eb4278ffa1c9d29403386dba27",
+    "content_hash": "a36ed819efb41e89933bf73265496afae87dc8c29ffb359dc2d7f399acc01757",
+    "event_count_ledger_hash": "985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a",
     "status": "selected",
     "eligible_assets": 6,
     "selected_asset_count": 1,
@@ -37,7 +67,10 @@
     "selected_assets": [
       {
         "asset_id": "73895424095742155573626958367283533358717984717096075221396743226794070701077",
-        "replay_rows": 5
+        "replay_rows": 5,
+        "source_row_groups": [
+          35
+        ]
       }
     ],
     "selection": {
@@ -55,14 +88,14 @@
     }
   },
   "selected_source_slice": {
-    "spec_path": "/private/tmp/bte-pmxt-selected-source-slice-gamma-backed-2026-06-08.toml",
+    "spec_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selected-source.toml",
     "usage_scope": "one_off_backfill_data",
-    "output_parquet_path": "/private/tmp/bte-pmxt-selected-source-slice-gamma-backed-2026-06-08/selected-source.parquet",
-    "report_path": "/private/tmp/bte-pmxt-selected-source-slice-gamma-backed-2026-06-08/selected-source-report.json",
+    "output_parquet_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selected-source/selected-source.parquet",
+    "report_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selected-source/selected-source-report.json",
     "output_parquet_sha256": "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e",
-    "report_file_sha256": "686e17e81d578cb2c460691ddca9620b9256761e53dfc3b3d3ad27a1cca884d4",
-    "report_hash": "aceed296f0287abca7ea0e23ba0d18a4d6c9b934b5b71bb6950e7c5edc62f5a9",
-    "report_bytes": 1280,
+    "report_file_sha256": "a33eeba4204c498eda44a442fda92c9530580304ce54ea72657f9bf86886c857",
+    "report_hash": "9d3e2f100f8f6047b89e8ce1355defef82476b9ecacc79ebc5a1ace85f21d5f3",
+    "report_bytes": 1286,
     "source_rows": 64877467,
     "source_row_groups": 62,
     "projected_row_groups": 1,
@@ -98,48 +131,65 @@
     ]
   },
   "performance_evidence": {
-    "command": "/usr/bin/time -p python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin selected_source_slice -- --spec /private/tmp/bte-pmxt-selected-source-slice-gamma-backed-2026-06-08.toml",
-    "wall_seconds": 30.31,
-    "user_seconds": 27.96,
-    "sys_seconds": 1.07,
+    "event_count_ledger_command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin first_proof_event_count_ledger -- --spec /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/event-count-ledger.toml",
+    "event_count_ledger_wall_seconds_observed": 90.27,
+    "selected_source_command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin selected_source_slice -- --spec /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selected-source.toml",
+    "selected_source_wall_seconds_observed": 18.93,
     "previous_full_projection_wall_seconds": 218.96,
-    "finding": "Historical 2026-06-08 artifact evidence: the selected-source slicer scanned only the asset column to locate matching row groups, then projected full columns for 1 of 62 row groups. Current code has since removed the asset-column rescan and requires selector-carried source_row_groups."
+    "finding": "The only current full-object pass is the bounded two-column event-count ledger. The selected-source stage consumes selector-carried source_row_groups and projected 1 of 62 row groups without the historical asset-column rescan."
   },
   "current_code_reconciliation": {
-    "status": "historical_artifact_stale_current_code_uses_selector_source_row_groups",
-    "current_head": "d79f574c9b75fe72469079e1b116fa59e27f06d5",
+    "status": "current_artifact_regenerated_with_selector_source_row_groups",
+    "current_head": "7c18f722",
     "pull_request": "https://github.com/seungpyoson/bolt-v2/pull/610",
-    "finding": "The listed /private/tmp selected-source and selector artifacts predate the current selector schema because selected_assets omit source_row_groups. Current selected_source_slice validates selector.selected_assets[].source_row_groups against Parquet metadata and projects those row groups directly; it no longer scans the asset column to discover row groups.",
+    "finding": "The selected-source artifact was regenerated from an event-count ledger and selector report that carry source_row_groups. Current selected_source_slice validates selector.selected_assets[].source_row_groups against Parquet metadata and projects those row groups directly.",
     "evidence": [
-      "RED rust_verification cargo test --test backtesting_vertical_slice_first_proof_selector first_proof_event_count_ledger_scans_configured_parquet_columns failed because the event-count ledger JSON lacked source_row_groups.",
-      "GREEN rust_verification cargo test --test backtesting_vertical_slice_first_proof_selector first_proof_event_count_ledger_scans_configured_parquet_columns passed after event-count ledger rows carried source_row_groups from Parquet row-group metadata.",
-      "RED rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice selected_source_slice_uses_selector_row_groups_without_full_asset_rescan failed before selected-source accepted selector-carried source_row_groups.",
-      "GREEN rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice selected_source_slice_uses_selector_row_groups_without_full_asset_rescan passed after selected-source used selector source_row_groups and avoided a full asset-column rescan.",
-      "PR #610 CI on d79f574c passed backtester-gate, bvs-test, bvs-clippy, fmt-check, main clippy, source-fence, and all nextest shards."
-    ]
+      "The refreshed ledger contains source_row_groups for event-count rows and selected asset families book=1, last_trade_price=1, price_change=3 all in row group 35.",
+      "The refreshed selector report has selected_assets[0].source_row_groups = [35] and selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110.",
+      "The refreshed selected-source report binds selector_report_sha256 8bbf34e5f743ec9fdf3cbf05c23c71c75ca310eb4278ffa1c9d29403386dba27, output_parquet_sha256 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, source_row_groups 62, projected_row_groups 1, selected_rows 5, and selected_asset_count 1.",
+      "PR #610 CI on 7c18f722 passed CI, Backtester CI, and actionlint."
+    ],
+    "supersedes": {
+      "selector_report_path": "/private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector-gamma-candidates/first-proof-selector-report.json",
+      "selected_source_report_path": "/private/tmp/bte-pmxt-selected-source-slice-gamma-backed-2026-06-08/selected-source-report.json",
+      "reason": "Those artifacts predate selector-carried source_row_groups and are historical only."
+    }
   },
   "metadata_gate_ref": {
     "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json",
     "status": "accepted",
     "nt_parser_surface": "nautilus_polymarket::http::parse::parse_gamma_market"
   },
+  "artifact_root_proof_ref": {
+    "path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/backtests/pmxt-run/backtest-result-contract.json",
+    "result_contract_hash": "1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe",
+    "catalog_hash": "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236",
+    "catalog_nt_data_types": [
+      "OrderBookDelta",
+      "TradeTick"
+    ],
+    "catalog_rows_by_nt_data_type": {
+      "OrderBookDelta": 103,
+      "TradeTick": 1
+    },
+    "nt_iterations": 104
+  },
   "verification": [
-    "DuckDB read-back of selected-source.parquet returned rows=5, assets=1, event_types='book, last_trade_price, price_change'.",
-    "DuckDB event-family count returned book=1, last_trade_price=1, price_change=3.",
-    "DuckDB DESCRIBE of selected-source.parquet showed the projected PMXT columns retained for NT projection proof.",
-    "The selected-source report binds source_parquet_sha256, selector_report_sha256, output_parquet_sha256, selected_rows, selected_asset_count, selected_asset_ids_hash, source_row_groups, and projected_row_groups."
+    "Selected-source report read-back returned selected_rows=5, selected_asset_count=1, source_row_groups=62, projected_row_groups=1.",
+    "Selected asset event-count ledger rows prove book=1, last_trade_price=1, price_change=3, all from source_row_groups [35].",
+    "The selected-source report binds source_parquet_sha256, selector_report_sha256, output_parquet_sha256, selected_rows, selected_asset_count, selected_asset_ids_hash, source_row_groups, and projected_row_groups.",
+    "The refreshed artifact-root run wrote the selected rows to NT ParquetDataCatalog, ran BacktestNode over OrderBookDelta and TradeTick catalog inputs, and emitted nt_iterations=104."
   ],
   "claim_limits": [
-    "This artifact does not prove PMXT raw-row-to-NT projection.",
-    "This artifact does not prove NT ParquetDataCatalog read-back.",
-    "This artifact does not prove BacktestNode consumption of a PMXT source-backed catalog.",
-    "This artifact must not be used as evidence that broad PMXT backfill is efficient.",
-    "The concrete /private/tmp selected-source artifact is historical under current code and must be regenerated from a selector report containing source_row_groups before citation as current selected-source evidence."
+    "This artifact is one-off PMXT selected-source evidence only.",
+    "This artifact does not authorize broad PMXT backfill.",
+    "This artifact does not prove dynamic tick-size replay.",
+    "This artifact does not prove expanded tranche coverage or production backfill throughput.",
+    "PMXT remains a one-off backfill data sample, not a reusable canonical source binding."
   ],
   "next_required_steps": [
-    "Implement selected PMXT row-to-NT projection using nautilus-polymarket public parser/provider surfaces.",
-    "Write selected BinaryOption, OrderBookDelta, and TradeTick data into NT ParquetDataCatalog.",
-    "Query the selected NT catalog back and bind logical catalog hash plus selected-source hashes.",
-    "Run BacktestNode against exactly the selected source-backed NT catalog."
+    "Record expanded-tranche coverage and cost evidence before any broad PMXT backfill discussion.",
+    "Prove dynamic tick-size replay separately before full PMXT Polymarket L2 acceptance.",
+    "Keep durable source selection data-family driven and config-owned; do not promote PMXT-specific constants into production code."
   ]
 }

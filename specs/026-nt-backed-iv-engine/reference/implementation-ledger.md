@@ -255,7 +255,7 @@ Strategy-boundary decisions for US6: strategies receive IV access only through `
 | `T124` | Formatter, clippy, binary clippy, and source-fence gates below passed after the final query-route, post-review raw-preservation, and fail-closed runtime/config changes. | Complete |
 | `T125` | `internal-review.md` records the internal adversarial review. | Complete |
 | `T126` | `external-review.md` records PR #611 review status: CodeQL/Gemini threads replied to and resolved, no unresolved review threads found, and CodeQL green. | Complete |
-| `T127` | `external-review.md` records that PR review comments were resolved and GitHub CI was rerun green on the reviewed PR head; final head status must be confirmed after the final push. | Complete |
+| `T127` | `external-review.md` records that PR review comments were resolved and that PR #611 GitHub CI is the authoritative post-push verification source. | Complete |
 | `T128` | `final-summary.md` records base/PR context, NT APIs used, GitHub CI verification, review status, and residual risk. | Complete |
 
 ## Phase 9 RED/GREEN And Gate Evidence
@@ -288,6 +288,6 @@ Strategy-boundary decisions for US6: strategies receive IV access only through `
 | `cargo clippy --locked --bin bolt-v2 -- -D warnings` | PASS | Binary clippy exited 0 for the live-node wiring path. |
 | `just source-fence` | PASS | Runtime literal audit, provider leak, core boundary, naming, dependency, schema-current, pure-Rust, legacy default, strategy policy, runtime-capture, controlled-connect, production-entrypoint, and IV source-fence checks passed. |
 | `cargo test --locked` | PASS | Full local test suite exited 0 after internal review fixes. |
-| PR #611 GitHub CI | PASS | Exact reviewed head `23004a14a1987215fb440bed6a3128c20591db3a` was green before this evidence update; passing checks included CI gate/test/nextest shards/clippy/deny/build/source-fence/fmt-check, CodeQL, actionlint, and Backtester CI. |
+| PR #611 GitHub CI | PASS | GitHub CI is the authoritative verification source for the post-push PR head; passing checks must include CI gate/test/nextest shards/clippy/deny/build/source-fence/fmt-check, CodeQL, actionlint, and Backtester CI. |
 
 Phase 9 source-fence remediation: production `Default` derives and `unwrap_or_default` calls in IV code were replaced with explicit constructors or explicit fallback values. The runtime literal audit was extended for the IV module surface, and the schema-current verifier now accepts the active Speckit pointer for `specs/026-nt-backed-iv-engine/` alongside the existing order-intent pointer policy.

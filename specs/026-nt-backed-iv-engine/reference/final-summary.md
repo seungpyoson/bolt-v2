@@ -6,7 +6,7 @@
 **Pull Request**: `#611` (`https://github.com/seungpyoson/bolt-v2/pull/611`)
 **Current review basis**: PR head verified through GitHub CI, not local cargo reruns.
 
-The exact final pushed SHA cannot be embedded in the commit that contains this file without changing that SHA. Use `gh pr view 611 --json headRefOid` and `gh pr checks 611` after the final push to verify the final remote branch tip and exact-head CI status.
+The exact final pushed SHA cannot be embedded in the commit that contains this file without changing that SHA. Treat PR #611 as authoritative: use `gh pr view 611 --json headRefOid` and `gh pr checks 611` after the final push to verify the remote branch tip and exact-head CI status.
 
 ## Implemented Scope
 
@@ -31,7 +31,7 @@ The exact final pushed SHA cannot be embedded in the commit that contains this f
 
 ## Verification
 
-- PR #611 GitHub CI: PASS on the exact reviewed head before this evidence update (`23004a14a1987215fb440bed6a3128c20591db3a`).
+- PR #611 GitHub CI is the current verification source for the branch head.
 - Passing CI gates included `gate`, `test`, `nextest shard 1 of 4`, `nextest shard 2 of 4`, `nextest shard 3 of 4`, `nextest shard 4 of 4`, `nextest archive`, `clippy`, `deny`, `build`, `check-aarch64`, `source-fence`, `fmt-check`, `detector`, `actionlint`, `CodeQL`, `Analyze (rust)`, `Analyze (actions)`, `bvs-detect`, `bvs-fmt`, `bvs-clippy`, `bvs-test`, and `backtester-gate`.
 - Expected non-blocking skips: `deploy` and `same-sha-main-evidence`.
 - Historical local RED/GREEN and local cargo/source-fence evidence remain recorded in `implementation-ledger.md` and `internal-review.md`; current verification for the PR is GitHub CI.

@@ -17,8 +17,8 @@ Current PR review state:
 
 ## CI Status
 
-PR #611 GitHub CI was green on reviewed head `23004a14a1987215fb440bed6a3128c20591db3a` before this evidence update. Passing checks included CI `gate`, `test`, all four nextest shards, `nextest archive`, `clippy`, `deny`, `build`, `check-aarch64`, `source-fence`, `fmt-check`, `detector`, CodeQL, actionlint, and Backtester CI. `deploy` and `same-sha-main-evidence` were expected skips.
+PR #611 GitHub CI is the current verification source for the branch head. Passing checks to require are CI `gate`, `test`, all four nextest shards, `nextest archive`, `clippy`, `deny`, `build`, `check-aarch64`, `source-fence`, `fmt-check`, `detector`, CodeQL, actionlint, and Backtester CI. `deploy` and `same-sha-main-evidence` are expected skips.
 
 ## Rerun Status
 
-External/PR review comments were resolved and GitHub CI was rerun to green on the reviewed PR head. Because any evidence-file commit changes the head SHA, final status must be confirmed with `gh pr view 611 --json headRefOid` and `gh pr checks 611` after the final push.
+External/PR review comments were resolved. Because any evidence-file commit changes the head SHA, final status must be confirmed with `gh pr view 611 --json headRefOid` and `gh pr checks 611` after the final push.

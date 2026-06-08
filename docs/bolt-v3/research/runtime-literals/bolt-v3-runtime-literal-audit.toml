@@ -8961,6 +8961,94 @@ classification = "iv_capability_discovery_literal"
 reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust path syntax, public-symbol prefixes, and IV/options vocabulary; this literal is scan metadata, not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "number"
+literal = '''8'''
+context = '''const CAPABILITY_ANCHOR_TERMS: [&str; 8] = ['''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory anchors whole-checkout discovery to IV/options terms before applying the classification ledger; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"option"'''
+context = '''if matches!(term, "option" | "options") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory uses structural vocabulary to detect NT option surfaces; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"options"'''
+context = '''if matches!(term, "option" | "options") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory uses structural vocabulary to detect NT option surfaces; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"optional"'''
+context = '''!token.starts_with("optional")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory excludes Rust optional-field wording from option-surface discovery; this literal is scanner syntax, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"iv"'''
+context = '''if matches!(term, "iv" | "vol") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory uses structural vocabulary to detect NT IV surfaces; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"vol"'''
+context = '''if matches!(term, "iv" | "vol") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory uses structural vocabulary to detect NT volatility surfaces; this literal is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"///"'''
+context = '''if line.starts_with("///")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory reads local Rust doc-comment context around public NT symbols; this literal is scanner syntax, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"//!"'''
+context = '''|| line.starts_with("//!")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory reads local Rust module-doc context around public NT symbols; this literal is scanner syntax, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"#["'''
+context = '''|| line.starts_with("#[")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory reads local Rust attribute context around public NT symbols; this literal is scanner syntax, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"#!"'''
+context = '''|| line.starts_with("#!")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory reads local Rust inner-attribute context around public NT symbols; this literal is scanner syntax, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"\n"'''
+context = '''let mut evidence = context.join("\n");'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory joins local public-symbol evidence for term scanning; this literal is scanner syntax, not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_iv/config.rs"
 kind = "number"
 literal = '''1'''
@@ -9327,6 +9415,14 @@ literal = '''1'''
 context = '''count += 1;'''
 classification = "iv_policy_algorithm_literal"
 reason = "IV policy code uses algorithmic indices, counters, and zero sentinels for interpolation/fallback/quorum math; policy inputs remain typed/config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/policy.rs"
+kind = "number"
+literal = '''0'''
+context = '''(count > 0).then(|| sum / count as f64)'''
+classification = "iv_policy_algorithm_literal"
+reason = "IV policy code uses a mathematical zero guard to avoid averaging empty inputs; policy inputs remain typed/config-owned."
 
 [[allowed]]
 path = "src/bolt_v3_iv/runtime.rs"

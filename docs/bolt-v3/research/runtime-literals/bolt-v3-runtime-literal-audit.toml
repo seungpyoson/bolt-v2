@@ -8570,7 +8570,7 @@ reason = "Stable reference-price provider key used for config validation and Dat
 path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
 literal = '''"BTC"'''
-context = '''pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];'''
+context = '''&["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "HYPE"];'''
 classification = "reference_price_provider_capability"
 reason = "Provider capability list for PolyResearch reference-price assets; it validates configured TOML sources and is not a selected runtime asset."
 
@@ -8578,7 +8578,7 @@ reason = "Provider capability list for PolyResearch reference-price assets; it v
 path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
 literal = '''"ETH"'''
-context = '''pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];'''
+context = '''&["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "HYPE"];'''
 classification = "reference_price_provider_capability"
 reason = "Provider capability list for PolyResearch reference-price assets; it validates configured TOML sources and is not a selected runtime asset."
 
@@ -8586,7 +8586,15 @@ reason = "Provider capability list for PolyResearch reference-price assets; it v
 path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
 literal = '''"SOL"'''
-context = '''pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];'''
+context = '''&["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "HYPE"];'''
+classification = "reference_price_provider_capability"
+reason = "Provider capability list for PolyResearch reference-price assets; it validates configured TOML sources and is not a selected runtime asset."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"BNB"'''
+context = '''&["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "HYPE"];'''
 classification = "reference_price_provider_capability"
 reason = "Provider capability list for PolyResearch reference-price assets; it validates configured TOML sources and is not a selected runtime asset."
 
@@ -8594,7 +8602,23 @@ reason = "Provider capability list for PolyResearch reference-price assets; it v
 path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
 literal = '''"XRP"'''
-context = '''pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];'''
+context = '''&["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "HYPE"];'''
+classification = "reference_price_provider_capability"
+reason = "Provider capability list for PolyResearch reference-price assets; it validates configured TOML sources and is not a selected runtime asset."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"DOGE"'''
+context = '''&["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "HYPE"];'''
+classification = "reference_price_provider_capability"
+reason = "Provider capability list for PolyResearch reference-price assets; it validates configured TOML sources and is not a selected runtime asset."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"HYPE"'''
+context = '''&["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "HYPE"];'''
 classification = "reference_price_provider_capability"
 reason = "Provider capability list for PolyResearch reference-price assets; it validates configured TOML sources and is not a selected runtime asset."
 

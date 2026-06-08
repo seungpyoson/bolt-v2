@@ -235,10 +235,10 @@ mod tests {
     // parameter.
     // Re-derived again after #606 named reference_current_price test fixtures
     // changed the canonical strategy test source set.
-    // Re-derived again after #606 made reference-current-price test constructors
-    // require explicit provider instruments.
+    // Re-derived again after #606 made stale reference-current-price replays
+    // fail closed without evicting fresh same-interval quotes.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "bae8b359da19fb0619e9d405c462597de48bfde5409ea5638023eff6e3b7a33b";
+        "d1368d7a45665b3b5d61ac4eb3c760900f83f4bbc3b7d75988cc375ffc41c6c8";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

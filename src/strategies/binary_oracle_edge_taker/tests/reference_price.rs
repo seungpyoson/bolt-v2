@@ -322,6 +322,89 @@ fn reference_price_interval_transition_clears_stale_quotes_and_health() {
 }
 
 #[test]
+fn stale_reference_price_replay_does_not_evict_fresh_same_interval_quotes() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price.min_valid_sources = 2;
+    reference_price
+        .sources
+        .get_mut(CHAINLINK_PRIMARY_SOURCE_ID)
+        .expect("chainlink source should exist")
+        .required = false;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let _cache = register_test_strategy(&mut strategy);
+
+    let fresh_primary = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        TEST_REFERENCE_CURRENT_PRICE,
+        1_100,
+        1_110,
+    );
+    DataActor::on_data(&mut strategy, &fresh_primary)
+        .expect("fresh primary quote should be handled");
+
+    let fresh_backup = reference_price_update(
+        POLYRESEARCH_BACKUP_SOURCE_ID,
+        POLYRESEARCH_REFERENCE_PROVIDER,
+        POLYRESEARCH_REFERENCE_SYMBOL,
+        66_301.00,
+        1_105,
+        1_115,
+    );
+    DataActor::on_data(&mut strategy, &fresh_backup).expect("fresh backup quote should be handled");
+
+    let stale_primary_replay = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        66_100.00,
+        900,
+        1_120,
+    );
+    DataActor::on_data(&mut strategy, &stale_primary_replay)
+        .expect("stale primary replay should be handled fail-closed");
+
+    let primary_quote = strategy
+        .reference_price_quotes
+        .get(CHAINLINK_PRIMARY_SOURCE_ID)
+        .expect("fresh primary quote should survive stale replay");
+    assert_eq!(primary_quote.observed_ts_ms(), 1_100);
+
+    let fresh_backup_update = reference_price_update(
+        POLYRESEARCH_BACKUP_SOURCE_ID,
+        POLYRESEARCH_REFERENCE_PROVIDER,
+        POLYRESEARCH_REFERENCE_SYMBOL,
+        66_301.25,
+        1_125,
+        1_130,
+    );
+    DataActor::on_data(&mut strategy, &fresh_backup_update)
+        .expect("fresh backup update should be handled after stale replay");
+
+    assert!(
+        strategy
+            .reference_price_quotes
+            .contains_key(CHAINLINK_PRIMARY_SOURCE_ID),
+        "fresh primary quote must not be cleared by stale replay cleanup"
+    );
+    assert_eq!(
+        strategy
+            .reference_price_quotes
+            .get(POLYRESEARCH_BACKUP_SOURCE_ID)
+            .map(|quote| quote.observed_ts_ms()),
+        Some(1_125)
+    );
+    assert_eq!(
+        strategy.active.reference_current_price,
+        Some(TEST_REFERENCE_CURRENT_PRICE)
+    );
+}
+
+#[test]
 fn reference_price_update_with_wrong_provider_does_not_satisfy_source() {
     let mut strategy = test_strategy();
     let mut reference_price = reference_price_config();

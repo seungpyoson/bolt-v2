@@ -1651,6 +1651,38 @@ impl BinaryOracleEdgeTaker {
             return;
         }
 
+        let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
+        if let (Some(reference_price), Some(interval_start_ms), Some(interval_end_ms)) = (
+            self.config.reference_current_price.as_ref(),
+            self.active.interval_start_ms,
+            self.active.interval_end_ms,
+        ) && (quote.observed_ts_ms() < interval_start_ms
+            || quote.observed_ts_ms() > interval_end_ms
+            || quote.observed_ts_ms() > now_ms
+            || now_ms.saturating_sub(quote.observed_ts_ms()) > reference_price.max_source_age_ms)
+        {
+            if !self
+                .reference_price_quotes
+                .get(quote.source_id())
+                .is_some_and(|existing| existing.observed_ts_ms() >= quote.observed_ts_ms())
+            {
+                self.mark_reference_price_source_status(
+                    quote.source_id(),
+                    ReferencePriceSourceStatus::Stale,
+                    Some(quote.observed_ts_ms()),
+                    Some(quote.received_ts_ms()),
+                );
+            }
+            log::warn!(
+                "binary_oracle_edge_taker stale reference current price ignored: source_id={} observed_ts_ms={} now_ms={} strategy_id={}",
+                quote.source_id(),
+                quote.observed_ts_ms(),
+                now_ms,
+                self.config.strategy_id,
+            );
+            return;
+        }
+
         self.reference_price_source_health.insert(
             quote.source_id().to_string(),
             ReferencePriceSourceHealth::available(&quote),
@@ -1658,7 +1690,6 @@ impl BinaryOracleEdgeTaker {
         self.reference_price_quotes
             .insert(quote.source_id().to_string(), quote.clone());
 
-        let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
         let (Some(interval_start_ms), Some(interval_end_ms), Some(selector)) = (
             self.active.interval_start_ms,
             self.active.interval_end_ms,

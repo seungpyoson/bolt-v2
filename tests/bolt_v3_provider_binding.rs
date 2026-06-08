@@ -50,7 +50,8 @@ use bolt_v2::{
         chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
         hyperliquid::ResolvedBoltV3HyperliquidSecrets,
         hyperliquid_artifacts::read_hyperliquid_live_submit_approval_artifact,
-        polymarket::ResolvedBoltV3PolymarketSecrets, validate_client_block,
+        polymarket::ResolvedBoltV3PolymarketSecrets,
+        polyresearch::ResolvedBoltV3PolyResearchSecrets, validate_client_block,
     },
     bolt_v3_secrets::{
         ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets,
@@ -138,6 +139,12 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
             api_secret: zeroize::Zeroizing::new(
                 "binding-chainlink-reference-api-secret".to_string(),
             ),
+        }),
+    );
+    clients.insert(
+        "polyresearch_reference".to_string(),
+        Arc::new(ResolvedBoltV3PolyResearchSecrets {
+            api_key: zeroize::Zeroizing::new("binding-polyresearch-api-key".to_string()),
         }),
     );
     ResolvedBoltV3Secrets { clients }

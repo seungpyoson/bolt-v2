@@ -3688,12 +3688,16 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         let scoped = trade_transport_loaded_config(&loaded)
             .expect("strategy-bound transport scope should be derived from config");
 
-        assert_eq!(scoped.root.clients.len(), 3);
+        assert_eq!(scoped.root.clients.len(), 4);
         assert!(scoped.root.clients.contains_key("polymarket_main"));
         assert!(scoped.root.clients.contains_key("signal_data"));
         assert!(
             scoped.root.clients.contains_key("chainlink_reference"),
             "reference_current_price source clients must be registered in the live transport scope"
+        );
+        assert!(
+            scoped.root.clients.contains_key("polyresearch_reference"),
+            "reference_current_price PRR source client must be registered in the live transport scope"
         );
         assert!(
             !scoped.root.clients.contains_key("unrelated_data"),
@@ -3713,6 +3717,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
                 binance::ResolvedBoltV3BinanceSecrets, chainlink::ResolvedBoltV3ChainlinkSecrets,
                 chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
                 polymarket::ResolvedBoltV3PolymarketSecrets,
+                polyresearch::ResolvedBoltV3PolyResearchSecrets,
             },
             bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
         };
@@ -3752,6 +3757,12 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             Arc::new(ResolvedBoltV3ChainlinkReferenceSecrets {
                 api_key: zeroize::Zeroizing::new("fixture-chainlink-api-key".to_string()),
                 api_secret: zeroize::Zeroizing::new("fixture-chainlink-api-secret".to_string()),
+            }),
+        );
+        clients.insert(
+            "polyresearch_reference".to_string(),
+            Arc::new(ResolvedBoltV3PolyResearchSecrets {
+                api_key: zeroize::Zeroizing::new("fixture-polyresearch-api-key".to_string()),
             }),
         );
         let resolved = ResolvedBoltV3Secrets { clients };

@@ -417,6 +417,7 @@ mod tests {
         binance::{self, ResolvedBoltV3BinanceSecrets},
         chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
+        polyresearch::ResolvedBoltV3PolyResearchSecrets,
     };
     use crate::bolt_v3_secrets::{
         BoltV3SecretError, ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets,
@@ -595,6 +596,12 @@ mod tests {
         }
     }
 
+    fn fixture_polyresearch_secrets() -> ResolvedBoltV3PolyResearchSecrets {
+        ResolvedBoltV3PolyResearchSecrets {
+            api_key: zeroize::Zeroizing::new("fixture-polyresearch-api-key".to_string()),
+        }
+    }
+
     fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
         clients.insert(
@@ -612,6 +619,10 @@ mod tests {
         clients.insert(
             "chainlink_reference".to_string(),
             Arc::new(fixture_chainlink_reference_secrets()),
+        );
+        clients.insert(
+            "polyresearch_reference".to_string(),
+            Arc::new(fixture_polyresearch_secrets()),
         );
         ResolvedBoltV3Secrets { clients }
     }
@@ -923,6 +934,10 @@ mod tests {
             "chainlink_reference".to_string(),
             Arc::new(fixture_chainlink_reference_secrets()),
         );
+        clients.insert(
+            "polyresearch_reference".to_string(),
+            Arc::new(fixture_polyresearch_secrets()),
+        );
         let resolved = ResolvedBoltV3Secrets { clients };
 
         let error = map_bolt_v3_adapters(&loaded, &resolved)
@@ -998,6 +1013,10 @@ mod tests {
         clients.insert(
             "chainlink_reference".to_string(),
             Arc::new(fixture_chainlink_reference_secrets()),
+        );
+        clients.insert(
+            "polyresearch_reference".to_string(),
+            Arc::new(fixture_polyresearch_secrets()),
         );
         let resolved = ResolvedBoltV3Secrets { clients };
 

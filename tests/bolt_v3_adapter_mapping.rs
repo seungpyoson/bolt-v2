@@ -27,6 +27,7 @@ use bolt_v2::{
         chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
         hyperliquid::{HyperliquidProductSurface, ResolvedBoltV3HyperliquidSecrets},
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
+        polyresearch::ResolvedBoltV3PolyResearchSecrets,
     },
     bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
 };
@@ -91,6 +92,12 @@ fn fixture_chainlink_reference_secrets() -> ResolvedBoltV3ChainlinkReferenceSecr
     }
 }
 
+fn fixture_polyresearch_secrets() -> ResolvedBoltV3PolyResearchSecrets {
+    ResolvedBoltV3PolyResearchSecrets {
+        api_key: zeroize::Zeroizing::new("regression-polyresearch-api-key".to_string()),
+    }
+}
+
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
     clients.insert(
@@ -108,6 +115,10 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     clients.insert(
         "chainlink_reference".to_string(),
         Arc::new(fixture_chainlink_reference_secrets()),
+    );
+    clients.insert(
+        "polyresearch_reference".to_string(),
+        Arc::new(fixture_polyresearch_secrets()),
     );
     ResolvedBoltV3Secrets { clients }
 }

@@ -223,10 +223,10 @@ fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
 
     // The scoped trade runner records exactly the strategy-bound
     // execution/data client, signal data client, and reference-current-price
-    // client.
+    // clients.
     assert_eq!(
         summary.clients.len(),
-        3,
+        4,
         "scoped trade path registers only strategy-bound clients; got {:?}",
         summary.clients.keys().collect::<Vec<_>>()
     );
@@ -260,6 +260,18 @@ fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
         !chainlink.execution,
         "fixture chainlink_reference has no [execution] block"
     );
+    let polyresearch = summary
+        .clients
+        .get("polyresearch_reference")
+        .expect("polyresearch_reference (strategy reference_current_price source client) must appear in summary");
+    assert!(
+        polyresearch.data,
+        "fixture polyresearch_reference has a [data] block"
+    );
+    assert!(
+        !polyresearch.execution,
+        "fixture polyresearch_reference has no [execution] block"
+    );
     assert!(
         !summary.clients.contains_key("binance_reference"),
         "binance_reference is unbound (no strategy signal_data or reference_current_price binding) and must be excluded from the scoped summary; got {:?}",
@@ -283,6 +295,10 @@ fn live_node_build_path_registers_only_strategy_bound_signal_data_and_exec() {
     assert!(
         registered_data.contains(&ClientId::from("chainlink_reference")),
         "data engine should expose strategy reference_current_price source client chainlink_reference; got {registered_data:?}"
+    );
+    assert!(
+        registered_data.contains(&ClientId::from("polyresearch_reference")),
+        "data engine should expose strategy reference_current_price source client polyresearch_reference; got {registered_data:?}"
     );
     assert!(
         !registered_data.contains(&ClientId::from("binance_reference")),

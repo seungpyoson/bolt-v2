@@ -158,6 +158,7 @@ mod tests {
             binance::ResolvedBoltV3BinanceSecrets, chainlink::ResolvedBoltV3ChainlinkSecrets,
             chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
             polymarket::ResolvedBoltV3PolymarketSecrets,
+            polyresearch::ResolvedBoltV3PolyResearchSecrets,
         },
         bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
     };
@@ -226,6 +227,12 @@ mod tests {
         }
     }
 
+    fn fixture_polyresearch_secrets() -> ResolvedBoltV3PolyResearchSecrets {
+        ResolvedBoltV3PolyResearchSecrets {
+            api_key: zeroize::Zeroizing::new("fixture-polyresearch-api-key".to_string()),
+        }
+    }
+
     fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
         clients.insert(
@@ -243,6 +250,10 @@ mod tests {
         clients.insert(
             "chainlink_reference".to_string(),
             Arc::new(fixture_chainlink_reference_secrets()),
+        );
+        clients.insert(
+            "polyresearch_reference".to_string(),
+            Arc::new(fixture_polyresearch_secrets()),
         );
         ResolvedBoltV3Secrets { clients }
     }
@@ -272,8 +283,8 @@ mod tests {
             .expect("registration should succeed");
 
         // polymarket_main + binance_reference + okx_data + chainlink_strike
-        // + chainlink_reference.
-        assert_eq!(summary.clients.len(), 5);
+        // + chainlink_reference + polyresearch_reference.
+        assert_eq!(summary.clients.len(), 6);
         let chainlink = summary
             .clients
             .get("chainlink_strike")
@@ -297,6 +308,18 @@ mod tests {
         assert!(
             !chainlink_reference.execution,
             "chainlink_reference has no [execution] block in the fixture"
+        );
+        let polyresearch_reference = summary
+            .clients
+            .get("polyresearch_reference")
+            .expect("polyresearch_reference must appear in summary");
+        assert!(
+            polyresearch_reference.data,
+            "polyresearch_reference has a [data] block in the fixture"
+        );
+        assert!(
+            !polyresearch_reference.execution,
+            "polyresearch_reference has no [execution] block in the fixture"
         );
         let polymarket = summary
             .clients

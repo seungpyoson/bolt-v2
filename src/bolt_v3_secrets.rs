@@ -369,6 +369,7 @@ mod tests {
         binance::{self, ResolvedBoltV3BinanceSecrets},
         chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
+        polyresearch::ResolvedBoltV3PolyResearchSecrets,
     };
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
     use std::path::PathBuf;
@@ -440,6 +441,7 @@ transport_backend = "sockudo"
             "/bolt/binance_reference/api_secret" => synthetic_binance_secret(),
             "/bolt/testnet/chainlink/api-key" => "chainlink-api-key".to_string(),
             "/bolt/testnet/chainlink/api-secret" => "chainlink-api-secret".to_string(),
+            "/bolt/polyresearch/api-key" => "polyresearch-api-key".to_string(),
             _ => panic!("unexpected SSM path: {path}"),
         }
     }
@@ -542,8 +544,9 @@ transport_backend = "sockudo"
         .expect("fixture secrets should resolve");
 
         // polymarket_main + binance_reference + chainlink_strike (shipped live
-        // resolution-strike client) + chainlink_reference.
-        assert_eq!(resolved.clients.len(), 4);
+        // resolution-strike client) + chainlink_reference
+        // + polyresearch_reference.
+        assert_eq!(resolved.clients.len(), 5);
         assert!(
             calls.iter().all(|(region, _)| region == "eu-west-2"),
             "all SSM calls must use [aws].region from the fixture root.toml: {calls:#?}"
@@ -557,6 +560,7 @@ transport_backend = "sockudo"
             "/bolt/binance_reference/api_secret",
             "/bolt/testnet/chainlink/api-key",
             "/bolt/testnet/chainlink/api-secret",
+            "/bolt/polyresearch/api-key",
         ] {
             assert!(
                 calls.iter().any(|(_, called_path)| called_path == path),
@@ -588,6 +592,14 @@ transport_backend = "sockudo"
         assert_eq!(
             chainlink_reference.api_secret.as_str(),
             "chainlink-api-secret"
+        );
+
+        let polyresearch_reference = resolved
+            .get_as::<ResolvedBoltV3PolyResearchSecrets>("polyresearch_reference")
+            .expect("polyresearch_reference should resolve to PolyResearch secrets");
+        assert_eq!(
+            polyresearch_reference.api_key.as_str(),
+            "polyresearch-api-key"
         );
     }
 

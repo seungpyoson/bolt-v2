@@ -21,7 +21,7 @@ use crate::{
     bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_config::ReferencePriceSourceBlock,
     bolt_v3_live_node::{BoltV3LiveNodeRuntime, build_bolt_v3_strategy_free_live_node},
-    bolt_v3_providers::{chainlink_reference, polyresearch},
+    bolt_v3_providers::{ReferencePriceIdentifierKind, reference_price_provider_metadata},
     bolt_v3_reference_price::{
         REFERENCE_PRICE_ASSET_PARAM, REFERENCE_PRICE_INSTRUMENT_ID_PARAM,
         REFERENCE_PRICE_PROVIDER_PARAM, REFERENCE_PRICE_SOURCE_KEY_PARAM,
@@ -483,23 +483,25 @@ fn reference_current_price_health_subscription(
         REFERENCE_PRICE_PROVIDER_PARAM.to_string(),
         serde_json::json!(target.provider),
     );
-    match target.provider.as_str() {
-        chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY => {
+    let provider_metadata = reference_price_provider_metadata(target.provider.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "reference_current_price health source provider `{}` is unsupported",
+                target.provider
+            )
+        })?;
+    match provider_metadata.identifier_kind {
+        ReferencePriceIdentifierKind::InstrumentId => {
             params.insert(
                 REFERENCE_PRICE_INSTRUMENT_ID_PARAM.to_string(),
                 serde_json::json!(target.provider_instrument),
             );
         }
-        polyresearch::REFERENCE_PRICE_PROVIDER_KEY => {
+        ReferencePriceIdentifierKind::Symbol => {
             params.insert(
                 REFERENCE_PRICE_SYMBOL_PARAM.to_string(),
                 serde_json::json!(target.provider_instrument),
             );
-        }
-        provider => {
-            return Err(anyhow::anyhow!(
-                "reference_current_price health source provider `{provider}` is unsupported"
-            ));
         }
     }
     Ok(ReferenceCurrentPriceHealthSubscription {

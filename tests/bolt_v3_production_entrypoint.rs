@@ -95,6 +95,26 @@ fn reference_current_price_health_uses_strategy_free_transport_path() {
 }
 
 #[test]
+fn reference_current_price_health_uses_provider_metadata_for_subscription_shape() {
+    let source = include_str!("../src/bolt_v3_reference_price_health.rs");
+    let production_source = source
+        .split("#[cfg(test)]")
+        .next()
+        .expect("health production source should precede tests");
+
+    assert!(
+        production_source.contains("reference_price_provider_metadata"),
+        "reference-current-price health must derive provider subscription identifiers from provider metadata"
+    );
+    for forbidden in ["chainlink_reference::", "polyresearch::"] {
+        assert!(
+            !production_source.contains(forbidden),
+            "reference-current-price health production path must not branch on concrete provider module `{forbidden}`"
+        );
+    }
+}
+
+#[test]
 fn active_reference_current_price_surfaces_do_not_claim_retired_reference_data_or_probe_paths() {
     let active_surfaces = [
         (

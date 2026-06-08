@@ -95,6 +95,8 @@ pub const UNSUPPORTED_NT_CATALOG_QUERY_SURFACES: &[(&str, &str, &str)] = &[
 ];
 /// Artifact-local manifest version written beside each backtest result.
 pub const BACKTEST_RUN_MANIFEST_ARTIFACT_VERSION: &str = "backtest-run-manifest.v1";
+/// Submitted run-manifest TOML schema version.
+pub const BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION: &str = "backtesting-run-manifest.v1";
 
 const CATALOG_STORAGE_OPTIONS_SHADOWED: &str =
     "cannot be combined with catalog_fs_rust_storage_options";
@@ -474,7 +476,14 @@ pub struct ManifestArtifactStoreSsmParameters {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BacktestingRunManifest {
+    pub manifest_schema_version: String,
     pub run_id: String,
+    /// Target `bolt-v2` branch used to resolve this run's dependencies/config.
+    pub target_bolt_v2_branch: String,
+    /// Exact target `bolt-v2` ref or commit used for this run.
+    pub target_bolt_v2_ref: String,
+    /// Resolved NautilusTrader revision/version for this run.
+    pub resolved_nt_version: String,
     pub market_structure_fixture: MarketStructureFixture,
     /// TOML/registry venue/provider binding key.
     pub venue_binding_key: String,
@@ -489,8 +498,14 @@ pub struct BacktestingRunManifest {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub proof_pin_reason_detail: Option<String>,
     pub strategy: StrategySource,
+    /// SHA-256 of the effective typed strategy config.
+    pub strategy_config_hash: String,
     pub venue: ManifestVenueConfig,
     pub catalog_inputs: Vec<ManifestCatalogInput>,
+    /// SHA-256 of the NT catalog consumed by the run.
+    pub catalog_hash: String,
+    /// Execution model selected for this run, for example `nt_backtest_node`.
+    pub execution_model: String,
     /// Configured S3 artifact root (TOML/config-owned).
     pub artifact_root: String,
     /// Output prefix under `artifact_root/backtests/`.
@@ -1013,6 +1028,48 @@ impl BacktestingRunManifest {
             .expect("BacktestingRunManifest always builds one BacktestVenueConfig");
         let mut surfaces = vec![
             resolved_surface(
+                "manifest.schema_version",
+                NtSurfaceClassification::CustomOwned,
+                "BacktestingRunManifest.manifest_schema_version",
+                self.manifest_schema_version.clone(),
+            ),
+            resolved_surface(
+                "target.bolt_v2_branch",
+                NtSurfaceClassification::CustomOwned,
+                "BacktestingRunManifest.target_bolt_v2_branch",
+                self.target_bolt_v2_branch.clone(),
+            ),
+            resolved_surface(
+                "target.bolt_v2_ref",
+                NtSurfaceClassification::CustomOwned,
+                "BacktestingRunManifest.target_bolt_v2_ref",
+                self.target_bolt_v2_ref.clone(),
+            ),
+            resolved_surface(
+                "manifest.resolved_nt_version",
+                NtSurfaceClassification::CustomOwned,
+                "BacktestingRunManifest.resolved_nt_version",
+                self.resolved_nt_version.clone(),
+            ),
+            resolved_surface(
+                "strategy.config_hash",
+                NtSurfaceClassification::CustomOwned,
+                "BacktestingRunManifest.strategy_config_hash",
+                self.strategy_config_hash.clone(),
+            ),
+            resolved_surface(
+                "catalog.hash",
+                NtSurfaceClassification::CustomOwned,
+                "BacktestingRunManifest.catalog_hash",
+                self.catalog_hash.clone(),
+            ),
+            resolved_surface(
+                "execution.model",
+                NtSurfaceClassification::CustomOwned,
+                "BacktestingRunManifest.execution_model",
+                self.execution_model.clone(),
+            ),
+            resolved_surface(
                 "engine.config",
                 NtSurfaceClassification::Defaulted,
                 "BacktestRunConfig.engine",
@@ -1277,9 +1334,22 @@ impl BacktestingRunManifest {
     /// Returns the first blocking [`ManifestError`].
     pub fn validate(&self, accepted: &AcceptedDataset) -> Result<(), ManifestError> {
         for (name, value) in [
+            (
+                "manifest_schema_version",
+                self.manifest_schema_version.as_str(),
+            ),
             ("run_id", self.run_id.as_str()),
+            (
+                "target_bolt_v2_branch",
+                self.target_bolt_v2_branch.as_str(),
+            ),
+            ("target_bolt_v2_ref", self.target_bolt_v2_ref.as_str()),
+            ("resolved_nt_version", self.resolved_nt_version.as_str()),
             ("venue_binding_key", self.venue_binding_key.as_str()),
             ("source_proof_id", self.source_proof_id.as_str()),
+            ("strategy_config_hash", self.strategy_config_hash.as_str()),
+            ("catalog_hash", self.catalog_hash.as_str()),
+            ("execution_model", self.execution_model.as_str()),
             ("artifact_root", self.artifact_root.as_str()),
             ("output_prefix", self.output_prefix.as_str()),
             ("venue.nt_venue", self.venue.nt_venue.as_str()),
@@ -1300,6 +1370,14 @@ impl BacktestingRunManifest {
                 return Err(ManifestError::MissingField(name));
             }
         }
+        if self.manifest_schema_version != BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION {
+            return Err(ManifestError::UnsupportedEnum {
+                field: "manifest_schema_version",
+                value: self.manifest_schema_version.clone(),
+            });
+        }
+        validate_strategy_source_hash("strategy_config_hash", &self.strategy_config_hash)?;
+        validate_strategy_source_hash("catalog_hash", &self.catalog_hash)?;
         if self.catalog_inputs.is_empty() {
             return Err(ManifestError::MissingField("catalog_inputs"));
         }
@@ -2238,6 +2316,10 @@ mod tests {
     const TEST_SOURCE_PROOF_ID: &str = "source-proof-synthetic-native-trades";
     const TEST_SOURCE_BINDING: &str = "synthetic-native-trades";
     const TEST_NT_VENUE: &str = "TESTVENUE";
+    const TEST_SHA256_ZERO: &str =
+        "0000000000000000000000000000000000000000000000000000000000000000";
+    const TEST_SHA256_ONE: &str =
+        "1111111111111111111111111111111111111111111111111111111111111111";
 
     fn accepted_dataset() -> AcceptedDataset {
         synthetic_accepted_dataset_for_tests()
@@ -2245,7 +2327,11 @@ mod tests {
 
     fn valid_manifest() -> BacktestingRunManifest {
         BacktestingRunManifest {
+            manifest_schema_version: BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION.to_string(),
             run_id: TEST_RUN_ID.to_string(),
+            target_bolt_v2_branch: "main".to_string(),
+            target_bolt_v2_ref: "refs/heads/main".to_string(),
+            resolved_nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
             market_structure_fixture: MarketStructureFixture::PerpsSpot,
             venue_binding_key: TEST_SOURCE_BINDING.to_string(),
             run_purpose: RunPurpose::Normal,
@@ -2266,6 +2352,7 @@ mod tests {
                 promotion_package_uri: None,
                 promotion_package_hash: None,
             },
+            strategy_config_hash: TEST_SHA256_ZERO.to_string(),
             venue: ManifestVenueConfig {
                 nt_venue: TEST_NT_VENUE.to_string(),
                 oms_type: "NETTING".to_string(),
@@ -2316,6 +2403,8 @@ mod tests {
                 bar_types: None,
                 optimize_file_loading: None,
             }],
+            catalog_hash: TEST_SHA256_ONE.to_string(),
+            execution_model: "nt_backtest_node".to_string(),
             artifact_root: "s3://bolt-parquet/nt-research-analytics".to_string(),
             output_prefix: "s3://bolt-parquet/nt-research-analytics/backtests/testpair".to_string(),
             artifact_store: ManifestArtifactStore {
@@ -2701,6 +2790,33 @@ mod tests {
                     BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
             },
         );
+        assert_hash_changes("manifest_schema_version", |manifest| {
+            manifest.manifest_schema_version = "backtesting-run-manifest.v2".to_string();
+        });
+        assert_hash_changes("target_bolt_v2_branch", |manifest| {
+            manifest.target_bolt_v2_branch = "release/backtesting".to_string();
+        });
+        assert_hash_changes("target_bolt_v2_ref", |manifest| {
+            manifest.target_bolt_v2_ref =
+                "refs/heads/release/backtesting".to_string();
+        });
+        assert_hash_changes("resolved_nt_version", |manifest| {
+            manifest.resolved_nt_version =
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+        });
+        assert_hash_changes("strategy_config_hash", |manifest| {
+            manifest.strategy_config_hash =
+                "2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string();
+        });
+        assert_hash_changes("catalog_hash", |manifest| {
+            manifest.catalog_hash =
+                "3333333333333333333333333333333333333333333333333333333333333333"
+                    .to_string();
+        });
+        assert_hash_changes("execution_model", |manifest| {
+            manifest.execution_model = "alternate_nt_execution_model".to_string();
+        });
     }
 
     #[test]
@@ -2734,6 +2850,121 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn manifest_toml_schema_records_currentness_dimensions() {
+        let manifest = valid_manifest();
+        let text = toml::to_string(&manifest).expect("serialize manifest");
+
+        for field in [
+            "manifest_schema_version",
+            "target_bolt_v2_branch",
+            "target_bolt_v2_ref",
+            "resolved_nt_version",
+            "strategy_config_hash",
+            "catalog_hash",
+            "execution_model",
+        ] {
+            assert!(
+                text.contains(field),
+                "manifest TOML should include required currentness/reproducibility field {field}"
+            );
+        }
+
+        let parsed = parse_manifest_toml(&text).expect("parse manifest with currentness fields");
+        assert_eq!(parsed.manifest_schema_version, manifest.manifest_schema_version);
+        assert_eq!(parsed.target_bolt_v2_branch, manifest.target_bolt_v2_branch);
+        assert_eq!(parsed.target_bolt_v2_ref, manifest.target_bolt_v2_ref);
+        assert_eq!(parsed.resolved_nt_version, manifest.resolved_nt_version);
+        assert_eq!(parsed.strategy_config_hash, manifest.strategy_config_hash);
+        assert_eq!(parsed.catalog_hash, manifest.catalog_hash);
+        assert_eq!(parsed.execution_model, manifest.execution_model);
+    }
+
+    #[test]
+    fn rejects_invalid_currentness_schema_dimensions() {
+        let mut manifest = valid_manifest();
+        manifest.manifest_schema_version = "backtesting-run-manifest.v0".to_string();
+        assert!(matches!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "manifest_schema_version",
+                ..
+            }
+        ));
+
+        let mut manifest = valid_manifest();
+        manifest.strategy_config_hash = "not-sha256".to_string();
+        assert!(matches!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::InvalidStrategySourceHash {
+                field: "strategy_config_hash",
+                ..
+            }
+        ));
+
+        let mut manifest = valid_manifest();
+        manifest.catalog_hash = "not-sha256".to_string();
+        assert!(matches!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::InvalidStrategySourceHash {
+                field: "catalog_hash",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn resolved_surfaces_record_custom_currentness_schema_dimensions() {
+        let manifest = valid_manifest();
+        let surfaces = manifest.resolved_nt_surfaces().expect("resolved surfaces");
+
+        for (surface, nt_field, resolved_value) in [
+            (
+                "manifest.schema_version",
+                "BacktestingRunManifest.manifest_schema_version",
+                manifest.manifest_schema_version.as_str(),
+            ),
+            (
+                "target.bolt_v2_branch",
+                "BacktestingRunManifest.target_bolt_v2_branch",
+                manifest.target_bolt_v2_branch.as_str(),
+            ),
+            (
+                "target.bolt_v2_ref",
+                "BacktestingRunManifest.target_bolt_v2_ref",
+                manifest.target_bolt_v2_ref.as_str(),
+            ),
+            (
+                "manifest.resolved_nt_version",
+                "BacktestingRunManifest.resolved_nt_version",
+                manifest.resolved_nt_version.as_str(),
+            ),
+            (
+                "strategy.config_hash",
+                "BacktestingRunManifest.strategy_config_hash",
+                manifest.strategy_config_hash.as_str(),
+            ),
+            (
+                "catalog.hash",
+                "BacktestingRunManifest.catalog_hash",
+                manifest.catalog_hash.as_str(),
+            ),
+            (
+                "execution.model",
+                "BacktestingRunManifest.execution_model",
+                manifest.execution_model.as_str(),
+            ),
+        ] {
+            assert!(
+                surfaces.iter().any(|record| record.surface == surface
+                    && record.classification == NtSurfaceClassification::CustomOwned
+                    && record.nt_field == nt_field
+                    && record.resolved_value == resolved_value),
+                "missing custom-owned currentness schema surface {surface}"
+            );
+        }
     }
 
     #[test]

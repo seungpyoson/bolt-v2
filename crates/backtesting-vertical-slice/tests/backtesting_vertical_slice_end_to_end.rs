@@ -20,8 +20,9 @@ use backtesting_vertical_slice::{
     catalog_projection::SpotInstrumentSpec,
     result_contract::ResultArtifactUris,
     run_manifest::{
-        BacktestingRunManifest, ManifestCatalogInput, ManifestVenueConfig, MarketStructureFixture,
-        RunPurpose, STRATEGY_HURST_VPIN_DIRECTIONAL, StrategySource, StrategySourceKind,
+        BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION, BacktestingRunManifest, ManifestCatalogInput,
+        ManifestVenueConfig, MarketStructureFixture, RunPurpose, STRATEGY_HURST_VPIN_DIRECTIONAL,
+        StrategySource, StrategySourceKind,
     },
     runner::{BacktestRunInputs, run_backtest},
     source_proof::{
@@ -207,7 +208,11 @@ fn instrument_spec() -> SpotInstrumentSpec {
 
 fn manifest(catalog_path: &str) -> BacktestingRunManifest {
     BacktestingRunManifest {
+        manifest_schema_version: BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION.to_string(),
         run_id: "backtesting-vertical-slice-end-to-end".to_string(),
+        target_bolt_v2_branch: "main".to_string(),
+        target_bolt_v2_ref: "refs/heads/main".to_string(),
+        resolved_nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
         market_structure_fixture: MarketStructureFixture::PerpsSpot,
         venue_binding_key: "bybit-spot-tick-trades".to_string(),
         run_purpose: RunPurpose::Normal,
@@ -231,6 +236,8 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             promotion_package_uri: None,
             promotion_package_hash: None,
         },
+        strategy_config_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+            .to_string(),
         venue: ManifestVenueConfig {
             nt_venue: "BYBIT".to_string(),
             oms_type: "NETTING".to_string(),
@@ -281,6 +288,9 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             bar_types: None,
             optimize_file_loading: None,
         }],
+        catalog_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+            .to_string(),
+        execution_model: "nt_backtest_node".to_string(),
         artifact_root: "s3://bolt-parquet/nt-research-analytics".to_string(),
         output_prefix:
             "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-end-to-end"

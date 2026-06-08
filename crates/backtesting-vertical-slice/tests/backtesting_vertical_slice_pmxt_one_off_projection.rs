@@ -24,10 +24,10 @@ use backtesting_vertical_slice::{
     result_contract::BacktestResultContract,
     result_contract::ResultArtifactUris,
     run_manifest::{
-        BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE, ManifestArtifactStore,
-        ManifestCatalogInput, ManifestVenueConfig, MarketStructureFixture, RunPurpose,
-        STRATEGY_HURST_VPIN_DIRECTIONAL, STRATEGY_PARAM_BAR_TYPE, STRATEGY_PARAM_TRADE_SIZE,
-        StrategySource, StrategySourceKind,
+        BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION, BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE,
+        ManifestArtifactStore, ManifestCatalogInput, ManifestVenueConfig, MarketStructureFixture,
+        RunPurpose, STRATEGY_HURST_VPIN_DIRECTIONAL, STRATEGY_PARAM_BAR_TYPE,
+        STRATEGY_PARAM_TRADE_SIZE, StrategySource, StrategySourceKind,
     },
     selected_source_slice::{SelectedSourceSliceReport, SelectedSourceSliceUsageScope},
     source_proof::{AcceptanceMode, SourceProofFidelityClass, SourceProofUsageScope},
@@ -1262,7 +1262,11 @@ fn pmxt_l2_manifest(
     let (venue_name, settlement_currency) =
         binary_option_venue_and_currency(&projection.instrument);
     BacktestingRunManifest {
+        manifest_schema_version: BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION.to_string(),
         run_id: "pmxt-one-off-l2-contract-proof".to_string(),
+        target_bolt_v2_branch: "main".to_string(),
+        target_bolt_v2_ref: "refs/heads/main".to_string(),
+        resolved_nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
         market_structure_fixture: MarketStructureFixture::BinaryOption,
         venue_binding_key: "synthetic-pmxt-one-off-source".to_string(),
         run_purpose: RunPurpose::Audit,
@@ -1286,6 +1290,8 @@ fn pmxt_l2_manifest(
             promotion_package_uri: None,
             promotion_package_hash: None,
         },
+        strategy_config_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+            .to_string(),
         venue: ManifestVenueConfig {
             nt_venue: venue_name,
             oms_type: "NETTING".to_string(),
@@ -1336,6 +1342,9 @@ fn pmxt_l2_manifest(
             bar_types: None,
             optimize_file_loading: None,
         }],
+        catalog_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+            .to_string(),
+        execution_model: "nt_backtest_node".to_string(),
         artifact_root: format!("file://{}", output_dir.display()),
         output_prefix: format!("file://{}", output_dir.display()),
         artifact_store: ManifestArtifactStore {

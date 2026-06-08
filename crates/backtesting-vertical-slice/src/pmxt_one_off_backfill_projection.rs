@@ -387,12 +387,15 @@ pub fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec(
             spec.manifest_path.display()
         )
     })?;
-    ensure!(
-        manifest.catalog_input.catalog_path == spec.catalog_root.display().to_string(),
-        "PMXT one-off manifest catalog_path {:?} must match spec catalog_root {:?}",
-        manifest.catalog_input.catalog_path,
-        spec.catalog_root.display().to_string()
-    );
+    let expected_catalog_root = spec.catalog_root.display().to_string();
+    for catalog_input in &manifest.catalog_inputs {
+        ensure!(
+            catalog_input.catalog_path == expected_catalog_root,
+            "PMXT one-off manifest catalog_path {:?} must match spec catalog_root {:?}",
+            catalog_input.catalog_path,
+            expected_catalog_root
+        );
+    }
     let output_catalog_uri = format!("file://{}", spec.catalog_root.display());
     let execution_catalog_uri = spec.catalog_root.display().to_string();
     let manifest_hash = manifest.manifest_hash();
@@ -1262,6 +1265,68 @@ fn read_conversion_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
+fn ensure_pmxt_manifest_catalog_inputs_match_conversion(
+    manifest: &BacktestingRunManifest,
+    completed: &PmxtOneOffCompletedConversionProjection,
+) -> Result<()> {
+    let catalog_root = completed
+        .catalog_projection
+        .catalog_root
+        .to_str()
+        .context("PMXT one-off catalog root is not valid UTF-8")?;
+    let mut has_order_book_delta = false;
+    for input in &manifest.catalog_inputs {
+        ensure!(
+            input.catalog_path == catalog_root,
+            "PMXT one-off manifest catalog_path {:?} does not match verified catalog root {catalog_root:?}",
+            input.catalog_path
+        );
+        ensure!(
+            input.nt_instrument_id == completed.catalog_projection.nt_instrument_id,
+            "PMXT one-off manifest instrument does not match conversion output"
+        );
+        match input.data_type.as_str() {
+            NT_DATA_TYPE_ORDER_BOOK_DELTA => {
+                has_order_book_delta = true;
+            }
+            NT_DATA_TYPE_TRADE_TICK => {}
+            other => bail!("PMXT one-off manifest data_type {other:?} is not supported"),
+        }
+    }
+    ensure!(
+        has_order_book_delta,
+        "PMXT one-off manifest must include OrderBookDelta"
+    );
+    Ok(())
+}
+
+fn expected_pmxt_backtest_iterations(
+    manifest: &BacktestingRunManifest,
+    completed: &PmxtOneOffCompletedConversionProjection,
+) -> Result<usize> {
+    let mut expected = 0usize;
+    for input in &manifest.catalog_inputs {
+        match input.data_type.as_str() {
+            NT_DATA_TYPE_ORDER_BOOK_DELTA => {
+                expected = expected
+                    .checked_add(usize::try_from(
+                        completed.catalog_projection.order_book_delta_count,
+                    )?)
+                    .context("PMXT one-off expected iteration count overflow")?;
+            }
+            NT_DATA_TYPE_TRADE_TICK => {
+                expected = expected
+                    .checked_add(usize::try_from(
+                        completed.catalog_projection.trade_tick_count,
+                    )?)
+                    .context("PMXT one-off expected iteration count overflow")?;
+            }
+            other => bail!("PMXT one-off manifest data_type {other:?} is not supported"),
+        }
+    }
+    Ok(expected)
+}
+
 pub fn run_pmxt_one_off_l2_backtest_contract(
     spec: PmxtOneOffBacktestContractSpec<'_>,
 ) -> Result<PmxtOneOffBacktestContractOutput> {
@@ -1319,7 +1384,12 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
         !spec.selected_asset_ids_hash.trim().is_empty(),
         "PMXT one-off L2 result contract requires selected_asset_ids_hash"
     );
-    let manifest_catalog_root = spec.manifest.catalog_input.catalog_path.as_str();
+    let manifest_catalog_root = spec
+        .manifest
+        .primary_catalog_input()
+        .map_err(|error| anyhow::anyhow!("PMXT one-off manifest requires catalog input: {error}"))?
+        .catalog_path
+        .as_str();
     let catalog_root = completed
         .catalog_projection
         .catalog_root
@@ -1329,15 +1399,7 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
         manifest_catalog_root == catalog_root,
         "PMXT one-off manifest catalog_path {manifest_catalog_root:?} does not match verified catalog root {catalog_root:?}"
     );
-    ensure!(
-        spec.manifest.catalog_input.data_type == NT_DATA_TYPE_ORDER_BOOK_DELTA,
-        "PMXT one-off manifest catalog_input.data_type must be OrderBookDelta"
-    );
-    ensure!(
-        spec.manifest.catalog_input.nt_instrument_id
-            == completed.catalog_projection.nt_instrument_id,
-        "PMXT one-off manifest instrument does not match conversion output"
-    );
+    ensure_pmxt_manifest_catalog_inputs_match_conversion(spec.manifest, completed)?;
     ensure!(
         spec.manifest.market_structure_fixture == MarketStructureFixture::BinaryOption,
         "PMXT one-off result contract requires binary-option market structure"
@@ -1357,8 +1419,7 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
 
     let nt_result =
         run_nt_backtest_node(spec.manifest).context("run PMXT one-off L2 BacktestNode")?;
-    let expected_iterations = usize::try_from(completed.catalog_projection.order_book_delta_count)
-        .context("PMXT one-off OrderBookDelta count does not fit usize")?;
+    let expected_iterations = expected_pmxt_backtest_iterations(spec.manifest, completed)?;
     if let Some(reason) = iterations_mismatch(nt_result.iterations, expected_iterations) {
         bail!("PMXT one-off BacktestNode did not consume verified L2 catalog: {reason}");
     }

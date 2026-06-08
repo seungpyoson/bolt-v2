@@ -12,6 +12,7 @@ use backtesting_vertical_slice::{
         ConversionFingerprint, ConversionOutputState, inspect_conversion_output,
     },
     pmxt_one_off_backfill_projection::{
+        NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_TRADE_TICK,
         PMXT_ONE_OFF_RESULT_CONTRACT_FILE, PmxtBookLevel, PmxtOneOffArtifactRootRunSpec,
         PmxtOneOffBacktestContractSpec, PmxtOneOffConversionProjectionSpec, PmxtOneOffNtProjection,
         PmxtOneOffProjectionRequest, PmxtOneOffSelectedRow, PmxtOneOffSnapshotRow,
@@ -223,7 +224,7 @@ fn pmxt_one_off_projection_writes_nt_catalog_and_backtest_node_consumes_l2() {
             None,
             None,
             None,
-            true,
+            false,
         )
         .expect("read back PMXT L2 deltas");
     assert_eq!(loaded.len(), projection.order_book_deltas.len());
@@ -787,9 +788,64 @@ fn pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog() {
     assert_eq!(expected_projection.projection.order_book_deltas.len(), 4);
     assert_eq!(expected_projection.projection.trade_ticks.len(), 2);
 
-    let manifest = pmxt_l2_manifest(&expected_projection.projection, &catalog_root, &output_dir);
+    let mut manifest = pmxt_l2_manifest(&expected_projection.projection, &catalog_root, &output_dir);
+    let mut trade_input = manifest.catalog_inputs[0].clone();
+    trade_input.data_type = NT_DATA_TYPE_TRADE_TICK.to_string();
+    manifest.catalog_inputs.push(trade_input);
     let manifest_hash = manifest.manifest_hash();
     let selected_source_sha256 = sha256_file(&selected_parquet_path);
+    let catalog_probe_dir = tempfile::TempDir::new().expect("catalog probe dir");
+    write_pmxt_one_off_projection_to_catalog(catalog_probe_dir.path(), &expected_projection.projection)
+        .expect("write PMXT mixed catalog probe");
+    let mut catalog_probe = ParquetDataCatalog::from_uri(
+        catalog_probe_dir
+            .path()
+            .to_str()
+            .expect("catalog probe path is UTF-8"),
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("open PMXT mixed catalog probe");
+    let loaded_trades: Vec<TradeTick> = catalog_probe
+        .query_typed_data::<TradeTick>(
+            Some(vec![
+                binary_option_instrument_id(&expected_projection.projection.instrument).to_string(),
+            ]),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .expect("read back PMXT mixed TradeTicks");
+    assert_eq!(
+        loaded_trades.len(),
+        expected_projection.projection.trade_ticks.len()
+    );
+    let mut probe_manifest = manifest.clone();
+    for catalog_input in &mut probe_manifest.catalog_inputs {
+        catalog_input.catalog_path = catalog_probe_dir.path().display().to_string();
+    }
+    let run_config = probe_manifest.to_nt_run_config().expect("PMXT run config");
+    assert_eq!(run_config.data().len(), 2);
+    let loaded_data_counts = run_config
+        .data()
+        .iter()
+        .map(|data_config| {
+            BacktestNode::load_data_config(data_config, None, None)
+                .expect("load PMXT data config")
+                .len()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        loaded_data_counts,
+        vec![
+            expected_projection.projection.order_book_deltas.len(),
+            expected_projection.projection.trade_ticks.len()
+        ]
+    );
     let spec = PmxtOneOffArtifactRootRunSpec {
         selected_source: PmxtSelectedSourceProjectionSpec {
             source_binding: "synthetic-pmxt-one-off-source".to_string(),
@@ -835,20 +891,23 @@ fn pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog() {
     );
     assert_eq!(
         run.completed.conversion_manifest.catalog_nt_data_types,
-        vec!["OrderBookDelta".to_string(), "TradeTick".to_string()]
+        vec![
+            NT_DATA_TYPE_ORDER_BOOK_DELTA.to_string(),
+            NT_DATA_TYPE_TRADE_TICK.to_string()
+        ]
     );
     assert_eq!(
         run.completed
             .conversion_manifest
             .catalog_rows_by_nt_data_type
-            .get("OrderBookDelta"),
+            .get(NT_DATA_TYPE_ORDER_BOOK_DELTA),
         Some(&expected_projection.projection.order_book_deltas.len())
     );
     assert_eq!(
         run.completed
             .conversion_manifest
             .catalog_rows_by_nt_data_type
-            .get("TradeTick"),
+            .get(NT_DATA_TYPE_TRADE_TICK),
         Some(&expected_projection.projection.trade_ticks.len())
     );
     assert_eq!(
@@ -868,6 +927,7 @@ fn pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog() {
     assert_eq!(
         run.contract_output.nt_result.iterations,
         expected_projection.projection.order_book_deltas.len()
+            + expected_projection.projection.trade_ticks.len()
     );
     assert_eq!(
         run.contract_output.contract.conversion_manifest_hash,
@@ -1256,12 +1316,12 @@ fn pmxt_l2_manifest(
             fee_model: None,
             settlement_prices: None,
         },
-        catalog_input: ManifestCatalogInput {
+        catalog_inputs: vec![ManifestCatalogInput {
             catalog_path: catalog_root.display().to_string(),
             catalog_fs_protocol: CATALOG_FS_PROTOCOL_NONE.to_string(),
             catalog_fs_storage_options: BTreeMap::new(),
             catalog_fs_rust_storage_options: BTreeMap::new(),
-            data_type: "OrderBookDelta".to_string(),
+            data_type: NT_DATA_TYPE_ORDER_BOOK_DELTA.to_string(),
             nt_instrument_id: instrument_id.to_string(),
             instrument_ids: None,
             start_time: None,
@@ -1272,7 +1332,7 @@ fn pmxt_l2_manifest(
             bar_spec: None,
             bar_types: None,
             optimize_file_loading: None,
-        },
+        }],
         artifact_root: format!("file://{}", output_dir.display()),
         output_prefix: format!("file://{}", output_dir.display()),
         artifact_store: ManifestArtifactStore {

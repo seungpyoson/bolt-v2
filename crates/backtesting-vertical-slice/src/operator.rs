@@ -280,13 +280,15 @@ fn local_run_manifest_for_output(
         .context("catalog path is not valid UTF-8")?
         .to_string();
     let mut manifest = spec.manifest.clone();
-    manifest.catalog_input.catalog_path = catalog_path;
-    manifest.catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
-    manifest.catalog_input.catalog_fs_storage_options.clear();
-    manifest
-        .catalog_input
-        .catalog_fs_rust_storage_options
-        .clear();
+    {
+        let catalog_input = manifest
+            .single_catalog_input_mut()
+            .map_err(|error| anyhow::anyhow!("local catalog manifest requires one catalog input: {error}"))?;
+        catalog_input.catalog_path = catalog_path;
+        catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
+        catalog_input.catalog_fs_storage_options.clear();
+        catalog_input.catalog_fs_rust_storage_options.clear();
+    }
     Ok(manifest)
 }
 
@@ -450,8 +452,12 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         canonical_table.schema_version == conversion_manifest.normalized_schema_version,
         "completed canonical schema mismatch"
     );
+    let manifest_catalog_input = inputs
+        .manifest
+        .single_catalog_input()
+        .map_err(|error| anyhow::anyhow!("completed conversion check requires one catalog input: {error}"))?;
     ensure!(
-        conversion_manifest.nt_instrument_id == inputs.manifest.catalog_input.nt_instrument_id,
+        conversion_manifest.nt_instrument_id == manifest_catalog_input.nt_instrument_id,
         "completed conversion instrument does not match run manifest"
     );
     assert_time_window_overlaps_data(&inputs.manifest, &canonical_table)?;
@@ -1002,12 +1008,15 @@ fn prove_published_catalog_consumption(
         nt_result.iterations,
         expected_iterations
     );
+    let catalog_input = manifest
+        .single_catalog_input()
+        .map_err(|error| anyhow::anyhow!("published catalog proof requires one catalog input: {error}"))?;
     let direct_s3_catalog_access_proven =
-        manifest.catalog_input.catalog_fs_protocol == "s3" && catalog_uri.starts_with("s3://");
+        catalog_input.catalog_fs_protocol == "s3" && catalog_uri.starts_with("s3://");
     Ok(PublishedCatalogProof {
         proof_version: "published-catalog-proof.v1".to_string(),
         catalog_uri,
-        catalog_fs_protocol: manifest.catalog_input.catalog_fs_protocol,
+        catalog_fs_protocol: catalog_input.catalog_fs_protocol.clone(),
         direct_s3_catalog_access_proven,
         expected_iterations,
         nt_iterations: nt_result.iterations,
@@ -1023,25 +1032,27 @@ fn published_catalog_manifest(
 ) -> Result<(BacktestingRunManifest, String)> {
     let catalog_uri = portable_artifact_uri(&spec.manifest.output_prefix, CATALOG_DIR);
     let mut manifest = spec.manifest.clone();
-    manifest.catalog_input.catalog_fs_storage_options.clear();
-    manifest
-        .catalog_input
-        .catalog_fs_rust_storage_options
-        .clear();
     manifest.artifact_store.storage_options.clear();
     manifest.artifact_store.rust_storage_options.clear();
     manifest.artifact_store.ssm_parameters = None;
-    if let Some(local_path) = catalog_uri.strip_prefix("file://") {
-        manifest.catalog_input.catalog_path = local_path.to_string();
-        manifest.catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
-    } else if let Some((protocol, path)) = catalog_uri.split_once("://") {
-        manifest.catalog_input.catalog_path = path.to_string();
-        manifest.catalog_input.catalog_fs_protocol = protocol.to_string();
-        manifest.catalog_input.catalog_fs_rust_storage_options =
-            storage_options.cloned().unwrap_or_default();
-    } else {
-        manifest.catalog_input.catalog_path = catalog_uri.clone();
-        manifest.catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
+    {
+        let catalog_input = manifest
+            .single_catalog_input_mut()
+            .map_err(|error| anyhow::anyhow!("published catalog manifest requires one catalog input: {error}"))?;
+        catalog_input.catalog_fs_storage_options.clear();
+        catalog_input.catalog_fs_rust_storage_options.clear();
+        if let Some(local_path) = catalog_uri.strip_prefix("file://") {
+            catalog_input.catalog_path = local_path.to_string();
+            catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
+        } else if let Some((protocol, path)) = catalog_uri.split_once("://") {
+            catalog_input.catalog_path = path.to_string();
+            catalog_input.catalog_fs_protocol = protocol.to_string();
+            catalog_input.catalog_fs_rust_storage_options =
+                storage_options.cloned().unwrap_or_default();
+        } else {
+            catalog_input.catalog_path = catalog_uri.clone();
+            catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
+        }
     }
     Ok((manifest, catalog_uri))
 }
@@ -1783,14 +1794,16 @@ mod tests {
             catalog_uri,
             "s3://example-bucket/backtests/published-run/nt-catalog"
         );
-        assert_eq!(manifest.catalog_input.catalog_fs_protocol, "s3");
+        assert_eq!(manifest.catalog_inputs[0].catalog_fs_protocol, "s3");
         assert_eq!(
-            manifest.catalog_input.catalog_path,
+            manifest.catalog_inputs[0].catalog_path,
             "example-bucket/backtests/published-run/nt-catalog"
         );
-        assert!(manifest.catalog_input.catalog_fs_storage_options.is_empty());
+        assert!(manifest.catalog_inputs[0]
+            .catalog_fs_storage_options
+            .is_empty());
         assert_eq!(
-            manifest.catalog_input.catalog_fs_rust_storage_options,
+            manifest.catalog_inputs[0].catalog_fs_rust_storage_options,
             resolved_options
         );
         assert!(
@@ -1813,7 +1826,7 @@ mod tests {
             "source-proof-bybit-spot-tick-trades"
         );
         assert_eq!(
-            spec.manifest.catalog_input.nt_instrument_id,
+            spec.manifest.catalog_inputs[0].nt_instrument_id,
             "BNBUSDC.BYBIT"
         );
     }
@@ -1964,7 +1977,7 @@ mod tests {
         spec.manifest.venue_binding_key = "binance-spot-native-trades".to_string();
         spec.manifest.source_proof_id = "source-proof-binance-spot-native-trades".to_string();
         spec.manifest.venue.nt_venue = "BINANCE".to_string();
-        spec.manifest.catalog_input.nt_instrument_id = "BNBUSDC.BINANCE".to_string();
+        spec.manifest.catalog_inputs[0].nt_instrument_id = "BNBUSDC.BINANCE".to_string();
         spec.instrument_spec.nt_instrument_id = "BNBUSDC.BINANCE".to_string();
         spec.instrument_spec.price_increment = "0.00000001".to_string();
         spec.instrument_spec.size_increment = "0.000001".to_string();

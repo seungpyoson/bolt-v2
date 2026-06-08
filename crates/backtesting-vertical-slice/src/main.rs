@@ -397,9 +397,11 @@ mod tests {
             .and_then(toml::Value::as_table_mut)
             .expect("run-spec has manifest table");
         let catalog_input = manifest
-            .get_mut("catalog_input")
+            .get_mut("catalog_inputs")
+            .and_then(toml::Value::as_array_mut)
+            .and_then(|inputs| inputs.first_mut())
             .and_then(toml::Value::as_table_mut)
-            .expect("run-spec has manifest catalog_input table");
+            .expect("run-spec has at least one manifest catalog_inputs table");
         catalog_input.insert("data_type".to_string(), toml::Value::String(data_type));
         toml::to_string_pretty(&value).expect("mutated run-spec serializes")
     }
@@ -577,7 +579,7 @@ mod tests {
         let run_spec_path = dir.path().join("run.toml");
         let base_spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("run-spec parses");
         let unsupported_data_type =
-            format!("{}-unsupported", base_spec.manifest.catalog_input.data_type);
+            format!("{}-unsupported", base_spec.manifest.catalog_inputs[0].data_type);
         let run_spec_text = run_spec_text_with_catalog_data_type(unsupported_data_type);
         fs::write(&run_spec_path, &run_spec_text).unwrap();
         let spec: RunSpec = toml::from_str(&run_spec_text).expect("mutated run-spec parses");

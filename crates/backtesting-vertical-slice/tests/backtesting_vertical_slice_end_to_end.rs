@@ -264,7 +264,7 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             fee_model: None,
             settlement_prices: None,
         },
-        catalog_input: ManifestCatalogInput {
+        catalog_inputs: vec![ManifestCatalogInput {
             catalog_path: catalog_path.to_string(),
             catalog_fs_protocol: "NONE".to_string(),
             catalog_fs_storage_options: BTreeMap::new(),
@@ -280,7 +280,7 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             bar_spec: None,
             bar_types: None,
             optimize_file_loading: None,
-        },
+        }],
         artifact_root: "s3://bolt-parquet/nt-research-analytics".to_string(),
         output_prefix:
             "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-end-to-end"

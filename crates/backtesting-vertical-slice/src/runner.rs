@@ -155,15 +155,12 @@ fn add_manifest_strategy(
     let strategy = &manifest.strategy;
     match strategy.registry_key.as_str() {
         STRATEGY_HURST_VPIN_DIRECTIONAL => {
-            let instrument_id: InstrumentId = manifest
-                .catalog_input
-                .nt_instrument_id
-                .parse()
-                .with_context(|| {
-                    format!(
-                        "invalid instrument id {:?}",
-                        manifest.catalog_input.nt_instrument_id
-                    )
+            let catalog_input = manifest
+                .primary_catalog_input()
+                .map_err(|error| anyhow::anyhow!("strategy instrument requires catalog input: {error}"))?;
+            let instrument_id: InstrumentId =
+                catalog_input.nt_instrument_id.parse().with_context(|| {
+                    format!("invalid instrument id {:?}", catalog_input.nt_instrument_id)
                 })?;
             let bar_type = strategy
                 .parameters
@@ -236,10 +233,14 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         .catalog_root
         .to_str()
         .context("catalog root is not valid UTF-8")?;
+    let manifest_catalog_input = inputs
+        .manifest
+        .single_catalog_input()
+        .map_err(|error| anyhow::anyhow!("trade replay runner requires one catalog input: {error}"))?;
     ensure!(
-        inputs.manifest.catalog_input.catalog_path == catalog_root_str,
+        manifest_catalog_input.catalog_path == catalog_root_str,
         "manifest catalog_path {:?} does not match projection root {catalog_root_str:?}",
-        inputs.manifest.catalog_input.catalog_path
+        manifest_catalog_input.catalog_path
     );
 
     // Gate 2: canonical normalization + canonical artifact.
@@ -264,14 +265,14 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     )
     .context("catalog projection failed")?;
     // Bind the manifest's catalog instrument id to the projected/read-back id.
-    // The engine queries the catalog under `manifest.catalog_input.nt_instrument_id`
+    // The engine queries the catalog under the configured catalog input instrument id.
     // (gate 4 -> BacktestDataConfig); if that diverged from the id the read-back
     // proof verified, NautilusTrader would query a different (or empty) directory
     // and the run would silently execute over zero accepted trades.
     ensure!(
-        inputs.manifest.catalog_input.nt_instrument_id == projection.nt_instrument_id,
-        "manifest catalog_input.nt_instrument_id {:?} does not match projected instrument {:?}",
-        inputs.manifest.catalog_input.nt_instrument_id,
+        manifest_catalog_input.nt_instrument_id == projection.nt_instrument_id,
+        "manifest catalog_inputs.nt_instrument_id {:?} does not match projected instrument {:?}",
+        manifest_catalog_input.nt_instrument_id,
         projection.nt_instrument_id
     );
     let read_back = read_back_trade_ticks(inputs.catalog_root, &projection.nt_instrument_id)
@@ -431,16 +432,22 @@ pub(crate) fn market_structure_label(manifest: &BacktestingRunManifest) -> &'sta
 }
 
 fn execution_catalog_uri(manifest: &BacktestingRunManifest) -> String {
-    match manifest.catalog_input.catalog_fs_protocol.as_str() {
+    let catalog_input = manifest
+        .single_catalog_input()
+        .expect("execution_catalog_uri requires one catalog input");
+    match catalog_input.catalog_fs_protocol.as_str() {
         crate::run_manifest::CATALOG_FS_PROTOCOL_NONE => {
-            manifest.catalog_input.catalog_path.clone()
+            catalog_input.catalog_path.clone()
         }
-        protocol => format!("{protocol}://{}", manifest.catalog_input.catalog_path),
+        protocol => format!("{protocol}://{}", catalog_input.catalog_path),
     }
 }
 
 fn direct_s3_catalog_access_proven(manifest: &BacktestingRunManifest) -> bool {
-    manifest.catalog_input.catalog_fs_protocol == "s3"
+    let catalog_input = manifest
+        .single_catalog_input()
+        .expect("direct_s3_catalog_access_proven requires one catalog input");
+    catalog_input.catalog_fs_protocol == "s3"
         && execution_catalog_uri(manifest).starts_with("s3://")
 }
 

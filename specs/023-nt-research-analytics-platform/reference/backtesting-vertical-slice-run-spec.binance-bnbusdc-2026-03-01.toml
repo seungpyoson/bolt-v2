@@ -7,7 +7,7 @@
 # This file is config-driven input for `cargo run --bin backtesting_vertical_slice
 # -- --run-spec <this file> --object <local accepted object> --output-dir <dir>`.
 # The binary re-verifies the object SHA-256 against `accepted_object.sha256`
-# before any normalization, and overrides `manifest.catalog_input.catalog_path`
+# before any normalization, and overrides `manifest.catalog_inputs[0].catalog_path`
 # with the local projection root.
 
 capture_time_utc = "2026-06-07T00:00:00Z"   # ingest manifest completed_at
@@ -247,7 +247,7 @@ base_currency = "NONE"
 default_leverage = "1"
 price_protection_points = 0
 
-[manifest.catalog_input]
+[[manifest.catalog_inputs]]
 catalog_path = "overridden-by-binary-at-runtime"
 catalog_fs_protocol = "NONE"
 catalog_fs_storage_options = {}

@@ -54,42 +54,42 @@ pub const UNSUPPORTED_NT_VENUE_SURFACES: &[&str] = &[
 pub const UNSUPPORTED_NT_CATALOG_QUERY_SURFACES: &[(&str, &str, &str)] = &[
     (
         "catalog.start_time",
-        "catalog_input.start_time",
+        "catalog_inputs.start_time",
         "BacktestDataConfig.start_time",
     ),
     (
         "catalog.end_time",
-        "catalog_input.end_time",
+        "catalog_inputs.end_time",
         "BacktestDataConfig.end_time",
     ),
     (
         "catalog.filter_expr",
-        "catalog_input.filter_expr",
+        "catalog_inputs.filter_expr",
         "BacktestDataConfig.filter_expr",
     ),
     (
         "catalog.client_id",
-        "catalog_input.client_id",
+        "catalog_inputs.client_id",
         "BacktestDataConfig.client_id",
     ),
     (
         "catalog.metadata",
-        "catalog_input.metadata",
+        "catalog_inputs.metadata",
         "BacktestDataConfig.metadata",
     ),
     (
         "catalog.bar_spec",
-        "catalog_input.bar_spec",
+        "catalog_inputs.bar_spec",
         "BacktestDataConfig.bar_spec",
     ),
     (
         "catalog.bar_types",
-        "catalog_input.bar_types",
+        "catalog_inputs.bar_types",
         "BacktestDataConfig.bar_types",
     ),
     (
         "catalog.optimize_file_loading",
-        "catalog_input.optimize_file_loading",
+        "catalog_inputs.optimize_file_loading",
         "BacktestDataConfig.optimize_file_loading",
     ),
 ];
@@ -490,7 +490,7 @@ pub struct BacktestingRunManifest {
     pub proof_pin_reason_detail: Option<String>,
     pub strategy: StrategySource,
     pub venue: ManifestVenueConfig,
-    pub catalog_input: ManifestCatalogInput,
+    pub catalog_inputs: Vec<ManifestCatalogInput>,
     /// Configured S3 artifact root (TOML/config-owned).
     pub artifact_root: String,
     /// Output prefix under `artifact_root/backtests/`.
@@ -1011,10 +1011,6 @@ impl BacktestingRunManifest {
             .venues()
             .first()
             .expect("BacktestingRunManifest always builds one BacktestVenueConfig");
-        let data = run_config
-            .data()
-            .first()
-            .expect("BacktestingRunManifest always builds one BacktestDataConfig");
         let mut surfaces = vec![
             resolved_surface(
                 "engine.config",
@@ -1205,43 +1201,53 @@ impl BacktestingRunManifest {
                 "BacktestVenueConfig.price_protection_points",
                 venue.price_protection_points().to_string(),
             ),
-            resolved_surface(
-                "catalog.data_type",
-                NtSurfaceClassification::PassThrough,
-                "BacktestDataConfig.data_type",
-                format!("{:?}", data.data_type()),
-            ),
-            resolved_surface(
-                "catalog.catalog_path",
-                NtSurfaceClassification::PassThrough,
-                "BacktestDataConfig.catalog_path",
-                data.catalog_path(),
-            ),
-            resolved_surface(
-                "catalog.catalog_fs_protocol",
-                NtSurfaceClassification::PassThrough,
-                "BacktestDataConfig.catalog_fs_protocol",
-                option_value(data.catalog_fs_protocol()),
-            ),
-            resolved_surface(
-                "catalog.catalog_fs_storage_options",
-                NtSurfaceClassification::PassThrough,
-                "BacktestDataConfig.catalog_fs_storage_options",
-                storage_option_keys_value(data.catalog_fs_storage_options()),
-            ),
-            resolved_surface(
-                "catalog.catalog_fs_rust_storage_options",
-                NtSurfaceClassification::PassThrough,
-                "BacktestDataConfig.catalog_fs_rust_storage_options",
-                storage_option_keys_value(data.catalog_fs_rust_storage_options()),
-            ),
-            resolved_surface(
-                "catalog.instrument_id",
-                NtSurfaceClassification::PassThrough,
-                "BacktestDataConfig.instrument_id",
-                option_value(data.instrument_id()),
-            ),
         ];
+        let data_configs = run_config.data();
+        for (index, data) in data_configs.iter().enumerate() {
+            let prefix = if data_configs.len() == 1 {
+                "catalog".to_string()
+            } else {
+                format!("catalog_inputs[{index}]")
+            };
+            surfaces.extend([
+                resolved_surface(
+                    &format!("{prefix}.data_type"),
+                    NtSurfaceClassification::PassThrough,
+                    "BacktestDataConfig.data_type",
+                    format!("{:?}", data.data_type()),
+                ),
+                resolved_surface(
+                    &format!("{prefix}.catalog_path"),
+                    NtSurfaceClassification::PassThrough,
+                    "BacktestDataConfig.catalog_path",
+                    data.catalog_path(),
+                ),
+                resolved_surface(
+                    &format!("{prefix}.catalog_fs_protocol"),
+                    NtSurfaceClassification::PassThrough,
+                    "BacktestDataConfig.catalog_fs_protocol",
+                    option_value(data.catalog_fs_protocol()),
+                ),
+                resolved_surface(
+                    &format!("{prefix}.catalog_fs_storage_options"),
+                    NtSurfaceClassification::PassThrough,
+                    "BacktestDataConfig.catalog_fs_storage_options",
+                    storage_option_keys_value(data.catalog_fs_storage_options()),
+                ),
+                resolved_surface(
+                    &format!("{prefix}.catalog_fs_rust_storage_options"),
+                    NtSurfaceClassification::PassThrough,
+                    "BacktestDataConfig.catalog_fs_rust_storage_options",
+                    storage_option_keys_value(data.catalog_fs_rust_storage_options()),
+                ),
+                resolved_surface(
+                    &format!("{prefix}.instrument_id"),
+                    NtSurfaceClassification::PassThrough,
+                    "BacktestDataConfig.instrument_id",
+                    option_value(data.instrument_id()),
+                ),
+            ]);
+        }
         surfaces.extend(UNSUPPORTED_NT_VENUE_SURFACES.iter().map(|surface| {
             resolved_surface(
                 &format!("venue.{surface}"),
@@ -1289,34 +1295,43 @@ impl BacktestingRunManifest {
                 "venue.default_leverage",
                 self.venue.default_leverage.as_str(),
             ),
-            (
-                "catalog_input.catalog_path",
-                self.catalog_input.catalog_path.as_str(),
-            ),
-            (
-                "catalog_input.catalog_fs_protocol",
-                self.catalog_input.catalog_fs_protocol.as_str(),
-            ),
-            (
-                "catalog_input.nt_instrument_id",
-                self.catalog_input.nt_instrument_id.as_str(),
-            ),
         ] {
             if value.trim().is_empty() {
                 return Err(ManifestError::MissingField(name));
             }
         }
+        if self.catalog_inputs.is_empty() {
+            return Err(ManifestError::MissingField("catalog_inputs"));
+        }
+        for input in &self.catalog_inputs {
+            for (name, value) in [
+                ("catalog_inputs.catalog_path", input.catalog_path.as_str()),
+                (
+                    "catalog_inputs.catalog_fs_protocol",
+                    input.catalog_fs_protocol.as_str(),
+                ),
+                (
+                    "catalog_inputs.nt_instrument_id",
+                    input.nt_instrument_id.as_str(),
+                ),
+            ] {
+                if value.trim().is_empty() {
+                    return Err(ManifestError::MissingField(name));
+                }
+            }
+        }
         ensure_supported_enums(self)?;
         ensure_unsupported_nt_venue_surfaces_absent(&self.venue)?;
-        ensure_unsupported_nt_catalog_query_surfaces_absent(&self.catalog_input)?;
-        ensure_supported_data_type(&self.catalog_input.data_type)?;
-        let catalog_fs_protocol =
-            parse_catalog_fs_protocol(&self.catalog_input.catalog_fs_protocol)?;
-        validate_catalog_storage_options(
-            catalog_fs_protocol.as_deref(),
-            &self.catalog_input.catalog_fs_storage_options,
-            &self.catalog_input.catalog_fs_rust_storage_options,
-        )?;
+        for input in &self.catalog_inputs {
+            ensure_unsupported_nt_catalog_query_surfaces_absent(input)?;
+            ensure_supported_data_type(&input.data_type)?;
+            let catalog_fs_protocol = parse_catalog_fs_protocol(&input.catalog_fs_protocol)?;
+            validate_catalog_storage_options(
+                catalog_fs_protocol.as_deref(),
+                &input.catalog_fs_storage_options,
+                &input.catalog_fs_rust_storage_options,
+            )?;
+        }
         validate_catalog_storage_options(
             output_prefix_protocol(&self.output_prefix),
             &self.artifact_store.storage_options,
@@ -1329,7 +1344,7 @@ impl BacktestingRunManifest {
             &self.artifact_store.rust_storage_options,
         )?;
         validate_artifact_root_protocol(&self.artifact_root)?;
-        ensure_data_type_matches_fidelity(&self.catalog_input.data_type, accepted.fidelity_class)?;
+        ensure_catalog_inputs_match_fidelity(&self.catalog_inputs, accepted.fidelity_class)?;
         validate_strategy_source(&self.strategy, &self.artifact_root)?;
         validate_starting_balances(&self.venue.starting_balances)?;
 
@@ -1436,14 +1451,127 @@ impl BacktestingRunManifest {
             .build())
     }
 
-    /// Map the catalog input into a NautilusTrader [`BacktestDataConfig`].
+    /// Map all catalog inputs into NautilusTrader [`BacktestDataConfig`]s.
     ///
     /// # Errors
     ///
     /// Returns an error if the data type or instrument id is unsupported.
+    pub fn to_nt_data_configs(&self) -> Result<Vec<BacktestDataConfig>, ManifestError> {
+        if self.catalog_inputs.is_empty() {
+            return Err(ManifestError::MissingField("catalog_inputs"));
+        }
+        self.catalog_inputs
+            .iter()
+            .map(catalog_input_to_nt_data_config)
+            .collect()
+    }
+
+    /// Map a single-input manifest into NautilusTrader [`BacktestDataConfig`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this manifest contains zero or multiple catalog inputs.
     pub fn to_nt_data_config(&self) -> Result<BacktestDataConfig, ManifestError> {
-        ensure_unsupported_nt_catalog_query_surfaces_absent(&self.catalog_input)?;
-        let data_type = match self.catalog_input.data_type.as_str() {
+        let [input] = self.catalog_inputs.as_slice() else {
+            return Err(ManifestError::UnsupportedEnum {
+                field: "catalog_inputs",
+                value: format!("expected exactly one catalog input, got {}", self.catalog_inputs.len()),
+            });
+        };
+        catalog_input_to_nt_data_config(input)
+    }
+
+    /// Return the only catalog input for code paths that intentionally support a
+    /// single data family.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest contains zero or multiple inputs.
+    pub fn single_catalog_input(&self) -> Result<&ManifestCatalogInput, ManifestError> {
+        let [input] = self.catalog_inputs.as_slice() else {
+            return Err(ManifestError::UnsupportedEnum {
+                field: "catalog_inputs",
+                value: format!("expected exactly one catalog input, got {}", self.catalog_inputs.len()),
+            });
+        };
+        Ok(input)
+    }
+
+    /// Return the only catalog input mutably for code paths that intentionally
+    /// support a single data family.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest contains zero or multiple inputs.
+    pub fn single_catalog_input_mut(&mut self) -> Result<&mut ManifestCatalogInput, ManifestError> {
+        let len = self.catalog_inputs.len();
+        let [input] = self.catalog_inputs.as_mut_slice() else {
+            return Err(ManifestError::UnsupportedEnum {
+                field: "catalog_inputs",
+                value: format!("expected exactly one catalog input, got {len}"),
+            });
+        };
+        Ok(input)
+    }
+
+    /// Return the primary catalog input for strategy/instrument configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no catalog input is configured.
+    pub fn primary_catalog_input(&self) -> Result<&ManifestCatalogInput, ManifestError> {
+        self.catalog_inputs
+            .first()
+            .ok_or(ManifestError::MissingField("catalog_inputs"))
+    }
+
+    /// Return the primary catalog input mutably.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no catalog input is configured.
+    pub fn primary_catalog_input_mut(&mut self) -> Result<&mut ManifestCatalogInput, ManifestError> {
+        self.catalog_inputs
+            .first_mut()
+            .ok_or(ManifestError::MissingField("catalog_inputs"))
+    }
+
+    /// Map the manifest into a NautilusTrader [`BacktestRunConfig`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if venue or data mapping fails.
+    pub fn to_nt_run_config(&self) -> Result<BacktestRunConfig, ManifestError> {
+        let venue = self.to_nt_venue_config()?;
+        let data = self.to_nt_data_configs()?;
+        let to_nanos = |field: &'static str, value: i64| -> Result<UnixNanos, ManifestError> {
+            u64::try_from(value)
+                .map(UnixNanos::from)
+                .map_err(|_| ManifestError::NegativeTime { field, value })
+        };
+        let start = self
+            .start_time
+            .map(|value| to_nanos("start_time", value))
+            .transpose()?;
+        let end = self
+            .end_time
+            .map(|value| to_nanos("end_time", value))
+            .transpose()?;
+        Ok(BacktestRunConfig::builder()
+            .id(self.run_id.clone())
+            .venues(vec![venue])
+            .data(data)
+            .maybe_start(start)
+            .maybe_end(end)
+            .build())
+    }
+}
+
+fn catalog_input_to_nt_data_config(
+    input: &ManifestCatalogInput,
+) -> Result<BacktestDataConfig, ManifestError> {
+    ensure_unsupported_nt_catalog_query_surfaces_absent(input)?;
+    let data_type = match input.data_type.as_str() {
             "TradeTick" => NautilusDataType::TradeTick,
             "OrderBookDelta" => NautilusDataType::OrderBookDelta,
             other => {
@@ -1452,8 +1580,7 @@ impl BacktestingRunManifest {
                 });
             }
         };
-        let instrument_ids = self
-            .catalog_input
+    let instrument_ids = input
             .instrument_ids
             .as_ref()
             .map(|ids| {
@@ -1467,53 +1594,48 @@ impl BacktestingRunManifest {
                     .collect::<Result<Vec<_>, _>>()
             })
             .transpose()?;
-        let instrument_id = if instrument_ids.is_some() {
+    let instrument_id = if instrument_ids.is_some() {
             None
         } else {
             Some(
-                self.catalog_input
+                input
                     .nt_instrument_id
                     .parse::<InstrumentId>()
                     .map_err(|_| ManifestError::InvalidInstrumentId {
-                        instrument_id: self.catalog_input.nt_instrument_id.clone(),
+                        instrument_id: input.nt_instrument_id.clone(),
                     })?,
             )
         };
-        let catalog_fs_protocol =
-            parse_catalog_fs_protocol(&self.catalog_input.catalog_fs_protocol)?;
-        validate_catalog_storage_options(
-            catalog_fs_protocol.as_deref(),
-            &self.catalog_input.catalog_fs_storage_options,
-            &self.catalog_input.catalog_fs_rust_storage_options,
-        )?;
-        Ok(BacktestDataConfig::builder()
+    let catalog_fs_protocol = parse_catalog_fs_protocol(&input.catalog_fs_protocol)?;
+    validate_catalog_storage_options(
+        catalog_fs_protocol.as_deref(),
+        &input.catalog_fs_storage_options,
+        &input.catalog_fs_rust_storage_options,
+    )?;
+    Ok(BacktestDataConfig::builder()
             .data_type(data_type)
-            .catalog_path(self.catalog_input.catalog_path.clone())
+        .catalog_path(input.catalog_path.clone())
             .maybe_catalog_fs_protocol(catalog_fs_protocol)
-            .maybe_catalog_fs_storage_options(
-                if self.catalog_input.catalog_fs_storage_options.is_empty() {
+        .maybe_catalog_fs_storage_options(
+                if input.catalog_fs_storage_options.is_empty() {
                     None
                 } else {
                     Some(
-                        self.catalog_input
-                            .catalog_fs_storage_options
+                        input
+                        .catalog_fs_storage_options
                             .clone()
                             .into_iter()
                             .collect(),
                     )
                 },
             )
-            .maybe_catalog_fs_rust_storage_options(
-                if self
-                    .catalog_input
-                    .catalog_fs_rust_storage_options
-                    .is_empty()
-                {
+        .maybe_catalog_fs_rust_storage_options(
+                if input.catalog_fs_rust_storage_options.is_empty() {
                     None
                 } else {
                     Some(
-                        self.catalog_input
-                            .catalog_fs_rust_storage_options
+                        input
+                        .catalog_fs_rust_storage_options
                             .clone()
                             .into_iter()
                             .collect(),
@@ -1523,8 +1645,9 @@ impl BacktestingRunManifest {
             .maybe_instrument_id(instrument_id)
             .maybe_instrument_ids(instrument_ids)
             .build())
-    }
+}
 
+impl BacktestingRunManifest {
     /// Return the single effective artifact-store option map for publication.
     ///
     /// # Errors
@@ -1570,35 +1693,6 @@ impl BacktestingRunManifest {
         artifact_store_base_storage_options_for_uri(&self.output_prefix, &self.artifact_store)
     }
 
-    /// Map the manifest into a NautilusTrader [`BacktestRunConfig`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if venue or data mapping fails.
-    pub fn to_nt_run_config(&self) -> Result<BacktestRunConfig, ManifestError> {
-        let venue = self.to_nt_venue_config()?;
-        let data = self.to_nt_data_config()?;
-        let to_nanos = |field: &'static str, value: i64| -> Result<UnixNanos, ManifestError> {
-            u64::try_from(value)
-                .map(UnixNanos::from)
-                .map_err(|_| ManifestError::NegativeTime { field, value })
-        };
-        let start = self
-            .start_time
-            .map(|value| to_nanos("start_time", value))
-            .transpose()?;
-        let end = self
-            .end_time
-            .map(|value| to_nanos("end_time", value))
-            .transpose()?;
-        Ok(BacktestRunConfig::builder()
-            .id(self.run_id.clone())
-            .venues(vec![venue])
-            .data(vec![data])
-            .maybe_start(start)
-            .maybe_end(end)
-            .build())
-    }
 }
 
 fn artifact_store_base_storage_options_for_uri(
@@ -1771,7 +1865,7 @@ fn parse_catalog_fs_protocol(value: &str) -> Result<Option<String>, ManifestErro
         CATALOG_FS_PROTOCOL_NONE => Ok(None),
         "s3" | "gs" | "gcs" | "az" | "abfs" | "http" | "https" => Ok(Some(value.to_string())),
         other => Err(ManifestError::UnsupportedEnum {
-            field: "catalog_input.catalog_fs_protocol",
+            field: "catalog_inputs.catalog_fs_protocol",
             value: other.to_string(),
         }),
     }
@@ -1804,27 +1898,27 @@ fn validate_catalog_storage_options(
 ) -> Result<(), ManifestError> {
     if !storage_options.is_empty() && !rust_storage_options.is_empty() {
         return Err(ManifestError::UnsupportedEnum {
-            field: "catalog_input.catalog_fs_storage_options",
+            field: "catalog_inputs.catalog_fs_storage_options",
             value: CATALOG_STORAGE_OPTIONS_SHADOWED.to_string(),
         });
     }
     if protocol.is_none() && (!storage_options.is_empty() || !rust_storage_options.is_empty()) {
         return Err(ManifestError::UnsupportedEnum {
-            field: "catalog_input.catalog_fs_protocol",
+            field: "catalog_inputs.catalog_fs_protocol",
             value: format!("{CATALOG_FS_PROTOCOL_NONE} cannot carry storage options"),
         });
     }
     if protocol == Some("s3") {
         for (key, value) in storage_options {
             ensure_supported_s3_storage_option(
-                "catalog_input.catalog_fs_storage_options",
+                "catalog_inputs.catalog_fs_storage_options",
                 key,
                 value,
             )?;
         }
         for (key, value) in rust_storage_options {
             ensure_supported_s3_storage_option(
-                "catalog_input.catalog_fs_rust_storage_options",
+                "catalog_inputs.catalog_fs_rust_storage_options",
                 key,
                 value,
             )?;
@@ -1996,6 +2090,56 @@ fn ensure_data_type_matches_fidelity(
     }
 }
 
+fn ensure_catalog_inputs_match_fidelity(
+    inputs: &[ManifestCatalogInput],
+    fidelity_class: SourceProofFidelityClass,
+) -> Result<(), ManifestError> {
+    match fidelity_class {
+        SourceProofFidelityClass::TradeReplay => {
+            for input in inputs {
+                ensure_data_type_matches_fidelity(&input.data_type, fidelity_class)?;
+            }
+            Ok(())
+        }
+        SourceProofFidelityClass::L2Replay => {
+            if !inputs
+                .iter()
+                .any(|input| input.data_type == "OrderBookDelta")
+            {
+                return Err(ManifestError::DataTypeFidelityMismatch {
+                    data_type: inputs
+                        .first()
+                        .map(|input| input.data_type.clone())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    fidelity_class,
+                });
+            }
+            for input in inputs {
+                match input.data_type.as_str() {
+                    "OrderBookDelta" | "TradeTick" => {}
+                    other => {
+                        return Err(ManifestError::DataTypeFidelityMismatch {
+                            data_type: other.to_string(),
+                            fidelity_class,
+                        });
+                    }
+                }
+            }
+            Ok(())
+        }
+        other => {
+            let data_type = inputs
+                .first()
+                .map(|input| input.data_type.clone())
+                .unwrap_or_else(|| "<none>".to_string());
+            Err(ManifestError::DataTypeFidelityMismatch {
+                data_type,
+                fidelity_class: other,
+            })
+        }
+    }
+}
+
 fn parse_oms_type(value: &str) -> Result<OmsType, ManifestError> {
     match value {
         "NETTING" => Ok(OmsType::Netting),
@@ -2150,7 +2294,7 @@ mod tests {
                 fee_model: None,
                 settlement_prices: None,
             },
-            catalog_input: ManifestCatalogInput {
+            catalog_inputs: vec![ManifestCatalogInput {
                 catalog_path: "/tmp/catalog".to_string(),
                 catalog_fs_protocol: CATALOG_FS_PROTOCOL_NONE.to_string(),
                 catalog_fs_storage_options: BTreeMap::new(),
@@ -2166,7 +2310,7 @@ mod tests {
                 bar_spec: None,
                 bar_types: None,
                 optimize_file_loading: None,
-            },
+            }],
             artifact_root: "s3://bolt-parquet/nt-research-analytics".to_string(),
             output_prefix: "s3://bolt-parquet/nt-research-analytics/backtests/testpair".to_string(),
             artifact_store: ManifestArtifactStore {
@@ -2256,7 +2400,7 @@ mod tests {
             "bar_type".to_string(),
             "ALTUSD.ALTVENUE-1-MINUTE-LAST-INTERNAL".to_string(),
         );
-        manifest.catalog_input.nt_instrument_id = "ALTUSD.ALTVENUE".to_string();
+        manifest.catalog_inputs[0].nt_instrument_id = "ALTUSD.ALTVENUE".to_string();
         manifest.output_prefix =
             "s3://bolt-parquet/nt-research-analytics/backtests/altvenue".to_string();
 
@@ -2276,16 +2420,16 @@ mod tests {
     #[test]
     fn data_config_maps_catalog_cloud_options() {
         let mut manifest = valid_manifest();
-        manifest.catalog_input.catalog_path =
+        manifest.catalog_inputs[0].catalog_path =
             "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
-        manifest.catalog_input.catalog_fs_protocol = "s3".to_string();
-        manifest.catalog_input.catalog_fs_rust_storage_options = BTreeMap::from([
+        manifest.catalog_inputs[0].catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_inputs[0].catalog_fs_rust_storage_options = BTreeMap::from([
             ("region".to_string(), "us-east-1".to_string()),
             ("allow_http".to_string(), "false".to_string()),
         ]);
 
         let data = manifest.to_nt_data_config().expect("data config");
-        assert_eq!(data.catalog_path(), manifest.catalog_input.catalog_path);
+        assert_eq!(data.catalog_path(), manifest.catalog_inputs[0].catalog_path);
         assert_eq!(data.catalog_fs_protocol(), Some("s3"));
         assert!(data.catalog_fs_storage_options().is_none());
         assert_eq!(
@@ -2305,10 +2449,10 @@ mod tests {
     #[test]
     fn data_config_preserves_configured_object_store_conditional_put() {
         let mut manifest = valid_manifest();
-        manifest.catalog_input.catalog_path =
+        manifest.catalog_inputs[0].catalog_path =
             "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
-        manifest.catalog_input.catalog_fs_protocol = "s3".to_string();
-        manifest.catalog_input.catalog_fs_rust_storage_options = BTreeMap::from([
+        manifest.catalog_inputs[0].catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_inputs[0].catalog_fs_rust_storage_options = BTreeMap::from([
             ("region".to_string(), "us-east-1".to_string()),
             ("conditional_put".to_string(), "etag".to_string()),
         ]);
@@ -2540,15 +2684,15 @@ mod tests {
         assert_hash_changes("venue.price_protection_points", |manifest| {
             manifest.venue.price_protection_points = 7;
         });
-        assert_hash_changes("catalog_input.catalog_fs_protocol", |manifest| {
-            manifest.catalog_input.catalog_path =
+        assert_hash_changes("catalog_inputs.catalog_fs_protocol", |manifest| {
+            manifest.catalog_inputs[0].catalog_path =
                 "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
-            manifest.catalog_input.catalog_fs_protocol = "s3".to_string();
+            manifest.catalog_inputs[0].catalog_fs_protocol = "s3".to_string();
         });
         assert_hash_changes(
-            "catalog_input.catalog_fs_rust_storage_options",
+            "catalog_inputs.catalog_fs_rust_storage_options",
             |manifest| {
-                manifest.catalog_input.catalog_fs_rust_storage_options =
+                manifest.catalog_inputs[0].catalog_fs_rust_storage_options =
                     BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
             },
         );
@@ -3185,7 +3329,7 @@ mod tests {
     #[test]
     fn rejects_unsupported_data_type() {
         let mut manifest = valid_manifest();
-        manifest.catalog_input.data_type = "QuoteTick".to_string();
+        manifest.catalog_inputs[0].data_type = "QuoteTick".to_string();
         assert_eq!(
             manifest.validate(&accepted_dataset()).unwrap_err(),
             ManifestError::UnsupportedDataType {
@@ -3197,7 +3341,7 @@ mod tests {
     #[test]
     fn l2_replay_accepts_order_book_delta_data_config() {
         let mut manifest = valid_manifest();
-        manifest.catalog_input.data_type = "OrderBookDelta".to_string();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
         manifest.venue.book_type = "L2_MBP".to_string();
         let mut accepted = accepted_dataset();
         accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
@@ -3213,8 +3357,8 @@ mod tests {
     #[test]
     fn data_config_maps_configured_multi_instrument_ids() {
         let mut manifest = valid_manifest();
-        manifest.catalog_input.data_type = "OrderBookDelta".to_string();
-        manifest.catalog_input.instrument_ids = Some(vec![
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.catalog_inputs[0].instrument_ids = Some(vec![
             "YES.TESTVENUE".to_string(),
             "NO.TESTVENUE".to_string(),
         ]);
@@ -3235,13 +3379,36 @@ mod tests {
     }
 
     #[test]
+    fn l2_replay_manifest_maps_configured_catalog_inputs_into_multiple_nt_data_configs() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let mut trade_input = manifest.catalog_inputs[0].clone();
+        trade_input.data_type = "TradeTick".to_string();
+        manifest.catalog_inputs.push(trade_input);
+        let text = toml::to_string(&manifest).expect("serialize plural manifest");
+        let parsed = parse_manifest_toml(&text).expect("parse plural catalog inputs");
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
+
+        parsed
+            .validate(&accepted)
+            .expect("L2Replay source proof should allow mixed OrderBookDelta and TradeTick inputs");
+        let run = parsed.to_nt_run_config().expect("run config");
+
+        assert_eq!(run.data().len(), 2);
+        assert_eq!(run.data()[0].data_type(), NautilusDataType::OrderBookDelta);
+        assert_eq!(run.data()[1].data_type(), NautilusDataType::TradeTick);
+    }
+
+    #[test]
     fn rejects_unsupported_catalog_fs_protocol() {
         let mut manifest = valid_manifest();
-        manifest.catalog_input.catalog_fs_protocol = "ftp".to_string();
+        manifest.catalog_inputs[0].catalog_fs_protocol = "ftp".to_string();
         assert_eq!(
             manifest.validate(&accepted_dataset()).unwrap_err(),
             ManifestError::UnsupportedEnum {
-                field: "catalog_input.catalog_fs_protocol",
+                field: "catalog_inputs.catalog_fs_protocol",
                 value: "ftp".to_string(),
             }
         );
@@ -3250,16 +3417,16 @@ mod tests {
     #[test]
     fn rejects_shadowed_catalog_storage_options_before_nt_config() {
         let mut manifest = valid_manifest();
-        manifest.catalog_input.catalog_path =
+        manifest.catalog_inputs[0].catalog_path =
             "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
-        manifest.catalog_input.catalog_fs_protocol = "s3".to_string();
-        manifest.catalog_input.catalog_fs_storage_options =
+        manifest.catalog_inputs[0].catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_inputs[0].catalog_fs_storage_options =
             BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
-        manifest.catalog_input.catalog_fs_rust_storage_options =
+        manifest.catalog_inputs[0].catalog_fs_rust_storage_options =
             BTreeMap::from([("allow_http".to_string(), "false".to_string())]);
 
         let expected = ManifestError::UnsupportedEnum {
-            field: "catalog_input.catalog_fs_storage_options",
+            field: "catalog_inputs.catalog_fs_storage_options",
             value: "cannot be combined with catalog_fs_rust_storage_options".to_string(),
         };
         assert_eq!(
@@ -3272,16 +3439,16 @@ mod tests {
     #[test]
     fn rejects_unknown_s3_catalog_rust_storage_option_before_nt_config() {
         let mut manifest = valid_manifest();
-        manifest.catalog_input.catalog_path =
+        manifest.catalog_inputs[0].catalog_path =
             "bolt-parquet/nt-research-analytics/backtests/run/nt-catalog".to_string();
-        manifest.catalog_input.catalog_fs_protocol = "s3".to_string();
-        manifest.catalog_input.catalog_fs_rust_storage_options = BTreeMap::from([(
+        manifest.catalog_inputs[0].catalog_fs_protocol = "s3".to_string();
+        manifest.catalog_inputs[0].catalog_fs_rust_storage_options = BTreeMap::from([(
             "aws_virtual_hosted_style_request".to_string(),
             "false".to_string(),
         )]);
 
         let expected = ManifestError::UnsupportedEnum {
-            field: "catalog_input.catalog_fs_rust_storage_options",
+            field: "catalog_inputs.catalog_fs_rust_storage_options",
             value: "aws_virtual_hosted_style_request".to_string(),
         };
         assert_eq!(
@@ -3303,7 +3470,7 @@ mod tests {
     #[test]
     fn rejects_invalid_instrument_id_with_specific_error() {
         let mut manifest = valid_manifest();
-        manifest.catalog_input.nt_instrument_id = "not-an-instrument-id".to_string();
+        manifest.catalog_inputs[0].nt_instrument_id = "not-an-instrument-id".to_string();
         assert!(matches!(
             manifest.to_nt_data_config(),
             Err(ManifestError::InvalidInstrumentId { instrument_id })
@@ -3450,15 +3617,15 @@ mod tests {
             ("optimize_file_loading", "true"),
         ] {
             let text = serialized.replace(
-                "[catalog_input]\n",
-                &format!("[catalog_input]\n{field} = {value}\n"),
+                "[[catalog_inputs]]\n",
+                &format!("[[catalog_inputs]]\n{field} = {value}\n"),
             );
             let manifest = parse_manifest_toml(&text)
                 .expect("unsupported NT catalog query surface should be represented in schema");
             let err = manifest
                 .to_nt_data_config()
                 .expect_err("unsupported NT catalog query surface must not reach NT config");
-            let expected = format!("catalog_input.{field}");
+            let expected = format!("catalog_inputs.{field}");
             assert!(
                 matches!(err, ManifestError::UnsupportedNtSurface { field: actual } if actual == expected),
                 "unsupported catalog query surface {field:?} should fail with a structured error, got {err}"

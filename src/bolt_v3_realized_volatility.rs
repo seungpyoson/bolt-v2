@@ -952,13 +952,13 @@ fn compute_rv(
         return blocked_computation(RealizedVolBlockReason::NotWarm);
     };
     let (continuous_variance, jump_variance) = match config.estimator.jump.policy {
-        RealizedVolJumpPolicy::None => (noise_robust_variance, ZERO_F64),
+        RealizedVolJumpPolicy::None => (measured, ZERO_F64),
         RealizedVolJumpPolicy::Separate => {
             let Some(bipower_variance) = bipower_variation(config, grid) else {
                 return blocked_computation(RealizedVolBlockReason::NotWarm);
             };
-            let continuous = noise_robust_variance.min(bipower_variance);
-            let jump = (noise_robust_variance - continuous).max(ZERO_F64);
+            let continuous = measured.min(bipower_variance);
+            let jump = (measured - continuous).max(ZERO_F64);
             (continuous, jump)
         }
     };
@@ -1060,16 +1060,22 @@ fn noise_robust_variance(
             if *subsamples == ZERO_COUNT_USIZE || *min_ready_subsamples == ZERO_COUNT_USIZE {
                 return None;
             }
+            let (Some((first_grid_ts, _)), Some((last_grid_ts, _))) = (grid.first(), grid.last())
+            else {
+                return None;
+            };
+            let window_start_ms = first_grid_ts.saturating_sub(config.sampling_interval_ms);
             let mut variances = Vec::new();
             for offset in ZERO_COUNT_USIZE..*subsamples {
-                let lane = samples
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, sample)| {
-                        (index % *subsamples == offset)
-                            .then_some((sample.event_ts_ms, sample.price))
-                    })
-                    .collect::<Vec<_>>();
+                let offset_ms = ((config.sampling_interval_ms as u128 * offset as u128)
+                    / *subsamples as u128) as u64;
+                let lane = grid_prices_with_interval(
+                    config.sampling_interval_ms,
+                    config.max_source_age_ms,
+                    samples,
+                    window_start_ms.saturating_add(offset_ms),
+                    *last_grid_ts,
+                );
                 if lane.len() < POWER_OF_TWO as usize {
                     continue;
                 }

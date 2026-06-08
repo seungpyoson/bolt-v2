@@ -71,6 +71,13 @@ fn ready_rv_for_prices(prices: &[f64]) -> f64 {
         .expect("price path should publish ready RV")
 }
 
+fn assert_close(actual: f64, expected: f64, tolerance: f64) {
+    assert!(
+        (actual - expected).abs() <= tolerance,
+        "expected {expected}, got {actual}"
+    );
+}
+
 #[test]
 fn source_id_quorum_snapshot_records_audit_fields() {
     let mut engine = RealizedVolEngine::from_config(config(&[SOURCE_A, SOURCE_B])).unwrap();
@@ -201,6 +208,88 @@ fn subsampled_rv_reduces_alternating_midpoint_bounce_vs_base_grid() {
                 .unwrap(),
         "subsampled RV should reduce deterministic bid/ask bounce"
     );
+}
+
+#[test]
+fn subsampled_rv_uses_deterministic_offset_grids_not_raw_tick_thinning() {
+    let mut robust_cfg = config(&[SOURCE_A]);
+    robust_cfg.max_source_age_ms = 1_000;
+    robust_cfg.estimator.noise = RealizedVolNoiseConfig {
+        method: RealizedVolNoiseMethod::Subsampled {
+            subsamples: 2,
+            min_ready_subsamples: 2,
+        },
+    };
+    let mut robust = RealizedVolEngine::from_config(robust_cfg).unwrap();
+    for (ts_ms, price) in [
+        (1_000, 100.0),
+        (2_000, 101.0),
+        (3_000, 100.0),
+        (4_000, 101.0),
+    ] {
+        assert!(robust.observe(observation(SOURCE_A, price, ts_ms)));
+    }
+
+    let snapshot = robust.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    let annualization = 31_536_000.0;
+    let base_sum = (101.0_f64 / 100.0).ln().powi(2)
+        + (100.0_f64 / 101.0).ln().powi(2)
+        + (101.0_f64 / 100.0).ln().powi(2);
+    let offset_sum = (101.0_f64 / 100.0).ln().powi(2) + (100.0_f64 / 101.0).ln().powi(2);
+    let base_variance = (base_sum / 3.0) * annualization;
+    let offset_variance = (offset_sum / 2.0) * annualization;
+    let expected_noise_robust_rv = ((base_variance + offset_variance) / 2.0).sqrt();
+    let actual = snapshot
+        .noise_robust_annualized_realized_vol_decimal
+        .expect("subsampled RV should be published");
+
+    assert_close(actual, expected_noise_robust_rv, 1e-9);
+    assert!(
+        actual > 0.0,
+        "offset-grid subsampling should not collapse this path to zero"
+    );
+}
+
+#[test]
+fn jump_separation_preserves_measured_variance_identity_when_noise_robust_prices() {
+    let mut cfg = config(&[SOURCE_A]);
+    cfg.estimator.noise = RealizedVolNoiseConfig {
+        method: RealizedVolNoiseMethod::Subsampled {
+            subsamples: 2,
+            min_ready_subsamples: 2,
+        },
+    };
+    cfg.estimator.jump = RealizedVolJumpConfig {
+        policy: RealizedVolJumpPolicy::Separate,
+    };
+    cfg.estimator.pricing_component = RealizedVolPricingComponent::NoiseRobust;
+    let mut engine = RealizedVolEngine::from_config(cfg).unwrap();
+    observe_path(&mut engine, SOURCE_A, &[100.0, 100.2, 140.0, 140.2]);
+
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    let measured = snapshot
+        .measured_annualized_realized_vol_decimal
+        .expect("measured RV should be present");
+    let continuous = snapshot
+        .continuous_annualized_realized_vol_decimal
+        .expect("continuous RV should be present");
+    let jump = snapshot
+        .jump_annualized_realized_vol_decimal
+        .expect("jump RV should be present");
+    let noise_robust = snapshot
+        .noise_robust_annualized_realized_vol_decimal
+        .expect("noise robust RV should be present");
+    let priced = snapshot
+        .annualized_realized_vol_decimal
+        .expect("final priced RV should be present");
+
+    assert_close(measured.powi(2), continuous.powi(2) + jump.powi(2), 1e-9);
+    assert_close(priced, noise_robust, 1e-12);
+    assert!(jump > 0.0, "large return should remain visible as jump");
 }
 
 #[test]

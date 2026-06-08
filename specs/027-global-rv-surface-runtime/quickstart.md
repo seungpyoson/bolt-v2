@@ -45,18 +45,17 @@ Useful verification:
 
 ```sh
 rg 'realized_volatility_surfaces' config/root.toml
-rg 'source_id|client_id|instrument_id' config/root.toml
+rg 'source_id|data_client_id|instrument_id' config/root.toml
 ```
 
 ### Mathematical Robustness
 
 Expected implementation result:
 
-- Multi-horizon estimates are emitted per source and per surface.
 - Noise-robust mode can reduce bid/ask-bounce volatility without hiding base fixed-grid RV.
 - Jump separation emits continuous and jump components instead of deleting jumps.
-- Cross-source aggregation supports median/trimmed/upper-quantile style policies and dispersion/MAD blockers.
-- Optional forecast mode is explicit and audited.
+- Cross-source aggregation supports median/trimmed/upper-quantile style policies and dispersion blockers.
+- Multi-horizon and forecast modes are future scope.
 
 ### Evidence
 

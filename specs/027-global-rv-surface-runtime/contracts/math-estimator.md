@@ -31,7 +31,11 @@ Coverage ratio:
 
 Flat valid prices produce zero RV and zero volatility.
 
-## Multi-Horizon Blend
+## Future Multi-Horizon Blend
+
+Multi-horizon blending is not part of PR #615. The current implementation computes one configured fixed-grid window per source and leaves `horizon_estimates` empty. Reserved horizon types must not be interpreted as delivered multi-horizon behavior.
+
+When implemented in a future PR, the contract is:
 
 Each source emits one estimate per configured horizon.
 
@@ -69,7 +73,7 @@ Use base fixed-grid RV.
 
 Compute the same base estimator using `coarse_sampling_interval_ms`. Emit both base and coarser estimates.
 
-Final horizon value depends on `coarser_grid_horizon_policy`:
+Final value depends on `coarser_grid_policy`:
 
 - `base`: use base fixed-grid estimate.
 - `coarse`: use coarser estimate.
@@ -86,7 +90,7 @@ For `k = subsamples`:
 5. The subsampled estimate is the arithmetic mean of ready offset-grid RVs.
 6. Reject unless `ready_offset_grid_count >= min_ready_subsamples`.
 
-Evidence must include base fixed-grid RV, number of ready subsamples, number of attempted subsamples, the actual offset timestamps used, per-offset coverage ratios, and subsampled RV.
+Evidence must include base fixed-grid RV and subsampled RV in PR #615. Per-offset counts, offset timestamps, and coverage ratios are future evidence extensions if needed by operators.
 
 ## Jump Separation
 
@@ -126,9 +130,9 @@ Sort contributors, remove configured symmetric `trim_fraction`, then average rem
 
 ### median_with_upper_quantile_guard
 
-Compute median and the selected upper-quantile value. Final value is `max(median, upper_quantile_value * guard_weight)` where `guard_weight` is TOML-owned and non-negative.
+Compute median and the selected upper-quantile value. Final value is `median * (1 - guard_weight) + upper_quantile_value * guard_weight` where `guard_weight` is TOML-owned and in `[0, 1]`.
 
-## Dispersion and MAD Blocking
+## Dispersion Blocking
 
 Relative dispersion:
 
@@ -137,19 +141,15 @@ Relative dispersion:
 - If aggregate is zero and all contributors are zero, dispersion is zero and does not block.
 - Block if `dispersion > max_cross_source_dispersion`.
 
-MAD dispersion:
-
-- `median_abs_dev = median(|source_i - median(source_i over eligible contributors)|)`.
-- `mad_ratio = median_abs_dev / median` when median is positive.
-- If median is zero and any deviation is positive, MAD ratio is infinite.
-- If median is zero and all deviations are zero, MAD ratio is zero and does not block.
-- Block if `mad_ratio > mad_block_threshold`.
-
-The first implementation intentionally uses raw MAD, not normal-calibrated `1.4826 * MAD`. TOML thresholds are calibrated against raw MAD ratio.
-
 Dispersion blockers are surface-level blockers. Source-level readiness blockers stay in source diagnostics.
 
-## Forecast Modes
+MAD-specific blocking is future scope. PR #615 robust aggregation uses median, trimmed mean, median/upper-quantile blending, and the existing cross-source relative dispersion blocker.
+
+## Future Forecast Modes
+
+Forecast modes are not part of PR #615. `pricing_component = forecast` is rejected by validation, and forecast snapshot/evidence fields remain empty placeholders.
+
+When implemented in a future PR, the contract is:
 
 Forecast modes are deterministic and evidence-first. Forecast state is owned per `surface_id` after cross-source aggregation and after the configured component selection that feeds the forecast.
 
@@ -187,10 +187,9 @@ Rules:
 
 The final `ReadyRealizedVol` value is selected by TOML `pricing_component` from the enum defined in `toml-schema.md`, with math semantics for:
 
-- measured multi-horizon blend
-- noise-robust multi-horizon blend
+- measured fixed-grid RV
+- noise-robust fixed-grid RV
 - continuous component
-- jump-adjusted component
-- forecast component
+- future forecast component
 
 Evidence must record the selected component and all intermediate components needed to reproduce it.

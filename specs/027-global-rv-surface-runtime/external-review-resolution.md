@@ -1,5 +1,7 @@
 # External Review Resolution Log
 
+> Historical note: this log records design-review fixes from the original broad plan. PR #615 later narrowed the implemented math slice to Option A microstructure-noise robustness with jump diagnostics and robust aggregation. Multi-horizon and forecast references below are retained as future-scope planning history, not current PR #615 acceptance criteria.
+
 ## Review Round 1
 
 Reviewed bundle commit: `882321f7c708e83eb77f09cf16c2da76afb67ff6`

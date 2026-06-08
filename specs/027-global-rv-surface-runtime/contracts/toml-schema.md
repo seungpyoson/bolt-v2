@@ -4,36 +4,46 @@
 
 All RV runtime values live under root TOML. Strategy TOMLs may only select a surface by ID.
 
-Strategies must not contain RV policy knobs such as windows, sampling intervals, aggregation policy, dispersion thresholds, forecast weights, noise filters, jump thresholds, or source routes.
+Strategies must not contain RV policy knobs such as windows, sampling intervals, aggregation policy, dispersion thresholds, noise filters, jump thresholds, or source routes. Future forecast weights and horizon policies must also remain outside strategies when implemented.
 
 ## Surface Table
 
 ```toml
 [realized_volatility_surfaces.<surface_id>]
 canonical_base_asset = "<BASE_ASSET>"
-refresh_interval_ms = 1000
+canonical_quote_asset = "<QUOTE_ASSET>"
+
+[realized_volatility_surfaces.<surface_id>.policy]
+window_ms = 600000
+sampling_interval_ms = 1000
 seconds_per_annum = 31536000.0
 min_ready_sources = 2
+max_source_age_ms = 30000
+max_event_receive_lag_ms = 1000
+max_inter_sample_gap_ms = 60000
+min_coverage_ratio = 0.80
 max_cross_source_dispersion = 0.35
-single_source_explanation = "<REQUIRED_WHEN_SINGLE_SOURCE>"
+aggregation = "median_with_upper_quantile_guard"
+upper_quantile = 0.75
+guard_weight = 1.0
 ```
 
 Rules:
 
 - `<surface_id>` is opaque, non-empty, trimmed, case-sensitive, and globally unique after trimming; two IDs that differ only by leading/trailing whitespace are duplicates.
 - `canonical_base_asset` must match the referenced strategy target's underlying asset.
+- `canonical_quote_asset` must be a trimmed non-empty asset symbol and must match source quote assets where applicable.
 - `seconds_per_annum` must be positive finite.
-- `refresh_interval_ms` must be positive.
 - `min_ready_sources` must be positive and no greater than enabled quorum-counting sources.
 - `max_cross_source_dispersion` must be non-negative finite.
-- Shipped production surfaces with fewer than two enabled quorum-counting sources must set `single_source_explanation` to a trimmed, non-empty operator-facing reason no longer than 512 characters. This is documentation/evidence metadata, not a runtime policy escape hatch.
+- Shipped production surfaces must configure every available supported source in root TOML; Rust code must not hardcode venue/asset exceptions.
 
 ## Sources
 
 ```toml
 [[realized_volatility_surfaces.<surface_id>.sources]]
 source_id = "<SOURCE_ID>"
-client_id = "<PUBLIC_DATA_CLIENT_ID>"
+data_client_id = "<PUBLIC_DATA_CLIENT_ID>"
 instrument_id = "<INSTRUMENT_ID>"
 source_class = "spot_quote"
 sample_kind = "midpoint"
@@ -54,9 +64,9 @@ Allowed source-class/sample-kind pairs for the initial production slice:
 Rules:
 
 - `source_id` is unique within a surface.
-- `client_id` must reference a configured public market-data client.
-- `instrument_id` must be valid for the referenced client.
-- `instrument_id` must resolve to the same canonical base asset as the parent surface for that client/source class.
+- `data_client_id` must reference a configured public market-data client.
+- `instrument_id` must be valid for the referenced data client.
+- `instrument_id` and `canonical_quote_asset` must resolve to the same canonical base/quote assets as the parent surface for that client/source class.
 - Disabled sources remain in diagnostics but do not subscribe and never count toward quorum.
 - Enabled `counts_toward_quorum = false` sources may subscribe and produce diagnostics but never contribute to readiness, aggregation, or surface blockers.
 
@@ -64,38 +74,19 @@ Rules:
 
 ```toml
 [realized_volatility_surfaces.<surface_id>.estimator]
-method = "multi_horizon"
-final_policy = "weighted_blend"
 pricing_component = "noise_robust"
 noise_robust_method = "subsampled"
+subsamples = 2
+min_ready_subsamples = 2
 jump_policy = "separate"
-forecast_method = "none"
-primary_horizon_name = "short"
-floor_horizon_name = "long"
-short_horizon_name = "short"
-medium_horizon_name = "medium"
-long_horizon_name = "long"
-floor_multiplier = 1.0
 ```
-
-Allowed `method` values:
-
-- `single_horizon_fixed_grid`
-- `multi_horizon`
-
-Allowed `final_policy` values:
-
-- `weighted_blend`
-- `max_floor`
-- `short_with_long_floor`
 
 Allowed `pricing_component` values:
 
 - `measured`
 - `noise_robust`
 - `continuous`
-- `jump_adjusted`
-- `forecast`
+- `forecast` is reserved but rejected by PR #615 validation.
 
 Allowed `noise_robust_method` values for first implementation:
 
@@ -108,21 +99,13 @@ Allowed `jump_policy` values:
 - `none`
 - `separate`
 
-Allowed `forecast_method` values:
-
-- `none`
-- `ewma`
-- `har_lite`
-
 Rules:
 
-- Horizon role names must reference configured horizon names when the selected final or forecast policy needs them.
-- `floor_multiplier` must be non-negative finite when `final_policy = "short_with_long_floor"`.
-- `pricing_component = "forecast"` requires `forecast_method != "none"`.
 - `pricing_component = "noise_robust"` requires `noise_robust_method != "none"`.
-- `forecast_method = "har_lite"` requires short, medium, and long role bindings.
+- `pricing_component = "continuous"` requires `jump_policy = "separate"`.
+- `pricing_component = "forecast"` is rejected in this implementation slice.
 
-## Horizons
+## Future Horizons
 
 ```toml
 [[realized_volatility_surfaces.<surface_id>.estimator.horizons]]
@@ -153,6 +136,8 @@ max_inter_sample_gap_ms = 60000
 required = false
 ```
 
+Horizon blocks are future scope and are not accepted by the PR #615 TOML parser. When implemented, rules will include:
+
 Rules:
 
 - Horizon names are unique within a surface.
@@ -162,7 +147,7 @@ Rules:
 - Required horizon weights must sum to a positive finite value.
 - `min_coverage_ratio` is in `(0, 1]`.
 - `max_inter_sample_gap_ms >= sampling_interval_ms`.
-- Missing optional horizons must not block surface readiness unless selected by final or forecast policy.
+- Missing optional horizons must not block surface readiness unless selected by final or future forecast policy.
 
 ## Noise Robustness
 
@@ -171,42 +156,39 @@ Rules:
 subsamples = 3
 min_ready_subsamples = 2
 coarse_sampling_interval_ms = 5000
-coarser_grid_horizon_policy = "coarse"
-allow_subsample_offset_collisions = false
+coarser_grid_policy = "coarse_only"
 ```
 
-Allowed `coarser_grid_horizon_policy` values:
+PR #615 uses a flat estimator block rather than this nested table; the keys above are shown as their logical group only. Allowed `coarser_grid_policy` values:
 
-- `base`
-- `coarse`
+- `coarse_only`
 - `min_base_coarse`
 
 Rules:
 
 - `subsamples` is positive when `noise_robust_method = "subsampled"`.
 - `min_ready_subsamples` is positive and no greater than `subsamples` when `noise_robust_method = "subsampled"`.
-- `subsamples` must be no greater than the smallest selected horizon `sampling_interval_ms` when `allow_subsample_offset_collisions = false` so integer millisecond offsets remain unique.
-- If `allow_subsample_offset_collisions = true`, evidence must report attempted and distinct offset counts.
 - `coarse_sampling_interval_ms` is positive when `noise_robust_method = "coarser_grid"`.
-- `coarser_grid_horizon_policy` is required when `noise_robust_method = "coarser_grid"`.
+- `coarser_grid_policy` is required when `noise_robust_method = "coarser_grid"`.
 - Noise-robust mode must emit both base fixed-grid RV and noise-robust RV in diagnostics.
 
 ## Jump Separation
 
 ```toml
 [realized_volatility_surfaces.<surface_id>.estimator.jump]
-method = "bipower_variation"
-threshold_multiplier = 4.0
+jump_policy = "separate"
 ```
+
+PR #615 uses a flat estimator block rather than this nested table; the key above is shown as its logical group only.
 
 Rules:
 
 - Jump separation must not silently delete jumps from evidence.
 - Snapshot output includes continuous component and jump component.
-- Pricing policy decides whether to use measured, continuous, jump-adjusted, or forecast RV.
+- Pricing policy decides whether to use measured, noise-robust, or continuous RV in PR #615. Forecast RV is future scope.
 - Fewer than two returns makes jump separation diagnostic-only; it cannot publish a usable jump component.
 
-## Forecast
+## Future Forecast
 
 ```toml
 [realized_volatility_surfaces.<surface_id>.estimator.forecast]
@@ -216,6 +198,8 @@ har_short_weight = 0.50
 har_medium_weight = 0.30
 har_long_weight = 0.20
 ```
+
+Forecast blocks are future scope and are not accepted by the PR #615 TOML parser. `pricing_component = "forecast"` is rejected by validation. When implemented, rules will include:
 
 Rules:
 
@@ -232,11 +216,10 @@ Rules:
 ## Cross-Source Aggregation
 
 ```toml
-[realized_volatility_surfaces.<surface_id>.aggregation]
-method = "median_with_upper_quantile_guard"
+[realized_volatility_surfaces.<surface_id>.policy]
+aggregation = "median_with_upper_quantile_guard"
 upper_quantile = 0.75
 guard_weight = 1.0
-mad_block_threshold = 0.50
 trim_fraction = 0.0
 ```
 
@@ -250,11 +233,10 @@ Allowed methods:
 Rules:
 
 - `upper_quantile` is in `[0.5, 1.0]`.
-- `guard_weight` is non-negative finite when `method = "median_with_upper_quantile_guard"`.
-- `mad_block_threshold` is non-negative finite.
-- `trim_fraction` is in `[0, 0.5)` when `method = "trimmed_mean"`.
+- `guard_weight` is in `[0, 1]` when `aggregation = "median_with_upper_quantile_guard"`.
+- `trim_fraction` is in `[0, 0.5)` when `aggregation = "trimmed_mean"`.
 - Aggregation uses eligible ready contributors only.
-- Dispersion/MAD blockers are surface-level blockers.
+- Cross-source dispersion blockers are surface-level blockers. MAD-specific blockers are future scope.
 
 ## Strategy Selector
 
@@ -271,4 +253,4 @@ Rules:
 
 ## Production Multi-Venue Rule
 
-For shipped production surfaces, configure every available public venue/source that has a valid client and instrument mapping for the canonical asset. Availability means the root config contains an enabled public market-data client and a valid instrument mapping for that canonical asset/source class. If only one source is available, `single_source_explanation` must be trimmed, non-empty, no longer than 512 characters, and emitted in evidence; Rust code must not hardcode the limitation.
+For shipped production surfaces, configure every available public venue/source that has a valid client and instrument mapping for the canonical asset. Availability means the root config contains an enabled public market-data client and a valid instrument mapping for that canonical asset/source class. Rust code must not hardcode venue or asset limitations.

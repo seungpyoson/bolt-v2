@@ -79,9 +79,9 @@ Rules:
 - Created by runtime routing from NT market-data events.
 - Strategy code must not construct production RV observations.
 
-## HorizonRvEstimate
+## Future HorizonRvEstimate
 
-Per-source, per-horizon RV estimate.
+Per-source, per-horizon RV estimate. This is future scope; PR #615 computes one configured fixed-grid window per source and publishes an empty `horizon_estimates` placeholder.
 
 Fields:
 - `horizon_id`
@@ -100,17 +100,17 @@ Rules:
 
 ## SourceRobustRvEstimate
 
-Per-source final estimate after horizon blending, noise handling, and jump diagnostics.
+Per-source final estimate after measured fixed-grid RV, noise handling, and jump diagnostics.
 
 Fields:
 - `source_id`
-- `horizon_estimates`
+- `horizon_estimates` future placeholder
 - `continuous_rv_decimal`
 - `jump_component_decimal`
 - `measured_rv_decimal`
-- `forecast_rv_decimal` optional
+- `noise_robust_rv_decimal`
+- `forecast_rv_decimal` future placeholder
 - `final_source_rv_decimal`
-- `regime_diagnostics`
 - `estimator_diagnostics`
 
 Rules:
@@ -139,8 +139,8 @@ Rules:
 Public payload consumed by pricing, maker, evidence, and future consumers.
 
 Existing fields remain and are extended with:
-- per-horizon estimates
-- measured/continuous/jump/forecast/final RV fields where configured
+- future per-horizon estimate placeholder
+- measured/noise-robust/continuous/jump/final RV fields where configured, plus a future forecast placeholder
 - runtime provenance and config fingerprint
 - robust aggregation diagnostics
 

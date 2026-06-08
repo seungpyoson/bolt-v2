@@ -31,5 +31,5 @@
 
 ## Notes
 
-- The spec intentionally does not narrow scope: it includes global runtime ownership outside taker, multiple venue/source enablement, multi-horizon RV, microstructure-noise robustness, jump separation, robust cross-source aggregation, and optional forecast-oriented RV.
+- The spec now names the PR #615 accepted slice: global runtime ownership outside taker, multiple venue/source enablement, Option A microstructure-noise robustness, jump separation diagnostics, and robust cross-source aggregation. Multi-horizon RV and forecast-oriented RV are explicit future scope.
 - TDD is explicitly required by FR-020 and task generation must include red-before-green test tasks.

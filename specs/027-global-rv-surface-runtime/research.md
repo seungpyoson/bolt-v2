@@ -64,9 +64,9 @@
 
 ## Decision: Robust aggregation extends upper-quantile/dispersion
 
-**Decision**: Keep upper-quantile as a supported policy but add robust median/MAD or equivalent policies for multi-source surfaces.
+**Decision**: Keep upper-quantile as a supported policy but add robust median, trimmed mean, and median/upper-quantile guard policies for multi-source surfaces.
 
-**Rationale**: Once sources are multi-venue, one outlier should not silently dominate the aggregate. MAD/median-style diagnostics are intuitive, auditable, and source-count appropriate.
+**Rationale**: Once sources are multi-venue, one outlier should not silently dominate the aggregate. Median and trimmed policies are intuitive, auditable, and source-count appropriate. MAD-specific blocking remains a future extension.
 
 **Alternatives considered**:
 - Naive mean: rejected due outlier sensitivity.

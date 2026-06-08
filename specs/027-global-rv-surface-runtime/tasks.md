@@ -3,7 +3,7 @@
 **Input**: Design documents from `specs/027-global-rv-surface-runtime/`
 **Prerequisites**: `plan.md`, `spec.md`, `research.md`, `data-model.md`, `contracts/`
 **Tests**: Required. Implementation uses TDD after plan approval.
-**Scope**: Full scope only. Do not split out global runtime, multi-venue production wiring, or robust estimator work unless the owner explicitly changes scope in writing.
+**Scope**: PR #615 accepted slice: global runtime, multi-venue production wiring, Option A microstructure-noise robustness, jump diagnostics, robust aggregation, and evidence/schema updates for those fields. Multi-horizon and forecast tasks remain future scope and are not PR #615 merge gates.
 
 ## Execution Rule
 
@@ -46,7 +46,7 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 - [ ] T022 RED: Add runtime test `runtime_publishes_snapshot_by_surface_id_for_multiple_real_consumers`.
 - [ ] T023 RED: Add runtime test `runtime_fails_loudly_when_strategy_references_missing_surface`.
 - [ ] T024 RED: Add runtime test `strategy_does_not_need_market_signal_feed_to_warm_rv_surface`.
-- [ ] T025 RED: Add runtime tests `runtime_refresh_ignores_or_rejects_non_monotonic_as_of_ms`, `runtime_refresh_ignores_or_rejects_equal_as_of_ms_without_advancing_forecast`, and `first_refresh_at_initial_timestamp_has_deterministic_behavior`.
+- [ ] T025 RED: Add runtime tests `runtime_refresh_ignores_or_rejects_non_monotonic_as_of_ms`, `runtime_refresh_ignores_or_rejects_equal_as_of_ms`, and `first_refresh_at_initial_timestamp_has_deterministic_behavior`. Future forecast work must add no-advance forecast assertions.
 - [ ] T026 RED: Add runtime test `snapshot_reads_cannot_mutate_runtime_state`.
 - [ ] T027 GREEN: Implement `src/bolt_v3_realized_volatility_runtime.rs` with root-config construction, surface map, sorted surface refresh order, serialized refresh, and snapshot lookup.
 - [ ] T028 GREEN: Move RV surface construction from `src/strategies/binary_oracle_edge_taker/mod.rs` into the global runtime build path.
@@ -61,7 +61,7 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 **Goal**: Production RV surfaces use every configured available public source instead of one hardcoded/single venue.
 
 - [ ] T034 RED: Add root-config validation tests `surface_source_references_existing_public_client_and_instrument` and `surface_source_instrument_asset_must_match_surface_canonical_base_asset`.
-- [ ] T035 RED: Add config tests `production_surfaces_use_all_available_public_sources_or_explain_single_source`, `single_source_explanation_required_when_only_one_source_available`, and `single_source_explanation_is_trimmed_non_empty_and_bounded`.
+- [ ] T035 RED: Add config tests `production_surfaces_use_all_available_public_sources` and `production_surface_source_bindings_are_root_toml_owned`.
 - [ ] T036 RED: Add config/runtime tests `unsupported_mark_source_class_sample_kind_is_rejected_until_runtime_routing_exists` and `runtime_construction_rejects_mark_source_if_validation_is_bypassed`.
 - [ ] T037 RED: Add runtime tests `deduplicates_physical_subscriptions_and_fans_out_to_multiple_sources` and `subscription_key_order_is_deterministic_for_equivalent_routes`.
 - [ ] T038 RED: Add runtime tests `two_available_venue_sources_contribute_to_one_surface_snapshot` and `multi_venue_partial_source_down_remains_auditable_while_quorum_policy_decides_readiness`.
@@ -71,11 +71,13 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 - [ ] T042 GREEN: Move RV subscription request generation out of strategy subscription methods.
 - [ ] T043 GREEN: Implement observation fan-out from one physical stream to every configured source route.
 - [ ] T044 GREEN: Extend root validation to reject source client/instrument drift before runtime starts.
-- [ ] T045 GREEN: Update `config/root.toml` surfaces to include all available configured venue/source mappings per asset or `single_source_explanation` where only one source is actually available.
+- [ ] T045 GREEN: Update `config/root.toml` surfaces to include all available configured venue/source mappings per asset.
 - [ ] T046 GREEN: Keep strategy TOMLs limited to `realized_volatility_surface_id` selectors.
 - [ ] T047 REFACTOR: Ensure no asset, token, venue, provider, timeout, or subscription policy is hardcoded in Rust.
 
-## Phase 6: Multi-Horizon RV
+## Phase 6: Future Multi-Horizon RV
+
+**PR #615 status**: Deferred. These tasks are retained as future horizon/regime robustness work and are not current merge gates.
 
 **Goal**: Replace single-window brittleness with auditable short/medium/long horizon estimates.
 
@@ -101,7 +103,7 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 - [ ] T062 RED: Add engine tests `subsampled_offset_grid_coverage_uses_offset_grid_denominator`, `subsampled_offsets_are_distinct_for_valid_collision_free_config`, and `subsampled_evidence_records_actual_offsets_used`.
 - [ ] T063 RED: Add config test `subsamples_greater_than_sampling_interval_is_rejected_or_collision_semantics_are_explicit`.
 - [ ] T064 RED: Add engine tests `coarser_grid_rv_policy_selects_base_coarse_or_min_base_coarse`, `min_base_coarse_returns_base_when_base_is_lower`, and `min_base_coarse_returns_coarse_when_coarse_is_lower`.
-- [ ] T065 RED: Add config validation tests for `noise_robust_method`, `subsamples`, `min_ready_subsamples`, `coarse_sampling_interval_ms`, and `coarser_grid_horizon_policy`.
+- [ ] T065 RED: Add config validation tests for `noise_robust_method`, `subsamples`, `min_ready_subsamples`, `coarse_sampling_interval_ms`, and `coarser_grid_policy`.
 - [ ] T066 GREEN: Implement `noise_robust_method = "none"` as current fixed-grid behavior.
 - [ ] T067 GREEN: Implement `noise_robust_method = "coarser_grid"` per horizon.
 - [ ] T068 GREEN: Implement `noise_robust_method = "subsampled"` per horizon with deterministic offset grids.
@@ -129,18 +131,20 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 
 - [ ] T081 RED: Add engine test `median_aggregation_ignores_one_extreme_ready_source_when_quorum_satisfied`.
 - [ ] T082 RED: Add engine tests `trimmed_mean_requires_enough_ready_sources_for_trim_policy` and `trimmed_mean_rejects_when_trim_removes_all_contributors`.
-- [ ] T083 RED: Add engine tests `mad_dispersion_blocks_when_ready_sources_disagree_too_much` and `all_zero_contributors_have_zero_dispersion_and_zero_mad`.
-- [ ] T084 RED: Add engine test `raw_mad_threshold_is_used_without_normal_scaling`.
+- [ ] T083 FUTURE RED: Add engine tests `mad_dispersion_blocks_when_ready_sources_disagree_too_much` and `all_zero_contributors_have_zero_dispersion_and_zero_mad` if MAD-specific blocking is added.
+- [ ] T084 FUTURE RED: Add engine test `raw_mad_threshold_is_used_without_normal_scaling` if MAD-specific blocking is added.
 - [ ] T085 RED: Add engine test `upper_quantile_guard_uses_guard_weight_and_upper_quantile_value`.
 - [ ] T086 RED: Add engine test `source_level_not_warm_does_not_block_satisfied_partial_quorum` to preserve PR #609 fix.
 - [ ] T087 RED: Add boundary tests for exactly `min_ready_sources`, one below `min_ready_sources`, zero eligible contributors blocking before aggregation, equal contributors across every aggregation method, and every aggregation method.
 - [ ] T088 GREEN: Extend aggregation config with `median`, `trimmed_mean`, `median_with_upper_quantile_guard`, `guard_weight`, and `trim_fraction`.
-- [ ] T089 GREEN: Implement MAD dispersion diagnostics and blocker.
+- [ ] T089 FUTURE GREEN: Implement MAD dispersion diagnostics and blocker only if the future MAD-specific policy is accepted.
 - [ ] T090 GREEN: Keep source-level blockers out of surface blockers when quorum is satisfied.
 - [ ] T091 GREEN: Preserve unknown-source, disabled-source, and non-quorum diagnostics.
 - [ ] T092 REFACTOR: Ensure aggregation never pretends correlated sources are independent; evidence must list sources used.
 
-## Phase 10: Optional Forecast RV
+## Phase 10: Future Optional Forecast RV
+
+**PR #615 status**: Deferred. Forecast pricing is rejected by validation in the current slice.
 
 **Goal**: Optionally forecast future volatility from realized components without introducing opaque model risk.
 
@@ -164,13 +168,13 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 
 - [ ] T108 RED: Add decision-evidence round-trip test for the new runtime robust RV fields.
 - [ ] T109 RED: Add stale-schema rejection test by reading the current evidence version on `main`, then asserting the feature branch rejects the previous version and bumps by exactly one.
-- [ ] T110 RED: Add runtime tests `unknown_source_diagnostics_are_bounded_and_evictions_are_reported`, `unknown_source_diagnostics_remain_bounded_under_sustained_churn`, and `unknown_source_eviction_policy_is_deterministic_and_documented`.
-- [ ] T111 RED: Add combined-mode determinism test for `subsampled + jump_separate + ewma`.
+- [ ] T110 FUTURE RED: Add runtime tests `unknown_source_diagnostics_are_bounded_and_evictions_are_reported`, `unknown_source_diagnostics_remain_bounded_under_sustained_churn`, and `unknown_source_eviction_policy_is_deterministic_and_documented` before any raw external source-ID ingestion path is added.
+- [ ] T111 FUTURE RED: Add combined-mode determinism test for `subsampled + jump_separate + ewma` when forecast mode ships.
 - [ ] T112 RED: Add surface ID hygiene tests for empty, whitespace, duplicate, trim-equivalent duplicate, and case-sensitive IDs.
 - [ ] T113 GREEN: Bump evidence schema from current `main` by exactly one version.
-- [ ] T114 GREEN: Update serializers/deserializers for runtime/horizon/noise/jump/forecast fields.
-- [ ] T115 GREEN: Implement bounded unknown-source diagnostic capacity and deterministic eviction reporting.
-- [ ] T116 GREEN: Update evidence fixtures and docs for runtime/horizon/noise/jump/forecast fields.
+- [ ] T114 GREEN: Update serializers/deserializers for runtime/noise/jump fields; horizon/forecast serializers are future scope.
+- [ ] T115 FUTURE GREEN: Implement bounded unknown-source diagnostic capacity and deterministic eviction reporting before raw external source-ID ingestion exists.
+- [ ] T116 GREEN: Update evidence fixtures and docs for runtime/noise/jump fields; horizon/forecast fixtures are future scope.
 - [ ] T117 GREEN: Update runtime literal audit for any new enum labels or schema fields.
 - [ ] T118 GREEN: Update source-integrity golden digest after source changes.
 
@@ -190,7 +194,7 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 - T014-T020 must complete before runtime implementation so source fences fail first.
 - T021-T033 must complete before multi-venue wiring because route ownership belongs to the global runtime.
 - T034-T047 must complete before robust cross-source aggregation can be trusted.
-- T048-T059 must complete before noise, jump, and forecast work because those build on horizon estimates.
-- T060-T092 can proceed in parallel by module once the horizon model is stable.
-- T093-T107 are optional only if the approved plan explicitly disables forecast mode; otherwise they are in scope.
+- T048-T059 are future multi-horizon work and are not prerequisites for PR #615 Option A fixed-grid noise robustness.
+- T060-T092 can proceed after the current fixed-grid engine contracts are stable.
+- T093-T107 are future forecast work; PR #615 explicitly disables forecast pricing.
 - T119-T125 require exact PR-head CI evidence, not inference from local tests.

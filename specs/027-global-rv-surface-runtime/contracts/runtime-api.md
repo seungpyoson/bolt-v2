@@ -2,13 +2,13 @@
 
 ## Purpose
 
-The realized-volatility runtime is a shared process-level service, not a strategy-owned estimator. It owns all configured RV surface state, market-data source routing, refresh cadence, readiness, diagnostics, robust estimation, forecast state, and snapshot publication. Strategies, taker pricing, maker pricing, evidence, and future consumers select a `realized_volatility_surface_id` and consume immutable ready snapshots.
+The realized-volatility runtime is a shared process-level service, not a strategy-owned estimator. It owns all configured RV surface state, market-data source routing, refresh cadence, readiness, diagnostics, Option A robust estimation, and snapshot publication. Strategies, taker pricing, maker pricing, evidence, and future consumers select a `realized_volatility_surface_id` and consume immutable ready snapshots.
 
 ## Ownership Boundary
 
 - `RealizedVolSurfaceRuntime` owns every `RealizedVolEngine`/surface state instance for the node.
 - Strategies never instantiate `RealizedVolEngine` directly.
-- Strategies never compute RV, quorum, aggregation, dispersion, jump components, horizon blends, or forecast adjustments.
+- Strategies never compute RV, quorum, aggregation, dispersion, jump components, future horizon blends, or future forecast adjustments.
 - Pricing code only consumes `ReadyRealizedVol` or equivalent accessor output from a runtime-published snapshot.
 - Missing, stale, blocked, or invalid snapshots fail closed at the consumer boundary.
 
@@ -21,10 +21,10 @@ Rules:
 - Market-data callbacks enqueue or call into the runtime owner; they do not mutate surface engines directly from strategy state.
 - `observe_market_data` and `refresh` are serialized by the runtime owner.
 - A runtime-wide `refresh(now_ms)` visits surfaces in deterministic sorted `surface_id` order.
-- `refresh(now_ms)` is monotonic per surface; a refresh with `now_ms` less than or equal to the last published snapshot timestamp is ignored or rejected deterministically before any forecast-state update is considered.
+- `refresh(now_ms)` is monotonic per surface; a refresh with `now_ms` less than or equal to the last published snapshot timestamp is ignored or rejected deterministically.
 - `snapshot(surface_id)` returns an immutable clone, reference, or handle that cannot mutate runtime state.
 - Consumers may read snapshots concurrently only if the implementation uses immutable publication or explicit read locking.
-- Forecast state advances only inside serialized `refresh`, never inside consumer reads. A refresh that passes surface-level monotonicity but has `now_ms` not greater than the previous forecast update timestamp must leave forecast state unchanged and report the deterministic no-advance reason in diagnostics/evidence.
+- Future forecast state, when implemented, must advance only inside serialized `refresh`, never inside consumer reads.
 
 If later implementation uses locks or a dedicated runtime actor thread, it must preserve the same observable ordering and publish immutable snapshots.
 
@@ -37,12 +37,12 @@ Process-level runtime container for all configured surfaces.
 Required responsibilities:
 
 - Build all RV surfaces from root TOML before strategies are constructed.
-- Validate surface IDs, source IDs, client references, instrument bindings, source classes, sample kinds, horizon policies, forecast policies, and aggregation settings.
+- Validate surface IDs, source IDs, client references, instrument bindings, source classes, sample kinds, estimator policies, and aggregation settings.
 - Produce deduplicated market-data subscription requests for every configured source.
-- Route quote/trade/index/mark observations to every matching surface source route.
+- Route quote/trade/index observations to every matching surface source route. Mark sources are reserved and rejected until routing is implemented.
 - Refresh all surfaces on a runtime-owned cadence.
 - Publish latest snapshots by `surface_id`.
-- Expose bounded diagnostics for unknown source IDs and rejected observations.
+- Expose diagnostics for unknown source IDs and rejected observations. PR #615 unknown IDs are bounded by configured runtime routing; any future raw ingestion path must add explicit cardinality bounds.
 
 ### RealizedVolSubscriptionRequest
 
@@ -70,16 +70,16 @@ Must include:
 - `ready`
 - `ready_realized_vol()` accessor output when ready
 - `annualized_realized_vol_decimal` for backward-compatible evidence
+- `measured_annualized_realized_vol_decimal`
+- `noise_robust_annualized_realized_vol_decimal`
 - `continuous_annualized_realized_vol_decimal`
 - `jump_annualized_realized_vol_decimal`
-- `forecast_annualized_realized_vol_decimal` when forecast mode is enabled
-- `forecast_cold_start`
-- `horizon_estimates`
+- `forecast_annualized_realized_vol_decimal` as an empty future placeholder in PR #615
+- `horizon_estimates` as an empty future placeholder in PR #615
 - `sources_used`
 - `source_diagnostics`
 - `blocked_reasons`
 - `aggregation_method`
-- `estimator_method`
 - `config_fingerprint`
 
 ## Operations
@@ -118,7 +118,7 @@ Output: observation acceptance/rejection diagnostics.
 
 Rules:
 
-- Unknown route IDs are counted in bounded diagnostics.
+- Unknown route IDs are counted in diagnostics. PR #615 route construction limits source IDs to configured routes; future raw ingestion must add explicit capacity.
 - Every matching source route receives the normalized observation.
 - Strategy-local signal data must not be required for RV ingestion.
 - Event-time/receive-time causality and same-event update rules remain enforced by the shared engine.
@@ -134,7 +134,7 @@ Rules:
 - Refresh cadence is TOML-owned and runtime-owned.
 - Surface readiness is computed from eligible contributors only.
 - Per-source blockers remain diagnostics unless quorum/aggregation rules require a surface-level blocker.
-- EWMA forecast state advances only when refresh publishes a ready current component, including when that component is numerically equal to the previous input, and `now_ms` is newer than the previous forecast update timestamp; non-monotonic forecast timestamps do not advance state.
+- Future EWMA/HAR forecast state must advance only when refresh publishes a ready current component and must preserve the same monotonic refresh contract.
 - The runtime must not fallback to legacy or strategy-owned RV.
 
 ### snapshot
@@ -156,7 +156,7 @@ Rules:
 - Missing snapshot: consumer blocks with `RealizedVolNotReady`.
 - Not-ready snapshot: consumer blocks with `RealizedVolNotReady` and evidence records blockers.
 - Invalid numeric output: blocked by the typed RV value constructor before publication.
-- Unknown source route: bounded diagnostic counter with deterministic eviction; no unbounded memory growth.
+- Unknown source route: diagnostic counter keyed by the configured route/source identity. Future raw external ingestion must add bounded cardinality before merge.
 
 ## Required Regression Fences
 

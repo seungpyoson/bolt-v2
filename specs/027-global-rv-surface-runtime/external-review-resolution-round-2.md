@@ -1,5 +1,7 @@
 # External Review Resolution Log - Round 2
 
+> Historical note: this log records design-review fixes from the original broad plan. PR #615 later narrowed the implemented math slice to Option A microstructure-noise robustness with jump diagnostics and robust aggregation. Multi-horizon and forecast references below are retained as future-scope planning history, not current PR #615 acceptance criteria.
+
 ## Review Round 2
 
 Reviewed focused artifacts after round-1 fixes:

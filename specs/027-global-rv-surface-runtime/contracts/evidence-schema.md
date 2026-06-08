@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Evidence must prove which global RV surface was consumed, why it was ready or blocked, which sources contributed, how each horizon was estimated, what noise/jump/aggregation policies were applied, and which final RV value pricing used.
+Evidence must prove which global RV surface was consumed, why it was ready or blocked, which sources contributed, what measured/noise-robust/jump/aggregation outputs were published, and which final RV value pricing used.
 
 ## Versioning
 
 The baseline after PR #609 is decision-evidence schema v8. Feature 027 must bump the schema to v9 unless another intervening merged change has already advanced the version, in which case feature 027 bumps from that new baseline by exactly one version.
 
-Adding global runtime provenance, multi-horizon estimates, noise-robust estimates, jump components, or forecast components requires the v9 decision-evidence schema change.
+Adding global runtime provenance, noise-robust estimates, jump components, robust aggregation provenance, or future multi-horizon/forecast components requires a decision-evidence schema change. PR #615 bumps to v9 for global runtime and measured/noise-robust/continuous/jump component fields.
 
 Consumers must tolerate unknown fields for forward compatibility, but the schema version must signal every material format change.
 
@@ -17,36 +17,31 @@ Consumers must tolerate unknown fields for forward compatibility, but the schema
 Every decision evidence snapshot that references RV must include:
 
 - `realized_volatility_surface_id`
-- `realized_volatility_runtime_as_of_ms`
-- `realized_volatility_ready`
-- `realized_volatility_final_annualized_decimal`
+- `realized_volatility_as_of_ms`
+- `realized_volatility_annualized_decimal`
 - `realized_volatility_pricing_component`
 - `realized_volatility_measured_annualized_decimal`
 - `realized_volatility_noise_robust_annualized_decimal`
 - `realized_volatility_continuous_annualized_decimal`
 - `realized_volatility_jump_annualized_decimal`
 - `realized_volatility_forecast_annualized_decimal`
-- `realized_volatility_forecast_cold_start`
-- `realized_volatility_forecast_previous_decimal`
-- `realized_volatility_forecast_alpha`
 - `realized_volatility_seconds_per_annum`
-- `realized_volatility_estimator_method`
-- `realized_volatility_noise_robust_method`
-- `realized_volatility_jump_policy`
-- `realized_volatility_forecast_method`
-- `realized_volatility_aggregation_method`
+- `realized_volatility_aggregation`
 - `realized_volatility_sources_used`
 - `realized_volatility_source_diagnostics`
-- `realized_volatility_horizon_estimates`
-- `realized_volatility_surface_blockers`
+- `realized_volatility_blockers`
 - `realized_volatility_unknown_source_rejections`
 - `realized_volatility_config_fingerprint`
 
-Empty numeric fields mean no value was published for that component. They must not be backfilled from unrelated fallback values. A valid zero RV must be serialized as a numeric zero string, not as an empty field.
+Empty numeric fields mean no value was published for that component. They must not be backfilled from unrelated fallback values. A valid zero RV must be serialized as a numeric zero string, not as an empty field. Forecast fields remain empty in PR #615 because forecast pricing is rejected by validation.
 
-## Horizon Estimate Fields
+## Future Horizon Estimate Fields
 
-Each horizon estimate must include:
+Per-horizon evidence is future scope. PR #615 does not emit per-horizon evidence because it computes one configured fixed-grid window per source.
+
+When multi-horizon ships, each horizon estimate must include:
+
+Future fields:
 
 - `horizon_name`
 - `window_ms`
@@ -78,8 +73,6 @@ Rules:
 Each source diagnostic must include:
 
 - `source_id`
-- `client_id`
-- `instrument_id`
 - `enabled`
 - `counts_toward_quorum`
 - `source_class`
@@ -90,8 +83,17 @@ Each source diagnostic must include:
 - `last_accepted_ts_ms`
 - `last_rejected_reason`
 - `rejection_counters`
-- `horizon_estimates`
-- `final_source_rv_decimal`
+- `annualized_realized_volatility_decimal`
+- `measured_annualized_realized_volatility_decimal`
+- `noise_robust_annualized_realized_volatility_decimal`
+- `continuous_annualized_realized_volatility_decimal`
+- `jump_annualized_realized_volatility_decimal`
+- `first_sample_ts_ms`
+- `last_sample_ts_ms`
+- `raw_sample_count`
+- `grid_sample_count`
+- `coverage_ratio`
+- `max_inter_sample_gap_ms`
 - `block_reason`
 
 Status labels:
@@ -117,9 +119,7 @@ Allowed surface blockers:
 - `source_class_mismatch`
 - `sample_kind_mismatch`
 - `cross_source_dispersion`
-- `cross_source_mad_dispersion`
-- `required_horizon_not_ready`
-- `forecast_not_ready`
+- Future MAD/multi-horizon/forecast blockers must be added only when those slices ship.
 
 Rules:
 
@@ -134,27 +134,18 @@ Evidence must state which RV component pricing consumed:
 - `measured`
 - `noise_robust`
 - `continuous`
-- `jump_adjusted`
-- `forecast`
+- `forecast` is reserved but rejected by PR #615 validation.
 
 The consumed component must correspond to the final `ReadyRealizedVol` value returned by the runtime accessor. Consumers must not recompute or substitute another component locally.
 
 ## Unknown Source Diagnostics
 
-Unknown source rejection counters must be bounded and emitted as:
-
-- `source_id_or_route_key`
-- `count`
-- `first_seen_ms`
-- `last_seen_ms`
-- `evicted_count`
-- `capacity`
+Unknown source rejection counters are emitted as a map of unknown source ID to count:
 
 Rules:
 
-- Unknown source diagnostics must not grow without a TOML-owned or hardcoded-safe maximum cardinality.
-- Eviction policy must be deterministic and documented.
-- Evidence must report aggregate evictions so dropped unknown IDs remain auditable at a count level.
+- In PR #615, unknown source IDs are produced only by configured runtime routes, so the strategy/router boundary caps practical cardinality.
+- Any future raw external ingestion path must add a TOML-owned or hardcoded-safe maximum cardinality before merge.
 
 ## Backward Compatibility
 

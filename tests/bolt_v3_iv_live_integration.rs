@@ -590,6 +590,10 @@ fn live_iv_event_bindings_route_nt_option_greeks_into_strategy_handle() {
         panic!("expected IV point");
     };
     assert_eq!(point.iv, 0.44);
+    assert_eq!(
+        point.convention,
+        IvConvention::Named(GreeksConvention::BlackScholes.to_string())
+    );
     assert_eq!(point.provenance.nt_symbol, "ConfiguredOptionGreeks");
 }
 

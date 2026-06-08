@@ -80,7 +80,7 @@ Final horizon value depends on `coarser_grid_horizon_policy`:
 For `k = subsamples`:
 
 1. Create `k` deterministic offset grids within the same horizon.
-2. Offset `j` starts at `window_start + floor(j * sampling_interval_ms / k)`.
+2. Offset `j` starts at `window_start + floor(j * sampling_interval_ms / k)`. Distinct integer millisecond offsets are required unless TOML explicitly enables offset-collision reporting.
 3. Compute base fixed-grid RV for each offset grid.
 4. Each offset grid computes coverage against its own expected return count after the offset start.
 5. The subsampled estimate is the arithmetic mean of ready offset-grid RVs.
@@ -114,7 +114,7 @@ Eligible contributors are enabled, quorum-counting, ready source estimates with 
 
 ### upper_quantile
 
-Sort contributor volatilities ascending and select nearest-rank quantile `q` in `[0.5, 1.0]`.
+Sort contributor volatilities ascending and select nearest-rank quantile `q` in `[0.5, 1.0]` using `index = ceil(q * n) - 1` on the zero-indexed sorted contributor list.
 
 ### median
 
@@ -175,7 +175,7 @@ Rules:
 
 Rules:
 
-- Betas and intercept are TOML-owned. Betas must be non-negative finite with positive sum; intercept must be non-negative finite.
+- Betas and intercept are TOML-owned. Betas must be non-negative finite with sum in `(0, 1]`; intercept must be non-negative finite.
 - Short, medium, and long role bindings must reference configured horizons.
 - Referenced horizons must be ready.
 - HAR-lite output must pass the shared valid-RV constructor before publication; non-finite output blocks the forecast component.

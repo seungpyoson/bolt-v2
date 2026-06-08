@@ -20,10 +20,10 @@ Rules:
 
 - Market-data callbacks enqueue or call into the runtime owner; they do not mutate surface engines directly from strategy state.
 - `observe_market_data` and `refresh` are serialized by the runtime owner.
-- `refresh(now_ms)` is monotonic per surface; a refresh with `now_ms` older than the last published snapshot is ignored or rejected deterministically.
+- `refresh(now_ms)` is monotonic per surface; a refresh with `now_ms` less than or equal to the last published snapshot timestamp is ignored or rejected deterministically before any forecast-state update is considered.
 - `snapshot(surface_id)` returns an immutable clone, reference, or handle that cannot mutate runtime state.
 - Consumers may read snapshots concurrently only if the implementation uses immutable publication or explicit read locking.
-- Forecast state advances only inside serialized `refresh`, never inside consumer reads. A refresh with `now_ms` not greater than the previous forecast update timestamp must leave forecast state unchanged and report the deterministic no-advance reason in diagnostics/evidence.
+- Forecast state advances only inside serialized `refresh`, never inside consumer reads. A refresh that passes surface-level monotonicity but has `now_ms` not greater than the previous forecast update timestamp must leave forecast state unchanged and report the deterministic no-advance reason in diagnostics/evidence.
 
 If later implementation uses locks or a dedicated runtime actor thread, it must preserve the same observable ordering and publish immutable snapshots.
 

@@ -15,7 +15,7 @@ refresh_interval_ms = 1000
 seconds_per_annum = 31536000.0
 min_ready_sources = 2
 max_cross_source_dispersion = 0.35
-single_source_explanation = ""
+single_source_explanation = "<REQUIRED_WHEN_SINGLE_SOURCE>"
 ```
 
 Rules:
@@ -49,7 +49,7 @@ Allowed source-class/sample-kind pairs for the initial production slice:
 - `trade` / `trade`
 - `index` / `index`
 
-`mark` may remain a declared enum only if validation clearly rejects it until runtime routing is implemented.
+`mark` may remain a declared enum only if validation clearly rejects it before runtime construction, and runtime construction still fails loudly if validation is bypassed, until mark routing is implemented.
 
 Rules:
 
@@ -119,6 +119,7 @@ Rules:
 - Horizon role names must reference configured horizon names when the selected final or forecast policy needs them.
 - `floor_multiplier` must be non-negative finite when `final_policy = "short_with_long_floor"`.
 - `pricing_component = "forecast"` requires `forecast_method != "none"`.
+- `pricing_component = "noise_robust"` requires `noise_robust_method != "none"`.
 - `forecast_method = "har_lite"` requires short, medium, and long role bindings.
 
 ## Horizons
@@ -223,7 +224,7 @@ Rules:
 - EWMA `alpha` is a refresh-step coefficient in `(0, 1]`, not time-normalized in the first implementation.
 - If no previous forecast exists, including after process restart, initialize from the current ready component and record cold start in evidence.
 - Changing forecast config changes the surface config fingerprint and resets forecast state.
-- HAR-lite weights must be non-negative finite and their sum must be positive.
+- HAR-lite weights must be non-negative finite and their sum must be in `(0, 1]`.
 - HAR-lite intercept must be non-negative finite.
 - Referenced short/medium/long horizons must be ready.
 - HAR-lite output must pass the shared valid-RV constructor before publication; non-finite output blocks the forecast component.

@@ -125,3 +125,58 @@ Resolution:
 Resolution:
 
 - `tasks.md` T110 now names sustained unknown-source churn boundedness in addition to single eviction reporting.
+
+## Review Round 4 Hardening
+
+Claude and Grok approved the round-3 artifacts but identified additional clarity and coverage hardening items. They are resolved before implementation.
+
+### R26 - Quantile and coarser-grid edge semantics
+
+Resolution:
+
+- `contracts/math-estimator.md` now defines nearest-rank upper quantile as `index = ceil(q * n) - 1` on the zero-indexed sorted list.
+- `contracts/math-estimator.md` now states subsample integer offsets must be distinct unless TOML explicitly enables offset-collision reporting.
+- `tasks.md` T064 now names both `min_base_coarse` directionality tests.
+- `tasks.md` T087 now includes equal-contributor aggregation boundaries.
+
+### R27 - HAR-lite weight upper bound and forecast invalid propagation
+
+Resolution:
+
+- `contracts/toml-schema.md` and `contracts/math-estimator.md` now require HAR-lite weight sum in `(0, 1]`.
+- `tasks.md` T102 now requires validation for that bounded HAR weight sum.
+- `tasks.md` T101 now requires invalid selected forecast components to block deterministically.
+
+### R28 - Refresh monotonicity precedence and reset warm path
+
+Resolution:
+
+- `contracts/runtime-api.md` now says surface-level refresh monotonicity is checked before any forecast-state update.
+- `tasks.md` T025 now covers equal `as_of_ms` refresh behavior.
+- `tasks.md` T097 now includes `forecast_warm_starts_on_next_refresh_after_fingerprint_reset`.
+
+### R29 - Noise-robust pricing component ambiguity
+
+Resolution:
+
+- `contracts/toml-schema.md` now requires `pricing_component = "noise_robust"` to use `noise_robust_method != "none"`.
+- `tasks.md` T102 now names `pricing_component_noise_robust_requires_noise_method_not_none`.
+
+### R30 - Unsupported mark enum guard
+
+Resolution:
+
+- `contracts/toml-schema.md` now requires both validation rejection and runtime construction failure if validation is bypassed for mark sources.
+- `tasks.md` T036 now names both the config and runtime-construction rejection tests.
+
+### R31 - Multi-venue degraded-source audit path
+
+Resolution:
+
+- `tasks.md` T038 now names `multi_venue_partial_source_down_remains_auditable_while_quorum_policy_decides_readiness`.
+
+### R32 - Schema example single-source explanation clarity
+
+Resolution:
+
+- `contracts/toml-schema.md` now uses `<REQUIRED_WHEN_SINGLE_SOURCE>` in the surface example instead of an empty string.

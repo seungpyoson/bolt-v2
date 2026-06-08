@@ -181,7 +181,6 @@ struct CargoMetadataPackage {
 #[derive(Debug, Deserialize)]
 struct FixtureLedger {
     surfaces: Vec<FixtureSurface>,
-    #[serde(default)]
     classification_rules: Vec<IvCapabilityClassificationRule>,
 }
 

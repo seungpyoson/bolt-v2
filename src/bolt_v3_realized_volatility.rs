@@ -176,7 +176,6 @@ pub enum RealizedVolSourceStatus {
     Blocked,
     DiagnosticOnly,
     Waiting,
-    Rejected,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -525,13 +524,19 @@ fn source_diagnostic(
         }
         _ => None,
     };
+    let status = source_status(&state.config, &state.samples, &computation);
+    let block_reason = if status == RealizedVolSourceStatus::Ready {
+        None
+    } else {
+        rejection_block_reason.or(computation.block_reason)
+    };
     RealizedVolSourceDiagnostic {
         source_id: state.config.source_id.clone(),
         source_class: state.config.source_class,
         sample_kind: state.config.sample_kind,
         enabled: state.config.enabled,
         counts_toward_quorum: state.config.counts_toward_quorum,
-        status: source_status(&state.config, &state.samples, &computation),
+        status,
         annualized_realized_vol_decimal: computation.rv,
         first_sample_ts_ms: window_samples.first().map(|sample| sample.event_ts_ms),
         last_sample_ts_ms: samples.last().map(|sample| sample.event_ts_ms),
@@ -541,7 +546,7 @@ fn source_diagnostic(
         max_inter_sample_gap_ms: max_gap,
         last_rejected_reason: state.last_rejected_reason,
         rejection_counters: state.rejection_counters.clone(),
-        block_reason: rejection_block_reason.or(computation.block_reason),
+        block_reason,
     }
 }
 

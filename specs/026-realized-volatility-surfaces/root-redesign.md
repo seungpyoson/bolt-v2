@@ -2,8 +2,8 @@
 
 ## Status
 
-Design review draft. Do not implement until Claude, Gemini, and Grok approve
-this design or all blocking review feedback has been incorporated.
+Implemented on PR #609 after Claude, Gemini, and Grok design review. This
+document records the accepted root contract used by the current diff.
 
 ## Problem
 

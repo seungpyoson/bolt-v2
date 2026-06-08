@@ -179,6 +179,34 @@ fn same_event_update_requires_strictly_larger_receive_time() {
 }
 
 #[test]
+fn recovered_source_reports_ready_without_historical_rejection_as_current_blocker() {
+    let mut engine = RealizedVolEngine::from_config(config(&[SOURCE_A])).unwrap();
+    assert!(!engine.observe(RealizedVolObservation {
+        source_class: RealizedVolSourceClass::Trade,
+        ..observation(SOURCE_A, 100.0, 500)
+    }));
+    observe_path(&mut engine, SOURCE_A, &[100.0, 101.0, 102.0, 103.0]);
+
+    let snapshot = engine.snapshot_at(4_000);
+    let diagnostic = &snapshot.source_diagnostics[0];
+
+    assert!(snapshot.ready);
+    assert_eq!(diagnostic.status, RealizedVolSourceStatus::Ready);
+    assert_eq!(
+        diagnostic.last_rejected_reason,
+        Some(RealizedVolSourceRejectReason::SourceClassMismatch)
+    );
+    assert_eq!(
+        diagnostic
+            .rejection_counters
+            .get(&RealizedVolSourceRejectReason::SourceClassMismatch)
+            .copied(),
+        Some(1)
+    );
+    assert_eq!(diagnostic.block_reason, None);
+}
+
+#[test]
 fn unknown_source_rejections_are_audited_without_mutating_configured_sources() {
     let mut engine = RealizedVolEngine::from_config(config(&[SOURCE_A])).unwrap();
     assert!(!engine.observe(observation("<unknown_source_id>", 100.0, 1_000)));

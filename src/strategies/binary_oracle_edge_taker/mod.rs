@@ -3504,10 +3504,7 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn realized_volatility_evidence_fields(
-        &self,
-        fallback_realized_volatility: Option<f64>,
-    ) -> RealizedVolatilityEvidenceFields {
+    fn realized_volatility_evidence_fields(&self) -> RealizedVolatilityEvidenceFields {
         let realized_volatility_snapshot = self
             .pricing
             .latest_realized_vol_snapshot
@@ -3546,8 +3543,7 @@ impl BinaryOracleEdgeTaker {
             None => RealizedVolatilityEvidenceFields {
                 surface_id: String::new(),
                 as_of_ms: None,
-                annualized_decimal: fallback_realized_volatility
-                    .map_or_else(String::new, evidence_number),
+                annualized_decimal: String::new(),
                 seconds_per_annum: String::new(),
                 aggregation: String::new(),
                 sources_used: Vec::new(),
@@ -3564,7 +3560,7 @@ impl BinaryOracleEdgeTaker {
         now_ms: u64,
         decision: &EntrySubmissionDecision,
     ) -> Result<BoltV3StrategyInputEvidenceSnapshot> {
-        let realized_volatility = self.realized_volatility_evidence_fields(None);
+        let realized_volatility = self.realized_volatility_evidence_fields();
         let market_selection_outcome =
             strategy_input_market_selection_outcome(self.active.market_selection_outcome);
         let reference_quote_ts_event = self.active.last_reference_ts_ms.ok_or_else(|| {

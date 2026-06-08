@@ -15,8 +15,9 @@
 //! / auth / strike-mapping unit tests.
 
 use bolt_v2::{
-    bolt_v3_config::ClientBlock,
+    bolt_v3_config::{BoltV3RootConfig, ClientBlock},
     bolt_v3_providers::chainlink::{ChainlinkDataConfig, validate_client},
+    bolt_v3_validate::validate_root_only,
 };
 
 const TEST_FEED_ID: &str = "0x000362205e10b3a147d02792eccee483dca6c7b44ecce7012cb8c6e0b68b3ae9";
@@ -47,6 +48,46 @@ api_key_ssm_parameter = "/bolt/chainlink_strike/api_key"
 api_secret_ssm_parameter = "/bolt/chainlink_strike/api_secret"
 "#
     )
+}
+
+fn fixture_root_with_client_feed_bindings_moved_to_shared_catalog() -> String {
+    let mut root_value: toml::Value = toml::from_str(include_str!("fixtures/bolt_v3/root.toml"))
+        .expect("fixture root TOML should parse as generic TOML");
+    let root = root_value
+        .as_table_mut()
+        .expect("fixture root must be a TOML table");
+    let feed_bindings = root
+        .get_mut("clients")
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|clients| clients.get_mut("chainlink_strike"))
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|client| client.get_mut("data"))
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|data| data.remove("feed_bindings"))
+        .expect("fixture must declare client-local chainlink feed_bindings");
+
+    let mut catalog = toml::map::Map::new();
+    catalog.insert("feed_bindings".to_string(), feed_bindings);
+    root.insert(
+        "chainlink_data_streams".to_string(),
+        toml::Value::Table(catalog),
+    );
+
+    toml::to_string(&root_value).expect("mutated fixture should serialize")
+}
+
+#[test]
+fn chainlink_reference_current_price_uses_shared_feed_catalog() {
+    let root_toml = fixture_root_with_client_feed_bindings_moved_to_shared_catalog();
+    let root: BoltV3RootConfig =
+        toml::from_str(&root_toml).expect("root-owned Chainlink feed catalog should parse");
+
+    let errors = validate_root_only(&root);
+
+    assert!(
+        errors.is_empty(),
+        "root-owned Chainlink feed catalog should validate cleanly: {errors:?}"
+    );
 }
 
 #[test]

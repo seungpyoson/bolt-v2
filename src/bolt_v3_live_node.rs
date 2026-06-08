@@ -976,6 +976,20 @@ impl BoltV3LiveNodeRuntime {
         &self.redaction_values
     }
 
+    pub async fn connect_registered_clients(
+        &mut self,
+        loaded: &LoadedBoltV3Config,
+    ) -> Result<(), BoltV3LiveNodeError> {
+        connect_bolt_v3_clients(&mut self.node, loaded).await
+    }
+
+    pub async fn disconnect_registered_clients(
+        &mut self,
+        loaded: &LoadedBoltV3Config,
+    ) -> Result<(), BoltV3LiveNodeError> {
+        disconnect_bolt_v3_clients(&mut self.node, loaded).await
+    }
+
     pub fn instance_id(&self) -> String {
         self.node.instance_id().to_string()
     }
@@ -1540,6 +1554,15 @@ fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> 
         }
         if let Some(resolution) = strategy.config.resolution_data.as_ref() {
             client_keys.insert(resolution.data_client_id.to_string());
+        }
+        if let Some(reference_current_price) = strategy.config.reference_current_price.as_ref() {
+            client_keys.extend(
+                reference_current_price
+                    .sources
+                    .values()
+                    .filter(|source| source.enabled)
+                    .map(|source| source.client_id.to_string()),
+            );
         }
     }
     client_keys
@@ -3592,9 +3615,13 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         let scoped = trade_transport_loaded_config(&loaded)
             .expect("strategy-bound transport scope should be derived from config");
 
-        assert_eq!(scoped.root.clients.len(), 2);
+        assert_eq!(scoped.root.clients.len(), 3);
         assert!(scoped.root.clients.contains_key("polymarket_main"));
         assert!(scoped.root.clients.contains_key("signal_data"));
+        assert!(
+            scoped.root.clients.contains_key("chainlink_reference"),
+            "reference_current_price source clients must be registered in the live transport scope"
+        );
         assert!(
             !scoped.root.clients.contains_key("unrelated_data"),
             "unrelated configured data clients must not block the selected trade path"

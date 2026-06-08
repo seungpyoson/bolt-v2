@@ -3,6 +3,22 @@ use std::process::Command;
 use tempfile::tempdir;
 
 #[test]
+fn bolt_v2_help_lists_reference_current_price_health() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .arg("--help")
+        .output()
+        .expect("bolt-v2 should run");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("reference-current-price-health"),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn stream_to_lake_fails_when_live_spool_is_missing() {
     let source_root = tempdir().unwrap();
     let output_root = tempdir().unwrap();

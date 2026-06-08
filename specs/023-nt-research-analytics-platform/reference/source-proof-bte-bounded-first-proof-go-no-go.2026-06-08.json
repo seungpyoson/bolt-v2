@@ -12,11 +12,10 @@
   "current_reconciliation": {
     "reconciled_at": "2026-06-08",
     "pr": "https://github.com/seungpyoson/bolt-v2/pull/610",
-    "ci_status": "green_after_rerunning_infrastructure_504_failures",
+    "ci_status": "green_on_pr_610_head_ddf3a24e",
     "ci_evidence": [
-      "gh pr checks 610 --repo seungpyoson/bolt-v2 exited 0 on 2026-06-08.",
-      "Passed checks included fmt-check, clippy, deny, source-fence, all four nextest shards, gate, bvs-fmt, bvs-clippy, bvs-test, and backtester-gate.",
-      "Initial nextest shard failures were GitHub release HTTP 504 failures while downloading just-1.49.0, not Rust test failures; rerunning failed jobs cleared them."
+      "GitHub Actions for PR #610 head ddf3a24e completed successfully on 2026-06-08.",
+      "Passed workflows were CI, Backtester CI, and actionlint."
     ],
     "scratch_artifact_status": {
       "path": "/private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08",

@@ -7,7 +7,7 @@
   "current_reconciliation": {
     "reconciled_at": "2026-06-08",
     "pr": "https://github.com/seungpyoson/bolt-v2/pull/610",
-    "ci_status": "green_after_rerunning_github_release_504_failures",
+    "ci_status": "green_on_pr_610_head_ddf3a24e",
     "scratch_artifact_status": {
       "path": "/private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08",
       "status": "stale_not_current_acceptance_evidence",

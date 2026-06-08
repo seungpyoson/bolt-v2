@@ -140,14 +140,14 @@
   },
   "current_code_reconciliation": {
     "status": "current_artifact_regenerated_with_selector_source_row_groups",
-    "current_head": "7c18f722",
+    "current_head": "ddf3a24e",
     "pull_request": "https://github.com/seungpyoson/bolt-v2/pull/610",
     "finding": "The selected-source artifact was regenerated from an event-count ledger and selector report that carry source_row_groups. Current selected_source_slice validates selector.selected_assets[].source_row_groups against Parquet metadata and projects those row groups directly.",
     "evidence": [
       "The refreshed ledger contains source_row_groups for event-count rows and selected asset families book=1, last_trade_price=1, price_change=3 all in row group 35.",
       "The refreshed selector report has selected_assets[0].source_row_groups = [35] and selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110.",
       "The refreshed selected-source report binds selector_report_sha256 8bbf34e5f743ec9fdf3cbf05c23c71c75ca310eb4278ffa1c9d29403386dba27, output_parquet_sha256 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, source_row_groups 62, projected_row_groups 1, selected_rows 5, and selected_asset_count 1.",
-      "PR #610 CI on 7c18f722 passed CI, Backtester CI, and actionlint."
+      "PR #610 CI on ddf3a24e passed CI, Backtester CI, and actionlint."
     ],
     "supersedes": {
       "selector_report_path": "/private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector-gamma-candidates/first-proof-selector-report.json",

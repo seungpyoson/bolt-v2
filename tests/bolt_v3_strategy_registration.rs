@@ -4,12 +4,12 @@ use anyhow::Result;
 use bolt_v2::{
     bolt_v3_archetypes::binary_oracle_edge_taker,
     bolt_v3_config::{
-        BoltV3RootConfig, ClientBlock, DECISION_REFERENCE_GATE_ROLE, DataInstrumentBlock,
-        RealizedVolatilityAggregationBlock, RealizedVolatilityPolicyBlock,
-        RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceBlock,
-        RealizedVolatilitySourceClassBlock, RealizedVolatilitySurfaceBlock, ReferencePriceBlock,
-        ReferencePriceDriftPolicy, ReferencePriceProvider, ReferencePriceSelectionPolicy,
-        ReferencePriceSourceBlock, ReferencePriceStalePolicy, load_bolt_v3_config,
+        BoltV3RootConfig, ClientBlock, DataInstrumentBlock, RealizedVolatilityAggregationBlock,
+        RealizedVolatilityPolicyBlock, RealizedVolatilitySampleKindBlock,
+        RealizedVolatilitySourceBlock, RealizedVolatilitySourceClassBlock,
+        RealizedVolatilitySurfaceBlock, ReferencePriceBlock, ReferencePriceDriftPolicy,
+        ReferencePriceProvider, ReferencePriceSelectionPolicy, ReferencePriceSourceBlock,
+        ReferencePriceStalePolicy, load_bolt_v3_config,
     },
     bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,

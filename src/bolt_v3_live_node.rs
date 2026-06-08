@@ -1136,9 +1136,6 @@ pub enum BoltV3LiveNodeError {
     StrategyFreeReferenceProbeFailed {
         reason: String,
     },
-    StrategyFreeDataClientProbeFailed {
-        reason: String,
-    },
     StrategyFreeStartFailed(anyhow::Error),
     StrategyFreeStopTimeout {
         timeout_secs: u64,
@@ -1246,10 +1243,6 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 f,
                 "bolt-v3 strategy-free controlled-run reached NT Running but live reference quote evidence was not observed; engine connectivity cannot be treated as proven: {reason}"
             ),
-            BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed { reason } => write!(
-                f,
-                "bolt-v3 strategy-free controlled-run reached NT Running but data-client readiness evidence was not observed; data-client production readiness cannot be treated as proven: {reason}"
-            ),
             BoltV3LiveNodeError::StrategyFreeStartFailed(error) => {
                 write!(f, "bolt-v3 strategy-free controlled-start failed: {error}")
             }
@@ -1297,7 +1290,6 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::StrategyFreeStartIncomplete
             | BoltV3LiveNodeError::StrategyFreeExecutionAccountsMissing { .. }
             | BoltV3LiveNodeError::StrategyFreeReferenceProbeFailed { .. }
-            | BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed { .. }
             | BoltV3LiveNodeError::StrategyFreeStopTimeout { .. }
             | BoltV3LiveNodeError::StrategyFreeStopTimeoutOverflow => None,
             BoltV3LiveNodeError::DisconnectFailed(error)
@@ -1483,19 +1475,6 @@ pub fn build_bolt_v3_strategy_free_live_node(
     Ok(runtime)
 }
 
-pub fn build_bolt_v3_strategy_free_data_client_probe_live_node(
-    loaded: &LoadedBoltV3Config,
-    client_key: &str,
-) -> Result<(BoltV3LiveNodeRuntime, LoadedBoltV3Config), BoltV3LiveNodeError> {
-    let probe_loaded = data_client_probe_loaded_config(loaded, client_key)?;
-    let resolved = resolve_bolt_v3_live_node_secrets(&probe_loaded)?;
-    let adapters = strategy_free_transport_adapter_configs(&probe_loaded, &resolved)?;
-    let strategy_free_loaded = strategy_free_transport_loaded_config(&probe_loaded);
-    let (runtime, _summary) =
-        build_live_node_with_clients(&strategy_free_loaded, &resolved, adapters)?;
-    Ok((runtime, strategy_free_loaded))
-}
-
 pub fn build_bolt_v3_all_configured_client_mapping_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
@@ -1566,39 +1545,6 @@ fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> 
         }
     }
     client_keys
-}
-
-fn data_client_probe_loaded_config(
-    loaded: &LoadedBoltV3Config,
-    client_key: &str,
-) -> Result<LoadedBoltV3Config, BoltV3LiveNodeError> {
-    if client_key.trim().is_empty() {
-        return Err(BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed {
-            reason: "data-client probe client_key is not configured".to_string(),
-        });
-    }
-    let client = loaded
-        .root
-        .clients
-        .get(client_key)
-        .cloned()
-        .ok_or_else(|| BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed {
-            reason: "data-client probe client_key is not configured".to_string(),
-        })?;
-    if client.data.is_none() {
-        return Err(BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed {
-            reason: "data-client probe requires the selected client to declare [data]".to_string(),
-        });
-    }
-    let mut probe_loaded = loaded.clone();
-    probe_loaded
-        .root
-        .clients
-        .retain(|configured_key, _| configured_key == client_key);
-    probe_loaded
-        .strategies
-        .retain(|strategy| strategy.config.execution_client_id == ClientId::from(client_key));
-    Ok(probe_loaded)
 }
 
 fn strategy_free_transport_loaded_config(loaded: &LoadedBoltV3Config) -> LoadedBoltV3Config {
@@ -3631,103 +3577,6 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             loaded.root.clients.contains_key("unrelated_data"),
             "helper must not mutate the caller's full client bundle"
         );
-    }
-
-    #[test]
-    fn data_client_probe_config_keeps_only_selected_data_client() {
-        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
-            "tests/fixtures/bolt_v3/root.toml",
-        ))
-        .expect("fixture config should load");
-        let mut secondary = loaded
-            .root
-            .clients
-            .get("polymarket_main")
-            .expect("fixture client should exist")
-            .clone();
-        secondary.execution = None;
-        secondary.secrets = None;
-        loaded
-            .root
-            .clients
-            .insert("secondary_data".to_string(), secondary);
-
-        let probe_loaded = data_client_probe_loaded_config(&loaded, "secondary_data")
-            .expect("selected data client should produce a scoped probe config");
-
-        assert!(
-            probe_loaded.strategies.is_empty(),
-            "adapter mapping must drop strategy targets that do not reference the selected probe client"
-        );
-        assert_eq!(probe_loaded.root_path, loaded.root_path);
-        assert_eq!(
-            probe_loaded.config_bundle_checksum,
-            loaded.config_bundle_checksum
-        );
-        assert_eq!(probe_loaded.root.clients.len(), 1);
-        assert!(probe_loaded.root.clients.contains_key("secondary_data"));
-        assert!(
-            loaded.root.clients.contains_key("polymarket_main"),
-            "helper must not mutate the caller's full client bundle"
-        );
-    }
-
-    #[test]
-    fn data_client_probe_adapter_mapping_drops_unrelated_strategy_targets() {
-        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
-            "tests/fixtures/bolt_v3/root.toml",
-        ))
-        .expect("fixture config should load");
-        let mut secondary = loaded
-            .root
-            .clients
-            .get("polymarket_main")
-            .expect("fixture client should exist")
-            .clone();
-        secondary.execution = None;
-        secondary.secrets = None;
-        loaded
-            .root
-            .clients
-            .insert("secondary_data".to_string(), secondary);
-
-        let probe_loaded = data_client_probe_loaded_config(&loaded, "secondary_data")
-            .expect("selected data client should produce a scoped probe config");
-
-        assert!(
-            probe_loaded.strategies.is_empty(),
-            "probe mapping input must drop strategy targets that reference clients outside the scoped probe"
-        );
-        strategy_free_transport_adapter_configs(
-            &probe_loaded,
-            &crate::bolt_v3_secrets::ResolvedBoltV3Secrets {
-                clients: Default::default(),
-            },
-        )
-        .expect("scoped data-client adapter mapping must not fail on unrelated strategies");
-    }
-
-    #[test]
-    fn data_client_probe_runtime_clears_strategies_after_adapter_mapping() {
-        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
-            "tests/fixtures/bolt_v3/root.toml",
-        ))
-        .expect("fixture config should load");
-
-        let probe_loaded = data_client_probe_loaded_config(&loaded, "polymarket_main")
-            .expect("selected data client should produce a scoped probe config");
-        let runtime_loaded = strategy_free_transport_loaded_config(&probe_loaded);
-
-        assert!(
-            !probe_loaded.strategies.is_empty(),
-            "probe adapter mapping input must keep strategies for provider-owned data filters"
-        );
-        assert!(
-            runtime_loaded.strategies.is_empty(),
-            "strategy-free data-client probes must not register strategy actors"
-        );
-        assert_eq!(runtime_loaded.root.clients.len(), 1);
-        assert!(runtime_loaded.root.clients.contains_key("polymarket_main"));
     }
 
     #[test]

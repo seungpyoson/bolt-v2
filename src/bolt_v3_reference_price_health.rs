@@ -5,9 +5,7 @@ use serde::Serialize;
 
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
-    bolt_v3_live_node::{
-        BoltV3LiveNodeRuntime, build_bolt_v3_strategy_free_data_client_probe_live_node,
-    },
+    bolt_v3_live_node::{BoltV3LiveNodeRuntime, build_bolt_v3_strategy_free_live_node},
 };
 
 const SOURCE_UPDATE_OBSERVATION_STATUS: &str = "not_collected";
@@ -56,13 +54,8 @@ pub struct ReferenceCurrentPriceHealthReport {
 
 pub struct ReferenceCurrentPriceHealthRun {
     plan: ReferenceCurrentPriceHealthPlan,
-    probes: Vec<ReferenceCurrentPriceHealthProbe>,
-}
-
-struct ReferenceCurrentPriceHealthProbe {
-    client_key: String,
     runtime: BoltV3LiveNodeRuntime,
-    scoped_loaded: LoadedBoltV3Config,
+    loaded: LoadedBoltV3Config,
 }
 
 pub fn reference_current_price_health_plan(
@@ -118,71 +111,79 @@ pub fn prepare_reference_current_price_health_run(
     loaded: &LoadedBoltV3Config,
 ) -> Result<ReferenceCurrentPriceHealthRun> {
     let plan = reference_current_price_health_plan(loaded)?;
-    let mut probes = Vec::new();
+    let runtime = build_bolt_v3_strategy_free_live_node(loaded)?;
 
-    for client_key in &plan.client_keys {
-        let (runtime, scoped_loaded) =
-            build_bolt_v3_strategy_free_data_client_probe_live_node(loaded, client_key)?;
-        probes.push(ReferenceCurrentPriceHealthProbe {
-            client_key: client_key.clone(),
-            runtime,
-            scoped_loaded,
-        });
-    }
-
-    Ok(ReferenceCurrentPriceHealthRun { plan, probes })
+    Ok(ReferenceCurrentPriceHealthRun {
+        plan,
+        runtime,
+        loaded: loaded.clone(),
+    })
 }
 
 pub async fn run_prepared_reference_current_price_health(
     health_run: &mut ReferenceCurrentPriceHealthRun,
 ) -> Result<ReferenceCurrentPriceHealthReport> {
-    let mut clients = Vec::new();
+    let registered_data_client_ids =
+        sorted_strings(health_run.runtime.registered_data_client_ids());
+    let registered_exec_client_ids =
+        sorted_strings(health_run.runtime.registered_exec_client_ids());
+    let registered_strategy_ids = sorted_strings(health_run.runtime.registered_strategy_ids());
+    if !registered_strategy_ids.is_empty() {
+        return Err(anyhow::anyhow!(
+            "reference_current_price health registered strategies: {}",
+            registered_strategy_ids.join(", ")
+        ));
+    }
 
-    for probe in &mut health_run.probes {
-        let client_key = probe.client_key.as_str();
-        let registered_data_client_ids = sorted_strings(probe.runtime.registered_data_client_ids());
-        let registered_exec_client_ids = sorted_strings(probe.runtime.registered_exec_client_ids());
-        let registered_strategy_ids = sorted_strings(probe.runtime.registered_strategy_ids());
-        if !registered_exec_client_ids.is_empty() {
-            return Err(anyhow::anyhow!(
-                "reference_current_price health registered execution clients for `{client_key}`: {}",
-                registered_exec_client_ids.join(", ")
-            ));
-        }
-        if !registered_strategy_ids.is_empty() {
-            return Err(anyhow::anyhow!(
-                "reference_current_price health registered strategies for `{client_key}`: {}",
-                registered_strategy_ids.join(", ")
-            ));
-        }
+    let registered_data_client_set = registered_data_client_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let missing_client_keys = health_run
+        .plan
+        .client_keys
+        .iter()
+        .filter(|client_key| !registered_data_client_set.contains(*client_key))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_client_keys.is_empty() {
+        return Err(anyhow::anyhow!(
+            "reference_current_price health strategy-free transport did not register source data client(s): {}",
+            missing_client_keys.join(", ")
+        ));
+    }
 
-        let connect = probe
-            .runtime
-            .connect_registered_clients(&probe.scoped_loaded)
-            .await
-            .map_err(|error| anyhow::anyhow!("client `{client_key}` connect failed: {error}"));
-        let disconnect = probe
-            .runtime
-            .disconnect_registered_clients(&probe.scoped_loaded)
-            .await
-            .map_err(|error| anyhow::anyhow!("client `{client_key}` disconnect failed: {error}"));
+    let connect = health_run
+        .runtime
+        .connect_registered_clients(&health_run.loaded)
+        .await
+        .map_err(|error| anyhow::anyhow!("strategy-free transport connect failed: {error}"));
+    let disconnect = health_run
+        .runtime
+        .disconnect_registered_clients(&health_run.loaded)
+        .await
+        .map_err(|error| anyhow::anyhow!("strategy-free transport disconnect failed: {error}"));
 
-        match (connect, disconnect) {
-            (Ok(()), Ok(())) => clients.push(ReferenceCurrentPriceHealthClientReport {
-                client_key: probe.client_key.clone(),
-                registered_data_client_ids,
-                registered_exec_client_ids,
-                registered_strategy_ids,
+    let clients = match (connect, disconnect) {
+        (Ok(()), Ok(())) => health_run
+            .plan
+            .client_keys
+            .iter()
+            .map(|client_key| ReferenceCurrentPriceHealthClientReport {
+                client_key: client_key.clone(),
+                registered_data_client_ids: registered_data_client_ids.clone(),
+                registered_exec_client_ids: registered_exec_client_ids.clone(),
+                registered_strategy_ids: registered_strategy_ids.clone(),
                 connect_status: "ok".to_string(),
                 disconnect_status: "ok".to_string(),
-            }),
-            (Err(connect_error), Ok(())) => return Err(connect_error),
-            (Ok(()), Err(disconnect_error)) => return Err(disconnect_error),
-            (Err(connect_error), Err(disconnect_error)) => {
-                return Err(anyhow::anyhow!("{connect_error}; {disconnect_error}"));
-            }
+            })
+            .collect(),
+        (Err(connect_error), Ok(())) => return Err(connect_error),
+        (Ok(()), Err(disconnect_error)) => return Err(disconnect_error),
+        (Err(connect_error), Err(disconnect_error)) => {
+            return Err(anyhow::anyhow!("{connect_error}; {disconnect_error}"));
         }
-    }
+    };
 
     Ok(ReferenceCurrentPriceHealthReport {
         targets: health_run.plan.targets.clone(),

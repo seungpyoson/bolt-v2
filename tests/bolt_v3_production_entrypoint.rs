@@ -47,7 +47,7 @@ fn main_runs_bolt_v3_runner_inside_local_set() {
 }
 
 #[test]
-fn reference_current_price_health_prepares_probe_nodes_before_tokio_runtime() {
+fn reference_current_price_health_prepares_strategy_free_transport_before_tokio_runtime() {
     let source = include_str!("../src/main.rs");
     let function_start = source
         .find("fn run_reference_current_price_health_command(")
@@ -56,7 +56,7 @@ fn reference_current_price_health_prepares_probe_nodes_before_tokio_runtime() {
     let prepare_health = function
         .find("let mut health_run = prepare_reference_current_price_health_run(&loaded)?;")
         .expect(
-            "reference-current-price health must resolve SSM and build probe LiveNodes before Tokio",
+            "reference-current-price health must resolve SSM and build strategy-free transport before Tokio",
         );
     let build_runtime = function
         .find("let runtime = tokio::runtime::Builder::new_multi_thread()")
@@ -64,15 +64,33 @@ fn reference_current_price_health_prepares_probe_nodes_before_tokio_runtime() {
 
     assert!(
         prepare_health < build_runtime,
-        "reference-current-price health must not construct SSM-backed probe LiveNodes inside Tokio"
+        "reference-current-price health must not construct SSM-backed strategy-free transport inside Tokio"
     );
     assert!(
         function.contains("run_prepared_reference_current_price_health(&mut health_run)"),
-        "reference-current-price health must only connect/disconnect prepared probe LiveNodes inside Tokio"
+        "reference-current-price health must only connect/disconnect prepared strategy-free transport inside Tokio"
     );
     assert!(
         !function.contains("run_reference_current_price_health(&loaded)"),
         "reference-current-price health must not pass the full loaded config into the async runtime"
+    );
+}
+
+#[test]
+fn reference_current_price_health_uses_strategy_free_transport_path() {
+    let source = include_str!("../src/bolt_v3_reference_price_health.rs");
+
+    assert!(
+        source.contains("build_bolt_v3_strategy_free_live_node"),
+        "reference-current-price health must build the strategy-free transport topology"
+    );
+    assert!(
+        !source.contains("build_bolt_v3_strategy_free_data_client_probe_live_node"),
+        "reference-current-price health must not build isolated one-client probe LiveNodes"
+    );
+    assert!(
+        !source.contains("ReferenceCurrentPriceHealthProbe"),
+        "reference-current-price health must not retain an isolated probe run model"
     );
 }
 

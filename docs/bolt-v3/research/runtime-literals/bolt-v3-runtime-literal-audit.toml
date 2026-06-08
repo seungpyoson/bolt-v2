@@ -9026,9 +9026,9 @@ reason = "Strategy config schema table name for optional reference-current-price
 path = "src/bolt_v3_reference_price_health.rs"
 kind = "string"
 literal = '''", "'''
-context = '''registered_exec_client_ids.join(", ")'''
+context = '''missing_client_keys.join(", ")'''
 classification = "diagnostic_separator"
-reason = "This joins already registered execution-client ids only when reporting an invalid no-execution-client health scope."
+reason = "This joins configured reference-current-price source client ids only when reporting that strategy-free transport failed to register them as data clients."
 
 [[allowed]]
 path = "src/bolt_v3_reference_price_health.rs"
@@ -9081,16 +9081,8 @@ reason = "Stable operator output status for a successful bounded client disconne
 [[allowed]]
 path = "src/bolt_v3_reference_price_health.rs"
 kind = "string"
-literal = '''"reference_current_price health registered execution clients for `{client_key}`: {}"'''
-context = '''"reference_current_price health registered execution clients for `{client_key}`: {}",'''
-classification = "reference_current_price_health_diagnostic"
-reason = "Fail-closed diagnostic proving the bounded health path did not remain data-client only."
-
-[[allowed]]
-path = "src/bolt_v3_reference_price_health.rs"
-kind = "string"
-literal = '''"reference_current_price health registered strategies for `{client_key}`: {}"'''
-context = '''"reference_current_price health registered strategies for `{client_key}`: {}",'''
+literal = '''"reference_current_price health registered strategies: {}"'''
+context = '''"reference_current_price health registered strategies: {}",'''
 classification = "reference_current_price_health_diagnostic"
 reason = "Fail-closed diagnostic proving the bounded health path did not remain strategy-free."
 

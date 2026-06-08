@@ -9370,6 +9370,14 @@ reason = "IV store uses internal sequence and drain-index sentinels for bounded 
 
 [[allowed]]
 path = "src/bolt_v3_iv/store.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''value.is_finite() && value > 0.0'''
+classification = "iv_validation_zero_boundary"
+reason = "IV validation uses the mathematical zero boundary to reject non-positive implied-volatility values; configured IV values remain supplied by NT/source payloads and TOML policy."
+
+[[allowed]]
+path = "src/bolt_v3_iv/store.rs"
 kind = "string"
 literal = '''"call"'''
 context = '''const OPTION_CHAIN_CALL_SIDE_LABEL: &str = "call";'''

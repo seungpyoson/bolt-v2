@@ -13,9 +13,10 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use arrow::array::{
     Array, BinaryArray, BinaryViewArray, Decimal64Array, Decimal128Array, FixedSizeBinaryArray,
-    LargeBinaryArray, LargeStringArray, RecordBatch, StringArray, StringViewArray,
-    TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
-    TimestampSecondArray,
+    Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array, LargeBinaryArray,
+    LargeStringArray, RecordBatch, StringArray, StringViewArray, TimestampMicrosecondArray,
+    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt8Array,
+    UInt16Array, UInt32Array, UInt64Array,
 };
 use nautilus_backtest::result::BacktestResult;
 use nautilus_core::UnixNanos;
@@ -1711,7 +1712,42 @@ fn optional_decimal_string(
     if let Some(strings) = values.as_any().downcast_ref::<StringViewArray>() {
         return Ok(Some(strings.value(row).to_string()));
     }
-    bail!("selected-source column {column:?} is not Decimal128/Decimal64/Utf8/LargeUtf8/Utf8View")
+    if let Some(values) = values.as_any().downcast_ref::<Float64Array>() {
+        return Ok(Some(finite_float_to_string(values.value(row), column)?));
+    }
+    if let Some(values) = values.as_any().downcast_ref::<Float32Array>() {
+        return Ok(Some(finite_float_to_string(
+            values.value(row) as f64,
+            column,
+        )?));
+    }
+    if let Some(values) = values.as_any().downcast_ref::<Int64Array>() {
+        return Ok(Some(values.value(row).to_string()));
+    }
+    if let Some(values) = values.as_any().downcast_ref::<Int32Array>() {
+        return Ok(Some(values.value(row).to_string()));
+    }
+    if let Some(values) = values.as_any().downcast_ref::<Int16Array>() {
+        return Ok(Some(values.value(row).to_string()));
+    }
+    if let Some(values) = values.as_any().downcast_ref::<Int8Array>() {
+        return Ok(Some(values.value(row).to_string()));
+    }
+    if let Some(values) = values.as_any().downcast_ref::<UInt64Array>() {
+        return Ok(Some(values.value(row).to_string()));
+    }
+    if let Some(values) = values.as_any().downcast_ref::<UInt32Array>() {
+        return Ok(Some(values.value(row).to_string()));
+    }
+    if let Some(values) = values.as_any().downcast_ref::<UInt16Array>() {
+        return Ok(Some(values.value(row).to_string()));
+    }
+    if let Some(values) = values.as_any().downcast_ref::<UInt8Array>() {
+        return Ok(Some(values.value(row).to_string()));
+    }
+    bail!(
+        "selected-source column {column:?} is not Decimal128/Decimal64/Utf8/LargeUtf8/Utf8View/numeric"
+    )
 }
 
 fn decimal_to_string(value: i128, scale: i8) -> Result<String> {
@@ -1734,6 +1770,14 @@ fn decimal_to_string(value: i128, scale: i8) -> Result<String> {
             &absolute[split..]
         ))
     }
+}
+
+fn finite_float_to_string(value: f64, column: &str) -> Result<String> {
+    ensure!(
+        value.is_finite(),
+        "selected-source column {column:?} has non-finite numeric value {value}"
+    );
+    Ok(value.to_string())
 }
 
 fn required_column<'a>(batch: &'a RecordBatch, column: &str) -> Result<&'a dyn Array> {

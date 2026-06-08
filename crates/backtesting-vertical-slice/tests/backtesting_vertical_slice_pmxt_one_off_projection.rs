@@ -1,7 +1,7 @@
 use arrow::{
     array::{
-        ArrayRef, BinaryArray, BinaryViewArray, Decimal128Array, FixedSizeBinaryArray, StringArray,
-        TimestampNanosecondArray,
+        ArrayRef, BinaryArray, BinaryViewArray, Decimal128Array, FixedSizeBinaryArray,
+        Float64Array, StringArray, TimestampNanosecondArray,
     },
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
@@ -1493,7 +1493,7 @@ fn write_pmxt_selected_source_trade_fixture(path: &std::path::Path) {
         Field::new("best_bid", DataType::Decimal128(9, 4), true),
         Field::new("best_ask", DataType::Decimal128(9, 4), true),
         Field::new("transaction_hash", DataType::Utf8, false),
-        Field::new("fee_rate_bps", DataType::Utf8, false),
+        Field::new("fee_rate_bps", DataType::Float64, false),
     ]));
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -1553,7 +1553,7 @@ fn write_pmxt_selected_source_trade_fixture(path: &std::path::Path) {
                     .expect("best ask decimal"),
             ) as ArrayRef,
             Arc::new(StringArray::from(vec![same_hash, same_hash, same_hash])) as ArrayRef,
-            Arc::new(StringArray::from(vec!["0", "0", "0"])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![0.0, 0.0, 0.0])) as ArrayRef,
         ],
     )
     .expect("selected-source trade batch");

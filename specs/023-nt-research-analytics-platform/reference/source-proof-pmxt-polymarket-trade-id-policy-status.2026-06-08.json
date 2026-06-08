@@ -2,7 +2,7 @@
   "schema_version": "source-proof-pmxt-polymarket-trade-id-policy-status.v1",
   "task_id": "BACKTESTING_ENGINE-022",
   "source_binding": "polymarket-parquet-archive-index",
-  "status": "policy_selected_tdd_proven_for_one_off_projection",
+  "status": "policy_selected_concrete_one_off_mixed_artifact_proven",
   "recorded_at_utc": "2026-06-08T00:00:00Z",
   "scope": {
     "question": "How should PMXT last_trade_price transaction_hash map to NT TradeTick.trade_id?",
@@ -116,12 +116,15 @@
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_projection_writes_nt_catalog_and_reads_back_trade_ticks passed after PMXT one-off TradeTicks were written to and queried back from NT ParquetDataCatalog.",
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 14 focused PMXT one-off projection tests.",
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog passed after mixed OrderBookDelta+TradeTick conversion metadata binding preserved the TradeTick projection inside the one-off artifact root.",
-    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 15 focused PMXT one-off projection tests."
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 15 focused PMXT one-off projection tests.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_trade_ticks_from_configured_trade_columns failed because concrete-style numeric fee_rate_bps columns were rejected by the one-off selected-source decimal decoder.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_trade_ticks_from_configured_trade_columns passed after configured selected-source decimal columns accepted Arrow numeric primitives and rejected non-finite floats.",
+    "GREEN rust_verification cargo run --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08/spec.toml produced result_contract_hash 9184746c040672fe948defcd7294aa13a07d445dcdb305279008d9dd53e84871, conversion_manifest_hash 3f5c48836fe459715b45da1b6a0e8a5a14cc0e86f9293f4852f14da16da8f738, catalog_hash 3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236, catalog_nt_data_types [OrderBookDelta, TradeTick], catalog_rows_by_nt_data_type {OrderBookDelta: 103, TradeTick: 1}, projected_l2_rows 5, and nt_iterations 103."
   ],
   "current_decision": {
     "trade_id_policy_can_close": true,
     "bte_022_can_close": false,
     "broad_backfill_allowed": false,
-    "next_required_evidence": "Concrete generated PMXT selected-source artifact must be rerun with TradeTick schema enabled before claiming the real selected sample binds both OrderBookDelta and TradeTick; this does not close tick-size epoch replay, expanded coverage, or broad PMXT backfill."
+    "next_required_evidence": "This closes the bounded one-off TradeTick policy path for the selected PMXT sample only. It does not close tick-size epoch replay, expanded coverage, source-proof acceptance, or broad PMXT backfill."
   }
 }

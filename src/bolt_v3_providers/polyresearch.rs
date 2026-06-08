@@ -396,21 +396,22 @@ struct PolyResearchReferenceSubscribeFrame<'a> {
 
 #[derive(Debug, Serialize)]
 struct PolyResearchReferenceSubscribeFilters<'a> {
-    feeds: [&'a str; 1],
+    feeds: Vec<&'a str>,
 }
 
 fn polyresearch_reference_subscribe_frame(
     subscription: &PolyResearchReferenceSubscription,
-) -> Result<String, String> {
+) -> anyhow::Result<String> {
     let frame = PolyResearchReferenceSubscribeFrame {
         action: POLYRESEARCH_SUBSCRIBE_ACTION,
         r#type: POLYRESEARCH_REFERENCE_SUBSCRIPTION_TYPE,
         filters: PolyResearchReferenceSubscribeFilters {
-            feeds: [subscription.symbol.as_str()],
+            feeds: vec![subscription.symbol.as_str()],
         },
     };
-    serde_json::to_string(&frame)
-        .map_err(|error| format!("PolyResearch subscribe frame serialization failed: {error}"))
+    serde_json::to_string(&frame).map_err(|error| {
+        anyhow::anyhow!("PolyResearch subscribe frame serialization failed: {error}")
+    })
 }
 
 fn polyresearch_reference_outbound_handle(

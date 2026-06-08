@@ -5,6 +5,7 @@
 //! PMXT a canonical source-proof input or a reusable venue abstraction.
 
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -20,8 +21,11 @@ use nautilus_backtest::result::BacktestResult;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{OrderBookDelta, TradeTick},
+    enums::AggressorSide,
     identifiers::InstrumentId,
+    identifiers::TradeId,
     instruments::{Instrument, InstrumentAny},
+    types::{Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use nautilus_polymarket::{
@@ -107,6 +111,12 @@ pub struct PmxtSelectedSourceSchema {
     pub sell_side: String,
     pub book_event_type: String,
     pub price_change_event_type: String,
+    #[serde(default)]
+    pub last_trade_price_event_type: Option<String>,
+    #[serde(default)]
+    pub transaction_hash_column: Option<String>,
+    #[serde(default)]
+    pub fee_rate_bps_column: Option<String>,
     pub ignored_event_types: Vec<String>,
 }
 
@@ -114,6 +124,7 @@ pub struct PmxtSelectedSourceSchema {
 pub enum PmxtOneOffSelectedRow {
     BookSnapshot(PmxtOneOffSnapshotRow),
     PriceChange(PmxtPriceChangeRow),
+    LastTrade(PmxtOneOffTradeRow),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,7 +150,20 @@ pub struct PmxtPriceChangeRow {
     pub ts_init: UnixNanos,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PmxtOneOffTradeRow {
+    pub market: String,
+    pub asset_id: String,
+    pub transaction_hash: String,
+    pub price: String,
+    pub side: PmxtOneOffTickSide,
+    pub size: String,
+    pub fee_rate_bps: String,
+    pub timestamp: UnixNanos,
+    pub ts_init: UnixNanos,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PmxtOneOffTickSide {
     Buy,
     Sell,
@@ -158,7 +182,18 @@ pub struct PmxtOneOffNtProjection {
     pub instrument: InstrumentAny,
     pub order_book_deltas: Vec<OrderBookDelta>,
     pub trade_ticks: Vec<TradeTick>,
+    pub trade_dedupe_provenance: Vec<PmxtTradeDedupeProvenance>,
     pub nt_surfaces_used: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PmxtTradeDedupeProvenance {
+    pub trade_id: String,
+    pub transaction_hash: String,
+    pub asset_id: String,
+    pub duplicate_count: u64,
+    pub earliest_ts_init: UnixNanos,
+    pub max_ts_init: UnixNanos,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -608,6 +643,26 @@ fn decode_batch_rows(
                 )?)?,
                 ts_init: required_timestamp_nanos(batch, &schema.timestamp_received_column, row)?,
             }));
+        } else if schema.last_trade_price_event_type.as_deref() == Some(event_type.as_str()) {
+            let transaction_hash_column = schema
+                .transaction_hash_column
+                .as_deref()
+                .context("PMXT selected-source schema missing transaction_hash_column")?;
+            let fee_rate_bps_column = schema
+                .fee_rate_bps_column
+                .as_deref()
+                .context("PMXT selected-source schema missing fee_rate_bps_column")?;
+            rows.push(PmxtOneOffSelectedRow::LastTrade(PmxtOneOffTradeRow {
+                market: required_market_string(batch, &schema.market_column, row)?,
+                asset_id: required_string(batch, &schema.asset_id_column, row)?,
+                transaction_hash: required_string(batch, transaction_hash_column, row)?,
+                price: required_decimal_string(batch, &schema.price_column, row)?,
+                side: required_side(batch, schema, row)?,
+                size: required_decimal_string(batch, &schema.size_column, row)?,
+                fee_rate_bps: required_decimal_string(batch, fee_rate_bps_column, row)?,
+                timestamp: required_timestamp_nanos(batch, &schema.timestamp_column, row)?,
+                ts_init: required_timestamp_nanos(batch, &schema.timestamp_received_column, row)?,
+            }));
         } else if schema
             .ignored_event_types
             .iter()
@@ -652,7 +707,7 @@ pub fn project_pmxt_one_off_rows_to_nt(
     let (instrument_id, price_precision, size_precision) = binary_option_l2_metadata(&instrument)?;
 
     let mut order_book_deltas = Vec::new();
-    let trade_ticks = Vec::new();
+    let mut trade_rows = Vec::new();
     let mut nt_surfaces_used = vec![
         "nautilus_polymarket::http::parse::parse_gamma_market".to_string(),
         "nautilus_polymarket::http::parse::create_instrument_from_def".to_string(),
@@ -722,8 +777,28 @@ pub fn project_pmxt_one_off_rows_to_nt(
                     "nautilus_polymarket::websocket::parse::parse_book_deltas",
                 );
             }
+            PmxtOneOffSelectedRow::LastTrade(row) => {
+                ensure_selected_row(
+                    &row.market,
+                    &row.asset_id,
+                    &request.selected_condition_id,
+                    &request.selected_token_id,
+                )?;
+                trade_rows.push(row);
+                push_surface_once(&mut nt_surfaces_used, "nautilus_model::data::TradeTick");
+                push_surface_once(
+                    &mut nt_surfaces_used,
+                    "nautilus_model::types::{Price,Quantity}",
+                );
+                push_surface_once(
+                    &mut nt_surfaces_used,
+                    "pinned_nt_polymarket_http_data_api_trade_id_shape_mirrored",
+                );
+            }
         }
     }
+    let (trade_ticks, trade_dedupe_provenance) =
+        project_pmxt_trade_rows_to_nt(instrument_id, price_precision, size_precision, trade_rows)?;
 
     Ok(PmxtOneOffNtProjection {
         source_binding: request.source_binding,
@@ -731,7 +806,160 @@ pub fn project_pmxt_one_off_rows_to_nt(
         instrument,
         order_book_deltas,
         trade_ticks,
+        trade_dedupe_provenance,
         nt_surfaces_used,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PmxtSemanticTradeKey {
+    transaction_hash: String,
+    asset_id: String,
+    timestamp: u64,
+    price: String,
+    size: String,
+    side: PmxtOneOffTickSide,
+    fee_rate_bps: String,
+}
+
+#[derive(Debug, Clone)]
+struct PmxtTradeGroup {
+    row: PmxtOneOffTradeRow,
+    duplicate_count: u64,
+    earliest_ts_init: UnixNanos,
+    max_ts_init: UnixNanos,
+}
+
+fn project_pmxt_trade_rows_to_nt(
+    instrument_id: InstrumentId,
+    price_precision: u8,
+    size_precision: u8,
+    rows: Vec<PmxtOneOffTradeRow>,
+) -> Result<(Vec<TradeTick>, Vec<PmxtTradeDedupeProvenance>)> {
+    let mut groups = Vec::<PmxtTradeGroup>::new();
+    let mut group_index = HashMap::<PmxtSemanticTradeKey, usize>::new();
+    for row in rows {
+        ensure!(
+            !row.transaction_hash.trim().is_empty(),
+            "PMXT last_trade_price row missing transaction_hash"
+        );
+        ensure!(
+            row.transaction_hash.is_ascii(),
+            "PMXT last_trade_price transaction_hash must be ASCII to mirror pinned NT trade id slicing"
+        );
+        ensure!(
+            row.asset_id.is_ascii(),
+            "PMXT last_trade_price asset_id must be ASCII to mirror pinned NT trade id slicing"
+        );
+        let key = PmxtSemanticTradeKey {
+            transaction_hash: row.transaction_hash.clone(),
+            asset_id: row.asset_id.clone(),
+            timestamp: row.timestamp.as_u64(),
+            price: row.price.clone(),
+            size: row.size.clone(),
+            side: row.side,
+            fee_rate_bps: row.fee_rate_bps.clone(),
+        };
+        if let Some(index) = group_index.get(&key).copied() {
+            let group = &mut groups[index];
+            group.duplicate_count = group.duplicate_count.saturating_add(1);
+            if row.ts_init < group.earliest_ts_init {
+                group.earliest_ts_init = row.ts_init;
+            }
+            if row.ts_init > group.max_ts_init {
+                group.max_ts_init = row.ts_init;
+            }
+        } else {
+            let index = groups.len();
+            group_index.insert(key, index);
+            groups.push(PmxtTradeGroup {
+                earliest_ts_init: row.ts_init,
+                max_ts_init: row.ts_init,
+                row,
+                duplicate_count: 1,
+            });
+        }
+    }
+
+    let mut tx_asset_counts = HashMap::<(String, String), u32>::new();
+    let mut ticks = Vec::with_capacity(groups.len());
+    let mut provenance = Vec::new();
+    for group in groups {
+        let key = (
+            group.row.transaction_hash.clone(),
+            group.row.asset_id.clone(),
+        );
+        let seq = *tx_asset_counts
+            .entry(key)
+            .and_modify(|count| *count = count.saturating_add(1))
+            .or_insert(0);
+        let trade_id =
+            build_pmxt_historical_trade_id(&group.row.transaction_hash, &group.row.asset_id, seq)?;
+        let price = parse_pmxt_trade_price(&group.row.price, price_precision)?;
+        let size = parse_pmxt_trade_quantity(&group.row.size, size_precision)?;
+        let tick = TradeTick::new_checked(
+            instrument_id,
+            price,
+            size,
+            AggressorSide::from(PolymarketOrderSide::from(group.row.side)),
+            TradeId::new(trade_id.as_str()),
+            group.row.timestamp,
+            group.earliest_ts_init,
+        )
+        .context("create PMXT one-off NT TradeTick")?;
+        if group.duplicate_count > 1 {
+            provenance.push(PmxtTradeDedupeProvenance {
+                trade_id: trade_id.clone(),
+                transaction_hash: group.row.transaction_hash,
+                asset_id: group.row.asset_id,
+                duplicate_count: group.duplicate_count,
+                earliest_ts_init: group.earliest_ts_init,
+                max_ts_init: group.max_ts_init,
+            });
+        }
+        ticks.push(tick);
+    }
+    Ok((ticks, provenance))
+}
+
+fn build_pmxt_historical_trade_id(
+    transaction_hash: &str,
+    asset_id: &str,
+    seq: u32,
+) -> Result<String> {
+    ensure!(
+        transaction_hash.is_ascii(),
+        "PMXT transaction_hash must be ASCII"
+    );
+    ensure!(asset_id.is_ascii(), "PMXT asset_id must be ASCII");
+    let hash_suffix = ascii_suffix(transaction_hash, 24)?;
+    let asset_suffix = ascii_suffix(asset_id, 4)?;
+    Ok(format!("{hash_suffix}-{asset_suffix}-{seq:06}"))
+}
+
+fn ascii_suffix(value: &str, max_len: usize) -> Result<&str> {
+    ensure!(value.is_ascii(), "PMXT trade id component must be ASCII");
+    if value.len() > max_len {
+        Ok(&value[value.len() - max_len..])
+    } else {
+        Ok(value)
+    }
+}
+
+fn parse_pmxt_trade_price(raw: &str, precision: u8) -> Result<Price> {
+    let value = raw
+        .parse::<f64>()
+        .with_context(|| format!("parse PMXT trade price {raw:?}"))?;
+    Price::new_checked(value, precision)
+        .map_err(|error| anyhow::anyhow!("create NT Price from PMXT trade price {raw:?}: {error}"))
+}
+
+fn parse_pmxt_trade_quantity(raw: &str, precision: u8) -> Result<Quantity> {
+    let value = raw
+        .parse::<f64>()
+        .with_context(|| format!("parse PMXT trade size {raw:?}"))?;
+    Quantity::new_checked(value, precision).map_err(|error| {
+        anyhow::anyhow!("create NT Quantity from PMXT trade size {raw:?}: {error}")
     })
 }
 

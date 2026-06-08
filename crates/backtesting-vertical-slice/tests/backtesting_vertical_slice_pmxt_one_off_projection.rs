@@ -13,13 +13,13 @@ use backtesting_vertical_slice::{
     },
     pmxt_one_off_backfill_projection::{
         PMXT_ONE_OFF_RESULT_CONTRACT_FILE, PmxtBookLevel, PmxtOneOffArtifactRootRunSpec,
-        PmxtOneOffBacktestContractSpec, PmxtOneOffConversionProjectionSpec,
+        PmxtOneOffBacktestContractSpec, PmxtOneOffConversionProjectionSpec, PmxtOneOffNtProjection,
         PmxtOneOffProjectionRequest, PmxtOneOffSelectedRow, PmxtOneOffSnapshotRow,
-        PmxtOneOffTickSide, PmxtPriceChangeRow, PmxtSelectedSourceProjectionSpec,
-        PmxtSelectedSourceSchema, project_pmxt_one_off_rows_to_nt,
-        project_pmxt_selected_source_parquet_to_nt, run_pmxt_one_off_l2_backtest_contract,
-        write_pmxt_one_off_conversion_projection, write_pmxt_one_off_l2_artifact_root_run,
-        write_pmxt_one_off_projection_to_catalog,
+        PmxtOneOffTickSide, PmxtOneOffTradeRow, PmxtPriceChangeRow,
+        PmxtSelectedSourceProjectionSpec, PmxtSelectedSourceSchema,
+        project_pmxt_one_off_rows_to_nt, project_pmxt_selected_source_parquet_to_nt,
+        run_pmxt_one_off_l2_backtest_contract, write_pmxt_one_off_conversion_projection,
+        write_pmxt_one_off_l2_artifact_root_run, write_pmxt_one_off_projection_to_catalog,
     },
     result_contract::BacktestResultContract,
     result_contract::ResultArtifactUris,
@@ -38,7 +38,7 @@ use nautilus_backtest::{
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::OrderBookDelta,
+    data::{OrderBookDelta, TradeTick},
     enums::{AccountType, BookAction, BookType, OmsType, OrderSide},
     identifiers::InstrumentId,
     instruments::{Instrument, InstrumentAny},
@@ -135,6 +135,45 @@ fn pmxt_one_off_projection_uses_nt_polymarket_metadata_and_l2_parsers() {
 }
 
 #[test]
+fn pmxt_one_off_projection_projects_trade_ticks_with_transaction_hash_dedupe_and_sequences() {
+    let projection = pmxt_trade_projection_fixture();
+
+    assert!(projection.order_book_deltas.is_empty());
+    assert_eq!(projection.trade_ticks.len(), 2);
+    assert_eq!(
+        projection.trade_ticks[0].trade_id.to_string(),
+        "000000000000000000abcdef-en-a-000000"
+    );
+    assert_eq!(
+        projection.trade_ticks[1].trade_id.to_string(),
+        "000000000000000000abcdef-en-a-000001"
+    );
+    assert_eq!(
+        projection.trade_ticks[0].ts_event,
+        UnixNanos::from(1_772_023_200_123_000_000)
+    );
+    assert_eq!(
+        projection.trade_ticks[0].ts_init,
+        UnixNanos::from(1_772_023_200_223_000_000)
+    );
+    assert_eq!(
+        projection.trade_ticks[1].ts_event,
+        UnixNanos::from(1_772_023_200_456_000_000)
+    );
+    assert_eq!(projection.trade_dedupe_provenance.len(), 1);
+    assert_eq!(projection.trade_dedupe_provenance[0].duplicate_count, 2);
+    assert_eq!(
+        projection.trade_dedupe_provenance[0].max_ts_init,
+        UnixNanos::from(1_772_023_200_323_000_000)
+    );
+    assert!(
+        projection
+            .nt_surfaces_used
+            .contains(&"nautilus_model::data::TradeTick".to_string())
+    );
+}
+
+#[test]
 fn pmxt_one_off_projection_rejects_canonical_usage_scope() {
     let error = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
         source_binding: "synthetic-pmxt-one-off-source".to_string(),
@@ -220,6 +259,40 @@ fn pmxt_one_off_projection_writes_nt_catalog_and_backtest_node_consumes_l2() {
 }
 
 #[test]
+fn pmxt_one_off_projection_writes_nt_catalog_and_reads_back_trade_ticks() {
+    let projection = pmxt_trade_projection_fixture();
+    let instrument_id = binary_option_instrument_id(&projection.instrument);
+    let catalog_dir = tempfile::TempDir::new().expect("catalog dir");
+    let catalog_report = write_pmxt_one_off_projection_to_catalog(catalog_dir.path(), &projection)
+        .expect("write PMXT one-off TradeTick projection to catalog");
+
+    assert_eq!(catalog_report.order_book_delta_count, 0);
+    assert_eq!(catalog_report.trade_tick_count, 2);
+    assert!(!catalog_report.catalog_hash.is_empty());
+
+    let mut catalog = ParquetDataCatalog::new(catalog_dir.path(), None, None, None, None);
+    let loaded: Vec<TradeTick> = catalog
+        .query_typed_data::<TradeTick>(
+            Some(vec![instrument_id.to_string()]),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .expect("read back PMXT TradeTicks");
+    assert_eq!(loaded.len(), 2);
+    assert_eq!(
+        loaded[0].trade_id.to_string(),
+        "000000000000000000abcdef-en-a-000000"
+    );
+    assert_eq!(
+        loaded[1].trade_id.to_string(),
+        "000000000000000000abcdef-en-a-000001"
+    );
+}
+
+#[test]
 fn pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let selected_parquet_path = dir.path().join("selected-source.parquet");
@@ -264,6 +337,49 @@ fn pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan() {
     assert_eq!(
         selected.projection.order_book_deltas[3].ts_init,
         UnixNanos::from(1_772_023_200_556_000_000)
+    );
+}
+
+#[test]
+fn pmxt_selected_source_parquet_projects_trade_ticks_from_configured_trade_columns() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let selected_parquet_path = dir.path().join("selected-source.parquet");
+    let selector_report_path = dir.path().join("first-proof-selector-report.json");
+    let selected_report_path = dir.path().join("selected-source-report.json");
+    write_pmxt_selected_source_trade_fixture(&selected_parquet_path);
+    write_selector_report_fixture(&selector_report_path);
+    write_selected_source_report_with_selector(
+        &selected_report_path,
+        &selected_parquet_path,
+        &selector_report_path,
+        3,
+    );
+
+    let selected = project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
+        source_binding: "synthetic-pmxt-one-off-source".to_string(),
+        usage_scope: SourceProofUsageScope::OneOffBackfillData,
+        selected_condition_id: "0xcondition".to_string(),
+        selected_token_id: "token-a".to_string(),
+        gamma_markets: gamma_markets(),
+        selected_source_parquet_path: selected_parquet_path,
+        selected_source_report_path: selected_report_path,
+        schema: pmxt_selected_source_schema_with_trades(),
+    })
+    .expect("project selected-source parquet with last_trade_price rows");
+
+    assert_eq!(selected.selected_rows, 3);
+    assert_eq!(selected.projected_l2_rows, 3);
+    assert_eq!(selected.skipped_non_l2_rows, 0);
+    assert!(selected.projection.order_book_deltas.is_empty());
+    assert_eq!(selected.projection.trade_ticks.len(), 2);
+    assert_eq!(
+        selected.projection.trade_ticks[0].trade_id.to_string(),
+        "000000000000000000abcdef-en-a-000000"
+    );
+    assert_eq!(selected.projection.trade_dedupe_provenance.len(), 1);
+    assert_eq!(
+        selected.projection.trade_dedupe_provenance[0].duplicate_count,
+        2
     );
 }
 
@@ -865,6 +981,53 @@ fn pmxt_projection_fixture()
     .expect("project PMXT one-off rows")
 }
 
+fn pmxt_trade_projection_fixture() -> PmxtOneOffNtProjection {
+    let same_hash = "0x000000000000000000000000000000000000000000000000000000000000abcdef";
+    project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
+        source_binding: "synthetic-pmxt-one-off-source".to_string(),
+        usage_scope: SourceProofUsageScope::OneOffBackfillData,
+        selected_condition_id: "0xcondition".to_string(),
+        selected_token_id: "token-a".to_string(),
+        gamma_markets: gamma_markets(),
+        rows: vec![
+            PmxtOneOffSelectedRow::LastTrade(PmxtOneOffTradeRow {
+                market: "0xcondition".to_string(),
+                asset_id: "token-a".to_string(),
+                transaction_hash: same_hash.to_string(),
+                price: "0.4900".to_string(),
+                side: PmxtOneOffTickSide::Buy,
+                size: "2.000000".to_string(),
+                fee_rate_bps: "0".to_string(),
+                timestamp: UnixNanos::from(1_772_023_200_123_000_000),
+                ts_init: UnixNanos::from(1_772_023_200_223_000_000),
+            }),
+            PmxtOneOffSelectedRow::LastTrade(PmxtOneOffTradeRow {
+                market: "0xcondition".to_string(),
+                asset_id: "token-a".to_string(),
+                transaction_hash: same_hash.to_string(),
+                price: "0.4900".to_string(),
+                side: PmxtOneOffTickSide::Buy,
+                size: "2.000000".to_string(),
+                fee_rate_bps: "0".to_string(),
+                timestamp: UnixNanos::from(1_772_023_200_123_000_000),
+                ts_init: UnixNanos::from(1_772_023_200_323_000_000),
+            }),
+            PmxtOneOffSelectedRow::LastTrade(PmxtOneOffTradeRow {
+                market: "0xcondition".to_string(),
+                asset_id: "token-a".to_string(),
+                transaction_hash: same_hash.to_string(),
+                price: "0.5000".to_string(),
+                side: PmxtOneOffTickSide::Sell,
+                size: "3.000000".to_string(),
+                fee_rate_bps: "0".to_string(),
+                timestamp: UnixNanos::from(1_772_023_200_456_000_000),
+                ts_init: UnixNanos::from(1_772_023_200_556_000_000),
+            }),
+        ],
+    })
+    .expect("project PMXT one-off trade rows")
+}
+
 fn binary_option_instrument_id(instrument: &InstrumentAny) -> InstrumentId {
     match instrument {
         InstrumentAny::BinaryOption(instrument) => instrument.id(),
@@ -1024,7 +1187,20 @@ fn pmxt_selected_source_schema() -> PmxtSelectedSourceSchema {
         sell_side: "SELL".to_string(),
         book_event_type: "book".to_string(),
         price_change_event_type: "price_change".to_string(),
+        last_trade_price_event_type: None,
+        transaction_hash_column: None,
+        fee_rate_bps_column: None,
         ignored_event_types: vec!["last_trade_price".to_string()],
+    }
+}
+
+fn pmxt_selected_source_schema_with_trades() -> PmxtSelectedSourceSchema {
+    PmxtSelectedSourceSchema {
+        last_trade_price_event_type: Some("last_trade_price".to_string()),
+        transaction_hash_column: Some("transaction_hash".to_string()),
+        fee_rate_bps_column: Some("fee_rate_bps".to_string()),
+        ignored_event_types: Vec::new(),
+        ..pmxt_selected_source_schema()
     }
 }
 
@@ -1164,6 +1340,102 @@ fn write_pmxt_selected_source_fixture_with_market_array(
     let mut writer = ArrowWriter::try_new(file, schema, None).expect("parquet writer");
     writer.write(&batch).expect("write selected source parquet");
     writer.close().expect("close selected source parquet");
+}
+
+fn write_pmxt_selected_source_trade_fixture(path: &std::path::Path) {
+    let same_hash = "0x000000000000000000000000000000000000000000000000000000000000abcdef";
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "timestamp_received",
+            DataType::Timestamp(TimeUnit::Nanosecond, Some("+00:00".into())),
+            false,
+        ),
+        Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, Some("+00:00".into())),
+            false,
+        ),
+        Field::new("market", DataType::Binary, false),
+        Field::new("event_type", DataType::Utf8, false),
+        Field::new("asset_id", DataType::Utf8, false),
+        Field::new("bids", DataType::Utf8, true),
+        Field::new("asks", DataType::Utf8, true),
+        Field::new("price", DataType::Decimal128(9, 4), true),
+        Field::new("size", DataType::Decimal128(18, 6), true),
+        Field::new("side", DataType::Utf8, true),
+        Field::new("best_bid", DataType::Decimal128(9, 4), true),
+        Field::new("best_ask", DataType::Decimal128(9, 4), true),
+        Field::new("transaction_hash", DataType::Utf8, false),
+        Field::new("fee_rate_bps", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(
+                TimestampNanosecondArray::from(vec![
+                    1_772_023_200_223_000_000,
+                    1_772_023_200_323_000_000,
+                    1_772_023_200_556_000_000,
+                ])
+                .with_timezone_utc(),
+            ) as ArrayRef,
+            Arc::new(
+                TimestampNanosecondArray::from(vec![
+                    1_772_023_200_123_000_000,
+                    1_772_023_200_123_000_000,
+                    1_772_023_200_456_000_000,
+                ])
+                .with_timezone_utc(),
+            ) as ArrayRef,
+            Arc::new(BinaryArray::from(vec![
+                Some(b"0xcondition".as_slice()),
+                Some(b"0xcondition".as_slice()),
+                Some(b"0xcondition".as_slice()),
+            ])) as ArrayRef,
+            Arc::new(StringArray::from(vec![
+                "last_trade_price",
+                "last_trade_price",
+                "last_trade_price",
+            ])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["token-a", "token-a", "token-a"])) as ArrayRef,
+            Arc::new(StringArray::from(vec![None::<&str>, None, None])) as ArrayRef,
+            Arc::new(StringArray::from(vec![None::<&str>, None, None])) as ArrayRef,
+            Arc::new(
+                Decimal128Array::from(vec![Some(4900), Some(4900), Some(5000)])
+                    .with_precision_and_scale(9, 4)
+                    .expect("trade price decimal"),
+            ) as ArrayRef,
+            Arc::new(
+                Decimal128Array::from(vec![Some(2_000_000), Some(2_000_000), Some(3_000_000)])
+                    .with_precision_and_scale(18, 6)
+                    .expect("trade size decimal"),
+            ) as ArrayRef,
+            Arc::new(StringArray::from(vec![
+                Some("BUY"),
+                Some("BUY"),
+                Some("SELL"),
+            ])) as ArrayRef,
+            Arc::new(
+                Decimal128Array::from(vec![None, None, None])
+                    .with_precision_and_scale(9, 4)
+                    .expect("best bid decimal"),
+            ) as ArrayRef,
+            Arc::new(
+                Decimal128Array::from(vec![None, None, None])
+                    .with_precision_and_scale(9, 4)
+                    .expect("best ask decimal"),
+            ) as ArrayRef,
+            Arc::new(StringArray::from(vec![same_hash, same_hash, same_hash])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["0", "0", "0"])) as ArrayRef,
+        ],
+    )
+    .expect("selected-source trade batch");
+    let file = File::create(path).expect("create selected source parquet");
+    let mut writer = ArrowWriter::try_new(file, schema, None).expect("parquet writer");
+    writer
+        .write(&batch)
+        .expect("write selected source trade parquet");
+    writer.close().expect("close selected source trade parquet");
 }
 
 fn write_selector_report_fixture(path: &std::path::Path) {

@@ -91,7 +91,7 @@
       "prompt_requirement": "idempotency proof",
       "bounded_first_proof_status": "pmxt_one_off_l2_idempotency_proven",
       "evidence": "PMXT one-off L2 conversion reuses matching completed manifest/checkpoint/catalog metadata; mismatched or dirty output remains gated by the generic conversion boundary. Result-contract reruns preserve an existing one-off contract only after stable-field comparison; NT run-volatiles machine_id, instance_id, and elapsed_time_secs are not treated as semantic source/catalog changes.",
-      "required_before_acceptance": "Keep this idempotency scoped to the bounded one-off artifact; broad backfill still needs coverage, partitioning, throughput, and TradeTick proof."
+      "required_before_acceptance": "Keep this idempotency scoped to the bounded one-off artifact; broad backfill still needs coverage, partitioning, throughput, and mixed data-family artifact binding."
     },
     {
       "prompt_requirement": "whether NT already provides needed mechanism",
@@ -103,7 +103,7 @@
       "prompt_requirement": "BacktestNode consumes exactly the verified catalog",
       "bounded_first_proof_status": "concrete_pmxt_one_off_l2_artifact_root_written",
       "evidence": "NT BacktestNode queries OrderBookDelta from ParquetDataCatalog and validates L2_MBP venues have order-book data. BTE manifest/data-config mapping is TDD-proven for OrderBookDelta and configured instrument_ids. NT-native BinaryOption/OrderBookDelta/TradeTick fixture write/read/logical-hash is TDD-proven. The PMXT one-off artifact-root writer validates selected-source and selector report hashes, projects selected PMXT L2 rows to ParquetDataCatalog, binds logical catalog hash 2a49db95fe31a87896bcb3989ec99abd6b1b805173732c4f27bf2ab523d1868c, and the concrete config-owned CLI run produced nt_iterations 103 from the selected PMXT sample.",
-      "required_before_acceptance": "Treat this as one-off PMXT L2 evidence only; PMXT TradeTick, expanded coverage, and dynamic tick-size replay remain separate gates."
+      "required_before_acceptance": "Treat this as one-off PMXT L2 evidence only; mixed TradeTick artifact binding, expanded coverage, and dynamic tick-size replay remain separate gates."
     },
     {
       "prompt_requirement": "result contract provenance binds the run",
@@ -148,7 +148,7 @@
     {
       "area": "source selector",
       "required_shape": "TOML/source-proof-owned event-count selector over source event families and row budget; no venue, asset, or symbol constants in production code.",
-      "current_status": "TDD-proven for generic configured event-family roles, excluded-event assets, row-budget ordering, event-count ledger hash, selected_asset_ids_hash, idempotent report writing, config-owned event-count parquet scanning, and thin CLIs. A concrete PMXT selector report was generated from the one-hour sample; config-owned selected-source Parquet decoding now projects bounded PMXT L2 rows into the one-off NT projection path without rescanning the full raw object. PMXT remains one-off backfill evidence, not a reusable converter abstraction. PMXT TradeTick trade-id proof remains pending."
+      "current_status": "TDD-proven for generic configured event-family roles, excluded-event assets, row-budget ordering, event-count ledger hash, selected_asset_ids_hash, idempotent report writing, config-owned event-count parquet scanning, and thin CLIs. A concrete PMXT selector report was generated from the one-hour sample; config-owned selected-source Parquet decoding now projects bounded PMXT L2 rows and configured PMXT last_trade_price rows into the one-off NT projection path without rescanning the full raw object. PMXT remains one-off backfill evidence, not a reusable converter abstraction. Mixed data-family artifact-root/result-contract support remains pending."
     },
     {
       "area": "manifest data config",
@@ -158,7 +158,7 @@
     {
       "area": "catalog projection",
       "required_shape": "Write InstrumentAny::BinaryOption, OrderBookDelta, and TradeTick to ParquetDataCatalog; read all three logical classes back and hash them deterministically.",
-      "current_status": "TDD-proven for an NT-native fixture, including BacktestNode consumption of a BinaryOption L2 OrderBookDelta catalog. PMXT one-off projection reuses nautilus-polymarket metadata/snapshot/delta parsers, writes BinaryOption plus OrderBookDelta data to ParquetDataCatalog, reads it back, and proves BacktestNode consumption for L2 rows. PMXT TradeTick projection remains pending because the pinned historical trade-id helper is crate-private."
+      "current_status": "TDD-proven for an NT-native fixture, including BacktestNode consumption of a BinaryOption L2 OrderBookDelta catalog. PMXT one-off projection reuses nautilus-polymarket metadata/snapshot/delta parsers, writes BinaryOption plus OrderBookDelta data to ParquetDataCatalog, reads it back, and proves BacktestNode consumption for L2 rows. PMXT TradeTick projection now mirrors pinned NT's crate-private historical transaction_hash+asset+sequence TradeId shape with provenance, emits NT TradeTick values, and writes/reads them through ParquetDataCatalog for one-off selected-source rows. Concrete mixed OrderBookDelta+TradeTick artifact-root/result-contract support remains pending."
     },
     {
       "area": "conversion governance",
@@ -251,13 +251,18 @@
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_artifact_root_cli_writes_result_contract_from_config_owned_spec passed after adding the thin config-owned PMXT one-off artifact-root CLI.",
     "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source_report_chain failed on rerun because NT run-volatiles changed the generated result contract bytes.",
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source_report_chain passed after result-contract reruns preserved the existing artifact only when all stable fields matched.",
-    "GREEN rust_verification cargo run --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-one-off-artifact-root-run-2026-06-08/spec.toml produced result_contract_hash 443a9748ad878984a4959ed840a1132f27c52575d70354af1b5e290cd50d4f19, conversion_manifest_hash f460cbb4d9be89d12984deb2fa3ce30959fc42b69fd08873714d8c2d632270ea, catalog_hash 2a49db95fe31a87896bcb3989ec99abd6b1b805173732c4f27bf2ab523d1868c, selected_source_parquet_hash 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, event_count_ledger_hash 9491b9fe73ba1bf75024fc113f6bf918866b952db9e81d262cc1fcaf0367dd2e, selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110, projected_l2_rows 4, and nt_iterations 103."
+    "GREEN rust_verification cargo run --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-one-off-artifact-root-run-2026-06-08/spec.toml produced result_contract_hash 443a9748ad878984a4959ed840a1132f27c52575d70354af1b5e290cd50d4f19, conversion_manifest_hash f460cbb4d9be89d12984deb2fa3ce30959fc42b69fd08873714d8c2d632270ea, catalog_hash 2a49db95fe31a87896bcb3989ec99abd6b1b805173732c4f27bf2ab523d1868c, selected_source_parquet_hash 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, event_count_ledger_hash 9491b9fe73ba1bf75024fc113f6bf918866b952db9e81d262cc1fcaf0367dd2e, selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110, projected_l2_rows 4, and nt_iterations 103.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_projection_projects_trade_ticks_with_transaction_hash_dedupe_and_sequences failed because PMXT TradeTick row projection, LastTrade, and dedupe provenance were absent.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_projection_projects_trade_ticks_with_transaction_hash_dedupe_and_sequences passed after the PMXT one-off projection mirrored pinned NT's crate-private historical TradeId shape and emitted NT TradeTick values with dedupe provenance.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_trade_ticks_from_configured_trade_columns passed for configured selected-source transaction_hash and fee_rate_bps columns.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_projection_writes_nt_catalog_and_reads_back_trade_ticks passed after PMXT one-off TradeTicks were written to and queried back from NT ParquetDataCatalog.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 14 focused PMXT one-off projection tests."
   ],
   "still_blocking_broad_backfill": [
     "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven.",
     "One-hour bounded sample does not prove one-year PMXT coverage, gaps, retention, throughput, or cost.",
     "Pending PMXT source proof has not passed storage, coverage, completeness, cost, and broad accepted NT mapping checks.",
     "Only one bounded PMXT one-off L2 result-contract artifact exists; it does not prove expanded tranche coverage or reusable PMXT backfill.",
-    "PMXT last_trade_price TradeTick projection remains blocked on a focused decision for the pinned NT historical trade-id helper being crate-private."
+    "PMXT TradeTick projection/catalog read-back is TDD-proven for one-off selected-source rows, but concrete mixed OrderBookDelta+TradeTick artifact-root/result-contract support is still pending."
   ]
 }

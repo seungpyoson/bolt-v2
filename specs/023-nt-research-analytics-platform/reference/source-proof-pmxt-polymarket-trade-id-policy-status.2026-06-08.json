@@ -2,7 +2,7 @@
   "schema_version": "source-proof-pmxt-polymarket-trade-id-policy-status.v1",
   "task_id": "BACKTESTING_ENGINE-022",
   "source_binding": "polymarket-parquet-archive-index",
-  "status": "policy_selected_tdd_unproven",
+  "status": "policy_selected_tdd_proven_for_one_off_projection",
   "recorded_at_utc": "2026-06-08T00:00:00Z",
   "scope": {
     "question": "How should PMXT last_trade_price transaction_hash map to NT TradeTick.trade_id?",
@@ -109,10 +109,17 @@
     "Exact semantic duplicate rows with different timestamp_received are deduped to one TradeTick with recorded duplicate_count and received-time provenance.",
     "TradeTick ts_event and ts_init policy is deterministic and preserves source timestamp versus timestamp_received provenance."
   ],
+  "implementation_evidence": [
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_projection_projects_trade_ticks_with_transaction_hash_dedupe_and_sequences failed because PmxtOneOffTradeRow, LastTrade, and trade_dedupe_provenance were absent.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_projection_projects_trade_ticks_with_transaction_hash_dedupe_and_sequences passed after PMXT one-off projection mirrored pinned NT's crate-private transaction_hash+asset+sequence TradeId shape, deduped semantic duplicate rows using earliest timestamp_received as ts_init, preserved max timestamp_received in provenance, and emitted NT TradeTick values.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_trade_ticks_from_configured_trade_columns passed after configured selected-source transaction_hash and fee_rate_bps columns decoded into the same PMXT one-off TradeTick path.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_projection_writes_nt_catalog_and_reads_back_trade_ticks passed after PMXT one-off TradeTicks were written to and queried back from NT ParquetDataCatalog.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 14 focused PMXT one-off projection tests."
+  ],
   "current_decision": {
     "trade_id_policy_can_close": true,
     "bte_022_can_close": false,
     "broad_backfill_allowed": false,
-    "next_required_evidence": "Focused TDD tests proving the selected TradeId, dedupe, sequence, and timestamp policy against the one-object sample; this does not close tick-size epoch replay or PMXT L2 catalog/backtest proof."
+    "next_required_evidence": "Concrete PMXT one-off artifact-root/result-contract support must become multi-data-family before claiming the selected sample binds both OrderBookDelta and TradeTick; this does not close tick-size epoch replay, expanded coverage, or broad PMXT backfill."
   }
 }

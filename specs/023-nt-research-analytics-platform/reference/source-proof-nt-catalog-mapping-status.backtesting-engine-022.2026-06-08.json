@@ -1,7 +1,7 @@
 {
   "schema_version": "source-proof-nt-catalog-mapping-status.v1",
   "task_id": "BACKTESTING_ENGINE-022",
-  "status": "open_pmxt_one_off_l2_artifact_proven_trade_tick_pending",
+  "status": "open_pmxt_one_off_l2_artifact_and_trade_tick_projection_proven_multi_data_artifact_pending",
   "recorded_at": "2026-06-08",
   "decision": "Do not start broad PMXT backfill. PMXT may proceed only as one-off backfill evidence after the chosen selected-source sample is converted into NT-native data classes, written to ParquetDataCatalog under the artifact root, queried back, consumed by BacktestNode, and bound to a result contract.",
   "nt_capability_evidence": [
@@ -64,7 +64,7 @@
       "evidence": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1448, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1524, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1762, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1991"
     },
     {
-      "limitation": "The catalog hash/read-back path now covers an NT-native BinaryOption, OrderBookDelta, and TradeTick fixture. PMXT has a one-off selected-source L2 OrderBookDelta projection path for bounded evidence only; it is not a reusable broad backfill adapter and PMXT TradeTick projection remains pending.",
+      "limitation": "The catalog hash/read-back path covers an NT-native BinaryOption, OrderBookDelta, and TradeTick fixture. PMXT has one-off selected-source OrderBookDelta and TradeTick projection/read-back paths for bounded evidence only; this is not a reusable broad backfill adapter and mixed PMXT artifact-root/result-contract support remains pending.",
       "evidence": "repo://crates/backtesting-vertical-slice/src/catalog_projection.rs:313, repo://crates/backtesting-vertical-slice/src/catalog_projection.rs:777"
     }
   ],
@@ -82,8 +82,8 @@
         "OrderBookDelta",
         "TradeTick"
       ],
-      "status": "one_off_order_book_delta_concrete_artifact_root_proven_trade_tick_pending",
-      "required_path": "Keep PMXT as one-off backfill evidence, reuse pinned nautilus-polymarket parser/provider surfaces, and separately prove PMXT TradeTick plus expanded coverage before any broader L2 claim."
+      "status": "one_off_order_book_delta_concrete_artifact_root_proven_trade_tick_projection_proven_multi_data_artifact_pending",
+      "required_path": "Keep PMXT as one-off backfill evidence, reuse pinned nautilus-polymarket parser/provider surfaces, and separately prove mixed OrderBookDelta+TradeTick artifact-root/result-contract support plus expanded coverage before any broader L2 claim."
     },
     {
       "source_binding": "pmxt-kalshi-orderbook-archive",
@@ -165,7 +165,7 @@
       "GREEN rust_verification cargo run --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-one-off-artifact-root-run-2026-06-08/spec.toml produced result_contract_hash 443a9748ad878984a4959ed840a1132f27c52575d70354af1b5e290cd50d4f19, catalog_hash 2a49db95fe31a87896bcb3989ec99abd6b1b805173732c4f27bf2ab523d1868c, projected_l2_rows 4, and nt_iterations 103."
     ],
     "claim_limits": [
-      "Does not prove PMXT TradeTick catalog projection.",
+      "PMXT TradeTick projection/catalog read-back is now proven only for one-off selected-source rows; mixed artifact-root/result-contract binding remains pending.",
       "Concrete generated /private/tmp PMXT selected-source parquet invocation is proven only for the bounded one-off sample.",
       "Does not authorize broad PMXT backfill."
     ]
@@ -182,7 +182,7 @@
     ],
     "claim_limits": [
       "Does not prove PMXT BinaryOption catalog projection.",
-      "Does not prove PMXT TradeTick read-back.",
+      "PMXT TradeTick projection/catalog read-back is now proven only for one-off selected-source rows; mixed artifact-root/result-contract binding remains pending.",
       "Concrete generated /private/tmp PMXT artifact invocation is proven only for the bounded one-off L2 selected-source sample.",
       "Does not authorize broad PMXT backfill."
     ]
@@ -196,8 +196,8 @@
       "just bte-fmt-check passed."
     ],
     "claim_limits": [
-      "Does not prove PMXT TradeTick row decoding.",
-      "Does not prove pinned NT's crate-private historical trade-id helper can be reused directly.",
+      "PMXT TradeTick row decoding is now proven only for the bounded one-off selected-source/catalog path.",
+      "Pinned NT's crate-private historical trade-id helper is mirrored with provenance; direct helper reuse remains unavailable.",
       "Concrete generated /private/tmp PMXT artifact invocation is proven only for the bounded one-off L2 selected-source sample.",
       "Does not authorize broad PMXT backfill."
     ]
@@ -213,8 +213,8 @@
       "managed BTE clippy passed."
     ],
     "claim_limits": [
-      "Does not prove PMXT TradeTick row decoding.",
-      "Does not prove pinned NT's crate-private historical trade-id helper can be reused directly.",
+      "PMXT TradeTick row decoding is now proven only for the bounded one-off selected-source/catalog path.",
+      "Pinned NT's crate-private historical trade-id helper is mirrored with provenance; direct helper reuse remains unavailable.",
       "Concrete generated /private/tmp PMXT artifact invocation is proven only for the bounded one-off L2 selected-source sample.",
       "Does not authorize broad PMXT backfill."
     ]
@@ -235,11 +235,16 @@
       "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_fixed_size_binary_market_column passed after one-off selected-source decoding normalized FixedSizeBinary market bytes to a hex string for NT Polymarket matching.",
       "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_artifact_root_cli_writes_result_contract_from_config_owned_spec failed because the config-owned PMXT one-off artifact-root CLI did not exist.",
       "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_artifact_root_cli_writes_result_contract_from_config_owned_spec passed after adding the thin config-owned PMXT one-off artifact-root CLI.",
+      "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_projection_projects_trade_ticks_with_transaction_hash_dedupe_and_sequences failed because PMXT TradeTick row projection, LastTrade, and dedupe provenance were absent.",
+      "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_projection_projects_trade_ticks_with_transaction_hash_dedupe_and_sequences passed after the PMXT one-off projection mirrored pinned NT's crate-private historical TradeId shape and emitted NT TradeTick values with dedupe provenance.",
+      "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_trade_ticks_from_configured_trade_columns passed for configured selected-source transaction_hash and fee_rate_bps columns.",
+      "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_projection_writes_nt_catalog_and_reads_back_trade_ticks passed after PMXT one-off TradeTicks were written to and queried back from NT ParquetDataCatalog.",
+      "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 14 focused PMXT one-off projection tests.",
       "GREEN rust_verification cargo run --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-one-off-artifact-root-run-2026-06-08/spec.toml produced result_contract_hash 443a9748ad878984a4959ed840a1132f27c52575d70354af1b5e290cd50d4f19, conversion_manifest_hash f460cbb4d9be89d12984deb2fa3ce30959fc42b69fd08873714d8c2d632270ea, catalog_hash 2a49db95fe31a87896bcb3989ec99abd6b1b805173732c4f27bf2ab523d1868c, selected_source_parquet_hash 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, event_count_ledger_hash 9491b9fe73ba1bf75024fc113f6bf918866b952db9e81d262cc1fcaf0367dd2e, selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110, projected_l2_rows 4, and nt_iterations 103."
     ],
     "claim_limits": [
       "Proves PMXT one-off L2 conversion metadata and concrete artifact_root run over the generated /private/tmp selected-source parquet.",
-      "Does not prove PMXT TradeTick row decoding.",
+      "PMXT TradeTick projection/catalog read-back is proven for one-off selected-source rows, but concrete PMXT artifact-root/result-contract invocation still binds only the bounded L2 path.",
       "Concrete PMXT artifact invocation is one bounded one-off sample only.",
       "Does not authorize broad PMXT backfill."
     ]
@@ -247,8 +252,8 @@
   "non_hardcoding_decision": "Bybit, Binance, Polymarket, Kalshi, and Hyperliquid remain source-binding examples. The next mapping work must be data-family driven: source schema plus registry binding plus NT data class, with no runtime venue or instrument constants in production code.",
   "next_required_evidence": [
     "Promote or archive the concrete PMXT one-off L2 artifact only if required; do not generalize PMXT from this bounded sample.",
-    "TDD proof for the selected PMXT historical TradeId path because pinned NT's build_polymarket_trade_id helper is crate-private; either mirror the pinned format with provenance or expose it upstream before claiming direct NT helper reuse.",
-    "Generic PMXT TradeTick projection contract from source last_trade_price events to NT TradeTick, including trade ids and first-proof tick-size claim limits.",
+    "Mixed PMXT one-off artifact-root/result-contract support for both OrderBookDelta and TradeTick without weakening conversion idempotency.",
+    "Concrete generated PMXT selected-source rerun with TradeTick schema enabled, once the artifact contract can represent both NT data families.",
     "Record expanded-tranche coverage and cost evidence before any PMXT broad backfill discussion.",
     "Coverage ledger using timestamp_received as the archive-hour coverage axis before any expanded tranche.",
     "Separate dynamic tick-size replay proof before full PMXT Polymarket L2 acceptance or broad backfill."

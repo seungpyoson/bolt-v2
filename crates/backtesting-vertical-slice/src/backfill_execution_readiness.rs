@@ -19,6 +19,7 @@ use crate::{
     artifact_index_commit_proof::ArtifactIndexCommitProofReport,
     backfill_accepted_tranche::{BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheStatus},
     backfill_execution_plan::{BackfillExecutionPlan, BackfillExecutionPlanStatus},
+    source_selection_readiness::{SourceSelectionReadinessReport, SourceSelectionReadinessStatus},
 };
 
 pub const BACKFILL_EXECUTION_READINESS_SCHEMA_VERSION: &str =
@@ -42,6 +43,10 @@ pub struct BackfillExecutionReadinessSpec {
     pub required_artifact_index_kind: Option<ArtifactKind>,
     #[serde(default)]
     pub artifact_index_commit_proof_report_path: Option<PathBuf>,
+    #[serde(default)]
+    pub source_selection_readiness_required: bool,
+    #[serde(default)]
+    pub source_selection_readiness_report_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +92,12 @@ pub enum BackfillExecutionReadinessBlocker {
     ArtifactIndexCommitProofKindMismatch,
     ArtifactIndexCommitMechanicsUnproven,
     ArtifactIndexProducerIamScopeUnproven,
+    SourceSelectionReadinessRequiredButMissing,
+    SourceSelectionReadinessNotReady,
+    SourceSelectionReadinessHasBlockers,
+    SourceSelectionReadinessSourceProofMismatch,
+    SourceSelectionReadinessSourceBindingMismatch,
+    SourceSelectionReadinessTableFamilyMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +115,10 @@ pub struct BackfillExecutionReadinessReport {
     pub artifact_index_commit_proof_hash: Option<String>,
     pub artifact_index_direct_s3_commit_proven: Option<bool>,
     pub artifact_index_producer_iam_scope_proven: Option<bool>,
+    pub source_selection_readiness_required: bool,
+    pub source_selection_readiness_id: Option<String>,
+    pub source_selection_readiness_hash: Option<String>,
+    pub source_selection_readiness_status: Option<SourceSelectionReadinessStatus>,
     pub accepted_tranche_id: String,
     pub accepted_tranche_manifest_hash: String,
     pub execution_plan_id: String,
@@ -138,6 +153,9 @@ pub struct BackfillExecutionReadinessInput<'a> {
     pub required_artifact_index_kind: Option<ArtifactKind>,
     pub artifact_index_commit_proof_report_hash: Option<&'a str>,
     pub artifact_index_commit_proof_report: Option<&'a ArtifactIndexCommitProofReport>,
+    pub source_selection_readiness_required: bool,
+    pub source_selection_readiness_report_hash: Option<&'a str>,
+    pub source_selection_readiness_report: Option<&'a SourceSelectionReadinessReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,6 +168,8 @@ pub enum BackfillExecutionReadinessError {
     ParseExecutionPlanJson { path: String, error: String },
     ReadArtifactIndexCommitProofReport { path: String, error: String },
     ParseArtifactIndexCommitProofReportJson { path: String, error: String },
+    ReadSourceSelectionReadinessReport { path: String, error: String },
+    ParseSourceSelectionReadinessReportJson { path: String, error: String },
     CreateDir { path: String, error: String },
     ReadExisting { path: String, error: String },
     Write { path: String, error: String },
@@ -188,6 +208,13 @@ impl fmt::Display for BackfillExecutionReadinessError {
             Self::ParseArtifactIndexCommitProofReportJson { path, error } => write!(
                 f,
                 "parse Artifact Index commit proof report JSON {path}: {error}"
+            ),
+            Self::ReadSourceSelectionReadinessReport { path, error } => {
+                write!(f, "read source-selection readiness report {path}: {error}")
+            }
+            Self::ParseSourceSelectionReadinessReportJson { path, error } => write!(
+                f,
+                "parse source-selection readiness report JSON {path}: {error}"
             ),
             Self::CreateDir { path, error } => write!(
                 f,
@@ -245,6 +272,15 @@ pub fn evaluate_backfill_execution_readiness(
         artifact_index_commit_proof_report.map(|report| report.direct_s3_commit_proven);
     let artifact_index_producer_iam_scope_proven =
         artifact_index_commit_proof_report.map(|report| report.producer_iam_scope_proven);
+    let source_selection_readiness_required = input.source_selection_readiness_required;
+    let source_selection_readiness_report = input.source_selection_readiness_report;
+    let source_selection_readiness_hash = input
+        .source_selection_readiness_report_hash
+        .map(str::to_string);
+    let source_selection_readiness_id =
+        source_selection_readiness_report.map(|report| report.selection_id.clone());
+    let source_selection_readiness_status =
+        source_selection_readiness_report.map(|report| report.status);
     let mut blockers = Vec::new();
 
     if readiness_id.trim().is_empty() {
@@ -366,6 +402,48 @@ pub fn evaluate_backfill_execution_readiness(
             }
         }
     }
+    if source_selection_readiness_required {
+        match source_selection_readiness_report {
+            None => blockers.push(
+                BackfillExecutionReadinessBlocker::SourceSelectionReadinessRequiredButMissing,
+            ),
+            Some(readiness) => {
+                if readiness.status != SourceSelectionReadinessStatus::Ready {
+                    blockers
+                        .push(BackfillExecutionReadinessBlocker::SourceSelectionReadinessNotReady);
+                }
+                if !readiness.blockers.is_empty() {
+                    blockers.push(
+                        BackfillExecutionReadinessBlocker::SourceSelectionReadinessHasBlockers,
+                    );
+                }
+                if readiness.source_proof_id != tranche.source_proof_id
+                    || readiness.source_proof_version != tranche.source_proof_version
+                    || readiness.source_proof_id != plan.source_proof_id
+                    || readiness.source_proof_version != plan.source_proof_version
+                {
+                    blockers.push(
+                        BackfillExecutionReadinessBlocker::SourceSelectionReadinessSourceProofMismatch,
+                    );
+                }
+                if readiness.source_binding != tranche.source_binding
+                    || readiness.source_binding != plan.source_binding
+                {
+                    blockers.push(
+                        BackfillExecutionReadinessBlocker::SourceSelectionReadinessSourceBindingMismatch,
+                    );
+                }
+                if readiness.table_family != tranche.table_family
+                    || readiness.table_family != plan.table_family
+                    || readiness.required_table_family.trim() != required_table_family_trimmed
+                {
+                    blockers.push(
+                        BackfillExecutionReadinessBlocker::SourceSelectionReadinessTableFamilyMismatch,
+                    );
+                }
+            }
+        }
+    }
 
     let status = if blockers.is_empty() {
         BackfillExecutionReadinessStatus::Ready
@@ -386,6 +464,10 @@ pub fn evaluate_backfill_execution_readiness(
         artifact_index_commit_proof_hash,
         artifact_index_direct_s3_commit_proven,
         artifact_index_producer_iam_scope_proven,
+        source_selection_readiness_required,
+        source_selection_readiness_id,
+        source_selection_readiness_hash,
+        source_selection_readiness_status,
         accepted_tranche_id: tranche.tranche_id.clone(),
         accepted_tranche_manifest_hash,
         execution_plan_id: plan.plan_id.clone(),
@@ -462,6 +544,14 @@ pub fn write_backfill_execution_readiness_report_from_spec_file(
             }
             None => None,
         };
+    let source_selection_readiness_report =
+        match spec.source_selection_readiness_report_path.as_deref() {
+            Some(path) => {
+                let (report, hash) = read_source_selection_readiness_report(path)?;
+                Some((report, hash))
+            }
+            None => None,
+        };
     let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
         readiness_id: &spec.readiness_id,
         accepted_tranche_manifest_hash: &tranche_hash,
@@ -477,6 +567,13 @@ pub fn write_backfill_execution_readiness_report_from_spec_file(
             .as_ref()
             .map(|(_, hash)| hash.as_str()),
         artifact_index_commit_proof_report: artifact_index_commit_proof_report
+            .as_ref()
+            .map(|(report, _)| report),
+        source_selection_readiness_required: spec.source_selection_readiness_required,
+        source_selection_readiness_report_hash: source_selection_readiness_report
+            .as_ref()
+            .map(|(_, hash)| hash.as_str()),
+        source_selection_readiness_report: source_selection_readiness_report
             .as_ref()
             .map(|(report, _)| report),
     });
@@ -532,6 +629,25 @@ fn read_artifact_index_commit_proof_report(
     let hash = sha256_bytes(&bytes);
     let report = serde_json::from_slice(&bytes).map_err(|error| {
         BackfillExecutionReadinessError::ParseArtifactIndexCommitProofReportJson {
+            path: path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    Ok((report, hash))
+}
+
+fn read_source_selection_readiness_report(
+    path: &Path,
+) -> Result<(SourceSelectionReadinessReport, String), BackfillExecutionReadinessError> {
+    let bytes = fs::read(path).map_err(|error| {
+        BackfillExecutionReadinessError::ReadSourceSelectionReadinessReport {
+            path: path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    let hash = sha256_bytes(&bytes);
+    let report = serde_json::from_slice(&bytes).map_err(|error| {
+        BackfillExecutionReadinessError::ParseSourceSelectionReadinessReportJson {
             path: path.display().to_string(),
             error: error.to_string(),
         }

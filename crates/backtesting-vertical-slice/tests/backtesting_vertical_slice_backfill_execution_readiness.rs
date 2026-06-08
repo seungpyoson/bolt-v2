@@ -17,6 +17,13 @@ use backtesting_vertical_slice::{
         BackfillExecutionReadinessSupportedDataPath, evaluate_backfill_execution_readiness,
         write_backfill_execution_readiness_report_from_spec_file,
     },
+    source_proof::{
+        FixtureType, SourceProofFidelityClass, SourceProofUsageScope, SourceSelectionStatus,
+    },
+    source_selection_readiness::{
+        SOURCE_SELECTION_READINESS_SCHEMA_VERSION, SourceSelectionReadinessBlocker,
+        SourceSelectionReadinessReport, SourceSelectionReadinessStatus,
+    },
 };
 
 #[test]
@@ -37,6 +44,9 @@ fn execution_readiness_is_ready_for_matching_accepted_tranche_and_ready_plan() {
         required_artifact_index_kind: None,
         artifact_index_commit_proof_report_hash: None,
         artifact_index_commit_proof_report: None,
+        source_selection_readiness_required: false,
+        source_selection_readiness_report_hash: None,
+        source_selection_readiness_report: None,
     });
 
     assert_eq!(report.status, BackfillExecutionReadinessStatus::Ready);
@@ -70,6 +80,9 @@ fn execution_readiness_blocks_when_plan_is_not_bound_to_the_tranche_file_hash() 
         required_artifact_index_kind: None,
         artifact_index_commit_proof_report_hash: None,
         artifact_index_commit_proof_report: None,
+        source_selection_readiness_required: false,
+        source_selection_readiness_report_hash: None,
+        source_selection_readiness_report: None,
     });
 
     assert_eq!(report.status, BackfillExecutionReadinessStatus::Blocked);
@@ -151,6 +164,9 @@ fn execution_readiness_blocks_index_backfill_when_producer_iam_scope_is_unproven
         required_artifact_index_kind: Some(ArtifactKind::Backtests),
         artifact_index_commit_proof_report_hash: Some("synthetic-artifact-index-proof-hash"),
         artifact_index_commit_proof_report: Some(&proof_report),
+        source_selection_readiness_required: false,
+        source_selection_readiness_report_hash: None,
+        source_selection_readiness_report: None,
     });
 
     assert_eq!(report.status, BackfillExecutionReadinessStatus::Blocked);
@@ -170,6 +186,76 @@ fn execution_readiness_blocks_index_backfill_when_producer_iam_scope_is_unproven
         report
             .blockers
             .contains(&BackfillExecutionReadinessBlocker::ArtifactIndexProducerIamScopeUnproven)
+    );
+}
+
+#[test]
+fn execution_readiness_is_ready_when_required_source_selection_readiness_matches() {
+    let tranche = accepted_tranche();
+    let plan = matching_execution_plan(&tranche);
+    let source_selection = source_selection_readiness_report(&tranche);
+
+    let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+        readiness_id: "synthetic-readiness",
+        accepted_tranche_manifest_hash: "synthetic-tranche-file-hash",
+        tranche: &tranche,
+        execution_plan_hash: "synthetic-plan-file-hash",
+        plan: &plan,
+        required_table_family: "trades",
+        required_nt_data_type: "TradeTick",
+        supported_data_paths: supported_data_paths(),
+        artifact_index_commit_required: false,
+        required_artifact_index_kind: None,
+        artifact_index_commit_proof_report_hash: None,
+        artifact_index_commit_proof_report: None,
+        source_selection_readiness_required: true,
+        source_selection_readiness_report_hash: Some("synthetic-source-selection-hash"),
+        source_selection_readiness_report: Some(&source_selection),
+    });
+
+    assert_eq!(report.status, BackfillExecutionReadinessStatus::Ready);
+    assert_eq!(
+        report.source_selection_readiness_id.as_deref(),
+        Some("synthetic-source-selection")
+    );
+    assert_eq!(
+        report.source_selection_readiness_hash.as_deref(),
+        Some("synthetic-source-selection-hash")
+    );
+    assert_eq!(
+        report.source_selection_readiness_status,
+        Some(SourceSelectionReadinessStatus::Ready)
+    );
+}
+
+#[test]
+fn execution_readiness_blocks_when_source_selection_readiness_is_required_but_missing() {
+    let tranche = accepted_tranche();
+    let plan = matching_execution_plan(&tranche);
+
+    let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+        readiness_id: "synthetic-readiness",
+        accepted_tranche_manifest_hash: "synthetic-tranche-file-hash",
+        tranche: &tranche,
+        execution_plan_hash: "synthetic-plan-file-hash",
+        plan: &plan,
+        required_table_family: "trades",
+        required_nt_data_type: "TradeTick",
+        supported_data_paths: supported_data_paths(),
+        artifact_index_commit_required: false,
+        required_artifact_index_kind: None,
+        artifact_index_commit_proof_report_hash: None,
+        artifact_index_commit_proof_report: None,
+        source_selection_readiness_required: true,
+        source_selection_readiness_report_hash: None,
+        source_selection_readiness_report: None,
+    });
+
+    assert_eq!(report.status, BackfillExecutionReadinessStatus::Blocked);
+    assert!(
+        report.blockers.contains(
+            &BackfillExecutionReadinessBlocker::SourceSelectionReadinessRequiredButMissing
+        )
     );
 }
 
@@ -276,6 +362,48 @@ fn artifact_index_commit_proof_report(
         producer_iam_scope_denied_write_rejections: if producer_iam_scope_proven { 3 } else { 0 },
         producer_iam_scope_violation_count: if producer_iam_scope_proven { 0 } else { 3 },
         producer_iam_scope_violation_uris: Vec::new(),
+    }
+}
+
+fn source_selection_readiness_report(
+    tranche: &BackfillAcceptedTrancheManifest,
+) -> SourceSelectionReadinessReport {
+    SourceSelectionReadinessReport {
+        schema_version: SOURCE_SELECTION_READINESS_SCHEMA_VERSION.to_string(),
+        selection_id: "synthetic-source-selection".to_string(),
+        status: SourceSelectionReadinessStatus::Ready,
+        source_proof_id: tranche.source_proof_id.clone(),
+        source_proof_version: tranche.source_proof_version,
+        source_proof_hash: "synthetic-source-proof-hash".to_string(),
+        source_binding: tranche.source_binding.clone(),
+        venue: "synthetic-venue".to_string(),
+        fixture_type: FixtureType::PerpsSpot,
+        table_family: tranche.table_family.clone(),
+        fidelity_class: SourceProofFidelityClass::TradeReplay,
+        source_selection_status: SourceSelectionStatus::AcceptedForRequiredFidelity,
+        usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
+        required_fixture_type: FixtureType::PerpsSpot,
+        required_table_family: tranche.table_family.clone(),
+        allowed_fidelity_classes: vec![SourceProofFidelityClass::TradeReplay],
+        allow_lower_fidelity: false,
+        source_proof_accepted: true,
+        canonical_usage_scope_proven: true,
+        source_access_proven: true,
+        license_proven: true,
+        sample_schema_proven: true,
+        time_semantics_proven: true,
+        instrument_universe_proven: true,
+        coverage_proven: true,
+        retention_freshness_proven: true,
+        granularity_proven: true,
+        completeness_proven: true,
+        nt_mapping_proven: true,
+        cost_proven: true,
+        storage_proven: true,
+        claim_limits_recorded: true,
+        source_proof_acceptance_error: None,
+        unmet_required_checks: Vec::new(),
+        blockers: Vec::<SourceSelectionReadinessBlocker>::new(),
     }
 }
 

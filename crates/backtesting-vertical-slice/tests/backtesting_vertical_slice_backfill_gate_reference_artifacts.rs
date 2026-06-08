@@ -97,6 +97,9 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
         required_artifact_index_kind: None,
         artifact_index_commit_proof_report_hash: None,
         artifact_index_commit_proof_report: None,
+        source_selection_readiness_required: false,
+        source_selection_readiness_report_hash: None,
+        source_selection_readiness_report: None,
     });
 
     assert_eq!(readiness.status, BackfillExecutionReadinessStatus::Ready);

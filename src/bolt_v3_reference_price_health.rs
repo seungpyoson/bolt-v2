@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use serde::Serialize;
 
 use crate::{
@@ -64,7 +64,7 @@ pub fn reference_current_price_health_plan(
         };
         for source_id in &reference_current_price.source_order {
             let source = reference_current_price.sources.get(source_id).ok_or_else(|| {
-                anyhow!(
+                anyhow::anyhow!(
                     "strategy `{}` lists reference_current_price source `{source_id}` without a matching source block",
                     strategy.config.strategy_instance_id
                 )
@@ -90,7 +90,7 @@ pub fn reference_current_price_health_plan(
     }
 
     if targets.is_empty() {
-        return Err(anyhow!(
+        return Err(anyhow::anyhow!(
             "no enabled reference_current_price sources are configured"
         ));
     }
@@ -114,13 +114,13 @@ pub async fn run_reference_current_price_health(
         let registered_exec_client_ids = sorted_strings(runtime.registered_exec_client_ids());
         let registered_strategy_ids = sorted_strings(runtime.registered_strategy_ids());
         if !registered_exec_client_ids.is_empty() {
-            return Err(anyhow!(
+            return Err(anyhow::anyhow!(
                 "reference_current_price health registered execution clients for `{client_key}`: {}",
                 registered_exec_client_ids.join(", ")
             ));
         }
         if !registered_strategy_ids.is_empty() {
-            return Err(anyhow!(
+            return Err(anyhow::anyhow!(
                 "reference_current_price health registered strategies for `{client_key}`: {}",
                 registered_strategy_ids.join(", ")
             ));
@@ -129,11 +129,11 @@ pub async fn run_reference_current_price_health(
         let connect = runtime
             .connect_registered_clients(&scoped_loaded)
             .await
-            .map_err(|error| anyhow!("client `{client_key}` connect failed: {error}"));
+            .map_err(|error| anyhow::anyhow!("client `{client_key}` connect failed: {error}"));
         let disconnect = runtime
             .disconnect_registered_clients(&scoped_loaded)
             .await
-            .map_err(|error| anyhow!("client `{client_key}` disconnect failed: {error}"));
+            .map_err(|error| anyhow::anyhow!("client `{client_key}` disconnect failed: {error}"));
 
         match (connect, disconnect) {
             (Ok(()), Ok(())) => clients.push(ReferenceCurrentPriceHealthClientReport {
@@ -147,7 +147,7 @@ pub async fn run_reference_current_price_health(
             (Err(connect_error), Ok(())) => return Err(connect_error),
             (Ok(()), Err(disconnect_error)) => return Err(disconnect_error),
             (Err(connect_error), Err(disconnect_error)) => {
-                return Err(anyhow!("{connect_error}; {disconnect_error}"));
+                return Err(anyhow::anyhow!("{connect_error}; {disconnect_error}"));
             }
         }
     }

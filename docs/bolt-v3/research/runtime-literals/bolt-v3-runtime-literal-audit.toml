@@ -9021,3 +9021,83 @@ literal = '''"reference_current_price"'''
 context = '''Self::validate_optional_table_field(table, field_prefix, "reference_current_price", errors);'''
 classification = "strategy_runtime_schema_field"
 reason = "Strategy config schema table name for optional reference-current-price settings."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''", "'''
+context = '''registered_exec_client_ids.join(", ")'''
+classification = "diagnostic_separator"
+reason = "This joins already registered execution-client ids only when reporting an invalid no-execution-client health scope."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''", "'''
+context = '''registered_strategy_ids.join(", ")'''
+classification = "diagnostic_separator"
+reason = "This joins already registered strategy ids only when reporting an invalid no-strategy health scope."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"bounded command verifies registration, connect, and disconnect only"'''
+context = '''"bounded command verifies registration, connect, and disconnect only";'''
+classification = "reference_current_price_health_cli_output_schema"
+reason = "Stable operator output reason describing the bounded command's verification scope; it is not a runtime configuration value."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"no enabled reference_current_price sources are configured"'''
+context = '''"no enabled reference_current_price sources are configured"'''
+classification = "reference_current_price_health_diagnostic"
+reason = "Diagnostic for a config that has no enabled reference-current-price source to probe."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"not_collected"'''
+context = '''const SOURCE_UPDATE_OBSERVATION_STATUS: &str = "not_collected";'''
+classification = "reference_current_price_health_status_code"
+reason = "Stable operator output status indicating this bounded command did not collect source update evidence."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"ok"'''
+context = '''connect_status: "ok".to_string(),'''
+classification = "reference_current_price_health_status_code"
+reason = "Stable operator output status for a successful bounded client connect."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"ok"'''
+context = '''disconnect_status: "ok".to_string(),'''
+classification = "reference_current_price_health_status_code"
+reason = "Stable operator output status for a successful bounded client disconnect."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"reference_current_price health registered execution clients for `{client_key}`: {}"'''
+context = '''"reference_current_price health registered execution clients for `{client_key}`: {}",'''
+classification = "reference_current_price_health_diagnostic"
+reason = "Fail-closed diagnostic proving the bounded health path did not remain data-client only."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"reference_current_price health registered strategies for `{client_key}`: {}"'''
+context = '''"reference_current_price health registered strategies for `{client_key}`: {}",'''
+classification = "reference_current_price_health_diagnostic"
+reason = "Fail-closed diagnostic proving the bounded health path did not remain strategy-free."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"strategy `{}` lists reference_current_price source `{source_id}` without a matching source block"'''
+context = '''"strategy `{}` lists reference_current_price source `{source_id}` without a matching source block",'''
+classification = "reference_current_price_health_diagnostic"
+reason = "Diagnostic for an invalid reference-current-price source plan after config loading."

@@ -2016,3 +2016,44 @@ Current conclusion:
   `BACKTESTING_ENGINE-006` still needs approved real IAM enforcement proof, and
   `BACKTESTING_ENGINE-022` still needs durable accepted source proof plus
   broad backfill safety evidence before canonical PMXT/Polymarket use.
+
+## 2026-06-09 L2 source-proof claim-limit checkpoint
+
+Root cause addressed:
+
+- `SourceProofReport::evaluate_acceptance()` validates structured
+  `claim_limits`, but the previous implementation returned early for
+  `L2_REPLAY` before checking that every `forbidden_claims` entry had a
+  matching structured claim-limit row.
+- That made an accepted L2 proof capable of carrying critical limits, such as
+  "no dynamic instrument-epoch replay claim", only as prose. Result-contract
+  consumers could then miss the structured provenance that explains why a
+  bounded replay must not be interpreted as broad execution-quality evidence.
+
+Change:
+
+- `validate_claim_limits` now requires structured `claim_limits` whenever
+  `forbidden_claims` are present, including `L2_REPLAY` proofs.
+- Full L2 proofs with no forbidden claims can still omit claim limits.
+- Non-L2 proofs still require forbidden claims and structured claim limits, so
+  weaker data cannot silently carry execution-quality claims.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --lib l2_replay_forbidden_claims_require_structured_claim_limits -- --nocapture`
+  failed because an L2 proof with an unstructured forbidden claim was accepted.
+- GREEN: the same focused test passed after claim-limit validation applied to
+  L2 forbidden claims.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --lib source_proof::tests:: -- --nocapture`
+  passed 76 source-proof unit tests.
+
+Current conclusion:
+
+- This closes a generic BTE-022 guardrail gap without adding any
+  venue/source/data-family constants.
+- It does not close `BACKTESTING_ENGINE-022`: durable accepted source proof,
+  coverage/cost/storage evidence, and dynamic tick-size replay proof or an
+  accepted bounded-exclusion policy are still required before broad
+  PMXT/Polymarket backfill can become canonical.

@@ -1500,13 +1500,13 @@ fn validate_claim_limits(proof: &SourceProofReport) -> Result<(), AcceptanceErro
         }
     }
 
-    if proof.fidelity_class == SourceProofFidelityClass::L2Replay {
-        return Ok(());
-    }
-    if proof.claim_limits.is_empty() {
+    if proof.claim_limits.is_empty()
+        && (proof.fidelity_class != SourceProofFidelityClass::L2Replay
+            || !proof.forbidden_claims.is_empty())
+    {
         return Err(AcceptanceError::InvalidClaimLimit {
             field: "claim_limits",
-            reason: "must not be empty for non-L2 fidelity",
+            reason: "must not be empty when forbidden_claims are present",
         });
     }
     for forbidden_claim in &proof.forbidden_claims {
@@ -2819,6 +2819,20 @@ table_families = ["signals"]
         let mut proof = candidate_proof();
         proof.claim_limits[0].claim = "No unrelated claim.".to_string();
         let err = proof.evaluate_acceptance().unwrap_err();
+        assert!(err.to_string().contains("forbidden_claims"), "{err}");
+    }
+
+    #[test]
+    fn l2_replay_forbidden_claims_require_structured_claim_limits() {
+        let mut proof = candidate_proof();
+        proof.fidelity_class = SourceProofFidelityClass::L2Replay;
+        proof.l2_replay_evidence.order_book_delta_ref =
+            Some("source-proof://l2-order-book-deltas".to_string());
+        proof.forbidden_claims = vec!["No dynamic instrument-epoch replay claim.".to_string()];
+        proof.claim_limits.clear();
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
         assert!(err.to_string().contains("forbidden_claims"), "{err}");
     }
 

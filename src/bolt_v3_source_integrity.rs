@@ -236,7 +236,7 @@ mod tests {
     // Re-derived again after merging #606 reference_current_price wiring with
     // main's surfaced realized-volatility strategy source set.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "75aff2714d20f79d01b50690ed3f807574a75dcf88b39555621391d6ee8755df";
+        "91957f229550e165ffb09fbe9f3d76524ae996c3db1598ed3509cd2f28a86a2d";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

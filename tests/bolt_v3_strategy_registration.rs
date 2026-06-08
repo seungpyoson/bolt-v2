@@ -1899,7 +1899,7 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_with_unknown_client() {
 //   (a) data_client_id resolves to a client whose venue is NOT the Chainlink
 //       strike provider (CHAINLINK_DATA_STREAMS),
 //   (b) instrument_id asset prefix does not match the target's underlying_asset,
-//   (c) instrument_id has no matching feed_binding in that client.
+//   (c) instrument_id has no matching root-owned Chainlink feed binding.
 // Today only client-existence is checked in `raw_taker_config`, so all three
 // MUST fail until the load-time binding validation is added.
 
@@ -1971,8 +1971,9 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_instrument_asset_mismat
 
 /// (c) The resolution_data client is the Chainlink strike client and the
 /// underlying_asset matches the instrument's asset prefix, but the instrument has
-/// no matching feed_binding in that client. A strike instrument with no feed_id
-/// binding can never produce a report, so it must fail closed at load time.
+/// no matching root-owned Chainlink feed binding. A strike instrument with no
+/// feed_id binding can never produce a report, so it must fail closed at load
+/// time.
 #[test]
 fn binary_oracle_runtime_mapping_rejects_resolution_data_instrument_without_feed_binding() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
@@ -1984,7 +1985,7 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_instrument_without_feed
         .expect("fixture should include initial binary oracle strategy");
     // Make the target's underlying_asset match the instrument asset prefix (ETH)
     // so the asset-prefix check (b) passes and this test isolates the missing
-    // feed_binding gap (c). The chainlink_strike client only binds
+    // feed_binding gap (c). The fixture's root Chainlink catalog only binds
     // "BTC-USD.CHAINLINK", so "ETH-USD.CHAINLINK" has no feed_binding.
     loaded.strategies[strategy_index]
         .config
@@ -2002,7 +2003,7 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_instrument_without_feed
 
     let strategy = &loaded.strategies[strategy_index];
     let error = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded).expect_err(
-        "resolution_data instrument with no matching feed_binding in the client must fail closed at load time",
+        "resolution_data instrument with no matching root-owned feed_binding must fail closed at load time",
     );
     let rendered = error.to_string();
     assert!(

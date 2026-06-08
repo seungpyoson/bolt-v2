@@ -530,6 +530,7 @@ pub fn raw_taker_config(
             strategy,
             resolution_data,
             resolution_client,
+            &loaded.root,
             &target.underlying_asset,
         )?;
     }
@@ -1371,13 +1372,14 @@ fn configured_resolution_data(
 /// `resolution_data` block must (a) point at a client whose venue is the
 /// Chainlink venue, (b) name an instrument whose asset prefix matches the
 /// target's `underlying_asset`, and (c) name an instrument that has a
-/// `feed_binding` in that client's `data.feed_bindings`. Any mismatch can only
-/// ever fail at subscribe time (no report, or the wrong asset's strike), so it
-/// is rejected here at config load.
+/// root-owned `chainlink_data_streams.feed_bindings` entry. Any mismatch can
+/// only ever fail at subscribe time (no report, or the wrong asset's strike),
+/// so it is rejected here at config load.
 fn validate_resolution_data_binding(
     strategy: &LoadedStrategy,
     resolution_data: &crate::bolt_v3_config::DataInstrumentBlock,
     resolution_client: &crate::bolt_v3_config::ClientBlock,
+    root: &crate::bolt_v3_config::BoltV3RootConfig,
     underlying_asset: &str,
 ) -> Result<(), BinaryOracleEdgeTakerRuntimeConfigError> {
     let reject = |message: String| BinaryOracleEdgeTakerRuntimeConfigError::ResolutionData {
@@ -1405,25 +1407,20 @@ fn validate_resolution_data_binding(
         )));
     }
 
-    // (c) instrument must have a feed_binding in the Chainlink client.
-    let has_feed_binding = resolution_client
-        .data
-        .as_ref()
-        .and_then(toml::Value::as_table)
-        .and_then(|data| data.get("feed_bindings"))
-        .and_then(toml::Value::as_array)
-        .is_some_and(|bindings| {
-            bindings.iter().any(|binding| {
-                binding
-                    .as_table()
-                    .and_then(|binding| binding.get("instrument_id"))
-                    .and_then(toml::Value::as_str)
-                    == Some(resolution_data.instrument_id.to_string().as_str())
-            })
-        });
+    // (c) instrument must have a feed_binding in the root Chainlink catalog.
+    let instrument_id = resolution_data.instrument_id.to_string();
+    let has_feed_binding = root.chainlink_data_streams.as_ref().is_some_and(|catalog| {
+        catalog.feed_bindings.iter().any(|binding| {
+            binding
+                .as_table()
+                .and_then(|binding| binding.get("instrument_id"))
+                .and_then(toml::Value::as_str)
+                == Some(instrument_id.as_str())
+        })
+    });
     if !has_feed_binding {
         return Err(reject(format!(
-            "instrument_id `{}` has no matching feed_binding in client `{}` (data.feed_bindings)",
+            "instrument_id `{}` has no matching feed_binding in root chainlink_data_streams.feed_bindings for client `{}`",
             resolution_data.instrument_id, resolution_data.data_client_id
         )));
     }

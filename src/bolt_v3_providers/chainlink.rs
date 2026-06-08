@@ -455,9 +455,12 @@ pub(crate) fn validate_client_gate_provider_consistency(root: &BoltV3RootConfig)
         let Some(data_value) = client.data.as_ref() else {
             continue;
         };
-        // Per-client shape errors are reported by the provider validator; only
-        // run the cross-check when the client config parses cleanly.
-        let Ok(data) = data_value.clone().try_into::<ChainlinkDataConfig>() else {
+        // Per-client shape errors are reported by the provider validator. This
+        // cross-check compares connection fields, so use the same normalized
+        // root-owned feed catalog view as root validation before parsing.
+        let normalized_data_value = data_value_with_root_feed_catalog(root, client_id, data_value)
+            .unwrap_or_else(|_| data_value.clone());
+        let Ok(data) = normalized_data_value.try_into::<ChainlinkDataConfig>() else {
             continue;
         };
 

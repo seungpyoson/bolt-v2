@@ -121,16 +121,18 @@ impl fmt::Display for SourceCatalogMappingReadinessError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ReadSpec { path, error } => {
-                write!(f, "read source catalog-mapping readiness spec {path}: {error}")
+                write!(
+                    f,
+                    "read source catalog-mapping readiness spec {path}: {error}"
+                )
             }
             Self::ParseSpecToml { path, error } => write!(
                 f,
                 "parse source catalog-mapping readiness spec TOML {path}: {error}"
             ),
-            Self::ReadCatalogMappingEvaluation { path, error } => write!(
-                f,
-                "read source catalog-mapping evaluation {path}: {error}"
-            ),
+            Self::ReadCatalogMappingEvaluation { path, error } => {
+                write!(f, "read source catalog-mapping evaluation {path}: {error}")
+            }
             Self::ParseCatalogMappingEvaluationJson { path, error } => write!(
                 f,
                 "parse source catalog-mapping evaluation JSON {path}: {error}"
@@ -268,9 +270,7 @@ pub fn evaluate_source_catalog_mapping_readiness(
                 .iter()
                 .any(|status| status.trim() == entry.parquet_catalog_status.trim())
             {
-                blockers.push(
-                    SourceCatalogMappingReadinessBlocker::ParquetCatalogStatusNotAllowed,
-                );
+                blockers.push(SourceCatalogMappingReadinessBlocker::ParquetCatalogStatusNotAllowed);
             }
         }
     }
@@ -315,13 +315,12 @@ pub fn write_source_catalog_mapping_readiness_report_from_spec_file(
             error: error.to_string(),
         }
     })?;
-    let spec: SourceCatalogMappingReadinessSpec =
-        toml::from_str(&spec_text).map_err(|error| {
-            SourceCatalogMappingReadinessError::ParseSpecToml {
-                path: spec_path_display,
-                error: error.to_string(),
-            }
-        })?;
+    let spec: SourceCatalogMappingReadinessSpec = toml::from_str(&spec_text).map_err(|error| {
+        SourceCatalogMappingReadinessError::ParseSpecToml {
+            path: spec_path_display,
+            error: error.to_string(),
+        }
+    })?;
     let evaluation_path = spec.catalog_mapping_evaluation_path.display().to_string();
     let evaluation_bytes = fs::read(&spec.catalog_mapping_evaluation_path).map_err(|error| {
         SourceCatalogMappingReadinessError::ReadCatalogMappingEvaluation {
@@ -329,13 +328,13 @@ pub fn write_source_catalog_mapping_readiness_report_from_spec_file(
             error: error.to_string(),
         }
     })?;
-    let evaluation: SourceCatalogMappingEvaluation =
-        serde_json::from_slice(&evaluation_bytes).map_err(|error| {
-            SourceCatalogMappingReadinessError::ParseCatalogMappingEvaluationJson {
+    let evaluation: SourceCatalogMappingEvaluation = serde_json::from_slice(&evaluation_bytes)
+        .map_err(
+            |error| SourceCatalogMappingReadinessError::ParseCatalogMappingEvaluationJson {
                 path: evaluation_path,
                 error: error.to_string(),
-            }
-        })?;
+            },
+        )?;
     let evaluation_hash = sha256_bytes(&evaluation_bytes);
 
     let report = evaluate_source_catalog_mapping_readiness(SourceCatalogMappingReadinessInput {
@@ -371,9 +370,11 @@ pub fn write_source_catalog_mapping_readiness_report(
                 error: error.to_string(),
             })?;
         if existing != bytes {
-            return Err(SourceCatalogMappingReadinessError::ExistingArtifactMismatch {
-                path: path.display().to_string(),
-            });
+            return Err(
+                SourceCatalogMappingReadinessError::ExistingArtifactMismatch {
+                    path: path.display().to_string(),
+                },
+            );
         }
     } else {
         fs::write(&path, &bytes).map_err(|error| SourceCatalogMappingReadinessError::Write {

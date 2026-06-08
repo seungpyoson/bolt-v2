@@ -17,16 +17,16 @@ use backtesting_vertical_slice::{
         BackfillExecutionReadinessSupportedDataPath, evaluate_backfill_execution_readiness,
         write_backfill_execution_readiness_report_from_spec_file,
     },
+    source_catalog_mapping_readiness::{
+        SOURCE_CATALOG_MAPPING_READINESS_SCHEMA_VERSION, SourceCatalogMappingReadinessReport,
+        SourceCatalogMappingReadinessStatus,
+    },
     source_proof::{
         FixtureType, SourceProofFidelityClass, SourceProofUsageScope, SourceSelectionStatus,
     },
     source_selection_readiness::{
         SOURCE_SELECTION_READINESS_SCHEMA_VERSION, SourceSelectionReadinessBlocker,
         SourceSelectionReadinessReport, SourceSelectionReadinessStatus,
-    },
-    source_catalog_mapping_readiness::{
-        SOURCE_CATALOG_MAPPING_READINESS_SCHEMA_VERSION, SourceCatalogMappingReadinessReport,
-        SourceCatalogMappingReadinessStatus,
     },
 };
 

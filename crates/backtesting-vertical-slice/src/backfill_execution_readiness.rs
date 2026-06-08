@@ -311,8 +311,7 @@ pub fn evaluate_backfill_execution_readiness(
         source_selection_readiness_report.map(|report| report.selection_id.clone());
     let source_selection_readiness_status =
         source_selection_readiness_report.map(|report| report.status);
-    let source_catalog_mapping_readiness_required =
-        input.source_catalog_mapping_readiness_required;
+    let source_catalog_mapping_readiness_required = input.source_catalog_mapping_readiness_required;
     let source_catalog_mapping_readiness_report = input.source_catalog_mapping_readiness_report;
     let source_catalog_mapping_readiness_hash = input
         .source_catalog_mapping_readiness_report_hash

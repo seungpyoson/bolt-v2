@@ -1578,6 +1578,45 @@ Midpoint table-family coverage audit:
   historical outcome replay coverage and checked BinaryOption fields are
   source-backed.
 
+## 2026-06-08 PMXT first-proof selector midpoint
+
+The bounded PMXT Polymarket first-proof selector now has a concrete
+source-backed selector artifact, but it is still not a PMXT-to-NT catalog
+projection or BacktestNode proof.
+
+- Source object:
+  `/private/tmp/polymarket-may20-one.parquet`, source URI
+  `https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet`, SHA-256
+  `0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567`.
+- Event-count ledger:
+  `/private/tmp/bte-pmxt-first-proof-selector-2026-06-08/event-count-ledger.json`;
+  `source_rows = 64877467`, `event_count_rows = 91786`, logical content hash
+  `5a51219a0988271c4f648d56341d3fadc734a31af2801fd957100dd513e9c3a6`, file
+  SHA-256 `de29c2edd18f4a23d24c42a90ad379b7ec602ea83fd997fd5eecb0fa7256fee3`.
+- Selector report:
+  `/private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector/first-proof-selector-report.json`;
+  `status = selected`, `eligible_assets = 451`, `selected_asset_count = 1`,
+  `selected_asset_ids_hash =
+  edc5e3c70031056cf544d2cf581c5fe2ee3122886090ae513d6321a34c99d966`,
+  selector-report logical content hash
+  `f8315f9eaaa9207b6eaeeac604019d8aa11af0e69eb2505f1f1fa1848e72153c`, file
+  SHA-256 `647f0cee89becb46b7051992dd7fea25ca08be3b551bd6873cd21be2ebd7b524`.
+- Efficiency evidence: the first projected debug scan that still allocated
+  strings per row took `88.30s`; after keeping parquet projection and changing
+  counting to borrow per row and allocate only for new keys, the same bounded
+  64.9M-row ledger scan took `55.23s` in debug. Selector report generation from
+  the compact ledger took `2.27s`.
+- TDD evidence: the event-count ledger API, event-count ledger CLI, and selector
+  CLI each had a RED failure first, then GREEN verification through
+  `scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice`.
+  The full first-proof selector integration test file is the focused regression
+  suite for this slice.
+
+This closes only the generic/configured source-selector artifact gap. It does
+not close PMXT raw-row-to-NT projection, `nautilus-polymarket` parser/provider
+reuse inside the isolated BTE crate, selected PMXT catalog read-back, or
+BacktestNode consumption of the selected source-backed catalog.
+
 ## Recommendation
 
 Proceed with backfill-first proof, then production BTE proof; do not start

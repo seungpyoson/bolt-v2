@@ -123,19 +123,28 @@
     ]
   },
   "bounded_first_proof_selector_status": {
-    "status": "tdd_proven_for_generic_event_count_selector",
+    "status": "tdd_proven_for_generic_event_count_selector_and_concrete_pmxt_selector_artifact",
     "evidence": [
       "RED just bte-test first_proof_selector_uses_configured_event_roles_without_asset_constants failed because the first-proof selector stub returned Blocked instead of Selected.",
       "GREEN just bte-test first_proof_selector_uses_configured_event_roles_without_asset_constants passed after applying configured required/excluded event families, row budget, and deterministic replay_rows/asset_id ordering.",
       "RED just bte-test first_proof_selector_writer_is_config_and_ledger_driven_and_idempotent failed with the explicit unimplemented writer error.",
       "GREEN just bte-test first_proof_selector_writer_is_config_and_ledger_driven_and_idempotent passed after TOML spec parsing, JSON event-count ledger parsing, idempotent report writing, event_count_ledger_hash, and selected_asset_ids_hash support.",
       "just bte-test first_proof_selector passed 2 focused selector tests.",
-      "just bte-fmt-check passed."
+      "just bte-fmt-check passed.",
+      "RED rust_verification cargo test first_proof_event_count_ledger_scans_configured_parquet_columns failed with unresolved event-count ledger API imports.",
+      "GREEN rust_verification cargo test first_proof_event_count_ledger_scans_configured_parquet_columns passed after TOML-driven parquet scanning of configured asset/event columns and idempotent first-proof event-count ledger writing.",
+      "RED rust_verification cargo test first_proof_event_count_ledger_cli_writes_artifact_from_config_owned_spec failed because CARGO_BIN_EXE_first_proof_event_count_ledger was absent.",
+      "GREEN rust_verification cargo test first_proof_event_count_ledger_cli_writes_artifact_from_config_owned_spec passed after adding the thin first_proof_event_count_ledger CLI.",
+      "RED rust_verification cargo test first_proof_selector_cli_writes_artifact_from_config_owned_spec failed because CARGO_BIN_EXE_first_proof_selector was absent.",
+      "GREEN rust_verification cargo test first_proof_selector_cli_writes_artifact_from_config_owned_spec passed after adding the thin first_proof_selector CLI.",
+      "rust_verification cargo test --test backtesting_vertical_slice_first_proof_selector passed 4 tests before the selector CLI and 5 tests after the selector CLI.",
+      "Bounded PMXT source object /private/tmp/polymarket-may20-one.parquet sha256 0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567 generated event-count ledger /private/tmp/bte-pmxt-first-proof-selector-2026-06-08/event-count-ledger.json with source_rows 64877467, event_count_rows 91786, content_hash 5a51219a0988271c4f648d56341d3fadc734a31af2801fd957100dd513e9c3a6, file_sha256 de29c2edd18f4a23d24c42a90ad379b7ec602ea83fd997fd5eecb0fa7256fee3.",
+      "Concrete selector report /private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector/first-proof-selector-report.json selected 1 asset from 451 eligible assets, selected_asset_ids_hash edc5e3c70031056cf544d2cf581c5fe2ee3122886090ae513d6321a34c99d966, event_count_ledger_hash 9491b9fe73ba1bf75024fc113f6bf918866b952db9e81d262cc1fcaf0367dd2e, content_hash f8315f9eaaa9207b6eaeeac604019d8aa11af0e69eb2505f1f1fa1848e72153c, file_sha256 647f0cee89becb46b7051992dd7fea25ca08be3b551bd6873cd21be2ebd7b524."
     ],
     "claim_limits": [
-      "Does not prove PMXT raw parquet row decoding.",
-      "Does not prove source-backed selected PMXT universe projection.",
-      "Does not wire a concrete PMXT selector report artifact into a source-backed completed run yet.",
+      "Proves only PMXT event-count source scanning and selector report generation, not PMXT row-to-NT data projection.",
+      "Does not prove source-backed selected PMXT universe projection into ParquetDataCatalog.",
+      "Does not wire the concrete PMXT selector report artifact into a source-backed completed run yet.",
       "Does not prove BacktestNode consumes a verified PMXT L2 catalog.",
       "Does not authorize broad PMXT backfill."
     ]
@@ -213,7 +222,7 @@
   },
   "non_hardcoding_decision": "Bybit, Binance, Polymarket, Kalshi, and Hyperliquid remain source-binding examples. The next mapping work must be data-family driven: source schema plus registry binding plus NT data class, with no runtime venue or instrument constants in production code.",
   "next_required_evidence": [
-    "Thread a concrete configured first-proof selector report artifact into the bounded PMXT source-backed run without venue or asset constants.",
+    "Thread the concrete configured first-proof selector report artifact into the bounded PMXT source-backed run without venue or asset constants.",
     "Machine-checked BTE crate proof that nautilus-polymarket parser/provider is reused for Polymarket instruments and token-id joins.",
     "TDD proof for the selected PMXT historical TradeId path because pinned NT's build_polymarket_trade_id helper is crate-private; either mirror the pinned format with provenance or expose it upstream before claiming direct NT helper reuse.",
     "Generic PMXT order-book projection contract from source event types to NT OrderBookDelta/TradeTick, including snapshot flags, side/action rules, timestamps, trade ids, and first-proof tick-size claim limits.",

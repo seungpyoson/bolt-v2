@@ -1,7 +1,11 @@
+use std::process::Command;
+
 use backtesting_vertical_slice::first_proof_selector::{
     AssetEventCount, FIRST_PROOF_SELECTOR_REPORT_FILE, FirstProofEventCountLedger,
-    FirstProofSelection, FirstProofSelectorReport, FirstProofSelectorStatus,
-    evaluate_first_proof_selector, write_first_proof_selector_report_from_spec_file,
+    FirstProofEventCountLedgerReport, FirstProofSelection, FirstProofSelectorReport,
+    FirstProofSelectorStatus, evaluate_first_proof_selector,
+    write_first_proof_event_count_ledger_from_spec_file,
+    write_first_proof_selector_report_from_spec_file,
 };
 
 #[test]
@@ -126,10 +130,210 @@ max_selected_assets = 1
     assert!(!report.selected_asset_ids_hash.is_empty());
 }
 
+#[test]
+fn first_proof_selector_cli_writes_artifact_from_config_owned_spec() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let ledger_path = dir.path().join("event-count-ledger.json");
+    let output_dir = dir.path().join("out");
+    let spec_path = dir.path().join("selector.toml");
+    std::fs::write(
+        &ledger_path,
+        serde_json::to_vec_pretty(&FirstProofEventCountLedger {
+            event_counts: vec![
+                count("asset-two", "snapshot", 1),
+                count("asset-two", "update", 3),
+                count("asset-two", "execution", 1),
+                count("asset-one", "snapshot", 1),
+                count("asset-one", "update", 1),
+                count("asset-one", "execution", 1),
+            ],
+        })
+        .expect("ledger json"),
+    )
+    .expect("write ledger");
+    std::fs::write(
+        &spec_path,
+        format!(
+            r#"selector_id = "bounded-l2-first-proof"
+event_count_ledger_path = "{}"
+output_dir = "{}"
+
+[selection]
+required_event_families = ["snapshot", "update", "execution"]
+excluded_event_families = ["instrument_epoch"]
+row_budget = 10
+max_selected_assets = 1
+"#,
+            ledger_path.display(),
+            output_dir.display()
+        ),
+    )
+    .expect("write selector spec");
+
+    let binary =
+        std::env::var("CARGO_BIN_EXE_first_proof_selector").expect("first_proof_selector binary");
+    let output = Command::new(binary)
+        .arg("--spec")
+        .arg(&spec_path)
+        .output()
+        .expect("run first-proof selector CLI");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert!(
+        stdout.contains("first_proof_selector_report = "),
+        "{stdout}"
+    );
+    assert!(stdout.contains("status = selected"), "{stdout}");
+    assert!(stdout.contains("selected_asset_count = 1"), "{stdout}");
+
+    let report_path = output_dir.join(FIRST_PROOF_SELECTOR_REPORT_FILE);
+    let report: FirstProofSelectorReport =
+        serde_json::from_slice(&std::fs::read(report_path).expect("read report"))
+            .expect("selector report json");
+    assert_eq!(report.status, FirstProofSelectorStatus::Selected);
+    assert_eq!(report.selected_assets[0].asset_id, "asset-one");
+}
+
+#[test]
+fn first_proof_event_count_ledger_scans_configured_parquet_columns() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let source_path = dir.path().join("source.parquet");
+    let ledger_path = dir.path().join("event-count-ledger.json");
+    let spec_path = dir.path().join("ledger.toml");
+    write_event_count_source_parquet(&source_path);
+    std::fs::write(
+        &spec_path,
+        format!(
+            r#"source_parquet_path = "{}"
+output_path = "{}"
+asset_id_column = "asset"
+event_family_column = "event_type"
+"#,
+            source_path.display(),
+            ledger_path.display()
+        ),
+    )
+    .expect("write ledger spec");
+
+    let artifact =
+        write_first_proof_event_count_ledger_from_spec_file(&spec_path).expect("write ledger");
+
+    assert_eq!(artifact.path, ledger_path);
+    assert_eq!(artifact.source_rows, 7);
+    assert_eq!(artifact.event_count_rows, 6);
+    assert!(!artifact.content_hash.is_empty());
+
+    let ledger: FirstProofEventCountLedgerReport =
+        serde_json::from_slice(&std::fs::read(&artifact.path).expect("read ledger"))
+            .expect("ledger json");
+    assert_eq!(ledger.source_rows, 7);
+    assert_eq!(
+        ledger.event_counts,
+        vec![
+            count("asset-a", "book", 1),
+            count("asset-a", "last_trade_price", 1),
+            count("asset-a", "price_change", 1),
+            count("asset-b", "book", 1),
+            count("asset-b", "price_change", 2),
+            count("asset-b", "tick_size_change", 1),
+        ]
+    );
+}
+
+#[test]
+fn first_proof_event_count_ledger_cli_writes_artifact_from_config_owned_spec() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let source_path = dir.path().join("source.parquet");
+    let ledger_path = dir.path().join("event-count-ledger.json");
+    let spec_path = dir.path().join("ledger.toml");
+    write_event_count_source_parquet(&source_path);
+    std::fs::write(
+        &spec_path,
+        format!(
+            r#"source_parquet_path = "{}"
+output_path = "{}"
+asset_id_column = "asset"
+event_family_column = "event_type"
+"#,
+            source_path.display(),
+            ledger_path.display()
+        ),
+    )
+    .expect("write ledger spec");
+
+    let binary = std::env::var("CARGO_BIN_EXE_first_proof_event_count_ledger")
+        .expect("first_proof_event_count_ledger binary path");
+    let output = Command::new(binary)
+        .arg("--spec")
+        .arg(&spec_path)
+        .output()
+        .expect("run first-proof event-count ledger CLI");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert!(stdout.contains("event_count_ledger = "), "{stdout}");
+    assert!(stdout.contains("source_rows = 7"), "{stdout}");
+    assert!(stdout.contains("event_count_rows = 6"), "{stdout}");
+
+    let ledger: FirstProofEventCountLedgerReport =
+        serde_json::from_slice(&std::fs::read(ledger_path).expect("read ledger"))
+            .expect("ledger json");
+    assert_eq!(ledger.source_rows, 7);
+}
+
 fn count(asset_id: &str, event_family: &str, rows: u64) -> AssetEventCount {
     AssetEventCount {
         asset_id: asset_id.to_string(),
         event_family: event_family.to_string(),
         rows,
     }
+}
+
+fn write_event_count_source_parquet(path: &std::path::Path) {
+    use std::{fs::File, sync::Arc};
+
+    use arrow::{
+        array::{ArrayRef, StringArray},
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
+    use parquet::arrow::ArrowWriter;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("asset", DataType::Utf8, false),
+        Field::new("event_type", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec![
+                "asset-b", "asset-a", "asset-b", "asset-a", "asset-b", "asset-a", "asset-b",
+            ])) as ArrayRef,
+            Arc::new(StringArray::from(vec![
+                "price_change",
+                "book",
+                "price_change",
+                "last_trade_price",
+                "tick_size_change",
+                "price_change",
+                "book",
+            ])) as ArrayRef,
+        ],
+    )
+    .expect("record batch");
+    let file = File::create(path).expect("create source parquet");
+    let mut writer = ArrowWriter::try_new(file, schema, None).expect("parquet writer");
+    writer.write(&batch).expect("write batch");
+    writer.close().expect("close parquet");
 }

@@ -8,12 +8,19 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt, fs,
+    fs::File,
     path::{Path, PathBuf},
 };
 
+use arrow::{
+    array::{Array, LargeStringArray, StringArray},
+    record_batch::RecordBatch,
+};
+use parquet::arrow::{ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuilder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub const FIRST_PROOF_EVENT_COUNT_LEDGER_SCHEMA_VERSION: &str = "first-proof-event-count-ledger.v1";
 pub const FIRST_PROOF_SELECTOR_SCHEMA_VERSION: &str = "first-proof-selector-report.v1";
 pub const FIRST_PROOF_SELECTOR_REPORT_FILE: &str = "first-proof-selector-report.json";
 
@@ -38,6 +45,23 @@ pub struct AssetEventCount {
 #[serde(deny_unknown_fields)]
 pub struct FirstProofEventCountLedger {
     pub event_counts: Vec<AssetEventCount>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirstProofEventCountLedgerReport {
+    pub schema_version: String,
+    pub source_rows: u64,
+    pub event_counts: Vec<AssetEventCount>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirstProofEventCountLedgerSpec {
+    pub source_parquet_path: PathBuf,
+    pub output_path: PathBuf,
+    pub asset_id_column: String,
+    pub event_family_column: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -100,11 +124,26 @@ pub struct FirstProofSelectorArtifact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstProofEventCountLedgerArtifact {
+    pub path: PathBuf,
+    pub content_hash: String,
+    pub bytes: u64,
+    pub source_rows: u64,
+    pub event_count_rows: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FirstProofSelectorError {
     ReadSpec { path: String, error: String },
     ParseSpecToml { path: String, error: String },
     ReadEventCountLedger { path: String, error: String },
     ParseEventCountLedgerJson { path: String, error: String },
+    ReadSourceParquet { path: String, error: String },
+    BuildSourceParquetReader { path: String, error: String },
+    ReadSourceParquetBatch { path: String, error: String },
+    MissingSourceColumn { column: String },
+    UnsupportedSourceColumn { column: String },
+    NullSourceColumnValue { column: String, row: usize },
     CreateDir { path: String, error: String },
     ReadExisting { path: String, error: String },
     Write { path: String, error: String },
@@ -127,6 +166,26 @@ impl fmt::Display for FirstProofSelectorError {
             Self::ParseEventCountLedgerJson { path, error } => write!(
                 f,
                 "parse first-proof event-count ledger JSON {path}: {error}"
+            ),
+            Self::ReadSourceParquet { path, error } => {
+                write!(f, "read first-proof source parquet {path}: {error}")
+            }
+            Self::BuildSourceParquetReader { path, error } => {
+                write!(f, "build first-proof source parquet reader {path}: {error}")
+            }
+            Self::ReadSourceParquetBatch { path, error } => {
+                write!(f, "read first-proof source parquet batch {path}: {error}")
+            }
+            Self::MissingSourceColumn { column } => {
+                write!(f, "first-proof source parquet missing column {column:?}")
+            }
+            Self::UnsupportedSourceColumn { column } => write!(
+                f,
+                "first-proof source parquet column {column:?} is not Utf8 or LargeUtf8"
+            ),
+            Self::NullSourceColumnValue { column, row } => write!(
+                f,
+                "first-proof source parquet column {column:?} has null at row {row}"
             ),
             Self::CreateDir { path, error } => write!(
                 f,
@@ -290,16 +349,129 @@ pub fn write_first_proof_selector_report_from_spec_file(
             error: error.to_string(),
         }
     })?;
-    let ledger: FirstProofEventCountLedger =
-        serde_json::from_slice(&ledger_bytes).map_err(|error| {
-            FirstProofSelectorError::ParseEventCountLedgerJson {
-                path: ledger_path_display,
-                error: error.to_string(),
-            }
-        })?;
+    let ledger = parse_event_count_ledger(&ledger_bytes, &ledger_path_display)?;
     let report =
         evaluate_first_proof_selector(spec.selector_id, &ledger.event_counts, &spec.selection);
     write_first_proof_selector_report(&spec.output_dir, &report)
+}
+
+pub fn write_first_proof_event_count_ledger_from_spec_file(
+    spec_path: &Path,
+) -> Result<FirstProofEventCountLedgerArtifact, FirstProofSelectorError> {
+    let spec_path_display = spec_path.display().to_string();
+    let spec_text =
+        fs::read_to_string(spec_path).map_err(|error| FirstProofSelectorError::ReadSpec {
+            path: spec_path_display.clone(),
+            error: error.to_string(),
+        })?;
+    let spec: FirstProofEventCountLedgerSpec =
+        toml::from_str(&spec_text).map_err(|error| FirstProofSelectorError::ParseSpecToml {
+            path: spec_path_display,
+            error: error.to_string(),
+        })?;
+    let report = build_first_proof_event_count_ledger_from_parquet(&spec)?;
+    write_first_proof_event_count_ledger(&spec.output_path, &report)
+}
+
+pub fn build_first_proof_event_count_ledger_from_parquet(
+    spec: &FirstProofEventCountLedgerSpec,
+) -> Result<FirstProofEventCountLedgerReport, FirstProofSelectorError> {
+    let source_path = spec.source_parquet_path.display().to_string();
+    let file = File::open(&spec.source_parquet_path).map_err(|error| {
+        FirstProofSelectorError::ReadSourceParquet {
+            path: source_path.clone(),
+            error: error.to_string(),
+        }
+    })?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|error| {
+        FirstProofSelectorError::BuildSourceParquetReader {
+            path: source_path.clone(),
+            error: error.to_string(),
+        }
+    })?;
+    let projection = ProjectionMask::columns(
+        builder.parquet_schema(),
+        [
+            spec.asset_id_column.as_str(),
+            spec.event_family_column.as_str(),
+        ],
+    );
+    let reader = builder
+        .with_projection(projection)
+        .build()
+        .map_err(|error| FirstProofSelectorError::BuildSourceParquetReader {
+            path: source_path.clone(),
+            error: error.to_string(),
+        })?;
+    let mut counts = BTreeMap::<String, BTreeMap<String, u64>>::new();
+    let mut source_rows = 0_u64;
+    for batch in reader {
+        let batch = batch.map_err(|error| FirstProofSelectorError::ReadSourceParquetBatch {
+            path: source_path.clone(),
+            error: error.to_string(),
+        })?;
+        source_rows = source_rows.saturating_add(batch.num_rows() as u64);
+        add_batch_event_counts(
+            &batch,
+            &spec.asset_id_column,
+            &spec.event_family_column,
+            &mut counts,
+        )?;
+    }
+    Ok(FirstProofEventCountLedgerReport {
+        schema_version: FIRST_PROOF_EVENT_COUNT_LEDGER_SCHEMA_VERSION.to_string(),
+        source_rows,
+        event_counts: counts
+            .into_iter()
+            .flat_map(|(asset_id, event_counts)| {
+                event_counts
+                    .into_iter()
+                    .map(move |(event_family, rows)| AssetEventCount {
+                        asset_id: asset_id.clone(),
+                        event_family,
+                        rows,
+                    })
+            })
+            .collect(),
+    })
+}
+
+pub fn write_first_proof_event_count_ledger(
+    output_path: &Path,
+    report: &FirstProofEventCountLedgerReport,
+) -> Result<FirstProofEventCountLedgerArtifact, FirstProofSelectorError> {
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| FirstProofSelectorError::CreateDir {
+            path: parent.display().to_string(),
+            error: error.to_string(),
+        })?;
+    }
+    let bytes = serde_json::to_vec_pretty(report)
+        .map_err(|error| FirstProofSelectorError::Serialize(error.to_string()))?;
+    if output_path.exists() {
+        let existing =
+            fs::read(output_path).map_err(|error| FirstProofSelectorError::ReadExisting {
+                path: output_path.display().to_string(),
+                error: error.to_string(),
+            })?;
+        if existing != bytes {
+            return Err(FirstProofSelectorError::ExistingArtifactMismatch {
+                path: output_path.display().to_string(),
+            });
+        }
+    } else {
+        fs::write(output_path, &bytes).map_err(|error| FirstProofSelectorError::Write {
+            path: output_path.display().to_string(),
+            error: error.to_string(),
+        })?;
+    }
+    Ok(FirstProofEventCountLedgerArtifact {
+        path: output_path.to_path_buf(),
+        content_hash: event_count_ledger_report_hash(report)?,
+        bytes: bytes.len() as u64,
+        source_rows: report.source_rows,
+        event_count_rows: report.event_counts.len() as u64,
+    })
 }
 
 pub fn write_first_proof_selector_report(
@@ -337,6 +509,79 @@ pub fn write_first_proof_selector_report(
     })
 }
 
+fn parse_event_count_ledger(
+    bytes: &[u8],
+    path: &str,
+) -> Result<FirstProofEventCountLedger, FirstProofSelectorError> {
+    if let Ok(report) = serde_json::from_slice::<FirstProofEventCountLedgerReport>(bytes) {
+        return Ok(FirstProofEventCountLedger {
+            event_counts: report.event_counts,
+        });
+    }
+    serde_json::from_slice(bytes).map_err(|error| {
+        FirstProofSelectorError::ParseEventCountLedgerJson {
+            path: path.to_string(),
+            error: error.to_string(),
+        }
+    })
+}
+
+fn add_batch_event_counts(
+    batch: &RecordBatch,
+    asset_id_column: &str,
+    event_family_column: &str,
+    counts: &mut BTreeMap<String, BTreeMap<String, u64>>,
+) -> Result<(), FirstProofSelectorError> {
+    let asset_values = batch.column_by_name(asset_id_column).ok_or_else(|| {
+        FirstProofSelectorError::MissingSourceColumn {
+            column: asset_id_column.to_string(),
+        }
+    })?;
+    let event_values = batch.column_by_name(event_family_column).ok_or_else(|| {
+        FirstProofSelectorError::MissingSourceColumn {
+            column: event_family_column.to_string(),
+        }
+    })?;
+    for row in 0..batch.num_rows() {
+        let asset_id = string_column_value(asset_values.as_ref(), asset_id_column, row)?;
+        let event_family = string_column_value(event_values.as_ref(), event_family_column, row)?;
+        if let Some(event_counts) = counts.get_mut(asset_id) {
+            if let Some(rows) = event_counts.get_mut(event_family) {
+                *rows = rows.saturating_add(1);
+            } else {
+                event_counts.insert(event_family.to_string(), 1);
+            }
+        } else {
+            let mut event_counts = BTreeMap::new();
+            event_counts.insert(event_family.to_string(), 1);
+            counts.insert(asset_id.to_string(), event_counts);
+        }
+    }
+    Ok(())
+}
+
+fn string_column_value<'a>(
+    values: &'a dyn Array,
+    column: &str,
+    row: usize,
+) -> Result<&'a str, FirstProofSelectorError> {
+    if values.is_null(row) {
+        return Err(FirstProofSelectorError::NullSourceColumnValue {
+            column: column.to_string(),
+            row,
+        });
+    }
+    if let Some(strings) = values.as_any().downcast_ref::<StringArray>() {
+        return Ok(strings.value(row));
+    }
+    if let Some(strings) = values.as_any().downcast_ref::<LargeStringArray>() {
+        return Ok(strings.value(row));
+    }
+    Err(FirstProofSelectorError::UnsupportedSourceColumn {
+        column: column.to_string(),
+    })
+}
+
 fn selected_asset_ids_hash(selected_assets: &[SelectedFirstProofAsset]) -> String {
     if selected_assets.is_empty() {
         return String::new();
@@ -350,6 +595,16 @@ fn selected_asset_ids_hash(selected_assets: &[SelectedFirstProofAsset]) -> Strin
 }
 
 fn content_hash(report: &FirstProofSelectorReport) -> Result<String, FirstProofSelectorError> {
+    let bytes = serde_json::to_vec(report)
+        .map_err(|error| FirstProofSelectorError::Serialize(error.to_string()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn event_count_ledger_report_hash(
+    report: &FirstProofEventCountLedgerReport,
+) -> Result<String, FirstProofSelectorError> {
     let bytes = serde_json::to_vec(report)
         .map_err(|error| FirstProofSelectorError::Serialize(error.to_string()))?;
     let mut hasher = Sha256::new();

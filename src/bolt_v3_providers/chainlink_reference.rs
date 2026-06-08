@@ -216,6 +216,16 @@ impl DataClient for ChainlinkReferencePriceClient {
     fn is_disconnected(&self) -> bool {
         !self.connected
     }
+
+    async fn connect(&mut self) -> anyhow::Result<()> {
+        self.connected = true;
+        Ok(())
+    }
+
+    async fn disconnect(&mut self) -> anyhow::Result<()> {
+        self.connected = false;
+        Ok(())
+    }
 }
 
 pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
@@ -465,5 +475,50 @@ fn secrets_for<'a>(
             client_key: client_key.to_string(),
             expected_provider_key: KEY,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture_config() -> ChainlinkReferencePriceClientConfig {
+        ChainlinkReferencePriceClientConfig {
+            websocket_endpoint: "wss://ws.testnet-dataengine.chain.link".to_string(),
+            transport_backend: TransportBackend::Sockudo,
+            heartbeat_secs: Some(5),
+            heartbeat_message: Some("ping".to_string()),
+            reconnect_timeout_ms: 5_000,
+            reconnect_delay_initial_ms: 250,
+            reconnect_delay_max_ms: 5_000,
+            reconnect_backoff_factor: 1.5,
+            reconnect_jitter_ms: 100,
+            idle_timeout_ms: 10_000,
+            api_key: Zeroizing::new("chainlink-api-key".to_string()),
+            api_secret: Zeroizing::new("chainlink-api-secret".to_string()),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn connect_disconnect_update_nt_data_client_connected_state() {
+        let mut client = ChainlinkReferencePriceClient {
+            client_id: ClientId::from("chainlink_reference"),
+            _config: fixture_config(),
+            connected: false,
+        };
+
+        assert!(client.is_disconnected());
+
+        client
+            .connect()
+            .await
+            .expect("chainlink reference connect should succeed");
+        assert!(client.is_connected());
+
+        client
+            .disconnect()
+            .await
+            .expect("chainlink reference disconnect should succeed");
+        assert!(client.is_disconnected());
     }
 }

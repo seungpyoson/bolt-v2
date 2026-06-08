@@ -2280,7 +2280,10 @@ Verification:
 Current conclusion:
 
 - The accepted one-object `binance-spot-native-trades` TradeTick/TRADE_REPLAY
-  path is freshly proven at the current head.
+  path is freshly proven at runtime head
+  `31ead4815f356445de16b6f06c40ebcba65c683c`; commit
+  `82c19678cc463bae708b96ceb2d80157e5a63a03` records the proof and is green
+  in PR #610 `CI`, `Backtester CI`, and `actionlint`.
 - This does not close `BACKTESTING_ENGINE-006`: no Artifact Index producer IAM
   enforcement was proven and no S3/Artifact Index mutation was attempted.
 - This does not close the PMXT portion of `BACKTESTING_ENGINE-022`: broad

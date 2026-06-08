@@ -2057,3 +2057,50 @@ Current conclusion:
   coverage/cost/storage evidence, and dynamic tick-size replay proof or an
   accepted bounded-exclusion policy are still required before broad
   PMXT/Polymarket backfill can become canonical.
+
+## 2026-06-09 source-catalog mapping proof-binding checkpoint
+
+Root cause addressed:
+
+- `BackfillExecutionReadiness` already bound source-selection readiness to the
+  accepted tranche's `source_proof_id` and `source_proof_version`.
+- `SourceCatalogMappingReadiness` only carried `source_binding`,
+  `table_family`, and NT data types. A stale or hand-edited mapping-readiness
+  report for the same binding/table family could therefore satisfy execution
+  readiness for a different source-proof version.
+- That was a generic broad-backfill safety gap: a PMXT one-off mapping artifact
+  or any older provider mapping proof must not authorize a later canonical
+  source proof unless the mapping evidence is for the same proof version.
+
+Change:
+
+- Source-catalog mapping readiness specs and reports now carry
+  `source_proof_id` and `source_proof_version`.
+- Mapping evaluation rows can carry the same proof identity, and readiness
+  blocks with `source_proof_mismatch` when the observed mapping evidence is not
+  for the requested proof.
+- Backfill execution readiness now rejects source-catalog mapping readiness
+  whose proof identity differs from the accepted tranche or execution plan.
+- The committed Binance ready mapping report and PMXT blocked mapping report
+  were refreshed so both are bound to exact source-proof versions.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_execution_readiness execution_readiness_blocks_when_source_catalog_mapping_readiness_source_proof_mismatches -- --nocapture`
+  failed because `SourceCatalogMappingReadinessReport` had no
+  `source_proof_id`/`source_proof_version` fields and execution readiness had
+  no source-proof mismatch blocker.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_source_catalog_mapping_readiness --test backtesting_vertical_slice_backfill_execution_readiness --test backtesting_vertical_slice_backfill_gate_reference_artifacts -- --nocapture`
+  passed 16 focused mapping/readiness/reference-artifact tests.
+
+Current conclusion:
+
+- This closes a generic `BACKTESTING_ENGINE-022` bypass without adding
+  venue/source/data-family constants: source-catalog mapping proof is now bound
+  to the exact source proof version before execution readiness can pass.
+- It does not close `BACKTESTING_ENGINE-022`. PMXT/Polymarket broad backfill
+  still requires durable accepted source proof, expanded coverage/cost/storage
+  evidence, and dynamic tick-size replay proof or an accepted bounded-exclusion
+  policy.

@@ -58,6 +58,8 @@
   "source_sample_mapping_status": [
     {
       "source_binding": "binance-spot-native-trades",
+      "source_proof_id": "source-proof-binance-spot-native-trades-bnbusdc-2026-03-01",
+      "source_proof_version": 1,
       "fixture_type": "perps-spot",
       "table_family": "trades",
       "source_sample_status": "sample_and_accepted_object_available",
@@ -75,6 +77,8 @@
     },
     {
       "source_binding": "polymarket-parquet-archive-index",
+      "source_proof_id": "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
+      "source_proof_version": 1,
       "fixture_type": "binary-option",
       "table_family": "order_book_snapshot_deltas",
       "source_sample_status": "sample_schema_available",
@@ -98,6 +102,8 @@
     },
     {
       "source_binding": "kalshi-official-historical-api",
+      "source_proof_id": "source-proof-kalshi-official-historical-binary-option-pending-2026-06-08",
+      "source_proof_version": 1,
       "fixture_type": "binary-option",
       "table_family": "bars",
       "source_sample_status": "historical_market_trade_candlestick_shapes_available",
@@ -132,6 +138,8 @@
     },
     {
       "source_binding": "hyperliquid-hip4-outcome-meta",
+      "source_proof_id": "source-proof-hyperliquid-hip4-outcome-meta-binary-option-pending-2026-06-08",
+      "source_proof_version": 1,
       "fixture_type": "binary-option",
       "table_family": "prediction_market_outcomes",
       "source_sample_status": "current_metadata_only",

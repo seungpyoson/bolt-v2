@@ -2,7 +2,9 @@
   "schema_version": "source-catalog-mapping-readiness-report.v1",
   "readiness_id": "polymarket-parquet-archive-index-canonical-source-catalog-mapping-readiness",
   "status": "blocked",
-  "catalog_mapping_evaluation_hash": "86493b0b706307253f821cccaa25671fafd5e77306598ec614977559fc646013",
+  "catalog_mapping_evaluation_hash": "18e86a04b5cad26d705083be38f0303523077859a17612f25e3766ad0f67419e",
+  "source_proof_id": "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
+  "source_proof_version": 1,
   "source_binding": "polymarket-parquet-archive-index",
   "required_table_family": "order_book_snapshot_deltas",
   "required_nt_data_types": [
@@ -15,6 +17,8 @@
   "allowed_parquet_catalog_statuses": [
     "proven"
   ],
+  "observed_source_proof_id": "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
+  "observed_source_proof_version": 1,
   "observed_source_binding": "polymarket-parquet-archive-index",
   "observed_table_family": "order_book_snapshot_deltas",
   "observed_nt_data_types": [

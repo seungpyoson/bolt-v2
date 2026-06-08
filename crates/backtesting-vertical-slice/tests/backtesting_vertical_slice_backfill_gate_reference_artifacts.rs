@@ -164,6 +164,8 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
             readiness_id: &expected_catalog_mapping_readiness.readiness_id,
             catalog_mapping_evaluation_hash: &sha256_hex(CATALOG_MAPPING_EVALUATION_BYTES),
             source_sample_mapping_status: &mapping_evaluation.source_sample_mapping_status,
+            source_proof_id: &expected_catalog_mapping_readiness.source_proof_id,
+            source_proof_version: expected_catalog_mapping_readiness.source_proof_version,
             source_binding: &expected_catalog_mapping_readiness.source_binding,
             required_table_family: &expected_catalog_mapping_readiness.required_table_family,
             required_nt_data_types: expected_catalog_mapping_readiness
@@ -278,6 +280,8 @@ fn blocked_canonical_source_catalog_mapping_reference_artifact_matches_generic_e
             readiness_id: &expected_blocked_readiness.readiness_id,
             catalog_mapping_evaluation_hash: &sha256_hex(CATALOG_MAPPING_EVALUATION_BYTES),
             source_sample_mapping_status: &mapping_evaluation.source_sample_mapping_status,
+            source_proof_id: &expected_blocked_readiness.source_proof_id,
+            source_proof_version: expected_blocked_readiness.source_proof_version,
             source_binding: &expected_blocked_readiness.source_binding,
             required_table_family: &expected_blocked_readiness.required_table_family,
             required_nt_data_types: expected_blocked_readiness.required_nt_data_types.clone(),

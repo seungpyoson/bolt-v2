@@ -1,6 +1,8 @@
 readiness_id = "binance-bnbusdc-2026-03-01-source-catalog-mapping-readiness"
 catalog_mapping_evaluation_path = "specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-evaluation.backtesting-engine.2026-06-08.json"
 output_dir = "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/source-catalog-mapping-readiness"
+source_proof_id = "source-proof-binance-spot-native-trades-bnbusdc-2026-03-01"
+source_proof_version = 1
 source_binding = "binance-spot-native-trades"
 required_table_family = "trades"
 required_nt_data_types = ["TradeTick"]

@@ -352,6 +352,41 @@ fn execution_readiness_blocks_when_source_catalog_mapping_readiness_is_required_
     ));
 }
 
+#[test]
+fn execution_readiness_blocks_when_source_catalog_mapping_readiness_source_proof_mismatches() {
+    let tranche = accepted_tranche();
+    let plan = matching_execution_plan(&tranche);
+    let mut catalog_mapping = source_catalog_mapping_readiness_report(&tranche);
+    catalog_mapping.source_proof_id = "source-proof-different".to_string();
+    catalog_mapping.source_proof_version = tranche.source_proof_version + 1;
+
+    let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+        readiness_id: "synthetic-readiness",
+        accepted_tranche_manifest_hash: "synthetic-tranche-file-hash",
+        tranche: &tranche,
+        execution_plan_hash: "synthetic-plan-file-hash",
+        plan: &plan,
+        required_table_family: "trades",
+        required_nt_data_type: "TradeTick",
+        supported_data_paths: supported_data_paths(),
+        artifact_index_commit_required: false,
+        required_artifact_index_kind: None,
+        artifact_index_commit_proof_report_hash: None,
+        artifact_index_commit_proof_report: None,
+        source_selection_readiness_required: false,
+        source_selection_readiness_report_hash: None,
+        source_selection_readiness_report: None,
+        source_catalog_mapping_readiness_required: true,
+        source_catalog_mapping_readiness_report_hash: Some("synthetic-catalog-mapping-hash"),
+        source_catalog_mapping_readiness_report: Some(&catalog_mapping),
+    });
+
+    assert_eq!(report.status, BackfillExecutionReadinessStatus::Blocked);
+    assert!(report.blockers.contains(
+        &BackfillExecutionReadinessBlocker::SourceCatalogMappingReadinessSourceProofMismatch
+    ));
+}
+
 fn accepted_tranche() -> BackfillAcceptedTrancheManifest {
     BackfillAcceptedTrancheManifest {
         schema_version: BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION.to_string(),
@@ -508,11 +543,15 @@ fn source_catalog_mapping_readiness_report(
         readiness_id: "synthetic-catalog-mapping".to_string(),
         status: SourceCatalogMappingReadinessStatus::Ready,
         catalog_mapping_evaluation_hash: "synthetic-catalog-mapping-evaluation-hash".to_string(),
+        source_proof_id: tranche.source_proof_id.clone(),
+        source_proof_version: tranche.source_proof_version,
         source_binding: tranche.source_binding.clone(),
         required_table_family: tranche.table_family.clone(),
         required_nt_data_types: vec!["TradeTick".to_string()],
         allowed_current_bte_statuses: vec!["accepted".to_string()],
         allowed_parquet_catalog_statuses: vec!["proven".to_string()],
+        observed_source_proof_id: Some(tranche.source_proof_id.clone()),
+        observed_source_proof_version: Some(tranche.source_proof_version),
         observed_source_binding: Some(tranche.source_binding.clone()),
         observed_table_family: Some(tranche.table_family.clone()),
         observed_nt_data_types: vec!["TradeTick".to_string()],

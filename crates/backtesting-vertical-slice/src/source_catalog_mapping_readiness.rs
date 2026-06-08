@@ -25,6 +25,8 @@ pub struct SourceCatalogMappingReadinessSpec {
     pub readiness_id: String,
     pub catalog_mapping_evaluation_path: PathBuf,
     pub output_dir: PathBuf,
+    pub source_proof_id: String,
+    pub source_proof_version: u32,
     pub source_binding: String,
     pub required_table_family: String,
     pub required_nt_data_types: Vec<String>,
@@ -43,6 +45,7 @@ pub enum SourceCatalogMappingReadinessStatus {
 #[serde(rename_all = "snake_case")]
 pub enum SourceCatalogMappingReadinessBlocker {
     EmptyReadinessId,
+    EmptySourceProofId,
     EmptySourceBinding,
     EmptyRequiredTableFamily,
     EmptyRequiredNtDataTypes,
@@ -52,6 +55,7 @@ pub enum SourceCatalogMappingReadinessBlocker {
     DuplicateMappingEntries,
     TableFamilyMismatch,
     RequiredNtDataTypeMissing,
+    SourceProofMismatch,
     CurrentBteStatusNotAllowed,
     ParquetCatalogStatusNotAllowed,
 }
@@ -63,11 +67,15 @@ pub struct SourceCatalogMappingReadinessReport {
     pub readiness_id: String,
     pub status: SourceCatalogMappingReadinessStatus,
     pub catalog_mapping_evaluation_hash: String,
+    pub source_proof_id: String,
+    pub source_proof_version: u32,
     pub source_binding: String,
     pub required_table_family: String,
     pub required_nt_data_types: Vec<String>,
     pub allowed_current_bte_statuses: Vec<String>,
     pub allowed_parquet_catalog_statuses: Vec<String>,
+    pub observed_source_proof_id: Option<String>,
+    pub observed_source_proof_version: Option<u32>,
     pub observed_source_binding: Option<String>,
     pub observed_table_family: Option<String>,
     pub observed_nt_data_types: Vec<String>,
@@ -79,6 +87,10 @@ pub struct SourceCatalogMappingReadinessReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceCatalogMappingStatusEntry {
+    #[serde(default)]
+    pub source_proof_id: Option<String>,
+    #[serde(default)]
+    pub source_proof_version: Option<u32>,
     pub source_binding: String,
     pub table_family: String,
     pub candidate_nt_data_classes: Vec<String>,
@@ -97,6 +109,8 @@ pub struct SourceCatalogMappingReadinessInput<'a> {
     pub readiness_id: &'a str,
     pub catalog_mapping_evaluation_hash: &'a str,
     pub source_sample_mapping_status: &'a [SourceCatalogMappingStatusEntry],
+    pub source_proof_id: &'a str,
+    pub source_proof_version: u32,
     pub source_binding: &'a str,
     pub required_table_family: &'a str,
     pub required_nt_data_types: Vec<String>,
@@ -168,12 +182,15 @@ pub fn evaluate_source_catalog_mapping_readiness(
     input: SourceCatalogMappingReadinessInput<'_>,
 ) -> SourceCatalogMappingReadinessReport {
     let readiness_id = input.readiness_id.to_string();
+    let source_proof_id = input.source_proof_id.to_string();
+    let source_proof_version = input.source_proof_version;
     let source_binding = input.source_binding.to_string();
     let required_table_family = input.required_table_family.to_string();
     let required_nt_data_types = input.required_nt_data_types;
     let allowed_current_bte_statuses = input.allowed_current_bte_statuses;
     let allowed_parquet_catalog_statuses = input.allowed_parquet_catalog_statuses;
 
+    let source_proof_id_trimmed = source_proof_id.trim();
     let source_binding_trimmed = source_binding.trim();
     let required_table_family_trimmed = required_table_family.trim();
     let required_nt_data_type_values = required_nt_data_types
@@ -200,6 +217,9 @@ pub fn evaluate_source_catalog_mapping_readiness(
     let mut blockers = Vec::new();
     if readiness_id.trim().is_empty() {
         blockers.push(SourceCatalogMappingReadinessBlocker::EmptyReadinessId);
+    }
+    if source_proof_id_trimmed.is_empty() {
+        blockers.push(SourceCatalogMappingReadinessBlocker::EmptySourceProofId);
     }
     if source_binding_trimmed.is_empty() {
         blockers.push(SourceCatalogMappingReadinessBlocker::EmptySourceBinding);
@@ -261,6 +281,11 @@ pub fn evaluate_source_catalog_mapping_readiness(
         }) {
             blockers.push(SourceCatalogMappingReadinessBlocker::RequiredNtDataTypeMissing);
         }
+        if entry.source_proof_id.as_deref().map(str::trim) != Some(source_proof_id_trimmed)
+            || entry.source_proof_version != Some(source_proof_version)
+        {
+            blockers.push(SourceCatalogMappingReadinessBlocker::SourceProofMismatch);
+        }
         if !allowed_current_bte_statuses
             .iter()
             .any(|status| status.trim() == entry.current_bte_status.trim())
@@ -287,11 +312,15 @@ pub fn evaluate_source_catalog_mapping_readiness(
         readiness_id,
         status,
         catalog_mapping_evaluation_hash: input.catalog_mapping_evaluation_hash.to_string(),
+        source_proof_id,
+        source_proof_version,
         source_binding,
         required_table_family,
         required_nt_data_types,
         allowed_current_bte_statuses,
         allowed_parquet_catalog_statuses,
+        observed_source_proof_id: observed_entry.and_then(|entry| entry.source_proof_id.clone()),
+        observed_source_proof_version: observed_entry.and_then(|entry| entry.source_proof_version),
         observed_source_binding: observed_entry.map(|entry| entry.source_binding.clone()),
         observed_table_family: observed_entry.map(|entry| entry.table_family.clone()),
         observed_nt_data_types: observed_entry
@@ -341,6 +370,8 @@ pub fn write_source_catalog_mapping_readiness_report_from_spec_file(
         readiness_id: &spec.readiness_id,
         catalog_mapping_evaluation_hash: &evaluation_hash,
         source_sample_mapping_status: &evaluation.source_sample_mapping_status,
+        source_proof_id: &spec.source_proof_id,
+        source_proof_version: spec.source_proof_version,
         source_binding: &spec.source_binding,
         required_table_family: &spec.required_table_family,
         required_nt_data_types: spec.required_nt_data_types,

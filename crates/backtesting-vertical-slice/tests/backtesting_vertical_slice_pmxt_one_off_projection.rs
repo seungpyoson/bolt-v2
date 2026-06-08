@@ -4,11 +4,16 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use backtesting_vertical_slice::{
+    conversion_boundary::{
+        CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
+        ConversionFingerprint, ConversionOutputState, inspect_conversion_output,
+    },
     pmxt_one_off_backfill_projection::{
-        PmxtBookLevel, PmxtOneOffProjectionRequest, PmxtOneOffSelectedRow, PmxtOneOffSnapshotRow,
-        PmxtOneOffTickSide, PmxtPriceChangeRow, PmxtSelectedSourceProjectionSpec,
-        PmxtSelectedSourceSchema, project_pmxt_one_off_rows_to_nt,
-        project_pmxt_selected_source_parquet_to_nt, write_pmxt_one_off_projection_to_catalog,
+        PmxtBookLevel, PmxtOneOffConversionProjectionSpec, PmxtOneOffProjectionRequest,
+        PmxtOneOffSelectedRow, PmxtOneOffSnapshotRow, PmxtOneOffTickSide, PmxtPriceChangeRow,
+        PmxtSelectedSourceProjectionSpec, PmxtSelectedSourceSchema,
+        project_pmxt_one_off_rows_to_nt, project_pmxt_selected_source_parquet_to_nt,
+        write_pmxt_one_off_conversion_projection, write_pmxt_one_off_projection_to_catalog,
     },
     selected_source_slice::{SelectedSourceSliceReport, SelectedSourceSliceUsageScope},
     source_proof::SourceProofUsageScope,
@@ -258,6 +263,93 @@ fn pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan() {
     );
 }
 
+#[test]
+fn pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_metadata() {
+    let projection = pmxt_projection_fixture();
+    let output_dir = tempfile::TempDir::new().expect("output dir");
+    let catalog_root = output_dir.path().join("nt-catalog");
+    let fingerprint = pmxt_conversion_fingerprint();
+
+    let completed = write_pmxt_one_off_conversion_projection(PmxtOneOffConversionProjectionSpec {
+        output_dir: output_dir.path().to_path_buf(),
+        catalog_root: catalog_root.clone(),
+        projection: projection.clone(),
+        fingerprint: fingerprint.clone(),
+        normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
+        output_catalog_uri: catalog_root.display().to_string(),
+        execution_catalog_uri: catalog_root.display().to_string(),
+        direct_s3_catalog_access_proven: false,
+        completed_at: "2026-06-08T00:00:00Z".to_string(),
+    })
+    .expect("write PMXT one-off conversion projection");
+
+    assert!(output_dir.path().join(CONVERSION_CHECKPOINT_FILE).exists());
+    assert!(output_dir.path().join(CONVERSION_MANIFEST_FILE).exists());
+    assert!(output_dir.path().join(CATALOG_METADATA_FILE).exists());
+    assert_eq!(
+        completed.catalog_projection.order_book_delta_count,
+        projection.order_book_deltas.len() as u64
+    );
+    assert_eq!(completed.conversion_manifest.nt_data_type, "OrderBookDelta");
+    assert_eq!(
+        completed.conversion_manifest.canonical_rows,
+        projection.order_book_deltas.len()
+    );
+    assert_eq!(
+        completed.conversion_manifest.catalog_hash,
+        completed.catalog_projection.catalog_hash
+    );
+    assert_eq!(
+        inspect_conversion_output(output_dir.path(), &fingerprint).expect("inspect conversion"),
+        ConversionOutputState::Complete {
+            manifest_hash: completed.conversion_manifest_hash.clone(),
+            checkpoint_hash: completed.conversion_checkpoint_hash.clone(),
+            catalog_hash: completed.catalog_projection.catalog_hash.clone(),
+        }
+    );
+}
+
+#[test]
+fn pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output() {
+    let projection = pmxt_projection_fixture();
+    let output_dir = tempfile::TempDir::new().expect("output dir");
+    let catalog_root = output_dir.path().join("nt-catalog");
+    let fingerprint = pmxt_conversion_fingerprint();
+    let spec = PmxtOneOffConversionProjectionSpec {
+        output_dir: output_dir.path().to_path_buf(),
+        catalog_root: catalog_root.clone(),
+        projection,
+        fingerprint,
+        normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
+        output_catalog_uri: catalog_root.display().to_string(),
+        execution_catalog_uri: catalog_root.display().to_string(),
+        direct_s3_catalog_access_proven: false,
+        completed_at: "2026-06-08T00:00:00Z".to_string(),
+    };
+
+    let first = write_pmxt_one_off_conversion_projection(spec.clone())
+        .expect("write first PMXT one-off conversion projection");
+    let second = write_pmxt_one_off_conversion_projection(spec)
+        .expect("reuse matching PMXT one-off conversion projection");
+
+    assert_eq!(
+        second.conversion_manifest_hash,
+        first.conversion_manifest_hash
+    );
+    assert_eq!(
+        second.conversion_checkpoint_hash,
+        first.conversion_checkpoint_hash
+    );
+    assert_eq!(
+        second.conversion_catalog_metadata_hash,
+        first.conversion_catalog_metadata_hash
+    );
+    assert_eq!(
+        second.catalog_projection.catalog_hash,
+        first.catalog_projection.catalog_hash
+    );
+}
+
 fn gamma_markets() -> Vec<GammaMarket> {
     serde_json::from_str(
         r#"[{
@@ -340,6 +432,19 @@ fn binary_option_venue_and_currency(instrument: &InstrumentAny) -> (String, Stri
             instrument.currency.to_string(),
         ),
         other => panic!("expected BinaryOption instrument, got {other:?}"),
+    }
+}
+
+fn pmxt_conversion_fingerprint() -> ConversionFingerprint {
+    ConversionFingerprint {
+        source_proof_id: "source-proof-pmxt-one-off".to_string(),
+        source_proof_version: 1,
+        accepted_object_sha256: "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e"
+            .to_string(),
+        converter_identity: "pmxt-one-off-selected-source-l2-to-nt.v1".to_string(),
+        converter_version: "1".to_string(),
+        converter_config_hash: "7c5ff8475a73c3aaf3e64cc09d803ff34de9cbc51345978406125fcc5147879a"
+            .to_string(),
     }
 }
 

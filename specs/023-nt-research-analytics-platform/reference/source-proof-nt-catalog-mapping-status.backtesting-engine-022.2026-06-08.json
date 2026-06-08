@@ -218,13 +218,29 @@
       "Does not authorize broad PMXT backfill."
     ]
   },
+  "pmxt_one_off_conversion_metadata_status": {
+    "status": "tdd_proven_for_pmxt_one_off_l2_clean_output_and_matching_complete_rerun",
+    "evidence": [
+      "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_metadata failed because the PMXT one-off conversion projection API was absent.",
+      "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_metadata passed after the PMXT one-off wrapper wrote conversion checkpoint, manifest, catalog metadata, and logical catalog hash through the generic conversion boundary.",
+      "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output failed because the PMXT wrapper required a clean output directory.",
+      "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output passed after matching completed output was reused with manifest/data-type/instrument/row-count/catalog-uri checks.",
+      "rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 6 focused PMXT one-off projection tests."
+    ],
+    "claim_limits": [
+      "Proves a PMXT one-off L2 conversion wrapper over an in-test selected projection, not a concrete artifact_root run over the generated selected-source parquet.",
+      "Does not prove PMXT TradeTick row decoding.",
+      "Does not prove BacktestResultContract binding for the verified PMXT L2 catalog.",
+      "Does not authorize broad PMXT backfill."
+    ]
+  },
   "non_hardcoding_decision": "Bybit, Binance, Polymarket, Kalshi, and Hyperliquid remain source-binding examples. The next mapping work must be data-family driven: source schema plus registry binding plus NT data class, with no runtime venue or instrument constants in production code.",
   "next_required_evidence": [
     "Thread the concrete configured first-proof selector report artifact into the bounded PMXT source-backed run without venue or asset constants.",
     "Machine-checked BTE crate proof that nautilus-polymarket parser/provider is reused for Polymarket instruments and token-id joins.",
     "TDD proof for the selected PMXT historical TradeId path because pinned NT's build_polymarket_trade_id helper is crate-private; either mirror the pinned format with provenance or expose it upstream before claiming direct NT helper reuse.",
     "Generic PMXT TradeTick projection contract from source last_trade_price events to NT TradeTick, including trade ids and first-proof tick-size claim limits.",
-    "Conversion manifest/checkpoint/catalog metadata proof for a selected PMXT Polymarket sample staged under artifact_root.",
+    "Concrete selected PMXT artifact-root run that threads selector report, selected-source parquet, conversion manifest/checkpoint/catalog metadata, and BacktestResultContract provenance together.",
     "BacktestResultContract binding proof for the selected source-backed PMXT catalog path.",
     "Coverage ledger using timestamp_received as the archive-hour coverage axis before any expanded tranche.",
     "Separate dynamic tick-size replay proof before full PMXT Polymarket L2 acceptance or broad backfill."

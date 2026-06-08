@@ -36,14 +36,23 @@ use nautilus_polymarket::{
     },
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use ustr::Ustr;
 
 use crate::{
     catalog_projection::logical_catalog_hash,
+    conversion_boundary::{
+        CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
+        ConversionCatalogMetadata, ConversionCheckpoint, ConversionFingerprint, ConversionManifest,
+        ConversionOutputState, inspect_conversion_output, write_completed_conversion_artifacts,
+    },
     selected_source_slice::{SelectedSourceSliceReport, SelectedSourceSliceUsageScope},
     source_proof::SourceProofUsageScope,
 };
+
+/// NautilusTrader data type written by the PMXT one-off L2 projection.
+pub const NT_DATA_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
 
 #[derive(Debug, Clone)]
 pub struct PmxtOneOffProjectionRequest {
@@ -158,6 +167,30 @@ pub struct PmxtSelectedSourceNtProjection {
     pub selected_rows: u64,
     pub projected_l2_rows: u64,
     pub skipped_non_l2_rows: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PmxtOneOffConversionProjectionSpec {
+    pub output_dir: PathBuf,
+    pub catalog_root: PathBuf,
+    pub projection: PmxtOneOffNtProjection,
+    pub fingerprint: ConversionFingerprint,
+    pub normalized_schema_version: String,
+    pub output_catalog_uri: String,
+    pub execution_catalog_uri: String,
+    pub direct_s3_catalog_access_proven: bool,
+    pub completed_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PmxtOneOffCompletedConversionProjection {
+    pub catalog_projection: PmxtOneOffCatalogProjection,
+    pub conversion_checkpoint: ConversionCheckpoint,
+    pub conversion_manifest: ConversionManifest,
+    pub conversion_catalog_metadata: ConversionCatalogMetadata,
+    pub conversion_checkpoint_hash: String,
+    pub conversion_manifest_hash: String,
+    pub conversion_catalog_metadata_hash: String,
 }
 
 pub fn project_pmxt_selected_source_parquet_to_nt(
@@ -495,6 +528,199 @@ pub fn write_pmxt_one_off_projection_to_catalog(
         trade_tick_count: projection.trade_ticks.len() as u64,
         catalog_hash: logical_catalog_hash(catalog_root)?,
     })
+}
+
+pub fn write_pmxt_one_off_conversion_projection(
+    spec: PmxtOneOffConversionProjectionSpec,
+) -> Result<PmxtOneOffCompletedConversionProjection> {
+    ensure!(
+        spec.projection.usage_scope == SourceProofUsageScope::OneOffBackfillData,
+        "PMXT one-off conversion projection only accepts one_off_backfill_data usage_scope"
+    );
+    ensure!(
+        !spec.normalized_schema_version.trim().is_empty(),
+        "PMXT one-off conversion projection missing normalized_schema_version"
+    );
+    ensure!(
+        !spec.output_catalog_uri.trim().is_empty(),
+        "PMXT one-off conversion projection missing output_catalog_uri"
+    );
+    ensure!(
+        !spec.execution_catalog_uri.trim().is_empty(),
+        "PMXT one-off conversion projection missing execution_catalog_uri"
+    );
+    ensure!(
+        !spec.completed_at.trim().is_empty(),
+        "PMXT one-off conversion projection missing completed_at"
+    );
+    match inspect_conversion_output(&spec.output_dir, &spec.fingerprint)? {
+        ConversionOutputState::CleanNew => write_new_pmxt_one_off_conversion_projection(spec),
+        ConversionOutputState::Complete {
+            manifest_hash,
+            checkpoint_hash,
+            catalog_hash,
+        } => reuse_completed_pmxt_one_off_conversion_projection(
+            spec,
+            manifest_hash,
+            checkpoint_hash,
+            catalog_hash,
+        ),
+        ConversionOutputState::ResumeFromCheckpoint { stage } => {
+            bail!(
+                "PMXT one-off conversion projection cannot resume from checkpoint stage {stage:?}"
+            )
+        }
+    }
+}
+
+fn write_new_pmxt_one_off_conversion_projection(
+    spec: PmxtOneOffConversionProjectionSpec,
+) -> Result<PmxtOneOffCompletedConversionProjection> {
+    let catalog_projection =
+        write_pmxt_one_off_projection_to_catalog(&spec.catalog_root, &spec.projection)?;
+    let canonical_rows = usize::try_from(catalog_projection.order_book_delta_count)
+        .context("PMXT one-off OrderBookDelta count does not fit usize")?;
+    let conversion_checkpoint = ConversionCheckpoint::completed(
+        spec.fingerprint.clone(),
+        canonical_rows,
+        catalog_projection.catalog_hash.clone(),
+        spec.completed_at.clone(),
+    );
+    let conversion_checkpoint_hash = conversion_checkpoint
+        .content_hash()
+        .context("hash PMXT one-off conversion checkpoint")?;
+    let conversion_manifest = ConversionManifest::completed(
+        spec.fingerprint,
+        spec.normalized_schema_version,
+        NT_DATA_TYPE_ORDER_BOOK_DELTA,
+        catalog_projection.nt_instrument_id.clone(),
+        canonical_rows,
+        spec.output_catalog_uri,
+        catalog_projection.catalog_hash.clone(),
+        conversion_checkpoint_hash.clone(),
+        spec.completed_at,
+    );
+    let conversion_manifest_hash = conversion_manifest
+        .content_hash()
+        .context("hash PMXT one-off conversion manifest")?;
+    let conversion_catalog_metadata = ConversionCatalogMetadata::from_manifest(
+        &conversion_manifest,
+        conversion_manifest_hash.clone(),
+        conversion_checkpoint_hash.clone(),
+    )
+    .with_execution_catalog_access(
+        spec.execution_catalog_uri,
+        spec.direct_s3_catalog_access_proven,
+    );
+    let conversion_catalog_metadata_hash = conversion_catalog_metadata
+        .content_hash()
+        .context("hash PMXT one-off catalog metadata")?;
+    write_completed_conversion_artifacts(
+        &spec.output_dir,
+        &conversion_manifest,
+        &conversion_checkpoint,
+        &conversion_catalog_metadata,
+    )?;
+
+    Ok(PmxtOneOffCompletedConversionProjection {
+        catalog_projection,
+        conversion_checkpoint,
+        conversion_manifest,
+        conversion_catalog_metadata,
+        conversion_checkpoint_hash,
+        conversion_manifest_hash,
+        conversion_catalog_metadata_hash,
+    })
+}
+
+fn reuse_completed_pmxt_one_off_conversion_projection(
+    spec: PmxtOneOffConversionProjectionSpec,
+    manifest_hash: String,
+    checkpoint_hash: String,
+    catalog_hash: String,
+) -> Result<PmxtOneOffCompletedConversionProjection> {
+    let conversion_checkpoint: ConversionCheckpoint =
+        read_conversion_json(&spec.output_dir.join(CONVERSION_CHECKPOINT_FILE))?;
+    let conversion_manifest: ConversionManifest =
+        read_conversion_json(&spec.output_dir.join(CONVERSION_MANIFEST_FILE))?;
+    let conversion_catalog_metadata: ConversionCatalogMetadata =
+        read_conversion_json(&spec.output_dir.join(CATALOG_METADATA_FILE))?;
+    ensure!(
+        conversion_checkpoint.content_hash()? == checkpoint_hash,
+        "PMXT one-off completed checkpoint hash changed after validation"
+    );
+    ensure!(
+        conversion_manifest.content_hash()? == manifest_hash,
+        "PMXT one-off completed manifest hash changed after validation"
+    );
+    let conversion_catalog_metadata_hash = conversion_catalog_metadata
+        .content_hash()
+        .context("hash PMXT one-off catalog metadata")?;
+    ensure!(
+        conversion_catalog_metadata.catalog_hash == catalog_hash,
+        "PMXT one-off catalog metadata hash binding changed after validation"
+    );
+
+    let nt_instrument_id = spec.projection.instrument.id().to_string();
+    let canonical_rows = spec.projection.order_book_deltas.len();
+    ensure!(
+        conversion_manifest.normalized_schema_version == spec.normalized_schema_version,
+        "PMXT one-off completed manifest normalized_schema_version mismatch"
+    );
+    ensure!(
+        conversion_manifest.nt_data_type == NT_DATA_TYPE_ORDER_BOOK_DELTA,
+        "PMXT one-off completed manifest nt_data_type mismatch"
+    );
+    ensure!(
+        conversion_manifest.nt_instrument_id == nt_instrument_id,
+        "PMXT one-off completed manifest nt_instrument_id mismatch"
+    );
+    ensure!(
+        conversion_manifest.canonical_rows == canonical_rows,
+        "PMXT one-off completed manifest canonical_rows mismatch"
+    );
+    ensure!(
+        conversion_manifest.output_catalog_uri == spec.output_catalog_uri,
+        "PMXT one-off completed manifest output_catalog_uri mismatch"
+    );
+    ensure!(
+        conversion_manifest.catalog_hash == catalog_hash,
+        "PMXT one-off completed manifest catalog_hash mismatch"
+    );
+    ensure!(
+        conversion_catalog_metadata.execution_catalog_uri == spec.execution_catalog_uri,
+        "PMXT one-off completed catalog metadata execution_catalog_uri mismatch"
+    );
+    ensure!(
+        conversion_catalog_metadata.direct_s3_catalog_access_proven
+            == spec.direct_s3_catalog_access_proven,
+        "PMXT one-off completed catalog metadata direct_s3_catalog_access_proven mismatch"
+    );
+
+    Ok(PmxtOneOffCompletedConversionProjection {
+        catalog_projection: PmxtOneOffCatalogProjection {
+            catalog_root: spec.catalog_root,
+            source_binding: spec.projection.source_binding,
+            usage_scope: spec.projection.usage_scope,
+            nt_instrument_id,
+            order_book_delta_count: u64::try_from(canonical_rows)
+                .context("PMXT one-off OrderBookDelta count does not fit u64")?,
+            trade_tick_count: u64::try_from(spec.projection.trade_ticks.len())
+                .context("PMXT one-off TradeTick count does not fit u64")?,
+            catalog_hash,
+        },
+        conversion_checkpoint,
+        conversion_manifest,
+        conversion_catalog_metadata,
+        conversion_checkpoint_hash: checkpoint_hash,
+        conversion_manifest_hash: manifest_hash,
+        conversion_catalog_metadata_hash,
+    })
+}
+
+fn read_conversion_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
 fn binary_option_l2_metadata(instrument: &InstrumentAny) -> Result<(InstrumentId, u8, u8)> {

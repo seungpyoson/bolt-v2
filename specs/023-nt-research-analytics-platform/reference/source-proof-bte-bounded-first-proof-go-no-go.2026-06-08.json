@@ -161,6 +161,11 @@
       "current_status": "TDD-proven for an NT-native fixture, including BacktestNode consumption of a BinaryOption L2 OrderBookDelta catalog. PMXT one-off projection reuses nautilus-polymarket metadata/snapshot/delta parsers, writes BinaryOption plus OrderBookDelta data to ParquetDataCatalog, reads it back, and proves BacktestNode consumption for L2 rows. PMXT TradeTick projection remains pending because the pinned historical trade-id helper is crate-private."
     },
     {
+      "area": "conversion governance",
+      "required_shape": "PMXT one-off L2 conversion writes the standard conversion manifest, checkpoint, catalog metadata, and logical catalog hash; matching reruns are idempotent and mismatched/dirty output remains gated by the generic conversion boundary.",
+      "current_status": "TDD-proven for PMXT one-off clean output metadata and matching-complete rerun reuse. Generic conversion-boundary tests prove dirty-output, identity mismatch, idempotent-complete, and validated-checkpoint state handling. Concrete selected PMXT artifact-root wiring remains pending."
+    },
+    {
       "area": "NT parser/provider reuse",
       "required_shape": "Add pinned nautilus-polymarket dependency to the isolated BTE crate and call public NT Polymarket parser/provider APIs for instruments, snapshots, deltas, and trades."
     },
@@ -226,7 +231,12 @@
     "Row-group-pruned selected-source staging produced 5 rows in 30.31s and projected 1 of 62 source row groups.",
     "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan failed because the selected-source projection API was absent.",
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan passed after report-hash/Parquet-hash-checked selected-source decoding projected only configured PMXT L2 event roles through the NT-backed one-off projection path.",
-    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection --test backtesting_vertical_slice_selected_source_slice passed 6 focused tests after selected-source decoding."
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection --test backtesting_vertical_slice_selected_source_slice passed 6 focused tests after selected-source decoding.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_metadata failed because the PMXT one-off conversion projection API was absent.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_metadata passed after PMXT one-off L2 projection wrote conversion checkpoint, manifest, catalog metadata, and logical catalog hash through the generic conversion boundary.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output failed because the PMXT wrapper required a clean output directory.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output passed after matching completed output was reused with manifest/data-type/instrument/row-count/catalog-uri checks.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 6 focused PMXT one-off projection tests."
   ],
   "still_blocking_broad_backfill": [
     "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven.",

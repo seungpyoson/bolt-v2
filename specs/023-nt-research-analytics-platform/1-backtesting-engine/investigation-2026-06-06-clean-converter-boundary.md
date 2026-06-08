@@ -1937,6 +1937,28 @@ Current conclusion:
   shows denied-kind event, snapshot, and latest-pointer writes rejected by
   permissions.
 
+## 2026-06-09 Artifact Index SSM readiness checkpoint
+
+Read-only external state:
+
+- `aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/bolt/artifact-index --query Parameters[].Name --output text`
+  returned no parameter names.
+- `aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/bolt/artifact-store --query Parameters[].Name --output text`
+  returned only `/bolt/artifact-store/s3/access-key-id` and
+  `/bolt/artifact-store/s3/secret-access-key`.
+- No SSM parameter values were read, and no AWS mutation was performed.
+
+Current conclusion:
+
+- The current environment still has only the broad generic artifact-store S3
+  credential binding.
+- There is no existing per-kind `/bolt/artifact-index/...` producer credential
+  namespace to use for a denied-kind IAM proof.
+- `BACKTESTING_ENGINE-006` remains open. It can close only after explicit
+  approval for AWS security mutation and provisioning of per-kind producer
+  credentials, or after an approved commit coordinator/table format replaces
+  the direct S3 pointer-commit path.
+
 ## 2026-06-09 coverage-ledger source-proof acceptance checkpoint
 
 Root cause addressed:

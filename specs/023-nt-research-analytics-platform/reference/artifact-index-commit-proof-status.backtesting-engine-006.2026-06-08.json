@@ -34,6 +34,21 @@
     "violation_count": 3,
     "producer_iam_scope_proven": false
   },
+  "read_only_ssm_probe": {
+    "observed_at_utc": "2026-06-08T21:29:52Z",
+    "commands": [
+      "aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/bolt/artifact-index --query Parameters[].Name --output text",
+      "aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/bolt/artifact-store --query Parameters[].Name --output text"
+    ],
+    "artifact_index_parameter_names": [],
+    "artifact_store_parameter_names": [
+      "/bolt/artifact-store/s3/access-key-id",
+      "/bolt/artifact-store/s3/secret-access-key"
+    ],
+    "credential_values_read": false,
+    "aws_mutation_performed": false,
+    "conclusion": "Current SSM state has only the broad artifact-store S3 credential binding and no per-kind /bolt/artifact-index producer credential namespace, so the denied-kind IAM proof cannot be closed by rerunning with current parameters."
+  },
   "repo_side_progress": {
     "per_kind_policy_generator": "crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs",
     "per_kind_provisioning_plan": "crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs::artifact_index_producer_iam_provisioning_plan",

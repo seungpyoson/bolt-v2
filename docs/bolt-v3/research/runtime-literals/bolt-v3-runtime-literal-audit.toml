@@ -8151,10 +8151,26 @@ reason = "PolyResearch reference-price WebSocket frame type for price updates; c
 [[allowed]]
 path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
+literal = '''"subscribed"'''
+context = '''const POLYRESEARCH_SUBSCRIBED_FRAME_TYPE: &str = "subscribed";'''
+classification = "provider_protocol_field"
+reason = "PolyResearch WebSocket subscribe acknowledgement frame type required to map provider subscription ids for targeted unsubscribe; configured TOML sources still select the runtime feed."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
 literal = '''"subscribe"'''
 context = '''const POLYRESEARCH_SUBSCRIBE_ACTION: &str = "subscribe";'''
 classification = "provider_protocol_field"
 reason = "PolyResearch WebSocket subscribe action required by the provider wire protocol; configured TOML sources still select the runtime feed."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"unsubscribe"'''
+context = '''const POLYRESEARCH_UNSUBSCRIBE_ACTION: &str = "unsubscribe";'''
+classification = "provider_protocol_field"
+reason = "PolyResearch WebSocket unsubscribe action required by the provider wire protocol; configured TOML sources still select the runtime feed."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polyresearch.rs"

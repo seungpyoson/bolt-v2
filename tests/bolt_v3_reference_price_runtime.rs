@@ -317,7 +317,7 @@ fn selector_required_source_unavailable_blocks_selection() {
 }
 
 #[test]
-fn selector_optional_source_unavailable_does_not_block_when_quorum_remains() {
+fn selector_marks_initial_backup_selection_as_failover_when_primary_unavailable() {
     let mut selector = ReferencePriceSelector::new_with_source_specs(
         "BTC",
         [
@@ -346,7 +346,31 @@ fn selector_optional_source_unavailable_does_not_block_when_quorum_remains() {
 
     assert_eq!(
         selected,
-        ReferencePriceSelection::selected("polyresearch_backup", 66300.25, false)
+        ReferencePriceSelection::selected("polyresearch_backup", 66300.25, true)
+    );
+}
+
+#[test]
+fn selector_uses_freshest_valid_quote_for_each_source() {
+    let mut selector =
+        ReferencePriceSelector::new("BTC", ["chainlink_primary".to_string()], 1, 2000, 25)
+            .expect("selector config should be valid");
+
+    let selected = selector
+        .select(
+            1774672089000,
+            1774672389000,
+            1774672090500,
+            &[
+                quote("chainlink_primary", 66300.25, 1774672089200, 1774672089300),
+                quote("chainlink_primary", 66305.00, 1774672090400, 1774672090450),
+            ],
+        )
+        .expect("selector should choose from valid same-source quotes");
+
+    assert_eq!(
+        selected,
+        ReferencePriceSelection::selected("chainlink_primary", 66305.00, false)
     );
 }
 

@@ -8,7 +8,7 @@
 use std::{
     any::Any,
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     rc::Rc,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -59,7 +59,9 @@ use crate::{
 const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "key";
 const POLYRESEARCH_LEGACY_API_KEY_QUERY_FIELD: &str = "apiKey";
 const POLYRESEARCH_PRICE_FEED_FRAME_TYPE: &str = "price_feed";
+const POLYRESEARCH_SUBSCRIBED_FRAME_TYPE: &str = "subscribed";
 const POLYRESEARCH_SUBSCRIBE_ACTION: &str = "subscribe";
+const POLYRESEARCH_UNSUBSCRIBE_ACTION: &str = "unsubscribe";
 const POLYRESEARCH_REFERENCE_SUBSCRIPTION_TYPE: &str = "chainlink";
 pub const KEY: &str = "POLYRESEARCH_REFERENCE_PRICE";
 pub const REFERENCE_PRICE_PROVIDER_KEY: &str = "polyresearch_ws";
@@ -188,6 +190,8 @@ impl DataClientFactory for PolyResearchReferencePriceClientFactory {
             client_id: ClientId::from(name),
             config: config.clone(),
             subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
+            pending_provider_subscriptions: Arc::new(Mutex::new(VecDeque::new())),
+            provider_subscription_ids: Arc::new(Mutex::new(BTreeMap::new())),
             outbound: None,
             data_sender: get_data_event_sender(),
             connected: false,
@@ -210,6 +214,8 @@ struct PolyResearchReferencePriceClient {
     subscriptions: Arc<
         Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, PolyResearchReferenceSubscription>>,
     >,
+    pending_provider_subscriptions: Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
+    provider_subscription_ids: Arc<Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, String>>>,
     outbound: Option<PolyResearchReferenceOutboundHandle>,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     connected: bool,
@@ -268,6 +274,26 @@ enum PolyResearchReferenceOutboundCommand {
 impl PolyResearchReferencePriceClient {
     fn clear_subscriptions(&self) -> anyhow::Result<()> {
         self.subscriptions
+            .lock()
+            .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
+            .clear();
+        self.pending_provider_subscriptions
+            .lock()
+            .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
+            .clear();
+        self.provider_subscription_ids
+            .lock()
+            .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
+            .clear();
+        Ok(())
+    }
+
+    fn clear_provider_subscription_state(&self) -> anyhow::Result<()> {
+        self.pending_provider_subscriptions
+            .lock()
+            .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
+            .clear();
+        self.provider_subscription_ids
             .lock()
             .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
             .clear();
@@ -333,14 +359,19 @@ impl DataClient for PolyResearchReferencePriceClient {
             api_key: self.config.api_key.to_string(),
         })
         .map_err(anyhow::Error::msg)?;
+        self.clear_provider_subscription_state()?;
         let config = polyresearch_websocket_client_config(&self.config, url);
         let message_handler = polyresearch_reference_message_handler(
             Arc::clone(&self.subscriptions),
+            Arc::clone(&self.pending_provider_subscriptions),
+            Arc::clone(&self.provider_subscription_ids),
             self.data_sender.clone(),
         );
         let (outbound, outbound_receiver) = polyresearch_reference_outbound_channel();
         let post_reconnection = polyresearch_reference_post_reconnection_handler(
             Arc::clone(&self.subscriptions),
+            Arc::clone(&self.pending_provider_subscriptions),
+            Arc::clone(&self.provider_subscription_ids),
             outbound.clone(),
         );
         let websocket = WebSocketClient::connect(
@@ -353,7 +384,11 @@ impl DataClient for PolyResearchReferencePriceClient {
         )
         .await?;
         polyresearch_reference_spawn_outbound_task(websocket, outbound_receiver);
-        replay_polyresearch_reference_subscriptions(&self.subscriptions, &outbound)?;
+        replay_polyresearch_reference_subscriptions(
+            &self.subscriptions,
+            &self.pending_provider_subscriptions,
+            &outbound,
+        )?;
         self.outbound = Some(outbound);
         self.connected = true;
         Ok(())
@@ -363,6 +398,7 @@ impl DataClient for PolyResearchReferencePriceClient {
         if let Some(outbound) = self.outbound.take() {
             outbound.disconnect().await?;
         }
+        self.clear_provider_subscription_state()?;
         self.connected = false;
         Ok(())
     }
@@ -379,7 +415,11 @@ impl DataClient for PolyResearchReferencePriceClient {
                 subscription.clone(),
             );
         if let Some(outbound) = self.outbound.as_ref() {
-            outbound.send_text(polyresearch_reference_subscribe_frame(&subscription)?)?;
+            queue_polyresearch_reference_subscribe(
+                &subscription,
+                &self.pending_provider_subscriptions,
+                outbound,
+            )?;
         }
         Ok(())
     }
@@ -388,12 +428,36 @@ impl DataClient for PolyResearchReferencePriceClient {
         let subscription =
             polyresearch_reference_subscription_from_command(&cmd.data_type, cmd.params.as_ref())
                 .map_err(anyhow::Error::msg)?;
-        self.subscriptions
+        let subscription_key =
+            PolyResearchReferenceSubscriptionKey::from_subscription(&subscription);
+        let (removed, subscriptions_empty) = {
+            let mut subscriptions = self.subscriptions.lock().map_err(|error| {
+                anyhow::anyhow!("PolyResearch subscription state poisoned: {error}")
+            })?;
+            let removed = subscriptions.remove(&subscription_key).is_some();
+            (removed, subscriptions.is_empty())
+        };
+        if !removed {
+            return Ok(());
+        }
+        self.pending_provider_subscriptions
             .lock()
             .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
-            .remove(&PolyResearchReferenceSubscriptionKey::from_subscription(
-                &subscription,
-            ));
+            .retain(|pending| pending != &subscription_key);
+        let provider_subscription_id = self
+            .provider_subscription_ids
+            .lock()
+            .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
+            .remove(&subscription_key);
+        if let Some(outbound) = self.outbound.as_ref() {
+            if let Some(provider_subscription_id) = provider_subscription_id {
+                outbound.send_text(polyresearch_reference_unsubscribe_frame(Some(
+                    provider_subscription_id.as_str(),
+                ))?)?;
+            } else if subscriptions_empty {
+                outbound.send_text(polyresearch_reference_unsubscribe_frame(None)?)?;
+            }
+        }
         Ok(())
     }
 }
@@ -430,6 +494,13 @@ struct PolyResearchReferenceSubscribeFrame<'a> {
 }
 
 #[derive(Debug, Serialize)]
+struct PolyResearchReferenceUnsubscribeFrame<'a> {
+    action: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subscription_id: Option<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
 struct PolyResearchReferenceSubscribeFilters<'a> {
     feeds: Vec<&'a str>,
 }
@@ -446,6 +517,18 @@ fn polyresearch_reference_subscribe_frame(
     };
     serde_json::to_string(&frame).map_err(|error| {
         anyhow::anyhow!("PolyResearch subscribe frame serialization failed: {error}")
+    })
+}
+
+fn polyresearch_reference_unsubscribe_frame(
+    provider_subscription_id: Option<&str>,
+) -> anyhow::Result<String> {
+    let frame = PolyResearchReferenceUnsubscribeFrame {
+        action: POLYRESEARCH_UNSUBSCRIBE_ACTION,
+        subscription_id: provider_subscription_id,
+    };
+    serde_json::to_string(&frame).map_err(|error| {
+        anyhow::anyhow!("PolyResearch unsubscribe frame serialization failed: {error}")
     })
 }
 
@@ -486,10 +569,22 @@ fn polyresearch_reference_post_reconnection_handler(
     subscriptions: Arc<
         Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, PolyResearchReferenceSubscription>>,
     >,
+    pending_provider_subscriptions: Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
+    provider_subscription_ids: Arc<Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, String>>>,
     outbound: PolyResearchReferenceOutboundHandle,
 ) -> Arc<dyn Fn() + Send + Sync> {
     Arc::new(move || {
-        if let Err(error) = replay_polyresearch_reference_subscriptions(&subscriptions, &outbound) {
+        if let Err(error) = clear_polyresearch_provider_subscription_state(
+            &pending_provider_subscriptions,
+            &provider_subscription_ids,
+        )
+        .and_then(|_| {
+            replay_polyresearch_reference_subscriptions(
+                &subscriptions,
+                &pending_provider_subscriptions,
+                &outbound,
+            )
+        }) {
             log::warn!(
                 "PolyResearch reference subscription replay after reconnect failed: {error}"
             );
@@ -501,14 +596,49 @@ fn replay_polyresearch_reference_subscriptions(
     subscriptions: &Arc<
         Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, PolyResearchReferenceSubscription>>,
     >,
+    pending_provider_subscriptions: &Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
     outbound: &PolyResearchReferenceOutboundHandle,
 ) -> anyhow::Result<()> {
     let subscriptions = subscriptions
         .lock()
         .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?;
     for subscription in subscriptions.values() {
-        outbound.send_text(polyresearch_reference_subscribe_frame(subscription)?)?;
+        queue_polyresearch_reference_subscribe(
+            subscription,
+            pending_provider_subscriptions,
+            outbound,
+        )?;
     }
+    Ok(())
+}
+
+fn clear_polyresearch_provider_subscription_state(
+    pending_provider_subscriptions: &Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
+    provider_subscription_ids: &Arc<Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, String>>>,
+) -> anyhow::Result<()> {
+    pending_provider_subscriptions
+        .lock()
+        .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
+        .clear();
+    provider_subscription_ids
+        .lock()
+        .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
+        .clear();
+    Ok(())
+}
+
+fn queue_polyresearch_reference_subscribe(
+    subscription: &PolyResearchReferenceSubscription,
+    pending_provider_subscriptions: &Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
+    outbound: &PolyResearchReferenceOutboundHandle,
+) -> anyhow::Result<()> {
+    outbound.send_text(polyresearch_reference_subscribe_frame(subscription)?)?;
+    pending_provider_subscriptions
+        .lock()
+        .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
+        .push_back(PolyResearchReferenceSubscriptionKey::from_subscription(
+            subscription,
+        ));
     Ok(())
 }
 
@@ -608,6 +738,7 @@ fn require_matching_reference_param(
 #[derive(Debug, Deserialize)]
 struct PolyResearchPriceFrame {
     r#type: Option<String>,
+    subscription_id: Option<String>,
     feed: Option<String>,
     timestamp: Option<u64>,
     data: Option<PolyResearchPriceData>,
@@ -622,6 +753,7 @@ struct PolyResearchPriceData {
     timestamp: u64,
 }
 
+#[cfg(test)]
 pub(crate) fn polyresearch_reference_update_from_price_frame(
     subscription: &PolyResearchReferenceSubscription,
     frame: &str,
@@ -629,12 +761,21 @@ pub(crate) fn polyresearch_reference_update_from_price_frame(
 ) -> Result<Option<ReferencePriceUpdate>, String> {
     let parsed = serde_json::from_str::<PolyResearchPriceFrame>(frame)
         .map_err(|error| format!("invalid PolyResearch price frame JSON: {error}"))?;
+    polyresearch_reference_update_from_parsed_price_frame(subscription, &parsed, received_ts_ms)
+}
+
+fn polyresearch_reference_update_from_parsed_price_frame(
+    subscription: &PolyResearchReferenceSubscription,
+    parsed: &PolyResearchPriceFrame,
+    received_ts_ms: u64,
+) -> Result<Option<ReferencePriceUpdate>, String> {
     if parsed.r#type.as_deref() != Some(POLYRESEARCH_PRICE_FEED_FRAME_TYPE) {
         return Ok(None);
     }
 
     let data = parsed
         .data
+        .as_ref()
         .ok_or_else(|| "PolyResearch price_feed frame missing data".to_string())?;
     if parsed.feed.as_deref().is_some_and(|feed| feed != data.feed) {
         return Err("PolyResearch price_feed top-level feed does not match data.feed".to_string());
@@ -668,29 +809,72 @@ pub(crate) fn polyresearch_reference_update_from_price_frame(
     .map(Some)
 }
 
-fn polyresearch_reference_updates_from_price_frame(
+fn polyresearch_reference_updates_from_parsed_price_frame(
     subscriptions: &BTreeMap<
         PolyResearchReferenceSubscriptionKey,
         PolyResearchReferenceSubscription,
     >,
-    frame: &str,
+    parsed: &PolyResearchPriceFrame,
     received_ts_ms: u64,
 ) -> Result<Vec<ReferencePriceUpdate>, String> {
     let mut updates = Vec::new();
     for subscription in subscriptions.values() {
-        if let Some(update) =
-            polyresearch_reference_update_from_price_frame(subscription, frame, received_ts_ms)?
-        {
+        if let Some(update) = polyresearch_reference_update_from_parsed_price_frame(
+            subscription,
+            parsed,
+            received_ts_ms,
+        )? {
             updates.push(update);
         }
     }
     Ok(updates)
 }
 
+#[cfg(test)]
+fn polyresearch_reference_record_subscription_ack(
+    pending_provider_subscriptions: &Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
+    provider_subscription_ids: &Arc<Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, String>>>,
+    frame: &str,
+) -> Result<bool, String> {
+    let parsed = serde_json::from_str::<PolyResearchPriceFrame>(frame)
+        .map_err(|error| format!("invalid PolyResearch control frame JSON: {error}"))?;
+    polyresearch_reference_record_subscription_ack_from_parsed(
+        pending_provider_subscriptions,
+        provider_subscription_ids,
+        &parsed,
+    )
+}
+
+fn polyresearch_reference_record_subscription_ack_from_parsed(
+    pending_provider_subscriptions: &Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
+    provider_subscription_ids: &Arc<Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, String>>>,
+    parsed: &PolyResearchPriceFrame,
+) -> Result<bool, String> {
+    if parsed.r#type.as_deref() != Some(POLYRESEARCH_SUBSCRIBED_FRAME_TYPE) {
+        return Ok(false);
+    }
+    let provider_subscription_id = parsed
+        .subscription_id
+        .as_ref()
+        .ok_or_else(|| "PolyResearch subscribed frame missing subscription_id".to_string())?;
+    let subscription_key = pending_provider_subscriptions
+        .lock()
+        .map_err(|error| format!("PolyResearch subscription state poisoned: {error}"))?
+        .pop_front()
+        .ok_or_else(|| "PolyResearch subscribed frame has no pending subscription".to_string())?;
+    provider_subscription_ids
+        .lock()
+        .map_err(|error| format!("PolyResearch subscription state poisoned: {error}"))?
+        .insert(subscription_key, provider_subscription_id.clone());
+    Ok(true)
+}
+
 fn polyresearch_reference_message_handler(
     subscriptions: Arc<
         Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, PolyResearchReferenceSubscription>>,
     >,
+    pending_provider_subscriptions: Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
+    provider_subscription_ids: Arc<Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, String>>>,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
 ) -> MessageHandler {
     Arc::new(move |message: Message| {
@@ -704,10 +888,29 @@ fn polyresearch_reference_message_handler(
                 return;
             }
         };
+        let parsed = match serde_json::from_str::<PolyResearchPriceFrame>(frame) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                log::warn!("PolyResearch reference frame dropped: invalid JSON: {error}");
+                return;
+            }
+        };
+        match polyresearch_reference_record_subscription_ack_from_parsed(
+            &pending_provider_subscriptions,
+            &provider_subscription_ids,
+            &parsed,
+        ) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                log::warn!("PolyResearch reference frame dropped: {error}");
+                return;
+            }
+        }
         let updates = match subscriptions.lock() {
-            Ok(subscriptions) => polyresearch_reference_updates_from_price_frame(
+            Ok(subscriptions) => polyresearch_reference_updates_from_parsed_price_frame(
                 &subscriptions,
-                frame,
+                &parsed,
                 received_ts_ms,
             ),
             Err(error) => Err(format!("PolyResearch subscription state poisoned: {error}")),
@@ -1045,6 +1248,8 @@ mod tests {
                 client_id: ClientId::from("polyresearch_reference"),
                 config: fixture_config(),
                 subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
+                pending_provider_subscriptions: Arc::new(Mutex::new(VecDeque::new())),
+                provider_subscription_ids: Arc::new(Mutex::new(BTreeMap::new())),
                 outbound: None,
                 data_sender,
                 connected: false,
@@ -1101,7 +1306,12 @@ mod tests {
             subscription("BTC", "polyresearch_primary", "BTC/USD"),
         )])));
         let (data_sender, mut data_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let handler = polyresearch_reference_message_handler(subscriptions, data_sender);
+        let handler = polyresearch_reference_message_handler(
+            subscriptions,
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::new(Mutex::new(BTreeMap::new())),
+            data_sender,
+        );
 
         handler(Message::text(
             r#"{"type":"price_feed","feed":"BTC/USD","timestamp":1774672588,"data":{"feed":"BTC/USD","price":66300.25,"bid":66299.5,"ask":66301.0,"timestamp":1774672588}}"#,
@@ -1131,7 +1341,12 @@ mod tests {
             subscription("BTC", "polyresearch_primary", "BTC/USD"),
         )])));
         let (data_sender, mut data_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let handler = polyresearch_reference_message_handler(subscriptions, data_sender);
+        let handler = polyresearch_reference_message_handler(
+            subscriptions,
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::new(Mutex::new(BTreeMap::new())),
+            data_sender,
+        );
 
         handler(Message::text(
             r#"{"type":"price_feed","feed":"ETH/USD","timestamp":1774672588,"data":{"feed":"ETH/USD","price":3000.25,"bid":2999.5,"ask":3001.0,"timestamp":1774672588}}"#,
@@ -1255,8 +1470,12 @@ mod tests {
             tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
         let outbound = PolyResearchReferenceOutboundHandle::from_sender(outbound_sender);
 
-        let handler =
-            polyresearch_reference_post_reconnection_handler(Arc::clone(&subscriptions), outbound);
+        let handler = polyresearch_reference_post_reconnection_handler(
+            Arc::clone(&subscriptions),
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::new(Mutex::new(BTreeMap::new())),
+            outbound,
+        );
         handler();
 
         let outbound_command = outbound_receiver
@@ -1324,6 +1543,60 @@ mod tests {
                 .expect("PRR reference subscriptions should not be poisoned")
                 .contains_key(&subscription_key("BTC", "polyresearch_primary", "BTC/USD",)),
             "PRR reference unsubscription should remove the active subscription"
+        );
+    }
+
+    #[test]
+    fn subscribed_ack_allows_unsubscribe_to_send_prr_provider_subscription_id() {
+        let (mut client, _data_receiver) = fixture_client();
+        let (outbound_sender, mut outbound_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
+        client.outbound = Some(PolyResearchReferenceOutboundHandle::from_sender(
+            outbound_sender,
+        ));
+
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                "BTC",
+                "polyresearch_primary",
+                "BTC/USD",
+            ))
+            .expect("PRR reference subscription should be accepted");
+        let PolyResearchReferenceOutboundCommand::SendText(subscribe_frame) = outbound_receiver
+            .try_recv()
+            .expect("PRR subscription should send provider subscribe")
+        else {
+            panic!("PRR subscription should send text");
+        };
+        assert_eq!(
+            subscribe_frame,
+            r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["BTC/USD"]}}"#
+        );
+
+        let handled = polyresearch_reference_record_subscription_ack(
+            &client.pending_provider_subscriptions,
+            &client.provider_subscription_ids,
+            r#"{"type":"subscribed","subscription_id":"chainlink:1"}"#,
+        )
+        .expect("subscribed ack should record provider subscription id");
+        assert!(handled, "subscribed ack must be handled as a control frame");
+
+        client
+            .unsubscribe(&reference_price_unsubscribe_cmd(
+                "BTC",
+                "polyresearch_primary",
+                "BTC/USD",
+            ))
+            .expect("PRR reference unsubscription should be accepted");
+        let PolyResearchReferenceOutboundCommand::SendText(unsubscribe_frame) = outbound_receiver
+            .try_recv()
+            .expect("PRR unsubscription should send provider unsubscribe")
+        else {
+            panic!("PRR unsubscription should send text");
+        };
+        assert_eq!(
+            unsubscribe_frame,
+            r#"{"action":"unsubscribe","subscription_id":"chainlink:1"}"#
         );
     }
 
@@ -1412,6 +1685,41 @@ mod tests {
         );
 
         SubscribeCustomData::new(
+            Some(ClientId::from("polyresearch_reference")),
+            None,
+            ReferencePriceUpdate::data_type_for(asset, source_id, REFERENCE_PRICE_PROVIDER_KEY)
+                .expect("reference price data type should build"),
+            UUID4::new(),
+            UnixNanos::default(),
+            None,
+            Some(params),
+        )
+    }
+
+    fn reference_price_unsubscribe_cmd(
+        asset: &str,
+        source_id: &str,
+        symbol: &str,
+    ) -> UnsubscribeCustomData {
+        let mut params = Params::new();
+        params.insert(
+            REFERENCE_PRICE_ASSET_PARAM.to_string(),
+            serde_json::json!(asset),
+        );
+        params.insert(
+            REFERENCE_PRICE_SOURCE_KEY_PARAM.to_string(),
+            serde_json::json!(source_id),
+        );
+        params.insert(
+            REFERENCE_PRICE_PROVIDER_PARAM.to_string(),
+            serde_json::json!(REFERENCE_PRICE_PROVIDER_KEY),
+        );
+        params.insert(
+            REFERENCE_PRICE_SYMBOL_PARAM.to_string(),
+            serde_json::json!(symbol),
+        );
+
+        UnsubscribeCustomData::new(
             Some(ClientId::from("polyresearch_reference")),
             None,
             ReferencePriceUpdate::data_type_for(asset, source_id, REFERENCE_PRICE_PROVIDER_KEY)

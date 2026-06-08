@@ -528,7 +528,8 @@ impl ReferencePriceSelector {
         }
 
         let next = valid_quotes.first()?;
-        let failed_over = self.selected_source_id.is_some();
+        let failed_over =
+            self.selected_source_id.is_some() || self.sources.first() != Some(&next.source_id);
         self.selected_source_id = Some(next.source_id.clone());
         if failed_over {
             self.failover_used = true;
@@ -570,14 +571,17 @@ impl ReferencePriceSelector {
         now_ms: u64,
         quotes: &'a [ReferenceQuote],
     ) -> Option<&'a ReferenceQuote> {
-        quotes.iter().find(|quote| {
-            quote.asset == self.asset
-                && quote.source_id == source_id
-                && quote.observed_ts_ms >= interval_start_ms
-                && quote.observed_ts_ms <= interval_end_ms
-                && quote.observed_ts_ms <= now_ms
-                && now_ms.saturating_sub(quote.observed_ts_ms) <= self.max_source_staleness_ms
-        })
+        quotes
+            .iter()
+            .filter(|quote| {
+                quote.asset == self.asset
+                    && quote.source_id == source_id
+                    && quote.observed_ts_ms >= interval_start_ms
+                    && quote.observed_ts_ms <= interval_end_ms
+                    && quote.observed_ts_ms <= now_ms
+                    && now_ms.saturating_sub(quote.observed_ts_ms) <= self.max_source_staleness_ms
+            })
+            .max_by_key(|quote| quote.observed_ts_ms)
     }
 
     pub const fn last_cross_source_drift_bps(&self) -> Option<f64> {

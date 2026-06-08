@@ -115,6 +115,28 @@ fn reference_current_price_health_uses_provider_metadata_for_subscription_shape(
 }
 
 #[test]
+fn polyresearch_reference_price_frames_parse_once_before_subscription_fanout() {
+    let source = include_str!("../src/bolt_v3_providers/polyresearch.rs");
+    let function_start = source
+        .find("fn polyresearch_reference_updates_from_parsed_price_frame(")
+        .expect("PolyResearch provider must define parsed price-frame fanout");
+    let function_tail = &source[function_start..];
+    let function_end = function_tail
+        .find("\n#[cfg(test)]\nfn polyresearch_reference_record_subscription_ack(")
+        .expect("parsed price-frame fanout should precede test-only ack helper");
+    let function = &function_tail[..function_end];
+
+    assert!(
+        !function.contains("serde_json::from_str"),
+        "PolyResearch parsed price-frame fanout must not parse the same websocket frame again"
+    );
+    assert!(
+        !function.contains("polyresearch_reference_update_from_price_frame(subscription, frame"),
+        "PolyResearch price-frame fanout must not re-parse the same websocket frame for every active subscription"
+    );
+}
+
+#[test]
 fn active_reference_current_price_surfaces_do_not_claim_retired_reference_data_or_probe_paths() {
     let active_surfaces = [
         (

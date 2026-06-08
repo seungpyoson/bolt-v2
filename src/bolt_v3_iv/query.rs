@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    sync::{Arc, RwLock},
+    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
 use serde::{Deserialize, Serialize};
@@ -201,39 +201,36 @@ impl IvQueryStateHandle {
         }
     }
 
-    pub fn snapshot(&self) -> IvQueryState {
+    fn read_state(&self) -> RwLockReadGuard<'_, IvQueryState> {
         self.inner
             .read()
-            .expect("IV query state lock poisoned")
-            .clone()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn write_state(&self) -> RwLockWriteGuard<'_, IvQueryState> {
+        self.inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn snapshot(&self) -> IvQueryState {
+        self.read_state().clone()
     }
 
     pub fn ingest_event(&self, event: IvIngestEvent) -> Result<IvRawEvent, IvStoreError> {
-        self.inner
-            .write()
-            .expect("IV query state lock poisoned")
-            .store
-            .ingest_event(event)
+        self.write_state().store.ingest_event(event)
     }
 
     pub fn raw_event_count(&self) -> usize {
-        self.inner
-            .read()
-            .expect("IV query state lock poisoned")
-            .store
-            .raw_events()
-            .len()
+        self.read_state().store.raw_events().len()
     }
 
     pub fn replace_source_health(&self, source_health: Vec<IvSourceHealth>) {
-        self.inner
-            .write()
-            .expect("IV query state lock poisoned")
-            .source_health = source_health;
+        self.write_state().source_health = source_health;
     }
 
     pub fn upsert_source_health(&self, source_health: IvSourceHealth) {
-        let mut state = self.inner.write().expect("IV query state lock poisoned");
+        let mut state = self.write_state();
         if state
             .current_subscription_generations
             .get(&source_health.source_id)
@@ -265,7 +262,7 @@ impl IvQueryStateHandle {
         reject_reason: super::error::IvRejectReason,
         mark_rejected: bool,
     ) {
-        let mut state = self.inner.write().expect("IV query state lock poisoned");
+        let mut state = self.write_state();
         if let Some(existing) = state.source_health.iter_mut().find(|existing| {
             existing.profile_id == profile_id
                 && existing.source_id == source_id
@@ -299,12 +296,12 @@ impl IvQueryStateHandle {
     }
 
     pub fn source_health_for(&self, profile_id: &str, source_id: &str) -> Option<IvSourceHealth> {
-        let state = self.inner.read().expect("IV query state lock poisoned");
+        let state = self.read_state();
         select_source_health(&state, profile_id, source_id).cloned()
     }
 
     pub fn enforce_retention(&self, policy: &IvRetentionPolicy) {
-        let mut state = self.inner.write().expect("IV query state lock poisoned");
+        let mut state = self.write_state();
         state.store.enforce_retention(policy);
         truncate_front(&mut state.derived_outputs, policy.max_derived_points);
         let current_subscription_generations = state.current_subscription_generations.clone();
@@ -316,78 +313,46 @@ impl IvQueryStateHandle {
     }
 
     pub fn derived_outputs(&self) -> Vec<IvDerivedOutput> {
-        self.inner
-            .read()
-            .expect("IV query state lock poisoned")
-            .derived_outputs
-            .clone()
+        self.read_state().derived_outputs.clone()
     }
 
     pub fn record_derived_output(&self, output: IvDerivedOutput) {
-        self.inner
-            .write()
-            .expect("IV query state lock poisoned")
-            .derived_outputs
-            .push(output);
+        self.write_state().derived_outputs.push(output);
     }
 
     pub fn set_projection_policies(&self, projection_policies: Vec<IvProjectionPolicy>) {
-        self.inner
-            .write()
-            .expect("IV query state lock poisoned")
-            .projection_policies = projection_policies;
+        self.write_state().projection_policies = projection_policies;
     }
 
     pub fn set_helper_policies(&self, helper_policies: Vec<IvHelperPolicy>) {
-        self.inner
-            .write()
-            .expect("IV query state lock poisoned")
-            .helper_policies = helper_policies;
+        self.write_state().helper_policies = helper_policies;
     }
 
     pub fn set_derived_input_policies(&self, derived_input_policies: Vec<IvDerivedInputPolicy>) {
-        self.inner
-            .write()
-            .expect("IV query state lock poisoned")
-            .derived_input_policies = derived_input_policies;
+        self.write_state().derived_input_policies = derived_input_policies;
     }
 
     pub fn set_interpolation_policies(&self, interpolation_policies: Vec<IvInterpolationPolicy>) {
-        self.inner
-            .write()
-            .expect("IV query state lock poisoned")
-            .interpolation_policies = interpolation_policies;
+        self.write_state().interpolation_policies = interpolation_policies;
     }
 
     pub fn set_fallback_policies(&self, fallback_policies: Vec<IvFallbackPolicy>) {
-        self.inner
-            .write()
-            .expect("IV query state lock poisoned")
-            .fallback_policies = fallback_policies;
+        self.write_state().fallback_policies = fallback_policies;
     }
 
     pub fn set_quorum_policies(&self, quorum_policies: Vec<IvQuorumPolicy>) {
-        self.inner
-            .write()
-            .expect("IV query state lock poisoned")
-            .quorum_policies = quorum_policies;
+        self.write_state().quorum_policies = quorum_policies;
     }
 
     pub fn set_derived_inputs(&self, derived_inputs: Vec<IvDerivedInputSet>) {
-        self.inner
-            .write()
-            .expect("IV query state lock poisoned")
-            .derived_inputs = derived_inputs;
+        self.write_state().derived_inputs = derived_inputs;
     }
 
     pub fn set_current_subscription_generations(
         &self,
         current_subscription_generations: BTreeMap<String, u64>,
     ) {
-        self.inner
-            .write()
-            .expect("IV query state lock poisoned")
-            .current_subscription_generations = current_subscription_generations;
+        self.write_state().current_subscription_generations = current_subscription_generations;
     }
 
     pub fn mark_sources_removed(
@@ -395,7 +360,7 @@ impl IvQueryStateHandle {
         profile_id: &str,
         source_generations: &BTreeMap<String, u64>,
     ) {
-        let mut state = self.inner.write().expect("IV query state lock poisoned");
+        let mut state = self.write_state();
         for (source_id, subscription_generation) in source_generations {
             let removed_health = IvSourceHealth {
                 profile_id: profile_id.to_string(),
@@ -1193,4 +1158,27 @@ fn retain_source_health_events(
     }
     historical.extend(current);
     *source_health = historical;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use super::*;
+
+    #[test]
+    fn query_state_handle_recovers_from_poisoned_lock() {
+        let handle = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+        let inner = handle.inner.clone();
+        let poison_result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = inner.write().unwrap();
+            panic!("poison query state lock");
+        }));
+        assert!(poison_result.is_err());
+
+        let recovered = catch_unwind(AssertUnwindSafe(|| handle.snapshot()));
+
+        assert!(recovered.is_ok());
+        assert_eq!(recovered.unwrap().store.raw_events().len(), 0);
+    }
 }

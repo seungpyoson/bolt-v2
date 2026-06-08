@@ -134,13 +134,13 @@ impl IvRuntimeEngine {
     fn read_inner(&self) -> RwLockReadGuard<'_, IvRuntimeEngineState> {
         self.inner
             .read()
-            .expect("IV runtime engine state lock must not be poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn write_inner(&self) -> RwLockWriteGuard<'_, IvRuntimeEngineState> {
         self.inner
             .write()
-            .expect("IV runtime engine state lock must not be poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn apply_iv_root_reload(
@@ -1018,5 +1018,33 @@ fn source_health(
         stale_state: false,
         retention_state: false,
         subscription_generation: plan.subscription_generation,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use super::{super::config::SUPPORTED_IV_SCHEMA_VERSION, *};
+
+    #[test]
+    fn runtime_engine_recovers_from_poisoned_lock() {
+        let engine = IvRuntimeEngine::from_iv_root(&IvRootConfig {
+            schema_version: SUPPORTED_IV_SCHEMA_VERSION,
+            profiles: Vec::new(),
+        })
+        .unwrap();
+        let inner = engine.inner.clone();
+        let poison_result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = inner.write().unwrap();
+            panic!("poison runtime engine lock");
+        }));
+        assert!(poison_result.is_err());
+
+        let recovered = catch_unwind(AssertUnwindSafe(|| {
+            engine.state_for_profile("configured-missing-profile")
+        }));
+
+        assert_eq!(recovered.unwrap(), None);
     }
 }

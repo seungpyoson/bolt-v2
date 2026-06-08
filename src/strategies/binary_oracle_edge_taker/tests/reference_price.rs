@@ -209,8 +209,9 @@ fn unsupported_optional_reference_price_source_does_not_subscribe() {
     DataActor::on_stop(&mut strategy).expect("strategy should stop");
 
     assert_eq!(strategy.reference_price_subscribe_events.len(), 2);
-    assert_reference_price_subscription(
+    assert_reference_price_subscription_for_asset(
         &strategy.reference_price_subscribe_events[1],
+        "BNB",
         REFERENCE_PRICE_UNSUBSCRIBE_ACTION,
         CHAINLINK_PRIMARY_SOURCE_ID,
         CHAINLINK_REFERENCE_PROVIDER,
@@ -672,17 +673,39 @@ fn assert_reference_price_subscription(
     instrument_id: Option<&str>,
     symbol: Option<&str>,
 ) {
+    assert_reference_price_subscription_for_asset(
+        event,
+        "BTC",
+        action,
+        source_id,
+        provider,
+        client_id,
+        instrument_id,
+        symbol,
+    );
+}
+
+fn assert_reference_price_subscription_for_asset(
+    event: &ReferencePriceSubscribeEvent,
+    asset: &str,
+    action: &str,
+    source_id: &str,
+    provider: &str,
+    client_id: &str,
+    instrument_id: Option<&str>,
+    symbol: Option<&str>,
+) {
     assert_eq!(event.action, action);
     assert_eq!(event.source_id, source_id);
     assert_eq!(event.provider, provider);
     assert_eq!(event.client_id, ClientId::from(client_id));
     assert_eq!(event.data_type.type_name(), "BoltV3ReferencePriceUpdate");
-    assert_eq!(event.data_type.identifier(), Some("BTC"));
+    assert_eq!(event.data_type.identifier(), Some(asset));
     let metadata = event
         .data_type
         .metadata()
         .expect("reference price data type should carry metadata");
-    assert_eq!(metadata.get_str(REFERENCE_PRICE_ASSET_PARAM), Some("BTC"));
+    assert_eq!(metadata.get_str(REFERENCE_PRICE_ASSET_PARAM), Some(asset));
     assert_eq!(
         metadata.get_str(REFERENCE_PRICE_SOURCE_KEY_PARAM),
         Some(source_id)
@@ -698,6 +721,10 @@ fn assert_reference_price_subscription(
     assert_eq!(
         event.params.get_str(REFERENCE_PRICE_PROVIDER_PARAM),
         Some(provider)
+    );
+    assert_eq!(
+        event.params.get_str(REFERENCE_PRICE_ASSET_PARAM),
+        Some(asset)
     );
     assert_eq!(
         event.params.get_str(REFERENCE_PRICE_INSTRUMENT_ID_PARAM),

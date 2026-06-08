@@ -206,8 +206,10 @@ mod tests {
     // cleanup in the canonical strategy source set.
     // Re-derived again by #606 after adding chainlink_reference fixture coverage
     // in the canonical strategy source set.
+    // Re-derived again by #606 after rejecting mismatched reference source
+    // provider instruments before feeding reference_current_price.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "b8901769c852ce9840845f67005850dc9668950177e18bd675e3fe4d62499155";
+        "b1e8d0820975f6baea7991ffc826c15333283f585d89ef90f86bc91234ccca49";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

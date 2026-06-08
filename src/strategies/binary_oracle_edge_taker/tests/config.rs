@@ -192,7 +192,7 @@ fn validate_config_rejects_missing_signal_data_pair() {
 }
 
 #[test]
-fn surfaced_realized_volatility_mode_rejects_legacy_runtime_vol_fields() {
+fn config_rejects_removed_internal_realized_volatility_fields() {
     let mut raw = valid_raw_config();
     let table = raw
         .as_table_mut()
@@ -204,10 +204,9 @@ fn surfaced_realized_volatility_mode_rejects_legacy_runtime_vol_fields() {
 
     assert!(
         errors.iter().any(|error| {
-            error.field == "strategies[0].config.vol_window_secs"
-                && error.code == "legacy_realized_volatility_path"
+            error.field == "strategies[0].config.vol_window_secs" && error.code == "unknown_field"
         }),
-        "surfaced RV mode must reject legacy vol fields: {errors:#?}"
+        "removed internal RV fields must be rejected as unknown fields: {errors:#?}"
     );
     assert!(
         !errors.iter().any(|error| {

@@ -9051,46 +9051,6 @@ reason = "Taker strategy runtime config schema field name used to parse or rejec
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
-literal = '''"vol_window_secs"'''
-context = '''"vol_window_secs",'''
-classification = "strategy_runtime_schema_field"
-reason = "Taker strategy runtime config schema field name used to parse or reject legacy realized-volatility fields; runtime values remain supplied by bolt-v3 TOML."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"vol_gap_reset_secs"'''
-context = '''"vol_gap_reset_secs",'''
-classification = "strategy_runtime_schema_field"
-reason = "Taker strategy runtime config schema field name used to parse or reject legacy realized-volatility fields; runtime values remain supplied by bolt-v3 TOML."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"vol_min_observations"'''
-context = '''"vol_min_observations",'''
-classification = "strategy_runtime_schema_field"
-reason = "Taker strategy runtime config schema field name used to parse or reject legacy realized-volatility fields; runtime values remain supplied by bolt-v3 TOML."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"vol_bridge_valid_secs"'''
-context = '''"vol_bridge_valid_secs",'''
-classification = "strategy_runtime_schema_field"
-reason = "Taker strategy runtime config schema field name used to parse or reject legacy realized-volatility fields; runtime values remain supplied by bolt-v3 TOML."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
-literal = '''"legacy_realized_volatility_path"'''
-context = '''code: "legacy_realized_volatility_path",'''
-classification = "strategy_runtime_diagnostic"
-reason = "Diagnostic code emitted when legacy in-strategy realized-volatility fields are rejected in surfaced RV mode; it is not an operator runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/config.rs"
-kind = "string"
 literal = '''"missing_realized_volatility_surface"'''
 context = '''"missing_realized_volatility_surface",'''
 classification = "strategy_runtime_diagnostic"

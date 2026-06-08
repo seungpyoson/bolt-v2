@@ -216,12 +216,6 @@ const ORDER_TRIGGER_INSTRUMENT_ID_FIELD: &str = "trigger_instrument_id";
 const ORDER_TRAILING_OFFSET_FIELD: &str = "trailing_offset";
 const ORDER_TRAILING_OFFSET_TYPE_FIELD: &str = "trailing_offset_type";
 const REALIZED_VOLATILITY_SURFACE_ID_FIELD: &str = "realized_volatility_surface_id";
-const LEGACY_REALIZED_VOLATILITY_RUNTIME_FIELDS: &[&str] = &[
-    "vol_window_secs",
-    "vol_gap_reset_secs",
-    "vol_min_observations",
-    "vol_bridge_valid_secs",
-];
 
 macro_rules! match_order_field_names {
     ($( $field:ident => $field_type:ident; )+) => {
@@ -374,9 +368,6 @@ impl BinaryOracleEdgeTakerBuilder {
         errors: &mut Vec<ValidationError>,
     ) {
         for key in table.keys() {
-            if LEGACY_REALIZED_VOLATILITY_RUNTIME_FIELDS.contains(&key.as_str()) {
-                continue;
-            }
             if !matches!(
                 key.as_str(),
                 ENTRY_ORDER_FIELD
@@ -423,7 +414,6 @@ impl BinaryOracleEdgeTakerBuilder {
             errors,
         );
         Self::validate_required_realized_volatility_surface_id(table, field_prefix, errors);
-        Self::validate_no_legacy_realized_volatility_fields(table, field_prefix, errors);
         Self::validate_optional_instrument_id_field(
             table,
             field_prefix,
@@ -514,24 +504,6 @@ impl BinaryOracleEdgeTakerBuilder {
             errors,
         );
         Self::validate_rotating_market_family(table, field_prefix, errors);
-    }
-
-    fn validate_no_legacy_realized_volatility_fields(
-        table: &toml::map::Map<String, Value>,
-        field_prefix: &str,
-        errors: &mut Vec<ValidationError>,
-    ) {
-        for field_name in LEGACY_REALIZED_VOLATILITY_RUNTIME_FIELDS {
-            if table.contains_key(*field_name) {
-                errors.push(ValidationError {
-                    field: format!("{field_prefix}.{field_name}"),
-                    code: "legacy_realized_volatility_path",
-                    message: format!(
-                        "`{field_name}` is rejected when `{REALIZED_VOLATILITY_SURFACE_ID_FIELD}` selects surfaced realized-volatility mode"
-                    ),
-                });
-            }
-        }
     }
 
     fn validate_required_realized_volatility_surface_id(

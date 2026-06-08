@@ -22,7 +22,7 @@ fn chainlink_reference_provider_binding_is_registered_as_data_only() {
 venue = "CHAINLINK_REFERENCE_PRICE"
 
 [data]
-websocket_endpoint = "wss://streams.chain.link/reference"
+websocket_endpoint = "wss://streams.chain.link"
 transport_backend = "sockudo"
 heartbeat_secs = 5
 heartbeat_message = "ping"
@@ -48,7 +48,7 @@ api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 venue = "CHAINLINK_REFERENCE_PRICE"
 
 [data]
-websocket_endpoint = "wss://streams.chain.link/reference"
+websocket_endpoint = "wss://streams.chain.link"
 transport_backend = "sockudo"
 heartbeat_secs = 5
 heartbeat_message = "ping"

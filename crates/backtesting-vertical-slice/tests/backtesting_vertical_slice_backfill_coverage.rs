@@ -31,6 +31,7 @@ fn completed_manifest() -> BackfillCoverageManifestEvidence {
         completed_bytes: 900,
         selector_scope_violations: 0,
         gap_policy_id: None,
+        coverage_axis: Some("synthetic_archive_hour".to_string()),
     }
 }
 
@@ -43,6 +44,55 @@ fn coverage_ledger_accepts_completed_manifest_without_venue_specific_fields() {
     assert_eq!(record.accepted_objects, 3);
     assert_eq!(record.accepted_bytes, 900);
     assert!(record.blocking_issues.is_empty(), "{record:?}");
+}
+
+#[test]
+fn coverage_ledger_rejects_completed_manifest_without_coverage_axis() {
+    let mut manifest = completed_manifest();
+    manifest.coverage_axis = None;
+
+    let record = classify_manifest_coverage(&manifest, None);
+
+    assert_eq!(record.status, BackfillCoverageStatus::Rejected);
+    assert!(
+        record
+            .blocking_issues
+            .contains(&BackfillCoverageIssue::MissingCoverageAxis),
+        "{record:?}"
+    );
+}
+
+#[test]
+fn coverage_ledger_preserves_configured_coverage_axis_from_manifest_json() {
+    let summary = serde_json::json!({
+        "run_id": "manifest-synthetic-axis",
+        "source_binding": "synthetic-native-trades",
+        "source_proof_id": "source-proof-synthetic-native-trades",
+        "source_proof_version": 1,
+        "coverage_axis": "synthetic_ingest_time",
+        "write_mode": "s3_staging",
+        "canonical_s3_write": false,
+        "planned_payload_object_count": 4,
+        "completed_payload_object_count": 4,
+        "completed_payload_bytes": 1_200,
+        "errors": [],
+        "selector_scope": {
+            "payload_selector_scope_violations": []
+        }
+    });
+
+    let manifest = BackfillCoverageManifestEvidence::from_manifest_json(
+        &summary,
+        Some(SourceProofStatus::Accepted),
+    )
+    .expect("manifest with coverage axis parses");
+    let record = classify_manifest_coverage(&manifest, None);
+
+    assert_eq!(record.status, BackfillCoverageStatus::Accepted);
+    assert_eq!(
+        serde_json::to_value(&record).expect("record json")["coverage_axis"],
+        "synthetic_ingest_time"
+    );
 }
 
 #[test]
@@ -136,6 +186,7 @@ fn coverage_manifest_evidence_parses_payload_count_aliases_from_json_summary() {
         "source_binding": "synthetic-native-trades",
         "source_proof_id": "source-proof-synthetic-native-trades",
         "source_proof_version": 1,
+        "coverage_axis": "synthetic_archive_hour",
         "write_mode": "s3_staging",
         "canonical_s3_write": false,
         "planned_payload_object_count": 4,
@@ -172,6 +223,7 @@ fn coverage_manifest_evidence_parses_nested_count_aliases_from_json_summary() {
         "source_binding": "synthetic-native-trades",
         "source_proof_id": "source-proof-synthetic-native-trades",
         "source_proof_version": 1,
+        "coverage_axis": "synthetic_archive_hour",
         "write_mode": "s3_staging",
         "canonical_s3_write": false,
         "counts": {
@@ -228,6 +280,7 @@ fn coverage_manifest_evidence_parses_staging_only_and_manifest_exclusion_aliases
         "source_binding": "synthetic-native-trades",
         "source_proof_id": "source-proof-synthetic-native-trades",
         "source_proof_version": 1,
+        "coverage_axis": "synthetic_archive_hour",
         "write_mode": "s3_staging_only",
         "canonical_s3_write": false,
         "object_count_excluding_manifest": 6,
@@ -258,6 +311,7 @@ fn coverage_ledger_builds_from_manifest_json_batch_without_payload_downloads() {
         "source_binding": "synthetic-native-trades",
         "source_proof_id": "source-proof-synthetic-native-trades",
         "source_proof_version": 1,
+        "coverage_axis": "synthetic_archive_hour",
         "write_mode": "s3_staging",
         "canonical_s3_write": false,
         "planned_payload_object_count": 2,
@@ -270,6 +324,7 @@ fn coverage_ledger_builds_from_manifest_json_batch_without_payload_downloads() {
         "source_binding": "synthetic-native-trades",
         "source_proof_id": "source-proof-synthetic-native-trades",
         "source_proof_version": 1,
+        "coverage_axis": "synthetic_archive_hour",
         "write_mode": "s3_staging",
         "canonical_s3_write": false,
         "counts": {
@@ -498,6 +553,7 @@ fn coverage_ledger_writer_reads_manifest_json_files_and_writes_artifact() {
             "source_binding": "synthetic-native-trades",
             "source_proof_id": "source-proof-synthetic-native-trades",
             "source_proof_version": 1,
+            "coverage_axis": "synthetic_archive_hour",
             "write_mode": "s3_staging",
             "canonical_s3_write": false,
             "completed_objects": 2,
@@ -514,6 +570,7 @@ fn coverage_ledger_writer_reads_manifest_json_files_and_writes_artifact() {
             "source_binding": "synthetic-native-trades",
             "source_proof_id": "source-proof-synthetic-native-trades",
             "source_proof_version": 1,
+            "coverage_axis": "synthetic_archive_hour",
             "write_mode": "s3_staging",
             "canonical_s3_write": false,
             "counts": {
@@ -589,6 +646,7 @@ fn coverage_ledger_writer_reads_toml_spec_and_writes_artifact() {
             "source_binding": "synthetic-native-trades",
             "source_proof_id": "source-proof-synthetic-native-trades",
             "source_proof_version": 1,
+            "coverage_axis": "synthetic_archive_hour",
             "write_mode": "s3_staging",
             "canonical_s3_write": false,
             "completed_objects": 8,
@@ -637,6 +695,7 @@ fn coverage_ledger_spec_binds_source_proof_metadata_when_manifest_lacks_it() {
         &manifest_path,
         serde_json::to_vec(&serde_json::json!({
             "run_id": "manifest-synthetic-bound-proof",
+            "coverage_axis": "synthetic_archive_hour",
             "write_mode": "s3_staging",
             "canonical_s3_write": false,
             "completed_objects": 5,

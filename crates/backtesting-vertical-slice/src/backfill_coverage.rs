@@ -54,6 +54,7 @@ pub enum BackfillCoverageIssue {
     PlannedObjectsAccountingMismatch,
     SkippedObjectsWithoutGapPolicy,
     UnsupportedManifestSchema,
+    MissingCoverageAxis,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,6 +256,7 @@ pub struct BackfillCoverageManifestEvidence {
     pub completed_bytes: u64,
     pub selector_scope_violations: u64,
     pub gap_policy_id: Option<String>,
+    pub coverage_axis: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -378,6 +380,7 @@ impl BackfillCoverageManifestEvidence {
         })
         .unwrap_or(0);
         let gap_policy_id = optional_string(summary, &[&["gap_policy_id"]]);
+        let coverage_axis = optional_string(summary, &[&["coverage_axis"]]);
 
         Ok(Self {
             manifest_id,
@@ -395,6 +398,7 @@ impl BackfillCoverageManifestEvidence {
             completed_bytes,
             selector_scope_violations,
             gap_policy_id,
+            coverage_axis,
         })
     }
 }
@@ -414,6 +418,7 @@ pub struct BackfillCoverageRecord {
     pub status: BackfillCoverageStatus,
     pub source_binding: Option<String>,
     pub table_family: Option<String>,
+    pub coverage_axis: Option<String>,
     pub source_proof_id: Option<String>,
     pub source_proof_version: Option<u32>,
     pub canonical_ready: bool,
@@ -769,6 +774,7 @@ pub fn classify_physical_inventory(
         status: BackfillCoverageStatus::PhysicalOnly,
         source_binding: None,
         table_family: None,
+        coverage_axis: None,
         source_proof_id: None,
         source_proof_version: None,
         canonical_ready: false,
@@ -787,6 +793,7 @@ fn classify_unsupported_manifest_schema(manifest_uri: String) -> BackfillCoverag
         status: BackfillCoverageStatus::Rejected,
         source_binding: None,
         table_family: None,
+        coverage_axis: None,
         source_proof_id: None,
         source_proof_version: None,
         canonical_ready: false,
@@ -820,6 +827,7 @@ pub fn classify_manifest_coverage(
         status,
         source_binding: Some(manifest.source_binding.clone()),
         table_family: manifest.table_family.clone(),
+        coverage_axis: manifest.coverage_axis.clone(),
         source_proof_id: manifest.source_proof_id.clone(),
         source_proof_version: manifest.source_proof_version,
         canonical_ready: accepted
@@ -895,6 +903,13 @@ fn blocking_issues_for(manifest: &BackfillCoverageManifestEvidence) -> Vec<Backf
             .is_none_or(|value| value.trim().is_empty())
     {
         issues.push(BackfillCoverageIssue::SkippedObjectsWithoutGapPolicy);
+    }
+    if manifest
+        .coverage_axis
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        issues.push(BackfillCoverageIssue::MissingCoverageAxis);
     }
 
     issues

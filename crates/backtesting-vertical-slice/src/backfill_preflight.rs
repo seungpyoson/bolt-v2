@@ -63,6 +63,7 @@ pub struct BackfillPreflightSelectedRecord {
     pub record_id: String,
     pub source_binding: String,
     pub table_family: String,
+    pub coverage_axis: String,
     pub source_proof_id: String,
     pub source_proof_version: u32,
     pub accepted_objects: u64,
@@ -312,6 +313,12 @@ fn is_eligible(record: &BackfillCoverageRecord, selection: &BackfillPreflightSel
             .unwrap_or("")
             .trim()
             .is_empty()
+        || record
+            .coverage_axis
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
         || record.source_proof_version.is_none()
     {
         return false;
@@ -328,6 +335,7 @@ fn selected_record(record: &BackfillCoverageRecord) -> BackfillPreflightSelected
         record_id: record.record_id.clone(),
         source_binding: record.source_binding.clone().unwrap_or_default(),
         table_family: record.table_family.clone().unwrap_or_default(),
+        coverage_axis: record.coverage_axis.clone().unwrap_or_default(),
         source_proof_id: record.source_proof_id.clone().unwrap_or_default(),
         source_proof_version: record.source_proof_version.unwrap_or_default(),
         accepted_objects: record.accepted_objects,

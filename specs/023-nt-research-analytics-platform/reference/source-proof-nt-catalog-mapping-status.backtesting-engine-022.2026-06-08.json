@@ -261,6 +261,10 @@
       "RED rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice selected_source_slice_uses_selector_row_groups_without_full_asset_rescan failed before selected-source accepted selector-carried source_row_groups.",
       "GREEN rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice selected_source_slice_uses_selector_row_groups_without_full_asset_rescan passed after selected-source used selector source_row_groups and avoided a full asset-column rescan.",
       "GREEN PR #610 CI on d79f574c passed backtester-gate, bvs-test, bvs-clippy, fmt-check, main clippy, source-fence, and all nextest shards.",
+      "RED rust_verification cargo test --test backtesting_vertical_slice_backfill_coverage coverage_ledger_rejects_completed_manifest_without_coverage_axis failed because a completed backfill manifest could be accepted without proving its coverage time axis.",
+      "GREEN rust_verification cargo test --test backtesting_vertical_slice_backfill_coverage coverage_ledger passed after backfill coverage manifests required a non-empty coverage_axis for acceptance and records preserved the configured axis.",
+      "RED rust_verification cargo test --test backtesting_vertical_slice_backfill_preflight backfill_preflight_selects_bounded_canonical_ready_record_without_source_constants failed because selected preflight records did not expose coverage_axis.",
+      "GREEN rust_verification cargo test --test backtesting_vertical_slice_backfill_preflight backfill_preflight_selects_bounded_canonical_ready_record_without_source_constants passed after preflight selected records carried coverage_axis and rejected eligible records without it.",
       "GREEN rust_verification cargo run --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-one-off-artifact-root-run-2026-06-08/spec.toml produced result_contract_hash 443a9748ad878984a4959ed840a1132f27c52575d70354af1b5e290cd50d4f19, conversion_manifest_hash f460cbb4d9be89d12984deb2fa3ce30959fc42b69fd08873714d8c2d632270ea, catalog_hash 2a49db95fe31a87896bcb3989ec99abd6b1b805173732c4f27bf2ab523d1868c, selected_source_parquet_hash 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, event_count_ledger_hash 9491b9fe73ba1bf75024fc113f6bf918866b952db9e81d262cc1fcaf0367dd2e, selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110, projected_l2_rows 4, and nt_iterations 103.",
       "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_trade_ticks_from_configured_trade_columns failed because concrete-style numeric fee_rate_bps columns were rejected by the one-off selected-source decimal decoder.",
       "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_trade_ticks_from_configured_trade_columns passed after configured selected-source decimal columns accepted Arrow numeric primitives and rejected non-finite floats.",
@@ -279,7 +283,7 @@
   "next_required_evidence": [
     "Regenerate the concrete PMXT one-off L2+TradeTick artifact with current [[catalog_inputs]] schema before promoting or archiving it; do not generalize PMXT from this bounded sample.",
     "Record expanded-tranche coverage and cost evidence before any PMXT broad backfill discussion.",
-    "Coverage ledger using timestamp_received as the archive-hour coverage axis before any expanded tranche.",
+    "Concrete PMXT coverage ledger with coverage_axis timestamp_received as the archive-hour coverage axis before any expanded tranche.",
     "Separate dynamic tick-size replay proof before full PMXT Polymarket L2 acceptance or broad backfill."
   ],
   "bte_022_can_close": false

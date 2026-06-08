@@ -103,6 +103,10 @@ fn backfill_preflight_selects_bounded_canonical_ready_record_without_source_cons
     assert_eq!(selected.table_family, "trades");
     assert_eq!(selected.accepted_objects, 3);
     assert_eq!(selected.accepted_bytes, 300);
+    assert_eq!(
+        serde_json::to_value(&selected).expect("selected record json")["coverage_axis"],
+        "synthetic_archive_hour"
+    );
 }
 
 #[test]
@@ -240,6 +244,7 @@ fn accepted_record(
         status: BackfillCoverageStatus::Accepted,
         source_binding: Some("synthetic-source-binding".to_string()),
         table_family: Some("trades".to_string()),
+        coverage_axis: Some("synthetic_archive_hour".to_string()),
         source_proof_id: Some("synthetic-source-proof".to_string()),
         source_proof_version: Some(1),
         canonical_ready: true,
@@ -258,6 +263,7 @@ fn rejected_record(record_id: &str) -> BackfillCoverageRecord {
         status: BackfillCoverageStatus::Rejected,
         source_binding: Some("synthetic-source-binding".to_string()),
         table_family: Some("trades".to_string()),
+        coverage_axis: Some("synthetic_archive_hour".to_string()),
         source_proof_id: Some("synthetic-source-proof".to_string()),
         source_proof_version: Some(1),
         canonical_ready: false,
@@ -276,6 +282,7 @@ fn physical_only_record(record_id: &str) -> BackfillCoverageRecord {
         status: BackfillCoverageStatus::PhysicalOnly,
         source_binding: None,
         table_family: None,
+        coverage_axis: None,
         source_proof_id: None,
         source_proof_version: None,
         canonical_ready: false,

@@ -252,6 +252,10 @@
     "RED rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice selected_source_slice_uses_selector_row_groups_without_full_asset_rescan failed before selected-source accepted selector-carried source_row_groups.",
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice selected_source_slice_uses_selector_row_groups_without_full_asset_rescan passed after selected-source used selector source_row_groups and avoided a full asset-column rescan.",
     "GREEN PR #610 CI on d79f574c passed backtester-gate, bvs-test, bvs-clippy, fmt-check, main clippy, source-fence, and all nextest shards.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_backfill_coverage coverage_ledger_rejects_completed_manifest_without_coverage_axis failed because a completed backfill manifest could be accepted without proving its coverage time axis.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_backfill_coverage coverage_ledger passed after backfill coverage manifests required a non-empty coverage_axis for acceptance and records preserved the configured axis.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_backfill_preflight backfill_preflight_selects_bounded_canonical_ready_record_without_source_constants failed because selected preflight records did not expose coverage_axis.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_backfill_preflight backfill_preflight_selects_bounded_canonical_ready_record_without_source_constants passed after preflight selected records carried coverage_axis and rejected eligible records without it.",
     "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan failed because the selected-source projection API was absent.",
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan passed after report-hash/Parquet-hash-checked selected-source decoding projected only configured PMXT L2 event roles through the NT-backed one-off projection path.",
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection --test backtesting_vertical_slice_selected_source_slice passed 6 focused tests after selected-source decoding.",
@@ -293,6 +297,7 @@
     "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven.",
     "One-hour bounded sample does not prove one-year PMXT coverage, gaps, retention, throughput, or cost.",
     "Pending PMXT source proof has not passed storage, coverage, completeness, cost, and broad accepted NT mapping checks.",
+    "Coverage-ledger code now requires a configured coverage_axis before acceptance, but no concrete PMXT expanded-tranche ledger with coverage_axis timestamp_received has been generated.",
     "Only one bounded PMXT one-off L2+TradeTick result-contract artifact exists; it does not prove expanded tranche coverage or reusable PMXT backfill.",
     "Concrete PMXT mixed OrderBookDelta+TradeTick artifact-root/result-contract evidence must be regenerated before it can be cited as current evidence; even after regeneration it is one bounded selected-source sample only and does not prove expanded tranche coverage, source completeness, throughput, or reusable PMXT backfill."
   ]

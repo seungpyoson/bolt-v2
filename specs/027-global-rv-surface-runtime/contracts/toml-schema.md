@@ -20,13 +20,13 @@ single_source_explanation = ""
 
 Rules:
 
-- `<surface_id>` is opaque, non-empty, trimmed, case-sensitive, and globally unique.
+- `<surface_id>` is opaque, non-empty, trimmed, case-sensitive, and globally unique after trimming; two IDs that differ only by leading/trailing whitespace are duplicates.
 - `canonical_base_asset` must match the referenced strategy target's underlying asset.
 - `seconds_per_annum` must be positive finite.
 - `refresh_interval_ms` must be positive.
 - `min_ready_sources` must be positive and no greater than enabled quorum-counting sources.
 - `max_cross_source_dispersion` must be non-negative finite.
-- Shipped production surfaces with fewer than two enabled quorum-counting sources must set `single_source_explanation` to a non-empty operator-facing reason. This is documentation/evidence metadata, not a runtime policy escape hatch.
+- Shipped production surfaces with fewer than two enabled quorum-counting sources must set `single_source_explanation` to a trimmed, non-empty operator-facing reason no longer than 512 characters. This is documentation/evidence metadata, not a runtime policy escape hatch.
 
 ## Sources
 
@@ -56,6 +56,7 @@ Rules:
 - `source_id` is unique within a surface.
 - `client_id` must reference a configured public market-data client.
 - `instrument_id` must be valid for the referenced client.
+- `instrument_id` must resolve to the same canonical base asset as the parent surface for that client/source class.
 - Disabled sources remain in diagnostics but do not subscribe and never count toward quorum.
 - Enabled `counts_toward_quorum = false` sources may subscribe and produce diagnostics but never contribute to readiness, aggregation, or surface blockers.
 
@@ -223,8 +224,9 @@ Rules:
 - If no previous forecast exists, including after process restart, initialize from the current ready component and record cold start in evidence.
 - Changing forecast config changes the surface config fingerprint and resets forecast state.
 - HAR-lite weights must be non-negative finite and their sum must be positive.
-- HAR-lite intercept must be finite.
+- HAR-lite intercept must be non-negative finite.
 - Referenced short/medium/long horizons must be ready.
+- HAR-lite output must pass the shared valid-RV constructor before publication; non-finite output blocks the forecast component.
 
 ## Cross-Source Aggregation
 
@@ -268,4 +270,4 @@ Rules:
 
 ## Production Multi-Venue Rule
 
-For shipped production surfaces, configure every available public venue/source that has a valid client and instrument mapping for the canonical asset. Availability means the root config contains an enabled public market-data client and a valid instrument mapping for that canonical asset/source class. If only one source is available, `single_source_explanation` must be non-empty; Rust code must not hardcode the limitation.
+For shipped production surfaces, configure every available public venue/source that has a valid client and instrument mapping for the canonical asset. Availability means the root config contains an enabled public market-data client and a valid instrument mapping for that canonical asset/source class. If only one source is available, `single_source_explanation` must be trimmed, non-empty, no longer than 512 characters, and emitted in evidence; Rust code must not hardcode the limitation.

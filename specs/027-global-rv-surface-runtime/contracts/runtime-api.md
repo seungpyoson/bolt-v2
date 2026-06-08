@@ -23,7 +23,7 @@ Rules:
 - `refresh(now_ms)` is monotonic per surface; a refresh with `now_ms` older than the last published snapshot is ignored or rejected deterministically.
 - `snapshot(surface_id)` returns an immutable clone, reference, or handle that cannot mutate runtime state.
 - Consumers may read snapshots concurrently only if the implementation uses immutable publication or explicit read locking.
-- Forecast state advances only inside serialized `refresh`, never inside consumer reads.
+- Forecast state advances only inside serialized `refresh`, never inside consumer reads. A refresh with `now_ms` not greater than the previous forecast update timestamp must leave forecast state unchanged and report the deterministic no-advance reason in diagnostics/evidence.
 
 If later implementation uses locks or a dedicated runtime actor thread, it must preserve the same observable ordering and publish immutable snapshots.
 
@@ -133,7 +133,7 @@ Rules:
 - Refresh cadence is TOML-owned and runtime-owned.
 - Surface readiness is computed from eligible contributors only.
 - Per-source blockers remain diagnostics unless quorum/aggregation rules require a surface-level blocker.
-- EWMA forecast state advances only when a new ready current component exists and `now_ms` is newer than the previous forecast update timestamp.
+- EWMA forecast state advances only when a new ready current component exists and `now_ms` is newer than the previous forecast update timestamp; non-monotonic forecast timestamps do not advance state.
 - The runtime must not fallback to legacy or strategy-owned RV.
 
 ### snapshot

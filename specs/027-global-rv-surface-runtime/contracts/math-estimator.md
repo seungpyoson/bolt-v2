@@ -175,10 +175,11 @@ Rules:
 
 Rules:
 
-- Betas and intercept are TOML-owned.
+- Betas and intercept are TOML-owned. Betas must be non-negative finite with positive sum; intercept must be non-negative finite.
 - Short, medium, and long role bindings must reference configured horizons.
 - Referenced horizons must be ready.
-- Evidence records every input and coefficient.
+- HAR-lite output must pass the shared valid-RV constructor before publication; non-finite output blocks the forecast component.
+- Evidence records every input, coefficient, and whether the forecast component was blocked by numeric validation.
 
 ## Final Pricing Value
 

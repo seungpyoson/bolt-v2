@@ -53,15 +53,15 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 - [ ] T029 GREEN: Remove any `RealizedVolEngine` fields, constructor calls, and refresh ownership from binary oracle taker strategy state.
 - [ ] T030 GREEN: Add a runtime snapshot provider/accessor that `src/bolt_v3_taker_pricing.rs` can consume by `surface_id`.
 - [ ] T031 GREEN: Wire binary oracle taker to consume runtime snapshots only.
-- [ ] T032 GREEN: Wire binary oracle maker if it exists on main; if not, add a real non-taker runtime consumer such as evidence/monitoring snapshot export. Synthetic two-consumer tests alone are insufficient.
+- [ ] T032 GREEN: Wire a real non-taker runtime consumer, starting with evidence/monitoring snapshot export; binary oracle maker may additionally consume the same runtime snapshot API if it exists on main. Synthetic two-consumer tests alone are insufficient.
 - [ ] T033 REFACTOR: Keep strategy code intent-only; any subscription, route, quorum, readiness, or aggregation code belongs outside strategies.
 
 ## Phase 5: Multi-Venue Available Sources
 
 **Goal**: Production RV surfaces use every configured available public source instead of one hardcoded/single venue.
 
-- [ ] T034 RED: Add root-config validation test `surface_source_references_existing_public_client_and_instrument`.
-- [ ] T035 RED: Add config test `production_surfaces_use_all_available_public_sources_or_explain_single_source`.
+- [ ] T034 RED: Add root-config validation tests `surface_source_references_existing_public_client_and_instrument` and `surface_source_instrument_asset_must_match_surface_canonical_base_asset`.
+- [ ] T035 RED: Add config tests `production_surfaces_use_all_available_public_sources_or_explain_single_source`, `single_source_explanation_required_when_only_one_source_available`, and `single_source_explanation_is_trimmed_non_empty_and_bounded`.
 - [ ] T036 RED: Add config test `unsupported_mark_source_class_sample_kind_is_rejected_until_runtime_routing_exists`.
 - [ ] T037 RED: Add runtime test `deduplicates_physical_subscriptions_and_fans_out_to_multiple_sources`.
 - [ ] T038 RED: Add runtime test `two_available_venue_sources_contribute_to_one_surface_snapshot`.
@@ -146,14 +146,14 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 
 - [ ] T093 RED: Add engine test `forecast_none_uses_measured_or_blended_rv_as_final`.
 - [ ] T094 RED: Add engine test `ewma_forecast_advances_only_on_refresh_with_new_ready_component`.
-- [ ] T095 RED: Add engine test `ewma_forecast_does_not_advance_on_observation_without_refresh`.
+- [ ] T095 RED: Add engine tests `ewma_forecast_does_not_advance_on_observation_without_refresh` and `ewma_forecast_does_not_advance_on_non_monotonic_now_ms`.
 - [ ] T096 RED: Add engine test `ewma_forecast_cold_starts_from_current_component_after_restart`.
-- [ ] T097 RED: Add engine test `forecast_state_resets_when_config_fingerprint_changes`.
+- [ ] T097 RED: Add engine tests `forecast_config_change_changes_fingerprint` and `forecast_state_resets_when_config_fingerprint_changes`.
 - [ ] T098 RED: Add engine test `forecast_state_is_independent_per_surface_id`.
 - [ ] T099 RED: Add engine test `har_lite_blends_short_medium_long_horizons_with_toml_weights`.
 - [ ] T100 RED: Add engine test `har_lite_blocks_when_any_role_horizon_is_not_ready`.
 - [ ] T101 RED: Add engine test `final_ready_realized_vol_equals_configured_pricing_component`.
-- [ ] T102 RED: Add config validation tests for forecast method, EWMA alpha, HAR weights, referenced horizon roles, non-negative HAR weights, and positive HAR weight sum.
+- [ ] T102 RED: Add config validation tests for forecast method, `ewma_alpha_zero_or_above_one_rejected`, HAR weights, referenced horizon roles, non-negative HAR weights, positive HAR weight sum, and `har_intercept_negative_or_non_finite_rejected`.
 - [ ] T103 GREEN: Implement `forecast_method = "none"`.
 - [ ] T104 GREEN: Implement `forecast_method = "ewma"` with per-surface serialized refresh state and TOML-owned alpha.
 - [ ] T105 GREEN: Implement `forecast_method = "har_lite"` using TOML-owned horizon weights.
@@ -164,9 +164,9 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 
 - [ ] T108 RED: Add decision-evidence round-trip test for the new runtime robust RV fields.
 - [ ] T109 RED: Add stale-schema rejection test by reading the current evidence version on `main`, then asserting the feature branch rejects the previous version and bumps by exactly one.
-- [ ] T110 RED: Add runtime test `unknown_source_diagnostics_are_bounded_and_evictions_are_reported`.
+- [ ] T110 RED: Add runtime tests `unknown_source_diagnostics_are_bounded_and_evictions_are_reported` and `unknown_source_diagnostics_remain_bounded_under_sustained_churn`.
 - [ ] T111 RED: Add combined-mode determinism test for `subsampled + jump_separate + ewma`.
-- [ ] T112 RED: Add surface ID hygiene tests for empty, whitespace, duplicate, and case-sensitive IDs.
+- [ ] T112 RED: Add surface ID hygiene tests for empty, whitespace, duplicate, trim-equivalent duplicate, and case-sensitive IDs.
 - [ ] T113 GREEN: Bump evidence schema from current `main` by exactly one version.
 - [ ] T114 GREEN: Update serializers/deserializers for runtime/horizon/noise/jump/forecast fields.
 - [ ] T115 GREEN: Implement bounded unknown-source diagnostic capacity and deterministic eviction reporting.

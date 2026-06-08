@@ -129,30 +129,29 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
 
     let mapping_evaluation: SourceCatalogMappingEvaluation =
         serde_json::from_str(CATALOG_MAPPING_EVALUATION).expect("mapping evaluation parses");
+    let manifest_exposure = &mapping_evaluation
+        .nt_surface_evidence
+        .current_bte_manifest_exposure;
     assert!(
-        mapping_evaluation
-            .current_bte_manifest_exposure
+        manifest_exposure
             .accepted_data_classes
             .iter()
             .any(|data_class| data_class == "TradeTick")
     );
     assert!(
-        mapping_evaluation
-            .current_bte_manifest_exposure
+        manifest_exposure
             .accepted_data_classes
             .iter()
             .any(|data_class| data_class == "OrderBookDelta")
     );
     assert!(
-        !mapping_evaluation
-            .current_bte_manifest_exposure
+        !manifest_exposure
             .rejected_for_now
             .iter()
             .any(|data_class| data_class == "OrderBookDelta")
     );
     assert!(
-        mapping_evaluation
-            .current_bte_manifest_exposure
+        manifest_exposure
             .rejected_for_now
             .iter()
             .any(|data_class| data_class == "QuoteTick")
@@ -342,8 +341,13 @@ fn source_proof_scope_hash(report: &BackfillSourceProofScopeReport) -> String {
 
 #[derive(Debug, Deserialize)]
 struct SourceCatalogMappingEvaluation {
-    current_bte_manifest_exposure: CurrentBteManifestExposure,
+    nt_surface_evidence: NtSurfaceEvidence,
     source_sample_mapping_status: Vec<SourceCatalogMappingStatusEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NtSurfaceEvidence {
+    current_bte_manifest_exposure: CurrentBteManifestExposure,
 }
 
 #[derive(Debug, Deserialize)]

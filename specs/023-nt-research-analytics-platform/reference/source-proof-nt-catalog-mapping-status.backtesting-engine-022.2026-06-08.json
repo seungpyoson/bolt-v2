@@ -398,6 +398,7 @@
     "Use the committed PMXT coverage-ledger status only as rejected/current evidence; do not treat it as accepted PMXT coverage.",
     "Use the committed PMXT broad-backfill efficiency status as a guardrail: no broad payload download, full-object hash, conversion, catalog projection, or BacktestNode run before manifest/index-only acceptance and bounded execution budgets are proven.",
     "Use the committed source-agnostic boundary status as the adapter-rule guardrail: new sources that match the existing native-trade CSV adapter can be registry/source-proof/run-spec additions; new raw formats or NT data families require a registered adapter contract and proof, not venue branches in generic gates.",
+    "Use the committed PMXT NT surface-usage boundary status as the NT ownership guardrail: one-off PMXT uses public NautilusTrader Polymarket parser/model surfaces, ParquetDataCatalog, and BacktestNode; Bolt-owned code remains limited to raw PMXT archive decoding, selected-source provenance, duplicate historical trade observation policy, and claim-limit enforcement.",
     "Record accepted expanded-tranche coverage and cost evidence before any PMXT broad backfill discussion.",
     "Accept a durable Polymarket source proof before any PMXT coverage ledger can authorize canonical-ready backfill.",
     "Separate dynamic tick-size replay proof before full PMXT Polymarket L2 acceptance or broad backfill."

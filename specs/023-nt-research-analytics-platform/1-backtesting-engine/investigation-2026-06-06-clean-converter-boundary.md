@@ -2419,3 +2419,41 @@ Current conclusion:
   contract and proof, not venue branches in generic readiness gates.
 - This checkpoint does not close `BACKTESTING_ENGINE-022`; it prevents the
   incorrect claim that every future venue/data type is TOML-only today.
+
+## 2026-06-09 PMXT Nautilus Polymarket surface-usage checkpoint
+
+Question answered:
+
+- Are we using the pinned NautilusTrader Polymarket/backtest surfaces instead
+  of building a separate PMXT backtesting path?
+
+Current answer:
+
+- Yes for the bounded one-off proof path: PMXT projection uses NT Gamma parsing,
+  BinaryOption construction, Polymarket websocket book snapshot/delta parsers,
+  NT `TradeTick`/`OrderBookDelta` model types, `ParquetDataCatalog`, and
+  `BacktestNode`.
+- No for a direct PMXT archive reader: pinned NT has live Polymarket websocket
+  and Data API clients/parsers, but it does not expose a batch reader for PMXT
+  hourly Parquet L2 archives.
+- The PMXT trade-id helper in pinned NT is `pub(crate)` and tied to Data API
+  trade models, so the one-off adapter mirrors its transaction-hash plus asset
+  plus sequence shape and adds PMXT-specific duplicate-observation collapse.
+- Dynamic tick-size replay is still not closed: standard `BacktestDataConfig`
+  replay dispatches catalog data classes, not scheduled `InstrumentAny`
+  definition updates.
+
+New evidence:
+
+- Added
+  `reference/source-proof-pmxt-nt-surface-usage-boundary.2026-06-09.json`.
+
+Current conclusion:
+
+- Do not build a custom PMXT backtesting engine.
+- Keep using NT for model, catalog, and backtest execution.
+- Keep Bolt-owned PMXT code limited to raw archive decoding, selected-source
+  proof validation, provenance, duplicate historical trade observation policy,
+  and claim-limit enforcement.
+- This does not close `BACKTESTING_ENGINE-022`; it makes the "use all of what
+  NT offers" boundary explicit and auditable.

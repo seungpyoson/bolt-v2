@@ -89,6 +89,7 @@ pub struct ChainlinkReferencePriceDataConfig {
     pub reconnect_delay_max_ms: u64,
     pub reconnect_backoff_factor: f64,
     pub reconnect_jitter_ms: u64,
+    pub reconnect_max_attempts: Option<u32>,
     pub idle_timeout_ms: u64,
 }
 
@@ -139,6 +140,7 @@ pub struct ChainlinkReferencePriceClientConfig {
     pub reconnect_delay_max_ms: u64,
     pub reconnect_backoff_factor: f64,
     pub reconnect_jitter_ms: u64,
+    pub reconnect_max_attempts: Option<u32>,
     pub idle_timeout_ms: u64,
     pub feed_bindings: Vec<ChainlinkStrikeFeedBinding>,
     pub api_key: Zeroizing<String>,
@@ -160,6 +162,7 @@ impl std::fmt::Debug for ChainlinkReferencePriceClientConfig {
             .field("reconnect_delay_max_ms", &self.reconnect_delay_max_ms)
             .field("reconnect_backoff_factor", &self.reconnect_backoff_factor)
             .field("reconnect_jitter_ms", &self.reconnect_jitter_ms)
+            .field("reconnect_max_attempts", &self.reconnect_max_attempts)
             .field("idle_timeout_ms", &self.idle_timeout_ms)
             .field("feed_bindings", &self.feed_bindings)
             .field("api_key", &REDACTED)
@@ -454,7 +457,7 @@ fn chainlink_reference_websocket_client_config(
         reconnect_delay_max_ms: Some(config.reconnect_delay_max_ms),
         reconnect_backoff_factor: Some(config.reconnect_backoff_factor),
         reconnect_jitter_ms: Some(config.reconnect_jitter_ms),
-        reconnect_max_attempts: None,
+        reconnect_max_attempts: config.reconnect_max_attempts,
         idle_timeout_ms: Some(config.idle_timeout_ms),
         backend: config.transport_backend,
         proxy_url: None,
@@ -693,6 +696,11 @@ fn validate_data_bounds(key: &str, data: &ChainlinkReferencePriceDataConfig) -> 
         data.reconnect_jitter_ms,
         &mut errors,
     );
+    if data.reconnect_max_attempts != Some(0) {
+        errors.push(format!(
+            "clients.{key}.data.reconnect_max_attempts must be 0 because Chainlink reference WebSocket auth headers are regenerated only on DataClient connect"
+        ));
+    }
     validate_positive_u64(
         &format!("clients.{key}.data.idle_timeout_ms"),
         data.idle_timeout_ms,
@@ -868,6 +876,7 @@ fn map_data(
         reconnect_delay_max_ms: cfg.reconnect_delay_max_ms,
         reconnect_backoff_factor: cfg.reconnect_backoff_factor,
         reconnect_jitter_ms: cfg.reconnect_jitter_ms,
+        reconnect_max_attempts: cfg.reconnect_max_attempts,
         idle_timeout_ms: cfg.idle_timeout_ms,
         feed_bindings,
         api_key: secrets.api_key.clone(),
@@ -930,6 +939,7 @@ mod tests {
             reconnect_delay_max_ms: 5_000,
             reconnect_backoff_factor: 1.5,
             reconnect_jitter_ms: 100,
+            reconnect_max_attempts: Some(0),
             idle_timeout_ms: 10_000,
             feed_bindings: vec![fixture_feed_binding()],
             api_key: Zeroizing::new("chainlink-api-key".to_string()),

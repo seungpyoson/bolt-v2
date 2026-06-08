@@ -17,6 +17,7 @@ fn quote(source_id: &str, price: f64, observed_ts_ms: u64, received_ts_ms: u64) 
         "BTC",
         source_id,
         reference_provider(CHAINLINK_REFERENCE_PROVIDER),
+        format!("{source_id}.REFERENCE"),
         price,
         None,
         None,
@@ -33,6 +34,7 @@ fn reference_quote_accepts_positive_price_with_optional_spread() {
         "BTC",
         "chainlink_primary",
         reference_provider(CHAINLINK_REFERENCE_PROVIDER),
+        "BTC-USD.CHAINLINK_REFERENCE",
         66300.25,
         Some(66299.0),
         Some(66301.0),
@@ -49,7 +51,7 @@ fn reference_quote_accepts_positive_price_with_optional_spread() {
     assert_eq!(quote.ask(), Some(66301.0));
     assert_eq!(quote.observed_ts_ms(), 1774672089000);
     assert_eq!(quote.received_ts_ms(), 1774672089123);
-    assert_eq!(quote.provider_instrument(), "chainlink_primary");
+    assert_eq!(quote.provider_instrument(), "BTC-USD.CHAINLINK_REFERENCE");
     assert!(quote.provenance().fields().is_empty());
 
     let quote = ReferenceQuote::try_new_with_provenance(
@@ -76,6 +78,7 @@ fn reference_quote_rejects_non_positive_price() {
         "BTC",
         "chainlink_primary",
         reference_provider(CHAINLINK_REFERENCE_PROVIDER),
+        "BTC-USD.CHAINLINK_REFERENCE",
         0.0,
         None,
         None,
@@ -183,6 +186,75 @@ fn selector_fails_over_once_without_flipback_until_next_interval() {
     assert_eq!(
         next_interval,
         ReferencePriceSelection::selected("chainlink_primary", 66310.00, false)
+    );
+}
+
+#[test]
+fn selector_reselects_available_source_when_failed_over_source_disappears() {
+    let mut selector = ReferencePriceSelector::new(
+        "BTC",
+        [
+            "chainlink_primary".to_string(),
+            "polyresearch_backup".to_string(),
+        ],
+        1,
+        2000,
+        25,
+    )
+    .expect("selector config should be valid");
+
+    let first = selector
+        .select(
+            1774672089000,
+            1774672389000,
+            1774672089500,
+            &[quote(
+                "chainlink_primary",
+                66300.25,
+                1774672089200,
+                1774672089300,
+            )],
+        )
+        .expect("first valid source should select");
+    assert_eq!(
+        first,
+        ReferencePriceSelection::selected("chainlink_primary", 66300.25, false)
+    );
+
+    let failed_over = selector
+        .select(
+            1774672089000,
+            1774672389000,
+            1774672092500,
+            &[quote(
+                "polyresearch_backup",
+                66302.00,
+                1774672092400,
+                1774672092450,
+            )],
+        )
+        .expect("stale primary should fail over to backup");
+    assert_eq!(
+        failed_over,
+        ReferencePriceSelection::selected("polyresearch_backup", 66302.00, true)
+    );
+
+    let reselected = selector
+        .select(
+            1774672089000,
+            1774672389000,
+            1774672093000,
+            &[quote(
+                "chainlink_primary",
+                66305.00,
+                1774672092950,
+                1774672092960,
+            )],
+        )
+        .expect("available primary should be selected when the failed-over source disappears");
+    assert_eq!(
+        reselected,
+        ReferencePriceSelection::selected("chainlink_primary", 66305.00, true)
     );
 }
 
@@ -415,6 +487,28 @@ fn reference_price_update_data_type_includes_asset_source_and_provider() {
     assert_eq!(metadata.get_str("asset"), Some("BTC"));
     assert_eq!(metadata.get_str("source_key"), Some("chainlink_primary"));
     assert_eq!(metadata.get_str("provider"), Some("chainlink_ws"));
+}
+
+#[test]
+fn reference_price_update_try_new_preserves_explicit_provider_instrument() {
+    let update = ReferencePriceUpdate::try_new(
+        "BTC",
+        "chainlink_primary",
+        "chainlink_ws",
+        "BTC-USD.CHAINLINK_REFERENCE",
+        66300.25,
+        Some(66299.0),
+        Some(66301.0),
+        1774672089200,
+        1774672089300,
+    )
+    .expect("valid update should construct");
+
+    assert_eq!(update.provider_instrument(), "BTC-USD.CHAINLINK_REFERENCE");
+    let quote = update
+        .to_reference_quote()
+        .expect("update should convert to reference quote");
+    assert_eq!(quote.provider_instrument(), "BTC-USD.CHAINLINK_REFERENCE");
 }
 
 #[test]

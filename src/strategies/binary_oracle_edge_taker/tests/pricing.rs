@@ -382,6 +382,7 @@ fn reference_current_price_does_not_open_interval_without_source_bound_price_to_
         "reference",
         crate::bolt_v3_config::ReferencePriceProvider::new("chainlink_ws")
             .expect("test provider should be valid"),
+        "BTC-USD.CHAINLINK_REFERENCE",
         3_101.0,
         None,
         None,

@@ -14,6 +14,7 @@ fn quote(source_id: &str, price: f64, observed_ts_ms: u64) -> ReferenceQuote {
         "BTC",
         source_id,
         provider(chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY),
+        format!("{source_id}.REFERENCE"),
         price,
         None,
         None,

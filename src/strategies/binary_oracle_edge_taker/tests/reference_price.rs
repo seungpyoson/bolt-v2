@@ -339,6 +339,7 @@ fn reference_price_update_with_wrong_provider_does_not_satisfy_source() {
         "BTC",
         CHAINLINK_PRIMARY_SOURCE_ID,
         POLYRESEARCH_REFERENCE_PROVIDER,
+        "BTC/USD",
         TEST_REFERENCE_CURRENT_PRICE,
         None,
         None,

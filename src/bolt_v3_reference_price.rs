@@ -46,18 +46,18 @@ impl ReferencePriceUpdate {
         asset: impl Into<String>,
         source_id: impl Into<String>,
         provider: impl Into<String>,
+        provider_instrument: impl Into<String>,
         price: f64,
         bid: Option<f64>,
         ask: Option<f64>,
         observed_ts_ms: u64,
         received_ts_ms: u64,
     ) -> Result<Self, String> {
-        let source_id = source_id.into();
         Self::try_new_with_provenance(
             asset,
-            source_id.clone(),
-            provider,
             source_id,
+            provider,
+            provider_instrument,
             price,
             bid,
             ask,
@@ -527,10 +527,6 @@ impl ReferencePriceSelector {
             ));
         }
 
-        if self.selected_source_id.is_some() && self.failover_used {
-            return None;
-        }
-
         let next = valid_quotes.first()?;
         let failed_over = self.selected_source_id.is_some();
         self.selected_source_id = Some(next.source_id.clone());
@@ -646,18 +642,18 @@ impl ReferenceQuote {
         asset: impl Into<String>,
         source_id: impl Into<String>,
         provider: ReferencePriceProvider,
+        provider_instrument: impl Into<String>,
         price: f64,
         bid: Option<f64>,
         ask: Option<f64>,
         observed_ts_ms: u64,
         received_ts_ms: u64,
     ) -> Result<Self, String> {
-        let source_id = source_id.into();
         Self::try_new_with_provenance(
             asset,
-            source_id.clone(),
-            provider,
             source_id,
+            provider,
+            provider_instrument,
             price,
             bid,
             ask,

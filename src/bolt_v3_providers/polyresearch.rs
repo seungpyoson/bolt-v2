@@ -338,10 +338,21 @@ impl DataClient for PolyResearchReferencePriceClient {
             Arc::clone(&self.subscriptions),
             self.data_sender.clone(),
         );
-        let websocket =
-            WebSocketClient::connect(config, Some(message_handler), None, None, vec![], None)
-                .await?;
-        let outbound = polyresearch_reference_outbound_handle(websocket);
+        let (outbound, outbound_receiver) = polyresearch_reference_outbound_channel();
+        let post_reconnection = polyresearch_reference_post_reconnection_handler(
+            Arc::clone(&self.subscriptions),
+            outbound.clone(),
+        );
+        let websocket = WebSocketClient::connect(
+            config,
+            Some(message_handler),
+            None,
+            Some(post_reconnection),
+            vec![],
+            None,
+        )
+        .await?;
+        polyresearch_reference_spawn_outbound_task(websocket, outbound_receiver);
         replay_polyresearch_reference_subscriptions(&self.subscriptions, &outbound)?;
         self.outbound = Some(outbound);
         self.connected = true;
@@ -438,11 +449,19 @@ fn polyresearch_reference_subscribe_frame(
     })
 }
 
-fn polyresearch_reference_outbound_handle(
-    websocket: WebSocketClient,
-) -> PolyResearchReferenceOutboundHandle {
-    let (sender, mut receiver) =
+fn polyresearch_reference_outbound_channel() -> (
+    PolyResearchReferenceOutboundHandle,
+    tokio::sync::mpsc::UnboundedReceiver<PolyResearchReferenceOutboundCommand>,
+) {
+    let (sender, receiver) =
         tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
+    (PolyResearchReferenceOutboundHandle { sender }, receiver)
+}
+
+fn polyresearch_reference_spawn_outbound_task(
+    websocket: WebSocketClient,
+    mut receiver: tokio::sync::mpsc::UnboundedReceiver<PolyResearchReferenceOutboundCommand>,
+) {
     get_runtime().spawn(async move {
         while let Some(command) = receiver.recv().await {
             match command {
@@ -461,7 +480,21 @@ fn polyresearch_reference_outbound_handle(
             }
         }
     });
-    PolyResearchReferenceOutboundHandle { sender }
+}
+
+fn polyresearch_reference_post_reconnection_handler(
+    subscriptions: Arc<
+        Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, PolyResearchReferenceSubscription>>,
+    >,
+    outbound: PolyResearchReferenceOutboundHandle,
+) -> Arc<dyn Fn() + Send + Sync> {
+    Arc::new(move || {
+        if let Err(error) = replay_polyresearch_reference_subscriptions(&subscriptions, &outbound) {
+            log::warn!(
+                "PolyResearch reference subscription replay after reconnect failed: {error}"
+            );
+        }
+    })
 }
 
 fn replay_polyresearch_reference_subscriptions(
@@ -1197,6 +1230,40 @@ mod tests {
             .expect("PRR subscription should send a provider subscribe frame");
         let PolyResearchReferenceOutboundCommand::SendText(frame) = outbound_command else {
             panic!("PRR subscription should send text, got {outbound_command:?}");
+        };
+        assert_eq!(
+            frame,
+            r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["BTC/USD"]}}"#
+        );
+    }
+
+    #[test]
+    fn post_reconnection_replays_prr_reference_subscriptions() {
+        let subscriptions = Arc::new(Mutex::new(BTreeMap::new()));
+        subscriptions
+            .lock()
+            .expect("test subscription state should lock")
+            .insert(
+                subscription_key("BTC", "polyresearch_primary", "BTC/USD"),
+                PolyResearchReferenceSubscription {
+                    asset: "BTC".to_string(),
+                    source_id: "polyresearch_primary".to_string(),
+                    symbol: "BTC/USD".to_string(),
+                },
+            );
+        let (outbound_sender, mut outbound_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
+        let outbound = PolyResearchReferenceOutboundHandle::from_sender(outbound_sender);
+
+        let handler =
+            polyresearch_reference_post_reconnection_handler(Arc::clone(&subscriptions), outbound);
+        handler();
+
+        let outbound_command = outbound_receiver
+            .try_recv()
+            .expect("post-reconnect replay should send a provider subscribe frame");
+        let PolyResearchReferenceOutboundCommand::SendText(frame) = outbound_command else {
+            panic!("post-reconnect replay should send text, got {outbound_command:?}");
         };
         assert_eq!(
             frame,

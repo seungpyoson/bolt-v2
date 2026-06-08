@@ -34,19 +34,17 @@ fn completed_manifest(
     fingerprint: &ConversionFingerprint,
     checkpoint_hash: String,
 ) -> ConversionManifest {
-    ConversionManifest {
-        manifest_version: "conversion-manifest.v1".to_string(),
-        fingerprint: fingerprint.clone(),
-        normalized_schema_version: "market_data.v1".to_string(),
-        nt_data_type: "TradeTick".to_string(),
-        nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
-        canonical_rows: 3,
-        output_catalog_uri: "s3://bolt-parquet/nt-research-analytics/backtests/run/nt-catalog"
-            .to_string(),
-        catalog_hash: "catalog-hash".to_string(),
+    ConversionManifest::completed(
+        fingerprint.clone(),
+        "market_data.v1",
+        "TradeTick",
+        "BNBUSDC.BYBIT",
+        3,
+        "s3://bolt-parquet/nt-research-analytics/backtests/run/nt-catalog",
+        "catalog-hash",
         checkpoint_hash,
-        completed_at: "2026-06-06T00:00:00Z".to_string(),
-    }
+        "2026-06-06T00:00:00Z",
+    )
 }
 
 #[test]
@@ -98,6 +96,41 @@ fn same_manifest_and_checkpoint_rerun_is_idempotent() {
     assert_eq!(first, second);
     assert_eq!(
         first,
+        ConversionOutputState::Complete {
+            manifest_hash,
+            checkpoint_hash: checkpoint.content_hash().unwrap(),
+            catalog_hash: "catalog-hash".to_string()
+        }
+    );
+}
+
+#[test]
+fn legacy_single_family_manifest_without_catalog_row_map_remains_idempotent() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let fingerprint = fingerprint();
+    let checkpoint = completed_checkpoint(&fingerprint);
+    let checkpoint_hash = checkpoint.content_hash().unwrap();
+    let mut manifest = completed_manifest(&fingerprint, checkpoint_hash.clone());
+    manifest.catalog_nt_data_types.clear();
+    manifest.catalog_rows_by_nt_data_type.clear();
+    let manifest_hash = manifest.content_hash().unwrap();
+    let mut metadata =
+        ConversionCatalogMetadata::from_manifest(&manifest, manifest_hash.clone(), checkpoint_hash);
+    metadata.catalog_nt_data_types.clear();
+    metadata.catalog_rows_by_nt_data_type.clear();
+    write_completed_conversion_artifacts(dir.path(), &manifest, &checkpoint, &metadata).unwrap();
+
+    let written_manifest =
+        std::fs::read_to_string(dir.path().join(CONVERSION_MANIFEST_FILE)).unwrap();
+    assert!(!written_manifest.contains("catalog_nt_data_types"));
+    assert!(!written_manifest.contains("catalog_rows_by_nt_data_type"));
+
+    assert_eq!(
+        manifest.effective_catalog_rows_by_nt_data_type(),
+        std::collections::BTreeMap::from([("TradeTick".to_string(), 3)])
+    );
+    assert_eq!(
+        inspect_conversion_output(dir.path(), &fingerprint).unwrap(),
         ConversionOutputState::Complete {
             manifest_hash,
             checkpoint_hash: checkpoint.content_hash().unwrap(),

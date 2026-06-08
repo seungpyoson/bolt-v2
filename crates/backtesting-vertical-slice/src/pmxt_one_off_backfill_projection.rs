@@ -5,7 +5,7 @@
 //! PMXT a canonical source-proof input or a reusable venue abstraction.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
 };
@@ -68,6 +68,7 @@ use crate::{
 
 /// NautilusTrader data type written by the PMXT one-off L2 projection.
 pub const NT_DATA_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
+pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
 pub const PMXT_ONE_OFF_RESULT_CONTRACT_FILE: &str = "backtest-result-contract.json";
 
 #[derive(Debug, Clone)]
@@ -1056,6 +1057,8 @@ fn write_new_pmxt_one_off_conversion_projection(
         write_pmxt_one_off_projection_to_catalog(&spec.catalog_root, &spec.projection)?;
     let canonical_rows = usize::try_from(catalog_projection.order_book_delta_count)
         .context("PMXT one-off OrderBookDelta count does not fit usize")?;
+    let catalog_rows_by_nt_data_type =
+        catalog_rows_by_nt_data_type(&catalog_projection).context("build PMXT catalog row map")?;
     let conversion_checkpoint = ConversionCheckpoint::completed(
         spec.fingerprint.clone(),
         canonical_rows,
@@ -1075,7 +1078,8 @@ fn write_new_pmxt_one_off_conversion_projection(
         catalog_projection.catalog_hash.clone(),
         conversion_checkpoint_hash.clone(),
         spec.completed_at,
-    );
+    )
+    .with_catalog_rows_by_nt_data_type(catalog_rows_by_nt_data_type);
     let conversion_manifest_hash = conversion_manifest
         .content_hash()
         .context("hash PMXT one-off conversion manifest")?;
@@ -1139,6 +1143,7 @@ fn reuse_completed_pmxt_one_off_conversion_projection(
 
     let nt_instrument_id = spec.projection.instrument.id().to_string();
     let canonical_rows = spec.projection.order_book_deltas.len();
+    let expected_catalog_rows_by_nt_data_type = projection_rows_by_nt_data_type(&spec.projection);
     ensure!(
         conversion_manifest.normalized_schema_version == spec.normalized_schema_version,
         "PMXT one-off completed manifest normalized_schema_version mismatch"
@@ -1156,6 +1161,19 @@ fn reuse_completed_pmxt_one_off_conversion_projection(
         "PMXT one-off completed manifest canonical_rows mismatch"
     );
     ensure!(
+        conversion_manifest.effective_catalog_rows_by_nt_data_type()
+            == expected_catalog_rows_by_nt_data_type,
+        "PMXT one-off completed manifest catalog row-count bindings mismatch"
+    );
+    ensure!(
+        conversion_manifest.effective_catalog_nt_data_types()
+            == expected_catalog_rows_by_nt_data_type
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+        "PMXT one-off completed manifest catalog data-type bindings mismatch"
+    );
+    ensure!(
         conversion_manifest.output_catalog_uri == spec.output_catalog_uri,
         "PMXT one-off completed manifest output_catalog_uri mismatch"
     );
@@ -1166,6 +1184,16 @@ fn reuse_completed_pmxt_one_off_conversion_projection(
     ensure!(
         conversion_catalog_metadata.execution_catalog_uri == spec.execution_catalog_uri,
         "PMXT one-off completed catalog metadata execution_catalog_uri mismatch"
+    );
+    ensure!(
+        conversion_catalog_metadata.effective_catalog_rows_by_nt_data_type()
+            == conversion_manifest.effective_catalog_rows_by_nt_data_type(),
+        "PMXT one-off completed catalog metadata row-count bindings mismatch"
+    );
+    ensure!(
+        conversion_catalog_metadata.effective_catalog_nt_data_types()
+            == conversion_manifest.effective_catalog_nt_data_types(),
+        "PMXT one-off completed catalog metadata data-type bindings mismatch"
     );
     ensure!(
         conversion_catalog_metadata.direct_s3_catalog_access_proven
@@ -1192,6 +1220,40 @@ fn reuse_completed_pmxt_one_off_conversion_projection(
         conversion_manifest_hash: manifest_hash,
         conversion_catalog_metadata_hash,
     })
+}
+
+fn catalog_rows_by_nt_data_type(
+    catalog_projection: &PmxtOneOffCatalogProjection,
+) -> Result<BTreeMap<String, usize>> {
+    let mut rows = BTreeMap::new();
+    rows.insert(
+        NT_DATA_TYPE_ORDER_BOOK_DELTA.to_string(),
+        usize::try_from(catalog_projection.order_book_delta_count)
+            .context("PMXT one-off OrderBookDelta count does not fit usize")?,
+    );
+    if catalog_projection.trade_tick_count > 0 {
+        rows.insert(
+            NT_DATA_TYPE_TRADE_TICK.to_string(),
+            usize::try_from(catalog_projection.trade_tick_count)
+                .context("PMXT one-off TradeTick count does not fit usize")?,
+        );
+    }
+    Ok(rows)
+}
+
+fn projection_rows_by_nt_data_type(projection: &PmxtOneOffNtProjection) -> BTreeMap<String, usize> {
+    let mut rows = BTreeMap::new();
+    rows.insert(
+        NT_DATA_TYPE_ORDER_BOOK_DELTA.to_string(),
+        projection.order_book_deltas.len(),
+    );
+    if !projection.trade_ticks.is_empty() {
+        rows.insert(
+            NT_DATA_TYPE_TRADE_TICK.to_string(),
+            projection.trade_ticks.len(),
+        );
+    }
+    rows
 }
 
 fn read_conversion_json<T: DeserializeOwned>(path: &Path) -> Result<T> {

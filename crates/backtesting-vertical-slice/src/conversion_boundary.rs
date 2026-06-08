@@ -8,6 +8,7 @@
 //! validated checkpoint.
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -174,6 +175,10 @@ pub struct ConversionManifest {
     pub nt_data_type: String,
     pub nt_instrument_id: String,
     pub canonical_rows: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub catalog_nt_data_types: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub catalog_rows_by_nt_data_type: BTreeMap<String, usize>,
     pub output_catalog_uri: String,
     pub catalog_hash: String,
     pub checkpoint_hash: String,
@@ -194,17 +199,50 @@ impl ConversionManifest {
         checkpoint_hash: impl Into<String>,
         completed_at: impl Into<String>,
     ) -> Self {
+        let nt_data_type = nt_data_type.into();
+        let canonical_rows_by_nt_data_type =
+            BTreeMap::from([(nt_data_type.clone(), canonical_rows)]);
         Self {
             manifest_version: CONVERSION_MANIFEST_VERSION.to_string(),
             fingerprint,
             normalized_schema_version: normalized_schema_version.into(),
-            nt_data_type: nt_data_type.into(),
+            nt_data_type: nt_data_type.clone(),
             nt_instrument_id: nt_instrument_id.into(),
             canonical_rows,
+            catalog_nt_data_types: vec![nt_data_type],
+            catalog_rows_by_nt_data_type: canonical_rows_by_nt_data_type,
             output_catalog_uri: output_catalog_uri.into(),
             catalog_hash: catalog_hash.into(),
             checkpoint_hash: checkpoint_hash.into(),
             completed_at: completed_at.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_catalog_rows_by_nt_data_type(
+        mut self,
+        catalog_rows_by_nt_data_type: BTreeMap<String, usize>,
+    ) -> Self {
+        self.catalog_nt_data_types = catalog_rows_by_nt_data_type.keys().cloned().collect();
+        self.catalog_rows_by_nt_data_type = catalog_rows_by_nt_data_type;
+        self
+    }
+
+    #[must_use]
+    pub fn effective_catalog_nt_data_types(&self) -> Vec<String> {
+        if self.catalog_nt_data_types.is_empty() {
+            vec![self.nt_data_type.clone()]
+        } else {
+            self.catalog_nt_data_types.clone()
+        }
+    }
+
+    #[must_use]
+    pub fn effective_catalog_rows_by_nt_data_type(&self) -> BTreeMap<String, usize> {
+        if self.catalog_rows_by_nt_data_type.is_empty() {
+            BTreeMap::from([(self.nt_data_type.clone(), self.canonical_rows)])
+        } else {
+            self.catalog_rows_by_nt_data_type.clone()
         }
     }
 
@@ -231,6 +269,41 @@ impl ConversionManifest {
         ensure!(
             !self.nt_data_type.trim().is_empty(),
             "conversion manifest missing nt_data_type"
+        );
+        let catalog_nt_data_types = self.effective_catalog_nt_data_types();
+        let catalog_rows_by_nt_data_type = self.effective_catalog_rows_by_nt_data_type();
+        ensure!(
+            !catalog_nt_data_types.is_empty(),
+            "conversion manifest missing catalog_nt_data_types"
+        );
+        ensure!(
+            catalog_nt_data_types
+                .iter()
+                .all(|data_type| !data_type.trim().is_empty()),
+            "conversion manifest catalog_nt_data_types contains empty data type"
+        );
+        ensure!(
+            catalog_rows_by_nt_data_type
+                .keys()
+                .all(|data_type| !data_type.trim().is_empty()),
+            "conversion manifest catalog_rows_by_nt_data_type contains empty data type"
+        );
+        ensure!(
+            catalog_nt_data_types
+                .iter()
+                .all(|data_type| catalog_rows_by_nt_data_type.contains_key(data_type)),
+            "conversion manifest catalog_nt_data_types missing row-count binding"
+        );
+        ensure!(
+            catalog_rows_by_nt_data_type.contains_key(&self.nt_data_type),
+            "conversion manifest missing primary nt_data_type row-count binding"
+        );
+        ensure!(
+            catalog_rows_by_nt_data_type
+                .get(&self.nt_data_type)
+                .copied()
+                == Some(self.canonical_rows),
+            "conversion manifest primary nt_data_type row count must match canonical_rows"
         );
         ensure!(
             !self.nt_instrument_id.trim().is_empty(),
@@ -266,6 +339,10 @@ pub struct ConversionCatalogMetadata {
     pub nt_data_type: String,
     pub nt_instrument_id: String,
     pub canonical_rows: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub catalog_nt_data_types: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub catalog_rows_by_nt_data_type: BTreeMap<String, usize>,
     pub output_catalog_uri: String,
     pub execution_catalog_uri: String,
     pub direct_s3_catalog_access_proven: bool,
@@ -286,6 +363,8 @@ impl ConversionCatalogMetadata {
             nt_data_type: manifest.nt_data_type.clone(),
             nt_instrument_id: manifest.nt_instrument_id.clone(),
             canonical_rows: manifest.canonical_rows,
+            catalog_nt_data_types: manifest.catalog_nt_data_types.clone(),
+            catalog_rows_by_nt_data_type: manifest.catalog_rows_by_nt_data_type.clone(),
             output_catalog_uri: manifest.output_catalog_uri.clone(),
             execution_catalog_uri: manifest.output_catalog_uri.clone(),
             direct_s3_catalog_access_proven: false,
@@ -301,6 +380,24 @@ impl ConversionCatalogMetadata {
         self.execution_catalog_uri = execution_catalog_uri.into();
         self.direct_s3_catalog_access_proven = direct_s3_catalog_access_proven;
         self
+    }
+
+    #[must_use]
+    pub fn effective_catalog_nt_data_types(&self) -> Vec<String> {
+        if self.catalog_nt_data_types.is_empty() {
+            vec![self.nt_data_type.clone()]
+        } else {
+            self.catalog_nt_data_types.clone()
+        }
+    }
+
+    #[must_use]
+    pub fn effective_catalog_rows_by_nt_data_type(&self) -> BTreeMap<String, usize> {
+        if self.catalog_rows_by_nt_data_type.is_empty() {
+            BTreeMap::from([(self.nt_data_type.clone(), self.canonical_rows)])
+        } else {
+            self.catalog_rows_by_nt_data_type.clone()
+        }
     }
 
     fn validate_against(
@@ -341,6 +438,17 @@ impl ConversionCatalogMetadata {
         ensure!(
             self.canonical_rows == manifest.canonical_rows,
             "catalog metadata canonical_rows mismatch"
+        );
+        let metadata_catalog_nt_data_types = self.effective_catalog_nt_data_types();
+        let metadata_catalog_rows_by_nt_data_type = self.effective_catalog_rows_by_nt_data_type();
+        ensure!(
+            metadata_catalog_nt_data_types == manifest.effective_catalog_nt_data_types(),
+            "catalog metadata catalog_nt_data_types mismatch"
+        );
+        ensure!(
+            metadata_catalog_rows_by_nt_data_type
+                == manifest.effective_catalog_rows_by_nt_data_type(),
+            "catalog metadata catalog_rows_by_nt_data_type mismatch"
         );
         ensure!(
             self.output_catalog_uri == manifest.output_catalog_uri,

@@ -114,12 +114,14 @@
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_projection_projects_trade_ticks_with_transaction_hash_dedupe_and_sequences passed after PMXT one-off projection mirrored pinned NT's crate-private transaction_hash+asset+sequence TradeId shape, deduped semantic duplicate rows using earliest timestamp_received as ts_init, preserved max timestamp_received in provenance, and emitted NT TradeTick values.",
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_trade_ticks_from_configured_trade_columns passed after configured selected-source transaction_hash and fee_rate_bps columns decoded into the same PMXT one-off TradeTick path.",
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_projection_writes_nt_catalog_and_reads_back_trade_ticks passed after PMXT one-off TradeTicks were written to and queried back from NT ParquetDataCatalog.",
-    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 14 focused PMXT one-off projection tests."
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 14 focused PMXT one-off projection tests.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog passed after mixed OrderBookDelta+TradeTick conversion metadata binding preserved the TradeTick projection inside the one-off artifact root.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 15 focused PMXT one-off projection tests."
   ],
   "current_decision": {
     "trade_id_policy_can_close": true,
     "bte_022_can_close": false,
     "broad_backfill_allowed": false,
-    "next_required_evidence": "Concrete PMXT one-off artifact-root/result-contract support must become multi-data-family before claiming the selected sample binds both OrderBookDelta and TradeTick; this does not close tick-size epoch replay, expanded coverage, or broad PMXT backfill."
+    "next_required_evidence": "Concrete generated PMXT selected-source artifact must be rerun with TradeTick schema enabled before claiming the real selected sample binds both OrderBookDelta and TradeTick; this does not close tick-size epoch replay, expanded coverage, or broad PMXT backfill."
   }
 }

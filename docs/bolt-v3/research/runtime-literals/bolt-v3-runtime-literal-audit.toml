@@ -8531,6 +8531,22 @@ reason = "Stable realized-volatility source-status evidence label emitted from s
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
+literal = '''"blocked"'''
+context = '''RealizedVolSourceStatus::Blocked => "blocked",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility source-status evidence label emitted from source diagnostics; it records per-source readiness provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"diagnostic_only"'''
+context = '''RealizedVolSourceStatus::DiagnosticOnly => "diagnostic_only",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility source-status evidence label emitted from source diagnostics for disabled or non-quorum sources; it records provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
 literal = '''"waiting"'''
 context = '''RealizedVolSourceStatus::Waiting => "waiting",'''
 classification = "realized_volatility_evidence_label"
@@ -8991,6 +9007,30 @@ literal = '''"{context}.policy.min_ready_sources {} exceeds enabled quorum sourc
 context = '''"{context}.policy.min_ready_sources {} exceeds enabled quorum source count {}",'''
 classification = "realized_volatility_config_diagnostic_template"
 reason = "Fail-closed realized-volatility config validation diagnostic; the referenced values come from bolt-v3 TOML and validation state."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''0usize'''
+context = '''let mut enabled_quorum_sources = 0usize;'''
+classification = "realized_volatility_validation_counter"
+reason = "Internal enabled-source quorum counter initialization used while validating TOML-owned RV engine config; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "number"
+literal = '''1'''
+context = '''enabled_quorum_sources += 1;'''
+classification = "realized_volatility_validation_counter"
+reason = "Internal enabled-source quorum counter increment used while validating TOML-owned RV engine config; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"min_ready_sources exceeds enabled quorum source count"'''
+context = '''return Err("min_ready_sources exceeds enabled quorum source count".to_string());'''
+classification = "realized_volatility_config_diagnostic_template"
+reason = "Fail-closed realized-volatility engine config validation diagnostic; the threshold and eligible source count come from TOML-owned RV config."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"

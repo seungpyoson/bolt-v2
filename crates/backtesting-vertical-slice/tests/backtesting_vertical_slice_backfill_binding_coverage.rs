@@ -336,6 +336,7 @@ fn accepted_record(source_binding: &str, table_family: &str) -> BackfillCoverage
         status: BackfillCoverageStatus::Accepted,
         source_binding: Some(source_binding.to_string()),
         table_family: Some(table_family.to_string()),
+        coverage_axis: Some("synthetic_archive_hour".to_string()),
         source_proof_id: None,
         source_proof_version: None,
         canonical_ready: true,

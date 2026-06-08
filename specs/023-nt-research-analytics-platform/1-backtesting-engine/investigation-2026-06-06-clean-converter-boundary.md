@@ -1716,8 +1716,9 @@ Open task audit against `tasks.md`:
   proven for the accepted Binance native-trades path and for the current PMXT
   one-off selected-source artifact, but broad PMXT source acceptance remains
   blocked.
-- `BACKTESTING_ENGINE-039` remains open: issue dependencies still need linking
-  before implementation review.
+- `BACKTESTING_ENGINE-039` is now repo-side complete: issue dependencies are
+  linked in `spec.md` and current live issue state is captured in
+  `reference/issue-dependency-status.backtesting-engine-039.2026-06-09.json`.
 
 BTE-022 current root cause:
 
@@ -1977,3 +1978,41 @@ Current conclusion:
 - It does not close `BACKTESTING_ENGINE-022`; PMXT broad backfill still needs
   durable accepted source proof, coverage/cost/storage evidence, and dynamic
   tick-size replay proof or an accepted bounded-exclusion policy.
+
+## 2026-06-09 BTE issue-dependency refresh checkpoint
+
+Root cause addressed:
+
+- `BACKTESTING_ENGINE-039` remained open because
+  `1-backtesting-engine/spec.md` listed dependency issue numbers but did not
+  bind them to current live issue state or a review boundary.
+- GitHub issue mutation is explicitly out of scope without user approval, so
+  the safe deliverable is a repo-side dependency refresh, not issue comments.
+
+Change:
+
+- Added
+  `reference/issue-dependency-status.backtesting-engine-039.2026-06-09.json`.
+- The record captures current live GitHub state for #19, #23, #24, #34, #112,
+  #115, #127, #148, #158, #236, #254, and #407.
+- The BTE spec now links each issue directly and states the exact BTE relation
+  and non-closure boundary.
+- `BACKTESTING_ENGINE-039` is marked complete for repo-side implementation
+  review preparation. No GitHub issue bodies or comments were mutated.
+
+Verification:
+
+- GitHub connector read-only fetches confirmed all twelve listed dependency
+  issues are currently open.
+- The local dependency status record has
+  `github_mutation_performed = false` and
+  `bte_039_repo_side_dependency_audit_complete = true`.
+
+Current conclusion:
+
+- BTE implementation review now has a current dependency map and explicit
+  non-closure boundaries.
+- This does not alter the remaining engine blockers:
+  `BACKTESTING_ENGINE-006` still needs approved real IAM enforcement proof, and
+  `BACKTESTING_ENGINE-022` still needs durable accepted source proof plus
+  broad backfill safety evidence before canonical PMXT/Polymarket use.

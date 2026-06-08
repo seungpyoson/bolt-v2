@@ -3,7 +3,7 @@ mod bolt_v3_iv_support;
 use std::collections::BTreeSet;
 
 use bolt_v2::bolt_v3_iv::{
-    audit::{IvAuditHandleId, IvAuditPolicy, IvRawProductKind},
+    audit::{IvAuditHandleId, IvAuditPolicy, IvAuditRetention, IvRawProductKind},
     authz::{IvAuthorizationMode, IvSelectorAuthorization},
     bounds::{IvBoundUnit, IvConventionBounds, IvNumericBounds},
     error::IvRejectReason,
@@ -122,7 +122,7 @@ fn foundational_structs_use_typed_time_bounds_audit_and_provenance() {
         )]),
         access_purposes: BTreeSet::from([bolt_v3_iv_support::access_purpose()]),
         eligible_sources: BTreeSet::from([bolt_v3_iv_support::source_id()]),
-        audit_retention: Default::default(),
+        audit_retention: IvAuditRetention::empty(),
     };
 
     let selector = IvSelector::PointQuery {

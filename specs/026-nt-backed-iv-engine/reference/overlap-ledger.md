@@ -1,8 +1,8 @@
 # IV Engine Open PR/Issue Overlap Ledger
 
 **Feature**: `specs/026-nt-backed-iv-engine/`
-**Search-time branch head**: `f994ae15198502aee9227aea5e813d12b8d5bf92`
-**Refresh note**: Open PR and open issue overlap searches were refreshed against this head before Phase 1 implementation edits; no additional open overlap item was found beyond the entries below.
+**Search-time branch head**: `ebd1a09d790ee6b242a9de49189bcfb7e361dd6e`
+**Refresh note**: Open PR and open issue overlap searches were refreshed after the US6 implementation commit. Broad open searches for IV/options/greeks, volatility/custom-data, NT capability/raw-payload bypass, and FV/RV/IV engine terms returned no open PRs or issues. Previously reviewed issues `#158`, `#488`, and `#493` were fetched directly and remain open; none is fully ported by this IV implementation.
 **Purpose**: Record the open PR/open issue overlap review required before treating the IV design packet as complete.
 
 ## Search Scope
@@ -18,6 +18,8 @@ Searched open PRs and open issues in `seungpyoson/bolt-v2` for:
 ## Open PR Results
 
 No open PRs matched the direct IV/options/greeks, volatility/custom-data, or NT capability/raw-payload strategy-bypass searches.
+
+Refresh at `ebd1a09d790ee6b242a9de49189bcfb7e361dd6e`: open PR searches again returned no matches.
 
 The previously accidental IV design PR `#608` was already closed and unmerged before this ledger. It is not an open overlap item and must not be recreated unless explicitly requested.
 
@@ -41,3 +43,5 @@ The previously accidental IV design PR `#608` was already closed and unmerged be
 No open issue or PR was fully ported by `specs/026-nt-backed-iv-engine/` as of the search-time branch head.
 
 No issue or PR was closed.
+
+Refresh at `ebd1a09d790ee6b242a9de49189bcfb7e361dd6e`: no issue or PR was closed. `#158`, `#488`, and `#493` remain open and retain unported scope outside this IV engine slice.

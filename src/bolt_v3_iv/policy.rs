@@ -189,18 +189,13 @@ pub fn resolve_quorum(
 }
 
 fn input_skew(inputs: &[IvPolicyInput]) -> u64 {
-    let min_ts = inputs
-        .iter()
-        .map(|input| input.ts_event_ns.get())
-        .min()
-        .unwrap_or_default();
-    let max_ts = inputs
-        .iter()
-        .map(|input| input.ts_event_ns.get())
-        .max()
-        .unwrap_or_default();
-
-    max_ts.saturating_sub(min_ts)
+    match (
+        inputs.iter().map(|input| input.ts_event_ns.get()).min(),
+        inputs.iter().map(|input| input.ts_event_ns.get()).max(),
+    ) {
+        (Some(min_ts), Some(max_ts)) => max_ts.saturating_sub(min_ts),
+        _ => u64::MIN,
+    }
 }
 
 fn average(values: impl Iterator<Item = f64>) -> f64 {

@@ -61,7 +61,7 @@ fn greeks_payload() -> IvOptionGreeksPayload {
 #[test]
 fn option_greeks_raw_payload_is_preserved_and_indexed_by_basis() {
     let payload = IvRawPayload::OptionGreeks(greeks_payload());
-    let mut store = IvStore::default();
+    let mut store = IvStore::empty();
 
     let raw = store
         .ingest_event(base_event(IvSourceKind::OptionGreeks, payload.clone()))
@@ -102,7 +102,7 @@ fn option_greeks_raw_payload_is_preserved_and_indexed_by_basis() {
 
 #[test]
 fn option_chain_slices_build_smiles_and_surface_views_without_interpolation() {
-    let mut store = IvStore::default();
+    let mut store = IvStore::empty();
 
     for series_id in ["configured-series-a", "configured-series-b"] {
         store
@@ -161,7 +161,7 @@ fn option_chain_slices_build_smiles_and_surface_views_without_interpolation() {
 
 #[test]
 fn aggregate_greeks_events_are_preserved_and_indexed_as_products() {
-    let mut store = IvStore::default();
+    let mut store = IvStore::empty();
 
     store
         .ingest_event(base_event(
@@ -192,7 +192,7 @@ fn aggregate_greeks_events_are_preserved_and_indexed_as_products() {
 
 #[test]
 fn custom_implied_volatility_events_are_preserved_as_custom_iv_evidence() {
-    let mut store = IvStore::default();
+    let mut store = IvStore::empty();
 
     store
         .ingest_event(base_event(

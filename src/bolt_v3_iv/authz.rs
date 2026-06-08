@@ -49,10 +49,11 @@ impl IvSelectorAuthorization {
             return false;
         }
 
-        if let Some(source_id) = source_id {
-            if !self.allowed_source_ids.is_empty() && !self.allowed_source_ids.contains(source_id) {
-                return false;
-            }
+        if let Some(source_id) = source_id
+            && !self.allowed_source_ids.is_empty()
+            && !self.allowed_source_ids.contains(source_id)
+        {
+            return false;
         }
 
         match self.authorization_mode {

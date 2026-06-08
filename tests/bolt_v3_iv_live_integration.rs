@@ -61,7 +61,7 @@ fn source_health_and_retention_eviction_keep_current_views_bounded() {
     assert!(IvSourceHealthState::Active.can_transition_to(IvSourceHealthState::Stale));
     assert!(!IvSourceHealthState::Removed.can_satisfy_current_query());
 
-    let mut store = IvStore::default();
+    let mut store = IvStore::empty();
     store.ingest_event(greeks_event(1_000)).unwrap();
     store.ingest_event(greeks_event(2_000)).unwrap();
     store.ingest_event(greeks_event(3_000)).unwrap();
@@ -180,7 +180,7 @@ configured_source_param = "configured-value"
     );
     let parsed: BoltV3RootConfig = toml::from_str(&with_iv).unwrap();
 
-    let registry = build_iv_query_handle_registry_for_root(&parsed, IvStore::default()).unwrap();
+    let registry = build_iv_query_handle_registry_for_root(&parsed, IvStore::empty()).unwrap();
     let handle = registry
         .handle("configured-strategy", "configured-profile")
         .expect("configured strategy should receive configured IV profile handle");

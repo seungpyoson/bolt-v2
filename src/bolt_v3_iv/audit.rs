@@ -15,10 +15,19 @@ pub enum IvRawProductKind {
     CustomImpliedVolatility,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IvAuditRetention {
     pub max_events: Option<usize>,
     pub max_age_ns: Option<u64>,
+}
+
+impl IvAuditRetention {
+    pub fn empty() -> Self {
+        Self {
+            max_events: None,
+            max_age_ns: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

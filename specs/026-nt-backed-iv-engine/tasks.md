@@ -239,16 +239,16 @@
 
 **Purpose**: Close documentation, review, and verification obligations after implementation.
 
-- [ ] T119 [P] Update IV quickstart with final TOML schema in `specs/026-nt-backed-iv-engine/quickstart.md`
-- [ ] T120 [P] Update IV API contract with final public type names in `specs/026-nt-backed-iv-engine/contracts/iv-engine-api.md`
-- [ ] T121 [P] Update implementation evidence ledger with all RED/GREEN command outputs in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
-- [ ] T122 [P] Update overlap ledger and close any fully ported issues or PRs in `specs/026-nt-backed-iv-engine/reference/overlap-ledger.md`
-- [ ] T123 Run focused IV test targets (`cargo test --locked bolt_v3_iv`, `cargo test --locked --test bolt_v3_iv_capability`, `cargo test --locked --test bolt_v3_iv_config`, `cargo test --locked --test bolt_v3_iv_live_integration`, `cargo test --locked --test bolt_v3_iv_subscription`, `cargo test --locked --test bolt_v3_iv_ingest`, `cargo test --locked --test bolt_v3_iv_store`, `cargo test --locked --test bolt_v3_iv_query`, `cargo test --locked --test bolt_v3_iv_policy`, `cargo test --locked --test bolt_v3_iv_derive`, `cargo test --locked --test bolt_v3_iv_source_fence`, `cargo test --locked --test config_parsing`) and record outcomes in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
-- [ ] T124 Run broader repository verification gates (`cargo fmt --check`, `cargo clippy --locked --lib -- -D warnings`, `just source-fence`) and record outcomes in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
-- [ ] T125 Conduct internal adversarial review and record findings in `specs/026-nt-backed-iv-engine/reference/internal-review.md`
-- [ ] T126 Request external reviews only after exact-head local verification and CI are green, then record results in `specs/026-nt-backed-iv-engine/reference/external-review.md`
-- [ ] T127 If a new commit lands after review approval, rerun external reviews and update `specs/026-nt-backed-iv-engine/reference/external-review.md`
-- [ ] T128 Prepare final branch summary with base/head SHAs, NT APIs used, tests, review status, and residual risks in `specs/026-nt-backed-iv-engine/reference/final-summary.md`
+- [X] T119 [P] Update IV quickstart with final TOML schema in `specs/026-nt-backed-iv-engine/quickstart.md`
+- [X] T120 [P] Update IV API contract with final public type names in `specs/026-nt-backed-iv-engine/contracts/iv-engine-api.md`
+- [X] T121 [P] Update implementation evidence ledger with all RED/GREEN command outputs in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T122 [P] Update overlap ledger and close any fully ported issues or PRs in `specs/026-nt-backed-iv-engine/reference/overlap-ledger.md`
+- [X] T123 Run focused IV test targets (`cargo test --locked bolt_v3_iv`, `cargo test --locked --test bolt_v3_iv_capability`, `cargo test --locked --test bolt_v3_iv_config`, `cargo test --locked --test bolt_v3_iv_live_integration`, `cargo test --locked --test bolt_v3_iv_subscription`, `cargo test --locked --test bolt_v3_iv_ingest`, `cargo test --locked --test bolt_v3_iv_store`, `cargo test --locked --test bolt_v3_iv_query`, `cargo test --locked --test bolt_v3_iv_policy`, `cargo test --locked --test bolt_v3_iv_derive`, `cargo test --locked --test bolt_v3_iv_source_fence`, `cargo test --locked --test config_parsing`) and record outcomes in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T124 Run broader repository verification gates (`cargo fmt --check`, `cargo clippy --locked --lib -- -D warnings`, `just source-fence`) and record outcomes in `specs/026-nt-backed-iv-engine/reference/implementation-ledger.md`
+- [X] T125 Conduct internal adversarial review and record findings in `specs/026-nt-backed-iv-engine/reference/internal-review.md`
+- [X] T126 Request external reviews only after exact-head local verification and CI are green, then record results in `specs/026-nt-backed-iv-engine/reference/external-review.md`
+- [X] T127 If a new commit lands after review approval, rerun external reviews and update `specs/026-nt-backed-iv-engine/reference/external-review.md`
+- [X] T128 Prepare final branch summary with base/head SHAs, NT APIs used, tests, review status, and residual risks in `specs/026-nt-backed-iv-engine/reference/final-summary.md`
 
 ---
 

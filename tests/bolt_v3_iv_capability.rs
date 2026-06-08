@@ -172,7 +172,7 @@ fn ledger_rejects_unclassified_candidates_and_loads_fixture() {
         matched_terms: BTreeSet::from(["option".to_string()]),
         seed_family: None,
     };
-    let empty = IvCapabilityLedger::default();
+    let empty = IvCapabilityLedger::empty();
 
     assert!(matches!(
         empty.validate_candidates(std::slice::from_ref(&candidate)),

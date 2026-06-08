@@ -32,16 +32,15 @@ TOML lifecycle boundary for one configured IV access domain.
 Fields:
 
 - `profile_id`
-- `schema_version`
 - `strategy_ids`
 - `selector_authorization`
-- `audit_policy`
-- `sources`
 - `enabled_products`
-- `freshness`
-- `retention`
-- `memory_bounds`
-- `bounds`
+- `max_raw_events`
+- `max_indexed_points`
+- `max_smiles`
+- `max_surfaces`
+- `max_source_health_events`
+- `sources`
 - `accepted_conventions`
 - `enabled_bases`
 - `interpolation_policy`

@@ -45,7 +45,7 @@ fn greeks_event() -> IvIngestEvent {
 
 #[test]
 fn raw_payload_access_is_audit_replay_or_test_only() {
-    let mut store = IvStore::default();
+    let mut store = IvStore::empty();
     let raw = store.ingest_event(greeks_event()).unwrap();
 
     let audit = read_raw_event(
@@ -83,7 +83,7 @@ fn raw_payload_access_is_audit_replay_or_test_only() {
 
 #[test]
 fn indexed_products_reject_incomplete_provenance() {
-    let mut store = IvStore::default();
+    let mut store = IvStore::empty();
     store.ingest_event(greeks_event()).unwrap();
 
     for provenance in store.all_product_provenance() {

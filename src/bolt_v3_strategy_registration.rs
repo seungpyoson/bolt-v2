@@ -200,7 +200,7 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
     if loaded.strategies.is_empty() {
         return Ok(summary);
     }
-    let iv_query_handles = Arc::new(build_iv_query_handle_registry(loaded, IvStore::default())?);
+    let iv_query_handles = Arc::new(build_iv_query_handle_registry(loaded, IvStore::empty())?);
 
     for strategy in &loaded.strategies {
         let binding = bindings

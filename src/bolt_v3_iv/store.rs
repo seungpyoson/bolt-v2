@@ -102,7 +102,7 @@ pub enum IvStoreError {
     ProvenanceIncomplete,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IvStore {
     raw_events: Vec<IvRawEvent>,
     iv_points: Vec<IvPoint>,
@@ -114,6 +114,18 @@ pub struct IvStore {
 }
 
 impl IvStore {
+    pub fn empty() -> Self {
+        Self {
+            raw_events: Vec::new(),
+            iv_points: Vec::new(),
+            greeks_points: Vec::new(),
+            smiles: Vec::new(),
+            aggregate_greeks: Vec::new(),
+            iv_evidence: Vec::new(),
+            next_ingest_sequence: u64::MIN,
+        }
+    }
+
     pub fn ingest_event(&mut self, event: IvIngestEvent) -> Result<IvRawEvent, IvStoreError> {
         if !event.payload.matches_source_kind(event.source_kind) {
             return Err(IvStoreError::PayloadKindMismatch);

@@ -222,10 +222,10 @@ Config group-by-change decisions for US5: one `[iv]` root block owns IV profiles
 | `T107` | `tests/bolt_v3_iv_source_fence.rs` rejects raw audit reader and raw payload DTO imports in strategy source. | Complete |
 | `T108` | `tests/bolt_v3_iv_source_fence.rs` rejects hardcoded IV runtime values in IV core source and scans current IV core files. | Complete |
 | `T109` | RED evidence below records the missing query/config/registration/lifecycle failures. | Complete |
-| `T110` | `src/bolt_v3_iv/query.rs` defines `IvQuery`, `IvProductQuery`, `IvRawPayloadQuery`, `IvQueryProduct`, `IvQueryError`, and `IvQueryHandle`. | Complete |
+| `T110` | `src/bolt_v3_iv/query.rs` defines `IvQuery`, `IvProductQuery`, `IvRawPayloadQuery`, `IvQueryProduct`, `IvProjectedScalarIv`, `IvQueryError`, and `IvQueryHandle`. | Complete |
 | `T111` | `src/bolt_v3_iv/authz.rs` authorizes profile-wide strategy product/source requests. | Complete |
 | `T112` | `src/bolt_v3_iv/authz.rs` authorizes selector-scoped requests by product kind, source ID, and selector fingerprint. | Complete |
-| `T113` | `src/bolt_v3_iv/query.rs` routes strategy-safe product queries through indexed store products. | Complete |
+| `T113` | `src/bolt_v3_iv/query.rs` routes strategy-safe product queries through indexed store products, configured projection policies, and engine-owned derived input/helper state. | Complete |
 | `T114` | `src/bolt_v3_iv/query.rs` rejects raw payload requests and raw event dereference on strategy handles. | Complete |
 | `T115` | `src/bolt_v3_strategy_registration.rs` builds an IV query handle registry from root IV config and injects it into `StrategyRegistrationContext`. | Complete |
 | `T116` | `src/bolt_v3_live_node.rs` derives IV start/stop lifecycle plans from root IV profiles. | Complete |
@@ -238,5 +238,36 @@ Config group-by-change decisions for US5: one `[iv]` root block owns IV profiles
 |---|---|---|
 | `cargo test --locked --test bolt_v3_iv_query --test bolt_v3_iv_config --test bolt_v3_iv_live_integration --test bolt_v3_iv_source_fence` | RED | Failed with missing `bolt_v3_iv::query`, missing profile-owned `strategy_ids`/`selector_authorization`, missing `strategy_authorizations()`, and missing live/strategy registration functions. |
 | `cargo test --locked --test bolt_v3_iv_query --test bolt_v3_iv_config --test bolt_v3_iv_live_integration --test bolt_v3_iv_source_fence` | GREEN | 19 tests passed after adding config-owned strategy authorization, query handles, raw rejection, strategy-registration IV handle registry, live IV lifecycle planning, and IV source-fence checks. |
+| `cargo test --locked --test bolt_v3_iv_query` | RED | Projection/derived query gap reproduced: missing `with_projection_policies`, missing `with_helper_policies`, missing `IvQueryProduct::ProjectedScalarIv`, and missing `IvQueryProduct::DerivedIv`. |
+| `cargo test --locked --test bolt_v3_iv_query` | GREEN | 5 tests passed after adding projected scalar routing, derived IV routing through engine-owned helper inputs, and boxed derived query products. |
 
-Strategy-boundary decisions for US6: strategies receive IV access only through `IvQueryHandle`; raw payload dereference remains rejected on strategy handles; strategy registration builds handles from profile-owned TOML authorization; source-fence allows public query API imports while rejecting direct NT IV subscription calls, NT helper derivation, raw audit readers, raw IV DTO imports, and IV-core placeholder runtime hardcodes.
+Strategy-boundary decisions for US6: strategies receive IV access only through `IvQueryHandle`; raw payload dereference remains rejected on strategy handles; strategy registration builds handles from profile-owned TOML authorization; projected scalar and derived IV queries require engine-owned policy/input state; source-fence allows public query API imports while rejecting direct NT IV subscription calls, NT helper derivation, raw audit readers, raw IV DTO imports, and IV-core placeholder runtime hardcodes.
+
+## Phase 9 Polish And Verification
+
+| Task | Evidence | Status |
+|---|---|---|
+| `T119` | `quickstart.md` was updated to the implemented `[iv]` TOML schema. | Complete |
+| `T120` | `contracts/iv-engine-api.md` was updated with final public query, registration, and lifecycle type names. | Complete |
+| `T121` | This section records RED/GREEN and verification outcomes through the latest local head. | Complete |
+| `T122` | `overlap-ledger.md` was refreshed at head `ebd1a09d790ee6b242a9de49189bcfb7e361dd6e`; no open overlap PRs/issues were found to close. | Complete |
+| `T123` | Focused IV and config test commands below passed after the final query-route change. | Complete |
+| `T124` | Formatter, clippy, and source-fence gates below passed after the final query-route change. | Complete |
+| `T125` | `internal-review.md` records the internal adversarial review. | Complete |
+| `T126` | `external-review.md` records that external reviews were not requested because there is no PR/CI-green exact head and the user did not request a PR. | Complete |
+| `T127` | `external-review.md` records that no post-approval rerun was applicable because there was no external approval in this no-PR workflow. | Complete |
+| `T128` | `final-summary.md` records base/head context, NT APIs used, verification, review status, and residual risk. | Complete |
+
+## Phase 9 RED/GREEN And Gate Evidence
+
+| Command | Outcome | Notes |
+|---|---|---|
+| `cargo test --locked --test bolt_v3_iv_query` | RED | Failed before the final query-route fix with missing projection/helper handle methods and missing projected/derived product variants. |
+| `cargo test --locked --test bolt_v3_iv_query` | GREEN | 5 tests passed: profile-wide point query, selector-scoped auth, raw rejection, projected scalar IV, and derived IV. |
+| `cargo test --locked bolt_v3_iv` | PASS | Filtered command compiled the crate graph and all matching test binaries; all filtered binaries exited 0. |
+| `cargo test --locked --test bolt_v3_iv_capability --test bolt_v3_iv_config --test bolt_v3_iv_live_integration --test bolt_v3_iv_subscription --test bolt_v3_iv_ingest --test bolt_v3_iv_store --test bolt_v3_iv_query --test bolt_v3_iv_policy --test bolt_v3_iv_derive --test bolt_v3_iv_source_fence --test config_parsing` | PASS | 45 IV tests and 191 `config_parsing` tests passed. |
+| `cargo fmt --check` | PASS | Formatter check exited 0 after the final edits. |
+| `cargo clippy --locked --lib -- -D warnings` | PASS | Clippy initially rejected a large `IvQueryProduct::DerivedIv` enum variant; after boxing the derived output, clippy exited 0. |
+| `just source-fence` | PASS | Runtime literal audit, provider leak, core boundary, naming, dependency, schema-current, pure-Rust, legacy default, strategy policy, runtime-capture, controlled-connect, production-entrypoint, and IV source-fence checks passed. |
+
+Phase 9 source-fence remediation: production `Default` derives and `unwrap_or_default` calls in IV code were replaced with explicit constructors or explicit fallback values. The runtime literal audit was extended for the IV module surface, and the schema-current verifier now accepts the active Speckit pointer for `specs/026-nt-backed-iv-engine/` alongside the existing order-intent pointer policy.

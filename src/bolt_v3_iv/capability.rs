@@ -75,13 +75,20 @@ pub struct IvCapabilityCandidate {
     pub seed_family: Option<SeedFamily>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IvCapabilityLedger {
     pub surfaces: Vec<IvCapabilityCandidate>,
     pub classifications: BTreeMap<String, CapabilityClassification>,
 }
 
 impl IvCapabilityLedger {
+    pub fn empty() -> Self {
+        Self {
+            surfaces: Vec::new(),
+            classifications: BTreeMap::new(),
+        }
+    }
+
     pub fn classification_for(&self, surface_id: &str) -> Option<CapabilityClassification> {
         self.classifications.get(surface_id).copied()
     }
@@ -197,14 +204,14 @@ pub fn resolve_nt_cargo_evidence(
     let lock_revisions = nt_lock_revisions(lock_text)?;
 
     for (package, lock_revision) in &lock_revisions {
-        if let Some(metadata_revision) = metadata_revisions.get(package) {
-            if metadata_revision != lock_revision {
-                return Err(IvCapabilityError::RevisionMismatch {
-                    package: package.clone(),
-                    metadata_revision: metadata_revision.clone(),
-                    lock_revision: lock_revision.clone(),
-                });
-            }
+        if let Some(metadata_revision) = metadata_revisions.get(package)
+            && metadata_revision != lock_revision
+        {
+            return Err(IvCapabilityError::RevisionMismatch {
+                package: package.clone(),
+                metadata_revision: metadata_revision.clone(),
+                lock_revision: lock_revision.clone(),
+            });
         }
     }
 
@@ -262,10 +269,10 @@ fn nt_source_revision(source: &str) -> Option<String> {
         return None;
     }
 
-    if let Some((_, revision)) = source.rsplit_once('#') {
-        if !revision.is_empty() {
-            return Some(revision.to_string());
-        }
+    if let Some((_, revision)) = source.rsplit_once('#')
+        && !revision.is_empty()
+    {
+        return Some(revision.to_string());
     }
 
     source.find("rev=").and_then(|start| {
@@ -273,7 +280,7 @@ fn nt_source_revision(source: &str) -> Option<String> {
         let revision = source[revision_start..]
             .split(['&', '#'])
             .next()
-            .unwrap_or_default();
+            .unwrap_or("");
 
         (!revision.is_empty()).then(|| revision.to_string())
     })
@@ -474,10 +481,10 @@ fn public_symbols(text: &str) -> Vec<String> {
     for line in text.lines() {
         let line = line.trim_start();
         for prefix in prefixes {
-            if let Some(rest) = line.strip_prefix(prefix) {
-                if let Some(symbol) = symbol_token(rest) {
-                    symbols.push(symbol);
-                }
+            if let Some(rest) = line.strip_prefix(prefix)
+                && let Some(symbol) = symbol_token(rest)
+            {
+                symbols.push(symbol);
             }
         }
     }
@@ -491,7 +498,7 @@ fn symbol_token(rest: &str) -> Option<String> {
             character.is_whitespace() || matches!(character, '<' | '(' | '{' | ';' | ':' | '=')
         })
         .next()
-        .unwrap_or_default();
+        .unwrap_or("");
 
     (!token.is_empty()).then(|| token.to_string())
 }

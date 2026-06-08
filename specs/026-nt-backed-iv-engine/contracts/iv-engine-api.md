@@ -27,23 +27,28 @@ Raw payload handles are not injected into strategy registration. Strategies can 
 
 ## Required Query Fields
 
-Every query includes:
+The public strategy-facing query types are:
+
+- `IvQuery`
+- `IvProductQuery`
+- `IvRawPayloadQuery`
+- `IvQueryProduct`
+- `IvProjectedScalarIv`
+- `IvQueryError`
+- `IvQueryHandle`
+
+Every `IvProductQuery` includes:
 
 - `strategy_id`
 - `profile_id`
-- `selector`
 - `product_kind`
-- `as_of_ns`
-- history/current mode
+- `selector`
 
-The `selector` field is a typed `IvSelector` union. It is not an arbitrary key-value bag. The selector variant must match the requested product kind and the owning profile's configured source kinds.
+The `selector` field is a typed `IvSelector` union. It is not an arbitrary key-value bag. Timestamp, basis, source filter, and product-specific query fields live in the selector variant.
 
 Authorization is evaluated through `IvSelectorAuthorization`. A profile may use profile-wide access or selector-scoped access, but the effective rule must authorize the strategy ID, product kind, source filter, and selector fingerprint. Raw-payload product kinds are never authorized for strategy query handles.
 
-Derived IV queries additionally include either:
-
-- an `IvDerivedInputSet` with all required helper inputs, or
-- permission to resolve every required input through the profile's `IvDerivedInputPolicy`
+Derived IV queries require engine-owned `IvDerivedInputSet` state with all required helper inputs. Strategy query handles name an instrument, helper policy, and timestamp; they do not receive raw payload DTOs or call NT helpers directly.
 
 Derived IV queries also require an `IvHelperPolicy` reference. The helper policy selects the NT helper symbol, parameter signature, allowed output shape, output bounds, and helper provenance fields. The engine rejects derived queries when helper policy is missing, unsupported by the capability ledger, or incompatible with resolved inputs.
 
@@ -63,7 +68,7 @@ Optional query fields are allowed only when the owning IV profile permits overri
 Responses are either:
 
 - `Ok(product)` with `IvProvenance`, profile identity, source identity, timestamp units, and policy decisions
-- `Rejected(reason)` with a typed `IvRejectReason` and rejection provenance
+- `Err(IvQueryError)` for profile mismatch, product-kind mismatch, not found, missing projection/helper policy, missing derived input, raw-payload rejection, strategy authorization rejection, or unsupported product-kind routing
 
 No query may silently fall back to another basis, convention, source, timestamp, projection, interpolation, fallback, quorum, extrapolation policy, rate input, carry input, or time convention.
 
@@ -78,6 +83,24 @@ Raw payloads are evidence, observability, replay, and test outputs. IV-shaped st
 The strategy-facing `IvQueryHandle` rejects raw-payload product kinds. Full raw payload retrieval is limited to `IvRawAuditReader` or equivalent audit/test modules outside `src/strategies/**`. Strategy-facing products may include `raw_event_id` references in provenance, but the raw NT payload bytes or typed NT payload structs remain engine-owned.
 
 Raw payload retrieval also requires the owning profile's `IvAuditPolicy` to authorize the raw product kind, source, audit handle, access purpose, and audit retention boundary.
+
+## Registration And Lifecycle Types
+
+Strategy registration exposes IV access through:
+
+- `BoltV3IvQueryHandleRegistry`
+- `build_iv_query_handle_registry_for_root`
+- `build_iv_query_handle_registry`
+- `StrategyRegistrationContext::iv_query_handles`
+
+Live-node IV lifecycle planning exposes:
+
+- `IvEngineLifecyclePlan`
+- `plan_iv_engine_lifecycle`
+
+The lifecycle plan derives start and stop subscription plans from the same root `[iv]` config used to build strategy query handles.
+
+`IvQueryHandle` also exposes builder-style wiring for engine-owned projection policies, helper policies, derived input sets, and source-health snapshots. Registration starts with config-owned strategy/profile authorization; the runtime IV engine is responsible for refreshing handle state as source data, derived inputs, and source health change.
 
 ## Projection Contract
 

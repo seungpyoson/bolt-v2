@@ -169,7 +169,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_order_rate_within_venue_egress(root));
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_aws_block(&root.aws));
-    errors.extend(validate_clients_block(&root.clients));
+    errors.extend(validate_clients_block(root));
     if let Some(gate_providers) = &root.gate_providers {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));
     }
@@ -1188,18 +1188,43 @@ fn validate_aws_block(block: &AwsBlock) -> Vec<String> {
     errors
 }
 
-fn validate_clients_block(clients: &BTreeMap<String, ClientBlock>) -> Vec<String> {
+fn validate_clients_block(root: &BoltV3RootConfig) -> Vec<String> {
     let mut errors = Vec::new();
+    let clients = &root.clients;
     if clients.is_empty() {
         errors.push("clients must define at least one client block".to_string());
         return errors;
     }
     for (key, client) in clients {
+        let validation_client = client_with_root_chainlink_feed_catalog(root, client);
+        let client = validation_client.as_ref().unwrap_or(client);
         errors.extend(crate::bolt_v3_providers::validate_client_block(key, client));
         errors.extend(validate_client_readiness_probe(key, client));
     }
     errors.extend(validate_unique_client_readiness_probe_instruments(clients));
     errors
+}
+
+fn client_with_root_chainlink_feed_catalog(
+    root: &BoltV3RootConfig,
+    client: &ClientBlock,
+) -> Option<ClientBlock> {
+    let catalog = root.chainlink_data_streams.as_ref()?;
+    if client.venue.as_str() != CHAINLINK_DATA_STREAMS_PROVIDER_KIND {
+        return None;
+    }
+    let data = client.data.as_ref()?.as_table()?;
+    if data.contains_key(CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD) {
+        return None;
+    }
+
+    let mut client = client.clone();
+    let data = client.data.as_mut()?.as_table_mut()?;
+    data.insert(
+        CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD.to_string(),
+        toml::Value::Array(catalog.feed_bindings.clone()),
+    );
+    Some(client)
 }
 
 fn validate_client_readiness_probe(key: &str, client: &ClientBlock) -> Vec<String> {

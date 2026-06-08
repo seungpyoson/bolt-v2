@@ -67,8 +67,15 @@ pub struct BoltV3RootConfig {
     pub logging: LoggingBlock,
     pub persistence: PersistenceBlock,
     pub aws: AwsBlock,
+    pub chainlink_data_streams: Option<ChainlinkDataStreamsFeedCatalog>,
     pub clients: BTreeMap<String, ClientBlock>,
     pub gate_providers: Option<BTreeMap<String, GateProviderBlock>>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ChainlinkDataStreamsFeedCatalog {
+    pub feed_bindings: Vec<toml::Value>,
 }
 
 // `[risk]` owns Bolt-v3 strategy-sizing limits and the explicit

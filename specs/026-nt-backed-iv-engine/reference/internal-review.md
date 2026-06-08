@@ -52,4 +52,4 @@ No blocking findings remain after the local fixes below.
 - `cargo test --locked bolt_v3_iv`: PASS.
 - `cargo test --locked`: PASS.
 
-Not rerun locally: CI.
+Current PR verification uses GitHub CI rather than local cargo reruns. PR #611 was green on reviewed head `23004a14a1987215fb440bed6a3128c20591db3a` before the evidence-file update; final head status must be confirmed after the final push.

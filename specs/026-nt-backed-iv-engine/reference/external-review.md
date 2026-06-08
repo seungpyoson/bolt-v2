@@ -5,19 +5,20 @@
 
 ## Status
 
-External review was not requested.
+External review and PR review comments were requested/reviewed on PR #611.
 
-Reason:
+Current PR review state:
 
-- The user explicitly did not request a PR.
-- There is no open PR for this branch.
-- Exact-head GitHub CI is therefore unavailable.
-- Repo rules require external review only after exact-head local verification and CI are green.
+- PR: `https://github.com/seungpyoson/bolt-v2/pull/611`
+- CodeQL hard-coded cryptographic value review threads: resolved/outdated; CodeQL checks are green.
+- Gemini review threads: replied to and resolved for strict-positive IV validation and optional operator expiration metadata.
+- Owner replies are present on both Gemini threads.
+- No unresolved review threads were found through the PR review-thread query.
 
-## Local Review Substitute
+## CI Status
 
-The branch has local verification evidence in `implementation-ledger.md` and internal review evidence in `internal-review.md`.
+PR #611 GitHub CI was green on reviewed head `23004a14a1987215fb440bed6a3128c20591db3a` before this evidence update. Passing checks included CI `gate`, `test`, all four nextest shards, `nextest archive`, `clippy`, `deny`, `build`, `check-aarch64`, `source-fence`, `fmt-check`, `detector`, CodeQL, actionlint, and Backtester CI. `deploy` and `same-sha-main-evidence` were expected skips.
 
 ## Rerun Status
 
-No external approval exists, so no post-approval rerun is applicable for T127.
+External/PR review comments were resolved and GitHub CI was rerun to green on the reviewed PR head. Because any evidence-file commit changes the head SHA, final status must be confirmed with `gh pr view 611 --json headRefOid` and `gh pr checks 611` after the final push.

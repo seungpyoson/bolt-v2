@@ -3,9 +3,10 @@
 **Feature**: `specs/026-nt-backed-iv-engine/`
 **Branch**: `026-nt-backed-iv-engine`
 **Base SHA**: `c1b1f7b49414008a11af11da24ebc49762debf54`
-**Final local implementation**: committed on branch `026-nt-backed-iv-engine`
+**Pull Request**: `#611` (`https://github.com/seungpyoson/bolt-v2/pull/611`)
+**Current review basis**: PR head verified through GitHub CI, not local cargo reruns.
 
-The exact final pushed SHA cannot be embedded in the commit that contains this file without changing that SHA. Record the final remote branch tip from `git ls-remote origin 026-nt-backed-iv-engine` after push.
+The exact final pushed SHA cannot be embedded in the commit that contains this file without changing that SHA. Use `gh pr view 611 --json headRefOid` and `gh pr checks 611` after the final push to verify the final remote branch tip and exact-head CI status.
 
 ## Implemented Scope
 
@@ -30,19 +31,16 @@ The exact final pushed SHA cannot be embedded in the commit that contains this f
 
 ## Verification
 
-- `cargo test --locked bolt_v3_iv`: PASS
-- `cargo test --locked --test bolt_v3_iv_capability --test bolt_v3_iv_config --test bolt_v3_iv_live_integration --test bolt_v3_iv_subscription --test bolt_v3_iv_ingest --test bolt_v3_iv_store --test bolt_v3_iv_query --test bolt_v3_iv_policy --test bolt_v3_iv_derive --test bolt_v3_iv_source_fence --test config_parsing`: PASS
-- `cargo fmt --check`: PASS
-- `cargo clippy --locked --lib -- -D warnings`: PASS
-- `cargo clippy --locked --bin bolt-v2 -- -D warnings`: PASS
-- `just source-fence`: PASS
-- `cargo test --locked`: PASS
+- PR #611 GitHub CI: PASS on the exact reviewed head before this evidence update (`23004a14a1987215fb440bed6a3128c20591db3a`).
+- Passing CI gates included `gate`, `test`, `nextest shard 1 of 4`, `nextest shard 2 of 4`, `nextest shard 3 of 4`, `nextest shard 4 of 4`, `nextest archive`, `clippy`, `deny`, `build`, `check-aarch64`, `source-fence`, `fmt-check`, `detector`, `actionlint`, `CodeQL`, `Analyze (rust)`, `Analyze (actions)`, `bvs-detect`, `bvs-fmt`, `bvs-clippy`, `bvs-test`, and `backtester-gate`.
+- Expected non-blocking skips: `deploy` and `same-sha-main-evidence`.
+- Historical local RED/GREEN and local cargo/source-fence evidence remain recorded in `implementation-ledger.md` and `internal-review.md`; current verification for the PR is GitHub CI.
 
 ## Review Status
 
-- Internal review: complete after local fixes; no blocking findings remain in `reference/internal-review.md`.
+- Internal review: complete after the review fixes; no blocking findings remain in `reference/internal-review.md`.
 - Blocking findings: none remaining from the internal adversarial review.
-- External review: not requested because there is no PR and no exact-head CI run.
+- External/PR review: CodeQL and Gemini review threads on PR #611 are replied to and resolved. CodeQL is green on the current PR checks.
 - Open overlap PRs/issues: none found to close for the IV/options overlap search; #158, #488, and #493 remain open because none were fully ported.
 
 ## Blocking Scope Remaining
@@ -51,5 +49,5 @@ The exact final pushed SHA cannot be embedded in the commit that contains this f
 
 ## Residual Risk
 
-- No PR CI has run for the exact final head.
 - Real venue-backed live NT market-data behavior is not exercised locally; coverage is through typed subscription/lifecycle plans, raw ingest/store tests, query tests, config tests, and source-fence.
+- Because this summary is committed into the branch, exact final head and CI status must always be checked from PR #611 after the final push.

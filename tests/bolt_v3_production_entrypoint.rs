@@ -68,7 +68,7 @@ fn reference_current_price_health_prepares_strategy_free_transport_before_tokio_
     );
     assert!(
         function.contains("run_prepared_reference_current_price_health(&mut health_run)"),
-        "reference-current-price health must only connect/disconnect prepared strategy-free transport inside Tokio"
+        "reference-current-price health must run only the prepared strategy-free transport health path inside Tokio"
     );
     assert!(
         !function.contains("run_reference_current_price_health(&loaded)"),

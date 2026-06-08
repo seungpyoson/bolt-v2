@@ -57,7 +57,8 @@ use crate::bolt_v3_config::{
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
 use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 use crate::bolt_v3_providers::{
-    RESOLUTION_ORACLE_VENUE_KEY, ReferencePriceIdentifierKind, reference_price_provider_metadata,
+    RESOLUTION_ORACLE_VENUE_KEY, ReferencePriceIdentifierKind,
+    reference_price_provider_identifier_is_configured, reference_price_provider_metadata,
 };
 
 #[derive(Debug)]
@@ -2324,6 +2325,23 @@ fn validate_reference_current_price(
                         "{context}: reference_current_price.source.{source_id}.instrument_id `{instrument_id}` must map to reference_current_price.asset `{}`",
                         reference_current_price.asset
                     ));
+                }
+                if source.enabled
+                    && let Some(instrument_id) = source.instrument_id.as_deref()
+                {
+                    match reference_price_provider_identifier_is_configured(
+                        root,
+                        source.provider.as_str(),
+                        instrument_id,
+                    ) {
+                        Ok(true) => {}
+                        Ok(false) => errors.push(format!(
+                            "{context}: reference_current_price.source.{source_id}.instrument_id `{instrument_id}` is not present in chainlink_data_streams.feed_bindings"
+                        )),
+                        Err(message) => errors.push(format!(
+                            "{context}: reference_current_price.source.{source_id}.instrument_id `{instrument_id}` could not be checked against provider catalog: {message}"
+                        )),
+                    }
                 }
             }
             ReferencePriceIdentifierKind::Symbol => {

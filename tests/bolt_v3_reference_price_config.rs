@@ -480,6 +480,37 @@ instrument_id = "ETH-USD.CHAINLINK"
 }
 
 #[test]
+fn reference_current_price_validation_rejects_chainlink_instrument_missing_from_shared_catalog() {
+    let messages = validate_reference_current_price(
+        r#"
+[reference_current_price]
+asset = "BTC"
+sources = ["chainlink_primary"]
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.chainlink_primary]
+provider = "chainlink_ws"
+enabled = true
+required = true
+client_id = "chainlink_reference"
+instrument_id = "BTC-USD.UNKNOWN"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("reference_current_price.source.chainlink_primary.instrument_id")
+                && message.contains("chainlink_data_streams.feed_bindings")
+        }),
+        "catalog-missing Chainlink reference instrument should fail validation, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn reference_current_price_validation_accepts_polyresearch_feed_symbol_for_asset() {
     let messages = validate_reference_current_price(
         r#"

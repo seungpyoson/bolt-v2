@@ -6887,6 +6887,22 @@ reason = "This is the ReportDataV3 ABI word index for benchmarkPrice."
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink/report.rs"
 kind = "number"
+literal = '''7'''
+context = '''const CHAINLINK_REPORT_V3_BID_PRICE_WORD_INDEX: usize = 7;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is the ReportDataV3 ABI word index for bid."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/report.rs"
+kind = "number"
+literal = '''8'''
+context = '''const CHAINLINK_REPORT_V3_ASK_PRICE_WORD_INDEX: usize = 8;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is the ReportDataV3 ABI word index for ask."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/report.rs"
+kind = "number"
 literal = '''0x80'''
 context = '''const CHAINLINK_REPORT_SIGN_BIT_MASK: u8 = 0x80;'''
 classification = "chainlink_report_protocol_decoder"
@@ -8489,6 +8505,22 @@ reason = "Diagnostic type tag for redacted Chainlink reference-price provider co
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink_reference.rs"
 kind = "string"
+literal = '''"/api/v1/ws"'''
+context = '''const CHAINLINK_REFERENCE_WS_PATH: &str = "/api/v1/ws";'''
+classification = "chainlink_websocket_protocol_path"
+reason = "Fixed Chainlink Data Streams WebSocket API path; endpoint host remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"feedIDs"'''
+context = '''const CHAINLINK_REFERENCE_FEED_IDS_QUERY_FIELD: &str = "feedIDs";'''
+classification = "chainlink_websocket_protocol_field"
+reason = "Fixed Chainlink Data Streams WebSocket query field; feed id values come from the root-owned TOML catalog."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
 literal = '''"reconnect_delay_initial_ms"'''
 context = '''"reconnect_delay_initial_ms",'''
 classification = "validation_field_label"
@@ -8505,18 +8537,74 @@ reason = "Lower-bound check for the configured reconnect backoff factor; the val
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink_reference.rs"
 kind = "string"
+literal = '''","'''
+context = '''&feed_ids.join(","),'''
+classification = "chainlink_websocket_feed_id_joiner"
+reason = "Chainlink Data Streams WebSocket protocol uses comma-separated feedIDs; individual feed ids remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"/"'''
+context = '''|| !(path.is_empty() || path == "/")'''
+classification = "url_origin_shape_guard"
+reason = "Allows only empty/root path when validating the configured Chainlink WebSocket origin before appending the fixed protocol path."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
 literal = '''"wss"'''
-context = '''&& url.scheme() == "wss"'''
+context = '''|| url.scheme() != "wss"'''
 classification = "provider_transport_scheme"
 reason = "Required secure WebSocket URL scheme for Chainlink reference-price connections."
 
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink_reference.rs"
 kind = "string"
-literal = '''"wss://"'''
-context = '''&& value.starts_with("wss://") => {}'''
-classification = "url_syntax_guard"
-reason = "URL syntax guard ensuring the Chainlink reference-price endpoint is an absolute WebSocket URL."
+literal = '''"data_type"'''
+context = '''let asset = required_reference_field(metadata, REFERENCE_PRICE_ASSET_PARAM, "data_type")?;'''
+classification = "reference_price_subscription_metadata_owner"
+reason = "Diagnostic owner label for custom-data subscription metadata validation; not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"data_type"'''
+context = '''required_reference_field(metadata, REFERENCE_PRICE_SOURCE_KEY_PARAM, "data_type")?;'''
+classification = "reference_price_subscription_metadata_owner"
+reason = "Diagnostic owner label for custom-data subscription metadata validation; not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"data_type"'''
+context = '''let provider = required_reference_field(metadata, REFERENCE_PRICE_PROVIDER_PARAM, "data_type")?;'''
+classification = "reference_price_subscription_metadata_owner"
+reason = "Diagnostic owner label for custom-data subscription metadata validation; not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"Chainlink reference subscription data_type metadata is inconsistent"'''
+context = '''"Chainlink reference subscription data_type metadata is inconsistent".to_string(),'''
+classification = "reference_price_subscription_validation_diagnostic"
+reason = "Fail-closed diagnostic for inconsistent custom-data subscription metadata; not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"params"'''
+context = '''required_reference_field(params, REFERENCE_PRICE_INSTRUMENT_ID_PARAM, "params")?;'''
+classification = "reference_price_subscription_metadata_owner"
+reason = "Diagnostic owner label for custom-data subscription parameter validation; not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"params"'''
+context = '''let actual = required_reference_field(params, key, "params")?;'''
+classification = "reference_price_subscription_metadata_owner"
+reason = "Diagnostic owner label for custom-data subscription parameter validation; not a runtime operator value."
 
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink_reference.rs"
@@ -9041,10 +9129,50 @@ reason = "This joins already registered strategy ids only when reporting an inva
 [[allowed]]
 path = "src/bolt_v3_reference_price_health.rs"
 kind = "string"
-literal = '''"bounded command verifies registration, connect, and disconnect only"'''
-context = '''"bounded command verifies registration, connect, and disconnect only";'''
+literal = '''"observed"'''
+context = '''const SOURCE_UPDATE_OBSERVATION_STATUS_OBSERVED: &str = "observed";'''
 classification = "reference_current_price_health_cli_output_schema"
-reason = "Stable operator output reason describing the bounded command's verification scope; it is not a runtime configuration value."
+reason = "Stable operator output status indicating the bounded strategy-free health path observed reference-current-price custom data."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"timed_out"'''
+context = '''const SOURCE_UPDATE_OBSERVATION_STATUS_TIMED_OUT: &str = "timed_out";'''
+classification = "reference_current_price_health_status_code"
+reason = "Stable operator output status indicating the bounded strategy-free health path timed out before observing reference-current-price custom data."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"not_observed"'''
+context = '''const SOURCE_UPDATE_OBSERVATION_STATUS_NOT_OBSERVED: &str = "not_observed";'''
+classification = "reference_current_price_health_status_code"
+reason = "Stable operator output status indicating the strategy-free health node exited before observing reference-current-price custom data."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"received reference_current_price custom data before the configured health bound"'''
+context = '''"received reference_current_price custom data before the configured health bound";'''
+classification = "reference_current_price_health_cli_output_schema"
+reason = "Stable operator output reason for an observed reference-current-price health update."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"no reference_current_price custom data was observed before the configured health bound"'''
+context = '''"no reference_current_price custom data was observed before the configured health bound";'''
+classification = "reference_current_price_health_cli_output_schema"
+reason = "Stable operator output reason for a bounded reference-current-price health timeout."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price_health.rs"
+kind = "string"
+literal = '''"strategy-free live node exited before reference_current_price custom data was observed"'''
+context = '''"strategy-free live node exited before reference_current_price custom data was observed";'''
+classification = "reference_current_price_health_cli_output_schema"
+reason = "Stable operator output reason for a strategy-free health run that exited before source update evidence arrived."
 
 [[allowed]]
 path = "src/bolt_v3_reference_price_health.rs"
@@ -9053,14 +9181,6 @@ literal = '''"no enabled reference_current_price sources are configured"'''
 context = '''"no enabled reference_current_price sources are configured"'''
 classification = "reference_current_price_health_diagnostic"
 reason = "Diagnostic for a config that has no enabled reference-current-price source to probe."
-
-[[allowed]]
-path = "src/bolt_v3_reference_price_health.rs"
-kind = "string"
-literal = '''"not_collected"'''
-context = '''const SOURCE_UPDATE_OBSERVATION_STATUS: &str = "not_collected";'''
-classification = "reference_current_price_health_status_code"
-reason = "Stable operator output status indicating this bounded command did not collect source update evidence."
 
 [[allowed]]
 path = "src/bolt_v3_reference_price_health.rs"
@@ -9085,6 +9205,14 @@ literal = '''"reference_current_price health registered strategies: {}"'''
 context = '''"reference_current_price health registered strategies: {}",'''
 classification = "reference_current_price_health_diagnostic"
 reason = "Fail-closed diagnostic proving the bounded health path did not remain strategy-free."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"custom-data subscription references unregistered data client {client_id}"'''
+context = '''"custom-data subscription references unregistered data client {client_id}"'''
+classification = "strategy_free_custom_data_subscription_diagnostic"
+reason = "Fail-closed diagnostic for a strategy-free custom-data subscription targeting a client that was not registered in the scoped LiveNode."
 
 [[allowed]]
 path = "src/bolt_v3_reference_price_health.rs"

@@ -52,18 +52,27 @@ use std::{
 use ahash::AHashMap;
 use anyhow::Result;
 use log::LevelFilter;
-use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
+use nautilus_common::{
+    enums::Environment,
+    logging::logger::LoggerConfig,
+    messages::data::{
+        DataCommand, SubscribeCommand, SubscribeCustomData, UnsubscribeCommand,
+        UnsubscribeCustomData,
+    },
+};
+use nautilus_core::{Params, UUID4};
 use nautilus_live::{
     builder::LiveNodeBuilder,
     config::LiveNodeConfig,
     node::{LiveNode, LiveNodeHandle, NodeState},
 };
-#[cfg(test)]
-use nautilus_model::{data::OrderBookDeltas, identifiers::InstrumentId};
 use nautilus_model::{
+    data::DataType,
     enums::BarIntervalType,
     identifiers::{ClientId, StrategyId},
 };
+#[cfg(test)]
+use nautilus_model::{data::OrderBookDeltas, identifiers::InstrumentId};
 use ustr::Ustr;
 use zeroize::Zeroizing;
 
@@ -995,6 +1004,91 @@ impl BoltV3LiveNodeRuntime {
         loaded: &LoadedBoltV3Config,
     ) -> Result<(), BoltV3LiveNodeError> {
         disconnect_bolt_v3_clients(&mut self.node, loaded).await
+    }
+
+    pub fn handle(&self) -> LiveNodeHandle {
+        self.node.handle()
+    }
+
+    pub fn subscribe_strategy_free_custom_data(
+        &mut self,
+        client_id: ClientId,
+        data_type: DataType,
+        params: Params,
+    ) -> Result<(), BoltV3LiveNodeError> {
+        if !self.registered_data_client_ids().contains(&client_id) {
+            return Err(BoltV3LiveNodeError::StrategyFreeDataClientReadinessSetup(
+                anyhow::anyhow!(
+                    "custom-data subscription references unregistered data client {client_id}"
+                ),
+            ));
+        }
+        let ts_init = self.node.kernel().generate_timestamp_ns();
+        let command = SubscribeCustomData::new(
+            Some(client_id),
+            None,
+            data_type,
+            UUID4::new(),
+            ts_init,
+            None,
+            Some(params),
+        );
+        self.node
+            .kernel_mut()
+            .data_engine
+            .borrow_mut()
+            .execute(DataCommand::Subscribe(SubscribeCommand::Data(command)));
+        Ok(())
+    }
+
+    pub fn unsubscribe_strategy_free_custom_data(
+        &mut self,
+        client_id: ClientId,
+        data_type: DataType,
+        params: Params,
+    ) {
+        let ts_init = self.node.kernel().generate_timestamp_ns();
+        let command = UnsubscribeCustomData::new(
+            Some(client_id),
+            None,
+            data_type,
+            UUID4::new(),
+            ts_init,
+            None,
+            Some(params),
+        );
+        self.node
+            .kernel_mut()
+            .data_engine
+            .borrow_mut()
+            .execute(DataCommand::Unsubscribe(UnsubscribeCommand::Data(command)));
+    }
+
+    pub async fn run_strategy_free_until_stop_or_timeout(
+        &mut self,
+        run_timeout: Duration,
+        stop_timeout: Duration,
+    ) -> Result<bool, BoltV3LiveNodeError> {
+        let handle = self.node.handle();
+        let run_future = self.node.run();
+        tokio::pin!(run_future);
+
+        match tokio::time::timeout(run_timeout, &mut run_future).await {
+            Ok(result) => {
+                result.map_err(BoltV3LiveNodeError::StrategyFreeStartFailed)?;
+                Ok(false)
+            }
+            Err(_) => {
+                handle.stop();
+                tokio::time::timeout(stop_timeout, run_future)
+                    .await
+                    .map_err(|_| BoltV3LiveNodeError::StrategyFreeStopTimeout {
+                        timeout_secs: stop_timeout.as_secs(),
+                    })?
+                    .map_err(BoltV3LiveNodeError::StrategyFreeStopFailed)?;
+                Ok(true)
+            }
+        }
     }
 
     pub fn instance_id(&self) -> String {

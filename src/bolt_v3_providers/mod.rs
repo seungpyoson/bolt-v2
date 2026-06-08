@@ -568,6 +568,22 @@ pub fn reference_price_provider_metadata(
     None
 }
 
+pub fn reference_price_provider_identifier_is_configured(
+    root: &BoltV3RootConfig,
+    provider_key: &str,
+    identifier: &str,
+) -> Result<bool, String> {
+    if provider_key == chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY {
+        return chainlink::reference_price_instrument_in_shared_catalog(root, identifier);
+    }
+    if provider_key == polyresearch::REFERENCE_PRICE_PROVIDER_KEY {
+        return Ok(true);
+    }
+    Err(format!(
+        "reference price provider `{provider_key}` is unsupported"
+    ))
+}
+
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,

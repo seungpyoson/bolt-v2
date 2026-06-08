@@ -306,6 +306,22 @@ pub fn map_adapters(
     })
 }
 
+pub fn reference_price_instrument_in_shared_catalog(
+    root: &BoltV3RootConfig,
+    instrument_id: &str,
+) -> Result<bool, String> {
+    let Some(catalog) = root.chainlink_data_streams.as_ref() else {
+        return Ok(false);
+    };
+    for (index, binding) in catalog.feed_bindings.iter().enumerate() {
+        let binding = parse_feed_binding(KEY, index, binding)?;
+        if binding.instrument_id.to_string() == instrument_id {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn map_data(
     root: &BoltV3RootConfig,
     client_key: &str,

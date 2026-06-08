@@ -207,7 +207,9 @@ impl DataClientFactory for PolyResearchReferencePriceClientFactory {
 struct PolyResearchReferencePriceClient {
     client_id: ClientId,
     config: PolyResearchReferencePriceClientConfig,
-    subscriptions: Arc<Mutex<BTreeMap<String, PolyResearchReferenceSubscription>>>,
+    subscriptions: Arc<
+        Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, PolyResearchReferenceSubscription>>,
+    >,
     outbound: Option<PolyResearchReferenceOutboundHandle>,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     connected: bool,
@@ -361,7 +363,10 @@ impl DataClient for PolyResearchReferencePriceClient {
         self.subscriptions
             .lock()
             .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
-            .insert(subscription.source_id.clone(), subscription.clone());
+            .insert(
+                PolyResearchReferenceSubscriptionKey::from_subscription(&subscription),
+                subscription.clone(),
+            );
         if let Some(outbound) = self.outbound.as_ref() {
             outbound.send_text(polyresearch_reference_subscribe_frame(&subscription)?)?;
         }
@@ -375,7 +380,9 @@ impl DataClient for PolyResearchReferencePriceClient {
         self.subscriptions
             .lock()
             .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
-            .remove(&subscription.source_id);
+            .remove(&PolyResearchReferenceSubscriptionKey::from_subscription(
+                &subscription,
+            ));
         Ok(())
     }
 }
@@ -385,6 +392,23 @@ pub(crate) struct PolyResearchReferenceSubscription {
     pub(crate) asset: String,
     pub(crate) source_id: String,
     pub(crate) symbol: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PolyResearchReferenceSubscriptionKey {
+    asset: String,
+    source_id: String,
+    symbol: String,
+}
+
+impl PolyResearchReferenceSubscriptionKey {
+    fn from_subscription(subscription: &PolyResearchReferenceSubscription) -> Self {
+        Self {
+            asset: subscription.asset.clone(),
+            source_id: subscription.source_id.clone(),
+            symbol: subscription.symbol.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -441,7 +465,9 @@ fn polyresearch_reference_outbound_handle(
 }
 
 fn replay_polyresearch_reference_subscriptions(
-    subscriptions: &Arc<Mutex<BTreeMap<String, PolyResearchReferenceSubscription>>>,
+    subscriptions: &Arc<
+        Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, PolyResearchReferenceSubscription>>,
+    >,
     outbound: &PolyResearchReferenceOutboundHandle,
 ) -> anyhow::Result<()> {
     let subscriptions = subscriptions
@@ -610,7 +636,10 @@ pub(crate) fn polyresearch_reference_update_from_price_frame(
 }
 
 fn polyresearch_reference_updates_from_price_frame(
-    subscriptions: &BTreeMap<String, PolyResearchReferenceSubscription>,
+    subscriptions: &BTreeMap<
+        PolyResearchReferenceSubscriptionKey,
+        PolyResearchReferenceSubscription,
+    >,
     frame: &str,
     received_ts_ms: u64,
 ) -> Result<Vec<ReferencePriceUpdate>, String> {
@@ -626,7 +655,9 @@ fn polyresearch_reference_updates_from_price_frame(
 }
 
 fn polyresearch_reference_message_handler(
-    subscriptions: Arc<Mutex<BTreeMap<String, PolyResearchReferenceSubscription>>>,
+    subscriptions: Arc<
+        Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, PolyResearchReferenceSubscription>>,
+    >,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
 ) -> MessageHandler {
     Arc::new(move |message: Message| {
@@ -989,6 +1020,30 @@ mod tests {
         )
     }
 
+    fn subscription_key(
+        asset: &str,
+        source_id: &str,
+        symbol: &str,
+    ) -> PolyResearchReferenceSubscriptionKey {
+        PolyResearchReferenceSubscriptionKey {
+            asset: asset.to_string(),
+            source_id: source_id.to_string(),
+            symbol: symbol.to_string(),
+        }
+    }
+
+    fn subscription(
+        asset: &str,
+        source_id: &str,
+        symbol: &str,
+    ) -> PolyResearchReferenceSubscription {
+        PolyResearchReferenceSubscription {
+            asset: asset.to_string(),
+            source_id: source_id.to_string(),
+            symbol: symbol.to_string(),
+        }
+    }
+
     #[test]
     fn start_stop_update_nt_data_client_connected_state() {
         let (mut client, _data_receiver) = fixture_client();
@@ -1009,12 +1064,8 @@ mod tests {
     #[test]
     fn price_feed_frame_for_active_subscription_emits_custom_reference_update() {
         let subscriptions = Arc::new(Mutex::new(BTreeMap::from([(
-            "polyresearch_primary".to_string(),
-            PolyResearchReferenceSubscription {
-                asset: "BTC".to_string(),
-                source_id: "polyresearch_primary".to_string(),
-                symbol: "BTC/USD".to_string(),
-            },
+            subscription_key("BTC", "polyresearch_primary", "BTC/USD"),
+            subscription("BTC", "polyresearch_primary", "BTC/USD"),
         )])));
         let (data_sender, mut data_receiver) = tokio::sync::mpsc::unbounded_channel();
         let handler = polyresearch_reference_message_handler(subscriptions, data_sender);
@@ -1043,12 +1094,8 @@ mod tests {
     #[test]
     fn price_feed_frame_for_unsubscribed_symbol_emits_no_custom_data() {
         let subscriptions = Arc::new(Mutex::new(BTreeMap::from([(
-            "polyresearch_primary".to_string(),
-            PolyResearchReferenceSubscription {
-                asset: "BTC".to_string(),
-                source_id: "polyresearch_primary".to_string(),
-                symbol: "BTC/USD".to_string(),
-            },
+            subscription_key("BTC", "polyresearch_primary", "BTC/USD"),
+            subscription("BTC", "polyresearch_primary", "BTC/USD"),
         )])));
         let (data_sender, mut data_receiver) = tokio::sync::mpsc::unbounded_channel();
         let handler = polyresearch_reference_message_handler(subscriptions, data_sender);
@@ -1080,11 +1127,51 @@ mod tests {
             .lock()
             .expect("PRR reference subscriptions should not be poisoned");
         let subscription = subscriptions
-            .get("polyresearch_primary")
+            .get(&subscription_key("BTC", "polyresearch_primary", "BTC/USD"))
             .expect("PRR reference subscription should be recorded");
         assert_eq!(subscription.asset, "BTC");
         assert_eq!(subscription.source_id, "polyresearch_primary");
         assert_eq!(subscription.symbol, "BTC/USD");
+    }
+
+    #[test]
+    fn same_source_id_subscriptions_remain_asset_scoped() {
+        let (mut client, _data_receiver) = fixture_client();
+
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                "BTC",
+                "polyresearch_primary",
+                "BTC/USD",
+            ))
+            .expect("BTC PRR reference subscription should be accepted");
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                "ETH",
+                "polyresearch_primary",
+                "ETH/USD",
+            ))
+            .expect("ETH PRR reference subscription should be accepted");
+
+        let subscriptions = client
+            .subscriptions
+            .lock()
+            .expect("PRR reference subscriptions should not be poisoned");
+        assert_eq!(
+            subscriptions.len(),
+            2,
+            "same source_id across assets must not overwrite active WebSocket subscriptions"
+        );
+        assert!(subscriptions.contains_key(&subscription_key(
+            "BTC",
+            "polyresearch_primary",
+            "BTC/USD",
+        )));
+        assert!(subscriptions.contains_key(&subscription_key(
+            "ETH",
+            "polyresearch_primary",
+            "ETH/USD",
+        )));
     }
 
     #[test]
@@ -1125,12 +1212,8 @@ mod tests {
             .lock()
             .expect("PRR reference subscriptions should not be poisoned")
             .insert(
-                "polyresearch_primary".to_string(),
-                PolyResearchReferenceSubscription {
-                    asset: "BTC".to_string(),
-                    source_id: "polyresearch_primary".to_string(),
-                    symbol: "BTC/USD".to_string(),
-                },
+                subscription_key("BTC", "polyresearch_primary", "BTC/USD"),
+                subscription("BTC", "polyresearch_primary", "BTC/USD"),
             );
         let mut params = Params::new();
         params.insert(
@@ -1172,7 +1255,7 @@ mod tests {
                 .subscriptions
                 .lock()
                 .expect("PRR reference subscriptions should not be poisoned")
-                .contains_key("polyresearch_primary"),
+                .contains_key(&subscription_key("BTC", "polyresearch_primary", "BTC/USD",)),
             "PRR reference unsubscription should remove the active subscription"
         );
     }

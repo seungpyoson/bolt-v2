@@ -171,8 +171,13 @@ fn run_reference_current_price_health_command(
         .block_on(local.run_until(run_prepared_reference_current_price_health(&mut health_run)))?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&serde_json::to_value(report)?)?
+        serde_json::to_string_pretty(&serde_json::to_value(&report)?)?
     );
+    if !report.all_sources_observed() {
+        return Err(
+            "reference_current_price health did not observe every configured source".into(),
+        );
+    }
     Ok(())
 }
 

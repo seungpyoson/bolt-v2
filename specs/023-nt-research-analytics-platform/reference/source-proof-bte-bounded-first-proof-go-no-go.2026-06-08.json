@@ -35,7 +35,7 @@
     ]
   },
   "bounded_first_proof_selector_artifacts": {
-    "status": "concrete_pmxt_gamma_backed_selector_artifact_generated_but_not_catalog_projected",
+    "status": "concrete_pmxt_gamma_backed_selector_artifact_generated_pmxt_one_off_artifact_root_writer_tdd_proven",
     "local_artifact_root": "/private/tmp/bte-pmxt-first-proof-selector-2026-06-08",
     "source_object_uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
     "source_object_sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
@@ -68,9 +68,9 @@
       "projected_row_groups": "1 of 62"
     },
     "claim_limits": [
-      "This proves PMXT source event-count scanning and selector report generation only.",
-      "This does not prove PMXT row-to-NT projection.",
-      "This does not prove BacktestNode consumes a selected PMXT source-backed catalog.",
+      "This proves PMXT source event-count scanning, selector report generation, and selected-source staging for one-off backfill evidence only.",
+      "TDD proves the selected-source report chain can validate selector report sha/status, project PMXT L2 rows to an NT catalog, run BacktestNode, and write a BacktestResultContract artifact.",
+      "This does not yet prove the concrete generated /private/tmp PMXT selected-source artifact was invoked through the artifact-root writer.",
       "This does not authorize broad PMXT backfill or production backfill."
     ]
   },
@@ -101,15 +101,15 @@
     },
     {
       "prompt_requirement": "BacktestNode consumes exactly the verified catalog",
-      "bounded_first_proof_status": "nt_native_l2_catalog_consumption_tdd_proven_source_backed_unproven",
-      "evidence": "NT BacktestNode queries OrderBookDelta from ParquetDataCatalog and validates L2_MBP venues have order-book data. BTE manifest/data-config mapping is now TDD-proven for OrderBookDelta and configured instrument_ids. NT-native BinaryOption/OrderBookDelta/TradeTick fixture write/read/logical-hash is TDD-proven, and an NT-native BinaryOption L2 ParquetDataCatalog fixture is now consumed by BacktestNode with BookType::L2_MBP and exactly two OrderBookDelta iterations. No selected PMXT L2 source-backed catalog has been consumed by BacktestNode.",
-      "required_before_acceptance": "Project the selected PMXT L2 universe into ParquetDataCatalog from source rows, bind the logical catalog hash, and prove BacktestNode consumes that exact catalog."
+      "bounded_first_proof_status": "pmxt_one_off_selected_source_fixture_artifact_root_tdd_proven_concrete_generated_invocation_pending",
+      "evidence": "NT BacktestNode queries OrderBookDelta from ParquetDataCatalog and validates L2_MBP venues have order-book data. BTE manifest/data-config mapping is now TDD-proven for OrderBookDelta and configured instrument_ids. NT-native BinaryOption/OrderBookDelta/TradeTick fixture write/read/logical-hash is TDD-proven. The PMXT one-off artifact-root writer now validates selected-source and selector report hashes, projects selected PMXT L2 rows to ParquetDataCatalog, binds the logical catalog hash, and proves BacktestNode consumes that exact catalog in TDD.",
+      "required_before_acceptance": "Invoke the artifact-root writer against the concrete generated PMXT selected-source artifact or promote an immutable accepted sample fixture, then record the output hashes."
     },
     {
       "prompt_requirement": "result contract provenance binds the run",
-      "bounded_first_proof_status": "pmxt_one_off_l2_contract_binding_tdd_proven_for_test_path",
-      "evidence": "Existing result contracts bind accepted proof and logical catalog evidence for the trade path. PMXT one-off L2 now has a TDD-proven BacktestNode/result-contract helper that binds source proof id/version, accepted object hash, selected_asset_ids_hash, event_count_ledger_hash, converter identity/version/config hash, conversion manifest/checkpoint hash, logical catalog hash, catalog metadata hash, NT revision, and first-proof claim limits.",
-      "required_before_acceptance": "Thread the concrete selected-source artifact and selector report under artifact_root into this PMXT one-off result-contract path and write the accepted result-contract artifact."
+      "bounded_first_proof_status": "pmxt_one_off_l2_artifact_root_contract_writer_tdd_proven",
+      "evidence": "Existing result contracts bind accepted proof and logical catalog evidence for the trade path. PMXT one-off L2 now has a TDD-proven artifact-root writer that validates the selected-source report chain, writes conversion checkpoint/manifest/catalog metadata, runs BacktestNode over the verified NT catalog, and writes a BacktestResultContract binding source proof id/version, accepted object hash, selected_asset_ids_hash, event_count_ledger_hash, converter identity/version/config hash, conversion manifest/checkpoint hash, logical catalog hash, catalog metadata hash, NT revision, and first-proof claim limits.",
+      "required_before_acceptance": "Run the writer on the concrete generated selected-source artifact or promote the accepted fixture, then capture the result-contract artifact hash."
     }
   ],
   "nt_use_matrix_delta": [
@@ -148,7 +148,7 @@
     {
       "area": "source selector",
       "required_shape": "TOML/source-proof-owned event-count selector over source event families and row budget; no venue, asset, or symbol constants in production code.",
-      "current_status": "TDD-proven for generic configured event-family roles, excluded-event assets, row-budget ordering, event-count ledger hash, selected_asset_ids_hash, idempotent report writing, config-owned event-count parquet scanning, and thin CLIs. A concrete PMXT selector report was generated from the one-hour sample; config-owned selected-source Parquet decoding now projects bounded PMXT L2 rows into the one-off NT projection path without rescanning the full raw object. PMXT TradeTick trade-id proof and claim-limit/result-contract binding remain pending."
+      "current_status": "TDD-proven for generic configured event-family roles, excluded-event assets, row-budget ordering, event-count ledger hash, selected_asset_ids_hash, idempotent report writing, config-owned event-count parquet scanning, and thin CLIs. A concrete PMXT selector report was generated from the one-hour sample; config-owned selected-source Parquet decoding now projects bounded PMXT L2 rows into the one-off NT projection path without rescanning the full raw object. PMXT remains one-off backfill evidence, not a reusable converter abstraction. PMXT TradeTick trade-id proof remains pending."
     },
     {
       "area": "manifest data config",
@@ -163,7 +163,7 @@
     {
       "area": "conversion governance",
       "required_shape": "PMXT one-off L2 conversion writes the standard conversion manifest, checkpoint, catalog metadata, and logical catalog hash; matching reruns are idempotent and mismatched/dirty output remains gated by the generic conversion boundary.",
-      "current_status": "TDD-proven for PMXT one-off clean output metadata and matching-complete rerun reuse. Generic conversion-boundary tests prove dirty-output, identity mismatch, idempotent-complete, and validated-checkpoint state handling. Concrete selected PMXT artifact-root wiring remains pending."
+      "current_status": "TDD-proven for PMXT one-off clean output metadata, matching-complete rerun reuse, and a selected-source report-chain artifact-root writer that writes the result contract. Generic conversion-boundary tests prove dirty-output, identity mismatch, idempotent-complete, and validated-checkpoint state handling. Concrete generated PMXT /private/tmp artifact invocation remains pending."
     },
     {
       "area": "NT parser/provider reuse",
@@ -176,7 +176,7 @@
     {
       "area": "result contract",
       "required_shape": "Bind source proof, object hash, event-count ledger hash, selected_asset_ids_hash, converter identity/version, conversion manifest/checkpoint hash, logical catalog hash, NT revision, and claim limits.",
-      "current_status": "TDD-proven schema validation requires event_count_ledger_hash and selected_asset_ids_hash for L2Replay result contracts; runner inputs expose generic selector provenance and refuse L2Replay result construction without it. PMXT one-off L2 now runs BacktestNode through a manifest over the verified catalog and builds a result contract binding selector, conversion, catalog, catalog-metadata, NT revision, and claim-limit provenance. Concrete selected-source artifact_root wiring remains pending."
+      "current_status": "TDD-proven schema validation requires event_count_ledger_hash and selected_asset_ids_hash for L2Replay result contracts; runner inputs expose generic selector provenance and refuse L2Replay result construction without it. PMXT one-off L2 now runs BacktestNode through a manifest over the verified catalog and writes a result contract binding selector, conversion, catalog, catalog-metadata, NT revision, and claim-limit provenance. Concrete generated PMXT /private/tmp artifact invocation remains pending."
     }
   ],
   "required_red_green_tests_before_acceptance": [
@@ -238,13 +238,17 @@
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output passed after matching completed output was reused with manifest/data-type/instrument/row-count/catalog-uri checks.",
     "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_provenance failed because the PMXT one-off BacktestNode/result-contract API was absent.",
     "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_provenance passed after the helper ran BacktestNode over the verified OrderBookDelta catalog and built a BacktestResultContract binding conversion, selector, catalog, catalog metadata, NT revision, and claim-limit provenance.",
-    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 7 focused PMXT one-off projection tests."
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 7 focused PMXT one-off projection tests.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source_report_chain failed because the PMXT one-off artifact-root writer API was absent.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source_report_chain passed after the writer validated selected-source/selector report hashes, projected PMXT L2 rows, wrote conversion metadata, ran BacktestNode, and wrote backtest-result-contract.json.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection passed 8 focused PMXT one-off projection tests.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_selected_source_slice --test backtesting_vertical_slice_conversion_boundary --test backtesting_vertical_slice_source_proof_reference_fixtures --test backtesting_vertical_slice_catalog_and_node passed 13 adjacent selected-source/conversion/source-proof/catalog-node tests."
   ],
   "still_blocking_broad_backfill": [
     "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven.",
     "One-hour bounded sample does not prove one-year PMXT coverage, gaps, retention, throughput, or cost.",
     "Pending PMXT source proof has not passed storage, coverage, completeness, cost, and accepted NT mapping checks.",
-    "No accepted clean PMXT L2 result-contract artifact exists yet.",
+    "No accepted clean PMXT L2 result-contract artifact from the concrete generated PMXT selected-source sample exists yet; fixture-based artifact-root writing is TDD-proven only.",
     "PMXT last_trade_price TradeTick projection remains blocked on a focused decision for the pinned NT historical trade-id helper being crate-private."
   ]
 }

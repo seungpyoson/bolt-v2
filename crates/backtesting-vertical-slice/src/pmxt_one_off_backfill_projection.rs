@@ -37,7 +37,7 @@ use nautilus_polymarket::{
     },
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use ustr::Ustr;
 
@@ -48,6 +48,7 @@ use crate::{
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionFingerprint, ConversionManifest,
         ConversionOutputState, inspect_conversion_output, write_completed_conversion_artifacts,
     },
+    first_proof_selector::{FirstProofSelectorReport, FirstProofSelectorStatus},
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
     },
@@ -62,6 +63,7 @@ use crate::{
 
 /// NautilusTrader data type written by the PMXT one-off L2 projection.
 pub const NT_DATA_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
+pub const PMXT_ONE_OFF_RESULT_CONTRACT_FILE: &str = "backtest-result-contract.json";
 
 #[derive(Debug, Clone)]
 pub struct PmxtOneOffProjectionRequest {
@@ -172,6 +174,8 @@ pub struct PmxtOneOffCatalogProjection {
 pub struct PmxtSelectedSourceNtProjection {
     pub projection: PmxtOneOffNtProjection,
     pub selected_source_report_hash: String,
+    pub selected_source_parquet_hash: String,
+    pub event_count_ledger_hash: String,
     pub selected_asset_ids_hash: String,
     pub selected_rows: u64,
     pub projected_l2_rows: u64,
@@ -223,6 +227,34 @@ pub struct PmxtOneOffBacktestContractOutput {
     pub contract: BacktestResultContract,
 }
 
+#[derive(Debug, Clone)]
+pub struct PmxtOneOffArtifactRootRunSpec {
+    pub selected_source: PmxtSelectedSourceProjectionSpec,
+    pub output_dir: PathBuf,
+    pub catalog_root: PathBuf,
+    pub fingerprint: ConversionFingerprint,
+    pub manifest: BacktestingRunManifest,
+    pub manifest_hash: String,
+    pub normalized_schema_version: String,
+    pub output_catalog_uri: String,
+    pub execution_catalog_uri: String,
+    pub direct_s3_catalog_access_proven: bool,
+    pub acceptance_mode: AcceptanceMode,
+    pub accepted_by: String,
+    pub accepted_at: String,
+    pub artifact_uris: ResultArtifactUris,
+    pub created_at: String,
+    pub claim_limits: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct PmxtOneOffArtifactRootRun {
+    pub selected_projection: PmxtSelectedSourceNtProjection,
+    pub completed: PmxtOneOffCompletedConversionProjection,
+    pub contract_output: PmxtOneOffBacktestContractOutput,
+    pub result_contract_path: PathBuf,
+}
+
 pub fn project_pmxt_selected_source_parquet_to_nt(
     spec: PmxtSelectedSourceProjectionSpec,
 ) -> Result<PmxtSelectedSourceNtProjection> {
@@ -261,6 +293,23 @@ pub fn project_pmxt_selected_source_parquet_to_nt(
         report.output_parquet_sha256,
         selected_parquet_sha256
     );
+    let selector_report = read_selected_source_selector_report(&report)?;
+    ensure!(
+        selector_report.selected_asset_ids_hash == report.selected_asset_ids_hash,
+        "selected-source report selected_asset_ids_hash {:?} does not match selector report {:?}",
+        report.selected_asset_ids_hash,
+        selector_report.selected_asset_ids_hash
+    );
+    ensure!(
+        selector_report.selected_assets.len() as u64 == report.selected_asset_count,
+        "selected-source report selected_asset_count {} does not match selector report {}",
+        report.selected_asset_count,
+        selector_report.selected_assets.len()
+    );
+    ensure!(
+        !selector_report.event_count_ledger_hash.trim().is_empty(),
+        "selector report event_count_ledger_hash must not be empty"
+    );
 
     let decoded = decode_selected_source_rows(&spec, &report)?;
     let projected_l2_rows = decoded.rows.len() as u64;
@@ -281,6 +330,8 @@ pub fn project_pmxt_selected_source_parquet_to_nt(
     Ok(PmxtSelectedSourceNtProjection {
         projection,
         selected_source_report_hash,
+        selected_source_parquet_hash: selected_parquet_sha256,
+        event_count_ledger_hash: selector_report.event_count_ledger_hash,
         selected_asset_ids_hash: report.selected_asset_ids_hash,
         selected_rows: decoded.total_rows,
         projected_l2_rows,
@@ -293,6 +344,28 @@ struct DecodedSelectedSourceRows {
     rows: Vec<PmxtOneOffSelectedRow>,
     total_rows: u64,
     skipped_non_l2_rows: u64,
+}
+
+fn read_selected_source_selector_report(
+    report: &SelectedSourceSliceReport,
+) -> Result<FirstProofSelectorReport> {
+    let selector_path = Path::new(&report.selector_report_path);
+    let selector_bytes = fs::read(selector_path)
+        .with_context(|| format!("read selector report {}", selector_path.display()))?;
+    let selector_sha256 = sha256_bytes(&selector_bytes);
+    ensure!(
+        selector_sha256 == report.selector_report_sha256,
+        "selected-source selector report sha256 mismatch: report {:?}, actual {:?}",
+        report.selector_report_sha256,
+        selector_sha256
+    );
+    let selector_report: FirstProofSelectorReport = serde_json::from_slice(&selector_bytes)
+        .with_context(|| format!("parse selector report {}", selector_path.display()))?;
+    ensure!(
+        selector_report.status == FirstProofSelectorStatus::Selected,
+        "selector report status must be selected for PMXT one-off projection"
+    );
+    Ok(selector_report)
 }
 
 fn decode_selected_source_rows(
@@ -894,6 +967,83 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
         nt_result,
         contract,
     })
+}
+
+pub fn write_pmxt_one_off_l2_artifact_root_run(
+    spec: PmxtOneOffArtifactRootRunSpec,
+) -> Result<PmxtOneOffArtifactRootRun> {
+    ensure!(
+        spec.fingerprint.accepted_object_sha256
+            == sha256_file(&spec.selected_source.selected_source_parquet_path)?,
+        "PMXT one-off conversion fingerprint accepted_object_sha256 must match selected-source parquet"
+    );
+    ensure!(
+        spec.artifact_uris.nt_catalog_uri == spec.output_catalog_uri,
+        "PMXT one-off result artifact nt_catalog_uri must match conversion output_catalog_uri"
+    );
+
+    let selected_projection = project_pmxt_selected_source_parquet_to_nt(spec.selected_source)
+        .context("project selected PMXT source rows into NT data")?;
+    ensure!(
+        selected_projection.selected_source_parquet_hash == spec.fingerprint.accepted_object_sha256,
+        "PMXT one-off selected-source hash does not match conversion fingerprint"
+    );
+    let completed = write_pmxt_one_off_conversion_projection(PmxtOneOffConversionProjectionSpec {
+        output_dir: spec.output_dir.clone(),
+        catalog_root: spec.catalog_root,
+        projection: selected_projection.projection.clone(),
+        fingerprint: spec.fingerprint,
+        normalized_schema_version: spec.normalized_schema_version,
+        output_catalog_uri: spec.output_catalog_uri,
+        execution_catalog_uri: spec.execution_catalog_uri,
+        direct_s3_catalog_access_proven: spec.direct_s3_catalog_access_proven,
+        completed_at: spec.created_at.clone(),
+    })
+    .context("write PMXT one-off conversion artifacts")?;
+    let contract_output = run_pmxt_one_off_l2_backtest_contract(PmxtOneOffBacktestContractSpec {
+        completed: &completed,
+        manifest: &spec.manifest,
+        manifest_hash: &spec.manifest_hash,
+        acceptance_mode: spec.acceptance_mode,
+        accepted_by: &spec.accepted_by,
+        accepted_at: &spec.accepted_at,
+        event_count_ledger_hash: &selected_projection.event_count_ledger_hash,
+        selected_asset_ids_hash: &selected_projection.selected_asset_ids_hash,
+        artifact_uris: spec.artifact_uris,
+        created_at: &spec.created_at,
+        claim_limits: spec.claim_limits,
+    })
+    .context("run PMXT one-off L2 backtest contract")?;
+    fs::create_dir_all(&spec.output_dir).with_context(|| {
+        format!(
+            "create PMXT one-off artifact output dir {}",
+            spec.output_dir.display()
+        )
+    })?;
+    let result_contract_path = spec.output_dir.join(PMXT_ONE_OFF_RESULT_CONTRACT_FILE);
+    write_json_pretty_idempotent(&result_contract_path, &contract_output.contract)
+        .with_context(|| format!("write {}", result_contract_path.display()))?;
+
+    Ok(PmxtOneOffArtifactRootRun {
+        selected_projection,
+        completed,
+        contract_output,
+        result_contract_path,
+    })
+}
+
+fn write_json_pretty_idempotent<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let bytes = serde_json::to_vec_pretty(value).context("serialize PMXT one-off artifact")?;
+    if path.exists() {
+        let existing = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        ensure!(
+            existing == bytes,
+            "existing PMXT one-off artifact {} differs from newly generated content",
+            path.display()
+        );
+        return Ok(());
+    }
+    fs::write(path, bytes).with_context(|| format!("write {}", path.display()))
 }
 
 fn binary_option_l2_metadata(instrument: &InstrumentAny) -> Result<(InstrumentId, u8, u8)> {

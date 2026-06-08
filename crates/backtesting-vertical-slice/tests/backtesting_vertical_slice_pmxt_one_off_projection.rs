@@ -9,13 +9,16 @@ use backtesting_vertical_slice::{
         ConversionFingerprint, ConversionOutputState, inspect_conversion_output,
     },
     pmxt_one_off_backfill_projection::{
-        PmxtBookLevel, PmxtOneOffBacktestContractSpec, PmxtOneOffConversionProjectionSpec,
+        PMXT_ONE_OFF_RESULT_CONTRACT_FILE, PmxtBookLevel, PmxtOneOffArtifactRootRunSpec,
+        PmxtOneOffBacktestContractSpec, PmxtOneOffConversionProjectionSpec,
         PmxtOneOffProjectionRequest, PmxtOneOffSelectedRow, PmxtOneOffSnapshotRow,
         PmxtOneOffTickSide, PmxtPriceChangeRow, PmxtSelectedSourceProjectionSpec,
         PmxtSelectedSourceSchema, project_pmxt_one_off_rows_to_nt,
         project_pmxt_selected_source_parquet_to_nt, run_pmxt_one_off_l2_backtest_contract,
-        write_pmxt_one_off_conversion_projection, write_pmxt_one_off_projection_to_catalog,
+        write_pmxt_one_off_conversion_projection, write_pmxt_one_off_l2_artifact_root_run,
+        write_pmxt_one_off_projection_to_catalog,
     },
+    result_contract::BacktestResultContract,
     result_contract::ResultArtifactUris,
     run_manifest::{
         BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE, ManifestArtifactStore,
@@ -217,9 +220,16 @@ fn pmxt_one_off_projection_writes_nt_catalog_and_backtest_node_consumes_l2() {
 fn pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let selected_parquet_path = dir.path().join("selected-source.parquet");
+    let selector_report_path = dir.path().join("first-proof-selector-report.json");
     let selected_report_path = dir.path().join("selected-source-report.json");
     write_pmxt_selected_source_fixture(&selected_parquet_path);
-    write_selected_source_report(&selected_report_path, &selected_parquet_path, 3);
+    write_selector_report_fixture(&selector_report_path);
+    write_selected_source_report_with_selector(
+        &selected_report_path,
+        &selected_parquet_path,
+        &selector_report_path,
+        3,
+    );
 
     let selected = project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
         source_binding: "synthetic-pmxt-one-off-source".to_string(),
@@ -229,31 +239,14 @@ fn pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan() {
         gamma_markets: gamma_markets(),
         selected_source_parquet_path: selected_parquet_path.clone(),
         selected_source_report_path: selected_report_path.clone(),
-        schema: PmxtSelectedSourceSchema {
-            timestamp_received_column: "timestamp_received".to_string(),
-            timestamp_column: "timestamp".to_string(),
-            market_column: "market".to_string(),
-            event_type_column: "event_type".to_string(),
-            asset_id_column: "asset_id".to_string(),
-            bids_column: "bids".to_string(),
-            asks_column: "asks".to_string(),
-            price_column: "price".to_string(),
-            size_column: "size".to_string(),
-            side_column: "side".to_string(),
-            best_bid_column: "best_bid".to_string(),
-            best_ask_column: "best_ask".to_string(),
-            buy_side: "BUY".to_string(),
-            sell_side: "SELL".to_string(),
-            book_event_type: "book".to_string(),
-            price_change_event_type: "price_change".to_string(),
-            ignored_event_types: vec!["last_trade_price".to_string()],
-        },
+        schema: pmxt_selected_source_schema(),
     })
     .expect("project selected-source parquet");
 
     assert_eq!(selected.selected_rows, 3);
     assert_eq!(selected.projected_l2_rows, 2);
     assert_eq!(selected.skipped_non_l2_rows, 1);
+    assert_eq!(selected.event_count_ledger_hash, "event-count-ledger-hash");
     assert_eq!(selected.selected_asset_ids_hash, "selected-assets-hash");
     assert_eq!(
         selected.projection.usage_scope,
@@ -450,6 +443,118 @@ fn pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_proven
     );
 }
 
+#[test]
+fn pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source_report_chain() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let selected_parquet_path = dir.path().join("selected-source.parquet");
+    let selector_report_path = dir.path().join("first-proof-selector-report.json");
+    let selected_report_path = dir.path().join("selected-source-report.json");
+    let output_dir = dir
+        .path()
+        .join("artifact-root")
+        .join("backtests")
+        .join("pmxt-run");
+    let catalog_root = output_dir.join("nt-catalog");
+    write_pmxt_selected_source_fixture(&selected_parquet_path);
+    write_selector_report_fixture(&selector_report_path);
+    write_selected_source_report_with_selector(
+        &selected_report_path,
+        &selected_parquet_path,
+        &selector_report_path,
+        3,
+    );
+    let expected_projection =
+        project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
+            source_binding: "synthetic-pmxt-one-off-source".to_string(),
+            usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            selected_condition_id: "0xcondition".to_string(),
+            selected_token_id: "token-a".to_string(),
+            gamma_markets: gamma_markets(),
+            selected_source_parquet_path: selected_parquet_path.clone(),
+            selected_source_report_path: selected_report_path.clone(),
+            schema: pmxt_selected_source_schema(),
+        })
+        .expect("expected selected-source projection");
+    let manifest = pmxt_l2_manifest(&expected_projection.projection, &catalog_root);
+    let manifest_hash = manifest.manifest_hash();
+    let selected_source_sha256 = sha256_file(&selected_parquet_path);
+
+    let run = write_pmxt_one_off_l2_artifact_root_run(PmxtOneOffArtifactRootRunSpec {
+        selected_source: PmxtSelectedSourceProjectionSpec {
+            source_binding: "synthetic-pmxt-one-off-source".to_string(),
+            usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            selected_condition_id: "0xcondition".to_string(),
+            selected_token_id: "token-a".to_string(),
+            gamma_markets: gamma_markets(),
+            selected_source_parquet_path: selected_parquet_path.clone(),
+            selected_source_report_path: selected_report_path.clone(),
+            schema: pmxt_selected_source_schema(),
+        },
+        output_dir: output_dir.clone(),
+        catalog_root: catalog_root.clone(),
+        fingerprint: pmxt_conversion_fingerprint_for_hash(&selected_source_sha256),
+        manifest,
+        manifest_hash,
+        normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
+        output_catalog_uri: format!("file://{}", catalog_root.display()),
+        execution_catalog_uri: catalog_root.display().to_string(),
+        direct_s3_catalog_access_proven: false,
+        acceptance_mode: AcceptanceMode::Manual,
+        accepted_by: "source-proof-reviewer".to_string(),
+        accepted_at: "2026-06-08T00:00:00Z".to_string(),
+        artifact_uris: pmxt_result_artifact_uris(&output_dir),
+        created_at: "2026-06-08T00:00:00Z".to_string(),
+        claim_limits: vec![
+            "one-off PMXT L2 sample only".to_string(),
+            "no dynamic tick-size replay claim".to_string(),
+            "no expanded coverage claim".to_string(),
+        ],
+    })
+    .expect("write PMXT one-off artifact-root run");
+
+    let contract_path = output_dir.join(PMXT_ONE_OFF_RESULT_CONTRACT_FILE);
+    assert!(contract_path.exists(), "result contract must be written");
+    assert!(output_dir.join(CONVERSION_CHECKPOINT_FILE).exists());
+    assert!(output_dir.join(CONVERSION_MANIFEST_FILE).exists());
+    assert!(output_dir.join(CATALOG_METADATA_FILE).exists());
+    let written_contract: BacktestResultContract =
+        serde_json::from_slice(&std::fs::read(&contract_path).expect("read contract"))
+            .expect("parse contract");
+    assert_eq!(written_contract, run.contract_output.contract);
+    assert_eq!(run.selected_projection.selected_rows, 3);
+    assert_eq!(run.selected_projection.projected_l2_rows, 2);
+    assert_eq!(
+        run.contract_output.nt_result.iterations,
+        expected_projection.projection.order_book_deltas.len()
+    );
+    assert_eq!(
+        run.contract_output
+            .contract
+            .event_count_ledger_hash
+            .as_deref(),
+        Some("event-count-ledger-hash")
+    );
+    assert_eq!(
+        run.contract_output
+            .contract
+            .selected_asset_ids_hash
+            .as_deref(),
+        Some("selected-assets-hash")
+    );
+    assert_eq!(
+        run.contract_output.contract.accepted_object_sha256,
+        selected_source_sha256
+    );
+    assert_eq!(
+        run.contract_output.contract.conversion_manifest_hash,
+        run.completed.conversion_manifest_hash
+    );
+    assert_eq!(
+        run.contract_output.contract.catalog_hash,
+        run.completed.catalog_projection.catalog_hash
+    );
+}
+
 fn gamma_markets() -> Vec<GammaMarket> {
     serde_json::from_str(
         r#"[{
@@ -536,11 +641,16 @@ fn binary_option_venue_and_currency(instrument: &InstrumentAny) -> (String, Stri
 }
 
 fn pmxt_conversion_fingerprint() -> ConversionFingerprint {
+    pmxt_conversion_fingerprint_for_hash(
+        "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e",
+    )
+}
+
+fn pmxt_conversion_fingerprint_for_hash(accepted_object_sha256: &str) -> ConversionFingerprint {
     ConversionFingerprint {
         source_proof_id: "source-proof-pmxt-one-off".to_string(),
         source_proof_version: 1,
-        accepted_object_sha256: "0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e"
-            .to_string(),
+        accepted_object_sha256: accepted_object_sha256.to_string(),
         converter_identity: "pmxt-one-off-selected-source-l2-to-nt.v1".to_string(),
         converter_version: "1".to_string(),
         converter_config_hash: "7c5ff8475a73c3aaf3e64cc09d803ff34de9cbc51345978406125fcc5147879a"
@@ -653,6 +763,28 @@ fn pmxt_result_artifact_uris(output_dir: &std::path::Path) -> ResultArtifactUris
     }
 }
 
+fn pmxt_selected_source_schema() -> PmxtSelectedSourceSchema {
+    PmxtSelectedSourceSchema {
+        timestamp_received_column: "timestamp_received".to_string(),
+        timestamp_column: "timestamp".to_string(),
+        market_column: "market".to_string(),
+        event_type_column: "event_type".to_string(),
+        asset_id_column: "asset_id".to_string(),
+        bids_column: "bids".to_string(),
+        asks_column: "asks".to_string(),
+        price_column: "price".to_string(),
+        size_column: "size".to_string(),
+        side_column: "side".to_string(),
+        best_bid_column: "best_bid".to_string(),
+        best_ask_column: "best_ask".to_string(),
+        buy_side: "BUY".to_string(),
+        sell_side: "SELL".to_string(),
+        book_event_type: "book".to_string(),
+        price_change_event_type: "price_change".to_string(),
+        ignored_event_types: vec!["last_trade_price".to_string()],
+    }
+}
+
 fn write_pmxt_selected_source_fixture(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new(
@@ -746,13 +878,48 @@ fn write_pmxt_selected_source_fixture(path: &std::path::Path) {
     writer.close().expect("close selected source parquet");
 }
 
-fn write_selected_source_report(path: &std::path::Path, parquet_path: &std::path::Path, rows: u64) {
+fn write_selector_report_fixture(path: &std::path::Path) {
+    let report = serde_json::json!({
+        "schema_version": "first-proof-selector-report.v1",
+        "selector_id": "pmxt-one-off-selector",
+        "status": "selected",
+        "selection": {
+            "required_event_families": ["book", "price_change", "last_trade_price"],
+            "excluded_event_families": ["tick_size_change"],
+            "row_budget": 10,
+            "max_selected_assets": 1
+        },
+        "event_count_ledger_hash": "event-count-ledger-hash",
+        "total_assets": 1,
+        "eligible_assets": 1,
+        "selected_assets": [{
+            "asset_id": "token-a",
+            "replay_rows": 3
+        }],
+        "selected_asset_ids_hash": "selected-assets-hash",
+        "excluded_event_asset_count": 0,
+        "excluded_event_row_count": 0,
+        "blocking_issues": []
+    });
+    std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&report).expect("selector report json"),
+    )
+    .expect("write selector report");
+}
+
+fn write_selected_source_report_with_selector(
+    path: &std::path::Path,
+    parquet_path: &std::path::Path,
+    selector_report_path: &std::path::Path,
+    rows: u64,
+) {
     let report = SelectedSourceSliceReport {
         schema_version: "selected-source-slice-report.v1".to_string(),
         source_parquet_path: "/source/full.parquet".to_string(),
         source_parquet_sha256: "source-sha".to_string(),
-        selector_report_path: "/selector/report.json".to_string(),
-        selector_report_sha256: "selector-sha".to_string(),
+        selector_report_path: selector_report_path.display().to_string(),
+        selector_report_sha256: sha256_file(selector_report_path),
         output_parquet_path: parquet_path.display().to_string(),
         asset_id_column: "asset_id".to_string(),
         usage_scope: SelectedSourceSliceUsageScope::OneOffBackfillData,

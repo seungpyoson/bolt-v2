@@ -103,17 +103,17 @@
     },
     {
       "nt_field": "currency",
-      "status": "resolved_by_pinned_nt_adapter_pending_bte_integration",
-      "evidence": "Pinned NT Polymarket parser constructs BinaryOption currency with get_currency(PUSD); BTE still needs an approved dependency path to reuse that parser rather than duplicating it."
+      "status": "resolved_by_pinned_nt_adapter_bounded_one_off_integrated",
+      "evidence": "Pinned NT Polymarket parser constructs BinaryOption currency with get_currency(PUSD); the bounded BTE one-off proof reuses the pinned NT parser/provider path instead of a custom BinaryOption mapper."
     },
     {
       "nt_field": "activation_ns",
-      "status": "resolved_by_pinned_nt_adapter_pending_bte_integration",
+      "status": "resolved_by_pinned_nt_adapter_bounded_one_off_integrated",
       "evidence": "Pinned NT Polymarket parser maps Gamma startDate to activation_ns; CLOB aot/acceptingOrdersTimestamp remains source evidence for order acceptance, not the NT activation field."
     },
     {
       "nt_field": "expiration_ns",
-      "status": "resolved_by_pinned_nt_adapter_pending_bte_integration",
+      "status": "resolved_by_pinned_nt_adapter_bounded_one_off_integrated",
       "evidence": "Pinned NT Polymarket parser maps Gamma endDate to expiration_ns."
     },
     {
@@ -123,7 +123,7 @@
     },
     {
       "nt_field": "size_precision",
-      "status": "resolved_by_pinned_nt_adapter_pending_bte_integration",
+      "status": "resolved_by_pinned_nt_adapter_bounded_one_off_integrated",
       "evidence": "Pinned NT Polymarket parser uses size_precision 6 for 6-decimal collateral increments; PMXT source schema reports size DECIMAL(18,6)."
     },
     {
@@ -133,13 +133,13 @@
     },
     {
       "nt_field": "size_increment",
-      "status": "resolved_by_pinned_nt_adapter_pending_bte_integration",
+      "status": "resolved_by_pinned_nt_adapter_bounded_one_off_integrated",
       "evidence": "Pinned NT Polymarket parser uses size_increment 0.000001. CLOB/Gamma minimum order size is 5 and NT deliberately does not map that into min_quantity."
     },
     {
       "nt_field": "min_quantity",
-      "status": "source_backed_candidate",
-      "evidence": "CLOB mos and Gamma orderMinSize are both 5; mapping to NT optional min_quantity still needs converter/readback proof."
+      "status": "source_evidence_not_nt_instrument_field",
+      "evidence": "CLOB mos and Gamma orderMinSize are both 5; pinned NT deliberately does not map venue minimum order size into BinaryOption min_quantity, so this remains venue/admission source evidence, not an NT instrument-field blocker."
     },
     {
       "nt_field": "outcome",
@@ -148,12 +148,12 @@
     },
     {
       "nt_field": "maker_fee",
-      "status": "resolved_by_pinned_nt_adapter_pending_bte_integration",
+      "status": "resolved_by_pinned_nt_adapter_bounded_one_off_integrated",
       "evidence": "Pinned NT Polymarket parser maps feeSchedule-backed maker fee to zero and otherwise leaves the optional maker fee unset so BinaryOption defaults it to zero."
     },
     {
       "nt_field": "taker_fee",
-      "status": "resolved_by_pinned_nt_adapter_pending_bte_integration",
+      "status": "resolved_by_pinned_nt_adapter_bounded_one_off_integrated",
       "evidence": "Pinned NT Polymarket parser maps feeSchedule.rate to taker_fee and otherwise leaves the optional taker fee unset so BinaryOption defaults it to zero."
     }
   ],
@@ -193,17 +193,17 @@
       "maker_fee": "zero when feeSchedule-backed, otherwise BinaryOption default zero",
       "taker_fee": "feeSchedule.rate when present, otherwise BinaryOption default zero"
     },
-    "bte_integration_blocker": "backtesting-vertical-slice does not currently depend on nautilus-polymarket. Adding that dependency and lock entry was not performed because prior user-scoped file-change instructions listed this crate's Cargo.toml and Cargo.lock as not-to-touch without fresh explicit approval."
+    "bte_integration_status": "bounded_one_off_integrated_with_pinned_nautilus_polymarket; broad durable PMXT backfill remains blocked by source-proof acceptance, expanded coverage, throughput/cost, and dynamic tick-size replay proof."
   },
   "mapping_conclusion": {
-    "instrument_mapping_status": "pinned_nt_adapter_surface_found_not_integrated",
-    "replay_mapping_status": "candidate_not_accepted",
-    "reason": "The bounded official join plus pinned NT source inspection removes the need to invent a BinaryOption mapping: the correct path is to reuse NT's Polymarket parser/provider for instruments and token-id lookup. The mapping is still not accepted because BTE has not integrated that dependency and has not committed generic PMXT OrderBookDelta/TradeTick conversion plus ParquetDataCatalog read-back.",
+    "instrument_mapping_status": "pinned_nt_adapter_bounded_one_off_integrated",
+    "replay_mapping_status": "bounded_one_off_proven_broad_backfill_not_accepted",
+    "reason": "The bounded official join plus pinned NT source inspection removes the need to invent a BinaryOption mapping: the bounded one-off path reuses NT's Polymarket parser/provider for instruments and token-id lookup, projects selected PMXT rows to OrderBookDelta and TradeTick, writes/reads ParquetDataCatalog data, and runs BacktestNode. This is still not durable broad PMXT acceptance because the source proof remains pending and expanded coverage, throughput/cost, artifact-root storage proof, and dynamic tick-size replay proof are not accepted.",
     "required_next_evidence": [
-      "approved BTE dependency path to nautilus-polymarket at the pinned NT revision",
-      "machine-checked proof that BTE uses NT Polymarket parse_gamma_market/create_instrument_from_def or PolymarketInstrumentProvider rather than a custom BinaryOption mapper",
-      "committed generic PMXT order-book adapter that joins PMXT asset_id to NT Polymarket token-id instruments and writes OrderBookDelta and TradeTick without venue constants",
-      "ParquetDataCatalog write plus query_typed_data read-back for the selected sample under artifact-root staging"
+      "accepted durable PMXT/Polymarket source proof instead of usage_scope=one_off_backfill_data",
+      "expanded coverage and gap policy before any tranche expansion",
+      "throughput, exact cost, and artifact-root storage proof for the accepted expanded tranche",
+      "dynamic tick-size replay proof or accepted bounded-exclusion policy before broad PMXT L2"
     ]
   }
 }

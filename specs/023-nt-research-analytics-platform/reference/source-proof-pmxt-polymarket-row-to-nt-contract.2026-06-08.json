@@ -249,7 +249,7 @@
   "price_change_grouping_status": {
     "status": "bounded_one_off_catalog_proven",
     "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-price-change-grouping-status.2026-06-08.json",
-    "mapping_constraint": "timestamp_received is part of the price_change boundary and must not be dropped; one-row-to-one-OrderBookDeltas is the preferred pinned NT live-client parity policy, but implementation and catalog read-back remain pending."
+    "mapping_constraint": "timestamp_received is part of the price_change boundary and must not be dropped; one-row-to-one OrderBookDelta projection is the bounded pinned-NT live-client parity policy now proven for the selected PMXT one-off artifact. Broad backfill still requires accepted durable source proof, expanded coverage, and dynamic tick-size replay proof or an accepted bounded-exclusion policy."
   },
   "tick_size_change_status": {
     "status": "open_dynamic_instrument_epoch_replay_unproven",

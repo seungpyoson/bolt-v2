@@ -15,12 +15,12 @@
     {
       "precondition": "source-contract claims are explicit",
       "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-row-to-nt-contract.2026-06-08.json",
-      "evidence_summary": "The PMXT Polymarket sample contract records row shapes, bounded grouping evidence, and unresolved NT mapping gates before implementation or broad backfill."
+      "evidence_summary": "The PMXT Polymarket sample contract records row shapes, bounded grouping evidence, NT Polymarket parser/provider reuse, bounded one-off OrderBookDelta/TradeTick projection, and the broad-backfill blockers that remain after the one-off proof."
     },
     {
       "precondition": "source-to-NT catalog status is explicit",
       "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json",
-      "evidence_summary": "BTE-022 remains open for binary-option L2 until NT Polymarket parser reuse, ParquetDataCatalog read-back, and BacktestNode consumption are proven."
+      "evidence_summary": "BTE-022 remains open for broad binary-option L2 because the bounded PMXT one-off ParquetDataCatalog and BacktestNode proof is not durable source acceptance, expanded coverage, throughput/cost proof, or dynamic tick-size replay proof."
     },
     {
       "precondition": "cost baseline exists",
@@ -48,7 +48,7 @@
     "row_shape_compute_risk": [
       "The full one-hour PMXT sample has 64,768,138 price_change rows.",
       "Grouping by market and source timestamp yields 32,066,846 groups, with 31,981,978 multi-row groups.",
-      "A safe converter cannot stream each flattened row as an independent NT batch; it must group by source contract before catalog write."
+      "A safe converter must not group by market and source timestamp alone; the current bounded policy preserves timestamp_received as the source-message boundary and ts_init/coverage evidence."
     ]
   },
   "approved_cost_cut_levers": [
@@ -70,19 +70,22 @@
     },
     {
       "lever": "one-object proof before tranche expansion",
-      "rule": "The next binary-option L2 run is capped to one verified hourly PMXT Polymarket object until NT catalog read-back and BacktestNode consumption are proven.",
+      "rule": "The current binary-option L2 evidence is capped to one verified PMXT selected-source proof artifact; tranche expansion remains blocked even though NT catalog read-back and BacktestNode consumption are proven for that one-off artifact.",
       "current_cap": {
         "max_objects": 1,
         "max_raw_bytes": 400000000,
         "source_binding": "polymarket-parquet-archive-index",
-        "table_family": "orderbook_l2",
+        "table_family": "order_book_snapshot_deltas",
         "not_production_backfill": true
       },
       "required_evidence_before_expansion": [
-        "raw download throughput",
-        "normalization throughput",
+        "accepted durable source proof",
+        "expanded coverage and gap policy",
+        "raw download throughput for the accepted tranche",
+        "normalization throughput for the accepted tranche",
         "catalog write throughput",
-        "catalog read-back throughput",
+        "catalog read-back throughput for the expanded tranche",
+        "dynamic tick-size replay proof or accepted bounded-exclusion policy",
         "peak memory",
         "output catalog bytes",
         "result-contract provenance bindings"
@@ -116,7 +119,8 @@
         "InstrumentAny::BinaryOption catalog write/read-back",
         "OrderBookDelta catalog write/read-back",
         "TradeTick catalog write/read-back",
-        "BacktestNode consumption of the same catalog path"
+        "BacktestNode consumption of the same catalog path",
+        "dynamic tick-size replay proof or accepted bounded-exclusion policy before broad PMXT L2"
       ]
     },
     {
@@ -175,15 +179,14 @@
   ],
   "current_decision": {
     "bte_028_can_close": true,
-    "bte_027_can_close": false,
+    "bte_027_can_close": true,
     "bte_022_can_close": false,
     "broad_backfill_allowed": false,
-    "next_allowed_work": "Implement or further prove the one-object PMXT Polymarket NT mapping/read-back path only after the dependency-boundary scope is explicitly accepted."
+    "next_allowed_work": "Do not repeat the one-off PMXT NT mapping/read-back proof. Next work must either close BTE-006 producer IAM scope without broad backfill, or advance BTE-022 with durable PMXT/Polymarket source acceptance evidence: expanded coverage, gap policy, throughput/cost, artifact-root storage proof, and dynamic tick-size replay proof or an accepted bounded-exclusion policy."
   },
   "open_follow_on_tasks": [
+    "BACKTESTING_ENGINE-006",
     "BACKTESTING_ENGINE-022",
-    "BACKTESTING_ENGINE-027",
-    "BACKTESTING_ENGINE-029",
-    "BACKTESTING_ENGINE-041"
+    "BACKTESTING_ENGINE-039"
   ]
 }

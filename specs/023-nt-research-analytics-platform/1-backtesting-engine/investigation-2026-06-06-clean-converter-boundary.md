@@ -1803,6 +1803,11 @@ Verification:
   polymarket-parquet-archive-index`, `table_family =
   order_book_snapshot_deltas`, `coverage_axis = timestamp_received`, and the
   PMXT source proof id/version from the committed source-proof report.
+- The rejected-ledger status is now committed in
+  `reference/source-proof-pmxt-coverage-ledger-status.2026-06-09.json`: two
+  records, both `canonical_ready = false`, both blocked by
+  `source_proof_not_accepted`, with ledger file sha256
+  `7dc20194f826eb9c05ec99c27cdb86057f775e1486d688a73cc2924659a4c2cf`.
 
 Current conclusion:
 

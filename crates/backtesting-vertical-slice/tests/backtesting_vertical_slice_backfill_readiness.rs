@@ -586,6 +586,7 @@ fn ready_backfill_preflight_with_proof(
             record_id: "synthetic-backfill-record".to_string(),
             source_binding: source_binding.to_string(),
             table_family: "trades".to_string(),
+            coverage_axis: "synthetic_archive_hour".to_string(),
             source_proof_id: source_proof_id.to_string(),
             source_proof_version,
             accepted_objects: 1,

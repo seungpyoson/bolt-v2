@@ -501,9 +501,10 @@ instrument_id = "BTC-USD.UNKNOWN"
     assert!(
         messages.iter().any(|message| {
             message.contains("reference_current_price.source.chainlink_primary.instrument_id")
-                && message.contains("chainlink_data_streams.feed_bindings")
+                && message.contains("provider catalog")
+                && !message.contains("chainlink_data_streams.feed_bindings")
         }),
-        "catalog-missing Chainlink reference instrument should fail validation, got: {messages:#?}"
+        "catalog-missing reference instrument should fail with provider-agnostic validation text, got: {messages:#?}"
     );
 }
 

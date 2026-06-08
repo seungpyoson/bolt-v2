@@ -106,7 +106,6 @@ pub struct ParametersBlock {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeParametersBlock {
-    pub reference_publish_topic: String,
     pub warmup_tick_count: u64,
     pub reentry_cooldown_secs: u64,
     pub book_impact_cap_bps: u64,
@@ -131,7 +130,6 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Wire {
-            reference_publish_topic: String,
             warmup_tick_count: u64,
             reentry_cooldown_secs: u64,
             book_impact_cap_bps: u64,
@@ -187,7 +185,6 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
         }
 
         Ok(Self {
-            reference_publish_topic: wire.reference_publish_topic,
             warmup_tick_count: wire.warmup_tick_count,
             reentry_cooldown_secs: wire.reentry_cooldown_secs,
             book_impact_cap_bps: wire.book_impact_cap_bps,

@@ -1039,7 +1039,6 @@ order_notional_target = "5.00"
 maximum_position_notional = "10.00"
 
 [parameters.runtime]
-reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-001"
 warmup_tick_count = 20
 reentry_cooldown_secs = 30
 book_impact_cap_bps = 50
@@ -1529,7 +1528,6 @@ For the current `binary_oracle_edge_taker` archetype:
 
 Runtime fields:
 
-- `reference_publish_topic`: string; reference-current-price topic consumed by the runtime strategy
 - `warmup_tick_count`: unsigned integer; fresh current-price warmup count before entry is allowed
 - `reentry_cooldown_secs`: unsigned integer; cooldown after an entry attempt
 - `book_impact_cap_bps`: unsigned integer; maximum allowed book-impact basis points for order construction
@@ -1839,7 +1837,6 @@ order_notional_target = "5.00"
 maximum_position_notional = "10.00"
 
 [parameters.runtime]
-reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-001"
 warmup_tick_count = 20
 reentry_cooldown_secs = 30
 book_impact_cap_bps = 50

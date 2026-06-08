@@ -2306,6 +2306,7 @@ fn validate_reference_current_price(
 
         match provider_metadata.identifier_kind {
             ReferencePriceIdentifierKind::InstrumentId => {
+                let provider_key = source.provider.as_str();
                 if source.enabled
                     && source
                         .instrument_id
@@ -2313,12 +2314,12 @@ fn validate_reference_current_price(
                         .is_none_or(reference_price_field_is_blank)
                 {
                     errors.push(format!(
-                        "{context}: reference_current_price.source.{source_id}.instrument_id is required for chainlink_ws"
+                        "{context}: reference_current_price.source.{source_id}.instrument_id is required for provider `{provider_key}`"
                     ));
                 }
                 if source.symbol.is_some() {
                     errors.push(format!(
-                        "{context}: reference_current_price.source.{source_id}.symbol is unsupported for chainlink_ws"
+                        "{context}: reference_current_price.source.{source_id}.symbol is unsupported for provider `{provider_key}`"
                     ));
                 }
                 if source.enabled
@@ -2343,7 +2344,7 @@ fn validate_reference_current_price(
                     ) {
                         Ok(true) => {}
                         Ok(false) => errors.push(format!(
-                            "{context}: reference_current_price.source.{source_id}.instrument_id `{instrument_id}` is not present in chainlink_data_streams.feed_bindings"
+                            "{context}: reference_current_price.source.{source_id}.instrument_id `{instrument_id}` is not present in provider catalog for provider `{provider_key}`"
                         )),
                         Err(message) => errors.push(format!(
                             "{context}: reference_current_price.source.{source_id}.instrument_id `{instrument_id}` could not be checked against provider catalog: {message}"
@@ -2352,6 +2353,7 @@ fn validate_reference_current_price(
                 }
             }
             ReferencePriceIdentifierKind::Symbol => {
+                let provider_key = source.provider.as_str();
                 if source.enabled
                     && source
                         .symbol
@@ -2359,12 +2361,12 @@ fn validate_reference_current_price(
                         .is_none_or(reference_price_field_is_blank)
                 {
                     errors.push(format!(
-                        "{context}: reference_current_price.source.{source_id}.symbol is required for polyresearch_ws"
+                        "{context}: reference_current_price.source.{source_id}.symbol is required for provider `{provider_key}`"
                     ));
                 }
                 if source.instrument_id.is_some() {
                     errors.push(format!(
-                        "{context}: reference_current_price.source.{source_id}.instrument_id is unsupported for polyresearch_ws"
+                        "{context}: reference_current_price.source.{source_id}.instrument_id is unsupported for provider `{provider_key}`"
                     ));
                 }
                 if source.enabled

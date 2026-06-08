@@ -635,6 +635,20 @@ fn binary_oracle_strategy_rejects_legacy_price_to_beat_source_under_runtime() {
 }
 
 #[test]
+fn binary_oracle_strategy_rejects_legacy_reference_publish_topic_under_runtime() {
+    let messages = legacy_binary_oracle_runtime_field_messages(
+        "reference_publish_topic = \"platform.runtime.selection.binary_oracle_edge_taker-001\"",
+    );
+
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("reference_publish_topic")),
+        "legacy reference_publish_topic must fail closed at the strategy runtime schema boundary: {messages:#?}"
+    );
+}
+
+#[test]
 fn bolt_v3_strategy_execution_client_id_rejects_data_only_client_with_client_vocabulary() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
@@ -5494,6 +5508,7 @@ fn is_legacy_binary_oracle_gate_runtime_line(line: &&str) -> bool {
         "price_to_beat_report_schema_version",
         "price_to_beat_report_decimal_scale",
         "forced_flat_stale_chainlink_ms",
+        "reference_publish_topic",
     ]
     .iter()
     .any(|field| trimmed.starts_with(field))
@@ -5514,6 +5529,7 @@ fn assert_binary_oracle_strategy_source_uses_gate_schema(label: &str, source: &s
         "price_to_beat_report_schema_version",
         "price_to_beat_report_decimal_scale",
         "forced_flat_stale_chainlink_ms",
+        "reference_publish_topic",
     ] {
         assert!(
             !source.contains(forbidden),

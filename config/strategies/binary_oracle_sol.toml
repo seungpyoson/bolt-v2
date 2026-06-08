@@ -89,7 +89,6 @@ data_client_id = "chainlink_strike"
 instrument_id = "SOL-USD.CHAINLINK"
 
 [parameters.runtime]
-reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-003"
 warmup_tick_count = 20
 reentry_cooldown_secs = 30
 book_impact_cap_bps = 50

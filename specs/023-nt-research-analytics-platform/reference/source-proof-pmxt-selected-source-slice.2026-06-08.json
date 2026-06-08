@@ -155,6 +155,13 @@
       "reason": "Those artifacts predate selector-carried source_row_groups and are historical only."
     }
   },
+  "selected_source_guardrails": {
+    "status": "selector_exclusion_required_for_schema_forbidden_event_types",
+    "root_cause": "The selected-source projection already rejected schema-configured forbidden ignored event types, but it did not require the selector report itself to prove those event families were excluded before slicing.",
+    "policy": "Before PMXT one-off projection, schema.forbidden_ignored_event_types must be covered by selector.selection.excluded_event_families. Both sides are config-owned values; the production guard does not hardcode venue names or event names.",
+    "repo_evidence": "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs ensure_selector_excludes_forbidden_event_types",
+    "test_evidence": "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs pmxt_selected_source_projection_requires_selector_to_exclude_forbidden_event_types"
+  },
   "metadata_gate_ref": {
     "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json",
     "status": "accepted",

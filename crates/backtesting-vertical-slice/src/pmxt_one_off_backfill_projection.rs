@@ -5,7 +5,7 @@
 //! PMXT a canonical source-proof input or a reusable venue abstraction.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
 };
@@ -497,6 +497,7 @@ pub fn project_pmxt_selected_source_parquet_to_nt(
         "selector report event_count_ledger_hash must not be empty"
     );
     ensure_ignored_event_types_are_allowed(&spec.schema)?;
+    ensure_selector_excludes_forbidden_event_types(&selector_report, &spec.schema)?;
 
     let decoded = decode_selected_source_rows(&spec, &report)?;
     let projected_l2_rows = decoded.rows.len() as u64;
@@ -563,6 +564,25 @@ fn ensure_ignored_event_types_are_allowed(schema: &PmxtSelectedSourceSchema) -> 
                 "PMXT selected-source event_type {ignored_event_type:?} cannot be ignored"
             );
         }
+    }
+    Ok(())
+}
+
+fn ensure_selector_excludes_forbidden_event_types(
+    selector_report: &FirstProofSelectorReport,
+    schema: &PmxtSelectedSourceSchema,
+) -> Result<()> {
+    let excluded_event_families = selector_report
+        .selection
+        .excluded_event_families
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    for forbidden_event_type in &schema.forbidden_ignored_event_types {
+        ensure!(
+            excluded_event_families.contains(forbidden_event_type.as_str()),
+            "selector report must exclude forbidden selected-source event_type {forbidden_event_type:?}"
+        );
     }
     Ok(())
 }

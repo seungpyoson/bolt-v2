@@ -2195,3 +2195,48 @@ Current conclusion:
 - This still does not close `BACKTESTING_ENGINE-022`; it strengthens the
   evidence for why broad PMXT/Polymarket L2 acceptance needs either a proven
   NT-native dynamic epoch path or a bounded exclusion policy.
+
+## 2026-06-09 selected-source forbidden-event exclusion checkpoint
+
+Root cause addressed:
+
+- The PMXT one-off projection schema already carried
+  `forbidden_ignored_event_types`, and the converter rejected attempts to
+  silently ignore those event rows.
+- The projection also read the selector report, but it did not require the
+  selector's own `excluded_event_families` to cover those schema-forbidden
+  event types before accepting the selected-source slice.
+- That left a provenance gap: a tiny selected-source artifact could pass if it
+  happened not to contain a tick-size-change row, without proving the selector
+  excluded the event family at source selection time.
+
+Change:
+
+- `project_pmxt_selected_source_parquet_to_nt` now requires every configured
+  `forbidden_ignored_event_type` to appear in the selector report's configured
+  `excluded_event_families`.
+- The guard is config-driven: production code compares schema-owned values to
+  selector-owned values and does not hardcode a venue, source, or event name.
+- `source-proof-pmxt-selected-source-slice.2026-06-08.json` now records this
+  selected-source guardrail as explicit reference evidence.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_projection_requires_selector_to_exclude_forbidden_event_types -- --nocapture`
+  failed because a selector report with no excluded event families still let
+  the PMXT projection succeed.
+- GREEN: the same focused test passed after adding the selector exclusion
+  coverage check.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_pmxt_one_off_projection -- --nocapture`
+  passed 17 related PMXT projection tests.
+
+Current conclusion:
+
+- This closes another BTE-022 overclaim path at the selected-source boundary:
+  the bounded one-off proof must now prove the excluded event family policy
+  before conversion, not merely rely on a lucky tiny slice.
+- It still does not close `BACKTESTING_ENGINE-022`. PMXT broad backfill still
+  needs durable accepted source proof, expanded coverage/cost/storage evidence,
+  and dynamic tick-size replay proof or an accepted bounded-exclusion policy.

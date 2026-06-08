@@ -488,6 +488,37 @@ fn pmxt_selected_source_projection_rejects_ignored_tick_size_change_rows() {
 }
 
 #[test]
+fn pmxt_selected_source_projection_requires_selector_to_exclude_forbidden_event_types() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let selected_parquet_path = dir.path().join("selected-source.parquet");
+    let selector_report_path = dir.path().join("first-proof-selector-report.json");
+    let selected_report_path = dir.path().join("selected-source-report.json");
+    write_pmxt_selected_source_fixture(&selected_parquet_path);
+    write_selector_report_without_excluded_events_fixture(&selector_report_path);
+    write_selected_source_report_with_selector(
+        &selected_report_path,
+        &selected_parquet_path,
+        &selector_report_path,
+        3,
+    );
+
+    let error = project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
+        source_binding: "synthetic-pmxt-one-off-source".to_string(),
+        usage_scope: SourceProofUsageScope::OneOffBackfillData,
+        selected_condition_id: "0xcondition".to_string(),
+        selected_token_id: "token-a".to_string(),
+        gamma_markets: gamma_markets(),
+        selected_source_parquet_path: selected_parquet_path,
+        selected_source_report_path: selected_report_path,
+        schema: pmxt_selected_source_schema(),
+    })
+    .expect_err("selector must prove forbidden event families are excluded");
+
+    assert!(error.to_string().contains("selector report"), "{error:#}");
+    assert!(error.to_string().contains("tick_size_change"), "{error:#}");
+}
+
+#[test]
 fn pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_metadata() {
     let projection = pmxt_projection_fixture();
     let output_dir = tempfile::TempDir::new().expect("output dir");
@@ -1921,13 +1952,24 @@ fn write_pmxt_selected_source_mixed_fixture(path: &std::path::Path) {
 }
 
 fn write_selector_report_fixture(path: &std::path::Path) {
+    write_selector_report_with_excluded_events_fixture(path, &["tick_size_change"]);
+}
+
+fn write_selector_report_without_excluded_events_fixture(path: &std::path::Path) {
+    write_selector_report_with_excluded_events_fixture(path, &[]);
+}
+
+fn write_selector_report_with_excluded_events_fixture(
+    path: &std::path::Path,
+    excluded_event_families: &[&str],
+) {
     let report = serde_json::json!({
         "schema_version": "first-proof-selector-report.v1",
         "selector_id": "pmxt-one-off-selector",
         "status": "selected",
         "selection": {
             "required_event_families": ["book", "price_change", "last_trade_price"],
-            "excluded_event_families": ["tick_size_change"],
+            "excluded_event_families": excluded_event_families,
             "row_budget": 10,
             "max_selected_assets": 1
         },

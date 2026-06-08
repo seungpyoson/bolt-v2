@@ -46,5 +46,10 @@
   "final_snapshot_content_hash": "86734a516a6c1601f64582304acaacdb78495de4d4462e2cf72de309a6503591",
   "persisted_final_snapshot_json_sha256": "fff01e6619766d206a49bf4116d3be3dace741f11f4b1779a2a4847351aa0c9c",
   "direct_s3_commit_proven": true,
-  "producer_iam_scope_proven": false
+  "producer_iam_scope_proven": false,
+  "producer_iam_scope_denied_kinds": [],
+  "producer_iam_scope_denied_write_attempts": 0,
+  "producer_iam_scope_denied_write_rejections": 0,
+  "producer_iam_scope_violation_count": 0,
+  "producer_iam_scope_violation_uris": []
 }

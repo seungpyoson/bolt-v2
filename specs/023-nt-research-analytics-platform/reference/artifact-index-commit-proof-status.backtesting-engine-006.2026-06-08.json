@@ -9,7 +9,7 @@
     "direct_s3_commit_proven": true,
     "real_s3_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-20260608-3d6b1529",
     "report_path": "specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/artifact-index-commit-proof-report.backtesting-engine-006-direct-s3.2026-06-08.json",
-    "report_content_hash": "14877f61c76c4d2ecdc58d94f0152f8f93ffe323e1c3e760795a657b25ece4b3",
+    "report_content_hash": "091501378ca70ca99b353d2252f040ef6b4d20c3d9b9e6db1dc29cc5d0489bf8",
     "event_create_only_proven": true,
     "snapshot_create_only_proven": true,
     "audit_epoch_create_only_proven": true,

@@ -375,6 +375,39 @@ instrument_id = "BTC-USD.CHAINLINK"
 }
 
 #[test]
+fn reference_current_price_validation_rejects_lowercase_asset_with_precise_message() {
+    let messages = validate_reference_current_price(
+        r#"
+[reference_current_price]
+asset = "btc"
+sources = ["chainlink_primary"]
+min_valid_sources = 1
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.chainlink_primary]
+provider = "chainlink_ws"
+enabled = true
+required = false
+client_id = "chainlink_reference"
+instrument_id = "BTC-USD.CHAINLINK"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("reference_current_price.asset")
+                && message.contains("uppercase")
+                && message.contains("ASCII")
+        }),
+        "lowercase reference_current_price.asset should fail with a precise validation message, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn reference_current_price_validation_rejects_non_positive_thresholds() {
     let messages = validate_reference_current_price(
         r#"

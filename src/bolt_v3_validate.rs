@@ -2193,7 +2193,7 @@ fn validate_reference_current_price(
             .all(|char| char.is_ascii_uppercase() || char.is_ascii_digit())
     {
         errors.push(format!(
-            "{context}: reference_current_price.asset must be a normalized non-empty symbol without surrounding or embedded whitespace"
+            "{context}: reference_current_price.asset must be a normalized non-empty uppercase ASCII asset symbol containing only letters and digits"
         ));
     }
 

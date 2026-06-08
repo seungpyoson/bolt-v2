@@ -265,6 +265,8 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
         }
 
         let mut seen_source_ids = BTreeSet::new();
+        let mut seen_source_instrument_clients: BTreeMap<String, (String, String)> =
+            BTreeMap::new();
         let mut enabled_quorum_sources = 0usize;
         for (index, source) in surface.sources.iter().enumerate() {
             let source_context = format!("{context}.sources[{index}]");
@@ -289,6 +291,31 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
                             source.data_client_id
                         ));
                     }
+                }
+            }
+
+            let source_base_asset = instrument_base_asset(&source.instrument_id);
+            if source_base_asset != surface.canonical_base_asset {
+                errors.push(format!(
+                    "{source_context}.instrument_id `{}` resolves to base asset `{source_base_asset}`, which must match {context}.canonical_base_asset `{}`",
+                    source.instrument_id, surface.canonical_base_asset,
+                ));
+            }
+            let instrument_key = source.instrument_id.to_string();
+            let data_client_id = source.data_client_id.to_string();
+            match seen_source_instrument_clients.get(&instrument_key) {
+                Some((existing_data_client_id, existing_context))
+                    if existing_data_client_id != &data_client_id =>
+                {
+                    errors.push(format!(
+                        "{source_context}.instrument_id `{}` with data_client_id `{data_client_id}` is also used by {existing_context} with distinct data_client_id `{existing_data_client_id}`; realized_volatility_surfaces source events do not carry data_client_id, so same-instrument RV sources must share one data client",
+                        source.instrument_id,
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    seen_source_instrument_clients
+                        .insert(instrument_key, (data_client_id, source_context.clone()));
                 }
             }
 
@@ -340,6 +367,11 @@ fn realized_volatility_source_pair_supported(
             RealizedVolatilitySampleKindBlock::Index,
         )
     )
+}
+
+fn instrument_base_asset(instrument_id: &InstrumentId) -> &str {
+    let symbol = instrument_id.symbol.as_str();
+    symbol.split_once('-').map_or(symbol, |(asset, _)| asset)
 }
 
 fn validate_gate_providers(
@@ -1641,6 +1673,21 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
                 ));
             }
             _ => {}
+        }
+
+        if let Some(surface_id) = &strategy.realized_volatility_surface_id
+            && let Some(surface) = root
+                .realized_volatility_surfaces
+                .as_ref()
+                .and_then(|surfaces| surfaces.get(surface_id))
+            && let Ok(target) =
+                crate::bolt_v3_market_families::target_runtime_fields_from_target(&strategy.target)
+            && target.underlying_asset != surface.canonical_base_asset
+        {
+            errors.push(format!(
+                "{context}: realized_volatility_surface_id `{surface_id}` references realized_volatility_surfaces.{surface_id}.canonical_base_asset `{}`, but target.underlying_asset is `{}`",
+                surface.canonical_base_asset, target.underlying_asset,
+            ));
         }
 
         match root.clients.get(strategy.execution_client_id.as_str()) {

@@ -8809,6 +8809,14 @@ classification = "realized_volatility_config_diagnostic_template"
 reason = "Fail-closed realized-volatility config validation diagnostic; the referenced values come from bolt-v3 TOML and validation state."
 
 [[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"{context}: realized_volatility_surface_id `{surface_id}` references realized_volatility_surfaces.{surface_id}.canonical_base_asset `{}`, but target.underlying_asset is `{}`"'''
+context = '''"{context}: realized_volatility_surface_id `{surface_id}` references realized_volatility_surfaces.{surface_id}.canonical_base_asset `{}`, but target.underlying_asset is `{}`",'''
+classification = "realized_volatility_config_diagnostic_template"
+reason = "Fail-closed realized-volatility config validation diagnostic proving strategy target asset and selected surface asset agree; referenced values come from bolt-v3 TOML and target parsing state."
+
+[[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"realized_volatility_surface_id"'''

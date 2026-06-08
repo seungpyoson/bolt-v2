@@ -33,7 +33,7 @@ use std::{collections::BTreeMap, sync::Arc};
 struct NoopFeeProvider;
 
 const RV_DATA_CLIENT_ID: &str = "<DATA_CLIENT_ID>";
-const RV_DATA_CLIENT_VENUE: &str = "<DATA_CLIENT_VENUE>";
+const RV_DATA_CLIENT_VENUE: &str = "OKX";
 
 impl FeeProvider for NoopFeeProvider {
     fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
@@ -47,7 +47,7 @@ impl FeeProvider for NoopFeeProvider {
 
 fn valid_realized_volatility_surface() -> RealizedVolatilitySurfaceBlock {
     RealizedVolatilitySurfaceBlock {
-        canonical_base_asset: "<BASE_ASSET>".to_string(),
+        canonical_base_asset: "CONFIGURED_ASSET".to_string(),
         canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
         policy: RealizedVolatilityPolicyBlock {
             window_ms: 4_000,
@@ -65,7 +65,7 @@ fn valid_realized_volatility_surface() -> RealizedVolatilitySurfaceBlock {
         sources: vec![RealizedVolatilitySourceBlock {
             source_id: "<SOURCE_ID_A>".to_string(),
             data_client_id: ClientId::from(RV_DATA_CLIENT_ID),
-            instrument_id: InstrumentId::from("<INSTRUMENT_ID_A>.<DATA_CLIENT_ID>"),
+            instrument_id: InstrumentId::from("CONFIGURED_ASSET-QUOTE.<DATA_CLIENT_ID>"),
             source_class: RealizedVolatilitySourceClassBlock::SpotQuote,
             sample_kind: RealizedVolatilitySampleKindBlock::Midpoint,
             enabled: true,
@@ -148,6 +148,64 @@ fn realized_volatility_validation_rejects_unknown_data_client_id() {
             insert_realized_volatility_surface(&mut loaded.root, surface);
         },
         "data_client_id",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_source_asset_mismatch() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources[0].instrument_id =
+                InstrumentId::from("OTHER_ASSET-QUOTE.<DATA_CLIENT_ID>");
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+            loaded.strategies[0].config.realized_volatility_surface_id =
+                Some("<surface_id>".to_string());
+        },
+        "canonical_base_asset",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_strategy_underlying_surface_asset_mismatch() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.canonical_base_asset = "OTHER_ASSET".to_string();
+            surface.sources[0].instrument_id =
+                InstrumentId::from("OTHER_ASSET-QUOTE.<DATA_CLIENT_ID>");
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+            loaded.strategies[0].config.realized_volatility_surface_id =
+                Some("<surface_id>".to_string());
+        },
+        "underlying_asset",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_same_instrument_distinct_data_clients() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            let mut second_source = surface.sources[0].clone();
+            second_source.source_id = "<SOURCE_ID_B>".to_string();
+            second_source.data_client_id = ClientId::from("<DATA_CLIENT_ID_B>");
+            surface.sources.push(second_source);
+            loaded.root.clients.insert(
+                "<DATA_CLIENT_ID_B>".to_string(),
+                ClientBlock {
+                    venue: Venue::from(RV_DATA_CLIENT_VENUE),
+                    data: Some(toml::Value::Table(toml::map::Map::new())),
+                    execution: None,
+                    secrets: None,
+                    readiness_probe: None,
+                },
+            );
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+            loaded.strategies[0].config.realized_volatility_surface_id =
+                Some("<surface_id>".to_string());
+        },
+        "distinct data_client_id",
     );
 }
 

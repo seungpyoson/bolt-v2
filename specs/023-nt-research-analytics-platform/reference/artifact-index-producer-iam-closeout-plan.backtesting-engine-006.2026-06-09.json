@@ -1,0 +1,120 @@
+{
+  "schema_version": "artifact-index-producer-iam-closeout-plan.v1",
+  "created_at_utc": "2026-06-08T22:41:14Z",
+  "task_id": "BACKTESTING_ENGINE-006",
+  "status": "open_security_mutation_required_for_per_kind_iam_or_coordinator_selection",
+  "decision": "Do not rely on Artifact Index producer commits for broad backfill with the current broad artifact-store credential. Direct S3 create-only and conditional pointer mechanics are proven, but producer ownership is not enforced until per-kind Artifact Index credentials reject denied-kind writes or an approved coordinator/table format replaces the direct pointer-commit path.",
+  "current_state_probe_2026_06_08": {
+    "credential_values_read": false,
+    "aws_mutation_performed": false,
+    "commands": [
+      "aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/bolt/artifact-index --query 'Parameters[].Name' --output text",
+      "aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/bolt/artifact-store --query 'Parameters[].Name' --output text"
+    ],
+    "artifact_index_parameter_names": [],
+    "artifact_store_parameter_names": [
+      "/bolt/artifact-store/s3/access-key-id",
+      "/bolt/artifact-store/s3/secret-access-key"
+    ],
+    "conclusion": "Current SSM state still exposes only the broad artifact-store S3 credential pair and no per-kind Artifact Index producer namespace."
+  },
+  "already_proven": {
+    "direct_s3_commit_mechanics_report": "repo://specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/artifact-index-commit-proof-report.backtesting-engine-006-direct-s3.2026-06-08.json",
+    "direct_s3_commit_proven": true,
+    "event_create_only_proven": true,
+    "snapshot_create_only_proven": true,
+    "audit_epoch_create_only_proven": true,
+    "latest_pointer_create_only_proven": true,
+    "latest_pointer_update_if_match_proven": true,
+    "latest_pointer_readback_proven": true,
+    "snapshot_readback_proven": true
+  },
+  "failed_current_credential_probe": {
+    "iam_scope_report": "repo://specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/artifact-index-commit-proof-report.backtesting-engine-006-iam-scope.2026-06-08.json",
+    "current_generic_ssm_binding": "/bolt/artifact-store/s3/*",
+    "required_artifact_kind": "backtests",
+    "denied_artifact_kinds": [
+      "research_analytics"
+    ],
+    "denied_write_attempts": 3,
+    "denied_write_rejections": 0,
+    "violation_count": 3,
+    "producer_iam_scope_proven": false,
+    "conclusion": "Rerunning the denied-kind proof with current SSM parameters cannot close BTE-006 because the available credential can write research_analytics event, snapshot, and latest-pointer paths."
+  },
+  "preferred_close_path": {
+    "path": "per_kind_artifact_index_producer_credentials",
+    "requires_explicit_aws_security_mutation_approval": true,
+    "artifact_kind_to_close_first": "backtests",
+    "ssm_parameter_prefix": "/bolt/artifact-index/producers",
+    "required_ssm_parameter_names": [
+      "/bolt/artifact-index/producers/backtests/access-key-id",
+      "/bolt/artifact-index/producers/backtests/secret-access-key"
+    ],
+    "policy_generator": "repo://crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs::artifact_index_producer_iam_policy",
+    "provisioning_plan_generator": "repo://crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs::artifact_index_producer_iam_provisioning_plan",
+    "policy_shape_for_artifact_root_s3_bolt_parquet_nt_research_analytics": {
+      "effect": "Allow",
+      "actions": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "resources": [
+        "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/v1/events/kind=backtests/*",
+        "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/v1/snapshots/kind=backtests/*",
+        "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/v1/pointers/kind=backtests/latest.json",
+        "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/v1/audit/epochs/*"
+      ],
+      "must_not_include": [
+        "kind=research_analytics",
+        "kind=*"
+      ]
+    },
+    "required_proof_after_provisioning": {
+      "proof_runner": "artifact_index_commit_proof",
+      "artifact_kind": "backtests",
+      "denied_artifact_kinds": [
+        "research_analytics"
+      ],
+      "expected_denied_write_attempts": 3,
+      "expected_denied_write_rejections": 3,
+      "expected_violation_count": 0,
+      "expected_report_field": "producer_iam_scope_proven = true"
+    }
+  },
+  "alternate_close_path": {
+    "path": "approved_commit_coordinator_or_table_format",
+    "requires_design_selection_before_implementation": true,
+    "minimum_required_properties": [
+      "single-writer or conditional compare-and-swap semantics for latest pointer updates",
+      "immutable event and snapshot records",
+      "producer-kind authorization enforced outside broad S3 object write permissions",
+      "read-back proof that committed discovery resolves only active matching snapshots",
+      "failure proof for stale or unauthorized producer updates"
+    ],
+    "examples_that_would_need_separate_approval": [
+      "DynamoDB conditional item coordinator",
+      "Iceberg/Delta-like table with transaction log and producer-kind permissions"
+    ]
+  },
+  "rejected_actions": [
+    {
+      "action": "Rerun artifact_index_commit_proof with /bolt/artifact-store/s3 credentials",
+      "reason": "The current denied-kind proof already showed those credentials can write another artifact kind."
+    },
+    {
+      "action": "Mark producer_iam_scope_proven from direct S3 mechanics",
+      "reason": "Create-only and conditional pointer semantics prove commit mechanics, not producer-kind authorization."
+    },
+    {
+      "action": "Use a broad wildcard Artifact Index policy",
+      "reason": "BTE-006 requires producer-owned per-kind writes; wildcard kind access preserves the same cross-kind write risk."
+    },
+    {
+      "action": "Start broad backfill before BTE-006 closes or is explicitly waived",
+      "reason": "Broad backfill would depend on committed artifact discovery and latest-pointer semantics under an unscoped producer credential."
+    }
+  ],
+  "bte_006_can_close": false,
+  "blocks_broad_backfill": true
+}

@@ -65,6 +65,7 @@
     "remaining_risk": "A broad producer credential can still write another artifact kind's event/snapshot/pointer paths, so producer ownership is not enforced by AWS yet."
   },
   "next_required_evidence": [
+    "Use repo://specs/023-nt-research-analytics-platform/reference/artifact-index-producer-iam-closeout-plan.backtesting-engine-006.2026-06-09.json as the current closeout plan: current SSM state still has no /bolt/artifact-index producer parameters, direct S3 mechanics are proven, and BTE-006 can close only through per-kind Artifact Index producer credentials or an approved coordinator/table format.",
     "Explicit approval for AWS security mutation if per-kind IAM is the selected path.",
     "Provision one producer identity and SSM parameter set per top-level Artifact Index kind using the generated provisioning plan and policy.",
     "Rerun artifact_index_commit_proof with denied_artifact_kinds configured so denied event, snapshot, and latest-pointer writes are rejected by permissions.",

@@ -2457,3 +2457,43 @@ Current conclusion:
   and claim-limit enforcement.
 - This does not close `BACKTESTING_ENGINE-022`; it makes the "use all of what
   NT offers" boundary explicit and auditable.
+
+## 2026-06-09 Artifact Index IAM closeout checkpoint
+
+Current BTE-006 state:
+
+- Direct S3 Artifact Index commit mechanics are proven: immutable event,
+  snapshot, audit epoch, create-only latest pointer, conditional pointer update,
+  read-back, and stale-update rejection are covered by the committed proof
+  report.
+- Producer IAM scope is not proven. The current broad artifact-store credential
+  was able to write all three denied `research_analytics` paths during the
+  real denied-kind probe.
+- A current read-only SSM parameter-name probe still shows no
+  `/bolt/artifact-index` producer credential namespace and only the broad
+  `/bolt/artifact-store/s3/access-key-id` and
+  `/bolt/artifact-store/s3/secret-access-key` parameters.
+
+New evidence:
+
+- Added
+  `reference/artifact-index-producer-iam-closeout-plan.backtesting-engine-006.2026-06-09.json`.
+- Updated
+  `reference/artifact-index-commit-proof-status.backtesting-engine-006.2026-06-08.json`
+  to point at the closeout plan.
+
+Current conclusion:
+
+- `BACKTESTING_ENGINE-006` can close through one of two paths:
+  per-kind Artifact Index producer credentials, or an approved commit
+  coordinator/table format.
+- The concrete per-kind IAM path is: provision
+  `/bolt/artifact-index/producers/backtests/access-key-id` and
+  `/bolt/artifact-index/producers/backtests/secret-access-key` with a policy
+  limited to `artifact-index/v1/events|snapshots|pointers/kind=backtests` plus
+  audit epochs, then rerun the denied-kind proof and require three denied
+  write attempts to be rejected.
+- No AWS mutation was performed for this checkpoint.
+- This does not close `BACKTESTING_ENGINE-006`; it removes ambiguity about the
+  remaining security decision and prevents another ineffective rerun with the
+  broad artifact-store credential.

@@ -37,6 +37,9 @@ pub const TRANSFORM_IDENTITY: &str = "csv-native-trades-to-canonical-trades.v1";
 /// Version of the registered compiled converter implementation.
 pub const TRANSFORM_VERSION: &str = "1";
 
+/// Source-proof table family accepted by the native trade converter.
+pub const TRADE_TABLE_FAMILY: &str = "trades";
+
 /// Native trade prints only; aggregated prints must never satisfy this table.
 pub const TRADE_SOURCE_TYPE_NATIVE: &str = "native";
 
@@ -59,6 +62,7 @@ const NANOS_PER_MILLISECOND: i64 = 1_000_000;
 pub struct TradeConverterDefinition {
     pub identity: &'static str,
     pub version: &'static str,
+    pub table_family: &'static str,
     pub normalized_schema_version: &'static str,
     pub nt_data_type: &'static str,
 }
@@ -130,6 +134,7 @@ pub enum CsvTimestampUnit {
 pub const CSV_NATIVE_TRADES_CONVERTER: TradeConverterDefinition = TradeConverterDefinition {
     identity: TRANSFORM_IDENTITY,
     version: TRANSFORM_VERSION,
+    table_family: TRADE_TABLE_FAMILY,
     normalized_schema_version: NORMALIZED_SCHEMA_VERSION,
     nt_data_type: "TradeTick",
 };
@@ -153,6 +158,23 @@ pub fn require_registered_trade_converter(
     registered_trade_converter(identity, version).with_context(|| {
         format!("converter {identity:?} version {version:?} is not a registered converter")
     })
+}
+
+pub fn require_registered_trade_converter_for_table_family(
+    identity: &str,
+    version: &str,
+    table_family: &str,
+) -> Result<&'static TradeConverterDefinition> {
+    let converter = require_registered_trade_converter(identity, version)?;
+    ensure!(
+        converter.table_family == table_family,
+        "converter {:?} version {:?} supports table_family {:?}, got {:?}",
+        converter.identity,
+        converter.version,
+        converter.table_family,
+        table_family
+    );
+    Ok(converter)
 }
 
 /// Aggressor side of a native trade print.
@@ -614,8 +636,11 @@ pub fn normalize_registered_trade_converter(
     capture_time_nanos: i64,
     ingest_run_id: &str,
 ) -> Result<CanonicalTradesTable> {
-    let converter =
-        require_registered_trade_converter(&converter_config.identity, &converter_config.version)?;
+    let converter = require_registered_trade_converter_for_table_family(
+        &converter_config.identity,
+        &converter_config.version,
+        &accepted.table_family,
+    )?;
     match converter.identity {
         TRANSFORM_IDENTITY => normalize_csv_native_trades(
             accepted,

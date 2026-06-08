@@ -29,6 +29,7 @@ use crate::{
     canonical_trades::{
         CanonicalInstrumentIdentity, CanonicalTradesTable, ConverterConfig, RawPayloadConfig,
         RawPayloadContainer, require_registered_trade_converter,
+        require_registered_trade_converter_for_table_family,
     },
     catalog_projection::{
         CatalogProjection, SpotInstrumentSpec, logical_catalog_hash, read_back_trade_ticks,
@@ -193,6 +194,15 @@ fn validate_converter_config(converter: &ConverterConfig) -> Result<()> {
     Ok(())
 }
 
+fn validate_converter_table_family(converter: &ConverterConfig, table_family: &str) -> Result<()> {
+    require_registered_trade_converter_for_table_family(
+        &converter.identity,
+        &converter.version,
+        table_family,
+    )?;
+    Ok(())
+}
+
 fn validate_raw_payload_config(config: &RawPayloadConfig) -> Result<()> {
     ensure!(
         config.max_object_bytes > 0,
@@ -313,6 +323,7 @@ pub fn validate_run_spec_manifest_for_object_hash(
 ) -> Result<()> {
     validate_converter_config(&spec.converter)?;
     let (_, accepted) = accepted_dataset_for_run_spec_hash(spec, object_sha256)?;
+    validate_converter_table_family(&spec.converter, &accepted.table_family)?;
     let manifest = local_run_manifest_for_output(spec, output_dir)?;
     validate_local_run_manifest(&manifest, &accepted)
 }
@@ -611,6 +622,7 @@ pub fn run_from_run_spec(
 
     // Gate 1: accept the source proof and bind the object via the ledger.
     let (accepted_proof, accepted) = accepted_dataset_for_run_spec_hash(spec, &verified_sha256)?;
+    validate_converter_table_family(&spec.converter, &accepted.table_family)?;
 
     let conversion_fingerprint = ConversionFingerprint {
         source_proof_id: accepted.source_proof_id.clone(),
@@ -1868,6 +1880,50 @@ mod tests {
             .expect("unregistered converter version must be rejected");
 
         assert!(err.to_string().contains("registered converter"), "{err}");
+    }
+
+    #[test]
+    fn validate_run_spec_rejects_converter_table_family_mismatch_before_artifacts() {
+        let gz = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().unwrap();
+        let registry_path = dir.path().join("source-bindings.toml");
+        fs::write(
+            &registry_path,
+            format!(
+                r#"
+[[source_binding]]
+key = "{}"
+venue = "{}"
+product_family = "{}"
+market_structure_fixture = "perps-spot"
+source_uri = "{}"
+evidence_state = "owner_archive_backfillable"
+table_families = ["trades", "bars"]
+"#,
+                spec.source_proof.source_binding,
+                spec.source_proof.venue,
+                spec.source_proof.product_family,
+                spec.accepted_object.source_url
+            ),
+        )
+        .expect("write source-binding registry");
+        spec.source_bindings_path = registry_path;
+        spec.source_proof.table_family = "bars".to_string();
+
+        let err = validate_run_spec_manifest_for_object_hash(
+            &spec,
+            dir.path(),
+            &spec.accepted_object.sha256,
+        )
+        .expect_err("trade converter must reject a non-trades source table family");
+
+        assert!(err.to_string().contains("converter"), "{err}");
+        assert!(err.to_string().contains("table_family"), "{err}");
+        assert!(
+            !dir.path().join(CONVERSION_CHECKPOINT_FILE).exists(),
+            "table-family rejection must happen before conversion checkpoint writes"
+        );
     }
 
     #[test]

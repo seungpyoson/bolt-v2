@@ -390,14 +390,14 @@
     },
     {
       "blocker": "source_agnostic_adapter_contract_gap",
-      "required_evidence": "repo://specs/023-nt-research-analytics-platform/reference/source-agnostic-backfill-boundary-status.2026-06-09.json records the boundary audit: generic gates are source_binding/table_family/NT-data-type driven, but the accepted-object operator is currently registered for native trade CSV only and PMXT is an explicit one-off adapter. Adding a new raw format or data family still requires a registered adapter contract, not just TOML."
+      "required_evidence": "repo://specs/023-nt-research-analytics-platform/reference/source-agnostic-backfill-boundary-status.2026-06-09.json records the boundary audit: generic gates are source_binding/table_family/NT-data-type driven, source-proof cross-market roles are registry-owned, and registered converters now declare table_family, but the accepted-object operator still has only the native trade CSV adapter while PMXT is an explicit one-off adapter. Adding a new raw format or data family still requires a registered adapter implementation/runner, not just TOML."
     }
   ],
   "next_required_evidence": [
     "Archive or promote only the refreshed one-off PMXT L2+TradeTick artifact if needed; do not generalize PMXT from this bounded sample.",
     "Use the committed PMXT coverage-ledger status only as rejected/current evidence; do not treat it as accepted PMXT coverage.",
     "Use the committed PMXT broad-backfill efficiency status as a guardrail: no broad payload download, full-object hash, conversion, catalog projection, or BacktestNode run before manifest/index-only acceptance and bounded execution budgets are proven.",
-    "Use the committed source-agnostic boundary status as the adapter-rule guardrail: new sources that match the existing native-trade CSV adapter can be registry/source-proof/run-spec additions; new raw formats or NT data families require a registered adapter contract and proof, not venue branches in generic gates.",
+    "Use the committed source-agnostic boundary status as the adapter-rule guardrail: new sources that match the existing native-trade CSV adapter can be registry/source-proof/run-spec additions; new raw formats or NT data families require a registered adapter implementation/runner and proof, not venue branches in generic gates.",
     "Use the committed PMXT NT surface-usage boundary status as the NT ownership guardrail: one-off PMXT uses public NautilusTrader Polymarket parser/model surfaces, ParquetDataCatalog, and BacktestNode; Bolt-owned code remains limited to raw PMXT archive decoding, selected-source provenance, duplicate historical trade observation policy, and claim-limit enforcement.",
     "Record accepted expanded-tranche coverage and cost evidence before any PMXT broad backfill discussion.",
     "Accept a durable Polymarket source proof before any PMXT coverage ledger can authorize canonical-ready backfill.",

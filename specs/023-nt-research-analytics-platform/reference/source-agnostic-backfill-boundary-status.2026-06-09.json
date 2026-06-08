@@ -5,7 +5,7 @@
   ],
   "created_at_utc": "2026-06-08T22:15:04Z",
   "status": "generic_gates_source_agnostic_adapter_registry_gap_remains",
-  "decision": "The current BTE gate/readiness/catalog/result-contract boundary is mostly source-agnostic, and cross-market component role requirements are now source-binding registry policy instead of product-name constants. The accepted-object converter path is still a registered native-trades CSV adapter and PMXT remains a separate one-off adapter. Adding a new source is easy only when it can reuse an existing registered adapter and NT data class; adding a new raw format or data family still requires a new adapter and proof.",
+  "decision": "The current BTE gate/readiness/catalog/result-contract boundary is mostly source-agnostic, cross-market component role requirements are now source-binding registry policy instead of product-name constants, and converter registrations now declare their accepted table family. The accepted-object converter path is still a registered native-trades CSV adapter and PMXT remains a separate one-off adapter. Adding a new source is easy only when it can reuse an existing registered adapter and NT data class; adding a new raw format or data family still requires a new adapter and proof.",
   "generic_surfaces_proven": [
     {
       "surface": "sample venue hardcode guard",
@@ -46,6 +46,11 @@
       "surface": "run manifest to NT",
       "path": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs",
       "evidence": "BacktestingRunManifest owns NT BacktestRunConfig, BacktestDataConfig, BacktestVenueConfig, catalog inputs, artifact_root, and result-contract provenance. It also records unsupported NT venue/query surfaces explicitly rather than silently ignoring them."
+    },
+    {
+      "surface": "registered converter table-family contract",
+      "path": "repo://crates/backtesting-vertical-slice/src/canonical_trades.rs",
+      "evidence": "TradeConverterDefinition now declares table_family as well as normalized_schema_version and nt_data_type. Operator preflight and normalization reject a source proof whose accepted table_family does not match the registered converter before conversion artifacts are written."
     }
   ],
   "source_specific_surfaces_found": [
@@ -53,7 +58,7 @@
       "surface": "accepted-object converter registry",
       "path": "repo://crates/backtesting-vertical-slice/src/canonical_trades.rs",
       "status": "registered_single_native_trade_csv_adapter",
-      "evidence": "REGISTERED_TRADE_CONVERTERS currently contains csv-native-trades-to-canonical-trades.v1. normalize_registered_trade_converter dispatches only this adapter to normalize_csv_native_trades.",
+      "evidence": "REGISTERED_TRADE_CONVERTERS currently contains csv-native-trades-to-canonical-trades.v1 for table_family=trades and nt_data_type=TradeTick. normalize_registered_trade_converter dispatches only this adapter to normalize_csv_native_trades.",
       "impact": "A new venue whose accepted object is native trade CSV/GZIP/ZIP can reuse this path by TOML config. A new raw container, schema family, bars, L2 deltas, snapshots, or non-trade event stream cannot be added by TOML alone."
     },
     {
@@ -129,6 +134,7 @@
   "accepted_claims": [
     "Generic BTE gate/readiness surfaces are source_binding/table_family/NT-data-type driven.",
     "Cross-market component role requirements are source-binding registry config, not product-category constants.",
+    "Registered accepted-object converters declare the table family they can consume, and operator preflight rejects table-family mismatches before conversion artifacts.",
     "Bybit and Binance are sample/reference source rows, not generic production gate branches.",
     "PMXT and Polymarket names are confined to explicit one-off/proof modules and test fixtures by a committed guard test.",
     "Adding another source that matches the existing native-trade CSV adapter should require registry/source-proof/run-spec data, not generic gate code."
@@ -140,7 +146,7 @@
     "Every future source-proof policy has been fully audited as hardcode-free today."
   ],
   "next_required_evidence": [
-    "Introduce or document a source-agnostic adapter registration contract before adding any non-trade-CSV durable source.",
+    "Extend the registered adapter contract into a durable non-trade-CSV adapter runner before adding any non-trade-CSV durable source.",
     "Complete a source-proof policy hardcode audit before claiming every future source-proof policy is config-owned.",
     "For Polymarket/PMXT, accept durable source proof plus coverage/cost/storage/dynamic-tick-size evidence before broad backfill.",
     "Keep GitHub CI as the broad verification gate for any committed changes."

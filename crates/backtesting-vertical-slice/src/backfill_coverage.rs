@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::source_proof::SourceProofStatus;
+use crate::source_proof::{SourceProofReport, SourceProofStatus};
 
 pub const BACKFILL_COVERAGE_LEDGER_SCHEMA_VERSION: &str = "backfill-coverage-ledger.v1";
 pub const BACKFILL_COVERAGE_LEDGER_FILE: &str = "backfill-coverage-ledger.json";
@@ -155,6 +155,22 @@ pub enum BackfillCoverageManifestFileError {
         path: String,
         error: String,
     },
+    ReadSourceProof {
+        manifest_uri: String,
+        path: String,
+        error: String,
+    },
+    ParseSourceProofJson {
+        manifest_uri: String,
+        path: String,
+        error: String,
+    },
+    SourceProofMetadataMismatch {
+        manifest_uri: String,
+        field: &'static str,
+        explicit: String,
+        source_proof: String,
+    },
     BuildLedger(BackfillCoverageLedgerError),
     WriteArtifact(BackfillCoverageWriteError),
 }
@@ -183,6 +199,31 @@ impl fmt::Display for BackfillCoverageManifestFileError {
             } => write!(
                 f,
                 "parse backfill coverage manifest JSON {manifest_uri} from {path}: {error}"
+            ),
+            Self::ReadSourceProof {
+                manifest_uri,
+                path,
+                error,
+            } => write!(
+                f,
+                "read backfill coverage source proof for {manifest_uri} from {path}: {error}"
+            ),
+            Self::ParseSourceProofJson {
+                manifest_uri,
+                path,
+                error,
+            } => write!(
+                f,
+                "parse backfill coverage source proof JSON for {manifest_uri} from {path}: {error}"
+            ),
+            Self::SourceProofMetadataMismatch {
+                manifest_uri,
+                field,
+                explicit,
+                source_proof,
+            } => write!(
+                f,
+                "backfill coverage source proof metadata mismatch for {manifest_uri}: {field} explicit={explicit} source_proof={source_proof}"
             ),
             Self::BuildLedger(error) => write!(f, "build backfill coverage ledger: {error}"),
             Self::WriteArtifact(error) => write!(f, "write backfill coverage ledger: {error}"),
@@ -271,6 +312,7 @@ pub struct BackfillCoverageManifestJson {
 pub struct BackfillCoverageManifestFile {
     pub manifest_uri: String,
     pub path: PathBuf,
+    pub source_proof_path: Option<PathBuf>,
     pub source_binding: Option<String>,
     pub table_family: Option<String>,
     pub coverage_axis: Option<String>,
@@ -620,6 +662,7 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
             let BackfillCoverageManifestFile {
                 manifest_uri,
                 path,
+                source_proof_path,
                 source_binding,
                 table_family,
                 coverage_axis,
@@ -642,6 +685,47 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
                     error: error.to_string(),
                 }
             })?;
+            let source_proof_metadata = source_proof_path
+                .as_deref()
+                .map(|path| read_source_proof_metadata(&manifest_uri, path))
+                .transpose()?;
+            let source_binding = merge_source_proof_metadata_string(
+                &manifest_uri,
+                "source_binding",
+                source_binding,
+                source_proof_metadata
+                    .as_ref()
+                    .map(|proof| proof.source_binding.clone()),
+            )?;
+            let table_family = merge_source_proof_metadata_string(
+                &manifest_uri,
+                "table_family",
+                table_family,
+                source_proof_metadata
+                    .as_ref()
+                    .map(|proof| proof.table_family.clone()),
+            )?;
+            let source_proof_id = merge_source_proof_metadata_string(
+                &manifest_uri,
+                "source_proof_id",
+                source_proof_id,
+                source_proof_metadata
+                    .as_ref()
+                    .map(|proof| proof.source_proof_id.clone()),
+            )?;
+            let source_proof_version = merge_source_proof_metadata_u32(
+                &manifest_uri,
+                "source_proof_version",
+                source_proof_version,
+                source_proof_metadata
+                    .as_ref()
+                    .map(|proof| proof.source_proof_version),
+            )?;
+            let source_proof_status = merge_source_proof_metadata_status(
+                &manifest_uri,
+                source_proof_status,
+                source_proof_metadata.as_ref().map(|proof| proof.status),
+            )?;
             bind_manifest_file_metadata(
                 &mut summary,
                 source_binding,
@@ -689,6 +773,85 @@ pub fn write_coverage_ledger_artifact_from_spec_file(
         spec.manifests,
         spec.inventories,
     )
+}
+
+fn read_source_proof_metadata(
+    manifest_uri: &str,
+    path: &Path,
+) -> Result<SourceProofReport, BackfillCoverageManifestFileError> {
+    let path_display = path.display().to_string();
+    let bytes =
+        fs::read(path).map_err(|error| BackfillCoverageManifestFileError::ReadSourceProof {
+            manifest_uri: manifest_uri.to_string(),
+            path: path_display.clone(),
+            error: error.to_string(),
+        })?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        BackfillCoverageManifestFileError::ParseSourceProofJson {
+            manifest_uri: manifest_uri.to_string(),
+            path: path_display,
+            error: error.to_string(),
+        }
+    })
+}
+
+fn merge_source_proof_metadata_string(
+    manifest_uri: &str,
+    field: &'static str,
+    explicit: Option<String>,
+    source_proof: Option<String>,
+) -> Result<Option<String>, BackfillCoverageManifestFileError> {
+    match (explicit, source_proof) {
+        (Some(explicit), Some(source_proof)) if explicit != source_proof => Err(
+            BackfillCoverageManifestFileError::SourceProofMetadataMismatch {
+                manifest_uri: manifest_uri.to_string(),
+                field,
+                explicit,
+                source_proof,
+            },
+        ),
+        (Some(value), _) | (_, Some(value)) => Ok(Some(value)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn merge_source_proof_metadata_u32(
+    manifest_uri: &str,
+    field: &'static str,
+    explicit: Option<u32>,
+    source_proof: Option<u32>,
+) -> Result<Option<u32>, BackfillCoverageManifestFileError> {
+    match (explicit, source_proof) {
+        (Some(explicit), Some(source_proof)) if explicit != source_proof => Err(
+            BackfillCoverageManifestFileError::SourceProofMetadataMismatch {
+                manifest_uri: manifest_uri.to_string(),
+                field,
+                explicit: explicit.to_string(),
+                source_proof: source_proof.to_string(),
+            },
+        ),
+        (Some(value), _) | (_, Some(value)) => Ok(Some(value)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn merge_source_proof_metadata_status(
+    manifest_uri: &str,
+    explicit: Option<SourceProofStatus>,
+    source_proof: Option<SourceProofStatus>,
+) -> Result<Option<SourceProofStatus>, BackfillCoverageManifestFileError> {
+    match (explicit, source_proof) {
+        (Some(explicit), Some(source_proof)) if explicit != source_proof => Err(
+            BackfillCoverageManifestFileError::SourceProofMetadataMismatch {
+                manifest_uri: manifest_uri.to_string(),
+                field: "source_proof_status",
+                explicit: format!("{explicit:?}"),
+                source_proof: format!("{source_proof:?}"),
+            },
+        ),
+        (Some(value), _) | (_, Some(value)) => Ok(Some(value)),
+        (None, None) => Ok(None),
+    }
 }
 
 fn bind_manifest_file_metadata(

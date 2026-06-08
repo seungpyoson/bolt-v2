@@ -1758,3 +1758,56 @@ Next efficient path:
    and result-contract binding.
 5. Old converted/catalog artifacts remain reference evidence only; do not
    delete them without a clean verified replacement and separate approval.
+
+## 2026-06-09 source-proof-bound coverage checkpoint
+
+Root cause addressed:
+
+- The efficient PMXT coverage-ledger path already avoided raw payload downloads,
+  but the scratch spec repeated source proof metadata by hand and omitted the
+  canonical `table_family`. That left the generic binding-coverage gate unable
+  to use the record for data-family-scoped readiness.
+- `BackfillCoverageManifestFile` now accepts `source_proof_path`. When present,
+  the coverage ledger derives `source_binding`, `table_family`,
+  `source_proof_id`, `source_proof_version`, and `source_proof_status` from the
+  committed `SourceProofReport` instead of duplicating those values in the
+  manifest spec.
+- If a manifest spec still supplies explicit source-proof metadata alongside
+  `source_proof_path`, the values must match the source-proof report. Conflicts
+  fail before ledger output is written.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_coverage coverage_ledger_binds_source_proof_metadata_from_report_path`
+  failed because `source_proof_path` was an unknown `[[manifest]]` field.
+- GREEN: the same focused test passed after the coverage-ledger manifest path
+  loaded `SourceProofReport` metadata.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_coverage source_proof`
+  passed 3 focused source-proof coverage tests, including conflict rejection
+  for explicit `table_family` values that disagree with `source_proof_path`.
+- Concrete PMXT rerun:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin backfill_coverage_ledger -- --spec /private/tmp/bte-pmxt-coverage-ledger-source-proof-20260609/pmxt-coverage-ledger.toml`
+  wrote
+  `/private/tmp/bte-pmxt-coverage-ledger-source-proof-20260609/ledger-output/backfill-coverage-ledger.json`
+  with `content_hash =
+  c1348e348e9b9ff4d5ac8aa3e52d004110bcf8b86fe1d7c7cba568dbedbb2a63`
+  and file sha256
+  `7dc20194f826eb9c05ec99c27cdb86057f775e1486d688a73cc2924659a4c2cf`.
+  Both records now carry `source_binding =
+  polymarket-parquet-archive-index`, `table_family =
+  order_book_snapshot_deltas`, `coverage_axis = timestamp_received`, and the
+  PMXT source proof id/version from the committed source-proof report.
+
+Current conclusion:
+
+- The change improves the systematic add-a-source/data-family path: coverage
+  records can be bound to source-proof metadata without hardcoded venue names,
+  path-family inference, or duplicate TOML values.
+- PMXT remains rejected for broad backfill because the source proof is still
+  `pending`; both records block on `source_proof_not_accepted`.
+- This does not close `BACKTESTING_ENGINE-022`. Remaining blockers are still
+  durable source-proof acceptance, expanded coverage/cost/storage proof, and
+  NT-native dynamic tick-size epoch replay or an accepted bounded-exclusion
+  policy.

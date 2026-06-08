@@ -11,7 +11,7 @@ use backtesting_vertical_slice::{
         write_coverage_ledger_artifact_from_manifest_files,
         write_coverage_ledger_artifact_from_spec_file,
     },
-    source_proof::SourceProofStatus,
+    source_proof::{CONTRACT_VERSION, SOURCE_PROOF_SCHEMA_VERSION, SourceProofStatus},
 };
 
 fn completed_manifest() -> BackfillCoverageManifestEvidence {
@@ -96,6 +96,145 @@ fn coverage_ledger_preserves_configured_coverage_axis_from_manifest_json() {
 }
 
 #[test]
+fn coverage_ledger_binds_source_proof_metadata_from_report_path() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let manifest_path = dir.path().join("manifest.json");
+    let source_proof_path = dir.path().join("source-proof.json");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "run_id": "manifest-synthetic-source-proof-bound",
+            "coverage_axis": "synthetic_ingest_time",
+            "write_mode": "s3_staging",
+            "canonical_s3_write": false,
+            "planned_payload_object_count": 2,
+            "completed_payload_object_count": 2,
+            "completed_payload_bytes": 600,
+            "errors": []
+        }))
+        .expect("serialize manifest"),
+    )
+    .expect("write manifest");
+    fs::write(
+        &source_proof_path,
+        serde_json::to_vec_pretty(&synthetic_pending_source_proof(
+            "synthetic-archive-index",
+            "synthetic_order_book_deltas",
+        ))
+        .expect("serialize source proof"),
+    )
+    .expect("write source proof");
+    let spec_path = dir.path().join("coverage-ledger.toml");
+    let output_dir = dir.path().join("coverage-ledger");
+    fs::write(
+        &spec_path,
+        format!(
+            r#"
+ledger_id = "ledger-synthetic-source-proof-bound"
+output_dir = "{}"
+
+[[manifest]]
+manifest_uri = "manifest://synthetic/source-proof-bound.json"
+path = "{}"
+source_proof_path = "{}"
+"#,
+            output_dir.display(),
+            manifest_path.display(),
+            source_proof_path.display()
+        ),
+    )
+    .expect("write coverage ledger spec");
+
+    let artifact =
+        write_coverage_ledger_artifact_from_spec_file(&spec_path).expect("write coverage ledger");
+    let ledger: BackfillCoverageLedger =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read ledger"))
+            .expect("parse ledger");
+    let record = ledger.records.first().expect("ledger record");
+
+    assert_eq!(
+        record.source_binding.as_deref(),
+        Some("synthetic-archive-index")
+    );
+    assert_eq!(
+        record.table_family.as_deref(),
+        Some("synthetic_order_book_deltas")
+    );
+    assert_eq!(
+        record.source_proof_id.as_deref(),
+        Some("source-proof-synthetic-archive-index")
+    );
+    assert_eq!(record.source_proof_version, Some(1));
+    assert_eq!(
+        record.blocking_issues,
+        vec![BackfillCoverageIssue::SourceProofNotAccepted]
+    );
+}
+
+#[test]
+fn coverage_ledger_rejects_metadata_conflicting_with_source_proof_path() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let manifest_path = dir.path().join("manifest.json");
+    let source_proof_path = dir.path().join("source-proof.json");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "run_id": "manifest-synthetic-source-proof-conflict",
+            "coverage_axis": "synthetic_ingest_time",
+            "write_mode": "s3_staging",
+            "canonical_s3_write": false,
+            "planned_payload_object_count": 2,
+            "completed_payload_object_count": 2,
+            "completed_payload_bytes": 600,
+            "errors": []
+        }))
+        .expect("serialize manifest"),
+    )
+    .expect("write manifest");
+    fs::write(
+        &source_proof_path,
+        serde_json::to_vec_pretty(&synthetic_pending_source_proof(
+            "synthetic-archive-index",
+            "synthetic_order_book_deltas",
+        ))
+        .expect("serialize source proof"),
+    )
+    .expect("write source proof");
+    let spec_path = dir.path().join("coverage-ledger.toml");
+    let output_dir = dir.path().join("coverage-ledger");
+    fs::write(
+        &spec_path,
+        format!(
+            r#"
+ledger_id = "ledger-synthetic-source-proof-conflict"
+output_dir = "{}"
+
+[[manifest]]
+manifest_uri = "manifest://synthetic/source-proof-conflict.json"
+path = "{}"
+source_proof_path = "{}"
+table_family = "synthetic_wrong_family"
+"#,
+            output_dir.display(),
+            manifest_path.display(),
+            source_proof_path.display()
+        ),
+    )
+    .expect("write coverage ledger spec");
+
+    let err = write_coverage_ledger_artifact_from_spec_file(&spec_path)
+        .expect_err("conflicting metadata is rejected");
+
+    assert!(matches!(
+        err,
+        BackfillCoverageManifestFileError::SourceProofMetadataMismatch {
+            field: "table_family",
+            ..
+        }
+    ));
+}
+
+#[test]
 fn coverage_ledger_classifies_inventory_without_manifest_as_physical_only() {
     let inventory = BackfillPhysicalInventory {
         inventory_id: "s3-prefix-synthetic-raw".to_string(),
@@ -112,6 +251,76 @@ fn coverage_ledger_classifies_inventory_without_manifest_as_physical_only() {
         record.blocking_issues,
         vec![BackfillCoverageIssue::MissingManifest]
     );
+}
+
+fn synthetic_pending_source_proof(source_binding: &str, table_family: &str) -> serde_json::Value {
+    serde_json::json!({
+        "source_proof_id": format!("source-proof-{source_binding}"),
+        "source_proof_version": 1,
+        "contract_version": CONTRACT_VERSION,
+        "schema_version": SOURCE_PROOF_SCHEMA_VERSION,
+        "status": "pending",
+        "source_binding": source_binding,
+        "venue": "synthetic-venue",
+        "product_family": "synthetic-product",
+        "product_category": "synthetic-category",
+        "table_family": table_family,
+        "evidence_state": "pending_source_proof",
+        "source_candidate_class": "official_free",
+        "source_selection_status": "PENDING_MORE_PROOF",
+        "usage_scope": "one_off_backfill_data",
+        "fixture_type": "binary-option",
+        "requested_time_range": {
+            "start_utc": "2026-03-01T00:00:00Z",
+            "end_utc": "2026-03-02T00:00:00Z"
+        },
+        "coverage_time_range": {
+            "start_utc": "2026-03-01T00:00:00Z",
+            "end_utc": "2026-03-02T00:00:00Z"
+        },
+        "instrument_universe_id": "synthetic-instrument-universe",
+        "raw_sample_uri": "s3://artifact-root/raw/synthetic/object.parquet",
+        "raw_sample_hash": "synthetic-raw-sample-hash",
+        "schema_sample_uri": "s3://artifact-root/source-proofs/synthetic/schema.json",
+        "schema_sample_hash": "synthetic-schema-sample-hash",
+        "license_ref": "s3://artifact-root/source-proofs/synthetic/license.txt",
+        "license_scope": "public",
+        "retention_ref": "s3://artifact-root/source-proofs/synthetic/retention.json",
+        "cost_ref": "s3://artifact-root/source-proofs/synthetic/cost.json",
+        "nt_mapping_status": "accepted",
+        "fidelity_class": "L2_REPLAY",
+        "l2_replay_evidence": {
+            "order_book_delta_ref": "s3://artifact-root/source-proofs/synthetic/nt-mapping.json"
+        },
+        "forbidden_claims": [
+            "No broad canonical use until coverage, cost, retention, and storage checks pass."
+        ],
+        "gap_policy_id": "",
+        "required_checks": synthetic_pending_required_checks()
+    })
+}
+
+fn synthetic_pending_required_checks() -> serde_json::Value {
+    let pending = |name: &str| {
+        serde_json::json!({
+            "outcome": "pending",
+            "evidence_ref": format!("pending://synthetic/{name}")
+        })
+    };
+    serde_json::json!({
+        "source_access": pending("source_access"),
+        "license": pending("license"),
+        "schema": pending("schema"),
+        "time_semantics": pending("time_semantics"),
+        "instrument_universe": pending("instrument_universe"),
+        "coverage": pending("coverage"),
+        "retention_freshness": pending("retention_freshness"),
+        "granularity": pending("granularity"),
+        "completeness": pending("completeness"),
+        "nt_mapping": pending("nt_mapping"),
+        "cost": pending("cost"),
+        "storage": pending("storage")
+    })
 }
 
 #[test]
@@ -810,6 +1019,7 @@ fn manifest_file(manifest_uri: &str, path: PathBuf) -> BackfillCoverageManifestF
     BackfillCoverageManifestFile {
         manifest_uri: manifest_uri.to_string(),
         path,
+        source_proof_path: None,
         source_binding: None,
         table_family: None,
         coverage_axis: None,

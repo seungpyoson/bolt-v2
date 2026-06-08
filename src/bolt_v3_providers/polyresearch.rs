@@ -5,15 +5,16 @@
 //! credential as separate SSM values, then constructs the credentialed URL once
 //! at the provider edge.
 
-use std::{any::Any, cell::RefCell, rc::Rc, sync::Arc, time::Duration};
+use std::{any::Any, cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc, time::Duration};
 
 use nautilus_common::{
     cache::CacheView,
     clients::DataClient,
     clock::Clock,
     factories::{ClientConfig, DataClientFactory},
+    messages::data::{SubscribeCustomData, UnsubscribeCustomData},
 };
-use nautilus_core::string::secret::REDACTED;
+use nautilus_core::{Params, string::secret::REDACTED};
 use nautilus_model::identifiers::{ClientId, Venue};
 use nautilus_network::websocket::TransportBackend;
 use serde::Deserialize;
@@ -30,7 +31,11 @@ use crate::{
         ProviderSecretRequirement, ProviderSecretResolveContext, ProviderSsmPathReference,
         ResolvedClientSecrets, SsmSecretResolver,
     },
-    bolt_v3_reference_price::{ReferencePriceUpdate, ReferenceQuoteProvenance},
+    bolt_v3_reference_price::{
+        REFERENCE_PRICE_ASSET_PARAM, REFERENCE_PRICE_PROVIDER_PARAM,
+        REFERENCE_PRICE_SOURCE_KEY_PARAM, REFERENCE_PRICE_SYMBOL_PARAM, ReferencePriceUpdate,
+        ReferenceQuoteProvenance,
+    },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
 };
 
@@ -162,6 +167,7 @@ impl DataClientFactory for PolyResearchReferencePriceClientFactory {
         Ok(Box::new(PolyResearchReferencePriceClient {
             client_id: ClientId::from(name),
             _config: config.clone(),
+            subscriptions: BTreeMap::new(),
             connected: false,
         }))
     }
@@ -179,6 +185,7 @@ impl DataClientFactory for PolyResearchReferencePriceClientFactory {
 struct PolyResearchReferencePriceClient {
     client_id: ClientId,
     _config: PolyResearchReferencePriceClientConfig,
+    subscriptions: BTreeMap<String, PolyResearchReferenceSubscription>,
     connected: bool,
 }
 
@@ -204,11 +211,13 @@ impl DataClient for PolyResearchReferencePriceClient {
 
     fn reset(&mut self) -> anyhow::Result<()> {
         self.connected = false;
+        self.subscriptions.clear();
         Ok(())
     }
 
     fn dispose(&mut self) -> anyhow::Result<()> {
         self.connected = false;
+        self.subscriptions.clear();
         Ok(())
     }
 
@@ -229,6 +238,23 @@ impl DataClient for PolyResearchReferencePriceClient {
         self.connected = false;
         Ok(())
     }
+
+    fn subscribe(&mut self, cmd: SubscribeCustomData) -> anyhow::Result<()> {
+        let subscription =
+            polyresearch_reference_subscription_from_command(&cmd.data_type, cmd.params.as_ref())
+                .map_err(anyhow::Error::msg)?;
+        self.subscriptions
+            .insert(subscription.source_id.clone(), subscription);
+        Ok(())
+    }
+
+    fn unsubscribe(&mut self, cmd: &UnsubscribeCustomData) -> anyhow::Result<()> {
+        let subscription =
+            polyresearch_reference_subscription_from_command(&cmd.data_type, cmd.params.as_ref())
+                .map_err(anyhow::Error::msg)?;
+        self.subscriptions.remove(&subscription.source_id);
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,6 +262,99 @@ pub(crate) struct PolyResearchReferenceSubscription {
     pub(crate) asset: String,
     pub(crate) source_id: String,
     pub(crate) symbol: String,
+}
+
+fn polyresearch_reference_subscription_from_command(
+    data_type: &nautilus_model::data::DataType,
+    params: Option<&Params>,
+) -> Result<PolyResearchReferenceSubscription, String> {
+    let data_type_owner = ReferenceSubscriptionFieldOwner::DataType;
+    let params_owner = ReferenceSubscriptionFieldOwner::Params;
+    let metadata = data_type.metadata().ok_or_else(|| {
+        format!(
+            "PolyResearch reference subscription missing {} metadata",
+            data_type_owner.as_str()
+        )
+    })?;
+    let asset = required_reference_field(metadata, REFERENCE_PRICE_ASSET_PARAM, data_type_owner)?;
+    let source_id =
+        required_reference_field(metadata, REFERENCE_PRICE_SOURCE_KEY_PARAM, data_type_owner)?;
+    let provider =
+        required_reference_field(metadata, REFERENCE_PRICE_PROVIDER_PARAM, data_type_owner)?;
+    if provider != REFERENCE_PRICE_PROVIDER_KEY {
+        return Err(format!(
+            "PolyResearch reference subscription provider must be {REFERENCE_PRICE_PROVIDER_KEY}"
+        ));
+    }
+    let expected_data_type =
+        ReferencePriceUpdate::data_type_for(asset, source_id, REFERENCE_PRICE_PROVIDER_KEY)?;
+    if &expected_data_type != data_type {
+        return Err(format!(
+            "PolyResearch reference subscription {} metadata is inconsistent",
+            data_type_owner.as_str()
+        ));
+    }
+
+    let params = params.ok_or_else(|| {
+        format!(
+            "PolyResearch reference subscription missing command {}",
+            params_owner.as_str()
+        )
+    })?;
+    require_matching_reference_param(params, REFERENCE_PRICE_ASSET_PARAM, asset)?;
+    require_matching_reference_param(params, REFERENCE_PRICE_SOURCE_KEY_PARAM, source_id)?;
+    require_matching_reference_param(params, REFERENCE_PRICE_PROVIDER_PARAM, provider)?;
+    let symbol = required_reference_field(params, REFERENCE_PRICE_SYMBOL_PARAM, params_owner)?;
+
+    Ok(PolyResearchReferenceSubscription {
+        asset: asset.to_string(),
+        source_id: source_id.to_string(),
+        symbol: symbol.to_string(),
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReferenceSubscriptionFieldOwner {
+    DataType,
+    Params,
+}
+
+impl ReferenceSubscriptionFieldOwner {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::DataType => stringify!(data_type),
+            Self::Params => stringify!(params),
+        }
+    }
+}
+
+fn required_reference_field<'a>(
+    params: &'a Params,
+    key: &'static str,
+    owner: ReferenceSubscriptionFieldOwner,
+) -> Result<&'a str, String> {
+    params.get_str(key).ok_or_else(|| {
+        format!(
+            "PolyResearch reference subscription missing {}.{key}",
+            owner.as_str()
+        )
+    })
+}
+
+fn require_matching_reference_param(
+    params: &Params,
+    key: &'static str,
+    expected: &str,
+) -> Result<(), String> {
+    let actual = required_reference_field(params, key, ReferenceSubscriptionFieldOwner::Params)?;
+    if actual != expected {
+        return Err(format!(
+            "PolyResearch reference subscription {}.{key} does not match {} metadata",
+            ReferenceSubscriptionFieldOwner::Params.as_str(),
+            ReferenceSubscriptionFieldOwner::DataType.as_str()
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -561,6 +680,7 @@ fn secrets_for<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nautilus_core::{UUID4, UnixNanos};
 
     fn fixture_config() -> PolyResearchReferencePriceClientConfig {
         PolyResearchReferencePriceClientConfig {
@@ -583,6 +703,7 @@ mod tests {
         let mut client = PolyResearchReferencePriceClient {
             client_id: ClientId::from("polyresearch_reference"),
             _config: fixture_config(),
+            subscriptions: BTreeMap::new(),
             connected: false,
         };
 
@@ -599,6 +720,58 @@ mod tests {
             .await
             .expect("polyresearch reference disconnect should succeed");
         assert!(client.is_disconnected());
+    }
+
+    #[test]
+    fn subscribe_custom_data_records_prr_reference_subscription() {
+        let mut client = PolyResearchReferencePriceClient {
+            client_id: ClientId::from("polyresearch_reference"),
+            _config: fixture_config(),
+            subscriptions: BTreeMap::new(),
+            connected: false,
+        };
+        let mut params = Params::new();
+        params.insert(
+            REFERENCE_PRICE_ASSET_PARAM.to_string(),
+            serde_json::json!("BTC"),
+        );
+        params.insert(
+            REFERENCE_PRICE_SOURCE_KEY_PARAM.to_string(),
+            serde_json::json!("polyresearch_primary"),
+        );
+        params.insert(
+            REFERENCE_PRICE_PROVIDER_PARAM.to_string(),
+            serde_json::json!(REFERENCE_PRICE_PROVIDER_KEY),
+        );
+        params.insert(
+            REFERENCE_PRICE_SYMBOL_PARAM.to_string(),
+            serde_json::json!("BTC/USD"),
+        );
+
+        client
+            .subscribe(SubscribeCustomData::new(
+                Some(ClientId::from("polyresearch_reference")),
+                None,
+                ReferencePriceUpdate::data_type_for(
+                    "BTC",
+                    "polyresearch_primary",
+                    REFERENCE_PRICE_PROVIDER_KEY,
+                )
+                .expect("reference price data type should build"),
+                UUID4::new(),
+                UnixNanos::default(),
+                None,
+                Some(params),
+            ))
+            .expect("PRR reference subscription should be accepted");
+
+        let subscription = client
+            .subscriptions
+            .get("polyresearch_primary")
+            .expect("PRR reference subscription should be recorded");
+        assert_eq!(subscription.asset, "BTC");
+        assert_eq!(subscription.source_id, "polyresearch_primary");
+        assert_eq!(subscription.symbol, "BTC/USD");
     }
 
     #[test]

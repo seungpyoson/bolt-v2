@@ -8705,6 +8705,14 @@ reason = "Diagnostic type tag for redacted PolyResearch reference-price provider
 [[allowed]]
 path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
+literal = '''"PolyResearch reference subscription {} metadata is inconsistent"'''
+context = '''"PolyResearch reference subscription {} metadata is inconsistent",'''
+classification = "provider_subscription_validation_diagnostic"
+reason = "Fail-closed diagnostic for malformed NT custom-data reference-price subscription metadata; the runtime source identity and symbol remain config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
 literal = '''"reconnect_delay_initial_ms"'''
 context = '''"reconnect_delay_initial_ms",'''
 classification = "validation_field_label"

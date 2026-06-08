@@ -46,14 +46,14 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 - [ ] T022 RED: Add runtime test `runtime_publishes_snapshot_by_surface_id_for_multiple_real_consumers`.
 - [ ] T023 RED: Add runtime test `runtime_fails_loudly_when_strategy_references_missing_surface`.
 - [ ] T024 RED: Add runtime test `strategy_does_not_need_market_signal_feed_to_warm_rv_surface`.
-- [ ] T025 RED: Add runtime tests `runtime_refresh_ignores_or_rejects_non_monotonic_as_of_ms` and `runtime_refresh_ignores_or_rejects_equal_as_of_ms_without_advancing_forecast`.
+- [ ] T025 RED: Add runtime tests `runtime_refresh_ignores_or_rejects_non_monotonic_as_of_ms`, `runtime_refresh_ignores_or_rejects_equal_as_of_ms_without_advancing_forecast`, and `first_refresh_at_initial_timestamp_has_deterministic_behavior`.
 - [ ] T026 RED: Add runtime test `snapshot_reads_cannot_mutate_runtime_state`.
-- [ ] T027 GREEN: Implement `src/bolt_v3_realized_volatility_runtime.rs` with root-config construction, surface map, serialized refresh, and snapshot lookup.
+- [ ] T027 GREEN: Implement `src/bolt_v3_realized_volatility_runtime.rs` with root-config construction, surface map, sorted surface refresh order, serialized refresh, and snapshot lookup.
 - [ ] T028 GREEN: Move RV surface construction from `src/strategies/binary_oracle_edge_taker/mod.rs` into the global runtime build path.
 - [ ] T029 GREEN: Remove any `RealizedVolEngine` fields, constructor calls, and refresh ownership from binary oracle taker strategy state.
 - [ ] T030 GREEN: Add a runtime snapshot provider/accessor that `src/bolt_v3_taker_pricing.rs` can consume by `surface_id`.
 - [ ] T031 GREEN: Wire binary oracle taker to consume runtime snapshots only.
-- [ ] T032 GREEN: Wire a real non-taker runtime consumer, starting with evidence/monitoring snapshot export; binary oracle maker may additionally consume the same runtime snapshot API if it exists on main. Synthetic two-consumer tests alone are insufficient.
+- [ ] T032 GREEN: Wire a real non-taker runtime consumer, starting with evidence/monitoring snapshot export; binary oracle maker may additionally consume the same runtime snapshot API if it exists on main. Add `maker_consumes_runtime_rv_snapshot_when_present` if maker integration exists. Synthetic two-consumer tests alone are insufficient.
 - [ ] T033 REFACTOR: Keep strategy code intent-only; any subscription, route, quorum, readiness, or aggregation code belongs outside strategies.
 
 ## Phase 5: Multi-Venue Available Sources
@@ -63,7 +63,7 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 - [ ] T034 RED: Add root-config validation tests `surface_source_references_existing_public_client_and_instrument` and `surface_source_instrument_asset_must_match_surface_canonical_base_asset`.
 - [ ] T035 RED: Add config tests `production_surfaces_use_all_available_public_sources_or_explain_single_source`, `single_source_explanation_required_when_only_one_source_available`, and `single_source_explanation_is_trimmed_non_empty_and_bounded`.
 - [ ] T036 RED: Add config/runtime tests `unsupported_mark_source_class_sample_kind_is_rejected_until_runtime_routing_exists` and `runtime_construction_rejects_mark_source_if_validation_is_bypassed`.
-- [ ] T037 RED: Add runtime test `deduplicates_physical_subscriptions_and_fans_out_to_multiple_sources`.
+- [ ] T037 RED: Add runtime tests `deduplicates_physical_subscriptions_and_fans_out_to_multiple_sources` and `subscription_key_order_is_deterministic_for_equivalent_routes`.
 - [ ] T038 RED: Add runtime tests `two_available_venue_sources_contribute_to_one_surface_snapshot` and `multi_venue_partial_source_down_remains_auditable_while_quorum_policy_decides_readiness`.
 - [ ] T039 RED: Add runtime test `disabled_source_is_audited_but_not_subscribed`.
 - [ ] T040 RED: Add runtime test `enabled_non_quorum_source_with_live_observations_remains_diagnostic_only`.
@@ -98,7 +98,7 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 
 - [ ] T060 RED: Add engine test `subsampled_rv_reduces_alternating_bid_ask_bounce_vs_base_grid`.
 - [ ] T061 RED: Add engine test `subsampled_rv_requires_min_ready_subsamples`.
-- [ ] T062 RED: Add engine test `subsampled_offset_grid_coverage_uses_offset_grid_denominator`.
+- [ ] T062 RED: Add engine tests `subsampled_offset_grid_coverage_uses_offset_grid_denominator` and `subsampled_offsets_are_distinct_for_valid_collision_free_config`.
 - [ ] T063 RED: Add config test `subsamples_greater_than_sampling_interval_is_rejected_or_collision_semantics_are_explicit`.
 - [ ] T064 RED: Add engine tests `coarser_grid_rv_policy_selects_base_coarse_or_min_base_coarse`, `min_base_coarse_returns_base_when_base_is_lower`, and `min_base_coarse_returns_coarse_when_coarse_is_lower`.
 - [ ] T065 RED: Add config validation tests for `noise_robust_method`, `subsamples`, `min_ready_subsamples`, `coarse_sampling_interval_ms`, and `coarser_grid_horizon_policy`.
@@ -128,12 +128,12 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 **Goal**: Make multi-venue RV useful by protecting against one bad feed while preserving fail-closed dispersion behavior.
 
 - [ ] T081 RED: Add engine test `median_aggregation_ignores_one_extreme_ready_source_when_quorum_satisfied`.
-- [ ] T082 RED: Add engine test `trimmed_mean_requires_enough_ready_sources_for_trim_policy`.
-- [ ] T083 RED: Add engine test `mad_dispersion_blocks_when_ready_sources_disagree_too_much`.
+- [ ] T082 RED: Add engine tests `trimmed_mean_requires_enough_ready_sources_for_trim_policy` and `trimmed_mean_rejects_when_trim_removes_all_contributors`.
+- [ ] T083 RED: Add engine tests `mad_dispersion_blocks_when_ready_sources_disagree_too_much` and `all_zero_contributors_have_zero_dispersion_and_zero_mad`.
 - [ ] T084 RED: Add engine test `raw_mad_threshold_is_used_without_normal_scaling`.
 - [ ] T085 RED: Add engine test `upper_quantile_guard_uses_guard_weight_and_upper_quantile_value`.
 - [ ] T086 RED: Add engine test `source_level_not_warm_does_not_block_satisfied_partial_quorum` to preserve PR #609 fix.
-- [ ] T087 RED: Add boundary tests for exactly `min_ready_sources`, one below `min_ready_sources`, equal contributors across every aggregation method, and each aggregation method.
+- [ ] T087 RED: Add boundary tests for exactly `min_ready_sources`, one below `min_ready_sources`, zero eligible contributors blocking before aggregation, equal contributors across every aggregation method, and every aggregation method.
 - [ ] T088 GREEN: Extend aggregation config with `median`, `trimmed_mean`, `median_with_upper_quantile_guard`, `guard_weight`, and `trim_fraction`.
 - [ ] T089 GREEN: Implement MAD dispersion diagnostics and blocker.
 - [ ] T090 GREEN: Keep source-level blockers out of surface blockers when quorum is satisfied.
@@ -145,12 +145,12 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 **Goal**: Optionally forecast future volatility from realized components without introducing opaque model risk.
 
 - [ ] T093 RED: Add engine test `forecast_none_uses_measured_or_blended_rv_as_final`.
-- [ ] T094 RED: Add engine test `ewma_forecast_advances_only_on_refresh_with_new_ready_component`.
+- [ ] T094 RED: Add engine tests `ewma_forecast_advances_only_on_refresh_with_new_ready_component` and `ewma_forecast_advances_on_refresh_even_when_component_value_is_unchanged`.
 - [ ] T095 RED: Add engine tests `ewma_forecast_does_not_advance_on_observation_without_refresh` and `ewma_forecast_does_not_advance_on_non_monotonic_now_ms`.
 - [ ] T096 RED: Add engine test `ewma_forecast_cold_starts_from_current_component_after_restart`.
 - [ ] T097 RED: Add engine tests `forecast_config_change_changes_fingerprint`, `forecast_state_resets_when_config_fingerprint_changes`, and `forecast_warm_starts_on_next_refresh_after_fingerprint_reset`.
 - [ ] T098 RED: Add engine test `forecast_state_is_independent_per_surface_id`.
-- [ ] T099 RED: Add engine test `har_lite_blends_short_medium_long_horizons_with_toml_weights`.
+- [ ] T099 RED: Add engine tests `har_lite_blends_short_medium_long_horizons_with_toml_weights` and `har_lite_all_zero_horizons_publish_valid_zero_forecast`.
 - [ ] T100 RED: Add engine test `har_lite_blocks_when_any_role_horizon_is_not_ready`.
 - [ ] T101 RED: Add engine tests `final_ready_realized_vol_equals_configured_pricing_component` and `forecast_component_invalid_blocks_when_selected_as_pricing_component`.
 - [ ] T102 RED: Add config validation tests for forecast method, `ewma_alpha_zero_or_above_one_rejected`, HAR weights, referenced horizon roles, non-negative HAR weights, HAR weight sum in open-zero-to-one, `har_intercept_negative_or_non_finite_rejected`, and `pricing_component_noise_robust_requires_noise_method_not_none`.

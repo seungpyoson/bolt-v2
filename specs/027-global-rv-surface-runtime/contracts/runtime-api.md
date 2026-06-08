@@ -20,6 +20,7 @@ Rules:
 
 - Market-data callbacks enqueue or call into the runtime owner; they do not mutate surface engines directly from strategy state.
 - `observe_market_data` and `refresh` are serialized by the runtime owner.
+- A runtime-wide `refresh(now_ms)` visits surfaces in deterministic sorted `surface_id` order.
 - `refresh(now_ms)` is monotonic per surface; a refresh with `now_ms` less than or equal to the last published snapshot timestamp is ignored or rejected deterministically before any forecast-state update is considered.
 - `snapshot(surface_id)` returns an immutable clone, reference, or handle that cannot mutate runtime state.
 - Consumers may read snapshots concurrently only if the implementation uses immutable publication or explicit read locking.
@@ -133,7 +134,7 @@ Rules:
 - Refresh cadence is TOML-owned and runtime-owned.
 - Surface readiness is computed from eligible contributors only.
 - Per-source blockers remain diagnostics unless quorum/aggregation rules require a surface-level blocker.
-- EWMA forecast state advances only when a new ready current component exists and `now_ms` is newer than the previous forecast update timestamp; non-monotonic forecast timestamps do not advance state.
+- EWMA forecast state advances only when refresh publishes a ready current component, including when that component is numerically equal to the previous input, and `now_ms` is newer than the previous forecast update timestamp; non-monotonic forecast timestamps do not advance state.
 - The runtime must not fallback to legacy or strategy-owned RV.
 
 ### snapshot

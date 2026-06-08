@@ -80,7 +80,7 @@ Final horizon value depends on `coarser_grid_horizon_policy`:
 For `k = subsamples`:
 
 1. Create `k` deterministic offset grids within the same horizon.
-2. Offset `j` starts at `window_start + floor(j * sampling_interval_ms / k)`. Distinct integer millisecond offsets are required unless TOML explicitly enables offset-collision reporting.
+2. For each `j` in `0..k`, offset `j` starts at `window_start + floor(j * sampling_interval_ms / k)`. Distinct integer millisecond offsets are required unless TOML explicitly enables offset-collision reporting.
 3. Compute base fixed-grid RV for each offset grid.
 4. Each offset grid computes coverage against its own expected return count after the offset start.
 5. The subsampled estimate is the arithmetic mean of ready offset-grid RVs.
@@ -114,7 +114,7 @@ Eligible contributors are enabled, quorum-counting, ready source estimates with 
 
 ### upper_quantile
 
-Sort contributor volatilities ascending and select nearest-rank quantile `q` in `[0.5, 1.0]` using `index = ceil(q * n) - 1` on the zero-indexed sorted contributor list.
+Sort contributor volatilities ascending and select nearest-rank quantile `q` in `[0.5, 1.0]` using `index = ceil(q * n) - 1` on the zero-indexed sorted contributor list. Quantile selection is undefined for `n = 0`; the engine must block with `QuorumNotReady` before aggregation when there are zero eligible contributors.
 
 ### median
 
@@ -134,11 +134,12 @@ Relative dispersion:
 
 - `dispersion = (max - min) / aggregate` when aggregate is positive.
 - If aggregate is zero and any contributor is positive, dispersion is infinite.
+- If aggregate is zero and all contributors are zero, dispersion is zero and does not block.
 - Block if `dispersion > max_cross_source_dispersion`.
 
 MAD dispersion:
 
-- `median_abs_dev = median(|source_i - median(source)|)`.
+- `median_abs_dev = median(|source_i - median(source_i over eligible contributors)|)`.
 - `mad_ratio = median_abs_dev / median` when median is positive.
 - If median is zero and any deviation is positive, MAD ratio is infinite.
 - Block if `mad_ratio > mad_block_threshold`.
@@ -163,7 +164,7 @@ Rules:
 
 - `alpha` is TOML-owned in `(0, 1]`.
 - `alpha` is a refresh-step coefficient, not time-normalized in the first implementation.
-- EWMA advances only on runtime `refresh(now_ms)` when a new ready current component exists and `now_ms > previous_forecast_update_ms`.
+- EWMA advances only on runtime `refresh(now_ms)` when the refresh publishes a ready current component, including when the numeric component equals the previous input, and `now_ms > previous_forecast_update_ms`.
 - It does not advance on every observation.
 - If no previous forecast exists, including after process restart, initialize from current component and record `forecast_cold_start = true` in evidence.
 - Changing forecast config changes the surface config fingerprint and resets forecast state.

@@ -180,3 +180,53 @@ Resolution:
 Resolution:
 
 - `contracts/toml-schema.md` now uses `<REQUIRED_WHEN_SINGLE_SOURCE>` in the surface example instead of an empty string.
+
+## Review Round 5 Hardening
+
+Claude, Gemini, Grok, and GLM approved round 4. Remaining non-blocking concerns were converted into explicit contracts or named RED tests before implementation. This file keeps its original name to preserve review-chain links, but it intentionally aggregates follow-up rounds after round 2.
+
+### R33 - Subsample, quantile, and zero-contributor edge definitions
+
+Resolution:
+
+- `contracts/math-estimator.md` now defines subsample offsets over `j in 0..k`.
+- `contracts/math-estimator.md` now states quantile selection is undefined for zero contributors and the engine must block with `QuorumNotReady` before aggregation.
+- `tasks.md` T062 now names distinct-offset verification.
+- `tasks.md` T087 now names zero-eligible-contributor blocking before aggregation.
+
+### R34 - All-zero dispersion and MAD semantics
+
+Resolution:
+
+- `contracts/math-estimator.md` now states aggregate zero with all-zero contributors has zero dispersion and does not block.
+- `contracts/math-estimator.md` clarifies MAD notation over eligible contributors.
+- `tasks.md` T083 now names all-zero contributor dispersion/MAD behavior.
+
+### R35 - EWMA unchanged-value and initial/equal timestamp behavior
+
+Resolution:
+
+- `contracts/math-estimator.md` and `contracts/runtime-api.md` now say EWMA advances on a refresh-published ready component even when the numeric value is unchanged.
+- `tasks.md` T094 now names the unchanged-component refresh behavior.
+- `tasks.md` T025 now names initial/equal timestamp boundary behavior.
+
+### R36 - Deterministic runtime ordering and subscription route collisions
+
+Resolution:
+
+- `contracts/runtime-api.md` now requires runtime-wide refresh to visit surfaces in sorted `surface_id` order.
+- `tasks.md` T027 includes sorted surface refresh order in implementation scope.
+- `tasks.md` T037 now names deterministic subscription-key order for equivalent routes.
+
+### R37 - Remaining robust-estimator boundary tests
+
+Resolution:
+
+- `tasks.md` T082 now names trim-removes-all-contributors rejection.
+- `tasks.md` T099 now names all-zero HAR-lite valid-zero forecast behavior.
+
+### R38 - Maker additive path test naming
+
+Resolution:
+
+- `tasks.md` T032 now names `maker_consumes_runtime_rv_snapshot_when_present` if maker integration exists on main.

@@ -27,7 +27,7 @@ pub const REQUIRED_CANDIDATE_SWEEP_TERMS: [&str; 18] = [
     "vol",
 ];
 
-const CAPABILITY_ANCHOR_TERMS: [&str; 8] = [
+const CAPABILITY_ANCHOR_TERMS: [&str; 9] = [
     "option",
     "options",
     "greeks",
@@ -35,6 +35,7 @@ const CAPABILITY_ANCHOR_TERMS: [&str; 8] = [
     "iv",
     "volatility",
     "smile",
+    "custom data",
     "vol",
 ];
 

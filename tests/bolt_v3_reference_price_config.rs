@@ -579,7 +579,7 @@ fn optional_unsupported_polyresearch_source_accepts_when_quorum_can_be_met() {
     let messages = validate_reference_current_price(
         r#"
 [reference_current_price]
-asset = "BNB"
+asset = "ADA"
 sources = ["chainlink_primary", "polyresearch_backup"]
 min_valid_sources = 1
 selection_policy = "first_valid_per_interval"
@@ -593,14 +593,14 @@ provider = "chainlink_ws"
 enabled = true
 required = false
 client_id = "chainlink_reference"
-instrument_id = "BNB-USD.CHAINLINK"
+instrument_id = "ADA-USD.CHAINLINK"
 
 [reference_current_price.source.polyresearch_backup]
 provider = "polyresearch_ws"
 enabled = true
 required = false
 client_id = "polyresearch_reference"
-symbol = "BNB"
+symbol = "ADA/USD"
 "#,
     );
 
@@ -615,7 +615,7 @@ fn required_unsupported_polyresearch_source_rejects() {
     let messages = validate_reference_current_price(
         r#"
 [reference_current_price]
-asset = "BNB"
+asset = "ADA"
 sources = ["polyresearch_primary"]
 min_valid_sources = 1
 selection_policy = "first_valid_per_interval"
@@ -629,14 +629,14 @@ provider = "polyresearch_ws"
 enabled = true
 required = true
 client_id = "polyresearch_reference"
-symbol = "BNB"
+symbol = "ADA/USD"
 "#,
     );
 
     assert!(
         messages.iter().any(|message| {
             message.contains("reference_current_price.source.polyresearch_primary")
-                && message.contains("BNB")
+                && message.contains("ADA")
                 && message.contains("polyresearch_ws")
                 && message.contains("unsupported")
         }),

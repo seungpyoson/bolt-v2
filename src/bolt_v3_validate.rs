@@ -2344,10 +2344,13 @@ fn validate_reference_current_price(
                 }
                 if source.enabled
                     && let Some(symbol) = source.symbol.as_deref()
-                    && symbol != reference_current_price.asset
+                    && !reference_price_identifier_matches_asset(
+                        symbol,
+                        &reference_current_price.asset,
+                    )
                 {
                     errors.push(format!(
-                        "{context}: reference_current_price.source.{source_id}.symbol `{symbol}` must equal reference_current_price.asset `{}`",
+                        "{context}: reference_current_price.source.{source_id}.symbol `{symbol}` must map to reference_current_price.asset `{}`",
                         reference_current_price.asset
                     ));
                 }

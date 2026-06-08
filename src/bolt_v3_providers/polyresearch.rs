@@ -61,7 +61,8 @@ const POLYRESEARCH_LEGACY_API_KEY_QUERY_FIELD: &str = "apiKey";
 const POLYRESEARCH_PRICE_FEED_FRAME_TYPE: &str = "price_feed";
 pub const KEY: &str = "POLYRESEARCH_REFERENCE_PRICE";
 pub const REFERENCE_PRICE_PROVIDER_KEY: &str = "polyresearch_ws";
-pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];
+pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] =
+    &["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "HYPE"];
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Data,

@@ -81,7 +81,7 @@ instrument_id = "BTC-USD.CHAINLINK"
 [reference_current_price.source.polyresearch_backup]
 provider = "polyresearch_ws"
 client_id = "polyresearch_reference"
-symbol = "BTC"
+symbol = "BTC/USD"
 "#,
     );
 
@@ -131,7 +131,7 @@ symbol = "BTC"
     assert!(polyresearch.enabled);
     assert!(!polyresearch.required);
     assert_eq!(polyresearch.client_id.as_str(), "polyresearch_reference");
-    assert_eq!(polyresearch.symbol.as_deref(), Some("BTC"));
+    assert_eq!(polyresearch.symbol.as_deref(), Some("BTC/USD"));
     assert_eq!(polyresearch.instrument_id.as_deref(), None);
 }
 
@@ -476,6 +476,68 @@ instrument_id = "ETH-USD.CHAINLINK"
                 && message.contains("ETH-USD.CHAINLINK")
         }),
         "wrong-asset provider identifier should fail validation, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn reference_current_price_validation_accepts_polyresearch_feed_symbol_for_asset() {
+    let messages = validate_reference_current_price(
+        r#"
+[reference_current_price]
+asset = "BTC"
+sources = ["polyresearch_primary"]
+min_valid_sources = 1
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.polyresearch_primary]
+provider = "polyresearch_ws"
+enabled = true
+required = true
+client_id = "polyresearch_reference"
+symbol = "BTC/USD"
+"#,
+    );
+
+    assert!(
+        messages.is_empty(),
+        "polyresearch_ws provider feed symbol for asset should validate cleanly, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn reference_current_price_validation_rejects_polyresearch_feed_symbol_for_wrong_asset() {
+    let messages = validate_reference_current_price(
+        r#"
+[reference_current_price]
+asset = "BTC"
+sources = ["polyresearch_primary"]
+min_valid_sources = 1
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.polyresearch_primary]
+provider = "polyresearch_ws"
+enabled = true
+required = true
+client_id = "polyresearch_reference"
+symbol = "ETH/USD"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("reference_current_price.source.polyresearch_primary.symbol")
+                && message.contains("BTC")
+                && message.contains("ETH/USD")
+        }),
+        "wrong-asset polyresearch_ws feed symbol should fail validation, got: {messages:#?}"
     );
 }
 

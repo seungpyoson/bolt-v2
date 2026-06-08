@@ -138,6 +138,32 @@ fn chainlink_feed_bindings_reject_dual_root_and_client_local_catalogs() {
 }
 
 #[test]
+fn shipped_fixture_uses_root_owned_chainlink_feed_catalog() {
+    let root = fixture_root_value();
+    let feed_bindings = root
+        .get("chainlink_data_streams")
+        .and_then(|value| value.get("feed_bindings"))
+        .and_then(toml::Value::as_array)
+        .expect("fixture root must declare root-owned Chainlink feed bindings");
+    assert_eq!(
+        feed_bindings.len(),
+        1,
+        "fixture root keeps one Chainlink feed binding for its configured BTC source"
+    );
+
+    let client_has_feed_bindings = root
+        .get("clients")
+        .and_then(|value| value.get("chainlink_strike"))
+        .and_then(|value| value.get("data"))
+        .and_then(|value| value.get("feed_bindings"))
+        .is_some();
+    assert!(
+        !client_has_feed_bindings,
+        "fixture must not keep legacy clients.chainlink_strike.data.feed_bindings"
+    );
+}
+
+#[test]
 fn well_formed_chainlink_data_block_parses_into_provider_config() {
     let client = client_from_toml(&well_formed_client_toml());
     let data = client

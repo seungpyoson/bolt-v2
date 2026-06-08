@@ -163,9 +163,9 @@
       "just bte-clippy passed."
     ],
     "claim_limits": [
-      "Does not prove PMXT source-backed catalog projection.",
+      "Does not prove PMXT TradeTick catalog projection.",
       "Does not prove a concrete PMXT selector report artifact is threaded into a source-backed completed run.",
-      "Does not prove BacktestNode consumes a verified PMXT L2 catalog.",
+      "Does not prove BacktestResultContract binding for the verified PMXT L2 catalog.",
       "Does not authorize broad PMXT backfill."
     ]
   },
@@ -181,8 +181,8 @@
     ],
     "claim_limits": [
       "Does not prove PMXT BinaryOption catalog projection.",
-      "Does not prove PMXT OrderBookDelta or TradeTick read-back.",
-      "Does not prove BacktestNode consumes a verified PMXT L2 catalog.",
+      "Does not prove PMXT TradeTick read-back.",
+      "Does not prove BacktestResultContract binding for the verified PMXT L2 catalog.",
       "Does not authorize broad PMXT backfill."
     ]
   },
@@ -195,10 +195,9 @@
       "just bte-fmt-check passed."
     ],
     "claim_limits": [
-      "Does not prove PMXT raw parquet row decoding.",
-      "Does not prove nautilus-polymarket parser/provider reuse inside the isolated BTE crate.",
-      "Does not prove source-backed selected PMXT universe projection.",
-      "Does not prove BacktestNode consumes a verified PMXT L2 catalog.",
+      "Does not prove PMXT TradeTick row decoding.",
+      "Does not prove pinned NT's crate-private historical trade-id helper can be reused directly.",
+      "Does not prove BacktestResultContract binding for the verified PMXT L2 catalog.",
       "Does not authorize broad PMXT backfill."
     ]
   },
@@ -213,10 +212,9 @@
       "managed BTE clippy passed."
     ],
     "claim_limits": [
-      "Does not prove PMXT raw parquet row decoding.",
-      "Does not prove nautilus-polymarket parser/provider reuse inside the isolated BTE crate.",
-      "Does not prove source-backed selected PMXT universe projection.",
-      "Does not prove BacktestNode consumes a selected source-backed PMXT L2 catalog.",
+      "Does not prove PMXT TradeTick row decoding.",
+      "Does not prove pinned NT's crate-private historical trade-id helper can be reused directly.",
+      "Does not prove BacktestResultContract binding for the verified PMXT L2 catalog.",
       "Does not authorize broad PMXT backfill."
     ]
   },
@@ -225,9 +223,9 @@
     "Thread the concrete configured first-proof selector report artifact into the bounded PMXT source-backed run without venue or asset constants.",
     "Machine-checked BTE crate proof that nautilus-polymarket parser/provider is reused for Polymarket instruments and token-id joins.",
     "TDD proof for the selected PMXT historical TradeId path because pinned NT's build_polymarket_trade_id helper is crate-private; either mirror the pinned format with provenance or expose it upstream before claiming direct NT helper reuse.",
-    "Generic PMXT order-book projection contract from source event types to NT OrderBookDelta/TradeTick, including snapshot flags, side/action rules, timestamps, trade ids, and first-proof tick-size claim limits.",
-    "ParquetDataCatalog write/readback proof for a selected PMXT Polymarket sample staged under artifact_root.",
-    "BacktestNode consumption proof for the same selected source-backed PMXT catalog path.",
+    "Generic PMXT TradeTick projection contract from source last_trade_price events to NT TradeTick, including trade ids and first-proof tick-size claim limits.",
+    "Conversion manifest/checkpoint/catalog metadata proof for a selected PMXT Polymarket sample staged under artifact_root.",
+    "BacktestResultContract binding proof for the selected source-backed PMXT catalog path.",
     "Coverage ledger using timestamp_received as the archive-hour coverage axis before any expanded tranche.",
     "Separate dynamic tick-size replay proof before full PMXT Polymarket L2 acceptance or broad backfill."
   ],

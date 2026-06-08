@@ -148,7 +148,7 @@
     {
       "area": "source selector",
       "required_shape": "TOML/source-proof-owned event-count selector over source event families and row budget; no venue, asset, or symbol constants in production code.",
-      "current_status": "TDD-proven for generic configured event-family roles, excluded-event assets, row-budget ordering, event-count ledger hash, selected_asset_ids_hash, idempotent report writing, config-owned event-count parquet scanning, and thin CLIs. A concrete PMXT selector report was generated from the one-hour sample; PMXT row-to-NT projection, claim-limit/result-contract binding, and BacktestNode consumption remain pending."
+      "current_status": "TDD-proven for generic configured event-family roles, excluded-event assets, row-budget ordering, event-count ledger hash, selected_asset_ids_hash, idempotent report writing, config-owned event-count parquet scanning, and thin CLIs. A concrete PMXT selector report was generated from the one-hour sample; config-owned selected-source Parquet decoding now projects bounded PMXT L2 rows into the one-off NT projection path without rescanning the full raw object. PMXT TradeTick trade-id proof and claim-limit/result-contract binding remain pending."
     },
     {
       "area": "manifest data config",
@@ -158,7 +158,7 @@
     {
       "area": "catalog projection",
       "required_shape": "Write InstrumentAny::BinaryOption, OrderBookDelta, and TradeTick to ParquetDataCatalog; read all three logical classes back and hash them deterministically.",
-      "current_status": "TDD-proven for an NT-native fixture, including BacktestNode consumption of a BinaryOption L2 OrderBookDelta catalog; source-backed PMXT row projection and PMXT BacktestNode consumption remain pending."
+      "current_status": "TDD-proven for an NT-native fixture, including BacktestNode consumption of a BinaryOption L2 OrderBookDelta catalog. PMXT one-off projection reuses nautilus-polymarket metadata/snapshot/delta parsers, writes BinaryOption plus OrderBookDelta data to ParquetDataCatalog, reads it back, and proves BacktestNode consumption for L2 rows. PMXT TradeTick projection remains pending because the pinned historical trade-id helper is crate-private."
     },
     {
       "area": "NT parser/provider reuse",
@@ -223,12 +223,16 @@
     "Timed bounded PMXT event-count scan generated /private/tmp/bte-pmxt-first-proof-selector-2026-06-08/event-count-ledger.json from the 64,877,467-row one-hour sample in 55.23s debug runtime after parquet projection and borrowed-row counting.",
     "Timed selector report generation produced /private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector/first-proof-selector-report.json in 2.27s debug runtime with 451 event-family eligible assets before metadata gating.",
     "Metadata-backed selector report /private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector-gamma-candidates/first-proof-selector-report.json selected 1 asset from 6 Gamma-backed candidates, selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110, file_sha256 3e64cc09d803ff34de9cbc51345978406125fcc5147879a7c5ff8475a73c3aaf.",
-    "Row-group-pruned selected-source staging produced 5 rows in 30.31s and projected 1 of 62 source row groups."
+    "Row-group-pruned selected-source staging produced 5 rows in 30.31s and projected 1 of 62 source row groups.",
+    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan failed because the selected-source projection API was absent.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan passed after report-hash/Parquet-hash-checked selected-source decoding projected only configured PMXT L2 event roles through the NT-backed one-off projection path.",
+    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection --test backtesting_vertical_slice_selected_source_slice passed 6 focused tests after selected-source decoding."
   ],
   "still_blocking_broad_backfill": [
     "Dynamic tick_size_change instrument epoch replay through BacktestNode catalog consumption is unproven.",
     "One-hour bounded sample does not prove one-year PMXT coverage, gaps, retention, throughput, or cost.",
     "Pending PMXT source proof has not passed storage, coverage, completeness, cost, and accepted NT mapping checks.",
-    "No accepted clean PMXT L2 catalog/backtest/result-contract artifact exists yet."
+    "No accepted clean PMXT L2 result-contract artifact exists yet.",
+    "PMXT last_trade_price TradeTick projection remains blocked on a focused decision for the pinned NT historical trade-id helper being crate-private."
   ]
 }

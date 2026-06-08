@@ -53,4 +53,5 @@ pub mod source_proof_evidence_staging;
 pub mod source_proof_legacy_derivability;
 pub mod source_proof_migration_preflight;
 pub mod source_proof_shortlist;
+pub mod source_catalog_mapping_readiness;
 pub mod source_selection_readiness;

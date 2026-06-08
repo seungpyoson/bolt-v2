@@ -22,6 +22,13 @@ For a horizon with window `W`, sampling interval `dt`, and annualization basis `
 5. Annualize as `annualized_rv = RV * A / horizon_seconds`.
 6. Annualized realized volatility is `sqrt(annualized_rv)`.
 
+Coverage ratio:
+
+- `expected_return_count = floor(W / dt)`.
+- `valid_return_count` is the count of adjacent grid-price pairs that produce valid positive finite log returns and pass source-age/gap constraints.
+- `coverage_ratio = valid_return_count / expected_return_count`.
+- If `expected_return_count == 0`, the horizon is invalid at config validation.
+
 Flat valid prices produce zero RV and zero volatility.
 
 ## Multi-Horizon Blend
@@ -44,10 +51,12 @@ Weighted blend:
 
 Max floor:
 
+- Use `primary_horizon_name` and `floor_horizon_name` from TOML.
 - Final source volatility is `max(primary_horizon, floor_horizon)`.
 
 Short with long floor:
 
+- Use `short_horizon_name`, `long_horizon_name`, and `floor_multiplier` from TOML.
 - Final source volatility is `max(short_horizon, long_horizon * floor_multiplier)`.
 
 ## Microstructure-Noise Robust Modes
@@ -60,7 +69,7 @@ Use base fixed-grid RV.
 
 Compute the same base estimator using `coarse_sampling_interval_ms`. Emit both base and coarser estimates.
 
-Final horizon value depends on TOML policy:
+Final horizon value depends on `coarser_grid_horizon_policy`:
 
 - `base`: use base fixed-grid estimate.
 - `coarse`: use coarser estimate.
@@ -73,19 +82,20 @@ For `k = subsamples`:
 1. Create `k` deterministic offset grids within the same horizon.
 2. Offset `j` starts at `window_start + floor(j * sampling_interval_ms / k)`.
 3. Compute base fixed-grid RV for each offset grid.
-4. The subsampled estimate is the arithmetic mean of ready offset-grid RVs.
-5. Reject if no offset grid is ready.
+4. Each offset grid computes coverage against its own expected return count after the offset start.
+5. The subsampled estimate is the arithmetic mean of ready offset-grid RVs.
+6. Reject unless `ready_offset_grid_count >= min_ready_subsamples`.
 
-Evidence must include base fixed-grid RV, number of ready subsamples, and subsampled RV.
+Evidence must include base fixed-grid RV, number of ready subsamples, number of attempted subsamples, per-offset coverage ratios, and subsampled RV.
 
 ## Jump Separation
 
 The first implementation separates jumps instead of removing them.
 
-For returns `r_1..r_n`:
+For returns `r_1..r_n` where `n >= 2`:
 
 - Measured variance: `RV = sum_i r_i^2`.
-- Bipower proxy: `BV = (pi / 2) * sum_{i=2..n} |r_i| * |r_{i-1}|`.
+- Bipower proxy with finite-sample correction: `BV = (pi / 2) * (n / (n - 1)) * sum_{i=2..n} |r_i| * |r_{i-1}|`.
 - Continuous variance: `continuous_var = min(RV, BV)`.
 - Jump variance: `jump_var = max(RV - continuous_var, 0)`.
 
@@ -96,6 +106,7 @@ Rules:
 - The final pricing component is explicit in TOML and evidence.
 - Jump variance is never silently discarded.
 - If there are fewer than two returns, jump separation is diagnostic-only and cannot create a usable jump component.
+- Flat valid prices produce zero measured, zero continuous, and zero jump components.
 
 ## Cross-Source Aggregation
 
@@ -111,11 +122,11 @@ Select the median contributor volatility. For even counts, use the arithmetic me
 
 ### trimmed_mean
 
-Sort contributors, remove configured symmetric trim count or fraction, then average remaining values. Reject if trimming removes all contributors or leaves fewer than `min_ready_sources`.
+Sort contributors, remove configured symmetric `trim_fraction`, then average remaining values. Reject if trimming removes all contributors or leaves fewer than `min_ready_sources`.
 
 ### median_with_upper_quantile_guard
 
-Compute median and upper quantile. Final value is `max(median, upper_quantile * guard_weight)` where `guard_weight` is TOML-owned and non-negative.
+Compute median and the selected upper-quantile value. Final value is `max(median, upper_quantile_value * guard_weight)` where `guard_weight` is TOML-owned and non-negative.
 
 ## Dispersion and MAD Blocking
 
@@ -132,11 +143,13 @@ MAD dispersion:
 - If median is zero and any deviation is positive, MAD ratio is infinite.
 - Block if `mad_ratio > mad_block_threshold`.
 
+The first implementation intentionally uses raw MAD, not normal-calibrated `1.4826 * MAD`. TOML thresholds are calibrated against raw MAD ratio.
+
 Dispersion blockers are surface-level blockers. Source-level readiness blockers stay in source diagnostics.
 
 ## Forecast Modes
 
-Forecast modes are deterministic and evidence-first.
+Forecast modes are deterministic and evidence-first. Forecast state is owned per `surface_id` after cross-source aggregation and after the configured component selection that feeds the forecast.
 
 ### none
 
@@ -149,8 +162,12 @@ Final forecast component is absent. Pricing uses the configured measured/continu
 Rules:
 
 - `alpha` is TOML-owned in `(0, 1]`.
-- If no previous forecast exists, initialize from current component.
-- Evidence records `alpha`, current component, previous forecast, and final forecast.
+- `alpha` is a refresh-step coefficient, not time-normalized in the first implementation.
+- EWMA advances only on runtime `refresh(now_ms)` when a new ready current component exists and `now_ms > previous_forecast_update_ms`.
+- It does not advance on every observation.
+- If no previous forecast exists, including after process restart, initialize from current component and record `forecast_cold_start = true` in evidence.
+- Changing forecast config changes the surface config fingerprint and resets forecast state.
+- Evidence records `alpha`, current component, previous forecast, final forecast, update timestamp, and cold-start flag.
 
 ### har_lite
 
@@ -159,12 +176,13 @@ Rules:
 Rules:
 
 - Betas and intercept are TOML-owned.
-- Required referenced horizons must be ready.
+- Short, medium, and long role bindings must reference configured horizons.
+- Referenced horizons must be ready.
 - Evidence records every input and coefficient.
 
 ## Final Pricing Value
 
-The final `ReadyRealizedVol` value is selected by TOML policy from one of:
+The final `ReadyRealizedVol` value is selected by TOML `pricing_component` from one of:
 
 - measured multi-horizon blend
 - noise-robust multi-horizon blend

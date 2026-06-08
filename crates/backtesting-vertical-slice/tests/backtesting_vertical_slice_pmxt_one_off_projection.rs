@@ -12,12 +12,11 @@ use backtesting_vertical_slice::{
         ConversionFingerprint, ConversionOutputState, inspect_conversion_output,
     },
     pmxt_one_off_backfill_projection::{
-        NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_TRADE_TICK,
-        PMXT_ONE_OFF_RESULT_CONTRACT_FILE, PmxtBookLevel, PmxtOneOffArtifactRootRunSpec,
-        PmxtOneOffBacktestContractSpec, PmxtOneOffConversionProjectionSpec, PmxtOneOffNtProjection,
-        PmxtOneOffProjectionRequest, PmxtOneOffSelectedRow, PmxtOneOffSnapshotRow,
-        PmxtOneOffTickSide, PmxtOneOffTradeRow, PmxtPriceChangeRow,
-        PmxtSelectedSourceProjectionSpec, PmxtSelectedSourceSchema,
+        NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_TRADE_TICK, PMXT_ONE_OFF_RESULT_CONTRACT_FILE,
+        PmxtBookLevel, PmxtOneOffArtifactRootRunSpec, PmxtOneOffBacktestContractSpec,
+        PmxtOneOffConversionProjectionSpec, PmxtOneOffNtProjection, PmxtOneOffProjectionRequest,
+        PmxtOneOffSelectedRow, PmxtOneOffSnapshotRow, PmxtOneOffTickSide, PmxtOneOffTradeRow,
+        PmxtPriceChangeRow, PmxtSelectedSourceProjectionSpec, PmxtSelectedSourceSchema,
         project_pmxt_one_off_rows_to_nt, project_pmxt_selected_source_parquet_to_nt,
         run_pmxt_one_off_l2_backtest_contract, write_pmxt_one_off_conversion_projection,
         write_pmxt_one_off_l2_artifact_root_run, write_pmxt_one_off_projection_to_catalog,
@@ -788,15 +787,19 @@ fn pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog() {
     assert_eq!(expected_projection.projection.order_book_deltas.len(), 4);
     assert_eq!(expected_projection.projection.trade_ticks.len(), 2);
 
-    let mut manifest = pmxt_l2_manifest(&expected_projection.projection, &catalog_root, &output_dir);
+    let mut manifest =
+        pmxt_l2_manifest(&expected_projection.projection, &catalog_root, &output_dir);
     let mut trade_input = manifest.catalog_inputs[0].clone();
     trade_input.data_type = NT_DATA_TYPE_TRADE_TICK.to_string();
     manifest.catalog_inputs.push(trade_input);
     let manifest_hash = manifest.manifest_hash();
     let selected_source_sha256 = sha256_file(&selected_parquet_path);
     let catalog_probe_dir = tempfile::TempDir::new().expect("catalog probe dir");
-    write_pmxt_one_off_projection_to_catalog(catalog_probe_dir.path(), &expected_projection.projection)
-        .expect("write PMXT mixed catalog probe");
+    write_pmxt_one_off_projection_to_catalog(
+        catalog_probe_dir.path(),
+        &expected_projection.projection,
+    )
+    .expect("write PMXT mixed catalog probe");
     let mut catalog_probe = ParquetDataCatalog::from_uri(
         catalog_probe_dir
             .path()

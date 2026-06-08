@@ -1475,7 +1475,10 @@ impl BacktestingRunManifest {
         let [input] = self.catalog_inputs.as_slice() else {
             return Err(ManifestError::UnsupportedEnum {
                 field: "catalog_inputs",
-                value: format!("expected exactly one catalog input, got {}", self.catalog_inputs.len()),
+                value: format!(
+                    "expected exactly one catalog input, got {}",
+                    self.catalog_inputs.len()
+                ),
             });
         };
         catalog_input_to_nt_data_config(input)
@@ -1491,7 +1494,10 @@ impl BacktestingRunManifest {
         let [input] = self.catalog_inputs.as_slice() else {
             return Err(ManifestError::UnsupportedEnum {
                 field: "catalog_inputs",
-                value: format!("expected exactly one catalog input, got {}", self.catalog_inputs.len()),
+                value: format!(
+                    "expected exactly one catalog input, got {}",
+                    self.catalog_inputs.len()
+                ),
             });
         };
         Ok(input)
@@ -1530,7 +1536,9 @@ impl BacktestingRunManifest {
     /// # Errors
     ///
     /// Returns an error when no catalog input is configured.
-    pub fn primary_catalog_input_mut(&mut self) -> Result<&mut ManifestCatalogInput, ManifestError> {
+    pub fn primary_catalog_input_mut(
+        &mut self,
+    ) -> Result<&mut ManifestCatalogInput, ManifestError> {
         self.catalog_inputs
             .first_mut()
             .ok_or(ManifestError::MissingField("catalog_inputs"))
@@ -1572,40 +1580,40 @@ fn catalog_input_to_nt_data_config(
 ) -> Result<BacktestDataConfig, ManifestError> {
     ensure_unsupported_nt_catalog_query_surfaces_absent(input)?;
     let data_type = match input.data_type.as_str() {
-            "TradeTick" => NautilusDataType::TradeTick,
-            "OrderBookDelta" => NautilusDataType::OrderBookDelta,
-            other => {
-                return Err(ManifestError::UnsupportedDataType {
-                    data_type: other.to_string(),
-                });
-            }
-        };
+        "TradeTick" => NautilusDataType::TradeTick,
+        "OrderBookDelta" => NautilusDataType::OrderBookDelta,
+        other => {
+            return Err(ManifestError::UnsupportedDataType {
+                data_type: other.to_string(),
+            });
+        }
+    };
     let instrument_ids = input
-            .instrument_ids
-            .as_ref()
-            .map(|ids| {
-                ids.iter()
-                    .map(|id| {
-                        id.parse::<InstrumentId>()
-                            .map_err(|_| ManifestError::InvalidInstrumentId {
-                                instrument_id: id.clone(),
-                            })
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()?;
+        .instrument_ids
+        .as_ref()
+        .map(|ids| {
+            ids.iter()
+                .map(|id| {
+                    id.parse::<InstrumentId>()
+                        .map_err(|_| ManifestError::InvalidInstrumentId {
+                            instrument_id: id.clone(),
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
     let instrument_id = if instrument_ids.is_some() {
-            None
-        } else {
-            Some(
-                input
-                    .nt_instrument_id
-                    .parse::<InstrumentId>()
-                    .map_err(|_| ManifestError::InvalidInstrumentId {
-                        instrument_id: input.nt_instrument_id.clone(),
-                    })?,
-            )
-        };
+        None
+    } else {
+        Some(
+            input
+                .nt_instrument_id
+                .parse::<InstrumentId>()
+                .map_err(|_| ManifestError::InvalidInstrumentId {
+                    instrument_id: input.nt_instrument_id.clone(),
+                })?,
+        )
+    };
     let catalog_fs_protocol = parse_catalog_fs_protocol(&input.catalog_fs_protocol)?;
     validate_catalog_storage_options(
         catalog_fs_protocol.as_deref(),
@@ -1613,38 +1621,36 @@ fn catalog_input_to_nt_data_config(
         &input.catalog_fs_rust_storage_options,
     )?;
     Ok(BacktestDataConfig::builder()
-            .data_type(data_type)
+        .data_type(data_type)
         .catalog_path(input.catalog_path.clone())
-            .maybe_catalog_fs_protocol(catalog_fs_protocol)
-        .maybe_catalog_fs_storage_options(
-                if input.catalog_fs_storage_options.is_empty() {
-                    None
-                } else {
-                    Some(
-                        input
-                        .catalog_fs_storage_options
-                            .clone()
-                            .into_iter()
-                            .collect(),
-                    )
-                },
+        .maybe_catalog_fs_protocol(catalog_fs_protocol)
+        .maybe_catalog_fs_storage_options(if input.catalog_fs_storage_options.is_empty() {
+            None
+        } else {
+            Some(
+                input
+                    .catalog_fs_storage_options
+                    .clone()
+                    .into_iter()
+                    .collect(),
             )
+        })
         .maybe_catalog_fs_rust_storage_options(
-                if input.catalog_fs_rust_storage_options.is_empty() {
-                    None
-                } else {
-                    Some(
-                        input
+            if input.catalog_fs_rust_storage_options.is_empty() {
+                None
+            } else {
+                Some(
+                    input
                         .catalog_fs_rust_storage_options
-                            .clone()
-                            .into_iter()
-                            .collect(),
-                    )
-                },
-            )
-            .maybe_instrument_id(instrument_id)
-            .maybe_instrument_ids(instrument_ids)
-            .build())
+                        .clone()
+                        .into_iter()
+                        .collect(),
+                )
+            },
+        )
+        .maybe_instrument_id(instrument_id)
+        .maybe_instrument_ids(instrument_ids)
+        .build())
 }
 
 impl BacktestingRunManifest {
@@ -1692,7 +1698,6 @@ impl BacktestingRunManifest {
     ) -> Result<Option<BTreeMap<String, String>>, ManifestError> {
         artifact_store_base_storage_options_for_uri(&self.output_prefix, &self.artifact_store)
     }
-
 }
 
 fn artifact_store_base_storage_options_for_uri(

@@ -155,9 +155,9 @@ fn add_manifest_strategy(
     let strategy = &manifest.strategy;
     match strategy.registry_key.as_str() {
         STRATEGY_HURST_VPIN_DIRECTIONAL => {
-            let catalog_input = manifest
-                .primary_catalog_input()
-                .map_err(|error| anyhow::anyhow!("strategy instrument requires catalog input: {error}"))?;
+            let catalog_input = manifest.primary_catalog_input().map_err(|error| {
+                anyhow::anyhow!("strategy instrument requires catalog input: {error}")
+            })?;
             let instrument_id: InstrumentId =
                 catalog_input.nt_instrument_id.parse().with_context(|| {
                     format!("invalid instrument id {:?}", catalog_input.nt_instrument_id)
@@ -233,10 +233,9 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         .catalog_root
         .to_str()
         .context("catalog root is not valid UTF-8")?;
-    let manifest_catalog_input = inputs
-        .manifest
-        .single_catalog_input()
-        .map_err(|error| anyhow::anyhow!("trade replay runner requires one catalog input: {error}"))?;
+    let manifest_catalog_input = inputs.manifest.single_catalog_input().map_err(|error| {
+        anyhow::anyhow!("trade replay runner requires one catalog input: {error}")
+    })?;
     ensure!(
         manifest_catalog_input.catalog_path == catalog_root_str,
         "manifest catalog_path {:?} does not match projection root {catalog_root_str:?}",
@@ -436,9 +435,7 @@ fn execution_catalog_uri(manifest: &BacktestingRunManifest) -> String {
         .single_catalog_input()
         .expect("execution_catalog_uri requires one catalog input");
     match catalog_input.catalog_fs_protocol.as_str() {
-        crate::run_manifest::CATALOG_FS_PROTOCOL_NONE => {
-            catalog_input.catalog_path.clone()
-        }
+        crate::run_manifest::CATALOG_FS_PROTOCOL_NONE => catalog_input.catalog_path.clone(),
         protocol => format!("{protocol}://{}", catalog_input.catalog_path),
     }
 }

@@ -281,9 +281,9 @@ fn local_run_manifest_for_output(
         .to_string();
     let mut manifest = spec.manifest.clone();
     {
-        let catalog_input = manifest
-            .single_catalog_input_mut()
-            .map_err(|error| anyhow::anyhow!("local catalog manifest requires one catalog input: {error}"))?;
+        let catalog_input = manifest.single_catalog_input_mut().map_err(|error| {
+            anyhow::anyhow!("local catalog manifest requires one catalog input: {error}")
+        })?;
         catalog_input.catalog_path = catalog_path;
         catalog_input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
         catalog_input.catalog_fs_storage_options.clear();
@@ -452,10 +452,9 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         canonical_table.schema_version == conversion_manifest.normalized_schema_version,
         "completed canonical schema mismatch"
     );
-    let manifest_catalog_input = inputs
-        .manifest
-        .single_catalog_input()
-        .map_err(|error| anyhow::anyhow!("completed conversion check requires one catalog input: {error}"))?;
+    let manifest_catalog_input = inputs.manifest.single_catalog_input().map_err(|error| {
+        anyhow::anyhow!("completed conversion check requires one catalog input: {error}")
+    })?;
     ensure!(
         conversion_manifest.nt_instrument_id == manifest_catalog_input.nt_instrument_id,
         "completed conversion instrument does not match run manifest"
@@ -1008,9 +1007,9 @@ fn prove_published_catalog_consumption(
         nt_result.iterations,
         expected_iterations
     );
-    let catalog_input = manifest
-        .single_catalog_input()
-        .map_err(|error| anyhow::anyhow!("published catalog proof requires one catalog input: {error}"))?;
+    let catalog_input = manifest.single_catalog_input().map_err(|error| {
+        anyhow::anyhow!("published catalog proof requires one catalog input: {error}")
+    })?;
     let direct_s3_catalog_access_proven =
         catalog_input.catalog_fs_protocol == "s3" && catalog_uri.starts_with("s3://");
     Ok(PublishedCatalogProof {
@@ -1036,9 +1035,9 @@ fn published_catalog_manifest(
     manifest.artifact_store.rust_storage_options.clear();
     manifest.artifact_store.ssm_parameters = None;
     {
-        let catalog_input = manifest
-            .single_catalog_input_mut()
-            .map_err(|error| anyhow::anyhow!("published catalog manifest requires one catalog input: {error}"))?;
+        let catalog_input = manifest.single_catalog_input_mut().map_err(|error| {
+            anyhow::anyhow!("published catalog manifest requires one catalog input: {error}")
+        })?;
         catalog_input.catalog_fs_storage_options.clear();
         catalog_input.catalog_fs_rust_storage_options.clear();
         if let Some(local_path) = catalog_uri.strip_prefix("file://") {
@@ -1799,9 +1798,11 @@ mod tests {
             manifest.catalog_inputs[0].catalog_path,
             "example-bucket/backtests/published-run/nt-catalog"
         );
-        assert!(manifest.catalog_inputs[0]
-            .catalog_fs_storage_options
-            .is_empty());
+        assert!(
+            manifest.catalog_inputs[0]
+                .catalog_fs_storage_options
+                .is_empty()
+        );
         assert_eq!(
             manifest.catalog_inputs[0].catalog_fs_rust_storage_options,
             resolved_options

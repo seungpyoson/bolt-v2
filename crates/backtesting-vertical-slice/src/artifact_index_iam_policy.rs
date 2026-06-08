@@ -130,19 +130,13 @@ fn validate_denied_kinds(
     denied_artifact_kinds: &[ArtifactKind],
 ) -> Result<(), ArtifactIndexIamPolicyError> {
     if denied_artifact_kinds.contains(&artifact_kind) {
-        Err(
-            ArtifactIndexIamPolicyError::DeniedArtifactKindIncludesProducerKind {
-                artifact_kind,
-            },
-        )
+        Err(ArtifactIndexIamPolicyError::DeniedArtifactKindIncludesProducerKind { artifact_kind })
     } else {
         Ok(())
     }
 }
 
-fn validate_ssm_parameter_prefix(
-    prefix: &str,
-) -> Result<String, ArtifactIndexIamPolicyError> {
+fn validate_ssm_parameter_prefix(prefix: &str) -> Result<String, ArtifactIndexIamPolicyError> {
     let whitespace_trimmed = prefix.trim();
     if whitespace_trimmed != prefix {
         return Err(ArtifactIndexIamPolicyError::InvalidSsmParameterPrefix {

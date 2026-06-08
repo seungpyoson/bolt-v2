@@ -1,8 +1,8 @@
 use backtesting_vertical_slice::{
     artifact_index::ArtifactKind,
     artifact_index_iam_policy::{
-        artifact_index_producer_iam_policy, artifact_index_producer_iam_provisioning_plan,
-        ArtifactIndexProducerIamProvisioningPlanSpec,
+        ArtifactIndexProducerIamProvisioningPlanSpec, artifact_index_producer_iam_policy,
+        artifact_index_producer_iam_provisioning_plan,
     },
 };
 
@@ -50,8 +50,8 @@ fn producer_iam_policy_scopes_index_writes_to_one_configured_kind() {
 
 #[test]
 fn producer_iam_provisioning_plan_binds_policy_ssm_paths_and_denied_probe_kinds() {
-    let plan =
-        artifact_index_producer_iam_provisioning_plan(ArtifactIndexProducerIamProvisioningPlanSpec {
+    let plan = artifact_index_producer_iam_provisioning_plan(
+        ArtifactIndexProducerIamProvisioningPlanSpec {
             artifact_root: "s3://example-bucket/example-root".to_string(),
             artifact_kind: ArtifactKind::Backtests,
             proof_artifact_roots: vec![
@@ -59,8 +59,9 @@ fn producer_iam_provisioning_plan_binds_policy_ssm_paths_and_denied_probe_kinds(
             ],
             ssm_parameter_prefix: "/example/artifact-index/producers".to_string(),
             denied_artifact_kinds: vec![ArtifactKind::ResearchAnalytics],
-        })
-        .expect("provisioning plan");
+        },
+    )
+    .expect("provisioning plan");
 
     assert_eq!(plan.artifact_kind, ArtifactKind::Backtests);
     assert_eq!(
@@ -84,9 +85,11 @@ fn producer_iam_provisioning_plan_binds_policy_ssm_paths_and_denied_probe_kinds(
         .iter()
         .flat_map(|statement| statement.resources.iter().map(String::as_str))
         .collect();
-    assert!(resources.iter().any(|resource| {
-        resource.ends_with("artifact-index/v1/events/kind=backtests/*")
-    }));
+    assert!(
+        resources
+            .iter()
+            .any(|resource| { resource.ends_with("artifact-index/v1/events/kind=backtests/*") })
+    );
     assert!(
         resources
             .iter()
@@ -101,25 +104,27 @@ fn producer_iam_provisioning_plan_binds_policy_ssm_paths_and_denied_probe_kinds(
 
 #[test]
 fn producer_iam_provisioning_plan_rejects_unscoped_prefix_and_self_denial() {
-    let invalid_prefix =
-        artifact_index_producer_iam_provisioning_plan(ArtifactIndexProducerIamProvisioningPlanSpec {
+    let invalid_prefix = artifact_index_producer_iam_provisioning_plan(
+        ArtifactIndexProducerIamProvisioningPlanSpec {
             artifact_root: "s3://example-bucket/example-root".to_string(),
             artifact_kind: ArtifactKind::Backtests,
             proof_artifact_roots: Vec::new(),
             ssm_parameter_prefix: "example/artifact-index/producers".to_string(),
             denied_artifact_kinds: vec![ArtifactKind::ResearchAnalytics],
-        })
-        .expect_err("relative SSM prefix must be rejected");
+        },
+    )
+    .expect_err("relative SSM prefix must be rejected");
     assert!(invalid_prefix.to_string().contains("absolute SSM"));
 
-    let self_denial =
-        artifact_index_producer_iam_provisioning_plan(ArtifactIndexProducerIamProvisioningPlanSpec {
+    let self_denial = artifact_index_producer_iam_provisioning_plan(
+        ArtifactIndexProducerIamProvisioningPlanSpec {
             artifact_root: "s3://example-bucket/example-root".to_string(),
             artifact_kind: ArtifactKind::Backtests,
             proof_artifact_roots: Vec::new(),
             ssm_parameter_prefix: "/example/artifact-index/producers".to_string(),
             denied_artifact_kinds: vec![ArtifactKind::Backtests],
-        })
-        .expect_err("producer kind cannot be denied by its own proof");
+        },
+    )
+    .expect_err("producer kind cannot be denied by its own proof");
     assert!(self_denial.to_string().contains("denied_artifact_kinds"));
 }

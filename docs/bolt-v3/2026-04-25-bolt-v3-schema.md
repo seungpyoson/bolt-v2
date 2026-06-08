@@ -62,7 +62,7 @@ The strategy file owns:
 - venue reference
 - target definition
 - target retry/block timing
-- optional reference data declarations
+- optional reference_current_price source declarations
 - strategy-specific parameters
 - archetype-specific order parameters
 
@@ -648,8 +648,8 @@ It is not the trader identifier.
 
 `[clients]` is a map keyed by these identifiers, so each client key must be unique.
 More than one client may target the same `venue`: the schema does not enforce a one-client-per-venue rule.
-A common layout is a trade client and a separate reference-data client on the same venue, distinguished by their keys and their `[data]` / `[execution]` blocks.
-Cross-client collisions are rejected only where two clients would produce indistinguishable runtime evidence: the same `instrument_id` must not be declared under more than one client's `readiness_probe.quote_targets`, and the same reference-data `instrument_id` must not be declared under more than one `data_client_id`, because NautilusTrader `QuoteTick` carries the instrument but not the producing data-client identifier.
+A common layout is a trade client and a separate data client on the same venue, distinguished by their keys and their `[data]` / `[execution]` blocks.
+Cross-client collisions are rejected only where two clients would produce indistinguishable runtime evidence: the same `instrument_id` must not be declared under more than one client's `readiness_probe.quote_targets`, because NautilusTrader `QuoteTick` carries the instrument but not the producing data-client identifier.
 
 #### `venue`
 
@@ -742,7 +742,7 @@ Presence of `[data]` means a data client is configured.
 
 No other Polymarket data-client fields are exposed in the current schema unless they are confirmed on the pinned NautilusTrader Rust adapter surface.
 
-For current reference-data clients other than Polymarket, each client's `venue` defines its own allowed `[data]` field set.
+For current data clients other than Polymarket, each client's `venue` defines its own allowed `[data]` field set.
 Unknown fields fail validation against the venue-specific set in Section 8.
 
 ### `[clients.<identifier>.execution]`
@@ -846,7 +846,7 @@ All are:
 
 No environment-variable fallback is allowed.
 
-For current Binance reference-data use:
+For current Binance data use:
 
 - `api_key_ssm_path` and `api_secret_ssm_path` are required
 - the expected credential type is Ed25519, matching the pinned Binance data-client requirement for SBE WebSocket streams
@@ -882,7 +882,7 @@ For current Binance reference-data use:
 - required: yes
 - maps to Nautilus `BinanceDataClientConfig.base_url_ws`
 - explicit TOML ownership prevents NautilusTrader from falling back to its compiled-in Binance WebSocket URL
-- must not use NautilusTrader's Binance Spot JSON WebSocket host; the bolt-v3 reference quote probe requires an SBE endpoint or compatible SBE proxy so NT `subscribe_quotes` can emit `QuoteTick` data
+- must not use NautilusTrader's Binance Spot JSON WebSocket host; configured NT quote subscriptions require an SBE endpoint or compatible SBE proxy so NT `subscribe_quotes` can emit `QuoteTick` data
 
 ##### `instrument_status_poll_secs`
 
@@ -1322,7 +1322,7 @@ The TOML value is the literal NautilusTrader `InstrumentId` string.
 The field name maps one-to-one to `nautilus_model::identifiers::InstrumentId`; aliases are forbidden.
 bolt does not define a second identifier format here.
 
-No archetype may hardcode its reference data source in code.
+No archetype may hardcode its reference_current_price source in code.
 
 ### `[parameters.entry_order]`, `[parameters.exit_order]`, and `[parameters.forced_exit_order]`
 
@@ -1526,8 +1526,8 @@ For the current `binary_oracle_edge_taker` archetype:
 
 Runtime fields:
 
-- `reference_publish_topic`: string; reference-data topic consumed by the runtime strategy
-- `warmup_tick_count`: unsigned integer; fresh-reference warmup count before entry is allowed
+- `reference_publish_topic`: string; reference-current-price topic consumed by the runtime strategy
+- `warmup_tick_count`: unsigned integer; fresh current-price warmup count before entry is allowed
 - `reentry_cooldown_secs`: unsigned integer; cooldown after an entry attempt
 - `book_impact_cap_bps`: unsigned integer; maximum allowed book-impact basis points for order construction
 - `risk_lambda`: float; sizing risk coefficient
@@ -1560,7 +1560,7 @@ Must fail if:
 - a referenced file does not exist
 - a client reference points to a missing client
 - a strategy `execution_client_id` points to a data-only client (no `[execution]` block)
-- a reference-data `data_client_id` points to a client without `[data]`
+- a `reference_current_price.source.*.client_id` points to a client without `[data]`
 - a `[secrets]` block is present without the same client's consuming adapter block
 - an SSM parameter path is empty or does not start with `/`
 - two listed strategy files declare the same `strategy_instance_id`
@@ -1575,7 +1575,7 @@ Must fail if:
 - `target.cadence_secs` is not positive or is not divisible by `60`
 - `target.cadence_secs` does not have a runtime-contract-defined slug-token mapping
 - a field appears under `[clients.<identifier>.data]` or `[clients.<identifier>.execution]` that is not allowed for that client's `venue`
-- a Binance reference-data `base_url_ws` uses NautilusTrader's Binance Spot JSON WebSocket host instead of an SBE endpoint or compatible SBE proxy
+- a Binance data `base_url_ws` uses NautilusTrader's Binance Spot JSON WebSocket host instead of an SBE endpoint or compatible SBE proxy
 - archetype-specific parameter sections contain fields not allowed for the declared `strategy_archetype`
 - archetype-specific order parameters contain any combination not explicitly allowed for that archetype
 - `order_notional_target` or `maximum_position_notional` is not a positive decimal

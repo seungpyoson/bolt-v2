@@ -2,8 +2,8 @@
 //!
 //! Core startup validation in `crate::bolt_v3_validate` is structural
 //! and family-/archetype-agnostic. Anything specific to a concrete
-//! strategy archetype key — required reference-data roles,
-//! the archetype's `[parameters]` row shape, archetype-shaped
+//! strategy archetype key — the archetype's `[parameters]` row shape,
+//! archetype-shaped
 //! parameter rules (entry/exit order combinations, decimal-syntax
 //! checks, root risk-cap comparison), and archetype-specific error-
 //! message policy — lives in a per-archetype binding module under

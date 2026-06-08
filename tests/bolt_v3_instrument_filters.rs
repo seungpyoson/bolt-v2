@@ -877,8 +877,8 @@ fn config_module_must_not_own_market_family_target_types() {
 fn validate_module_must_not_own_binary_oracle_edge_taker_policy() {
     // Bolt-v3 startup validation must stay structural and dispatch
     // strategy-archetype policy out to a dedicated archetype module.
-    // The `binary_oracle_edge_taker` archetype's required reference-data
-    // role, its allowed entry/exit order-combination rules, and the
+    // The `binary_oracle_edge_taker` archetype's reference-current-price
+    // source requirements, its allowed entry/exit order-combination rules, and the
     // error-message policy that names those rules belong to the
     // archetype binding (`crate::bolt_v3_archetypes::binary_oracle_edge_taker`),
     // not to core validation. Validate.rs may still dispatch into the

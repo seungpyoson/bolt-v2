@@ -4,8 +4,8 @@
 //!
 //! This module owns common strategy-envelope validation (schema
 //! version, uniqueness of instance / order-id-tag, client / execution
-//! lookup, per-role reference-data structural validation, reference quote
-//! probe source disambiguation), root-block validation, and root risk
+//! lookup, reference-current-price source structural validation,
+//! readiness-probe source disambiguation), root-block validation, and root risk
 //! decimal syntax only. Market-family-shaped
 //! target rules
 //! (rotating-market kind, family discriminator, cadence policy,
@@ -14,7 +14,7 @@
 //! `crate::bolt_v3_market_families`; `validate_strategies` dispatches
 //! the strategy envelope's raw `[target]` value through
 //! `crate::bolt_v3_market_families::validate_strategy_target`. Strategy-
-//! archetype-specific rules (required reference-data roles, allowed
+//! archetype-specific rules (allowed
 //! `[parameters.entry_order]` / `[parameters.exit_order]` combinations,
 //! archetype-specific error wording) are owned by the per-archetype
 //! binding modules under `crate::bolt_v3_archetypes`; those modules also
@@ -1066,7 +1066,7 @@ fn validate_rate_limit_string(value: &str) -> Result<(u64, u64), String> {
 /// (a Polymarket market submit = `get_book` + `post_order` = 2). A submit rate at
 /// the raw per-minute cap therefore over-drives the venue's request quota by the
 /// fanout factor; the excess does not reject early with a loud `OrderDenied` — it
-/// blocks at egress (added latency, stale reference quotes), a silent failure on
+/// blocks at egress (added latency, stale market data), a silent failure on
 /// a live-money path. Reconciling `limit * fanout` against the cap at config load
 /// keeps the policy fail-loud regardless of the rendered deploy-time value, which
 /// is not otherwise knowable from the repo.

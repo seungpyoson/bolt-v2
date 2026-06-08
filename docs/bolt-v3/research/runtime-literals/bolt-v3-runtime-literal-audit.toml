@@ -1343,8 +1343,8 @@ reason = "Runtime contract Section 3: NT resolve_credentials reads this demo (al
 [[allowed]]
 path = "src/bolt_v3_providers/binance.rs"
 kind = "string"
-literal = '''"Binance reference-data client"'''
-context = '''consumer: "Binance reference-data client",'''
+literal = '''"Binance data client"'''
+context = '''consumer: "Binance data client",'''
 classification = "provider_secret_requirement_label"
 reason = "This label explains the provider-owned credential-consuming block covered by the central required-[secrets] validation."
 

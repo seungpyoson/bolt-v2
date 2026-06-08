@@ -4550,10 +4550,10 @@ fn rejects_binance_reference_client_missing_secrets_block() {
         messages.iter().any(|m| m.contains("binance_reference")
             && m.contains("[data]")
             && m.contains("required [secrets] block")),
-        "expected missing-secrets failure for binance reference-data client, got: {messages:#?}"
+        "expected missing-secrets failure for binance data client, got: {messages:#?}"
     );
-    assert!(rendered.contains("Binance reference-data client"));
-    assert!(!rendered.contains("Binance reference-data venue"));
+    assert!(rendered.contains("Binance data client"));
+    assert!(!rendered.contains("Binance data venue"));
     assert!(rendered.contains("(provider=BINANCE)"));
     assert!(!rendered.contains("(venue="));
 }

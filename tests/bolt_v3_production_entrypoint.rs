@@ -95,6 +95,55 @@ fn reference_current_price_health_uses_strategy_free_transport_path() {
 }
 
 #[test]
+fn active_reference_current_price_surfaces_do_not_claim_retired_reference_data_or_probe_paths() {
+    let active_surfaces = [
+        (
+            "src/bolt_v3_validate.rs",
+            include_str!("../src/bolt_v3_validate.rs"),
+        ),
+        (
+            "src/bolt_v3_archetypes/mod.rs",
+            include_str!("../src/bolt_v3_archetypes/mod.rs"),
+        ),
+        (
+            "src/bolt_v3_live_node.rs",
+            include_str!("../src/bolt_v3_live_node.rs"),
+        ),
+        (
+            "src/bolt_v3_providers/binance.rs",
+            include_str!("../src/bolt_v3_providers/binance.rs"),
+        ),
+        (
+            "docs/bolt-v3/2026-04-25-bolt-v3-schema.md",
+            include_str!("../docs/bolt-v3/2026-04-25-bolt-v3-schema.md"),
+        ),
+        (
+            "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md",
+            include_str!("../docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"),
+        ),
+    ];
+
+    for (path, source) in active_surfaces {
+        for forbidden in [
+            "reference_data",
+            "reference-data",
+            "reference-data structural validation",
+            "required reference-data roles",
+            "same reference-data `instrument_id`",
+            "strategy-free reference quote",
+            "live reference quote evidence",
+            "reference quote probe",
+            "reference quote readiness",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{path} still claims retired reference-data or standalone reference quote-probe behavior via `{forbidden}`"
+            );
+        }
+    }
+}
+
+#[test]
 fn bolt_v3_production_path_cannot_load_legacy_config_defaults() {
     let production_sources = [
         ("src/main.rs", include_str!("../src/main.rs")),

@@ -1237,11 +1237,11 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             ),
             BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(error) => write!(
                 f,
-                "bolt-v3 strategy-free reference quote probe setup failed: {error}"
+                "bolt-v3 strategy-free data-client readiness probe setup failed: {error}"
             ),
             BoltV3LiveNodeError::StrategyFreeReferenceProbeFailed { reason } => write!(
                 f,
-                "bolt-v3 strategy-free controlled-run reached NT Running but live reference quote evidence was not observed; engine connectivity cannot be treated as proven: {reason}"
+                "bolt-v3 strategy-free controlled-run reached NT Running but live data-client readiness evidence was not observed; engine connectivity cannot be treated as proven: {reason}"
             ),
             BoltV3LiveNodeError::StrategyFreeStartFailed(error) => {
                 write!(f, "bolt-v3 strategy-free controlled-start failed: {error}")
@@ -1468,11 +1468,18 @@ pub fn build_bolt_v3_strategy_free_live_node(
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
     let transport_loaded = trade_transport_loaded_config(loaded)?;
     let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
-    let adapters = strategy_free_transport_adapter_configs(&transport_loaded, &resolved)?;
-    let strategy_free_loaded = strategy_free_transport_loaded_config(&transport_loaded);
     let (runtime, _summary) =
-        build_live_node_with_clients(&strategy_free_loaded, &resolved, adapters)?;
+        build_bolt_v3_strategy_free_live_node_from_transport(&transport_loaded, &resolved)?;
     Ok(runtime)
+}
+
+fn build_bolt_v3_strategy_free_live_node_from_transport(
+    transport_loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
+    let adapters = strategy_free_transport_adapter_configs(transport_loaded, resolved)?;
+    let strategy_free_loaded = strategy_free_transport_loaded_config(transport_loaded);
+    build_live_node_with_clients(&strategy_free_loaded, resolved, adapters)
 }
 
 pub fn build_bolt_v3_all_configured_client_mapping_live_node(
@@ -1683,6 +1690,25 @@ where
         bundle.configs,
         bundle.live_submit_approval_limits,
     )
+}
+
+#[cfg(test)]
+pub(crate) fn build_bolt_v3_strategy_free_live_node_with_summary<F, R, E>(
+    loaded: &LoadedBoltV3Config,
+    env_is_set: F,
+    resolver: R,
+) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError>
+where
+    F: FnMut(&str) -> bool,
+    R: FnMut(&str, &str) -> Result<String, E>,
+    E: std::fmt::Display,
+{
+    let transport_loaded = trade_transport_loaded_config(loaded)?;
+    check_no_forbidden_credential_env_vars_with(&transport_loaded.root, env_is_set)
+        .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
+    let resolved = resolve_bolt_v3_secrets_with(&transport_loaded, resolver)
+        .map_err(BoltV3LiveNodeError::SecretResolution)?;
+    build_bolt_v3_strategy_free_live_node_from_transport(&transport_loaded, &resolved)
 }
 
 pub fn build_bolt_v3_all_configured_client_mapping_live_node_with_summary<F, R, E>(

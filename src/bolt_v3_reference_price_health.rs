@@ -224,7 +224,24 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::bolt_v3_config::load_bolt_v3_config;
+    use crate::{
+        bolt_v3_config::load_bolt_v3_config,
+        bolt_v3_live_node::build_bolt_v3_strategy_free_live_node_with_summary,
+    };
+
+    fn fake_bolt_v3_health_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
+        match path {
+            "/bolt/polymarket/private-key" => Ok(format!("0x{}", "1".repeat(64))),
+            "/bolt/polymarket/api-key" => Ok("polymarket-api-key".to_string()),
+            "/bolt/polymarket/api-secret" => Ok("YWJj".to_string()),
+            "/bolt/polymarket/api-passphrase" => Ok("polymarket-passphrase".to_string()),
+            "/bolt/testnet/chainlink/api-key" => Ok("chainlink-api-key".to_string()),
+            "/bolt/testnet/chainlink/api-secret" => Ok("chainlink-api-secret".to_string()),
+            _ => {
+                Err("unexpected SSM path requested by reference-current-price health fake resolver")
+            }
+        }
+    }
 
     #[test]
     fn reference_current_price_health_plan_uses_enabled_strategy_sources() {
@@ -244,5 +261,40 @@ mod tests {
         assert_eq!(target.client_key, "chainlink_reference");
         assert_eq!(target.provider_instrument, "BTC-USD.CHAINLINK");
         assert!(target.required);
+    }
+
+    #[test]
+    fn reference_current_price_health_prepares_strategy_free_transport_runtime() {
+        let loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        let plan = reference_current_price_health_plan(&loaded)
+            .expect("reference_current_price health plan should build");
+        let (runtime, _summary) = build_bolt_v3_strategy_free_live_node_with_summary(
+            &loaded,
+            |_| false,
+            fake_bolt_v3_health_resolver,
+        )
+        .expect("strategy-free transport runtime should build with fake secrets");
+        let health_run = ReferenceCurrentPriceHealthRun {
+            plan,
+            runtime,
+            loaded,
+        };
+
+        assert_eq!(health_run.plan.client_keys, vec!["chainlink_reference"]);
+        assert_eq!(
+            sorted_strings(health_run.runtime.registered_data_client_ids()),
+            vec!["chainlink_reference", "okx_data", "polymarket_main"],
+            "health must prepare all strategy-bound transport data clients"
+        );
+        assert_eq!(
+            sorted_strings(health_run.runtime.registered_exec_client_ids()),
+            vec!["polymarket_main"],
+            "health may prepare the strategy-bound execution transport client but no order path"
+        );
+        assert!(
+            health_run.runtime.registered_strategy_ids().is_empty(),
+            "health must clear strategies from the prepared transport runtime"
+        );
     }
 }

@@ -60,7 +60,7 @@ pub const KEY: &str = "BINANCE";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Data,
-    consumer: "Binance reference-data client",
+    consumer: "Binance data client",
 }];
 pub const SECRET_FIELD_NAMES: &[&str] = &["api_key_ssm_path", "api_secret_ssm_path"];
 /// NT module path(s) whose info-level logs can echo Binance credential
@@ -315,7 +315,7 @@ fn validate_binance_websocket_endpoint(
 
     if configured.host_str() == json_endpoint.host_str() {
         errors.push(format!(
-            "clients.{key}.data.base_url_ws must not use the Binance Spot JSON WebSocket host for NT subscribe_quotes (<symbol>@bestBidAsk); configure a Binance Spot SBE WebSocket endpoint or compatible SBE proxy so strategy-free reference quote readiness can observe QuoteTick data"
+            "clients.{key}.data.base_url_ws must not use the Binance Spot JSON WebSocket host for NT subscribe_quotes (<symbol>@bestBidAsk); configure a Binance Spot SBE WebSocket endpoint or compatible SBE proxy so NT quote subscriptions can emit QuoteTick data"
         ));
     }
     errors

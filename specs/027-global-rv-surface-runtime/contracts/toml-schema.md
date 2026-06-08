@@ -170,6 +170,7 @@ subsamples = 3
 min_ready_subsamples = 2
 coarse_sampling_interval_ms = 5000
 coarser_grid_horizon_policy = "coarse"
+allow_subsample_offset_collisions = false
 ```
 
 Allowed `coarser_grid_horizon_policy` values:
@@ -182,6 +183,8 @@ Rules:
 
 - `subsamples` is positive when `noise_robust_method = "subsampled"`.
 - `min_ready_subsamples` is positive and no greater than `subsamples` when `noise_robust_method = "subsampled"`.
+- `subsamples` must be no greater than the smallest selected horizon `sampling_interval_ms` when `allow_subsample_offset_collisions = false` so integer millisecond offsets remain unique.
+- If `allow_subsample_offset_collisions = true`, evidence must report attempted and distinct offset counts.
 - `coarse_sampling_interval_ms` is positive when `noise_robust_method = "coarser_grid"`.
 - `coarser_grid_horizon_policy` is required when `noise_robust_method = "coarser_grid"`.
 - Noise-robust mode must emit both base fixed-grid RV and noise-robust RV in diagnostics.
@@ -219,7 +222,9 @@ Rules:
 - EWMA `alpha` is a refresh-step coefficient in `(0, 1]`, not time-normalized in the first implementation.
 - If no previous forecast exists, including after process restart, initialize from the current ready component and record cold start in evidence.
 - Changing forecast config changes the surface config fingerprint and resets forecast state.
-- HAR-lite weights and intercept must be finite. Referenced short/medium/long horizons must be ready.
+- HAR-lite weights must be non-negative finite and their sum must be positive.
+- HAR-lite intercept must be finite.
+- Referenced short/medium/long horizons must be ready.
 
 ## Cross-Source Aggregation
 

@@ -71,7 +71,7 @@
       "severity": "blocking",
       "claim": "No broad accepted BinaryOption catalog input until coverage, completeness, replay gap policy, and storage checks are accepted.",
       "reason": "The selected one-off PMXT token now has source-backed GammaMarket metadata accepted by NT's Polymarket parser, and bounded selected-source rows were written to and read back from ParquetDataCatalog as OrderBookDelta and TradeTick. That proves only the one-off NT mapping path, not broad PMXT source acceptance.",
-      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json current_artifact_status.result_contract_hash=1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe catalog_nt_data_types=OrderBookDelta,TradeTick catalog_rows_by_nt_data_type=OrderBookDelta:103,TradeTick:1 nt_iterations=104"
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json ParquetDataCatalog read-back current_artifact_status.result_contract_hash=1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe catalog_nt_data_types=OrderBookDelta,TradeTick catalog_rows_by_nt_data_type=OrderBookDelta:103,TradeTick:1 nt_iterations=104"
     },
     {
       "id": "binary-option-pmxt-source-proof-claim-limit-005",
@@ -121,7 +121,7 @@
     },
     "nt_mapping": {
       "outcome": "passed",
-      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json current_artifact_status.result_contract_hash=1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe catalog_nt_data_types=OrderBookDelta,TradeTick catalog_rows_by_nt_data_type=OrderBookDelta:103,TradeTick:1 nt_iterations=104"
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json ParquetDataCatalog read-back current_artifact_status.result_contract_hash=1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe catalog_nt_data_types=OrderBookDelta,TradeTick catalog_rows_by_nt_data_type=OrderBookDelta:103,TradeTick:1 nt_iterations=104"
     },
     "cost": {
       "outcome": "pending",

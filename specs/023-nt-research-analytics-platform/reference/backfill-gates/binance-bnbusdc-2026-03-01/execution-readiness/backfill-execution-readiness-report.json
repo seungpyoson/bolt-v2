@@ -1,0 +1,39 @@
+{
+  "schema_version": "backfill-execution-readiness-report.v1",
+  "readiness_id": "binance-bnbusdc-2026-03-01-reference-readiness",
+  "status": "ready",
+  "required_table_family": "trades",
+  "required_nt_data_type": "TradeTick",
+  "supported_data_paths": [
+    {
+      "table_family": "trades",
+      "nt_data_type": "TradeTick"
+    }
+  ],
+  "artifact_index_commit_required": false,
+  "required_artifact_index_kind": null,
+  "artifact_index_commit_proof_id": null,
+  "artifact_index_commit_proof_hash": null,
+  "artifact_index_direct_s3_commit_proven": null,
+  "artifact_index_producer_iam_scope_proven": null,
+  "source_selection_readiness_required": false,
+  "source_selection_readiness_id": null,
+  "source_selection_readiness_hash": null,
+  "source_selection_readiness_status": null,
+  "source_catalog_mapping_readiness_required": true,
+  "source_catalog_mapping_readiness_id": "binance-bnbusdc-2026-03-01-source-catalog-mapping-readiness",
+  "source_catalog_mapping_readiness_hash": "7cef841db616ff8b1e9a9537d081cf844aca861a01be4ef57447b76422fcc429",
+  "source_catalog_mapping_readiness_status": "ready",
+  "accepted_tranche_id": "backfill-accepted-tranche-binance-bnbusdc-2026-03-01",
+  "accepted_tranche_manifest_hash": "1777b31080b7c0003479504116cbd6346bdab8a992805c0514e009927ba1126b",
+  "execution_plan_id": "backfill-execution-plan-binance-bnbusdc-2026-03-01",
+  "execution_plan_hash": "e230f506059af9ca6a9f12719af877bcb3deeeab32c79010a6519806b1dd8be2",
+  "operator_run_id": "backtesting-vertical-slice-binance-bnbusdc-2026-03-01-accepted",
+  "source_proof_id": "source-proof-binance-spot-native-trades-bnbusdc-2026-03-01",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 1066394,
+  "blockers": []
+}

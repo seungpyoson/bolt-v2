@@ -1,0 +1,26 @@
+{
+  "schema_version": "source-catalog-mapping-readiness-report.v1",
+  "readiness_id": "binance-bnbusdc-2026-03-01-source-catalog-mapping-readiness",
+  "status": "ready",
+  "catalog_mapping_evaluation_hash": "9d54fedb07b78267b7e1c4d65785eed0b95123da59aecbaf0098759aa6a0f36a",
+  "source_binding": "binance-spot-native-trades",
+  "required_table_family": "trades",
+  "required_nt_data_types": [
+    "TradeTick"
+  ],
+  "allowed_current_bte_statuses": [
+    "accepted"
+  ],
+  "allowed_parquet_catalog_statuses": [
+    "proven"
+  ],
+  "observed_source_binding": "binance-spot-native-trades",
+  "observed_table_family": "trades",
+  "observed_nt_data_types": [
+    "TradeTick"
+  ],
+  "observed_current_bte_status": "accepted",
+  "observed_parquet_catalog_status": "proven",
+  "nt_catalog_mapping_proven": true,
+  "blockers": []
+}

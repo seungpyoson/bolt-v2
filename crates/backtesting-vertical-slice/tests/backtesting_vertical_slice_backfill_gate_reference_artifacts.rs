@@ -6,14 +6,21 @@ use backtesting_vertical_slice::{
         BackfillExecutionPlan, BackfillExecutionRunBinding, evaluate_backfill_execution_plan,
     },
     backfill_execution_readiness::{
-        BackfillExecutionReadinessInput, BackfillExecutionReadinessStatus,
-        BackfillExecutionReadinessSupportedDataPath, evaluate_backfill_execution_readiness,
+        BackfillExecutionReadinessInput, BackfillExecutionReadinessReport,
+        BackfillExecutionReadinessStatus, BackfillExecutionReadinessSupportedDataPath,
+        evaluate_backfill_execution_readiness,
     },
     backfill_source_proof_scope::{
         BackfillSourceProofScopeReport, evaluate_backfill_source_proof_scope,
     },
     operator::RunSpec,
+    source_catalog_mapping_readiness::{
+        SourceCatalogMappingReadinessInput, SourceCatalogMappingReadinessReport,
+        SourceCatalogMappingReadinessStatus, SourceCatalogMappingStatusEntry,
+        evaluate_source_catalog_mapping_readiness,
+    },
 };
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const SOURCE_PROOF: &str = include_str!(
@@ -39,6 +46,27 @@ const ACCEPTED_TRANCHE_MANIFEST_BYTES: &[u8] = include_bytes!(
 );
 const EXECUTION_PLAN: &str = include_str!(
     "../../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-plan/backfill-execution-plan.json"
+);
+const EXECUTION_PLAN_BYTES: &[u8] = include_bytes!(
+    "../../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-plan/backfill-execution-plan.json"
+);
+const CATALOG_MAPPING_EVALUATION: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-evaluation.backtesting-engine.2026-06-08.json"
+);
+const CATALOG_MAPPING_EVALUATION_BYTES: &[u8] = include_bytes!(
+    "../../../specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-evaluation.backtesting-engine.2026-06-08.json"
+);
+const SOURCE_CATALOG_MAPPING_READINESS_REPORT: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/source-catalog-mapping-readiness/source-catalog-mapping-readiness-report.json"
+);
+const SOURCE_CATALOG_MAPPING_READINESS_REPORT_BYTES: &[u8] = include_bytes!(
+    "../../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/source-catalog-mapping-readiness/source-catalog-mapping-readiness-report.json"
+);
+const BLOCKED_SOURCE_CATALOG_MAPPING_READINESS_REPORT: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/source-catalog-mapping-readiness/polymarket-parquet-archive-index-canonical/source-catalog-mapping-readiness-report.json"
+);
+const EXECUTION_READINESS_REPORT: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-readiness/backfill-execution-readiness-report.json"
 );
 
 #[test]
@@ -79,8 +107,40 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
     assert_eq!(actual_plan, expected_plan);
     assert!(actual_plan.blocking_issues.is_empty());
 
+    let mapping_evaluation: SourceCatalogMappingEvaluation =
+        serde_json::from_str(CATALOG_MAPPING_EVALUATION).expect("mapping evaluation parses");
+    let expected_catalog_mapping_readiness: SourceCatalogMappingReadinessReport =
+        serde_json::from_str(SOURCE_CATALOG_MAPPING_READINESS_REPORT)
+            .expect("source catalog-mapping readiness parses");
+    let actual_catalog_mapping_readiness =
+        evaluate_source_catalog_mapping_readiness(SourceCatalogMappingReadinessInput {
+            readiness_id: &expected_catalog_mapping_readiness.readiness_id,
+            catalog_mapping_evaluation_hash: &sha256_hex(CATALOG_MAPPING_EVALUATION_BYTES),
+            source_sample_mapping_status: &mapping_evaluation.source_sample_mapping_status,
+            source_binding: &expected_catalog_mapping_readiness.source_binding,
+            required_table_family: &expected_catalog_mapping_readiness.required_table_family,
+            required_nt_data_types: expected_catalog_mapping_readiness
+                .required_nt_data_types
+                .clone(),
+            allowed_current_bte_statuses: expected_catalog_mapping_readiness
+                .allowed_current_bte_statuses
+                .clone(),
+            allowed_parquet_catalog_statuses: expected_catalog_mapping_readiness
+                .allowed_parquet_catalog_statuses
+                .clone(),
+        });
+
+    assert_eq!(
+        actual_catalog_mapping_readiness,
+        expected_catalog_mapping_readiness
+    );
+
+    let expected_readiness: BackfillExecutionReadinessReport =
+        serde_json::from_str(EXECUTION_READINESS_REPORT).expect("execution readiness parses");
     let accepted_tranche_manifest_hash = sha256_hex(ACCEPTED_TRANCHE_MANIFEST_BYTES);
-    let execution_plan_hash = execution_plan_hash(&actual_plan);
+    let execution_plan_hash = sha256_hex(EXECUTION_PLAN_BYTES);
+    let source_catalog_mapping_readiness_hash =
+        sha256_hex(SOURCE_CATALOG_MAPPING_READINESS_REPORT_BYTES);
     let readiness = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
         readiness_id: "binance-bnbusdc-2026-03-01-reference-readiness",
         accepted_tranche_manifest_hash: &accepted_tranche_manifest_hash,
@@ -100,13 +160,46 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
         source_selection_readiness_required: false,
         source_selection_readiness_report_hash: None,
         source_selection_readiness_report: None,
-        source_catalog_mapping_readiness_required: false,
-        source_catalog_mapping_readiness_report_hash: None,
-        source_catalog_mapping_readiness_report: None,
+        source_catalog_mapping_readiness_required: true,
+        source_catalog_mapping_readiness_report_hash: Some(&source_catalog_mapping_readiness_hash),
+        source_catalog_mapping_readiness_report: Some(&actual_catalog_mapping_readiness),
     });
 
+    assert_eq!(readiness, expected_readiness);
     assert_eq!(readiness.status, BackfillExecutionReadinessStatus::Ready);
     assert!(readiness.blockers.is_empty());
+}
+
+#[test]
+fn blocked_canonical_source_catalog_mapping_reference_artifact_matches_generic_evaluator() {
+    let mapping_evaluation: SourceCatalogMappingEvaluation =
+        serde_json::from_str(CATALOG_MAPPING_EVALUATION).expect("mapping evaluation parses");
+    let expected_blocked_readiness: SourceCatalogMappingReadinessReport =
+        serde_json::from_str(BLOCKED_SOURCE_CATALOG_MAPPING_READINESS_REPORT)
+            .expect("blocked source catalog-mapping readiness parses");
+
+    let actual_blocked_readiness =
+        evaluate_source_catalog_mapping_readiness(SourceCatalogMappingReadinessInput {
+            readiness_id: &expected_blocked_readiness.readiness_id,
+            catalog_mapping_evaluation_hash: &sha256_hex(CATALOG_MAPPING_EVALUATION_BYTES),
+            source_sample_mapping_status: &mapping_evaluation.source_sample_mapping_status,
+            source_binding: &expected_blocked_readiness.source_binding,
+            required_table_family: &expected_blocked_readiness.required_table_family,
+            required_nt_data_types: expected_blocked_readiness.required_nt_data_types.clone(),
+            allowed_current_bte_statuses: expected_blocked_readiness
+                .allowed_current_bte_statuses
+                .clone(),
+            allowed_parquet_catalog_statuses: expected_blocked_readiness
+                .allowed_parquet_catalog_statuses
+                .clone(),
+        });
+
+    assert_eq!(actual_blocked_readiness, expected_blocked_readiness);
+    assert_eq!(
+        actual_blocked_readiness.status,
+        SourceCatalogMappingReadinessStatus::Blocked
+    );
+    assert!(!actual_blocked_readiness.blockers.is_empty());
 }
 
 fn source_proof_scope_hash(report: &BackfillSourceProofScopeReport) -> String {
@@ -114,9 +207,9 @@ fn source_proof_scope_hash(report: &BackfillSourceProofScopeReport) -> String {
     sha256_hex(&bytes)
 }
 
-fn execution_plan_hash(plan: &BackfillExecutionPlan) -> String {
-    let bytes = serde_json::to_vec(plan).expect("execution plan serializes");
-    sha256_hex(&bytes)
+#[derive(Debug, Deserialize)]
+struct SourceCatalogMappingEvaluation {
+    source_sample_mapping_status: Vec<SourceCatalogMappingStatusEntry>,
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

@@ -42,7 +42,7 @@ Required responsibilities:
 - Route quote/trade/index observations to every matching surface source route. Mark sources are reserved and rejected until routing is implemented.
 - Refresh all surfaces on a runtime-owned cadence.
 - Publish latest snapshots by `surface_id`.
-- Expose diagnostics for unknown source IDs and rejected observations. PR #615 unknown IDs are bounded by configured runtime routing; any future raw ingestion path must add explicit cardinality bounds.
+- Expose diagnostics for configured sources and routed rejections. PR #615 drops unconfigured raw source IDs at the runtime boundary; any future raw ingestion path must add explicit cardinality bounds before recording unknown IDs.
 
 ### RealizedVolSubscriptionRequest
 
@@ -118,7 +118,7 @@ Output: observation acceptance/rejection diagnostics.
 
 Rules:
 
-- Unknown route IDs are counted in diagnostics. PR #615 route construction limits source IDs to configured routes; future raw ingestion must add explicit capacity.
+- Unconfigured raw source IDs are dropped at the runtime boundary. PR #615 route construction limits source IDs to configured routes; future raw ingestion must add explicit capacity before recording unknown IDs.
 - Every matching source route receives the normalized observation.
 - Strategy-local signal data must not be required for RV ingestion.
 - Event-time/receive-time causality and same-event update rules remain enforced by the shared engine.
@@ -156,7 +156,7 @@ Rules:
 - Missing snapshot: consumer blocks with `RealizedVolNotReady`.
 - Not-ready snapshot: consumer blocks with `RealizedVolNotReady` and evidence records blockers.
 - Invalid numeric output: blocked by the typed RV value constructor before publication.
-- Unknown source route: diagnostic counter keyed by the configured route/source identity. Future raw external ingestion must add bounded cardinality before merge.
+- Unconfigured raw source ID: dropped at the runtime boundary. Future raw external ingestion must add bounded cardinality before merge.
 
 ## Required Regression Fences
 

@@ -216,10 +216,7 @@ impl RealizedVolSurfaceRuntime {
         if matched_configured_source {
             return observed;
         }
-        for state in self.surfaces.values_mut() {
-            observed |= state.engine.observe(observation.clone());
-        }
-        observed
+        false
     }
 
     pub fn observe_quote(&mut self, quote: &QuoteTick) -> Vec<RealizedVolSnapshot> {

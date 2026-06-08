@@ -138,7 +138,7 @@ As a pricing consumer, I need an optional forward-looking RV forecast layer only
 - Future multi-horizon scope: short horizon is ready but long horizon is not; TOML policy determines whether final RV is ready, fallback, or blocked.
 - Final RV exactly zero remains valid when all required estimators/horizons are valid and flat.
 - A jump is real market information rather than a bad tick; evidence must preserve it rather than hide it.
-- Unknown source IDs must remain bounded by configured routing; any raw external ingestion path must add TOML-owned cardinality limits before merge.
+- Unconfigured raw source IDs must be dropped at the runtime boundary; any raw external ingestion path that records unknown IDs must add TOML-owned cardinality limits before merge.
 
 ## Requirements *(mandatory)*
 

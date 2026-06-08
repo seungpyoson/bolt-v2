@@ -179,6 +179,33 @@ fn runtime_direct_observe_wrong_sample_kind_rejects_without_republishing_snapsho
 }
 
 #[test]
+fn runtime_direct_observe_unknown_source_drops_at_boundary_without_polluting_surfaces() {
+    let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([
+        (
+            SURFACE_A.to_string(),
+            config(SURFACE_A, SOURCE_A, "<INSTRUMENT_A>.<DATA_CLIENT_ID>"),
+        ),
+        (
+            SURFACE_B.to_string(),
+            config(SURFACE_B, SOURCE_B, "<INSTRUMENT_B>.<DATA_CLIENT_ID>"),
+        ),
+    ]))
+    .expect("runtime should build");
+
+    assert!(!runtime.observe(observation("<UNKNOWN_SOURCE>", 100.0, 1_000)));
+
+    for surface_id in [SURFACE_A, SURFACE_B] {
+        let snapshot = runtime
+            .refresh_surface_at(surface_id, 1_000)
+            .expect("configured surface should publish diagnostics");
+        assert!(
+            snapshot.unknown_source_rejections.is_empty(),
+            "unknown direct observations should be dropped before reaching surface {surface_id}"
+        );
+    }
+}
+
+#[test]
 fn runtime_generic_observe_fans_out_duplicate_source_ids_across_surfaces() {
     let mut runtime = RealizedVolSurfaceRuntime::from_configs(BTreeMap::from([
         (

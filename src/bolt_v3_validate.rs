@@ -1196,6 +1196,7 @@ fn validate_clients_block(root: &BoltV3RootConfig) -> Vec<String> {
         return errors;
     }
     for (key, client) in clients {
+        errors.extend(validate_no_dual_chainlink_feed_catalog(root, key, client));
         let validation_client = client_with_root_chainlink_feed_catalog(root, client);
         let client = validation_client.as_ref().unwrap_or(client);
         errors.extend(crate::bolt_v3_providers::validate_client_block(key, client));
@@ -1203,6 +1204,29 @@ fn validate_clients_block(root: &BoltV3RootConfig) -> Vec<String> {
     }
     errors.extend(validate_unique_client_readiness_probe_instruments(clients));
     errors
+}
+
+fn validate_no_dual_chainlink_feed_catalog(
+    root: &BoltV3RootConfig,
+    key: &str,
+    client: &ClientBlock,
+) -> Vec<String> {
+    if root.chainlink_data_streams.is_none()
+        || client.venue.as_str() != CHAINLINK_DATA_STREAMS_PROVIDER_KIND
+    {
+        return Vec::new();
+    }
+    let has_client_feed_bindings = client
+        .data
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .is_some_and(|data| data.contains_key(CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD));
+    if !has_client_feed_bindings {
+        return Vec::new();
+    }
+    vec![format!(
+        "chainlink_data_streams.feed_bindings is root-owned; clients.{key}.data.feed_bindings must be removed so Chainlink Data Streams feed bindings have one configured path"
+    )]
 }
 
 fn client_with_root_chainlink_feed_catalog(

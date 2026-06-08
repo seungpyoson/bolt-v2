@@ -7,10 +7,6 @@ const POSITIVE_REQUIRED_INTEGER_FIELDS: &[&str] = &[
     stringify!(trade_flow_max_samples),
     stringify!(trade_flow_window_secs),
     stringify!(spike_guard_cooldown_secs),
-    stringify!(vol_window_secs),
-    stringify!(vol_gap_reset_secs),
-    stringify!(vol_min_observations),
-    stringify!(vol_bridge_valid_secs),
 ];
 
 #[test]
@@ -201,10 +197,7 @@ fn surfaced_realized_volatility_mode_rejects_legacy_runtime_vol_fields() {
     let table = raw
         .as_table_mut()
         .expect("valid raw config should be a TOML table");
-    table.insert(
-        "realized_volatility_surface_id".to_string(),
-        Value::String("<surface_id>".to_string()),
-    );
+    table.insert("vol_window_secs".to_string(), Value::Integer(60));
 
     let mut errors = Vec::new();
     BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
@@ -222,6 +215,25 @@ fn surfaced_realized_volatility_mode_rejects_legacy_runtime_vol_fields() {
                 || error.field == "strategies[0].config.signal_instrument_id"
         }),
         "surfaced RV mode must keep signal data available for fast-spot pricing: {errors:#?}"
+    );
+}
+
+#[test]
+fn realized_volatility_surface_id_is_required_for_runtime_config() {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("valid raw config should be a TOML table")
+        .remove("realized_volatility_surface_id");
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    assert!(
+        errors.iter().any(|error| {
+            error.field == "strategies[0].config.realized_volatility_surface_id"
+                && error.code == "missing_realized_volatility_surface"
+        }),
+        "taker runtime config must consume the shared realized-volatility surface: {errors:#?}"
     );
 }
 
@@ -549,26 +561,10 @@ fn builder_requires_pricing_model_fields() {
             .iter()
             .any(|e| e.field == "strategies[0].config.cadence_seconds")
     );
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.field == "strategies[0].config.vol_window_secs")
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.field == "strategies[0].config.vol_gap_reset_secs")
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.field == "strategies[0].config.vol_min_observations")
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.field == "strategies[0].config.vol_bridge_valid_secs")
-    );
+    assert!(errors.iter().any(|e| {
+        e.field == "strategies[0].config.realized_volatility_surface_id"
+            && e.code == "missing_realized_volatility_surface"
+    }));
     assert!(
         errors
             .iter()

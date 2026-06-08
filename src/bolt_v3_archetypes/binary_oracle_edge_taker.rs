@@ -112,10 +112,6 @@ pub struct RuntimeParametersBlock {
     pub book_impact_cap_bps: u64,
     pub risk_lambda: f64,
     pub exit_hysteresis_bps: i64,
-    pub vol_window_secs: Option<u64>,
-    pub vol_gap_reset_secs: Option<u64>,
-    pub vol_min_observations: Option<u64>,
-    pub vol_bridge_valid_secs: Option<u64>,
     pub trade_flow_window_secs: u64,
     pub trade_flow_max_samples: u64,
     pub spike_guard_return_threshold: f64,
@@ -141,10 +137,6 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             book_impact_cap_bps: u64,
             risk_lambda: f64,
             exit_hysteresis_bps: i64,
-            vol_window_secs: Option<u64>,
-            vol_gap_reset_secs: Option<u64>,
-            vol_min_observations: Option<u64>,
-            vol_bridge_valid_secs: Option<u64>,
             trade_flow_window_secs: u64,
             trade_flow_max_samples: u64,
             spike_guard_return_threshold: f64,
@@ -201,10 +193,6 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             book_impact_cap_bps: wire.book_impact_cap_bps,
             risk_lambda: wire.risk_lambda,
             exit_hysteresis_bps: wire.exit_hysteresis_bps,
-            vol_window_secs: wire.vol_window_secs,
-            vol_gap_reset_secs: wire.vol_gap_reset_secs,
-            vol_min_observations: wire.vol_min_observations,
-            vol_bridge_valid_secs: wire.vol_bridge_valid_secs,
             trade_flow_window_secs: wire.trade_flow_window_secs,
             trade_flow_max_samples: wire.trade_flow_max_samples,
             spike_guard_return_threshold: wire.spike_guard_return_threshold,
@@ -502,7 +490,14 @@ pub fn raw_taker_config(
             ),
         })?;
     let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
-    let realized_volatility_surface_id = strategy.config.realized_volatility_surface_id.as_deref();
+    let realized_volatility_surface_id = strategy
+        .config
+        .realized_volatility_surface_id
+        .as_deref()
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: "config.realized_volatility_surface_id is required".to_string(),
+        })?;
     let reference_data = configured_reference_data(strategy)?;
     let signal_data = configured_signal_data(strategy)?;
     validate_configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
@@ -693,13 +688,11 @@ pub fn raw_taker_config(
         "signal_instrument_id",
         signal_data.instrument_id.to_string(),
     );
-    if let Some(surface_id) = realized_volatility_surface_id {
-        insert_string(
-            &mut table,
-            "realized_volatility_surface_id",
-            surface_id.to_string(),
-        );
-    }
+    insert_string(
+        &mut table,
+        "realized_volatility_surface_id",
+        realized_volatility_surface_id.to_string(),
+    );
     if let Some(resolution_data) = resolution_data {
         insert_string(
             &mut table,
@@ -765,48 +758,6 @@ pub fn raw_taker_config(
         "exit_hysteresis_bps",
         parameters.runtime.exit_hysteresis_bps,
     );
-    if realized_volatility_surface_id.is_none() {
-        insert_u64(
-            &mut table,
-            strategy_instance_id,
-            "vol_window_secs",
-            required_legacy_runtime_u64(
-                strategy_instance_id,
-                "vol_window_secs",
-                parameters.runtime.vol_window_secs,
-            )?,
-        )?;
-        insert_u64(
-            &mut table,
-            strategy_instance_id,
-            "vol_gap_reset_secs",
-            required_legacy_runtime_u64(
-                strategy_instance_id,
-                "vol_gap_reset_secs",
-                parameters.runtime.vol_gap_reset_secs,
-            )?,
-        )?;
-        insert_u64(
-            &mut table,
-            strategy_instance_id,
-            "vol_min_observations",
-            required_legacy_runtime_u64(
-                strategy_instance_id,
-                "vol_min_observations",
-                parameters.runtime.vol_min_observations,
-            )?,
-        )?;
-        insert_u64(
-            &mut table,
-            strategy_instance_id,
-            "vol_bridge_valid_secs",
-            required_legacy_runtime_u64(
-                strategy_instance_id,
-                "vol_bridge_valid_secs",
-                parameters.runtime.vol_bridge_valid_secs,
-            )?,
-        )?;
-    }
     insert_u64(
         &mut table,
         strategy_instance_id,
@@ -1266,19 +1217,6 @@ fn insert_u64(
         })?;
     table.insert(key.to_string(), Value::Integer(converted));
     Ok(())
-}
-
-fn required_legacy_runtime_u64(
-    strategy_instance_id: &str,
-    key: &'static str,
-    value: Option<u64>,
-) -> Result<u64, BinaryOracleEdgeTakerRuntimeConfigError> {
-    value.ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
-        strategy_instance_id: strategy_instance_id.to_string(),
-        message: format!(
-            "parameters.runtime.{key} is required when realized_volatility_surface_id is not configured"
-        ),
-    })
 }
 
 fn insert_float(table: &mut Map<String, Value>, key: &'static str, value: f64) {

@@ -10,6 +10,168 @@ strategy_files = [
   "strategies/binary_oracle_doge.toml",
 ]
 
+[realized_volatility_surfaces.binary_oracle_btc_rv_surface]
+canonical_base_asset = "BTC"
+canonical_quote_asset = "USDT"
+
+[realized_volatility_surfaces.binary_oracle_btc_rv_surface.policy]
+window_ms = 600000
+sampling_interval_ms = 1000
+min_ready_sources = 1
+max_source_age_ms = 30000
+max_event_receive_lag_ms = 1000
+max_inter_sample_gap_ms = 60000
+min_coverage_ratio = 0.01
+max_cross_source_dispersion = 1.0
+seconds_per_annum = 31536000.0
+aggregation = "upper_quantile"
+upper_quantile = 1.0
+
+[[realized_volatility_surfaces.binary_oracle_btc_rv_surface.sources]]
+source_id = "binary_oracle_btc_okx_midpoint"
+data_client_id = "okx_data"
+instrument_id = "BTC-USDT.OKX"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[realized_volatility_surfaces.binary_oracle_eth_rv_surface]
+canonical_base_asset = "ETH"
+canonical_quote_asset = "USDT"
+
+[realized_volatility_surfaces.binary_oracle_eth_rv_surface.policy]
+window_ms = 600000
+sampling_interval_ms = 1000
+min_ready_sources = 1
+max_source_age_ms = 30000
+max_event_receive_lag_ms = 1000
+max_inter_sample_gap_ms = 60000
+min_coverage_ratio = 0.01
+max_cross_source_dispersion = 1.0
+seconds_per_annum = 31536000.0
+aggregation = "upper_quantile"
+upper_quantile = 1.0
+
+[[realized_volatility_surfaces.binary_oracle_eth_rv_surface.sources]]
+source_id = "binary_oracle_eth_okx_midpoint"
+data_client_id = "okx_data"
+instrument_id = "ETH-USDT.OKX"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[realized_volatility_surfaces.binary_oracle_sol_rv_surface]
+canonical_base_asset = "SOL"
+canonical_quote_asset = "USDT"
+
+[realized_volatility_surfaces.binary_oracle_sol_rv_surface.policy]
+window_ms = 600000
+sampling_interval_ms = 1000
+min_ready_sources = 1
+max_source_age_ms = 30000
+max_event_receive_lag_ms = 1000
+max_inter_sample_gap_ms = 60000
+min_coverage_ratio = 0.01
+max_cross_source_dispersion = 1.0
+seconds_per_annum = 31536000.0
+aggregation = "upper_quantile"
+upper_quantile = 1.0
+
+[[realized_volatility_surfaces.binary_oracle_sol_rv_surface.sources]]
+source_id = "binary_oracle_sol_okx_midpoint"
+data_client_id = "okx_data"
+instrument_id = "SOL-USDT.OKX"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[realized_volatility_surfaces.binary_oracle_bnb_rv_surface]
+canonical_base_asset = "BNB"
+canonical_quote_asset = "USDT"
+
+[realized_volatility_surfaces.binary_oracle_bnb_rv_surface.policy]
+window_ms = 600000
+sampling_interval_ms = 1000
+min_ready_sources = 1
+max_source_age_ms = 30000
+max_event_receive_lag_ms = 1000
+max_inter_sample_gap_ms = 60000
+min_coverage_ratio = 0.01
+max_cross_source_dispersion = 1.0
+seconds_per_annum = 31536000.0
+aggregation = "upper_quantile"
+upper_quantile = 1.0
+
+[[realized_volatility_surfaces.binary_oracle_bnb_rv_surface.sources]]
+source_id = "binary_oracle_bnb_okx_midpoint"
+data_client_id = "okx_data"
+instrument_id = "BNB-USDT.OKX"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[realized_volatility_surfaces.binary_oracle_xrp_rv_surface]
+canonical_base_asset = "XRP"
+canonical_quote_asset = "USDT"
+
+[realized_volatility_surfaces.binary_oracle_xrp_rv_surface.policy]
+window_ms = 600000
+sampling_interval_ms = 1000
+min_ready_sources = 1
+max_source_age_ms = 30000
+max_event_receive_lag_ms = 1000
+max_inter_sample_gap_ms = 60000
+min_coverage_ratio = 0.01
+max_cross_source_dispersion = 1.0
+seconds_per_annum = 31536000.0
+aggregation = "upper_quantile"
+upper_quantile = 1.0
+
+[[realized_volatility_surfaces.binary_oracle_xrp_rv_surface.sources]]
+source_id = "binary_oracle_xrp_okx_midpoint"
+data_client_id = "okx_data"
+instrument_id = "XRP-USDT.OKX"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[realized_volatility_surfaces.binary_oracle_doge_rv_surface]
+canonical_base_asset = "DOGE"
+canonical_quote_asset = "USDT"
+
+[realized_volatility_surfaces.binary_oracle_doge_rv_surface.policy]
+window_ms = 600000
+sampling_interval_ms = 1000
+min_ready_sources = 1
+max_source_age_ms = 30000
+max_event_receive_lag_ms = 1000
+max_inter_sample_gap_ms = 60000
+min_coverage_ratio = 0.01
+max_cross_source_dispersion = 1.0
+seconds_per_annum = 31536000.0
+aggregation = "upper_quantile"
+upper_quantile = 1.0
+
+[[realized_volatility_surfaces.binary_oracle_doge_rv_surface.sources]]
+source_id = "binary_oracle_doge_okx_midpoint"
+data_client_id = "okx_data"
+instrument_id = "DOGE-USDT.OKX"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
 [runtime]
 mode = "Live"
 

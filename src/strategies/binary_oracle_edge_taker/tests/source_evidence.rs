@@ -44,11 +44,7 @@ fn test_strategy_with_realized_volatility_surface(
 ) -> BinaryOracleEdgeTaker {
     let base = test_strategy();
     let mut config = base.config.clone();
-    config.realized_volatility_surface_id = Some(TEST_SURFACE_ID.to_string());
-    config.vol_window_secs = None;
-    config.vol_gap_reset_secs = None;
-    config.vol_min_observations = None;
-    config.vol_bridge_valid_secs = None;
+    config.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
     let mut surfaces = std::collections::BTreeMap::new();
     surfaces.insert(TEST_SURFACE_ID.to_string(), engine_config);
     let decision_evidence = std::sync::Arc::new(RecordingDecisionEvidenceWriter);
@@ -678,8 +674,8 @@ fn strategy_input_evidence_records_realized_volatility_unknown_source_rejections
         submit_admission,
     );
     register_test_strategy_with_active_instruments(&mut strategy);
-    strategy.config.realized_volatility_surface_id = Some(TEST_SURFACE_ID.to_string());
-    strategy.pricing.realized_volatility_surface_id = Some(TEST_SURFACE_ID.to_string());
+    strategy.config.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
+    strategy.pricing.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
     let mut unknown_source_rejections = std::collections::BTreeMap::new();
     unknown_source_rejections.insert("<UNKNOWN_SOURCE_ID>".to_string(), 2);
     strategy.pricing.observe_realized_vol_snapshot(
@@ -726,8 +722,8 @@ fn strategy_input_evidence_accepts_ready_surfaced_zero_realized_volatility() {
         submit_admission,
     );
     register_test_strategy_with_active_instruments(&mut strategy);
-    strategy.config.realized_volatility_surface_id = Some(TEST_SURFACE_ID.to_string());
-    strategy.pricing.realized_volatility_surface_id = Some(TEST_SURFACE_ID.to_string());
+    strategy.config.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
+    strategy.pricing.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
     strategy.pricing.observe_realized_vol_snapshot(
         crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
             surface_id: TEST_SURFACE_ID.to_string(),

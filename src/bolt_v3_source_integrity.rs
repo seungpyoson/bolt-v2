@@ -208,8 +208,10 @@ mod tests {
     // unknown-source surfaced RV rejection counters in strategy input evidence.
     // Re-derived again after allowing zero-RV strategy evidence/position paths
     // and adding disabled-source surfaced RV diagnostics coverage.
+    // Re-derived again after removing the strategy-owned internal realized
+    // volatility estimator and requiring surfaced RV for taker pricing.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "2cd8af0b2c414db3bfdfe5561d73270f53fcb5cded22d0aed8d0b0b40a0fa2bf";
+        "2ef78ecc23fd4662e59a94235617412ca62ef9a4f42ff6baeacfd17260be2590";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

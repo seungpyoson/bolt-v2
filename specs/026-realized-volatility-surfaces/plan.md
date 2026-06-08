@@ -1245,8 +1245,8 @@ Expected: FAIL because surfaced mode is not parsed or mapped.
 
 - [ ] **Step 3: Implement surfaced-mode validation and mapping**
 
-Add `realized_volatility_surface_id: Option<String>` to the taker runtime config struct.
-When present:
+Add `realized_volatility_surface_id: String` to the taker runtime config struct.
+For taker strategies:
 
 - allow the field through `validate_table`
 - reject legacy `vol_window_secs`, `vol_gap_reset_secs`, `vol_min_observations`, `vol_bridge_valid_secs`
@@ -1388,13 +1388,12 @@ Expected: FAIL because `observe_realized_vol_snapshot` does not exist.
 - [ ] **Step 3: Implement snapshot consumption**
 
 In `src/bolt_v3_taker_pricing.rs`, import `RealizedVolSnapshot`, store the
-latest snapshot, and add `realized_vol_surface_id` to the pricing result. When
-`realized_volatility_surface_id` is configured, `current_realized_vol_at` must
-read only the latest matching ready snapshot. A missing, stale, mismatched, or
-not-ready surfaced snapshot returns `RealizedVolNotReady` and must not call the
-legacy internal `RealizedVolEstimator` path. The existing
-`realized_vol_source_venue` field remains for legacy non-surfaced pricing and is
-left `None` for surfaced snapshots.
+latest snapshot, and add `realized_vol_surface_id` to the pricing result.
+`current_realized_vol_at` must read only the latest matching ready snapshot. A
+missing, stale, mismatched, or not-ready surfaced snapshot returns
+`RealizedVolNotReady` and must not call a strategy-owned internal RV estimator.
+`realized_vol_source_venue` is left `None` because surfaced RV provenance comes
+from the snapshot source IDs.
 
 - [ ] **Step 4: Run tests to verify GREEN**
 
@@ -1604,5 +1603,5 @@ git diff --check
 - The implementation is RV-specific and does not introduce generic volatility,
   IV, or broad market-state abstractions.
 - The strategy boundary is enforced by an explicit source-fence test.
-- The migration rejects legacy RV paths in surfaced RV mode instead of allowing
-  two live RV authorities.
+- The migration removes the taker strategy-owned internal RV estimator instead
+  of allowing two live RV authorities.

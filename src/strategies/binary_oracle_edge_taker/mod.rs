@@ -75,7 +75,6 @@ use crate::{
         outcome_side_evidence_label, uncertainty_band_probability,
     },
     bolt_v3_trade_flow::{SignedTradeFlow, SignedTradeFlowConfig},
-    bolt_v3_volatility::RealizedVolConfig,
     strategies::registry::{
         BoxedStrategy, FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError,
     },
@@ -90,7 +89,6 @@ use crate::{
     bolt_v3_submit_admission::{BoltV3RiskReducingExitProof, BoltV3SubmitIntentKind},
     bolt_v3_taker_pricing::VenueTimingState,
     bolt_v3_taker_signal::{price_agreement_corr, price_gap_probability},
-    bolt_v3_volatility::RealizedVolEstimator,
 };
 
 mod selection;
@@ -343,20 +341,8 @@ fn visible_book_depth_side_for_order(
     }
 }
 
-/// Project legacy volatility-window TOML knobs into the foundational
-/// estimator's runtime config view when the legacy path is configured.
-fn realized_vol_config(config: &BinaryOracleEdgeTakerConfig) -> Option<RealizedVolConfig> {
-    Some(RealizedVolConfig {
-        window_secs: config.vol_window_secs?,
-        gap_reset_secs: config.vol_gap_reset_secs?,
-        min_observations: config.vol_min_observations?,
-        bridge_valid_secs: config.vol_bridge_valid_secs?,
-    })
-}
-
 fn taker_pricing_config(config: &BinaryOracleEdgeTakerConfig) -> TakerPricingConfig<'_> {
     TakerPricingConfig {
-        realized_vol: realized_vol_config(config),
         realized_volatility_surface_id: config.realized_volatility_surface_id.clone(),
         lead_agreement_min_corr: config.lead_agreement_min_corr,
         lead_jitter_max_ms: config.lead_jitter_max_ms,
@@ -377,9 +363,7 @@ fn realized_volatility_runtime_from_context(
     Option<RealizedVolEngine>,
     BTreeMap<InstrumentId, Vec<RealizedVolSourceBinding>>,
 ) {
-    let Some(surface_id) = config.realized_volatility_surface_id.as_deref() else {
-        return (None, BTreeMap::new());
-    };
+    let surface_id = config.realized_volatility_surface_id.as_str();
     let Some(engine_config) = context.realized_volatility_surface(surface_id).cloned() else {
         log::error!(
             "binary_oracle_edge_taker realized-volatility surface config missing from build context: strategy_id={} surface_id={}",
@@ -449,7 +433,6 @@ impl PricingState {
         }
 
         let candidates = self.build_lead_venue_signals(snapshot);
-        self.observe_realized_vol_candidates(&candidates, min_agreement_corr, max_jitter_ms);
         self.lead_quality_policy_applied = true;
         if let Some(candidate) =
             arbitrate_lead_reference(&candidates, min_agreement_corr, max_jitter_ms)
@@ -463,9 +446,6 @@ impl PricingState {
                     .observed_ts_ms
                     .expect("selected lead venue should carry timestamp"),
             };
-            let selected_realized_vol = self.selected_realized_vol_for_candidate(candidate);
-            self.realized_vol.set(selected_realized_vol);
-            self.realized_vol_source_venue = Some(candidate.venue_name.clone());
             self.fast_spot = Some(fast_spot);
             self.last_lead_gap_probability = Some(candidate.lead_gap_probability);
             self.last_jitter_penalty_probability = Some(if max_jitter_ms == 0 {
@@ -486,55 +466,6 @@ impl PricingState {
             self.last_fast_venue_jitter_ms = None;
             self.fast_venue_incoherent = !candidates.is_empty();
         }
-    }
-
-    #[cfg(test)]
-    fn observe_realized_vol_candidates(
-        &mut self,
-        candidates: &[LeadVenueSignal],
-        min_agreement_corr: f64,
-        max_jitter_ms: u64,
-    ) {
-        let Some(estimator_template) = self
-            .realized_vol
-            .as_ref()
-            .map(RealizedVolEstimator::empty_like)
-        else {
-            return;
-        };
-
-        for candidate in candidates {
-            if !candidate.is_eligible(min_agreement_corr, max_jitter_ms) {
-                continue;
-            }
-            let (Some(price), Some(observed_ts_ms)) = (candidate.price, candidate.observed_ts_ms)
-            else {
-                continue;
-            };
-
-            let estimator = self
-                .realized_vol_by_venue
-                .entry(candidate.venue_name.clone())
-                .or_insert_with(|| estimator_template.clone());
-            let _ = estimator.observe(&candidate.venue_name, price, observed_ts_ms);
-        }
-    }
-
-    #[cfg(test)]
-    fn selected_realized_vol_for_candidate(
-        &self,
-        candidate: &LeadVenueSignal,
-    ) -> RealizedVolEstimator {
-        self.realized_vol_by_venue
-            .get(&candidate.venue_name)
-            .cloned()
-            .unwrap_or_else(|| {
-                log::error!(
-                    "binary_oracle_edge_taker selected lead venue missing realized-vol state: venue={}",
-                    candidate.venue_name
-                );
-                self.realized_vol.expect_configured().empty_like()
-            })
     }
 
     #[cfg(test)]
@@ -3680,10 +3611,7 @@ impl BinaryOracleEdgeTaker {
             .latest_realized_vol_snapshot
             .as_ref()
             .filter(|snapshot| {
-                self.config
-                    .realized_volatility_surface_id
-                    .as_deref()
-                    .is_some_and(|surface_id| surface_id == snapshot.surface_id.as_str())
+                self.config.realized_volatility_surface_id.as_str() == snapshot.surface_id.as_str()
             });
         let (
             realized_volatility_surface_id,

@@ -80,16 +80,16 @@ types: integers for `*_ms` and `min_ready_sources`, decimals for ratios and
 
 ### RV-003 One RV Runtime Path
 
-A strategy that uses the new surface contains only:
+A taker strategy contains exactly one TOML-owned RV selector:
 
 ```toml
 realized_volatility_surface_id = "<surface_id>"
 ```
 
-When this field is present, validation rejects legacy strategy-owned RV knobs
-as RV inputs. Existing signal data bindings remain valid for fast-spot pricing,
-but surfaced mode must not use them to warm or compute realized volatility.
-There must be one runtime source of truth for RV policy and RV source identity.
+Validation rejects legacy strategy-owned RV knobs as RV inputs. Existing signal
+data bindings remain valid for fast-spot pricing, but the strategy must not use
+them to warm or compute realized volatility. There must be one runtime source of
+truth for RV policy and RV source identity.
 
 ### RV-004 Source Identity
 
@@ -214,9 +214,9 @@ The closed `RealizedVolBlockReason` set is:
 `TakerPricingState` may consume `RealizedVolSnapshot`, but it does not own
 multi-source RV source selection, quorum, dispersion, source readiness, or RV
 sampling. It blocks on snapshot blockers and otherwise passes
-`annualized_realized_vol_decimal` into market-family fair-probability inputs. In
-surfaced RV mode, a missing or not-ready snapshot must block pricing; it must
-not fall back to the legacy internal RV estimator.
+`annualized_realized_vol_decimal` into market-family fair-probability inputs. A
+missing or not-ready snapshot must block pricing; it must not fall back to a
+strategy-owned internal RV estimator.
 
 ### RV-012 Strategy Boundary
 
@@ -240,11 +240,10 @@ deterministic non-locale formatting.
 
 ## Acceptance Criteria
 
-- Config validation accepts exactly one TOML-owned surfaced RV path for a
-  surfaced strategy.
+- Config validation accepts exactly one TOML-owned surfaced RV path for a taker
+  strategy.
 - Config validation rejects duplicate source ids, unknown data client ids,
-  empty source lists, invalid policy values, and legacy RV knobs when surfaced
-  RV mode is enabled.
+  empty source lists, invalid policy values, and legacy RV knobs.
 - Unit tests prove per-source fixed-grid RV, coverage blocking, stale blocking,
   source-class mismatch blocking, upper-quantile aggregation, and
   dispersion blocking.

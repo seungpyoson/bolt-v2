@@ -54,9 +54,8 @@ formatting, clippy, and final verification.
   implement RV policy.
 - Taker pricing may consume `RealizedVolSnapshot`, but must not own RV sampling,
   quorum, dispersion, source readiness, or source selection.
-- In surfaced RV mode, pricing must fail closed on a missing, stale,
-  mismatched, or not-ready snapshot. It must not fall back to the legacy internal
-  RV estimator.
+- Taker pricing must fail closed on a missing, stale, mismatched, or not-ready
+  snapshot. It must not fall back to a strategy-owned internal RV estimator.
 
 ## Engine Invariants
 

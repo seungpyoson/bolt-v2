@@ -32,7 +32,6 @@ pub mod bolt_v3_taker_pricing;
 pub mod bolt_v3_taker_signal;
 pub mod bolt_v3_trade_flow;
 pub mod bolt_v3_validate;
-pub mod bolt_v3_volatility;
 mod bounded_config_read;
 pub mod execution_state;
 pub mod lake_batch;

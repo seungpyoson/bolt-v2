@@ -631,38 +631,6 @@ reason = "This is a Nautilus StrategyConfig field name projected from bolt-v3 TO
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"vol_bridge_valid_secs"'''
-context = '''"vol_bridge_valid_secs",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"vol_gap_reset_secs"'''
-context = '''"vol_gap_reset_secs",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"vol_min_observations"'''
-context = '''"vol_min_observations",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"vol_window_secs"'''
-context = '''"vol_window_secs",'''
-classification = "strategy_runtime_schema_field"
-reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
 literal = '''"warmup_tick_count"'''
 context = '''"warmup_tick_count",'''
 classification = "strategy_runtime_schema_field"
@@ -2581,30 +2549,6 @@ classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_volatility.rs"
-kind = "number"
-literal = '''0'''
-context = '''const INITIAL_COUNTER_USIZE: usize = 0;'''
-classification = "strategy_state_invariant"
-reason = "This is a named initial counter invariant for the realized-volatility estimator's accumulation loop, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_volatility.rs"
-kind = "number"
-literal = '''0'''
-context = '''const INITIAL_COUNTER_U64: u64 = 0;'''
-classification = "strategy_state_invariant"
-reason = "This is a named initial counter invariant for the realized-volatility estimator's accumulation loop, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_volatility.rs"
-kind = "number"
-literal = '''1'''
-context = '''const COUNTER_INCREMENT: usize = 1;'''
-classification = "strategy_state_invariant"
-reason = "This is a named counter increment invariant for the realized-volatility estimator's accumulation loop, not an operator runtime value."
-
-[[allowed]]
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''0.0'''
@@ -2691,14 +2635,6 @@ literal = '''0.398_942_3'''
 context = '''const NORMAL_CDF_DENSITY_SCALE: f64 = 0.398_942_3;'''
 classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_volatility.rs"
-kind = "number"
-literal = '''1'''
-context = '''const MIN_OBSERVATION_COUNT: u64 = 1;'''
-classification = "strategy_state_invariant"
-reason = "This is the named minimum observation count needed for realized-volatility math, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -8919,3 +8855,11 @@ literal = '''"legacy_realized_volatility_path"'''
 context = '''code: "legacy_realized_volatility_path",'''
 classification = "strategy_runtime_diagnostic"
 reason = "Diagnostic code emitted when legacy in-strategy realized-volatility fields are rejected in surfaced RV mode; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"missing_realized_volatility_surface"'''
+context = '''"missing_realized_volatility_surface",'''
+classification = "strategy_runtime_diagnostic"
+reason = "Diagnostic code emitted when taker runtime config omits the required surfaced realized-volatility selector; it is not an operator runtime value."

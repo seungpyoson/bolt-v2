@@ -1624,6 +1624,10 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
         }
 
         match &strategy.realized_volatility_surface_id {
+            None => errors.push(format!(
+                "{context}: {} is required",
+                stringify!(realized_volatility_surface_id),
+            )),
             Some(surface_id)
                 if !root
                     .realized_volatility_surfaces

@@ -5,7 +5,7 @@
   ],
   "created_at_utc": "2026-06-08T22:15:04Z",
   "status": "generic_gates_source_agnostic_adapter_registry_gap_remains",
-  "decision": "The current BTE gate/readiness/catalog/result-contract boundary is mostly source-agnostic, but the accepted-object converter path is still a registered native-trades CSV adapter and PMXT remains a separate one-off adapter. Adding a new source is easy only when it can reuse an existing registered adapter and NT data class; adding a new raw format or data family still requires a new adapter and proof.",
+  "decision": "The current BTE gate/readiness/catalog/result-contract boundary is mostly source-agnostic, and cross-market component role requirements are now source-binding registry policy instead of product-name constants. The accepted-object converter path is still a registered native-trades CSV adapter and PMXT remains a separate one-off adapter. Adding a new source is easy only when it can reuse an existing registered adapter and NT data class; adding a new raw format or data family still requires a new adapter and proof.",
   "generic_surfaces_proven": [
     {
       "surface": "sample venue hardcode guard",
@@ -20,7 +20,12 @@
     {
       "surface": "source-proof acceptance against registry",
       "path": "repo://crates/backtesting-vertical-slice/src/source_proof.rs",
-      "evidence": "SourceProofReport acceptance validates source_binding, venue, product_family, market_structure_fixture, evidence_state, and table_family against SourceBindingRegistry before an object can become AcceptedDataset."
+      "evidence": "SourceProofReport acceptance validates source_binding, venue, product_family, market_structure_fixture, evidence_state, table_family, and optional required_cross_market_component_roles against SourceBindingRegistry before an object can become AcceptedDataset."
+    },
+    {
+      "surface": "registry-driven cross-market role policy",
+      "path": "repo://crates/backtesting-vertical-slice/src/source_proof.rs",
+      "evidence": "Production Rust no longer contains KIMCHI_PREMIUM_SIGNAL_FAMILY or KIMCHI_REQUIRED_CROSS_MARKET_ROLES. Source-binding rows may declare required_cross_market_component_roles, and focused RED/GREEN tests prove a non-Kimchi cross-market source fails when a configured role is missing and passes when the configured role is present."
     },
     {
       "surface": "source-to-catalog mapping readiness",
@@ -68,13 +73,6 @@
       "path": "repo://crates/backtesting-vertical-slice/src/polymarket_metadata_gate.rs",
       "status": "source_specific_proof_module",
       "evidence": "Polymarket-specific proof code reuses nautilus-polymarket Gamma parser/provider surfaces for the bounded PMXT/Polymarket path. This is acceptable as source-specific proof/adaptation, not generic gate logic."
-    },
-    {
-      "surface": "kimchi-premium cross-market role constants",
-      "path": "repo://crates/backtesting-vertical-slice/src/source_proof.rs",
-      "status": "hardcoded_source_family_policy",
-      "evidence": "Production Rust contains KIMCHI_PREMIUM_SIGNAL_FAMILY and KIMCHI_REQUIRED_CROSS_MARKET_ROLES. The roles are source roles, not venue names, but they are still source-family runtime policy in code.",
-      "impact": "Do not claim the source-proof layer is fully hardcode-free until required cross-market roles move into source-proof schema/config or a registry policy row."
     }
   ],
   "solutions": [
@@ -117,18 +115,20 @@
     },
     {
       "solution_id": "move_cross_market_source_family_policy_to_config",
-      "when_valid": "Before claiming the source-proof layer is fully hardcode-free across research analytics and backtesting inputs.",
+      "status": "implemented_current_branch",
+      "when_valid": "Before claiming the source-proof layer can accept new cross-market signal families without product-name constants.",
       "changes_required": [
-        "Extend the source-binding or source-proof schema with configured required cross-market component roles keyed by product_category or source_binding.",
-        "Replace KIMCHI_PREMIUM_SIGNAL_FAMILY and KIMCHI_REQUIRED_CROSS_MARKET_ROLES with registry-driven validation.",
-        "Keep the venue/provider values as TOML source_binding rows and source-proof component evidence."
+        "SourceBindingConfig now accepts required_cross_market_component_roles.",
+        "SourceProofReport acceptance validates required component roles from the matched source-binding row.",
+        "Focused tests cover both the former Kimchi policy and a custom cross-market source-binding row."
       ],
-      "generic_gate_changes_required": true,
+      "generic_gate_changes_required": false,
       "new_rust_adapter_required": false
     }
   ],
   "accepted_claims": [
     "Generic BTE gate/readiness surfaces are source_binding/table_family/NT-data-type driven.",
+    "Cross-market component role requirements are source-binding registry config, not product-category constants.",
     "Bybit and Binance are sample/reference source rows, not generic production gate branches.",
     "PMXT and Polymarket names are confined to explicit one-off/proof modules and test fixtures by a committed guard test.",
     "Adding another source that matches the existing native-trade CSV adapter should require registry/source-proof/run-spec data, not generic gate code."
@@ -137,11 +137,11 @@
     "Adding any new venue or data type is TOML-only today.",
     "PMXT is a durable canonical Polymarket source today.",
     "The accepted-object operator is a general raw-source adapter runner today.",
-    "The full source-proof layer is hardcode-free today."
+    "Every future source-proof policy has been fully audited as hardcode-free today."
   ],
   "next_required_evidence": [
     "Introduce or document a source-agnostic adapter registration contract before adding any non-trade-CSV durable source.",
-    "Move cross-market source-family required roles out of production Rust before claiming complete no-hardcode compliance across source proofs.",
+    "Complete a source-proof policy hardcode audit before claiming every future source-proof policy is config-owned.",
     "For Polymarket/PMXT, accept durable source proof plus coverage/cost/storage/dynamic-tick-size evidence before broad backfill.",
     "Keep GitHub CI as the broad verification gate for any committed changes."
   ]

@@ -35,14 +35,6 @@ const SOURCE_BINDINGS_REGISTRY: &str = include_str!(
     "../../../specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
 );
 
-const KIMCHI_PREMIUM_SIGNAL_FAMILY: &str = "kimchi-premium";
-const KIMCHI_REQUIRED_CROSS_MARKET_ROLES: [&str; 4] = [
-    "korean_spot",
-    "reference_price",
-    "fx_quote",
-    "token_mapping",
-];
-
 #[derive(Debug, Deserialize)]
 pub struct SourceBindingRegistry {
     #[serde(rename = "source_binding", default)]
@@ -57,6 +49,7 @@ pub struct SourceBindingMetadata {
     pub market_structure_fixture: Option<FixtureType>,
     pub evidence_state: EvidenceState,
     pub table_families: Vec<String>,
+    pub required_cross_market_component_roles: Vec<String>,
 }
 
 impl SourceBindingRegistry {
@@ -95,6 +88,7 @@ impl SourceBindingRegistry {
                 market_structure_fixture: config.market_structure_fixture,
                 evidence_state: config.evidence_state,
                 table_families: config.table_families,
+                required_cross_market_component_roles: config.required_cross_market_component_roles,
             })
     }
 }
@@ -128,6 +122,8 @@ struct SourceBindingConfig {
     evidence_state: EvidenceState,
     #[serde(default)]
     table_families: Vec<String>,
+    #[serde(default)]
+    required_cross_market_component_roles: Vec<String>,
 }
 
 /// Lifecycle status of a source-proof record.
@@ -874,7 +870,7 @@ impl SourceProofReport {
         ensure_staged_s3_uri("raw_sample_uri", &self.raw_sample_uri)?;
         ensure_staged_s3_uri("schema_sample_uri", &self.schema_sample_uri)?;
         ensure_backfillable_evidence_state(self.evidence_state)?;
-        ensure_source_binding_metadata_matches(self, registry)?;
+        let source_binding = ensure_source_binding_metadata_matches(self, registry)?;
         validate_source_selection(self)?;
         validate_l2_replay_evidence(self)?;
         let acceptance_scope = self
@@ -900,7 +896,10 @@ impl SourceProofReport {
         validate_claim_limits(self)?;
         validate_not_applicable_required_checks(self)?;
         validate_required_check_expiry(self)?;
-        validate_cross_market_components(self)?;
+        validate_cross_market_components(
+            self,
+            &source_binding.required_cross_market_component_roles,
+        )?;
         // When the proof claims to supersede a prior proof, that reference must be
         // a real, distinct id — not blank and not the proof's own id.
         if let Some(superseded) = &self.supersedes_source_proof_id {
@@ -1563,19 +1562,20 @@ fn validate_required_check_expiry(proof: &SourceProofReport) -> Result<(), Accep
     Ok(())
 }
 
-fn validate_cross_market_components(proof: &SourceProofReport) -> Result<(), AcceptanceError> {
-    if proof.product_category == KIMCHI_PREMIUM_SIGNAL_FAMILY {
-        for required_role in KIMCHI_REQUIRED_CROSS_MARKET_ROLES {
-            if !proof
-                .cross_market_components
-                .iter()
-                .any(|component| component.role == required_role)
-            {
-                return Err(AcceptanceError::InvalidCrossMarketJoin {
-                    field: "cross_market_components",
-                    reason: format!("missing required role {required_role:?}"),
-                });
-            }
+fn validate_cross_market_components(
+    proof: &SourceProofReport,
+    required_roles: &[String],
+) -> Result<(), AcceptanceError> {
+    for required_role in required_roles {
+        if !proof
+            .cross_market_components
+            .iter()
+            .any(|component| component.role == *required_role)
+        {
+            return Err(AcceptanceError::InvalidCrossMarketJoin {
+                field: "cross_market_components",
+                reason: format!("missing required role {required_role:?}"),
+            });
         }
     }
 
@@ -1669,7 +1669,7 @@ fn validate_cross_market_component(
 fn ensure_source_binding_metadata_matches(
     proof: &SourceProofReport,
     registry: &SourceBindingRegistry,
-) -> Result<(), AcceptanceError> {
+) -> Result<SourceBindingConfig, AcceptanceError> {
     let Some(config) = registry.source_binding_config(&proof.source_binding, &proof.venue) else {
         return Err(AcceptanceError::UnknownSourceBinding {
             source_binding: proof.source_binding.clone(),
@@ -1715,7 +1715,7 @@ fn ensure_source_binding_metadata_matches(
             actual: proof.table_family.clone(),
         });
     }
-    Ok(())
+    Ok(config)
 }
 
 fn ensure_bte_market_structure_fixture(fixture_type: FixtureType) -> Result<(), AcceptanceError> {
@@ -1987,9 +1987,32 @@ market_structure_fixture = "perps-spot"
 source_uri = "https://signals.example.test/kimchi/{dt}.json"
 evidence_state = "directly_backfillable"
 table_families = ["signals"]
+required_cross_market_component_roles = ["korean_spot", "reference_price", "fx_quote", "token_mapping"]
 "#,
         )
         .expect("kimchi registry parses")
+    }
+
+    fn cross_market_registry_with_required_roles(roles: &[&str]) -> SourceBindingRegistry {
+        let roles = roles
+            .iter()
+            .map(|role| format!(r#""{role}""#))
+            .collect::<Vec<_>>()
+            .join(", ");
+        SourceBindingRegistry::from_toml_str(&format!(
+            r#"
+[[source_binding]]
+key = "synthetic-custom-cross-market-signal"
+venue = "synthetic-signal-source"
+product_family = "cross_market_signal"
+market_structure_fixture = "perps-spot"
+source_uri = "https://signals.example.test/custom/{{dt}}.json"
+evidence_state = "directly_backfillable"
+table_families = ["signals"]
+required_cross_market_component_roles = [{roles}]
+"#
+        ))
+        .expect("cross-market registry parses")
     }
 
     fn kimchi_component(role: &str) -> CrossMarketJoinComponent {
@@ -2025,6 +2048,19 @@ table_families = ["signals"]
             kimchi_component("fx_quote"),
             kimchi_component("token_mapping"),
         ];
+        proof
+    }
+
+    fn custom_cross_market_signal_proof() -> SourceProofReport {
+        let mut proof = kimchi_signal_proof();
+        proof.source_proof_id = "source-proof-synthetic-custom-cross-market".to_string();
+        proof.source_binding = "synthetic-custom-cross-market-signal".to_string();
+        proof.product_category = "custom-cross-market-signal".to_string();
+        proof.raw_sample_uri =
+            "s3://bolt-parquet/.../custom-cross-market/raw/sample.json".to_string();
+        proof.schema_sample_uri =
+            "s3://bolt-parquet/.../custom-cross-market/schema-sample.json".to_string();
+        proof.cross_market_components = vec![kimchi_component("primary_leg")];
         proof
     }
 
@@ -2120,6 +2156,29 @@ table_families = ["signals"]
         kimchi_signal_proof()
             .evaluate_acceptance_with_registry(&registry)
             .expect("configured cross-market roles should satisfy kimchi signal proof");
+    }
+
+    #[test]
+    fn source_binding_registry_declares_required_cross_market_component_roles() {
+        let registry = cross_market_registry_with_required_roles(&["primary_leg", "reference_leg"]);
+        let mut proof = custom_cross_market_signal_proof();
+
+        let err = proof
+            .evaluate_acceptance_with_registry(&registry)
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("cross_market_components")
+                && err.to_string().contains("reference_leg"),
+            "{err}"
+        );
+
+        proof
+            .cross_market_components
+            .push(kimchi_component("reference_leg"));
+        proof
+            .evaluate_acceptance_with_registry(&registry)
+            .expect("registry-declared cross-market roles should satisfy custom signal proof");
     }
 
     #[test]

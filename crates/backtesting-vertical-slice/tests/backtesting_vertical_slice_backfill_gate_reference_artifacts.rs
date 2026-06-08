@@ -93,6 +93,10 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
             table_family: actual_plan.table_family.clone(),
             nt_data_type: "TradeTick".to_string(),
         }],
+        artifact_index_commit_required: false,
+        required_artifact_index_kind: None,
+        artifact_index_commit_proof_report_hash: None,
+        artifact_index_commit_proof_report: None,
     });
 
     assert_eq!(readiness.status, BackfillExecutionReadinessStatus::Ready);

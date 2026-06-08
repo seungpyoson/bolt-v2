@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    artifact_index::ArtifactKind,
+    artifact_index_commit_proof::ArtifactIndexCommitProofReport,
     backfill_accepted_tranche::{BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheStatus},
     backfill_execution_plan::{BackfillExecutionPlan, BackfillExecutionPlanStatus},
 };
@@ -34,6 +36,12 @@ pub struct BackfillExecutionReadinessSpec {
     pub required_table_family: String,
     pub required_nt_data_type: String,
     pub supported_data_paths: Vec<BackfillExecutionReadinessSupportedDataPath>,
+    #[serde(default)]
+    pub artifact_index_commit_required: bool,
+    #[serde(default)]
+    pub required_artifact_index_kind: Option<ArtifactKind>,
+    #[serde(default)]
+    pub artifact_index_commit_proof_report_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +82,11 @@ pub enum BackfillExecutionReadinessBlocker {
     ExecutionPlanAcceptedBytesMismatch,
     ExecutionPlanObjectMismatch,
     RequiredTableFamilyMismatch,
+    ArtifactIndexCommitProofRequiredButMissing,
+    ArtifactIndexCommitProofKindRequiredButMissing,
+    ArtifactIndexCommitProofKindMismatch,
+    ArtifactIndexCommitMechanicsUnproven,
+    ArtifactIndexProducerIamScopeUnproven,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +98,12 @@ pub struct BackfillExecutionReadinessReport {
     pub required_table_family: String,
     pub required_nt_data_type: String,
     pub supported_data_paths: Vec<BackfillExecutionReadinessSupportedDataPath>,
+    pub artifact_index_commit_required: bool,
+    pub required_artifact_index_kind: Option<ArtifactKind>,
+    pub artifact_index_commit_proof_id: Option<String>,
+    pub artifact_index_commit_proof_hash: Option<String>,
+    pub artifact_index_direct_s3_commit_proven: Option<bool>,
+    pub artifact_index_producer_iam_scope_proven: Option<bool>,
     pub accepted_tranche_id: String,
     pub accepted_tranche_manifest_hash: String,
     pub execution_plan_id: String,
@@ -115,6 +134,10 @@ pub struct BackfillExecutionReadinessInput<'a> {
     pub required_table_family: &'a str,
     pub required_nt_data_type: &'a str,
     pub supported_data_paths: Vec<BackfillExecutionReadinessSupportedDataPath>,
+    pub artifact_index_commit_required: bool,
+    pub required_artifact_index_kind: Option<ArtifactKind>,
+    pub artifact_index_commit_proof_report_hash: Option<&'a str>,
+    pub artifact_index_commit_proof_report: Option<&'a ArtifactIndexCommitProofReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +148,8 @@ pub enum BackfillExecutionReadinessError {
     ParseAcceptedTrancheManifestJson { path: String, error: String },
     ReadExecutionPlan { path: String, error: String },
     ParseExecutionPlanJson { path: String, error: String },
+    ReadArtifactIndexCommitProofReport { path: String, error: String },
+    ParseArtifactIndexCommitProofReportJson { path: String, error: String },
     CreateDir { path: String, error: String },
     ReadExisting { path: String, error: String },
     Write { path: String, error: String },
@@ -157,6 +182,13 @@ impl fmt::Display for BackfillExecutionReadinessError {
             Self::ParseExecutionPlanJson { path, error } => {
                 write!(f, "parse backfill execution-plan JSON {path}: {error}")
             }
+            Self::ReadArtifactIndexCommitProofReport { path, error } => {
+                write!(f, "read Artifact Index commit proof report {path}: {error}")
+            }
+            Self::ParseArtifactIndexCommitProofReportJson { path, error } => write!(
+                f,
+                "parse Artifact Index commit proof report JSON {path}: {error}"
+            ),
             Self::CreateDir { path, error } => write!(
                 f,
                 "create backfill execution-readiness artifact directory {path}: {error}"
@@ -201,6 +233,18 @@ pub fn evaluate_backfill_execution_readiness(
     let tranche = input.tranche;
     let plan = input.plan;
     let supported_data_paths = input.supported_data_paths;
+    let artifact_index_commit_required = input.artifact_index_commit_required;
+    let required_artifact_index_kind = input.required_artifact_index_kind;
+    let artifact_index_commit_proof_report = input.artifact_index_commit_proof_report;
+    let artifact_index_commit_proof_hash = input
+        .artifact_index_commit_proof_report_hash
+        .map(str::to_string);
+    let artifact_index_commit_proof_id =
+        artifact_index_commit_proof_report.map(|report| report.proof_id.clone());
+    let artifact_index_direct_s3_commit_proven =
+        artifact_index_commit_proof_report.map(|report| report.direct_s3_commit_proven);
+    let artifact_index_producer_iam_scope_proven =
+        artifact_index_commit_proof_report.map(|report| report.producer_iam_scope_proven);
     let mut blockers = Vec::new();
 
     if readiness_id.trim().is_empty() {
@@ -293,6 +337,35 @@ pub fn evaluate_backfill_execution_readiness(
     {
         blockers.push(BackfillExecutionReadinessBlocker::ExecutionPlanObjectMismatch);
     }
+    if artifact_index_commit_required {
+        match artifact_index_commit_proof_report {
+            None => blockers.push(
+                BackfillExecutionReadinessBlocker::ArtifactIndexCommitProofRequiredButMissing,
+            ),
+            Some(proof_report) => {
+                match required_artifact_index_kind {
+                    None => blockers.push(
+                        BackfillExecutionReadinessBlocker::ArtifactIndexCommitProofKindRequiredButMissing,
+                    ),
+                    Some(required_kind) if proof_report.artifact_kind != required_kind => blockers
+                        .push(
+                            BackfillExecutionReadinessBlocker::ArtifactIndexCommitProofKindMismatch,
+                        ),
+                    Some(_) => {}
+                }
+                if !artifact_index_commit_mechanics_proven(proof_report) {
+                    blockers.push(
+                        BackfillExecutionReadinessBlocker::ArtifactIndexCommitMechanicsUnproven,
+                    );
+                }
+                if !proof_report.producer_iam_scope_proven {
+                    blockers.push(
+                        BackfillExecutionReadinessBlocker::ArtifactIndexProducerIamScopeUnproven,
+                    );
+                }
+            }
+        }
+    }
 
     let status = if blockers.is_empty() {
         BackfillExecutionReadinessStatus::Ready
@@ -307,6 +380,12 @@ pub fn evaluate_backfill_execution_readiness(
         required_table_family,
         required_nt_data_type,
         supported_data_paths,
+        artifact_index_commit_required,
+        required_artifact_index_kind,
+        artifact_index_commit_proof_id,
+        artifact_index_commit_proof_hash,
+        artifact_index_direct_s3_commit_proven,
+        artifact_index_producer_iam_scope_proven,
         accepted_tranche_id: tranche.tranche_id.clone(),
         accepted_tranche_manifest_hash,
         execution_plan_id: plan.plan_id.clone(),
@@ -375,6 +454,14 @@ pub fn write_backfill_execution_readiness_report_from_spec_file(
     let (tranche, tranche_hash) =
         read_accepted_tranche_manifest(&spec.accepted_tranche_manifest_path)?;
     let (plan, plan_hash) = read_execution_plan(&spec.execution_plan_path)?;
+    let artifact_index_commit_proof_report =
+        match spec.artifact_index_commit_proof_report_path.as_deref() {
+            Some(path) => {
+                let (report, hash) = read_artifact_index_commit_proof_report(path)?;
+                Some((report, hash))
+            }
+            None => None,
+        };
     let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
         readiness_id: &spec.readiness_id,
         accepted_tranche_manifest_hash: &tranche_hash,
@@ -384,6 +471,14 @@ pub fn write_backfill_execution_readiness_report_from_spec_file(
         required_table_family: &spec.required_table_family,
         required_nt_data_type: &spec.required_nt_data_type,
         supported_data_paths: spec.supported_data_paths,
+        artifact_index_commit_required: spec.artifact_index_commit_required,
+        required_artifact_index_kind: spec.required_artifact_index_kind,
+        artifact_index_commit_proof_report_hash: artifact_index_commit_proof_report
+            .as_ref()
+            .map(|(_, hash)| hash.as_str()),
+        artifact_index_commit_proof_report: artifact_index_commit_proof_report
+            .as_ref()
+            .map(|(report, _)| report),
     });
     write_backfill_execution_readiness_report(&spec.output_dir, &report)
 }
@@ -423,6 +518,39 @@ fn read_execution_plan(
         }
     })?;
     Ok((plan, hash))
+}
+
+fn read_artifact_index_commit_proof_report(
+    path: &Path,
+) -> Result<(ArtifactIndexCommitProofReport, String), BackfillExecutionReadinessError> {
+    let bytes = fs::read(path).map_err(|error| {
+        BackfillExecutionReadinessError::ReadArtifactIndexCommitProofReport {
+            path: path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    let hash = sha256_bytes(&bytes);
+    let report = serde_json::from_slice(&bytes).map_err(|error| {
+        BackfillExecutionReadinessError::ParseArtifactIndexCommitProofReportJson {
+            path: path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    Ok((report, hash))
+}
+
+fn artifact_index_commit_mechanics_proven(report: &ArtifactIndexCommitProofReport) -> bool {
+    report.direct_s3_commit_proven
+        && report.prior_pointer_etag_observed
+        && report.final_pointer_etag_observed
+        && report.event_create_only_proven
+        && report.snapshot_create_only_proven
+        && report.audit_epoch_create_only_proven
+        && report.latest_pointer_create_only_proven
+        && report.latest_pointer_update_if_match_proven
+        && report.stale_etag_update_rejected
+        && report.latest_pointer_readback_proven
+        && report.snapshot_readback_proven
 }
 
 fn content_hash(

@@ -1,4 +1,8 @@
 use backtesting_vertical_slice::{
+    artifact_index::ArtifactKind,
+    artifact_index_commit_proof::{
+        ARTIFACT_INDEX_COMMIT_PROOF_SCHEMA_VERSION, ArtifactIndexCommitProofReport,
+    },
     backfill_accepted_tranche::{
         BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION, BackfillAcceptedTrancheManifest,
         BackfillAcceptedTrancheObject, BackfillAcceptedTrancheStatus,
@@ -29,6 +33,10 @@ fn execution_readiness_is_ready_for_matching_accepted_tranche_and_ready_plan() {
         required_table_family: "trades",
         required_nt_data_type: "TradeTick",
         supported_data_paths: supported_data_paths(),
+        artifact_index_commit_required: false,
+        required_artifact_index_kind: None,
+        artifact_index_commit_proof_report_hash: None,
+        artifact_index_commit_proof_report: None,
     });
 
     assert_eq!(report.status, BackfillExecutionReadinessStatus::Ready);
@@ -58,6 +66,10 @@ fn execution_readiness_blocks_when_plan_is_not_bound_to_the_tranche_file_hash() 
         required_table_family: "trades",
         required_nt_data_type: "TradeTick",
         supported_data_paths: supported_data_paths(),
+        artifact_index_commit_required: false,
+        required_artifact_index_kind: None,
+        artifact_index_commit_proof_report_hash: None,
+        artifact_index_commit_proof_report: None,
     });
 
     assert_eq!(report.status, BackfillExecutionReadinessStatus::Blocked);
@@ -120,6 +132,47 @@ nt_data_type = "TradeTick"
     );
 }
 
+#[test]
+fn execution_readiness_blocks_index_backfill_when_producer_iam_scope_is_unproven() {
+    let tranche = accepted_tranche();
+    let plan = matching_execution_plan(&tranche);
+    let proof_report = artifact_index_commit_proof_report(false);
+
+    let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+        readiness_id: "synthetic-readiness",
+        accepted_tranche_manifest_hash: "synthetic-tranche-file-hash",
+        tranche: &tranche,
+        execution_plan_hash: "synthetic-plan-file-hash",
+        plan: &plan,
+        required_table_family: "trades",
+        required_nt_data_type: "TradeTick",
+        supported_data_paths: supported_data_paths(),
+        artifact_index_commit_required: true,
+        required_artifact_index_kind: Some(ArtifactKind::Backtests),
+        artifact_index_commit_proof_report_hash: Some("synthetic-artifact-index-proof-hash"),
+        artifact_index_commit_proof_report: Some(&proof_report),
+    });
+
+    assert_eq!(report.status, BackfillExecutionReadinessStatus::Blocked);
+    assert_eq!(
+        report.artifact_index_commit_proof_id.as_deref(),
+        Some("synthetic-artifact-index-proof")
+    );
+    assert_eq!(
+        report.artifact_index_commit_proof_hash.as_deref(),
+        Some("synthetic-artifact-index-proof-hash")
+    );
+    assert_eq!(
+        report.required_artifact_index_kind,
+        Some(ArtifactKind::Backtests)
+    );
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillExecutionReadinessBlocker::ArtifactIndexProducerIamScopeUnproven)
+    );
+}
+
 fn accepted_tranche() -> BackfillAcceptedTrancheManifest {
     BackfillAcceptedTrancheManifest {
         schema_version: BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION.to_string(),
@@ -177,6 +230,52 @@ fn accepted_object() -> BackfillAcceptedTrancheObject {
         sha256: "synthetic-object-sha".to_string(),
         bytes: 17,
         archive_date: "2026-03-01".to_string(),
+    }
+}
+
+fn artifact_index_commit_proof_report(
+    producer_iam_scope_proven: bool,
+) -> ArtifactIndexCommitProofReport {
+    ArtifactIndexCommitProofReport {
+        schema_version: ARTIFACT_INDEX_COMMIT_PROOF_SCHEMA_VERSION.to_string(),
+        proof_id: "synthetic-artifact-index-proof".to_string(),
+        artifact_root: "s3://synthetic-artifacts".to_string(),
+        artifact_protocol: "s3".to_string(),
+        artifact_kind: ArtifactKind::Backtests,
+        producer_project: "synthetic-producer".to_string(),
+        writer_id: "synthetic-writer".to_string(),
+        storage_option_keys: vec!["conditional_put".to_string()],
+        event_uris: vec!["s3://synthetic-artifacts/artifact-index/v1/events/kind=backtests/event.json".to_string()],
+        snapshot_uris: vec!["s3://synthetic-artifacts/artifact-index/v1/snapshots/kind=backtests/snapshot.json".to_string()],
+        latest_pointer_uri: "s3://synthetic-artifacts/artifact-index/v1/pointers/kind=backtests/latest.json".to_string(),
+        audit_epoch_uris: vec!["s3://synthetic-artifacts/artifact-index/v1/audit/epochs/synthetic.json".to_string()],
+        first_pointer_precondition:
+            backtesting_vertical_slice::artifact_index::ArtifactIndexPointerPrecondition::IfNoneMatchAny,
+        second_pointer_precondition:
+            backtesting_vertical_slice::artifact_index::ArtifactIndexPointerPrecondition::IfMatch {
+                etag: "synthetic-etag".to_string(),
+            },
+        prior_pointer_etag_observed: true,
+        final_pointer_etag_observed: true,
+        event_create_only_proven: true,
+        snapshot_create_only_proven: true,
+        audit_epoch_create_only_proven: true,
+        latest_pointer_create_only_proven: true,
+        latest_pointer_update_if_match_proven: true,
+        stale_etag_update_rejected: true,
+        latest_pointer_readback_proven: true,
+        snapshot_readback_proven: true,
+        resolved_snapshot_id: "synthetic-snapshot-b".to_string(),
+        final_snapshot_id: "synthetic-snapshot-b".to_string(),
+        final_snapshot_content_hash: "synthetic-snapshot-content-hash".to_string(),
+        persisted_final_snapshot_json_sha256: "synthetic-snapshot-json-hash".to_string(),
+        direct_s3_commit_proven: true,
+        producer_iam_scope_proven,
+        producer_iam_scope_denied_kinds: vec![ArtifactKind::ResearchAnalytics],
+        producer_iam_scope_denied_write_attempts: 3,
+        producer_iam_scope_denied_write_rejections: if producer_iam_scope_proven { 3 } else { 0 },
+        producer_iam_scope_violation_count: if producer_iam_scope_proven { 0 } else { 3 },
+        producer_iam_scope_violation_uris: Vec::new(),
     }
 }
 

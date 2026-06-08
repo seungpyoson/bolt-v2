@@ -92,10 +92,13 @@ Go for the local BNBUSDC vertical-slice path after this fix:
   standard `BacktestDataConfig` catalog replay feeds `Vec<Data>` through
   `BacktestEngine::add_data`; NT's `Data` enum has no `InstrumentAny` variant.
   NT live-style `DataEngine::process(&InstrumentAny)` exists, but that is a
-  separate path from catalog-backed replay, so dynamic instrument-epoch replay is
-  unproven. A first one-object proof may
+  separate path from catalog-backed replay. A focused pinned-NT source recheck
+  on 2026-06-08 proves standard `BacktestNode` catalog replay does not expose a
+  timed `InstrumentAny` stream; multiple up-front snapshots collapse through
+  instrument-id keyed cache/exchange insertion rather than scheduled replay. A first one-object proof may
   exclude tick-changing assets only with explicit claim limits; full L2
-  acceptance must prove tick-size epochs.
+  acceptance must either accept a no-tick-size-change source universe or prove a
+  separate timed instrument-epoch replay path.
 - PMXT Polymarket first-proof universe policy is now recorded in
   `reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json`:
   the same one-hour object has `71,593` assets, `343` assets with

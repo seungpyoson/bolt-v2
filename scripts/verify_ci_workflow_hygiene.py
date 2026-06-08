@@ -201,7 +201,6 @@ SETUP_ACTION_REQUIRED_LITERALS = (
     "just --evaluate target",
     "just --evaluate zig_version",
     "just --evaluate zigbuild_version",
-    "just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256",
     "just --evaluate rust_verification_owner",
     'target-dir --repo "$GITHUB_WORKSPACE"',
     "os.path.relpath",
@@ -213,7 +212,6 @@ SETUP_ACTION_OUTPUT_MAPPINGS = {
     "target": "steps.shared.outputs.target",
     "zig_version": "steps.shared.outputs.zig_version",
     "zigbuild_version": "steps.shared.outputs.zigbuild_version",
-    "zigbuild_x86_64_unknown_linux_gnu_sha256": "steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256",
     "rust_verification_owner": "steps.shared.outputs.rust_verification_owner",
     "managed_target_dir": "steps.target_dir.outputs.managed_target_dir",
     "managed_target_dir_relative": "steps.target_dir.outputs.managed_target_dir_relative",
@@ -321,11 +319,13 @@ TAIKI_INSTALL_ACTION_RE = re.compile(
 TAIKI_INSTALL_ACTION_MENTION_RE = re.compile(r"\btaiki-e/install-action@")
 TAIKI_INSTALL_ACTION_USES_LINE_RE = re.compile(r"^\s*(?:-\s*)?uses\s*:")
 TAIKI_INSTALL_ACTION_BARE_USES_KEY_RE = re.compile(r"^\s*(?:-\s*)?uses\s*:\s*$")
+SETUP_JUST_TOOL = "just@${{ inputs.just-version }}"
 CI_INSTALL_ACTION_TOOLS = {
     "deny": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "advisories": ("cargo-deny", "steps.setup.outputs.deny_version"),
     "test-archive": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
     "test-shards": ("cargo-nextest", "steps.setup.outputs.nextest_version"),
+    "build": ("cargo-zigbuild", "steps.setup.outputs.zigbuild_version"),
 }
 CI_SOURCE_BUILD_TOOLS = ("cargo-deny", "cargo-nextest", "cargo-zigbuild")
 CI_INSTALL_ACTION_COMMANDS = {
@@ -333,33 +333,11 @@ CI_INSTALL_ACTION_COMMANDS = {
     "advisories": "just deny-advisories",
     "test-archive": 'just test-archive "$NEXTEST_ARCHIVE_PATH"',
     "test-shards": TEST_PARTITION_COMMAND,
+    "build": "just build",
 }
 # Static-only option consumption keeps this local constant intentionally; the
 # shared scanner has broader Cargo CLI coverage while preserving scan parity.
 CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {"--frozen", "--locked", "--offline", "--quiet", "-q", "--verbose", "-v"}
-ZIGBUILD_PREBUILT_LITERALS = (
-    'version="${{ steps.setup.outputs.zigbuild_version }}"',
-    'archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"',
-    "https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}",
-    "curl \\",
-    "--retry 10",
-    "--retry-delay 3",
-    "--retry-all-errors",
-    "--fail",
-    "--location",
-    "--show-error",
-    "--silent",
-    '--output "$archive"',
-    '"$base_url/$archive"',
-    'expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"',
-    'actual="$(sha256sum "$archive" | awk \'{print $1}\')"',
-    'test "$actual" = "$expected"',
-    'tar --extract --xz --file "$archive"',
-    'mkdir -p "$HOME/.cargo/bin"',
-    'mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"',
-    'chmod +x "$HOME/.cargo/bin/cargo-zigbuild"',
-    'test -x "$HOME/.cargo/bin/cargo-zigbuild"',
-)
 
 
 def strip_comment(line: str) -> str:
@@ -887,31 +865,17 @@ def install_action_tool_step(job_lines: list[str], tool: str, output: str) -> tu
     return None
 
 
+def named_step_block(lines: list[str], step_name: str) -> list[str] | None:
+    name_re = re.compile(rf"^\s*(?:-\s*)?name:\s*{re.escape(step_name)}\s*$")
+    for block in step_blocks(lines):
+        if any(name_re.match(strip_comment(line)) for line in block):
+            return block
+    return None
+
+
 def first_step_running_command(job_lines: list[str], command: str) -> int | None:
     for index, block in enumerate(step_blocks(job_lines)):
         if block_runs_command(block, command):
-            return index
-    return None
-
-
-def first_step_containing_literals(job_lines: list[str], literals: tuple[str, ...]) -> int | None:
-    for index, block in enumerate(step_blocks(job_lines)):
-        text = uncommented_text(block)
-        if all(literal in text for literal in literals):
-            return index
-    return None
-
-
-def first_step_containing_literals_in_order(job_lines: list[str], literals: tuple[str, ...]) -> int | None:
-    for index, block in enumerate(step_blocks(job_lines)):
-        text = uncommented_text(block)
-        position = 0
-        for literal in literals:
-            found = text.find(literal, position)
-            if found < 0:
-                break
-            position = found + len(literal)
-        else:
             return index
     return None
 
@@ -5788,21 +5752,6 @@ def verify_prebuilt_tool_installs(workflow_text: str, workflow_name: str) -> lis
         if command_index is not None and install_index >= command_index:
             errors.append(f"{workflow_name} {job} must install {tool} before {command}")
 
-    build_lines = jobs.get("build")
-    if build_lines is None:
-        return errors
-    build_text = uncommented_text(build_lines)
-    if "archive.sha256" in build_text or "steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256" not in build_text:
-        errors.append(f"{workflow_name} build must use pinned cargo-zigbuild archive sha256")
-    zigbuild_install_index = first_step_containing_literals_in_order(build_lines, ZIGBUILD_PREBUILT_LITERALS)
-    if zigbuild_install_index is None:
-        errors.append(f"{workflow_name} build must install cargo-zigbuild from checksum-verified prebuilt release")
-    else:
-        build_command_index = first_step_running_command(build_lines, "just build")
-        if build_command_index is not None and zigbuild_install_index >= build_command_index:
-            errors.append(f"{workflow_name} build must install cargo-zigbuild before just build")
-    if 'test "$actual" = "$expected"' not in build_text:
-        errors.append(f"{workflow_name} build must verify cargo-zigbuild archive checksum")
     return errors
 
 
@@ -5810,6 +5759,15 @@ def verify_setup_action(action_text: str) -> list[str]:
     errors: list[str] = []
     uncommented_lines = [strip_comment(line) for line in action_text.splitlines()]
     uncommented = "\n".join(uncommented_lines)
+    install_just_step = named_step_block(action_text.splitlines(), "Install just")
+    if (
+        install_just_step is None
+        or not block_uses_pinned_install_action(install_just_step)
+        or not block_has_input(install_just_step, "tool", SETUP_JUST_TOOL)
+    ):
+        errors.append("setup action must install just with pinned taiki-e/install-action")
+    elif not block_has_input(install_just_step, "fallback", "none"):
+        errors.append("setup action just install-action fallback must be none")
     step_lines = [action_step_line(action_text, step) for step in SETUP_ACTION_ORDERED_STEPS]
     if any(line is None for line in step_lines):
         errors.append("setup action missing required ordered steps")

@@ -333,28 +333,10 @@ jobs:
         run: |
           python -m pip install ziglang=="${{ steps.setup.outputs.zig_version }}"
       - name: Install cargo-zigbuild
-        run: |
-          version="${{ steps.setup.outputs.zigbuild_version }}"
-          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
-          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl \\
-            --retry 10 \\
-            --retry-delay 3 \\
-            --retry-all-errors \\
-            --fail \\
-            --location \\
-            --show-error \\
-            --silent \\
-            --output "$archive" \\
-            "$base_url/$archive"
-          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
-          actual="$(sha256sum "$archive" | awk '{print $1}')"
-          test "$actual" = "$expected"
-          tar --extract --xz --file "$archive"
-          mkdir -p "$HOME/.cargo/bin"
-          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
-          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild"
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none
       - run: just build
       - name: Stage managed build artifact
         id: managed_artifact
@@ -555,8 +537,6 @@ outputs:
     value: ${{ steps.shared.outputs.zig_version }}
   zigbuild_version:
     value: ${{ steps.shared.outputs.zigbuild_version }}
-  zigbuild_x86_64_unknown_linux_gnu_sha256:
-    value: ${{ steps.shared.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}
   rust_verification_owner:
     value: ${{ steps.shared.outputs.rust_verification_owner }}
   managed_target_dir:
@@ -567,8 +547,10 @@ runs:
   using: composite
   steps:
     - name: Install just
-      shell: bash
-      run: echo "${{ inputs.just-version }}"
+      uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+      with:
+        tool: just@${{ inputs.just-version }}
+        fallback: none
     - name: Lint workflow contract
       if: ${{ inputs.lint-workflow-contract == 'true' }}
       shell: bash
@@ -589,7 +571,6 @@ runs:
           echo "target=$(just --evaluate target)" >> "$GITHUB_OUTPUT"
           echo "zig_version=$(just --evaluate zig_version)" >> "$GITHUB_OUTPUT"
           echo "zigbuild_version=$(just --evaluate zigbuild_version)" >> "$GITHUB_OUTPUT"
-          echo "zigbuild_x86_64_unknown_linux_gnu_sha256=$(just --evaluate zigbuild_x86_64_unknown_linux_gnu_sha256)" >> "$GITHUB_OUTPUT"
         fi
     - name: Resolve managed target dir
       if: ${{ inputs.include-managed-target-dir == 'true' }}
@@ -4628,31 +4609,41 @@ def main() -> int:
         ),
     )
     assert_error(
-        "ci.yml build must not compile cargo-zigbuild from source",
+        "ci.yml build must install cargo-zigbuild with pinned taiki-e/install-action",
         replace_once(
             BASE_WORKFLOW,
-            """          version="${{ steps.setup.outputs.zigbuild_version }}"
-          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
-          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl \\
-            --retry 10 \\
-            --retry-delay 3 \\
-            --retry-all-errors \\
-            --fail \\
-            --location \\
-            --show-error \\
-            --silent \\
-            --output "$archive" \\
-            "$base_url/$archive"
-          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
-          actual="$(sha256sum "$archive" | awk '{print $1}')"
-          test "$actual" = "$expected"
-          tar --extract --xz --file "$archive"
-          mkdir -p "$HOME/.cargo/bin"
-          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
-          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild\"""",
-            '          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked',
+            """      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none""",
+            """      - name: Install cargo-zigbuild
+        run: |
+          cargo install cargo-zigbuild --version "${{ steps.setup.outputs.zigbuild_version }}" --locked""",
+        ),
+    )
+    assert_error(
+        "ci.yml build must install cargo-zigbuild with pinned taiki-e/install-action",
+        replace_once(
+            BASE_WORKFLOW,
+            "        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c\n        with:\n          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}",
+            "        uses: taiki-e/install-action@v2\n        with:\n          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}",
+        ),
+    )
+    assert_error(
+        "ci.yml build must install cargo-zigbuild with pinned taiki-e/install-action",
+        replace_once(
+            BASE_WORKFLOW,
+            "          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}",
+            "          tool: cargo-zigbuild@${{ env.ZIGBUILD_VERSION }}",
+        ),
+    )
+    assert_error(
+        "ci.yml build install-action fallback must be none",
+        replace_once(
+            BASE_WORKFLOW,
+            "          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}\n          fallback: none",
+            "          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}\n          fallback: cargo-install",
         ),
     )
     assert_error(
@@ -4716,93 +4707,21 @@ def main() -> int:
         ),
     )
     assert_error(
-        "ci.yml build must verify cargo-zigbuild archive checksum",
-        replace_once(BASE_WORKFLOW, '          test "$actual" = "$expected"\n', ""),
-    )
-    assert_error(
-        "ci.yml build must install cargo-zigbuild from checksum-verified prebuilt release",
-        replace_once(
-            BASE_WORKFLOW,
-            '          test "$actual" = "$expected"\n          tar --extract --xz --file "$archive"',
-            '          tar --extract --xz --file "$archive"\n          test "$actual" = "$expected"',
-        ),
-    )
-    assert_error(
-        "ci.yml build must install cargo-zigbuild from checksum-verified prebuilt release",
-        replace_once(
-            replace_once(BASE_WORKFLOW, '          test "$actual" = "$expected"\n', ""),
-            "      - run: just build",
-            '''      - run: |
-          just build
-          test "$actual" = "$expected"''',
-        ),
-    )
-    assert_error(
-        "ci.yml build must install cargo-zigbuild from checksum-verified prebuilt release",
-        replace_once(BASE_WORKFLOW, "          --retry-all-errors \\\n", ""),
-    )
-    assert_error(
-        "ci.yml build must use pinned cargo-zigbuild archive sha256",
-        replace_once(
-            BASE_WORKFLOW,
-            '          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"\n',
-            """          curl --fail --location --show-error --silent --output "$archive.sha256" "$base_url/$archive.sha256"
-          expected="$(awk '{print $1}' "$archive.sha256")"
-""",
-        ),
-    )
-    assert_error(
         "ci.yml build must install cargo-zigbuild before just build",
         replace_once(
             BASE_WORKFLOW,
             """      - name: Install cargo-zigbuild
-        run: |
-          version="${{ steps.setup.outputs.zigbuild_version }}"
-          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
-          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl \\
-            --retry 10 \\
-            --retry-delay 3 \\
-            --retry-all-errors \\
-            --fail \\
-            --location \\
-            --show-error \\
-            --silent \\
-            --output "$archive" \\
-            "$base_url/$archive"
-          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
-          actual="$(sha256sum "$archive" | awk '{print $1}')"
-          test "$actual" = "$expected"
-          tar --extract --xz --file "$archive"
-          mkdir -p "$HOME/.cargo/bin"
-          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
-          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild"
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none
       - run: just build""",
             """      - run: just build
       - name: Install cargo-zigbuild
-        run: |
-          version="${{ steps.setup.outputs.zigbuild_version }}"
-          archive="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
-          base_url="https://github.com/rust-cross/cargo-zigbuild/releases/download/v${version}"
-          curl \\
-            --retry 10 \\
-            --retry-delay 3 \\
-            --retry-all-errors \\
-            --fail \\
-            --location \\
-            --show-error \\
-            --silent \\
-            --output "$archive" \\
-            "$base_url/$archive"
-          expected="${{ steps.setup.outputs.zigbuild_x86_64_unknown_linux_gnu_sha256 }}"
-          actual="$(sha256sum "$archive" | awk '{print $1}')"
-          test "$actual" = "$expected"
-          tar --extract --xz --file "$archive"
-          mkdir -p "$HOME/.cargo/bin"
-          mv cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild "$HOME/.cargo/bin/cargo-zigbuild"
-          chmod +x "$HOME/.cargo/bin/cargo-zigbuild"
-          test -x "$HOME/.cargo/bin/cargo-zigbuild\"""",
+        uses: taiki-e/install-action@3771e22aa892e03fd35585fae288baad1755695c
+        with:
+          tool: cargo-zigbuild@${{ steps.setup.outputs.zigbuild_version }}
+          fallback: none""",
         ),
     )
     assert_workflows_error(
@@ -5062,6 +4981,26 @@ def main() -> int:
     assert_error(
         "setup action missing expected literal 'just --evaluate nextest_version'",
         action=replace_once(BASE_ACTION, "just --evaluate nextest_version", "just --evaluate cargo_nextest_version"),
+    )
+    assert_error(
+        "setup action must install just with pinned taiki-e/install-action",
+        action=replace_once(
+            BASE_ACTION,
+            """    - name: Install just
+      uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+      with:
+        tool: just@${{ inputs.just-version }}
+        fallback: none
+""",
+            """    - name: Install just
+      shell: bash
+      run: echo "${{ inputs.just-version }}"
+""",
+        ),
+    )
+    assert_error(
+        "setup action just install-action fallback must be none",
+        action=replace_once(BASE_ACTION, "        fallback: none\n    - name: Lint workflow contract", "        fallback: cargo-install\n    - name: Lint workflow contract"),
     )
     assert_error(
         "setup action step order drifted",

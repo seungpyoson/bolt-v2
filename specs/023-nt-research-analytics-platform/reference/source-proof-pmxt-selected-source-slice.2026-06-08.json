@@ -1,0 +1,92 @@
+{
+  "schema_version": "source-proof-pmxt-selected-source-slice.v1",
+  "created_date": "2026-06-08",
+  "purpose": "One-off bounded PMXT selected-source staging before NT catalog projection proof.",
+  "source": {
+    "local_path": "/private/tmp/polymarket-may20-one.parquet",
+    "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
+    "source_rows": 64877467
+  },
+  "selector": {
+    "report_path": "/private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector/first-proof-selector-report.json",
+    "report_sha256": "647f0cee89becb46b7051992dd7fea25ca08be3b551bd6873cd21be2ebd7b524",
+    "status": "selected",
+    "selected_asset_count": 1,
+    "selected_asset_ids_hash": "edc5e3c70031056cf544d2cf581c5fe2ee3122886090ae513d6321a34c99d966",
+    "selected_assets": [
+      {
+        "asset_id": "101573629105061692824394189329292260077476973116785474086922405861943493792845",
+        "replay_rows": 4
+      }
+    ],
+    "selection": {
+      "required_event_families": [
+        "book",
+        "price_change",
+        "last_trade_price"
+      ],
+      "excluded_event_families": [
+        "tick_size_change"
+      ],
+      "row_budget": 1000,
+      "max_selected_assets": 1
+    }
+  },
+  "selected_source_slice": {
+    "spec_path": "/private/tmp/bte-pmxt-selected-source-slice-2026-06-08.toml",
+    "output_parquet_path": "/private/tmp/bte-pmxt-selected-source-slice-2026-06-08/selected-source.parquet",
+    "report_path": "/private/tmp/bte-pmxt-selected-source-slice-2026-06-08/selected-source-report.json",
+    "output_parquet_sha256": "a0890b3d87b913010325a7e1c4988bfab0654d3fe532ea5caa94494b6582e79e",
+    "report_hash": "97b8f3c642c28faed2d742750f84d6c32cbfec08b873951ae55218a1932c5e10",
+    "report_bytes": 1152,
+    "selected_rows": 4,
+    "selected_asset_count": 1,
+    "event_types": [
+      "book",
+      "last_trade_price",
+      "price_change"
+    ],
+    "projected_columns": [
+      "timestamp_received",
+      "timestamp",
+      "market",
+      "event_type",
+      "asset_id",
+      "bids",
+      "asks",
+      "price",
+      "size",
+      "side",
+      "best_bid",
+      "best_ask",
+      "fee_rate_bps",
+      "transaction_hash",
+      "old_tick_size",
+      "new_tick_size"
+    ]
+  },
+  "performance_evidence": {
+    "command": "/usr/bin/time -p python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin selected_source_slice -- --spec /private/tmp/bte-pmxt-selected-source-slice-2026-06-08.toml",
+    "wall_seconds": 218.96,
+    "user_seconds": 167.19,
+    "sys_seconds": 2.45,
+    "finding": "The generic Rust Arrow row slicer is acceptable for one-off bounded proof staging once, but too slow to become the broad PMXT backfill selection method."
+  },
+  "verification": [
+    "DuckDB read-back of selected-source.parquet returned rows=4, assets=1, event_types='book, last_trade_price, price_change'.",
+    "DuckDB DESCRIBE of selected-source.parquet showed the projected PMXT columns retained for NT projection proof.",
+    "The selected-source report binds source_parquet_sha256, selector_report_sha256, output_parquet_sha256, selected_rows, selected_asset_count, and selected_asset_ids_hash."
+  ],
+  "claim_limits": [
+    "This artifact does not prove PMXT raw-row-to-NT projection.",
+    "This artifact does not prove NT ParquetDataCatalog read-back.",
+    "This artifact does not prove BacktestNode consumption of a PMXT source-backed catalog.",
+    "This artifact must not be used as evidence that broad PMXT backfill is efficient."
+  ],
+  "next_required_steps": [
+    "Implement selected PMXT row-to-NT projection using nautilus-polymarket public parser/provider surfaces.",
+    "Write selected BinaryOption, OrderBookDelta, and TradeTick data into NT ParquetDataCatalog.",
+    "Query the selected NT catalog back and bind logical catalog hash plus selected-source hashes.",
+    "Run BacktestNode against exactly the selected source-backed NT catalog."
+  ]
+}

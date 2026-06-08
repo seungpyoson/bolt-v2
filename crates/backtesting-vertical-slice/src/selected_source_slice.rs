@@ -41,7 +41,9 @@ pub struct SelectedSourceSliceSpec {
 pub struct SelectedSourceSliceReport {
     pub schema_version: String,
     pub source_parquet_path: String,
+    pub source_parquet_sha256: String,
     pub selector_report_path: String,
+    pub selector_report_sha256: String,
     pub output_parquet_path: String,
     pub asset_id_column: String,
     pub projected_columns: Vec<String>,
@@ -56,6 +58,8 @@ pub struct SelectedSourceSliceReport {
 pub struct SelectedSourceSliceArtifact {
     pub output_parquet_path: PathBuf,
     pub report_path: PathBuf,
+    pub source_parquet_sha256: String,
+    pub selector_report_sha256: String,
     pub output_parquet_sha256: String,
     pub report_hash: String,
     pub report_bytes: u64,
@@ -90,12 +94,14 @@ pub fn write_selected_source_slice(
         "projected_columns must not be empty"
     );
 
+    let source_parquet_sha256 = sha256_file(&spec.source_parquet_path)?;
     let selector_bytes = fs::read(&spec.selector_report_path).with_context(|| {
         format!(
             "read selector report {}",
             spec.selector_report_path.display()
         )
     })?;
+    let selector_report_sha256 = sha256_bytes(&selector_bytes);
     let selector: FirstProofSelectorReport =
         serde_json::from_slice(&selector_bytes).with_context(|| {
             format!(
@@ -216,7 +222,9 @@ pub fn write_selected_source_slice(
     let report = SelectedSourceSliceReport {
         schema_version: SELECTED_SOURCE_SLICE_REPORT_SCHEMA_VERSION.to_string(),
         source_parquet_path: spec.source_parquet_path.display().to_string(),
+        source_parquet_sha256,
         selector_report_path: spec.selector_report_path.display().to_string(),
+        selector_report_sha256,
         output_parquet_path: spec.output_parquet_path.display().to_string(),
         asset_id_column: spec.asset_id_column.clone(),
         projected_columns: spec.projected_columns.clone(),
@@ -234,6 +242,8 @@ pub fn write_selected_source_slice(
     Ok(SelectedSourceSliceArtifact {
         output_parquet_path: spec.output_parquet_path.clone(),
         report_path: spec.report_path.clone(),
+        source_parquet_sha256: report.source_parquet_sha256,
+        selector_report_sha256: report.selector_report_sha256,
         output_parquet_sha256: report.output_parquet_sha256,
         report_hash,
         report_bytes: report_bytes.len() as u64,
@@ -276,12 +286,16 @@ fn string_column_value<'a>(values: &'a dyn Array, column: &str, row: usize) -> R
 fn sha256_file(path: &Path) -> Result<String> {
     let bytes =
         fs::read(path).with_context(|| format!("read file for sha256 {}", path.display()))?;
-    Ok(hex::encode(Sha256::digest(bytes)))
+    Ok(sha256_bytes(&bytes))
 }
 
 fn report_hash(report: &SelectedSourceSliceReport) -> Result<String> {
     let bytes = serde_json::to_vec(report).context("serialize selected source report for hash")?;
-    Ok(hex::encode(Sha256::digest(bytes)))
+    Ok(sha256_bytes(&bytes))
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn temp_artifact_path(path: &Path) -> PathBuf {

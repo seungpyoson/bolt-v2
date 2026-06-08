@@ -1,4 +1,4 @@
-use std::{fs::File, sync::Arc};
+use std::{fs::File, process::Command, sync::Arc};
 
 use arrow::{
     array::{ArrayRef, StringArray},
@@ -13,6 +13,7 @@ use backtesting_vertical_slice::{
     selected_source_slice::write_selected_source_slice_from_spec_file,
 };
 use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
+use sha2::{Digest, Sha256};
 
 #[test]
 fn selected_source_slice_writes_only_selector_assets_and_configured_columns() {
@@ -23,50 +24,14 @@ fn selected_source_slice_writes_only_selector_assets_and_configured_columns() {
     let report_path = dir.path().join("selected-report.json");
     let spec_path = dir.path().join("selected.toml");
     write_source_parquet(&source_path);
-    std::fs::write(
-        &selector_path,
-        serde_json::to_vec_pretty(&FirstProofSelectorReport {
-            schema_version: FIRST_PROOF_SELECTOR_SCHEMA_VERSION.to_string(),
-            selector_id: "selector-synthetic".to_string(),
-            status: FirstProofSelectorStatus::Selected,
-            selection: FirstProofSelection {
-                required_event_families: vec!["book".to_string()],
-                excluded_event_families: vec!["tick_size_change".to_string()],
-                row_budget: 10,
-                max_selected_assets: 1,
-            },
-            event_count_ledger_hash: "event-ledger-hash".to_string(),
-            total_assets: 2,
-            eligible_assets: 1,
-            selected_assets: vec![SelectedFirstProofAsset {
-                asset_id: "asset-a".to_string(),
-                replay_rows: 2,
-            }],
-            selected_asset_ids_hash: "selected-assets-hash".to_string(),
-            excluded_event_asset_count: 0,
-            excluded_event_row_count: 0,
-            blocking_issues: vec![],
-        })
-        .expect("selector json"),
-    )
-    .expect("write selector");
-    std::fs::write(
+    let selector_bytes = write_selector_report(&selector_path);
+    write_spec(
         &spec_path,
-        format!(
-            r#"source_parquet_path = "{}"
-selector_report_path = "{}"
-output_parquet_path = "{}"
-report_path = "{}"
-asset_id_column = "asset"
-projected_columns = ["asset", "event_type", "payload"]
-"#,
-            source_path.display(),
-            selector_path.display(),
-            output_path.display(),
-            report_path.display()
-        ),
-    )
-    .expect("write spec");
+        &source_path,
+        &selector_path,
+        &output_path,
+        &report_path,
+    );
 
     let artifact = write_selected_source_slice_from_spec_file(&spec_path).expect("source slice");
 
@@ -77,6 +42,17 @@ projected_columns = ["asset", "event_type", "payload"]
     assert_eq!(artifact.selected_asset_ids_hash, "selected-assets-hash");
     assert!(!artifact.output_parquet_sha256.is_empty());
     assert!(!artifact.report_hash.is_empty());
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report_path).expect("read report"))
+            .expect("parse report");
+    assert_eq!(
+        report["source_parquet_sha256"],
+        sha256_bytes(&std::fs::read(&source_path).expect("read source parquet"))
+    );
+    assert_eq!(
+        report["selector_report_sha256"],
+        sha256_bytes(&selector_bytes)
+    );
 
     let (columns, rows) = read_selected_rows(&artifact.output_parquet_path);
     assert_eq!(columns, vec!["asset", "event_type", "payload"]);
@@ -99,6 +75,100 @@ projected_columns = ["asset", "event_type", "payload"]
         err.to_string().contains("dirty selected source artifact"),
         "{err}"
     );
+}
+
+#[test]
+fn selected_source_slice_cli_writes_artifact_from_config_owned_spec() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let source_path = dir.path().join("source.parquet");
+    let selector_path = dir.path().join("selector.json");
+    let output_path = dir.path().join("selected.parquet");
+    let report_path = dir.path().join("selected-report.json");
+    let spec_path = dir.path().join("selected.toml");
+    write_source_parquet(&source_path);
+    write_selector_report(&selector_path);
+    write_spec(
+        &spec_path,
+        &source_path,
+        &selector_path,
+        &output_path,
+        &report_path,
+    );
+
+    let binary =
+        std::env::var("CARGO_BIN_EXE_selected_source_slice").expect("selected_source_slice binary");
+    let output = Command::new(binary)
+        .arg("--spec")
+        .arg(&spec_path)
+        .output()
+        .expect("run selected-source-slice CLI");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert!(stdout.contains("selected_source_parquet = "), "{stdout}");
+    assert!(stdout.contains("selected_rows = 2"), "{stdout}");
+    assert!(stdout.contains("selected_asset_count = 1"), "{stdout}");
+    assert!(report_path.exists());
+    assert!(output_path.exists());
+}
+
+fn write_selector_report(path: &std::path::Path) -> Vec<u8> {
+    let selector_bytes = serde_json::to_vec_pretty(&FirstProofSelectorReport {
+        schema_version: FIRST_PROOF_SELECTOR_SCHEMA_VERSION.to_string(),
+        selector_id: "selector-synthetic".to_string(),
+        status: FirstProofSelectorStatus::Selected,
+        selection: FirstProofSelection {
+            required_event_families: vec!["book".to_string()],
+            excluded_event_families: vec!["tick_size_change".to_string()],
+            row_budget: 10,
+            max_selected_assets: 1,
+        },
+        event_count_ledger_hash: "event-ledger-hash".to_string(),
+        total_assets: 2,
+        eligible_assets: 1,
+        selected_assets: vec![SelectedFirstProofAsset {
+            asset_id: "asset-a".to_string(),
+            replay_rows: 2,
+        }],
+        selected_asset_ids_hash: "selected-assets-hash".to_string(),
+        excluded_event_asset_count: 0,
+        excluded_event_row_count: 0,
+        blocking_issues: vec![],
+    })
+    .expect("selector json");
+    std::fs::write(path, &selector_bytes).expect("write selector");
+    selector_bytes
+}
+
+fn write_spec(
+    spec_path: &std::path::Path,
+    source_path: &std::path::Path,
+    selector_path: &std::path::Path,
+    output_path: &std::path::Path,
+    report_path: &std::path::Path,
+) {
+    std::fs::write(
+        spec_path,
+        format!(
+            r#"source_parquet_path = "{}"
+selector_report_path = "{}"
+output_parquet_path = "{}"
+report_path = "{}"
+asset_id_column = "asset"
+projected_columns = ["asset", "event_type", "payload"]
+"#,
+            source_path.display(),
+            selector_path.display(),
+            output_path.display(),
+            report_path.display()
+        ),
+    )
+    .expect("write spec");
 }
 
 fn write_source_parquet(path: &std::path::Path) {
@@ -186,4 +256,8 @@ fn read_selected_rows(path: &std::path::Path) -> (Vec<String>, Vec<Vec<String>>)
         }
     }
     (columns, rows)
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }

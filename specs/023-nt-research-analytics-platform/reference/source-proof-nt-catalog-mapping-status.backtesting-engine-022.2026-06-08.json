@@ -193,6 +193,24 @@
       "Does not authorize broad PMXT backfill."
     ]
   },
+  "bounded_l2_backtestnode_status": {
+    "status": "tdd_proven_for_nt_native_binary_option_order_book_delta_catalog",
+    "evidence": [
+      "RED rust_verification cargo test --test backtesting_vertical_slice_catalog_and_node catalog_round_trips_binary_option_l2_deltas_and_node_consumes_them failed with the explicit unimplemented L2 BacktestNode proof helper.",
+      "First GREEN attempt exposed NT matching-engine precision enforcement: L2 Add/Update delta quantities must match the BinaryOption size precision.",
+      "GREEN rust_verification cargo test --test backtesting_vertical_slice_catalog_and_node catalog_round_trips_binary_option_l2_deltas_and_node_consumes_them passed after the BinaryOption fixture wrote two OrderBookDelta rows to ParquetDataCatalog, queried them back, and ran BacktestNode with BookType::L2_MBP plus NautilusDataType::OrderBookDelta for exactly two iterations.",
+      "rust_verification cargo test --test backtesting_vertical_slice_catalog_and_node passed both catalog/node integration tests.",
+      "rust_verification cargo fmt --check passed.",
+      "managed BTE clippy passed."
+    ],
+    "claim_limits": [
+      "Does not prove PMXT raw parquet row decoding.",
+      "Does not prove nautilus-polymarket parser/provider reuse inside the isolated BTE crate.",
+      "Does not prove source-backed selected PMXT universe projection.",
+      "Does not prove BacktestNode consumes a selected source-backed PMXT L2 catalog.",
+      "Does not authorize broad PMXT backfill."
+    ]
+  },
   "non_hardcoding_decision": "Bybit, Binance, Polymarket, Kalshi, and Hyperliquid remain source-binding examples. The next mapping work must be data-family driven: source schema plus registry binding plus NT data class, with no runtime venue or instrument constants in production code.",
   "next_required_evidence": [
     "Thread a concrete configured first-proof selector report artifact into the bounded PMXT source-backed run without venue or asset constants.",
@@ -200,7 +218,7 @@
     "TDD proof for the selected PMXT historical TradeId path because pinned NT's build_polymarket_trade_id helper is crate-private; either mirror the pinned format with provenance or expose it upstream before claiming direct NT helper reuse.",
     "Generic PMXT order-book projection contract from source event types to NT OrderBookDelta/TradeTick, including snapshot flags, side/action rules, timestamps, trade ids, and first-proof tick-size claim limits.",
     "ParquetDataCatalog write/readback proof for a selected PMXT Polymarket sample staged under artifact_root.",
-    "BacktestNode consumption proof for the same verified catalog path.",
+    "BacktestNode consumption proof for the same selected source-backed PMXT catalog path.",
     "Coverage ledger using timestamp_received as the archive-hour coverage axis before any expanded tranche.",
     "Separate dynamic tick-size replay proof before full PMXT Polymarket L2 acceptance or broad backfill."
   ],

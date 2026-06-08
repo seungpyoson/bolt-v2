@@ -61,8 +61,8 @@
     },
     {
       "prompt_requirement": "BacktestNode consumes exactly the verified catalog",
-      "bounded_first_proof_status": "manifest_data_config_tdd_proven_catalog_consumption_unproven",
-      "evidence": "NT BacktestNode queries OrderBookDelta from ParquetDataCatalog and validates L2_MBP venues have order-book data. BTE manifest/data-config mapping is now TDD-proven for OrderBookDelta and configured instrument_ids, and NT-native BinaryOption/OrderBookDelta/TradeTick fixture write/read/logical-hash is TDD-proven. No selected PMXT L2 source-backed catalog has been consumed by BacktestNode.",
+      "bounded_first_proof_status": "nt_native_l2_catalog_consumption_tdd_proven_source_backed_unproven",
+      "evidence": "NT BacktestNode queries OrderBookDelta from ParquetDataCatalog and validates L2_MBP venues have order-book data. BTE manifest/data-config mapping is now TDD-proven for OrderBookDelta and configured instrument_ids. NT-native BinaryOption/OrderBookDelta/TradeTick fixture write/read/logical-hash is TDD-proven, and an NT-native BinaryOption L2 ParquetDataCatalog fixture is now consumed by BacktestNode with BookType::L2_MBP and exactly two OrderBookDelta iterations. No selected PMXT L2 source-backed catalog has been consumed by BacktestNode.",
       "required_before_acceptance": "Project the selected PMXT L2 universe into ParquetDataCatalog from source rows, bind the logical catalog hash, and prove BacktestNode consumes that exact catalog."
     },
     {
@@ -118,7 +118,7 @@
     {
       "area": "catalog projection",
       "required_shape": "Write InstrumentAny::BinaryOption, OrderBookDelta, and TradeTick to ParquetDataCatalog; read all three logical classes back and hash them deterministically.",
-      "current_status": "TDD-proven for an NT-native fixture; source-backed PMXT row projection and BacktestNode consumption remain pending."
+      "current_status": "TDD-proven for an NT-native fixture, including BacktestNode consumption of a BinaryOption L2 OrderBookDelta catalog; source-backed PMXT row projection and PMXT BacktestNode consumption remain pending."
     },
     {
       "area": "NT parser/provider reuse",

@@ -42,7 +42,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
 - non-L2 source-proof acceptance now requires structured `claim_limits` rows backing every `forbidden_claims` entry, so trade-replay or weaker data cannot rely on unstructured prose to block execution-quality, order-book, coverage, or fidelity claims
 - source-proof required checks now support `not_applicable` only when a structured `claim_limits` row binds the same `evidence_ref`; this is generic schema behavior, not a Binance/Bybit branch
 - `SourceProofReport` now carries first-class generic source-selection evidence before provider selection: `source_candidate_class`, `source_selection_status`, `official_free_gap_ref`, `paid_vendor_gap_ref`, `cost_ref`, `retention_freshness` and `cost` required checks, and thin `l2_replay_evidence` pointers. Paid/vendor candidates require a recorded official/free gap, forward-capture candidates also require paid/vendor gap evidence, non-selected candidates cannot be accepted for canonical backfill input, `L2_REPLAY` requires order-book delta or sufficient snapshot-cadence evidence, and pending/rejected reports cannot carry acceptance provenance. This closes `BACKTESTING_ENGINE-015` without adding venue/provider constants or storing heavy raw/catalog/result payloads in the proof.
-- BTE-022 status is now recorded in `reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json`: pinned NT provides the required `ParquetDataCatalog`, `BacktestNode`, `OrderBookDelta`/`OrderBookDepth10`/`TradeTick`, and Polymarket instrument/parser surfaces; the isolated BTE slice now has TDD-proven manifest/data-config mapping for `OrderBookDelta` and configured `instrument_ids`, NT-native `BinaryOption`/`OrderBookDelta`/`TradeTick` catalog write/read/logical-hash coverage, a generic TOML/ledger-driven first-proof selector over configured event-family roles and row budgets, L2 result-contract validation for `event_count_ledger_hash` plus `selected_asset_ids_hash`, and generic runner input wiring that refuses L2Replay result construction without selector provenance. It still lacks machine-checked Polymarket adapter reuse, PMXT source-row projection, a concrete PMXT selector-report artifact threaded into a source-backed run, and BacktestNode proof over a selected PMXT catalog.
+- BTE-022 status is now recorded in `reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json`: pinned NT provides the required `ParquetDataCatalog`, `BacktestNode`, `OrderBookDelta`/`OrderBookDepth10`/`TradeTick`, and Polymarket instrument/parser surfaces; the isolated BTE slice now has TDD-proven manifest/data-config mapping for `OrderBookDelta` and configured `instrument_ids`, NT-native `BinaryOption`/`OrderBookDelta`/`TradeTick` catalog write/read/logical-hash coverage, NT-native BinaryOption L2 `BacktestNode` consumption with `BookType::L2_MBP` and exact OrderBookDelta iteration counts, a generic TOML/ledger-driven first-proof selector over configured event-family roles and row budgets, L2 result-contract validation for `event_count_ledger_hash` plus `selected_asset_ids_hash`, and generic runner input wiring that refuses L2Replay result construction without selector provenance. It still lacks machine-checked Polymarket adapter reuse, PMXT source-row projection, a concrete PMXT selector-report artifact threaded into a source-backed run, and BacktestNode proof over a selected source-backed PMXT catalog.
 - PMXT Polymarket row-to-NT draft contract is now recorded in `reference/source-proof-pmxt-polymarket-row-to-nt-contract.2026-06-08.json`: `book`, `price_change`, `last_trade_price`, and `tick_size_change` rows line up with pinned NT Polymarket parser/data surfaces, but price-change implementation, mixed `timestamp_received` policy proof, selected trade-id policy tests, and tick-size-change catalog representation remain unresolved before broad backfill.
 - PMXT Polymarket parser field-use audit is now recorded in
   `reference/source-proof-pmxt-polymarket-nt-parser-field-use.2026-06-08.json`:
@@ -113,7 +113,10 @@ Go for the local BNBUSDC vertical-slice path after this fix:
   `instrument_ids`, and `OrderBookDelta`/`L2_REPLAY` fidelity binding. It still
   lacks a `nautilus-polymarket` dependency and source-backed PMXT row projection,
   while `catalog_projection.rs` now has NT-native logical hash/read-back coverage
-  for `BinaryOption`, `OrderBookDelta`, and `TradeTick` fixture data. The new
+  for `BinaryOption`, `OrderBookDelta`, and `TradeTick` fixture data, and
+  `backtesting_vertical_slice_catalog_and_node.rs` now proves an NT-native
+  BinaryOption L2 `OrderBookDelta` catalog is consumed by BacktestNode with
+  exactly two iterations under `BookType::L2_MBP`. The new
   `first_proof_selector` path is generic and TOML/event-ledger driven: required
   event families, excluded event families, row budget, and max selected assets
   come from the spec, and the report binds `event_count_ledger_hash` plus
@@ -122,7 +125,7 @@ Go for the local BNBUSDC vertical-slice path after this fix:
   selector hashes before stamping a result contract. The next implementation
   gate is therefore threading a concrete PMXT selector-report artifact into a
   source-backed run and PMXT source-backed binary-option L2 catalog projection
-  using NT classes, not a venue-specific branch.
+  plus BacktestNode proof using NT classes, not a venue-specific branch.
 - Pinned NT Polymarket API exposure is now recorded in the PMXT row-to-NT
   contract and BTE-022 mapping status. The required instrument/provider,
   Gamma parse, BinaryOption build/rebuild, websocket message, snapshot,
@@ -441,6 +444,10 @@ GREEN checks after implementation:
 - `just bte-test result_contract::tests::l2_result_contract_requires_and_binds_selected_asset_ids_hash`: RED failed because an `L2Replay` contract with only `event_count_ledger_hash` still validated; GREEN passed after `L2Replay` contracts required `selected_asset_ids_hash` and serialized both selector hashes
 - `just bte-test runner::tests::l2_run_contract_provenance_requires_selector_hashes`: RED failed with unresolved `BacktestSelectorProvenance` and `selector_provenance_hashes`; GREEN passed after runner inputs gained generic selector provenance and L2 replay run-contract construction refused missing selector hashes
 - `just bte-test runner::tests:: backtesting_vertical_slice_end_to_end result_contract::tests::`: 35 focused tests passed after runner selector-provenance wiring
+- `rust_verification cargo test --test backtesting_vertical_slice_catalog_and_node catalog_round_trips_binary_option_l2_deltas_and_node_consumes_them`: RED failed with the explicit unimplemented L2 BacktestNode proof helper; first GREEN attempt exposed NT matching-engine precision enforcement for L2 delta size precision; GREEN passed after the BinaryOption fixture wrote two OrderBookDelta rows to ParquetDataCatalog, queried them back, and ran BacktestNode with `BookType::L2_MBP` for exactly two iterations
+- `rust_verification cargo test --test backtesting_vertical_slice_catalog_and_node`: 2 focused catalog/node tests passed after the NT-native L2 proof
+- `rust_verification cargo fmt --check`: passed after the NT-native L2 proof
+- managed BTE clippy: passed after the NT-native L2 proof
 - `just bte-test artifact_root_resolves_typed_subpaths_without_extra_root_knobs rejects_unsupported_artifact_root_scheme`: 2 passed after RED compile failure on missing typed artifact-subpath API
 - `just bte-test run_from_run_spec_rejects_object_byte_count_mismatch_before_artifacts`: RED failed because the operator ran NT instead of rejecting the byte mismatch, then GREEN passed after adding the pre-hash/pre-decompression byte-count check
 - `just bte-test read_object_rejects_size_mismatch_before_loading_object`: RED failed with missing checked-read helper, then GREEN passed after adding CLI object-size preflight before `fs::read`

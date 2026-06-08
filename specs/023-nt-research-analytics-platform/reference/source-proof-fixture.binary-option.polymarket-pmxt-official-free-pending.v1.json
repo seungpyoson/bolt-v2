@@ -78,8 +78,8 @@
       "id": "binary-option-pmxt-source-proof-claim-limit-005",
       "severity": "blocking",
       "claim": "No dynamic tick-size replay claim until NT-native instrument-epoch replay is proven.",
-      "reason": "Pinned NT live Polymarket handles tick-size changes as instrument epoch transitions, but the BacktestDataConfig catalog path has not proven timed InstrumentAny replay. The bounded first-proof path excludes tick-changing assets instead of overclaiming dynamic replay.",
-      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json status=open_dynamic_instrument_epoch_replay_unproven"
+      "reason": "Pinned NT live Polymarket handles tick-size changes as instrument epoch transitions, but standard BacktestNode catalog replay does not expose a timed InstrumentAny stream in the pinned NT revision. The bounded first-proof path excludes tick-changing assets instead of overclaiming dynamic replay.",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json status=open_standard_backtestnode_catalog_replay_does_not_support_dynamic_instrument_epoch"
     },
     {
       "id": "binary-option-pmxt-source-proof-claim-limit-006",

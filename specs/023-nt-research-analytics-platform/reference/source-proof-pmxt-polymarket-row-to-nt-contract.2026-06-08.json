@@ -252,9 +252,9 @@
     "mapping_constraint": "timestamp_received is part of the price_change boundary and must not be dropped; one-row-to-one OrderBookDelta projection is the bounded pinned-NT live-client parity policy now proven for the selected PMXT one-off artifact. Broad backfill still requires accepted durable source proof, expanded coverage, and dynamic tick-size replay proof or an accepted bounded-exclusion policy."
   },
   "tick_size_change_status": {
-    "status": "open_dynamic_instrument_epoch_replay_unproven",
+    "status": "open_standard_backtestnode_catalog_replay_does_not_support_dynamic_instrument_epoch",
     "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json",
-    "mapping_constraint": "Pinned NT live handling rebuilds BinaryOption instruments and starts a book epoch on tick_size_change, but BacktestNode dynamic InstrumentAny replay is unproven. A first proof may exclude tick-changing assets only with explicit claim limits; full L2 acceptance must prove tick-size epochs."
+    "mapping_constraint": "Pinned NT live handling rebuilds BinaryOption instruments and starts a book epoch on tick_size_change, but standard BacktestNode catalog replay does not expose timed InstrumentAny replay in the pinned NT revision. A first proof may exclude tick-changing assets only with explicit claim limits; full L2 acceptance must either accept a bounded no-tick-size-change source universe or prove a separate timed instrument-epoch replay path."
   },
   "first_proof_universe_policy": {
     "status": "bounded_selector_tdd_proven",

@@ -1096,9 +1096,9 @@ fn selected_market_resolution_mapping(
 /// `d2 = (ln(S/K) - sigma_eff^2/2 * T) / (sigma_eff * sqrt(T))`. The
 /// realized-volatility estimate is widened by a kurtosis term
 /// (`sigma_eff = realized_vol * (1 + kurtosis / 6)`) so fat-tailed
-/// regimes price wider. Fails closed (returns `None`) on degenerate
-/// inputs so the strategy treats the market as un-priceable rather
-/// than acting on a step-function probability.
+/// regimes price wider. Invalid degenerate inputs fail closed
+/// (return `None`); zero effective volatility returns the deterministic
+/// expiry-limit probability.
 pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
     if !is_positive_finite(inputs.spot_price)
         || !is_positive_finite(inputs.strike_price)

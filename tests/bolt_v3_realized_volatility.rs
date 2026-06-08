@@ -205,6 +205,29 @@ fn disabled_configured_source_rejections_remain_auditable_without_quorum_partici
 }
 
 #[test]
+fn disabled_source_diagnostic_exports_config_participation_without_observations() {
+    let mut config = config(&[SOURCE_A, SOURCE_B]);
+    config.min_ready_sources = 1;
+    config.sources[1].enabled = false;
+    config.sources[1].counts_toward_quorum = false;
+    let mut engine = RealizedVolEngine::from_config(config).unwrap();
+    observe_path(&mut engine, SOURCE_A, &[100.0, 101.0, 102.0, 103.0]);
+
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    let disabled = snapshot
+        .source_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source_id == SOURCE_B)
+        .expect("disabled configured source should remain visible in diagnostics");
+    assert!(!disabled.enabled);
+    assert!(!disabled.counts_toward_quorum);
+    assert_eq!(disabled.status, RealizedVolSourceStatus::Waiting);
+    assert_eq!(disabled.last_rejected_reason, None);
+}
+
+#[test]
 fn observation_validation_rejects_timestamp_and_lag_violations() {
     let mut engine = RealizedVolEngine::from_config(config(&[SOURCE_A])).unwrap();
     assert!(engine.observe(observation(SOURCE_A, 100.0, 1_000)));
@@ -297,6 +320,20 @@ fn fresh_pre_window_observation_can_seed_first_grid_cell() {
 }
 
 #[test]
+fn snapshot_at_u64_max_does_not_loop_when_grid_increment_overflows() {
+    let mut config = config(&[SOURCE_A]);
+    config.window_ms = 1;
+    config.sampling_interval_ms = 1;
+    config.min_coverage_ratio = 0.0 + f64::EPSILON;
+    let engine = RealizedVolEngine::from_config(config).unwrap();
+
+    let snapshot = engine.snapshot_at(u64::MAX);
+
+    assert_eq!(snapshot.as_of_ms, u64::MAX);
+    assert!(!snapshot.ready);
+}
+
+#[test]
 fn config_fingerprint_changes_when_policy_changes() {
     let baseline = RealizedVolEngine::from_config(config(&[SOURCE_A])).unwrap();
     let mut changed_config = config(&[SOURCE_A]);
@@ -306,6 +343,19 @@ fn config_fingerprint_changes_when_policy_changes() {
     assert_ne!(
         baseline.snapshot_at(4_000).config_fingerprint,
         changed.snapshot_at(4_000).config_fingerprint
+    );
+}
+
+#[test]
+fn config_fingerprint_is_stable_across_source_order() {
+    let ordered = RealizedVolEngine::from_config(config(&[SOURCE_A, SOURCE_B])).unwrap();
+    let mut reversed_config = config(&[SOURCE_A, SOURCE_B]);
+    reversed_config.sources.reverse();
+    let reversed = RealizedVolEngine::from_config(reversed_config).unwrap();
+
+    assert_eq!(
+        ordered.snapshot_at(4_000).config_fingerprint,
+        reversed.snapshot_at(4_000).config_fingerprint
     );
 }
 

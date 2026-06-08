@@ -687,10 +687,10 @@ reason = "This domain separator pins the config-bundle checksum format used to b
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''7'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 7;'''
+literal = '''8'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 8;'''
 classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v7 adds realized_volatility_unknown_source_rejections to strategy input snapshots so surfaced-RV source routing anomalies are auditable; it is part of the audit-record contract, not an operator runtime value."
+reason = "This is the decision-evidence JSONL envelope schema version. v8 adds realized-volatility source diagnostic config-state fields so disabled and non-quorum sources are auditable without TOML side-channel context; it is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -8775,6 +8775,190 @@ literal = '''0'''
 context = '''let range = sorted[sorted.len() - 1] - sorted[0];'''
 classification = "realized_volatility_vector_index_bound"
 reason = "Zero-based vector index bound used for quantile and dispersion calculations over already computed RV values; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"sampling_interval_ms={}"'''
+context = '''"sampling_interval_ms={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"min_ready_sources={}"'''
+context = '''"min_ready_sources={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"max_source_age_ms={}"'''
+context = '''"max_source_age_ms={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"max_event_receive_lag_ms={}"'''
+context = '''"max_event_receive_lag_ms={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"max_inter_sample_gap_ms={}"'''
+context = '''"max_inter_sample_gap_ms={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"min_coverage_ratio={}"'''
+context = '''"min_coverage_ratio={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"max_cross_source_dispersion={}"'''
+context = '''"max_cross_source_dispersion={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"seconds_per_annum={}"'''
+context = '''"seconds_per_annum={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"aggregation.quantile={}"'''
+context = '''"aggregation.quantile={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"source.data_client_id={}"'''
+context = '''"source.data_client_id={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"source.instrument_id={}"'''
+context = '''"source.instrument_id={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"source.source_class={}"'''
+context = '''"source.source_class={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"source.sample_kind={}"'''
+context = '''"source.sample_kind={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"source.counts_toward_quorum={}"'''
+context = '''"source.counts_toward_quorum={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"source.canonical_quote_asset={}"'''
+context = '''"source.canonical_quote_asset={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"spot_quote"'''
+context = '''RealizedVolSourceClass::SpotQuote => "spot_quote",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable source-class enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"trade"'''
+context = '''RealizedVolSourceClass::Trade => "trade",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable source-class enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"mark"'''
+context = '''RealizedVolSourceClass::Mark => "mark",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable source-class enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"index"'''
+context = '''RealizedVolSourceClass::Index => "index",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable source-class enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"midpoint"'''
+context = '''RealizedVolSampleKind::Midpoint => "midpoint",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable sample-kind enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"trade"'''
+context = '''RealizedVolSampleKind::Trade => "trade",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable sample-kind enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"mark"'''
+context = '''RealizedVolSampleKind::Mark => "mark",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable sample-kind enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"index"'''
+context = '''RealizedVolSampleKind::Index => "index",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable sample-kind enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"

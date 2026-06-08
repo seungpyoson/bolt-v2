@@ -10,8 +10,13 @@ use bolt_v2::{
         BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
         BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3OrderIntentOrderFields, BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
-        decision_evidence_path, read_latest_entry_decision_evidence_chain,
+        BoltV3OrderIntentOrderFields, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
+        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind, decision_evidence_path,
+        read_latest_entry_decision_evidence_chain,
+    },
+    bolt_v3_realized_volatility::{
+        RealizedVolBlockReason, RealizedVolSampleKind, RealizedVolSourceClass,
+        RealizedVolSourceDiagnostic, RealizedVolSourceRejectReason, RealizedVolSourceStatus,
     },
     strategies::registry::FeeProvider,
     strategies::registry::StrategyBuildContext,
@@ -45,6 +50,40 @@ fn strategy_input_evidence_records_realized_volatility_snapshot_provenance() {
         vec!["<SOURCE_ID_A>".to_string()]
     );
     assert!(snapshot.realized_volatility_blockers.is_empty());
+}
+
+#[test]
+fn realized_volatility_source_diagnostic_evidence_exports_config_participation() {
+    let diagnostic = RealizedVolSourceDiagnostic {
+        source_id: "<SOURCE_ID_B>".to_string(),
+        source_class: RealizedVolSourceClass::SpotQuote,
+        sample_kind: RealizedVolSampleKind::Midpoint,
+        enabled: false,
+        counts_toward_quorum: false,
+        status: RealizedVolSourceStatus::Rejected,
+        annualized_realized_vol_decimal: None,
+        first_sample_ts_ms: None,
+        last_sample_ts_ms: None,
+        raw_sample_count: 0,
+        grid_sample_count: 0,
+        coverage_ratio: 0.0,
+        max_inter_sample_gap_ms: None,
+        last_rejected_reason: Some(RealizedVolSourceRejectReason::DisabledSource),
+        rejection_counters: BTreeMap::from([(RealizedVolSourceRejectReason::DisabledSource, 2)]),
+        block_reason: Some(RealizedVolBlockReason::NotWarm),
+    };
+
+    let evidence =
+        BoltV3RealizedVolatilitySourceDiagnosticEvidence::from_realized_vol_diagnostic(&diagnostic);
+
+    assert_eq!(evidence.source_id, "<SOURCE_ID_B>");
+    assert!(!evidence.enabled);
+    assert!(!evidence.counts_toward_quorum);
+    assert_eq!(evidence.status, "rejected");
+    assert_eq!(
+        evidence.rejection_counters.get("disabled_source").copied(),
+        Some(2)
+    );
 }
 
 fn strategy_input_snapshot_with_realized_volatility_snapshot() -> BoltV3StrategyInputEvidenceSnapshot

@@ -200,6 +200,19 @@ fn realized_volatility_bindings_keep_disabled_sources_non_subscribable_for_audit
 }
 
 #[test]
+fn invalid_realized_volatility_engine_config_does_not_leave_source_bindings() {
+    let mut engine_config = test_realized_volatility_engine_config();
+    engine_config.sampling_interval_ms = engine_config.window_ms + 1;
+    let strategy = test_strategy_with_realized_volatility_surface(engine_config);
+
+    assert!(strategy.realized_vol_engine.is_none());
+    assert!(
+        strategy.realized_vol_source_bindings.is_empty(),
+        "rejected engine config must not leave source subscriptions behind"
+    );
+}
+
+#[test]
 fn surfaced_realized_volatility_refresh_blocks_when_source_goes_stale() {
     let mut strategy =
         test_strategy_with_realized_volatility_surface(test_realized_volatility_engine_config());

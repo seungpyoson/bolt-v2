@@ -17,7 +17,7 @@ use crate::bolt_v3_realized_volatility::{
     RealizedVolSourceDiagnostic, RealizedVolSourceRejectReason, RealizedVolSourceStatus,
 };
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 7;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 8;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
@@ -159,6 +159,8 @@ pub struct BoltV3RealizedVolatilitySourceDiagnosticEvidence {
     pub source_id: String,
     pub source_class: String,
     pub sample_kind: String,
+    pub enabled: bool,
+    pub counts_toward_quorum: bool,
     pub status: String,
     pub annualized_realized_volatility_decimal: Option<String>,
     pub first_sample_ts_ms: Option<u64>,
@@ -180,6 +182,8 @@ impl BoltV3RealizedVolatilitySourceDiagnosticEvidence {
                 .to_string(),
             sample_kind: realized_volatility_sample_kind_evidence_label(diagnostic.sample_kind)
                 .to_string(),
+            enabled: diagnostic.enabled,
+            counts_toward_quorum: diagnostic.counts_toward_quorum,
             status: realized_volatility_source_status_evidence_label(diagnostic.status).to_string(),
             annualized_realized_volatility_decimal: diagnostic
                 .annualized_realized_vol_decimal

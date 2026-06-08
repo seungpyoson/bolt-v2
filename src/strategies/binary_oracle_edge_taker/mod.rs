@@ -383,7 +383,7 @@ fn realized_volatility_runtime_from_context(
                 surface_id,
                 error,
             );
-            (None, source_bindings)
+            (None, BTreeMap::new())
         }
     }
 }

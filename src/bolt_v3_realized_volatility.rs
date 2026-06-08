@@ -1,6 +1,9 @@
 //! RV-specific realized-volatility engine.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    fmt::Write,
+};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -116,6 +119,8 @@ pub struct RealizedVolSourceDiagnostic {
     pub source_id: String,
     pub source_class: RealizedVolSourceClass,
     pub sample_kind: RealizedVolSampleKind,
+    pub enabled: bool,
+    pub counts_toward_quorum: bool,
     pub status: RealizedVolSourceStatus,
     pub annualized_realized_vol_decimal: Option<f64>,
     pub first_sample_ts_ms: Option<u64>,
@@ -472,6 +477,8 @@ fn source_diagnostic(
         source_id: state.config.source_id.clone(),
         source_class: state.config.source_class,
         sample_kind: state.config.sample_kind,
+        enabled: state.config.enabled,
+        counts_toward_quorum: state.config.counts_toward_quorum,
         status: if computation.rv.is_some() {
             RealizedVolSourceStatus::Ready
         } else if state.last_rejected_reason.is_some() {
@@ -501,7 +508,7 @@ fn grid_prices(
     let mut out = Vec::new();
     let mut latest = None;
     let mut index = 0;
-    let mut ts = window_start_ms + config.sampling_interval_ms;
+    let mut ts = window_start_ms.saturating_add(config.sampling_interval_ms);
     while ts <= as_of_ms {
         while index < samples.len() && samples[index].event_ts_ms <= ts {
             latest = Some(samples[index]);
@@ -513,7 +520,13 @@ fn grid_prices(
             }
             _ => {}
         }
-        ts = ts.saturating_add(config.sampling_interval_ms);
+        let Some(next_ts) = ts.checked_add(config.sampling_interval_ms) else {
+            break;
+        };
+        if next_ts <= ts {
+            break;
+        }
+        ts = next_ts;
     }
     out
 }
@@ -657,14 +670,139 @@ fn increment_counter<K: Ord>(counters: &mut BTreeMap<K, u64>, key: K) {
 }
 
 fn config_fingerprint(config: &RealizedVolEngineConfig) -> String {
-    let mut canonical_config = config.clone();
-    canonical_config
-        .sources
-        .sort_by(|left, right| left.source_id.cmp(&right.source_id));
-    let canonical =
-        toml::to_string(&canonical_config).expect("realized-volatility config should serialize");
+    let mut sources = config.sources.clone();
+    sources.sort_by(|left, right| left.source_id.cmp(&right.source_id));
+    let mut canonical = String::new();
+    writeln!(&mut canonical, "surface_id={}", config.surface_id)
+        .expect("canonical fingerprint write should not fail");
+    writeln!(&mut canonical, "window_ms={}", config.window_ms)
+        .expect("canonical fingerprint write should not fail");
+    writeln!(
+        &mut canonical,
+        "sampling_interval_ms={}",
+        config.sampling_interval_ms
+    )
+    .expect("canonical fingerprint write should not fail");
+    writeln!(
+        &mut canonical,
+        "min_ready_sources={}",
+        config.min_ready_sources
+    )
+    .expect("canonical fingerprint write should not fail");
+    writeln!(
+        &mut canonical,
+        "max_source_age_ms={}",
+        config.max_source_age_ms
+    )
+    .expect("canonical fingerprint write should not fail");
+    writeln!(
+        &mut canonical,
+        "max_event_receive_lag_ms={}",
+        config.max_event_receive_lag_ms
+    )
+    .expect("canonical fingerprint write should not fail");
+    writeln!(
+        &mut canonical,
+        "max_inter_sample_gap_ms={}",
+        config.max_inter_sample_gap_ms
+    )
+    .expect("canonical fingerprint write should not fail");
+    writeln!(
+        &mut canonical,
+        "min_coverage_ratio={}",
+        canonical_f64(config.min_coverage_ratio)
+    )
+    .expect("canonical fingerprint write should not fail");
+    writeln!(
+        &mut canonical,
+        "max_cross_source_dispersion={}",
+        canonical_f64(config.max_cross_source_dispersion)
+    )
+    .expect("canonical fingerprint write should not fail");
+    writeln!(
+        &mut canonical,
+        "seconds_per_annum={}",
+        canonical_f64(config.seconds_per_annum)
+    )
+    .expect("canonical fingerprint write should not fail");
+    match config.aggregation {
+        RealizedVolAggregation::UpperQuantile { quantile } => {
+            writeln!(&mut canonical, "aggregation=upper_quantile")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(
+                &mut canonical,
+                "aggregation.quantile={}",
+                canonical_f64(quantile)
+            )
+            .expect("canonical fingerprint write should not fail");
+        }
+    }
+    for source in sources {
+        writeln!(&mut canonical, "source.id={}", source.source_id)
+            .expect("canonical fingerprint write should not fail");
+        writeln!(
+            &mut canonical,
+            "source.data_client_id={}",
+            source.data_client_id
+        )
+        .expect("canonical fingerprint write should not fail");
+        writeln!(
+            &mut canonical,
+            "source.instrument_id={}",
+            source.instrument_id
+        )
+        .expect("canonical fingerprint write should not fail");
+        writeln!(
+            &mut canonical,
+            "source.source_class={}",
+            source_class_fingerprint_label(source.source_class)
+        )
+        .expect("canonical fingerprint write should not fail");
+        writeln!(
+            &mut canonical,
+            "source.sample_kind={}",
+            sample_kind_fingerprint_label(source.sample_kind)
+        )
+        .expect("canonical fingerprint write should not fail");
+        writeln!(&mut canonical, "source.enabled={}", source.enabled)
+            .expect("canonical fingerprint write should not fail");
+        writeln!(
+            &mut canonical,
+            "source.counts_toward_quorum={}",
+            source.counts_toward_quorum
+        )
+        .expect("canonical fingerprint write should not fail");
+        writeln!(
+            &mut canonical,
+            "source.canonical_quote_asset={}",
+            source.canonical_quote_asset
+        )
+        .expect("canonical fingerprint write should not fail");
+    }
     let digest = Sha256::digest(canonical.as_bytes());
     format!("sha256:{}", hex::encode(digest))
+}
+
+fn canonical_f64(value: f64) -> String {
+    format!("{:016x}", value.to_bits())
+}
+
+fn source_class_fingerprint_label(source_class: RealizedVolSourceClass) -> &'static str {
+    match source_class {
+        RealizedVolSourceClass::SpotQuote => "spot_quote",
+        RealizedVolSourceClass::Trade => "trade",
+        RealizedVolSourceClass::Mark => "mark",
+        RealizedVolSourceClass::Index => "index",
+    }
+}
+
+fn sample_kind_fingerprint_label(sample_kind: RealizedVolSampleKind) -> &'static str {
+    match sample_kind {
+        RealizedVolSampleKind::Midpoint => "midpoint",
+        RealizedVolSampleKind::Trade => "trade",
+        RealizedVolSampleKind::Mark => "mark",
+        RealizedVolSampleKind::Index => "index",
+    }
 }
 
 #[cfg(test)]

@@ -98,7 +98,7 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 
 - [ ] T060 RED: Add engine test `subsampled_rv_reduces_alternating_bid_ask_bounce_vs_base_grid`.
 - [ ] T061 RED: Add engine test `subsampled_rv_requires_min_ready_subsamples`.
-- [ ] T062 RED: Add engine tests `subsampled_offset_grid_coverage_uses_offset_grid_denominator` and `subsampled_offsets_are_distinct_for_valid_collision_free_config`.
+- [ ] T062 RED: Add engine tests `subsampled_offset_grid_coverage_uses_offset_grid_denominator`, `subsampled_offsets_are_distinct_for_valid_collision_free_config`, and `subsampled_evidence_records_actual_offsets_used`.
 - [ ] T063 RED: Add config test `subsamples_greater_than_sampling_interval_is_rejected_or_collision_semantics_are_explicit`.
 - [ ] T064 RED: Add engine tests `coarser_grid_rv_policy_selects_base_coarse_or_min_base_coarse`, `min_base_coarse_returns_base_when_base_is_lower`, and `min_base_coarse_returns_coarse_when_coarse_is_lower`.
 - [ ] T065 RED: Add config validation tests for `noise_robust_method`, `subsamples`, `min_ready_subsamples`, `coarse_sampling_interval_ms`, and `coarser_grid_horizon_policy`.
@@ -115,7 +115,7 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 - [ ] T071 RED: Add engine test `single_large_jump_increases_jump_component_without_erasing_measured_rv`.
 - [ ] T072 RED: Add engine test `flat_source_publishes_zero_continuous_and_zero_jump_rv`.
 - [ ] T073 RED: Add engine test `jump_separation_with_fewer_than_two_returns_is_diagnostic_only`.
-- [ ] T074 RED: Add engine test `measured_variance_equals_continuous_variance_plus_jump_variance_before_sqrt`.
+- [ ] T074 RED: Add engine tests `measured_variance_equals_continuous_variance_plus_jump_variance_before_sqrt` and `bipower_variance_above_measured_variance_produces_zero_jump_component`.
 - [ ] T075 RED: Add evidence test `jump_component_is_serialized_separately_from_final_rv`.
 - [ ] T076 RED: Add config validation tests for jump policy and threshold bounds.
 - [ ] T077 GREEN: Implement `jump_policy = "none"` as measured RV passthrough.
@@ -147,7 +147,7 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 - [ ] T093 RED: Add engine test `forecast_none_uses_measured_or_blended_rv_as_final`.
 - [ ] T094 RED: Add engine tests `ewma_forecast_advances_only_on_refresh_with_new_ready_component` and `ewma_forecast_advances_on_refresh_even_when_component_value_is_unchanged`.
 - [ ] T095 RED: Add engine tests `ewma_forecast_does_not_advance_on_observation_without_refresh` and `ewma_forecast_does_not_advance_on_non_monotonic_now_ms`.
-- [ ] T096 RED: Add engine test `ewma_forecast_cold_starts_from_current_component_after_restart`.
+- [ ] T096 RED: Add engine tests `ewma_forecast_cold_starts_from_current_component_after_restart` and `ewma_cold_start_sets_previous_update_timestamp_for_next_refresh`.
 - [ ] T097 RED: Add engine tests `forecast_config_change_changes_fingerprint`, `forecast_state_resets_when_config_fingerprint_changes`, and `forecast_warm_starts_on_next_refresh_after_fingerprint_reset`.
 - [ ] T098 RED: Add engine test `forecast_state_is_independent_per_surface_id`.
 - [ ] T099 RED: Add engine tests `har_lite_blends_short_medium_long_horizons_with_toml_weights` and `har_lite_all_zero_horizons_publish_valid_zero_forecast`.
@@ -164,7 +164,7 @@ T006-T013 are pre-implementation approval tasks and must complete before any RED
 
 - [ ] T108 RED: Add decision-evidence round-trip test for the new runtime robust RV fields.
 - [ ] T109 RED: Add stale-schema rejection test by reading the current evidence version on `main`, then asserting the feature branch rejects the previous version and bumps by exactly one.
-- [ ] T110 RED: Add runtime tests `unknown_source_diagnostics_are_bounded_and_evictions_are_reported` and `unknown_source_diagnostics_remain_bounded_under_sustained_churn`.
+- [ ] T110 RED: Add runtime tests `unknown_source_diagnostics_are_bounded_and_evictions_are_reported`, `unknown_source_diagnostics_remain_bounded_under_sustained_churn`, and `unknown_source_eviction_policy_is_deterministic_and_documented`.
 - [ ] T111 RED: Add combined-mode determinism test for `subsampled + jump_separate + ewma`.
 - [ ] T112 RED: Add surface ID hygiene tests for empty, whitespace, duplicate, trim-equivalent duplicate, and case-sensitive IDs.
 - [ ] T113 GREEN: Bump evidence schema from current `main` by exactly one version.

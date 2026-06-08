@@ -230,3 +230,46 @@ Resolution:
 Resolution:
 
 - `tasks.md` T032 now names `maker_consumes_runtime_rv_snapshot_when_present` if maker integration exists on main.
+
+## Review Round 6 Hardening
+
+Claude approved round 5 and left documentation/test-polish concerns. These are resolved before implementation to avoid carrying known ambiguity into TDD.
+
+### R39 - Subsample evidence reproducibility
+
+Resolution:
+
+- `contracts/math-estimator.md` now requires evidence to include actual offset timestamps used by subsampled grids.
+- `tasks.md` T062 now names `subsampled_evidence_records_actual_offsets_used`.
+
+### R40 - Jump variance identity and bipower upper-bound case
+
+Resolution:
+
+- `contracts/math-estimator.md` now states the measured/continuous/jump identity is enforced on the pre-annualized variance scale before square-root conversion.
+- `tasks.md` T074 now names `bipower_variance_above_measured_variance_produces_zero_jump_component`.
+
+### R41 - MAD zero-median subcases
+
+Resolution:
+
+- `contracts/math-estimator.md` now states median zero with all deviations zero has MAD ratio zero and does not block.
+
+### R42 - EWMA cold-start timestamp ordering
+
+Resolution:
+
+- `contracts/math-estimator.md` now states cold start sets `previous_forecast_update_ms` to the refresh timestamp and later refreshes use strict `now_ms > previous_forecast_update_ms`.
+- `tasks.md` T096 now names `ewma_cold_start_sets_previous_update_timestamp_for_next_refresh`.
+
+### R43 - Pricing-component enum drift
+
+Resolution:
+
+- `contracts/math-estimator.md` now points final pricing selection back to the enum defined in `toml-schema.md`.
+
+### R44 - Unknown-source eviction policy proof
+
+Resolution:
+
+- `tasks.md` T110 now names `unknown_source_eviction_policy_is_deterministic_and_documented`.

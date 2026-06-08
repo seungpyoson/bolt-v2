@@ -86,7 +86,7 @@ For `k = subsamples`:
 5. The subsampled estimate is the arithmetic mean of ready offset-grid RVs.
 6. Reject unless `ready_offset_grid_count >= min_ready_subsamples`.
 
-Evidence must include base fixed-grid RV, number of ready subsamples, number of attempted subsamples, per-offset coverage ratios, and subsampled RV.
+Evidence must include base fixed-grid RV, number of ready subsamples, number of attempted subsamples, the actual offset timestamps used, per-offset coverage ratios, and subsampled RV.
 
 ## Jump Separation
 
@@ -99,7 +99,7 @@ For returns `r_1..r_n` where `n >= 2`:
 - Continuous variance: `continuous_var = min(RV, BV)`.
 - Jump variance: `jump_var = max(RV - continuous_var, 0)`.
 
-Annualize continuous and jump components using the same horizon annualization basis. Convert variance components to volatility components by square root after annualization.
+Annualize continuous and jump components using the same horizon annualization basis. The identity `measured_variance = continuous_variance + jump_variance` is enforced on the pre-annualized variance scale before any square-root conversion. Convert variance components to volatility components by square root after annualization.
 
 Rules:
 
@@ -142,6 +142,7 @@ MAD dispersion:
 - `median_abs_dev = median(|source_i - median(source_i over eligible contributors)|)`.
 - `mad_ratio = median_abs_dev / median` when median is positive.
 - If median is zero and any deviation is positive, MAD ratio is infinite.
+- If median is zero and all deviations are zero, MAD ratio is zero and does not block.
 - Block if `mad_ratio > mad_block_threshold`.
 
 The first implementation intentionally uses raw MAD, not normal-calibrated `1.4826 * MAD`. TOML thresholds are calibrated against raw MAD ratio.
@@ -166,7 +167,7 @@ Rules:
 - `alpha` is a refresh-step coefficient, not time-normalized in the first implementation.
 - EWMA advances only on runtime `refresh(now_ms)` when the refresh publishes a ready current component, including when the numeric component equals the previous input, and `now_ms > previous_forecast_update_ms`.
 - It does not advance on every observation.
-- If no previous forecast exists, including after process restart, initialize from current component and record `forecast_cold_start = true` in evidence.
+- If no previous forecast exists, including after process restart, initialize from current component, set `previous_forecast_update_ms` to that refresh timestamp, and record `forecast_cold_start = true` in evidence. Later refreshes apply the strict `now_ms > previous_forecast_update_ms` rule.
 - Changing forecast config changes the surface config fingerprint and resets forecast state.
 - Evidence records `alpha`, current component, previous forecast, final forecast, update timestamp, and cold-start flag.
 
@@ -184,7 +185,7 @@ Rules:
 
 ## Final Pricing Value
 
-The final `ReadyRealizedVol` value is selected by TOML `pricing_component` from one of:
+The final `ReadyRealizedVol` value is selected by TOML `pricing_component` from the enum defined in `toml-schema.md`, with math semantics for:
 
 - measured multi-horizon blend
 - noise-robust multi-horizon blend

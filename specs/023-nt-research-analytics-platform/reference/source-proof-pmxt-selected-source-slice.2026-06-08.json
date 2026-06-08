@@ -81,12 +81,14 @@
   ],
   "claim_limits": [
     "This artifact does not prove PMXT raw-row-to-NT projection.",
+    "This artifact does not carry the source-backed GammaMarket metadata required by NT's Polymarket BinaryOption parser.",
     "This artifact does not prove NT ParquetDataCatalog read-back.",
     "This artifact does not prove BacktestNode consumption of a PMXT source-backed catalog.",
     "This artifact must not be used as evidence that broad PMXT backfill is efficient."
   ],
   "next_required_steps": [
-    "Implement selected PMXT row-to-NT projection using nautilus-polymarket public parser/provider surfaces.",
+    "Acquire or stage source-backed GammaMarket metadata for the selected condition/token and rerun source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json.",
+    "Only after the metadata gate passes, implement selected PMXT row-to-NT projection using nautilus-polymarket public parser/provider surfaces.",
     "Write selected BinaryOption, OrderBookDelta, and TradeTick data into NT ParquetDataCatalog.",
     "Query the selected NT catalog back and bind logical catalog hash plus selected-source hashes.",
     "Run BacktestNode against exactly the selected source-backed NT catalog."

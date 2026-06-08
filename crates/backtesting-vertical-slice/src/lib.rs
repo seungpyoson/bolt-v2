@@ -38,6 +38,7 @@ pub mod first_proof_selector;
 pub mod nt_catalog_proof;
 pub mod nt_dependency_proof;
 pub mod operator;
+pub mod polymarket_metadata_gate;
 pub mod polymarket_nt_surface_proof;
 pub mod research_analytics;
 pub mod result_contract;

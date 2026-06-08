@@ -70,8 +70,8 @@
       "id": "binary-option-pmxt-source-proof-claim-limit-004",
       "severity": "blocking",
       "claim": "No accepted BinaryOption instrument mapping until activation, expiration, increments, precision, outcome label, and metadata are source-backed.",
-      "reason": "Official CLOB/Gamma joins and pinned NT Polymarket parser inspection now show the non-custom source-backed BinaryOption mapping path, but accepted mapping still requires approved BTE reuse of NT's Polymarket parser/provider, generic converter output, and ParquetDataCatalog read-back.",
-      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook-instrument-join.2026-06-08.json sha256=f4c5353a8f19ccdc2c0a86feefa0f74bdc929bea82e3abd384f0bf73aea1f8f8"
+      "reason": "Pinned NT Polymarket parser inspection shows the non-custom BinaryOption mapping path, but the selected PMXT token currently has no matching source-backed GammaMarket response for NT's parser.",
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json status=blocked_missing_source_backed_gamma_market"
     },
     {
       "id": "binary-option-pmxt-source-proof-claim-limit-005",
@@ -101,7 +101,7 @@
     },
     "instrument_universe": {
       "outcome": "pending",
-      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook-instrument-join.2026-06-08.json sha256=f4c5353a8f19ccdc2c0a86feefa0f74bdc929bea82e3abd384f0bf73aea1f8f8 pending approved BTE reuse of pinned NT Polymarket parser/provider"
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json status=blocked_missing_source_backed_gamma_market"
     },
     "coverage": {
       "outcome": "pending",
@@ -121,7 +121,7 @@
     },
     "nt_mapping": {
       "outcome": "pending",
-      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook-instrument-join.2026-06-08.json sha256=f4c5353a8f19ccdc2c0a86feefa0f74bdc929bea82e3abd384f0bf73aea1f8f8; pending generic PMXT OrderBookDelta/TradeTick converter and ParquetDataCatalog read-back"
+      "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json status=blocked_missing_source_backed_gamma_market; pending selected PMXT OrderBookDelta/TradeTick projection and ParquetDataCatalog read-back"
     },
     "cost": {
       "outcome": "pending",

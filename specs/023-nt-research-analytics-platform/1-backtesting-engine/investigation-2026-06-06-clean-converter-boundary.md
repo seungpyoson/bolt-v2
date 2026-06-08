@@ -125,6 +125,23 @@ Go for the local BNBUSDC vertical-slice path after this fix:
   one-hour sample, so it must not become a broad backfill method. Broad PMXT
   history is out of scope unless a separate source-proofed plan is explicitly
   authorized.
+- PMXT selected-token Polymarket metadata gating is now recorded in
+  `reference/source-proof-pmxt-selected-polymarket-metadata-gate.2026-06-08.json`:
+  the selected PMXT row carries token
+  `101573629105061692824394189329292260077476973116785474086922405861943493792845`
+  and condition
+  `0xd7c7d829b33a3ad4698fc13b77c960c68aa3e05d03683b173e0af9db6c1c555c`.
+  Official CLOB endpoints bind that token to a sibling token, outcomes, tick
+  size, and minimum order size, but they do not return an NT `GammaMarket`.
+  Gamma `/markets` probes by `clob_token_ids` and `condition_ids` returned an
+  empty array, camel/singular filter probes returned default pages without the
+  selected token/condition, and unauthenticated Gamma search returned 401. The
+  new generic `polymarket_metadata_gate` deserializes source-backed Gamma JSON
+  into NT's `GammaMarket` and calls NT's `parse_gamma_market`; for this selected
+  PMXT proof it reports `blocked_missing_gamma_market`. Therefore the next
+  allowed step is to acquire or stage source-backed GammaMarket metadata for
+  the selected condition/token; synthesizing `BinaryOption` metadata from PMXT
+  rows or CLOB-only abbreviated fields is explicitly forbidden.
 - Current BTE implementation audit after selecting that policy: the source-proof
   and claim-limit governance pieces exist, and the isolated crate now has
   TDD-proven manifest/data-config support for `OrderBookDelta`, configured

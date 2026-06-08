@@ -15,8 +15,9 @@ use super::{
     health::IvSourceHealth,
     ingest::{IvIngestEvent, IvRawEvent},
     policy::{
-        IvFallbackPolicy, IvInterpolationPolicy, IvPolicyInput, IvProjectionPolicy, IvQuorumPolicy,
-        project_scalar,
+        IvFallbackCandidate, IvFallbackPolicy, IvInterpolationPolicy, IvPolicyInput,
+        IvPolicyOutput, IvProjectionPolicy, IvQuorumPolicy, interpolate_smile, project_scalar,
+        resolve_fallback, resolve_quorum,
     },
     provenance::IvProvenance,
     selector::IvSelector,
@@ -298,23 +299,20 @@ impl IvQueryStateHandle {
     }
 
     pub fn source_health_for(&self, profile_id: &str, source_id: &str) -> Option<IvSourceHealth> {
-        self.inner
-            .read()
-            .expect("IV query state lock poisoned")
-            .source_health
-            .iter()
-            .find(|health| health.profile_id == profile_id && health.source_id == source_id)
-            .cloned()
+        let state = self.inner.read().expect("IV query state lock poisoned");
+        select_source_health(&state, profile_id, source_id).cloned()
     }
 
     pub fn enforce_retention(&self, policy: &IvRetentionPolicy) {
         let mut state = self.inner.write().expect("IV query state lock poisoned");
         state.store.enforce_retention(policy);
         truncate_front(&mut state.derived_outputs, policy.max_derived_points);
-        if state.source_health.len() > policy.max_source_health_events {
-            let retained_start = state.source_health.len() - policy.max_source_health_events;
-            state.source_health.drain(..retained_start);
-        }
+        let current_subscription_generations = state.current_subscription_generations.clone();
+        retain_source_health_events(
+            &mut state.source_health,
+            &current_subscription_generations,
+            policy.max_source_health_events,
+        );
     }
 
     pub fn derived_outputs(&self) -> Vec<IvDerivedOutput> {
@@ -771,12 +769,34 @@ impl IvQueryHandle {
             state,
         )?;
         let inputs = projection_inputs(&input_product)?;
-        let output =
-            project_scalar(policy, &inputs).map_err(|_| IvQueryError::ProjectionRejected)?;
+        let mut policy_decisions = Vec::new();
+        if let Some(quorum_policy_ref) = &policy.quorum_policy_ref {
+            let quorum_policy = state
+                .quorum_policies
+                .iter()
+                .find(|policy| policy.policy_id == *quorum_policy_ref)
+                .ok_or(IvQueryError::ProjectionRejected)?;
+            let quorum_output = resolve_quorum(quorum_policy, &inputs)
+                .map_err(|_| IvQueryError::ProjectionRejected)?;
+            policy_decisions.extend(quorum_output.policy_decisions);
+        }
+
+        let output = if let Some(interpolation_policy_ref) = &policy.interpolation_policy_ref {
+            if let Some(interpolation_output) =
+                interpolate_projected_input(state, interpolation_policy_ref, &input_product)?
+            {
+                interpolation_output
+            } else {
+                project_or_fallback(policy, state, &inputs)?
+            }
+        } else {
+            project_or_fallback(policy, state, &inputs)?
+        };
         let mut provenance = input_product
             .provenance()
             .cloned()
             .ok_or(IvQueryError::UnsupportedProductKind)?;
+        provenance.policy_decisions.extend(policy_decisions);
         provenance.policy_decisions.extend(output.policy_decisions);
         provenance.ts_event_ns = as_of_ns;
 
@@ -974,6 +994,75 @@ fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQ
     }
 }
 
+fn project_or_fallback(
+    policy: &IvProjectionPolicy,
+    state: &IvQueryState,
+    inputs: &[IvPolicyInput],
+) -> Result<IvPolicyOutput, IvQueryError> {
+    match project_scalar(policy, inputs) {
+        Ok(output) => Ok(output),
+        Err(_) => {
+            let Some(fallback_policy_ref) = &policy.fallback_policy_ref else {
+                return Err(IvQueryError::ProjectionRejected);
+            };
+            let fallback_policy = state
+                .fallback_policies
+                .iter()
+                .find(|fallback_policy| fallback_policy.policy_id == *fallback_policy_ref)
+                .ok_or(IvQueryError::ProjectionRejected)?;
+            let candidates = inputs
+                .iter()
+                .map(|input| IvFallbackCandidate {
+                    candidate_id: input.product_id.clone(),
+                    value: input.value,
+                    eligible: fallback_policy.eligible_sources.is_empty()
+                        || fallback_policy.eligible_sources.contains(&input.source_id),
+                })
+                .collect::<Vec<_>>();
+            resolve_fallback(fallback_policy, &candidates)
+                .map_err(|_| IvQueryError::ProjectionRejected)
+        }
+    }
+}
+
+fn interpolate_projected_input(
+    state: &IvQueryState,
+    interpolation_policy_id: &str,
+    input_product: &IvQueryProduct,
+) -> Result<Option<IvPolicyOutput>, IvQueryError> {
+    let policy = state
+        .interpolation_policies
+        .iter()
+        .find(|policy| policy.policy_id == interpolation_policy_id)
+        .ok_or(IvQueryError::ProjectionRejected)?;
+    match input_product {
+        IvQueryProduct::Smile(smile) => {
+            let strike = smile
+                .atm_strike
+                .or_else(|| smile.points_by_strike.first().map(|point| point.strike))
+                .ok_or(IvQueryError::ProjectionRejected)?;
+            interpolate_smile(policy, &smile.points_by_strike, strike)
+                .map(Some)
+                .map_err(|_| IvQueryError::ProjectionRejected)
+        }
+        IvQueryProduct::Surface(surface) => {
+            let smile = surface
+                .smiles
+                .iter()
+                .find(|smile| !smile.points_by_strike.is_empty())
+                .ok_or(IvQueryError::ProjectionRejected)?;
+            let strike = smile
+                .atm_strike
+                .or_else(|| smile.points_by_strike.first().map(|point| point.strike))
+                .ok_or(IvQueryError::ProjectionRejected)?;
+            interpolate_smile(policy, &smile.points_by_strike, strike)
+                .map(Some)
+                .map_err(|_| IvQueryError::ProjectionRejected)
+        }
+        _ => Ok(None),
+    }
+}
+
 fn iv_convention_name(convention: &IvConvention) -> String {
     match convention {
         IvConvention::Named(name) => name.clone(),
@@ -1013,9 +1102,9 @@ fn product_satisfies_current_state(product: &IvQueryProduct, state: &IvQueryStat
             return false;
         }
     }
-    if let Some(current_health) = state.source_health.iter().find(|health| {
-        health.profile_id == provenance.profile_id && health.source_id == provenance.source_id
-    }) {
+    if let Some(current_health) =
+        select_source_health(state, &provenance.profile_id, &provenance.source_id)
+    {
         return current_health.can_satisfy_current_query()
             && current_health.subscription_generation == provenance.subscription_generation;
     }
@@ -1041,4 +1130,67 @@ fn truncate_front<T>(values: &mut Vec<T>, max_len: usize) {
         let retained_start = values.len() - max_len;
         values.drain(..retained_start);
     }
+}
+
+fn select_source_health<'a>(
+    state: &'a IvQueryState,
+    profile_id: &str,
+    source_id: &str,
+) -> Option<&'a IvSourceHealth> {
+    if let Some(current_generation) = state.current_subscription_generations.get(source_id)
+        && let Some(health) = state.source_health.iter().find(|health| {
+            health.profile_id == profile_id
+                && health.source_id == source_id
+                && health.subscription_generation == *current_generation
+        })
+    {
+        return Some(health);
+    }
+
+    state
+        .source_health
+        .iter()
+        .filter(|health| health.profile_id == profile_id && health.source_id == source_id)
+        .max_by_key(|health| health.subscription_generation)
+}
+
+fn retain_source_health_events(
+    source_health: &mut Vec<IvSourceHealth>,
+    current_subscription_generations: &BTreeMap<String, u64>,
+    max_events: usize,
+) {
+    if source_health.len() <= max_events {
+        return;
+    }
+    if max_events == 0 {
+        source_health.clear();
+        return;
+    }
+
+    let mut current = Vec::new();
+    let mut historical = Vec::new();
+    for health in source_health.iter().cloned() {
+        if current_subscription_generations
+            .get(&health.source_id)
+            .is_some_and(|generation| *generation == health.subscription_generation)
+        {
+            current.push(health);
+        } else {
+            historical.push(health);
+        }
+    }
+
+    if current.len() >= max_events {
+        let retained_start = current.len() - max_events;
+        *source_health = current.split_off(retained_start);
+        return;
+    }
+
+    let historical_limit = max_events - current.len();
+    if historical.len() > historical_limit {
+        let retained_start = historical.len() - historical_limit;
+        historical.drain(..retained_start);
+    }
+    historical.extend(current);
+    *source_health = historical;
 }

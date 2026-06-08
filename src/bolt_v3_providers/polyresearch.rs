@@ -528,6 +528,33 @@ mod tests {
             .expect("polyresearch reference disconnect should succeed");
         assert!(client.is_disconnected());
     }
+
+    #[test]
+    fn price_feed_frame_maps_to_reference_price_update() {
+        let subscription = PolyResearchReferenceSubscription {
+            asset: "BTC".to_string(),
+            source_id: "polyresearch_primary".to_string(),
+            symbol: "BTC/USD".to_string(),
+        };
+
+        let update = polyresearch_reference_update_from_price_frame(
+            &subscription,
+            r#"{"type":"price_feed","feed":"BTC/USD","timestamp":1774672588,"data":{"feed":"BTC/USD","price":66300.25,"bid":66299.5,"ask":66301.0,"timestamp":1774672588}}"#,
+            1774672589123,
+        )
+        .expect("valid PRR price_feed frame should parse")
+        .expect("matching PRR price_feed frame should emit an update");
+
+        assert_eq!(update.asset(), "BTC");
+        assert_eq!(update.source_id(), "polyresearch_primary");
+        assert_eq!(update.provider(), REFERENCE_PRICE_PROVIDER_KEY);
+        assert_eq!(update.provider_instrument(), "BTC/USD");
+        assert_eq!(update.price(), 66300.25);
+        assert_eq!(update.bid(), Some(66299.5));
+        assert_eq!(update.ask(), Some(66301.0));
+        assert_eq!(update.observed_ts_ms(), 1774672588000);
+        assert_eq!(update.received_ts_ms(), 1774672589123);
+    }
 }
 
 fn validate_secret_field(field: &'static str, value: &str) -> Result<(), String> {

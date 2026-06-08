@@ -398,6 +398,11 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
         .iter()
         .map(|policy| policy.helper_policy_id.as_str())
         .collect::<BTreeSet<_>>();
+    let derived_input_policy_ids = profile
+        .derived_input_policies
+        .iter()
+        .map(|policy| policy.input_policy_id.as_str())
+        .collect::<BTreeSet<_>>();
 
     for policy in &profile.interpolation_policies {
         if policy.minimum_points == 0 {
@@ -406,11 +411,23 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.policy_id
             ));
         }
+        if policy.strike_axis.trim().is_empty() || policy.tenor_axis.trim().is_empty() {
+            errors.push(format!(
+                "{context}.interpolation_policies.{} axes must be non-empty",
+                policy.policy_id
+            ));
+        }
     }
     for policy in &profile.fallback_policies {
-        if policy.ordered_candidate_ids.is_empty() {
+        if policy.candidate_order.is_empty() {
             errors.push(format!(
-                "{context}.fallback_policies.{}.ordered_candidate_ids must be non-empty",
+                "{context}.fallback_policies.{}.candidate_order must be non-empty",
+                policy.policy_id
+            ));
+        }
+        if policy.maximum_timestamp_skew_ns == 0 {
+            errors.push(format!(
+                "{context}.fallback_policies.{}.maximum_timestamp_skew_ns must be positive",
                 policy.policy_id
             ));
         }
@@ -428,11 +445,39 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.policy_id
             ));
         }
+        if !policy.eligible_sources.is_empty()
+            && policy.minimum_sources > policy.eligible_sources.len()
+        {
+            errors.push(format!(
+                "{context}.quorum_policies.{}.minimum_sources cannot exceed eligible_sources",
+                policy.policy_id
+            ));
+        }
     }
     for policy in &profile.helper_policies {
         if policy.parameter_signature.trim().is_empty() {
             errors.push(format!(
                 "{context}.helper_policies.{}.parameter_signature must be non-empty",
+                policy.helper_policy_id
+            ));
+        }
+        if policy.allowed_outputs.is_empty() {
+            errors.push(format!(
+                "{context}.helper_policies.{}.allowed_outputs must be non-empty",
+                policy.helper_policy_id
+            ));
+        }
+        if !derived_input_policy_ids.is_empty()
+            && !derived_input_policy_ids.contains(policy.input_policy_ref.as_str())
+        {
+            errors.push(format!(
+                "{context}.helper_policies.{}.input_policy_ref must reference a configured derived input policy",
+                policy.helper_policy_id
+            ));
+        }
+        if policy.convention_policy.trim().is_empty() || policy.failure_policy.trim().is_empty() {
+            errors.push(format!(
+                "{context}.helper_policies.{} convention_policy and failure_policy must be non-empty",
                 policy.helper_policy_id
             ));
         }
@@ -456,9 +501,30 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.input_policy_id
             ));
         }
-        if policy.field_policies.is_empty() {
+        if policy.required_fields.is_empty() {
             errors.push(format!(
-                "{context}.derived_input_policies.{}.field_policies must be non-empty",
+                "{context}.derived_input_policies.{}.required_fields must be non-empty",
+                policy.input_policy_id
+            ));
+        }
+        if policy.field_sources.is_empty() {
+            errors.push(format!(
+                "{context}.derived_input_policies.{}.field_sources must be non-empty",
+                policy.input_policy_id
+            ));
+        }
+        if policy.max_input_skew_ns == 0 {
+            errors.push(format!(
+                "{context}.derived_input_policies.{}.max_input_skew_ns must be positive",
+                policy.input_policy_id
+            ));
+        }
+        if policy.bounds.trim().is_empty()
+            || policy.convention_policy.trim().is_empty()
+            || policy.operator_value_refresh_policy.trim().is_empty()
+        {
+            errors.push(format!(
+                "{context}.derived_input_policies.{} bounds, convention_policy, and operator_value_refresh_policy must be non-empty",
                 policy.input_policy_id
             ));
         }
@@ -499,6 +565,26 @@ fn validate_unique_policy_ids<'a>(
 fn validate_projection_policies(context: &str, profile: &IvProfile) -> Vec<String> {
     let mut errors = Vec::new();
     let policy_context = format!("{context}.projection_policies");
+    let interpolation_policy_ids = profile
+        .interpolation_policies
+        .iter()
+        .map(|policy| policy.policy_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let fallback_policy_ids = profile
+        .fallback_policies
+        .iter()
+        .map(|policy| policy.policy_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let quorum_policy_ids = profile
+        .quorum_policies
+        .iter()
+        .map(|policy| policy.policy_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let source_ids = profile
+        .sources
+        .iter()
+        .map(|source| source.source_id.as_str())
+        .collect::<BTreeSet<_>>();
 
     if profile
         .enabled_products
@@ -524,6 +610,62 @@ fn validate_projection_policies(context: &str, profile: &IvProfile) -> Vec<Strin
         if policy.minimum_points == 0 {
             errors.push(format!(
                 "{policy_context}.{}.minimum_points must be positive",
+                policy.policy_id
+            ));
+        }
+        if policy.basis_selection.trim().is_empty()
+            || policy.strike_selection.trim().is_empty()
+            || policy.tenor_selection.trim().is_empty()
+            || policy.evidence_mapping.trim().is_empty()
+        {
+            errors.push(format!(
+                "{policy_context}.{} basis_selection, strike_selection, tenor_selection, and evidence_mapping must be non-empty",
+                policy.policy_id
+            ));
+        }
+        if policy.max_projection_input_skew_ns == 0 {
+            errors.push(format!(
+                "{policy_context}.{}.max_projection_input_skew_ns must be positive",
+                policy.policy_id
+            ));
+        }
+        if policy
+            .source_eligibility
+            .iter()
+            .any(|source_id| !source_ids.contains(source_id.as_str()))
+        {
+            errors.push(format!(
+                "{policy_context}.{}.source_eligibility contains unknown source",
+                policy.policy_id
+            ));
+        }
+        if policy
+            .fallback_policy_ref
+            .as_ref()
+            .is_some_and(|policy_ref| !fallback_policy_ids.contains(policy_ref.as_str()))
+        {
+            errors.push(format!(
+                "{policy_context}.{}.fallback_policy_ref must reference a configured fallback policy",
+                policy.policy_id
+            ));
+        }
+        if policy
+            .interpolation_policy_ref
+            .as_ref()
+            .is_some_and(|policy_ref| !interpolation_policy_ids.contains(policy_ref.as_str()))
+        {
+            errors.push(format!(
+                "{policy_context}.{}.interpolation_policy_ref must reference a configured interpolation policy",
+                policy.policy_id
+            ));
+        }
+        if policy
+            .quorum_policy_ref
+            .as_ref()
+            .is_some_and(|policy_ref| !quorum_policy_ids.contains(policy_ref.as_str()))
+        {
+            errors.push(format!(
+                "{policy_context}.{}.quorum_policy_ref must reference a configured quorum policy",
                 policy.policy_id
             ));
         }

@@ -128,6 +128,11 @@ max_age_ns = 10000
 [[iv.profiles.projection_policies]]
 policy_id = "configured-projection-policy"
 projection_kind = "mean"
+basis_selection = "preserve_input_basis"
+source_eligibility = ["configured-greeks-source"]
+strike_selection = "all_configured_strikes"
+tenor_selection = "all_configured_tenors"
+evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
 
@@ -1032,6 +1037,11 @@ max_age_ns = 10000
 [[iv.profiles.projection_policies]]
 policy_id = "configured-projection-policy"
 projection_kind = "mean"
+basis_selection = "preserve_input_basis"
+source_eligibility = ["configured-greeks-source"]
+strike_selection = "all_configured_strikes"
+tenor_selection = "all_configured_tenors"
+evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
 
@@ -1113,6 +1123,11 @@ max_age_ns = 10000
 [[iv.profiles.projection_policies]]
 policy_id = "configured-projection-policy"
 projection_kind = "mean"
+basis_selection = "preserve_input_basis"
+source_eligibility = ["configured-greeks-source"]
+strike_selection = "all_configured_strikes"
+tenor_selection = "all_configured_tenors"
+evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
 
@@ -1257,6 +1272,11 @@ max_age_ns = 10000
 [[iv.profiles.projection_policies]]
 policy_id = "configured-projection-policy"
 projection_kind = "mean"
+basis_selection = "preserve_input_basis"
+source_eligibility = ["configured-greeks-source"]
+strike_selection = "all_configured_strikes"
+tenor_selection = "all_configured_tenors"
+evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
 
@@ -1359,6 +1379,11 @@ max_age_ns = 10000
 [[iv.profiles.projection_policies]]
 policy_id = "configured-projection-policy"
 projection_kind = "mean"
+basis_selection = "preserve_input_basis"
+source_eligibility = ["configured-greeks-source"]
+strike_selection = "all_configured_strikes"
+tenor_selection = "all_configured_tenors"
+evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
 
@@ -1570,6 +1595,11 @@ max_age_ns = 10000
 [[iv.profiles.projection_policies]]
 policy_id = "configured-projection-policy"
 projection_kind = "mean"
+basis_selection = "preserve_input_basis"
+source_eligibility = ["configured-greeks-source"]
+strike_selection = "all_configured_strikes"
+tenor_selection = "all_configured_tenors"
+evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
 
@@ -1658,6 +1688,11 @@ max_age_ns = 10000
 [[iv.profiles.projection_policies]]
 policy_id = "configured-projection-policy"
 projection_kind = "mean"
+basis_selection = "preserve_input_basis"
+source_eligibility = ["configured-greeks-source"]
+strike_selection = "all_configured_strikes"
+tenor_selection = "all_configured_tenors"
+evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
 

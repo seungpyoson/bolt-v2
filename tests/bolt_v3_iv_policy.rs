@@ -1,11 +1,12 @@
 use bolt_v2::bolt_v3_iv::{
     error::IvRejectReason,
     policy::{
-        IvFallbackCandidate, IvFallbackPolicy, IvInterpolationPolicy, IvPolicyError, IvPolicyInput,
-        IvProjectionKind, IvProjectionPolicy, IvQuorumPolicy, interpolate_smile, project_scalar,
-        resolve_fallback, resolve_quorum,
+        IvExtrapolationPolicy, IvFallbackCandidate, IvFallbackPolicy, IvInterpolationMethod,
+        IvInterpolationPolicy, IvPolicyError, IvPolicyInput, IvProjectionKind, IvProjectionPolicy,
+        IvQuorumPolicy, IvQuorumTieBreak, interpolate_smile, project_scalar, resolve_fallback,
+        resolve_quorum,
     },
-    provenance::IvPolicyDecision,
+    provenance::{IvPolicyDecision, IvRejectedCandidate},
     store::IvSmilePoint,
     time::UnixNanos,
 };
@@ -13,19 +14,50 @@ use bolt_v2::bolt_v3_iv::{
 fn input(product_id: &str, value: f64, ts: u64) -> IvPolicyInput {
     IvPolicyInput {
         product_id: product_id.to_string(),
+        source_id: product_id.to_string(),
+        selector_fingerprint: format!("{product_id}-selector"),
+        basis: "mark".to_string(),
+        convention: "configured-convention".to_string(),
         value,
         ts_event_ns: UnixNanos::new(ts),
     }
 }
 
-#[test]
-fn projection_policy_rejects_inputs_outside_configured_skew() {
-    let policy = IvProjectionPolicy {
+fn projection_policy(
+    minimum_points: usize,
+    max_projection_input_skew_ns: u64,
+) -> IvProjectionPolicy {
+    IvProjectionPolicy {
         policy_id: "configured-projection".to_string(),
         projection_kind: IvProjectionKind::Mean,
-        minimum_points: 1,
-        max_projection_input_skew_ns: 5,
-    };
+        basis_selection: "preserve_input_basis".to_string(),
+        source_eligibility: Vec::new(),
+        strike_selection: "all_configured_strikes".to_string(),
+        tenor_selection: "all_configured_tenors".to_string(),
+        evidence_mapping: "preserve_evidence_kind".to_string(),
+        minimum_points,
+        max_projection_input_skew_ns,
+        fallback_policy_ref: None,
+        interpolation_policy_ref: None,
+        quorum_policy_ref: None,
+    }
+}
+
+fn interpolation_policy(extrapolation: IvExtrapolationPolicy) -> IvInterpolationPolicy {
+    IvInterpolationPolicy {
+        policy_id: "configured-interpolation".to_string(),
+        method: IvInterpolationMethod::Linear,
+        strike_axis: "strike".to_string(),
+        tenor_axis: "expiry".to_string(),
+        minimum_points: 2,
+        eligible_sources: vec!["configured-source".to_string()],
+        extrapolation,
+    }
+}
+
+#[test]
+fn projection_policy_rejects_inputs_outside_configured_skew() {
+    let policy = projection_policy(1, 5);
 
     assert_eq!(
         project_scalar(&policy, &[input("a", 0.2, 1_000), input("b", 0.3, 1_020)]),
@@ -38,12 +70,7 @@ fn projection_policy_rejects_inputs_outside_configured_skew() {
 
 #[test]
 fn projection_policy_rejects_when_minimum_input_count_is_not_met() {
-    let policy = IvProjectionPolicy {
-        policy_id: "configured-projection".to_string(),
-        projection_kind: IvProjectionKind::Mean,
-        minimum_points: 2,
-        max_projection_input_skew_ns: 5,
-    };
+    let policy = projection_policy(2, 5);
 
     assert_eq!(
         project_scalar(&policy, &[input("a", 0.2, 1_000)]),
@@ -56,12 +83,7 @@ fn projection_policy_rejects_when_minimum_input_count_is_not_met() {
 
 #[test]
 fn projection_policy_rejects_empty_inputs_even_if_policy_is_invalid() {
-    let policy = IvProjectionPolicy {
-        policy_id: "configured-projection".to_string(),
-        projection_kind: IvProjectionKind::Mean,
-        minimum_points: 0,
-        max_projection_input_skew_ns: 5,
-    };
+    let policy = projection_policy(0, 5);
 
     assert_eq!(
         project_scalar(&policy, &[]),
@@ -74,11 +96,8 @@ fn projection_policy_rejects_empty_inputs_even_if_policy_is_invalid() {
 
 #[test]
 fn interpolation_policy_rejects_empty_points_even_if_policy_is_invalid() {
-    let policy = IvInterpolationPolicy {
-        policy_id: "configured-interpolation".to_string(),
-        allow_extrapolation: true,
-        minimum_points: 0,
-    };
+    let mut policy = interpolation_policy(IvExtrapolationPolicy::Nearest);
+    policy.minimum_points = 0;
 
     assert_eq!(
         interpolate_smile(&policy, &[], 100.0),
@@ -91,11 +110,7 @@ fn interpolation_policy_rejects_empty_points_even_if_policy_is_invalid() {
 
 #[test]
 fn interpolation_policy_records_decision_and_rejects_unconfigured_extrapolation() {
-    let policy = IvInterpolationPolicy {
-        policy_id: "configured-interpolation".to_string(),
-        allow_extrapolation: false,
-        minimum_points: 2,
-    };
+    let policy = interpolation_policy(IvExtrapolationPolicy::Reject);
 
     let output = interpolate_smile(
         &policy,
@@ -118,9 +133,12 @@ fn interpolation_policy_records_decision_and_rejects_unconfigured_extrapolation(
         vec![IvPolicyDecision::InterpolationDecision {
             policy_id: "configured-interpolation".to_string(),
             input_point_ids: vec!["90".to_string(), "100".to_string()],
+            strike_axis: "strike".to_string(),
+            tenor_axis: "expiry".to_string(),
             method: "linear".to_string(),
             minimum_points: 2,
-            allow_extrapolation: false,
+            extrapolation: "reject".to_string(),
+            eligible_sources: vec!["configured-source".to_string()],
             accepted_range: Some("90..100".to_string()),
             rejected_range: None,
         }]
@@ -153,7 +171,10 @@ fn fallback_and_quorum_policies_record_typed_decisions() {
     let fallback = resolve_fallback(
         &IvFallbackPolicy {
             policy_id: "configured-fallback".to_string(),
-            ordered_candidate_ids: vec!["primary".to_string(), "backup".to_string()],
+            candidate_order: vec!["primary".to_string(), "backup".to_string()],
+            eligible_sources: vec!["configured-source".to_string()],
+            maximum_timestamp_skew_ns: 10,
+            required_provenance_fields: vec!["raw_event_id".to_string()],
         },
         &[
             IvFallbackCandidate {
@@ -176,7 +197,13 @@ fn fallback_and_quorum_policies_record_typed_decisions() {
             policy_id: "configured-fallback".to_string(),
             candidate_order: vec!["primary".to_string(), "backup".to_string()],
             accepted_candidate: Some("backup".to_string()),
-            rejected_candidates: vec!["primary".to_string()],
+            rejected_candidates: vec![IvRejectedCandidate {
+                candidate_id: "primary".to_string(),
+                reason: "candidate_not_eligible".to_string(),
+            }],
+            maximum_timestamp_skew_ns: 10,
+            eligible_sources: vec!["configured-source".to_string()],
+            required_provenance_fields: vec!["raw_event_id".to_string()],
         }]
     );
 
@@ -184,7 +211,9 @@ fn fallback_and_quorum_policies_record_typed_decisions() {
         &IvQuorumPolicy {
             policy_id: "configured-quorum".to_string(),
             minimum_sources: 2,
+            eligible_sources: vec!["source-a".to_string(), "source-b".to_string()],
             agreement_band: 0.05,
+            tie_break: IvQuorumTieBreak::Mean,
         },
         &[
             input("source-a", 0.30, 1_000),
@@ -199,6 +228,7 @@ fn fallback_and_quorum_policies_record_typed_decisions() {
             participating_sources: vec!["source-a".to_string(), "source-b".to_string()],
             rejected_sources: Vec::new(),
             agreement_band: 0.05,
+            tie_break: "mean".to_string(),
             quorum_met: true,
         }]
     );
@@ -208,7 +238,9 @@ fn fallback_and_quorum_policies_record_typed_decisions() {
             &IvQuorumPolicy {
                 policy_id: "configured-quorum".to_string(),
                 minimum_sources: 3,
+                eligible_sources: vec!["source-a".to_string(), "source-b".to_string()],
                 agreement_band: 0.05,
+                tie_break: IvQuorumTieBreak::Mean,
             },
             &[
                 input("source-a", 0.30, 1_000),

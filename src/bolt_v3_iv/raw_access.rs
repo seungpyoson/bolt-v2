@@ -108,6 +108,7 @@ pub fn read_raw_event(
             raw_event_id: request.raw_event_id.clone(),
             payload_kind: raw_event.payload_kind.clone(),
             access_purpose: request.access_purpose.clone(),
+            source_eligibility: policy.eligible_sources.iter().cloned().collect(),
             retention_result: "retained".to_string(),
         });
 

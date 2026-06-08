@@ -33,9 +33,21 @@ pub struct IvHelperPolicy {
     pub helper_policy_id: String,
     pub nt_helper_symbol: IvNtHelperSymbol,
     pub parameter_signature: String,
+    pub allowed_outputs: BTreeSet<IvHelperOutput>,
+    pub input_policy_ref: String,
     pub output_bounds: IvNumericBounds,
+    pub convention_policy: String,
+    pub failure_policy: String,
     pub max_input_timestamp_skew_ns: u64,
     pub max_operator_input_age_ns: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IvHelperOutput {
+    Iv,
+    Greeks,
+    IvAndGreeks,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -81,6 +93,7 @@ impl IvDerivedInputField {
 pub enum IvDerivedInputSourceKind {
     QuerySupplied,
     ProfileSourceRef,
+    InstrumentMetadata,
     OperatorConfigured,
 }
 
@@ -128,7 +141,13 @@ pub struct IvDerivedInputFieldPolicy {
 pub struct IvDerivedInputPolicy {
     pub input_policy_id: String,
     pub helper_policy_ref: String,
-    pub field_policies: Vec<IvDerivedInputFieldPolicy>,
+    pub required_fields: Vec<IvDerivedInputField>,
+    pub field_sources: Vec<IvDerivedInputFieldPolicy>,
+    pub freshness_ns: u64,
+    pub max_input_skew_ns: u64,
+    pub bounds: String,
+    pub convention_policy: String,
+    pub operator_value_refresh_policy: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -209,6 +228,16 @@ pub fn derive_iv(
     policy: &IvHelperPolicy,
     inputs: IvDerivedInputSet,
 ) -> Result<IvDerivedOutput, IvDeriveError> {
+    if !policy
+        .allowed_outputs
+        .contains(&IvHelperOutput::IvAndGreeks)
+    {
+        return Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::InvalidDerivedInput,
+            field: "allowed_outputs".to_string(),
+        });
+    }
+
     let resolved = ResolvedDerivedInputs::resolve(policy, &inputs)?;
     let helper_result = nautilus_model::data::imply_vol_and_greeks(
         resolved.underlying_price,
@@ -238,6 +267,13 @@ pub fn derive_iv(
         engine_mapping: "derived_iv".to_string(),
     };
     let input_event_ids = inputs.input_event_ids.clone();
+    let input_set_id = format!(
+        "{}:{}:{}:{}",
+        inputs.profile_id,
+        inputs.source_id,
+        inputs.instrument_id,
+        inputs.as_of_ns.get()
+    );
     let provenance = IvProvenance {
         profile_id: inputs.profile_id.clone(),
         source_id: inputs.source_id.clone(),
@@ -252,7 +288,9 @@ pub fn derive_iv(
         helper_identity: Some(helper_identity.clone()),
         policy_decisions: vec![IvPolicyDecision::HelperDecision {
             helper_policy_id: policy.helper_policy_id.clone(),
+            helper_identity: helper_identity.clone(),
             helper_symbol: policy.nt_helper_symbol.nt_symbol().to_string(),
+            input_set_id,
             input_event_ids,
             output_validated: true,
             rejection_reason: None,
@@ -297,19 +335,19 @@ pub fn resolve_derived_input_policy(
     mut request: IvDerivedInputSet,
     profile_inputs: &[IvDerivedInputSet],
 ) -> Result<IvDerivedInputSet, IvDeriveError> {
-    for field in IvDerivedInputField::required_fields() {
+    for field in &policy.required_fields {
         let field_policy = policy
-            .field_policies
+            .field_sources
             .iter()
-            .find(|field_policy| field_policy.field == field);
-        match field {
+            .find(|field_policy| field_policy.field == *field);
+        match *field {
             IvDerivedInputField::OptionPrice
             | IvDerivedInputField::UnderlyingPrice
             | IvDerivedInputField::Strike
             | IvDerivedInputField::TimeToExpiryYears
             | IvDerivedInputField::Rate
             | IvDerivedInputField::Carry => {
-                resolve_number_field(field, field_policy, &mut request, profile_inputs)?;
+                resolve_number_field(*field, field_policy, &mut request, profile_inputs)?;
             }
             IvDerivedInputField::OptionSide => {
                 resolve_side_field(field_policy, &mut request, profile_inputs)?;
@@ -317,7 +355,58 @@ pub fn resolve_derived_input_policy(
         }
     }
 
+    validate_resolved_input_policy(policy, &request)?;
+
     Ok(request)
+}
+
+fn validate_resolved_input_policy(
+    policy: &IvDerivedInputPolicy,
+    inputs: &IvDerivedInputSet,
+) -> Result<(), IvDeriveError> {
+    let timed_inputs = policy
+        .required_fields
+        .iter()
+        .filter_map(|field| timed_input_ns(inputs, *field).map(|ts| (*field, ts)))
+        .collect::<Vec<_>>();
+    if timed_inputs.len() != policy.required_fields.len() {
+        let missing = policy
+            .required_fields
+            .iter()
+            .find(|field| timed_input_ns(inputs, **field).is_none())
+            .copied()
+            .unwrap_or(IvDerivedInputField::OptionPrice);
+        return Err(IvDeriveError::MissingInput { field: missing });
+    }
+
+    let min_ts = timed_inputs
+        .iter()
+        .map(|(_, ts)| ts.get())
+        .min()
+        .unwrap_or(inputs.as_of_ns.get());
+    let max_ts = timed_inputs
+        .iter()
+        .map(|(_, ts)| ts.get())
+        .max()
+        .unwrap_or(inputs.as_of_ns.get());
+    if max_ts > inputs.as_of_ns.get() || max_ts.saturating_sub(min_ts) > policy.max_input_skew_ns {
+        return Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::ClockSkew,
+            field: "max_input_skew_ns".to_string(),
+        });
+    }
+    if policy.freshness_ns > 0
+        && timed_inputs
+            .iter()
+            .any(|(_, ts)| inputs.as_of_ns.get().saturating_sub(ts.get()) > policy.freshness_ns)
+    {
+        return Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::StaleData,
+            field: "freshness".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 fn resolve_number_field(
@@ -415,6 +504,20 @@ fn set_number_field(
         IvDerivedInputField::Rate => inputs.rate = Some(input),
         IvDerivedInputField::Carry => inputs.carry = Some(input),
         IvDerivedInputField::OptionSide => {}
+    }
+}
+
+fn timed_input_ns(inputs: &IvDerivedInputSet, field: IvDerivedInputField) -> Option<UnixNanos> {
+    match field {
+        IvDerivedInputField::OptionPrice => inputs.option_price.map(|input| input.ts_ns),
+        IvDerivedInputField::UnderlyingPrice => inputs.underlying_price.map(|input| input.ts_ns),
+        IvDerivedInputField::Strike => inputs.strike.map(|input| input.ts_ns),
+        IvDerivedInputField::OptionSide => inputs.option_side.map(|input| input.ts_ns),
+        IvDerivedInputField::TimeToExpiryYears => {
+            inputs.time_to_expiry_years.map(|input| input.ts_ns)
+        }
+        IvDerivedInputField::Rate => inputs.rate.map(|input| input.ts_ns),
+        IvDerivedInputField::Carry => inputs.carry.map(|input| input.ts_ns),
     }
 }
 

@@ -4,9 +4,9 @@ use bolt_v2::bolt_v3_iv::{
     bounds::{IvBoundUnit, IvConventionBounds, IvNumericBounds},
     derive::{
         IvDeriveError, IvDerivedInputField, IvDerivedInputFieldPolicy, IvDerivedInputPolicy,
-        IvDerivedInputSet, IvDerivedInputSourceKind, IvDerivedProfileSourceRef, IvHelperPolicy,
-        IvNtHelperSymbol, IvOptionSide, IvTimedInput, derive_iv, resolve_derived_input_policy,
-        select_helper_policy,
+        IvDerivedInputSet, IvDerivedInputSourceKind, IvDerivedProfileSourceRef, IvHelperOutput,
+        IvHelperPolicy, IvNtHelperSymbol, IvOptionSide, IvTimedInput, derive_iv,
+        resolve_derived_input_policy, select_helper_policy,
     },
     error::IvRejectReason,
     health::IvSourceHealthState,
@@ -39,7 +39,11 @@ fn helper_policy() -> IvHelperPolicy {
         helper_policy_id: "configured-helper-policy".to_string(),
         nt_helper_symbol: IvNtHelperSymbol::ImplyVolAndGreeks,
         parameter_signature: "s,r,b,is_call,k,t,price".to_string(),
+        allowed_outputs: BTreeSet::from([IvHelperOutput::IvAndGreeks]),
+        input_policy_ref: "configured-derived-input-policy".to_string(),
         output_bounds: bounds(2.0),
+        convention_policy: "configured-convention-policy".to_string(),
+        failure_policy: "reject_invalid_helper_output".to_string(),
         max_input_timestamp_skew_ns: 20,
         max_operator_input_age_ns: 100,
     }
@@ -147,7 +151,10 @@ fn complete_inputs_derive_iv_with_nt_helper_and_helper_provenance() {
         output.provenance.policy_decisions,
         vec![IvPolicyDecision::HelperDecision {
             helper_policy_id: "configured-helper-policy".to_string(),
+            helper_identity: output.helper_identity.clone(),
             helper_symbol: "nautilus_model::data::imply_vol_and_greeks".to_string(),
+            input_set_id: "configured-profile:configured-source:configured-option-instrument:1000"
+                .to_string(),
             input_event_ids: vec!["configured-input-event".to_string()],
             output_validated: true,
             rejection_reason: None,
@@ -176,7 +183,8 @@ fn derived_input_policy_resolves_profile_source_and_operator_fields_before_helpe
     let policy = IvDerivedInputPolicy {
         input_policy_id: "configured-derived-input-policy".to_string(),
         helper_policy_ref: "configured-helper-policy".to_string(),
-        field_policies: vec![
+        required_fields: IvDerivedInputField::required_fields().to_vec(),
+        field_sources: vec![
             IvDerivedInputFieldPolicy {
                 field: IvDerivedInputField::UnderlyingPrice,
                 allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::ProfileSourceRef]),
@@ -206,6 +214,11 @@ fn derived_input_policy_resolves_profile_source_and_operator_fields_before_helpe
                 operator_side: None,
             },
         ],
+        freshness_ns: 100,
+        max_input_skew_ns: 20,
+        bounds: "configured-derived-input-bounds".to_string(),
+        convention_policy: "configured-convention-policy".to_string(),
+        operator_value_refresh_policy: "reject_expired_operator_values".to_string(),
     };
 
     let resolved =

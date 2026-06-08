@@ -5,8 +5,8 @@ use bolt_v2::bolt_v3_iv::{
     bounds::{IvBoundUnit, IvConventionBounds, IvNumericBounds},
     derive::{
         IvDerivedInputField, IvDerivedInputFieldPolicy, IvDerivedInputPolicy, IvDerivedInputSet,
-        IvDerivedInputSourceKind, IvDerivedProfileSourceRef, IvHelperPolicy, IvNtHelperSymbol,
-        IvOptionSide, IvTimedInput,
+        IvDerivedInputSourceKind, IvDerivedProfileSourceRef, IvHelperOutput, IvHelperPolicy,
+        IvNtHelperSymbol, IvOptionSide, IvTimedInput,
     },
     health::{IvSourceHealth, IvSourceHealthState},
     ingest::{IvBasisValue, IvGreekValues, IvIngestEvent, IvOptionGreeksPayload, IvRawPayload},
@@ -151,7 +151,11 @@ fn helper_policy() -> IvHelperPolicy {
         helper_policy_id: "configured-helper-policy".to_string(),
         nt_helper_symbol: IvNtHelperSymbol::ImplyVolAndGreeks,
         parameter_signature: "s,r,b,is_call,k,t,price".to_string(),
+        allowed_outputs: BTreeSet::from([IvHelperOutput::IvAndGreeks]),
+        input_policy_ref: "configured-derived-input-policy".to_string(),
         output_bounds: bounds(),
+        convention_policy: "configured-convention-policy".to_string(),
+        failure_policy: "reject_invalid_helper_output".to_string(),
         max_input_timestamp_skew_ns: 20,
         max_operator_input_age_ns: 100,
     }
@@ -223,7 +227,8 @@ fn profile_resolving_derived_input_policy() -> IvDerivedInputPolicy {
     IvDerivedInputPolicy {
         input_policy_id: "configured-derived-input-policy".to_string(),
         helper_policy_ref: "configured-helper-policy".to_string(),
-        field_policies: vec![
+        required_fields: IvDerivedInputField::required_fields().to_vec(),
+        field_sources: vec![
             IvDerivedInputFieldPolicy {
                 field: IvDerivedInputField::UnderlyingPrice,
                 allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::ProfileSourceRef]),
@@ -253,6 +258,11 @@ fn profile_resolving_derived_input_policy() -> IvDerivedInputPolicy {
                 operator_side: None,
             },
         ],
+        freshness_ns: 100,
+        max_input_skew_ns: 20,
+        bounds: "configured-derived-input-bounds".to_string(),
+        convention_policy: "configured-convention-policy".to_string(),
+        operator_value_refresh_policy: "reject_expired_operator_values".to_string(),
     }
 }
 
@@ -407,8 +417,16 @@ fn projected_scalar_query_uses_configured_projection_policy() {
         .with_projection_policies(vec![IvProjectionPolicy {
             policy_id: "configured-projection-policy".to_string(),
             projection_kind: IvProjectionKind::Mean,
+            basis_selection: "preserve_input_basis".to_string(),
+            source_eligibility: vec!["configured-source".to_string()],
+            strike_selection: "all_configured_strikes".to_string(),
+            tenor_selection: "all_configured_tenors".to_string(),
+            evidence_mapping: "preserve_evidence_kind".to_string(),
             minimum_points: 1,
             max_projection_input_skew_ns: 10,
+            fallback_policy_ref: None,
+            interpolation_policy_ref: None,
+            quorum_policy_ref: None,
         }]);
 
     let product = handle

@@ -7,6 +7,10 @@ use super::{
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IvPolicyInput {
     pub product_id: String,
+    pub source_id: String,
+    pub selector_fingerprint: String,
+    pub basis: String,
+    pub convention: String,
     pub value: f64,
     pub ts_event_ns: UnixNanos,
 }
@@ -31,28 +35,99 @@ pub enum IvProjectionKind {
     Mean,
 }
 
+impl IvProjectionKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Mean => "mean",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IvInterpolationMethod {
+    Linear,
+}
+
+impl IvInterpolationMethod {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IvExtrapolationPolicy {
+    Reject,
+    Nearest,
+}
+
+impl IvExtrapolationPolicy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Reject => "reject",
+            Self::Nearest => "nearest",
+        }
+    }
+
+    fn allows_extrapolation(self) -> bool {
+        matches!(self, Self::Nearest)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IvQuorumTieBreak {
+    Mean,
+}
+
+impl IvQuorumTieBreak {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Mean => "mean",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IvProjectionPolicy {
     pub policy_id: String,
     pub projection_kind: IvProjectionKind,
+    pub basis_selection: String,
+    pub source_eligibility: Vec<String>,
+    pub strike_selection: String,
+    pub tenor_selection: String,
+    pub evidence_mapping: String,
     pub minimum_points: usize,
     pub max_projection_input_skew_ns: u64,
+    pub fallback_policy_ref: Option<String>,
+    pub interpolation_policy_ref: Option<String>,
+    pub quorum_policy_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IvInterpolationPolicy {
     pub policy_id: String,
-    pub allow_extrapolation: bool,
+    pub method: IvInterpolationMethod,
+    pub strike_axis: String,
+    pub tenor_axis: String,
     pub minimum_points: usize,
+    pub eligible_sources: Vec<String>,
+    pub extrapolation: IvExtrapolationPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IvFallbackPolicy {
     pub policy_id: String,
-    pub ordered_candidate_ids: Vec<String>,
+    pub candidate_order: Vec<String>,
+    pub eligible_sources: Vec<String>,
+    pub maximum_timestamp_skew_ns: u64,
+    pub required_provenance_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -67,7 +142,9 @@ pub struct IvFallbackCandidate {
 pub struct IvQuorumPolicy {
     pub policy_id: String,
     pub minimum_sources: usize,
+    pub eligible_sources: Vec<String>,
     pub agreement_band: f64,
+    pub tie_break: IvQuorumTieBreak,
 }
 
 pub fn project_scalar(
@@ -77,6 +154,9 @@ pub fn project_scalar(
     if inputs.is_empty()
         || inputs.len() < policy.minimum_points
         || input_skew(inputs) > policy.max_projection_input_skew_ns
+        || !inputs_satisfy_source_eligibility(inputs, &policy.source_eligibility)
+        || !inputs_share_field(inputs.iter().map(|input| input.basis.as_str()))
+        || !inputs_share_field(inputs.iter().map(|input| input.convention.as_str()))
     {
         return Err(rejected(
             policy.policy_id.clone(),
@@ -95,7 +175,13 @@ pub fn project_scalar(
                     .iter()
                     .map(|input| input.product_id.clone())
                     .collect(),
-                projection_kind: "mean".to_string(),
+                selector_fingerprints: inputs
+                    .iter()
+                    .map(|input| input.selector_fingerprint.clone())
+                    .collect(),
+                projection_kind: policy.projection_kind.as_str().to_string(),
+                basis: inputs[0].basis.clone(),
+                convention: inputs[0].convention.clone(),
                 max_projection_input_skew_ns: policy.max_projection_input_skew_ns,
                 accepted_input_ids: inputs
                     .iter()
@@ -125,7 +211,7 @@ pub fn interpolate_smile(
     let last = points.last().expect("minimum_points checked");
 
     if strike < first.strike || strike > last.strike {
-        if !policy.allow_extrapolation {
+        if !policy.extrapolation.allows_extrapolation() {
             return Err(rejected(
                 policy.policy_id.clone(),
                 IvRejectReason::ExtrapolationRejected,
@@ -141,9 +227,12 @@ pub fn interpolate_smile(
             policy_decisions: vec![IvPolicyDecision::InterpolationDecision {
                 policy_id: policy.policy_id.clone(),
                 input_point_ids: points.iter().map(strike_id).collect(),
-                method: "nearest_extrapolation".to_string(),
+                strike_axis: policy.strike_axis.clone(),
+                tenor_axis: policy.tenor_axis.clone(),
+                method: policy.method.as_str().to_string(),
                 minimum_points: policy.minimum_points,
-                allow_extrapolation: policy.allow_extrapolation,
+                extrapolation: policy.extrapolation.as_str().to_string(),
+                eligible_sources: policy.eligible_sources.clone(),
                 accepted_range: Some(format!("{}..{}", first.strike, last.strike)),
                 rejected_range: None,
             }],
@@ -165,9 +254,12 @@ pub fn interpolate_smile(
                 policy_decisions: vec![IvPolicyDecision::InterpolationDecision {
                     policy_id: policy.policy_id.clone(),
                     input_point_ids: vec![strike_id(&left), strike_id(&right)],
-                    method: "linear".to_string(),
+                    strike_axis: policy.strike_axis.clone(),
+                    tenor_axis: policy.tenor_axis.clone(),
+                    method: policy.method.as_str().to_string(),
                     minimum_points: policy.minimum_points,
-                    allow_extrapolation: policy.allow_extrapolation,
+                    extrapolation: policy.extrapolation.as_str().to_string(),
+                    eligible_sources: policy.eligible_sources.clone(),
                     accepted_range: Some(format!("{}..{}", left.strike, right.strike)),
                     rejected_range: None,
                 }],
@@ -185,7 +277,7 @@ pub fn resolve_fallback(
     policy: &IvFallbackPolicy,
     candidates: &[IvFallbackCandidate],
 ) -> Result<IvPolicyOutput, IvPolicyError> {
-    for candidate_id in &policy.ordered_candidate_ids {
+    for candidate_id in &policy.candidate_order {
         if let Some(candidate) = candidates
             .iter()
             .find(|candidate| candidate.eligible && candidate.candidate_id == *candidate_id)
@@ -194,14 +286,20 @@ pub fn resolve_fallback(
                 value: candidate.value,
                 policy_decisions: vec![IvPolicyDecision::FallbackDecision {
                     policy_id: policy.policy_id.clone(),
-                    candidate_order: policy.ordered_candidate_ids.clone(),
+                    candidate_order: policy.candidate_order.clone(),
                     accepted_candidate: Some(candidate.candidate_id.clone()),
                     rejected_candidates: policy
-                        .ordered_candidate_ids
+                        .candidate_order
                         .iter()
                         .take_while(|ordered_id| *ordered_id != candidate_id)
-                        .cloned()
+                        .map(|candidate_id| super::provenance::IvRejectedCandidate {
+                            candidate_id: candidate_id.clone(),
+                            reason: "candidate_not_eligible".to_string(),
+                        })
                         .collect(),
+                    maximum_timestamp_skew_ns: policy.maximum_timestamp_skew_ns,
+                    eligible_sources: policy.eligible_sources.clone(),
+                    required_provenance_fields: policy.required_provenance_fields.clone(),
                 }],
             });
         }
@@ -217,18 +315,22 @@ pub fn resolve_quorum(
     policy: &IvQuorumPolicy,
     inputs: &[IvPolicyInput],
 ) -> Result<IvPolicyOutput, IvPolicyError> {
-    if inputs.is_empty() || inputs.len() < policy.minimum_sources {
+    let (eligible_inputs, rejected_sources): (Vec<_>, Vec<_>) = inputs.iter().partition(|input| {
+        policy.eligible_sources.is_empty() || policy.eligible_sources.contains(&input.source_id)
+    });
+
+    if eligible_inputs.is_empty() || eligible_inputs.len() < policy.minimum_sources {
         return Err(rejected(
             policy.policy_id.clone(),
             IvRejectReason::QuorumNotMet,
         ));
     }
 
-    let min = inputs
+    let min = eligible_inputs
         .iter()
         .map(|input| input.value)
         .fold(f64::INFINITY, f64::min);
-    let max = inputs
+    let max = eligible_inputs
         .iter()
         .map(|input| input.value)
         .fold(f64::NEG_INFINITY, f64::max);
@@ -241,19 +343,40 @@ pub fn resolve_quorum(
     }
 
     Ok(IvPolicyOutput {
-        value: average(inputs.iter().map(|input| input.value))
+        value: average(eligible_inputs.iter().map(|input| input.value))
             .ok_or_else(|| rejected(policy.policy_id.clone(), IvRejectReason::QuorumNotMet))?,
         policy_decisions: vec![IvPolicyDecision::QuorumDecision {
             policy_id: policy.policy_id.clone(),
-            participating_sources: inputs
+            participating_sources: eligible_inputs
                 .iter()
-                .map(|input| input.product_id.clone())
+                .map(|input| input.source_id.clone())
                 .collect(),
-            rejected_sources: Vec::new(),
+            rejected_sources: rejected_sources
+                .iter()
+                .map(|input| input.source_id.clone())
+                .collect(),
             agreement_band: policy.agreement_band,
+            tie_break: policy.tie_break.as_str().to_string(),
             quorum_met: true,
         }],
     })
+}
+
+fn inputs_satisfy_source_eligibility(
+    inputs: &[IvPolicyInput],
+    eligible_sources: &[String],
+) -> bool {
+    eligible_sources.is_empty()
+        || inputs
+            .iter()
+            .all(|input| eligible_sources.contains(&input.source_id))
+}
+
+fn inputs_share_field<'a>(mut values: impl Iterator<Item = &'a str>) -> bool {
+    let Some(first) = values.next() else {
+        return false;
+    };
+    values.all(|value| value == first)
 }
 
 fn input_skew(inputs: &[IvPolicyInput]) -> u64 {

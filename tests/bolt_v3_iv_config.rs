@@ -19,7 +19,6 @@ max_smiles = 2
 max_surfaces = 2
 max_source_health_events = 2
 derived_inputs = []
-derived_input_policies = []
 
 [profiles.audit_policy]
 enabled_raw_products = ["option_greeks"]
@@ -34,27 +33,48 @@ max_age_ns = 10000
 [[profiles.projection_policies]]
 policy_id = "configured-projection-policy"
 projection_kind = "mean"
+basis_selection = "preserve_input_basis"
+source_eligibility = ["configured-greeks-source"]
+strike_selection = "all_configured_strikes"
+tenor_selection = "all_configured_tenors"
+evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
+fallback_policy_ref = "configured-fallback-policy"
+interpolation_policy_ref = "configured-interpolation-policy"
+quorum_policy_ref = "configured-quorum-policy"
 
 [[profiles.interpolation_policies]]
 policy_id = "configured-interpolation-policy"
-allow_extrapolation = false
+method = "linear"
+strike_axis = "strike"
+tenor_axis = "expiry"
 minimum_points = 2
+eligible_sources = ["configured-greeks-source"]
+extrapolation = "reject"
 
 [[profiles.fallback_policies]]
 policy_id = "configured-fallback-policy"
-ordered_candidate_ids = ["configured-primary-candidate", "configured-backup-candidate"]
+candidate_order = ["configured-primary-candidate", "configured-backup-candidate"]
+eligible_sources = ["configured-greeks-source"]
+maximum_timestamp_skew_ns = 10
+required_provenance_fields = ["raw_event_id"]
 
 [[profiles.quorum_policies]]
 policy_id = "configured-quorum-policy"
 minimum_sources = 2
+eligible_sources = ["configured-greeks-source", "configured-backup-source"]
 agreement_band = 0.05
+tie_break = "mean"
 
 [[profiles.helper_policies]]
 helper_policy_id = "configured-helper-policy"
 nt_helper_symbol = "imply_vol_and_greeks"
 parameter_signature = "configured-helper-signature"
+allowed_outputs = ["iv_and_greeks"]
+input_policy_ref = "configured-derived-input-policy"
+convention_policy = "configured-convention-policy"
+failure_policy = "reject_invalid_helper_output"
 max_input_timestamp_skew_ns = 10
 max_operator_input_age_ns = 100
 
@@ -69,6 +89,44 @@ unit = "unitless"
 
 [profiles.helper_policies.output_bounds.allowed_conventions]
 allowed_conventions = []
+
+[[profiles.derived_input_policies]]
+input_policy_id = "configured-derived-input-policy"
+helper_policy_ref = "configured-helper-policy"
+required_fields = ["option_price", "underlying_price", "strike", "option_side", "time_to_expiry_years", "rate", "carry"]
+freshness_ns = 100
+max_input_skew_ns = 10
+bounds = "configured-derived-input-bounds"
+convention_policy = "configured-convention-policy"
+operator_value_refresh_policy = "reject_expired_operator_values"
+
+[[profiles.derived_input_policies.field_sources]]
+field = "option_price"
+allowed_source_kinds = ["query_supplied"]
+
+[[profiles.derived_input_policies.field_sources]]
+field = "underlying_price"
+allowed_source_kinds = ["query_supplied", "profile_source_ref"]
+
+[[profiles.derived_input_policies.field_sources]]
+field = "strike"
+allowed_source_kinds = ["query_supplied", "instrument_metadata"]
+
+[[profiles.derived_input_policies.field_sources]]
+field = "option_side"
+allowed_source_kinds = ["query_supplied", "instrument_metadata"]
+
+[[profiles.derived_input_policies.field_sources]]
+field = "time_to_expiry_years"
+allowed_source_kinds = ["query_supplied", "instrument_metadata"]
+
+[[profiles.derived_input_policies.field_sources]]
+field = "rate"
+allowed_source_kinds = ["operator_configured"]
+
+[[profiles.derived_input_policies.field_sources]]
+field = "carry"
+allowed_source_kinds = ["operator_configured"]
 
 [profiles.selector_authorization]
 authorization_mode = "profile_wide"
@@ -168,7 +226,10 @@ fn full_profile_toml_maps_to_typed_iv_config_without_defaults() {
         config.profiles[0].helper_policies[0].helper_policy_id,
         "configured-helper-policy"
     );
-    assert!(config.profiles[0].derived_input_policies.is_empty());
+    assert_eq!(
+        config.profiles[0].derived_input_policies[0].input_policy_id,
+        "configured-derived-input-policy"
+    );
     assert!(config.profiles[0].derived_inputs.is_empty());
     assert_eq!(config.profiles[0].sources[0].subscription_generation, 7);
     assert_eq!(

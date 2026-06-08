@@ -856,11 +856,19 @@ fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQ
     let inputs = match product {
         IvQueryProduct::IvPoint(point) => vec![IvPolicyInput {
             product_id: point.instrument_id.clone(),
+            source_id: point.source_id.clone(),
+            selector_fingerprint: point.provenance.selector_fingerprint.clone(),
+            basis: format!("{:?}", point.basis),
+            convention: format!("{:?}", point.convention),
             value: point.iv,
             ts_event_ns: point.ts_event_ns,
         }],
         IvQueryProduct::IvGreeksPoint(point) => vec![IvPolicyInput {
             product_id: point.point.instrument_id.clone(),
+            source_id: point.point.source_id.clone(),
+            selector_fingerprint: point.point.provenance.selector_fingerprint.clone(),
+            basis: format!("{:?}", point.point.basis),
+            convention: format!("{:?}", point.point.convention),
             value: point.point.iv,
             ts_event_ns: point.point.ts_event_ns,
         }],
@@ -869,6 +877,10 @@ fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQ
             .iter()
             .map(|point| IvPolicyInput {
                 product_id: smile.series_id.clone(),
+                source_id: smile.source_id.clone(),
+                selector_fingerprint: smile.provenance.selector_fingerprint.clone(),
+                basis: format!("{:?}", smile.basis),
+                convention: smile.provenance.nt_symbol.clone(),
                 value: point.iv,
                 ts_event_ns: smile.ts_event_ns,
             })
@@ -879,6 +891,10 @@ fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQ
             .flat_map(|smile| {
                 smile.points_by_strike.iter().map(|point| IvPolicyInput {
                     product_id: smile.series_id.clone(),
+                    source_id: smile.source_id.clone(),
+                    selector_fingerprint: smile.provenance.selector_fingerprint.clone(),
+                    basis: format!("{:?}", smile.basis),
+                    convention: smile.provenance.nt_symbol.clone(),
                     value: point.iv,
                     ts_event_ns: smile.ts_event_ns,
                 })
@@ -886,11 +902,19 @@ fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQ
             .collect(),
         IvQueryProduct::CustomIvEvidence(evidence) => vec![IvPolicyInput {
             product_id: evidence.iv_evidence_kind.clone(),
+            source_id: evidence.source_id.clone(),
+            selector_fingerprint: evidence.provenance.selector_fingerprint.clone(),
+            basis: evidence.iv_evidence_kind.clone(),
+            convention: evidence.provenance.nt_symbol.clone(),
             value: evidence.value,
             ts_event_ns: evidence.ts_event_ns,
         }],
         IvQueryProduct::DerivedIv(derived) => vec![IvPolicyInput {
             product_id: derived.point.instrument_id.clone(),
+            source_id: derived.point.source_id.clone(),
+            selector_fingerprint: derived.point.provenance.selector_fingerprint.clone(),
+            basis: format!("{:?}", derived.point.basis),
+            convention: format!("{:?}", derived.point.convention),
             value: derived.point.iv,
             ts_event_ns: derived.point.ts_event_ns,
         }],

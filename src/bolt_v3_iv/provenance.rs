@@ -10,7 +10,10 @@ pub enum IvPolicyDecision {
     ProjectionDecision {
         policy_id: String,
         input_product_ids: Vec<String>,
+        selector_fingerprints: Vec<String>,
         projection_kind: String,
+        basis: String,
+        convention: String,
         max_projection_input_skew_ns: u64,
         accepted_input_ids: Vec<String>,
         rejected_input_ids: Vec<String>,
@@ -18,9 +21,12 @@ pub enum IvPolicyDecision {
     InterpolationDecision {
         policy_id: String,
         input_point_ids: Vec<String>,
+        strike_axis: String,
+        tenor_axis: String,
         method: String,
         minimum_points: usize,
-        allow_extrapolation: bool,
+        extrapolation: String,
+        eligible_sources: Vec<String>,
         accepted_range: Option<String>,
         rejected_range: Option<String>,
     },
@@ -28,18 +34,24 @@ pub enum IvPolicyDecision {
         policy_id: String,
         candidate_order: Vec<String>,
         accepted_candidate: Option<String>,
-        rejected_candidates: Vec<String>,
+        rejected_candidates: Vec<IvRejectedCandidate>,
+        maximum_timestamp_skew_ns: u64,
+        eligible_sources: Vec<String>,
+        required_provenance_fields: Vec<String>,
     },
     QuorumDecision {
         policy_id: String,
         participating_sources: Vec<String>,
         rejected_sources: Vec<String>,
         agreement_band: f64,
+        tie_break: String,
         quorum_met: bool,
     },
     HelperDecision {
         helper_policy_id: String,
+        helper_identity: IvHelperIdentity,
         helper_symbol: String,
+        input_set_id: String,
         input_event_ids: Vec<String>,
         output_validated: bool,
         rejection_reason: Option<IvRejectReason>,
@@ -58,6 +70,12 @@ pub enum IvPolicyDecision {
         source_health_state: IvSourceHealthState,
         subscription_generation: u64,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IvRejectedCandidate {
+    pub candidate_id: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1854,3 +1854,47 @@ Current conclusion:
 - This guard does not close `BACKTESTING_ENGINE-022`; it prevents future drift
   while source-proof acceptance, coverage/cost/storage, and dynamic tick-size
   replay remain unresolved.
+
+## 2026-06-09 PMXT row-to-NT evidence reconciliation
+
+Root cause addressed:
+
+- `reference/source-proof-pmxt-polymarket-row-to-nt-contract.2026-06-08.json`
+  still described the PMXT row-to-NT contract as
+  `draft_contract_not_implemented`, but current code and later proof artifacts
+  have moved the bounded one-off path past that state.
+- The stale label made it look as if BTE had not yet reused NT Polymarket
+  parser/catalog/backtest surfaces for the selected PMXT sample, even though
+  the current branch has one-off projection, NT catalog read-back,
+  `BacktestNode` execution, and result-contract binding.
+
+Current reconciliation:
+
+- The evidence artifact now records
+  `bounded_one_off_projection_implemented_broad_backfill_blocked`.
+- The bounded PMXT path remains scoped to
+  `usage_scope = one_off_backfill_data`; it is not canonical source acceptance.
+- Current code evidence is the explicit PMXT one-off module:
+  `crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs`.
+  It validates the selected-source report chain, rejects non-one-off usage
+  scope, uses pinned NT `parse_gamma_market`/`create_instrument_from_def`,
+  `parse_book_snapshot`, and `parse_book_deltas`, mirrors the private NT
+  historical trade-id shape with provenance, writes NT `ParquetDataCatalog`
+  data, and runs NT `BacktestNode` against the verified catalog.
+- Current tests proving the claim are in
+  `crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs`:
+  parser reuse, canonical-scope rejection, selected-source projection without
+  a full source rescan, TradeTick projection/read-back, `tick_size_change`
+  fail-closed behavior, mixed OrderBookDelta/TradeTick catalog metadata, and
+  artifact-root result-contract binding.
+
+Current conclusion:
+
+- This removes a stale report contradiction. It does not close
+  `BACKTESTING_ENGINE-022`.
+- PMXT broad backfill remains blocked by pending source-proof acceptance,
+  expanded coverage/cost/storage evidence, durable source selection, and
+  NT-native dynamic tick-size epoch replay.
+- The efficient path is still to keep PMXT as a one-off evidence source while
+  durable Polymarket source selection and dynamic tick-size replay are proven
+  separately.

@@ -2,14 +2,15 @@
   "schema_version": "source-proof-pmxt-polymarket-row-to-nt-contract.v1",
   "source_binding": "polymarket-parquet-archive-index",
   "task_id": "BACKTESTING_ENGINE-022",
-  "status": "draft_contract_not_implemented",
+  "status": "bounded_one_off_projection_implemented_broad_backfill_blocked",
   "recorded_at": "2026-06-08",
+  "reconciled_at": "2026-06-09",
   "source_sample": {
     "uri": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
     "local_path": "/private/tmp/polymarket-may20-one.parquet",
     "bytes": 361365244,
     "sha256": "0de44455fde7aedd6678fa30cc1ef86ba215eaf70fb3f7b9735510e1371f6567",
-    "artifact_root_staging_status": "pending"
+    "artifact_root_staging_status": "current_one_off_artifact_root_written"
   },
   "representative_row_shapes": [
     {
@@ -241,12 +242,12 @@
     }
   ],
   "trade_id_policy_status": {
-    "status": "policy_selected_tdd_unproven",
+    "status": "bounded_one_off_tdd_proven",
     "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-trade-id-policy-status.2026-06-08.json",
     "mapping_constraint": "PMXT last_trade_price exposes transaction_hash, so transaction_hash must remain in TradeTick identity/provenance. Pinned NT's HTTP data API path provides the selected hash+asset+sequence TradeId shape. The PMXT sample's 42 duplicate semantic trade groups must dedupe before sequence assignment to avoid volume overcounting."
   },
   "price_change_grouping_status": {
-    "status": "policy_narrowed_to_received_message_boundary_not_catalog_proven",
+    "status": "bounded_one_off_catalog_proven",
     "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-price-change-grouping-status.2026-06-08.json",
     "mapping_constraint": "timestamp_received is part of the price_change boundary and must not be dropped; one-row-to-one-OrderBookDeltas is the preferred pinned NT live-client parity policy, but implementation and catalog read-back remain pending."
   },
@@ -256,19 +257,47 @@
     "mapping_constraint": "Pinned NT live handling rebuilds BinaryOption instruments and starts a book epoch on tick_size_change, but BacktestNode dynamic InstrumentAny replay is unproven. A first proof may exclude tick-changing assets only with explicit claim limits; full L2 acceptance must prove tick-size epochs."
   },
   "first_proof_universe_policy": {
-    "status": "first_proof_exclusion_policy_selected_tdd_unproven",
+    "status": "bounded_selector_tdd_proven",
     "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json",
     "mapping_constraint": "A bounded first proof may select an instrument universe from source-proof event counts where tick_size_change_rows == 0, book_rows > 0, price_change_rows > 0, last_trade_price_rows > 0, and replay_rows <= configured row budget. The selector and row budget must be TOML/source-proof-owned, not code constants."
   },
-  "unresolved_before_implementation": [
-    "The isolated BTE crate must have an approved dependency or integration boundary for nautilus-polymarket before parser/provider reuse is machine-checked.",
-    "Pinned NT's historical Polymarket build_polymarket_trade_id helper is pub(crate), so the selected PMXT trade-id format must be mirrored with tests/provenance or exposed upstream before direct helper reuse can be claimed.",
-    "PMXT price_change grouping policy must be implemented and verified against pinned NT live-client parity, including timestamp_received boundary handling.",
-    "PMXT last_trade_price selected TradeId/dedupe policy must be TDD-proven before catalog acceptance.",
-    "The selected first-proof instrument-universe selector must be TDD-proven with TOML/source-proof-owned predicates and claim limits.",
-    "tick_size_change dynamic instrument-epoch representation remains unresolved for full L2 acceptance and must be proven with NT catalog read-back and BacktestNode consumption before broad backfill.",
-    "The resulting ParquetDataCatalog proof must write/read InstrumentAny::BinaryOption, OrderBookDelta, and TradeTick under artifact_root staging; local prototype directories are insufficient.",
-    "The coverage ledger must use timestamp_received as the archive-hour coverage axis because source timestamp can be older than the archive object hour."
+  "resolved_by_current_code": [
+    "The isolated BTE crate now depends on pinned nautilus-polymarket and compile-checks the public Polymarket provider/parser surfaces.",
+    "The bounded one-off PMXT projection uses NT parse_gamma_market/create_instrument_from_def, parse_book_snapshot, and parse_book_deltas for the selected Gamma-backed BinaryOption sample.",
+    "The selected PMXT historical TradeTick path mirrors pinned NT's crate-private transaction_hash+asset+sequence TradeId shape with focused tests and provenance because build_polymarket_trade_id is not public.",
+    "Selected-source projection validates the selected-source report hash, selected-source parquet hash, selector hash chain, usage_scope, selected asset hash, and source-row-group constrained artifact before projection.",
+    "The bounded one-off artifact-root run writes OrderBookDelta and TradeTick data to NT ParquetDataCatalog, reads the typed catalog data back, runs NT BacktestNode over the verified catalog, and writes a BacktestResultContract with selector and catalog provenance.",
+    "The selected-source projection rejects configured non-ignorable tick_size_change rows instead of silently dropping dynamic instrument-epoch events."
   ],
+  "remaining_before_broad_backfill": [
+    "The PMXT source proof remains pending and usage_scope remains one_off_backfill_data, so this artifact cannot become canonical backfill input.",
+    "Expanded PMXT coverage, gap/completeness, retention/freshness, throughput, storage, and exact cost evidence are still unproven for any durable broad tranche.",
+    "tick_size_change dynamic instrument-epoch representation remains unresolved for full L2 acceptance and must be proven with NT catalog read-back and BacktestNode consumption before broad backfill.",
+    "A durable Polymarket source selection proof is still required before PMXT coverage ledgers can authorize canonical-ready backfill.",
+    "The coverage ledger must continue to use timestamp_received as the archive-hour coverage axis because source timestamp can be older than the archive object hour."
+  ],
+  "current_code_reconciliation": {
+    "status": "current_one_off_pmxt_l2_trade_tick_projection_proven",
+    "branch": "codex/bte-clean-converter-nt-use-main-reconcile",
+    "current_head": "21d53976",
+    "code_evidence": [
+      "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs:698",
+      "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs:444",
+      "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs:985",
+      "repo://crates/backtesting-vertical-slice/src/pmxt_one_off_backfill_projection.rs:1344",
+      "repo://crates/backtesting-vertical-slice/src/polymarket_metadata_gate.rs:57",
+      "repo://crates/backtesting-vertical-slice/src/polymarket_nt_surface_proof.rs:59"
+    ],
+    "test_evidence": [
+      "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs:54",
+      "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs:137",
+      "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs:197",
+      "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs:262",
+      "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs:456",
+      "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_pmxt_one_off_projection.rs:790"
+    ],
+    "ci_evidence": "PR #610 head 21d53976 passed Backtester CI bvs-test, bvs-clippy, bvs-fmt, backtester-gate and main CI fmt-check, clippy, source-fence, nextest archive plus all shards, deny, check-aarch64, gate, test, CodeQL, and actionlint.",
+    "claim_limit": "This reconciliation proves only the bounded one-off PMXT selected-source path. It does not prove durable source acceptance, expanded coverage/cost/storage, production throughput, dynamic tick-size replay, or broad PMXT backfill."
+  },
   "broad_backfill_allowed": false
 }

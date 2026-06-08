@@ -56,6 +56,7 @@ use crate::{
     bolt_v3_providers::{
         STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
         normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
+        reference_price_provider_supports_asset,
     },
     bolt_v3_realized_volatility::{
         RealizedVolEngine, RealizedVolObservation, RealizedVolSampleKind, RealizedVolSourceClass,
@@ -405,15 +406,7 @@ fn reference_price_source_is_unsupported(
     reference_price: &ReferencePriceBlock,
     source: &crate::bolt_v3_config::ReferencePriceSourceBlock,
 ) -> bool {
-    let Some(metadata) =
-        crate::bolt_v3_providers::reference_price_provider_metadata(source.provider.as_str())
-    else {
-        return true;
-    };
-    !metadata.supported_assets.is_empty()
-        && !metadata
-            .supported_assets
-            .contains(&reference_price.asset.as_str())
+    !reference_price_provider_supports_asset(source.provider.as_str(), &reference_price.asset)
 }
 
 fn reference_price_source_provider_identifier<'a>(
@@ -1512,7 +1505,7 @@ impl BinaryOracleEdgeTaker {
             let Some(source) = reference_price.sources.get(source_id) else {
                 continue;
             };
-            if !source.enabled {
+            if !reference_price_source_is_runtime_available(reference_price, source) {
                 continue;
             }
             let provider = source.provider.as_str();

@@ -21,7 +21,10 @@ use crate::{
     bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_config::ReferencePriceSourceBlock,
     bolt_v3_live_node::{BoltV3LiveNodeRuntime, build_bolt_v3_strategy_free_live_node},
-    bolt_v3_providers::{ReferencePriceIdentifierKind, reference_price_provider_metadata},
+    bolt_v3_providers::{
+        ReferencePriceIdentifierKind, reference_price_provider_metadata,
+        reference_price_provider_supports_asset,
+    },
     bolt_v3_reference_price::{
         REFERENCE_PRICE_ASSET_PARAM, REFERENCE_PRICE_INSTRUMENT_ID_PARAM,
         REFERENCE_PRICE_PROVIDER_PARAM, REFERENCE_PRICE_SOURCE_KEY_PARAM,
@@ -125,6 +128,12 @@ pub fn reference_current_price_health_plan(
                 )
             })?;
             if !source.enabled {
+                continue;
+            }
+            if !reference_price_provider_supports_asset(
+                source.provider.as_str(),
+                reference_current_price.asset.as_str(),
+            ) {
                 continue;
             }
             let client_key = source.client_id.to_string();
@@ -617,6 +626,40 @@ mod tests {
         assert_eq!(target.client_key, "polyresearch_reference");
         assert_eq!(target.provider_instrument, "BTC/USD");
         assert!(!target.required);
+    }
+
+    #[test]
+    fn reference_current_price_health_plan_skips_unsupported_optional_sources() {
+        let mut loaded = load_bolt_v3_config(Path::new("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture config should load");
+        let reference = loaded.strategies[0]
+            .config
+            .reference_current_price
+            .as_mut()
+            .expect("fixture strategy should declare reference_current_price");
+        reference.asset = "BNB".to_string();
+        reference
+            .sources
+            .get_mut("chainlink_primary")
+            .expect("chainlink source should exist")
+            .instrument_id = Some("BNB-USD.CHAINLINK".to_string());
+        reference
+            .sources
+            .get_mut("polyresearch_backup")
+            .expect("polyresearch source should exist")
+            .symbol = Some("BNB/USD".to_string());
+
+        let plan = reference_current_price_health_plan(&loaded)
+            .expect("reference_current_price health plan should build");
+
+        assert_eq!(plan.client_keys, vec!["chainlink_reference"]);
+        assert_eq!(plan.targets.len(), 1);
+        let target = &plan.targets[0];
+        assert_eq!(target.source_id, "chainlink_primary");
+        assert_eq!(target.asset, "BNB");
+        assert_eq!(target.provider, "chainlink_ws");
+        assert_eq!(target.client_key, "chainlink_reference");
+        assert_eq!(target.provider_instrument, "BNB-USD.CHAINLINK");
     }
 
     #[test]

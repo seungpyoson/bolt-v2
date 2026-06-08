@@ -59,6 +59,7 @@ use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 use crate::bolt_v3_providers::{
     REFERENCE_CATALOG_VENUE_KEY, RESOLUTION_ORACLE_VENUE_KEY, ReferencePriceIdentifierKind,
     reference_price_provider_identifier_is_configured, reference_price_provider_metadata,
+    reference_price_provider_supports_asset,
 };
 
 #[derive(Debug)]
@@ -2377,10 +2378,10 @@ fn validate_reference_current_price(
         }
 
         let unsupported_asset = source.enabled
-            && !provider_metadata.supported_assets.is_empty()
-            && !provider_metadata
-                .supported_assets
-                .contains(&reference_current_price.asset.as_str());
+            && !reference_price_provider_supports_asset(
+                source.provider.as_str(),
+                reference_current_price.asset.as_str(),
+            );
         if unsupported_asset {
             valid_enabled_sources = valid_enabled_sources.saturating_sub(1);
         }

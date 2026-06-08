@@ -569,6 +569,13 @@ pub fn reference_price_provider_metadata(
     None
 }
 
+pub fn reference_price_provider_supports_asset(provider_key: &str, asset: &str) -> bool {
+    let Some(metadata) = reference_price_provider_metadata(provider_key) else {
+        return false;
+    };
+    metadata.supported_assets.is_empty() || metadata.supported_assets.contains(&asset)
+}
+
 pub fn reference_price_provider_identifier_is_configured(
     root: &BoltV3RootConfig,
     provider_key: &str,

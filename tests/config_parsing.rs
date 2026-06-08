@@ -33,13 +33,13 @@ const SHIPPED_BINARY_ORACLE_STRATEGY_FILES: &[&str] = &[
     "config/strategies/binary_oracle_doge.toml",
 ];
 
-const SHIPPED_REFERENCE_PRICE_SOURCES: &[(&str, &str, &str)] = &[
-    ("BTC", "BTC-USD.CHAINLINK", "BTC/USD"),
-    ("ETH", "ETH-USD.CHAINLINK", "ETH/USD"),
-    ("SOL", "SOL-USD.CHAINLINK", "SOL/USD"),
-    ("BNB", "BNB-USD.CHAINLINK", "BNB/USD"),
-    ("XRP", "XRP-USD.CHAINLINK", "XRP/USD"),
-    ("DOGE", "DOGE-USD.CHAINLINK", "DOGE/USD"),
+const SHIPPED_REFERENCE_PRICE_SOURCES: &[(&str, &str, Option<&str>)] = &[
+    ("BTC", "BTC-USD.CHAINLINK", Some("BTC/USD")),
+    ("ETH", "ETH-USD.CHAINLINK", Some("ETH/USD")),
+    ("SOL", "SOL-USD.CHAINLINK", Some("SOL/USD")),
+    ("BNB", "BNB-USD.CHAINLINK", None),
+    ("XRP", "XRP-USD.CHAINLINK", Some("XRP/USD")),
+    ("DOGE", "DOGE-USD.CHAINLINK", None),
 ];
 
 #[test]
@@ -130,10 +130,17 @@ fn shipped_reference_current_price_can_select_chainlink_or_prr_websockets() {
             .as_ref()
             .expect("strategy should declare reference_current_price");
 
+        let expected_sources = if prr_symbol.is_some() {
+            vec![
+                "chainlink_primary".to_string(),
+                "polyresearch_backup".to_string(),
+            ]
+        } else {
+            vec!["chainlink_primary".to_string()]
+        };
         assert_eq!(
-            reference.source_order,
-            ["chainlink_primary", "polyresearch_backup"],
-            "{asset} must expose Chainlink and PRR current-price sources in order"
+            reference.source_order, expected_sources,
+            "{asset} must expose only supported current-price sources in order"
         );
         assert_eq!(reference.min_valid_sources, 1);
 
@@ -149,14 +156,21 @@ fn shipped_reference_current_price_can_select_chainlink_or_prr_websockets() {
         );
         assert!(!chainlink.required);
 
-        let prr = reference
-            .sources
-            .get("polyresearch_backup")
-            .expect("PRR current-price source must be configured");
-        assert_eq!(prr.provider.as_str(), "polyresearch_ws");
-        assert_eq!(prr.client_id.as_str(), "polyresearch_reference");
-        assert_eq!(prr.symbol.as_deref(), Some(*prr_symbol));
-        assert!(!prr.required);
+        if let Some(prr_symbol) = prr_symbol {
+            let prr = reference
+                .sources
+                .get("polyresearch_backup")
+                .expect("PRR current-price source must be configured for supported assets");
+            assert_eq!(prr.provider.as_str(), "polyresearch_ws");
+            assert_eq!(prr.client_id.as_str(), "polyresearch_reference");
+            assert_eq!(prr.symbol.as_deref(), Some(*prr_symbol));
+            assert!(!prr.required);
+        } else {
+            assert!(
+                !reference.sources.contains_key("polyresearch_backup"),
+                "{asset} must not declare unsupported PRR current-price source"
+            );
+        }
     }
 }
 

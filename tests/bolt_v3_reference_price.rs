@@ -43,10 +43,7 @@ fn reference_price_provider_metadata_uses_provider_owned_keys() {
         polyresearch.identifier_kind,
         ReferencePriceIdentifierKind::Symbol
     );
-    assert_eq!(
-        polyresearch.supported_assets,
-        ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "HYPE"]
-    );
+    assert_eq!(polyresearch.supported_assets, ["BTC", "ETH", "SOL", "XRP"]);
 }
 
 #[test]

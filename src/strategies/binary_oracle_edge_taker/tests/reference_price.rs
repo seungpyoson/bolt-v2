@@ -176,6 +176,51 @@ fn reference_price_sources_subscribe_as_custom_data_on_start_and_unsubscribe_on_
 }
 
 #[test]
+fn unsupported_optional_reference_price_source_does_not_subscribe() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price.asset = "BNB".to_string();
+    reference_price
+        .sources
+        .get_mut(CHAINLINK_PRIMARY_SOURCE_ID)
+        .expect("chainlink source should exist")
+        .instrument_id = Some("BNB-USD.CHAINLINK_REFERENCE".to_string());
+    reference_price
+        .sources
+        .get_mut(POLYRESEARCH_BACKUP_SOURCE_ID)
+        .expect("polyresearch source should exist")
+        .symbol = Some("BNB".to_string());
+    strategy.config.reference_current_price = Some(reference_price);
+    register_test_strategy(&mut strategy);
+
+    DataActor::on_start(&mut strategy).expect("strategy should start");
+
+    assert_eq!(strategy.reference_price_subscribe_events.len(), 1);
+    assert_reference_price_subscription(
+        &strategy.reference_price_subscribe_events[0],
+        REFERENCE_PRICE_SUBSCRIBE_ACTION,
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        "chainlink_reference",
+        Some("BNB-USD.CHAINLINK_REFERENCE"),
+        None,
+    );
+
+    DataActor::on_stop(&mut strategy).expect("strategy should stop");
+
+    assert_eq!(strategy.reference_price_subscribe_events.len(), 2);
+    assert_reference_price_subscription(
+        &strategy.reference_price_subscribe_events[1],
+        REFERENCE_PRICE_UNSUBSCRIBE_ACTION,
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        "chainlink_reference",
+        Some("BNB-USD.CHAINLINK_REFERENCE"),
+        None,
+    );
+}
+
+#[test]
 fn non_winning_reference_price_source_updates_health_without_trading_state() {
     let mut strategy = test_strategy();
     let mut reference_price = reference_price_config();

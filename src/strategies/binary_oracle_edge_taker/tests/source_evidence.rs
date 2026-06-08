@@ -120,6 +120,86 @@ fn surfaced_realized_volatility_forwards_duplicate_stream_bindings() {
 }
 
 #[test]
+fn surfaced_realized_volatility_forwards_disabled_source_observations_for_audit() {
+    let mut engine_config = test_realized_volatility_engine_config();
+    engine_config.sources.push(
+        crate::bolt_v3_realized_volatility::RealizedVolSourceConfig {
+            source_id: TEST_SOURCE_ID_B.to_string(),
+            data_client_id: "<DATA_CLIENT_ID>".to_string(),
+            instrument_id: TEST_RV_INSTRUMENT_ID.to_string(),
+            source_class: crate::bolt_v3_realized_volatility::RealizedVolSourceClass::SpotQuote,
+            sample_kind: crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Midpoint,
+            enabled: false,
+            counts_toward_quorum: false,
+            canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
+        },
+    );
+    let mut strategy = test_strategy_with_realized_volatility_surface(engine_config);
+
+    strategy
+        .on_quote(&quote_tick(TEST_RV_INSTRUMENT_ID, 100.0, 102.0, 1_000))
+        .expect("configured RV quote source should process");
+
+    let snapshot = strategy
+        .pricing
+        .latest_realized_vol_snapshot
+        .as_ref()
+        .expect("RV forwarding should publish a pricing snapshot");
+    let disabled_diagnostic = snapshot
+        .source_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source_id == TEST_SOURCE_ID_B)
+        .expect("disabled source diagnostic should exist");
+    assert_eq!(
+        disabled_diagnostic.status,
+        crate::bolt_v3_realized_volatility::RealizedVolSourceStatus::Rejected
+    );
+    assert_eq!(
+        disabled_diagnostic.last_rejected_reason,
+        Some(crate::bolt_v3_realized_volatility::RealizedVolSourceRejectReason::DisabledSource)
+    );
+    assert_eq!(
+        disabled_diagnostic.rejection_counters.get(
+            &crate::bolt_v3_realized_volatility::RealizedVolSourceRejectReason::DisabledSource
+        ),
+        Some(&1)
+    );
+}
+
+#[test]
+fn realized_volatility_bindings_keep_disabled_sources_non_subscribable_for_audit_fanout() {
+    let mut engine_config = test_realized_volatility_engine_config();
+    engine_config.sources.push(
+        crate::bolt_v3_realized_volatility::RealizedVolSourceConfig {
+            source_id: TEST_SOURCE_ID_B.to_string(),
+            data_client_id: "<DATA_CLIENT_ID>".to_string(),
+            instrument_id: TEST_RV_INSTRUMENT_ID.to_string(),
+            source_class: crate::bolt_v3_realized_volatility::RealizedVolSourceClass::SpotQuote,
+            sample_kind: crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Midpoint,
+            enabled: false,
+            counts_toward_quorum: false,
+            canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
+        },
+    );
+
+    let bindings = realized_vol_source_bindings(&engine_config.sources);
+    let instrument_id =
+        InstrumentId::from_str(TEST_RV_INSTRUMENT_ID).expect("test instrument id should parse");
+    let source_bindings = bindings
+        .get(&instrument_id)
+        .expect("shared instrument should have bindings");
+    assert_eq!(source_bindings.len(), 2);
+    let disabled_binding = source_bindings
+        .iter()
+        .find(|binding| binding.source_id == TEST_SOURCE_ID_B)
+        .expect("disabled source should stay bound for observation fanout");
+    assert!(
+        !disabled_binding.enabled,
+        "disabled source must not become a subscription target"
+    );
+}
+
+#[test]
 fn surfaced_realized_volatility_refresh_blocks_when_source_goes_stale() {
     let mut strategy =
         test_strategy_with_realized_volatility_surface(test_realized_volatility_engine_config());
@@ -757,6 +837,60 @@ fn strategy_input_evidence_accepts_ready_surfaced_zero_realized_volatility() {
     };
     assert_eq!(snapshot.realized_volatility, "0");
     assert_eq!(snapshot.realized_volatility_annualized_decimal, "0");
+}
+
+#[test]
+fn strategy_input_evidence_records_realized_volatility_not_ready_pricing_block() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
+    strategy.pricing.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
+    strategy.pricing.observe_realized_vol_snapshot(
+        crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
+            surface_id: TEST_SURFACE_ID.to_string(),
+            as_of_ms: 1_200,
+            annualized_realized_vol_decimal: None,
+            ready: false,
+            sources_used: Vec::new(),
+            source_diagnostics: Vec::new(),
+            unknown_source_rejections: std::collections::BTreeMap::new(),
+            blocked_reasons: vec![
+                crate::bolt_v3_realized_volatility::RealizedVolBlockReason::QuorumNotReady,
+            ],
+            aggregate_method:
+                crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
+                    quantile: 1.0,
+                },
+            seconds_per_annum: 31_536_000.0,
+            config_fingerprint: "<config_fingerprint>".to_string(),
+        },
+    );
+
+    assert_eq!(
+        strategy
+            .try_submit_entry_order(1_200)
+            .expect("RV-not-ready pricing block should not attempt submit"),
+        None
+    );
+
+    let events = evidence.events();
+    let [RecordedDecisionEvidenceEvent::StrategyInput(snapshot)] = events.as_slice() else {
+        panic!("expected only blocked strategy input evidence; got {events:#?}");
+    };
+    assert_eq!(snapshot.realized_volatility_surface_id, TEST_SURFACE_ID);
+    assert_eq!(snapshot.realized_volatility_as_of_ms, Some(1_200));
+    assert_eq!(snapshot.realized_volatility_annualized_decimal, "");
+    assert_eq!(
+        snapshot.realized_volatility_blockers,
+        vec!["quorum_not_ready".to_string()]
+    );
+    assert_eq!(snapshot.submission_instrument_id, "");
+    assert_eq!(snapshot.client_order_id, "");
 }
 
 #[test]

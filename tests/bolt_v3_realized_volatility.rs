@@ -310,6 +310,28 @@ fn config_fingerprint_changes_when_policy_changes() {
 }
 
 #[test]
+fn engine_config_validation_matches_root_policy_bounds() {
+    let mut interval_exceeds_window = config(&[SOURCE_A]);
+    interval_exceeds_window.window_ms = 1_000;
+    interval_exceeds_window.sampling_interval_ms = 2_000;
+    let error = RealizedVolEngine::from_config(interval_exceeds_window)
+        .expect_err("engine constructor must reject sample intervals larger than the window");
+    assert!(
+        error.contains("window_ms"),
+        "unexpected validation error: {error}"
+    );
+
+    let mut nan_coverage = config(&[SOURCE_A]);
+    nan_coverage.min_coverage_ratio = f64::NAN;
+    let error = RealizedVolEngine::from_config(nan_coverage)
+        .expect_err("engine constructor must reject NaN coverage ratios");
+    assert!(
+        error.contains("min_coverage_ratio"),
+        "unexpected validation error: {error}"
+    );
+}
+
+#[test]
 fn invalid_config_snapshot_uses_explicit_invalid_config_blocker() {
     let snapshot = RealizedVolSnapshot::invalid_config(
         "<surface_id>",

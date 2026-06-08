@@ -210,8 +210,11 @@ mod tests {
     // and adding disabled-source surfaced RV diagnostics coverage.
     // Re-derived again after removing the strategy-owned internal realized
     // volatility estimator and requiring surfaced RV for taker pricing.
+    // Re-derived again after recording RV-not-ready pricing blocks in strategy
+    // input evidence and forwarding disabled surfaced RV sources for audit
+    // without subscribing disabled-only source bindings.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "2ef78ecc23fd4662e59a94235617412ca62ef9a4f42ff6baeacfd17260be2590";
+        "9d749225dcaddf69b12d7e58e0e1f2ee0bb0c60037ade2ed40f2bc92ecd1c4af";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

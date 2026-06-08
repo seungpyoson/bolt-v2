@@ -340,10 +340,16 @@ fn validate_config(config: &RealizedVolEngineConfig) -> Result<(), String> {
     if config.window_ms == 0 || config.sampling_interval_ms == 0 || config.min_ready_sources == 0 {
         return Err("realized_volatility policy integers must be positive".to_string());
     }
+    if config.sampling_interval_ms > config.window_ms {
+        return Err("window_ms must be greater than or equal to sampling_interval_ms".to_string());
+    }
     if !is_positive_finite(config.seconds_per_annum) {
         return Err("seconds_per_annum must be positive finite".to_string());
     }
-    if config.min_coverage_ratio <= ZERO_F64 || config.min_coverage_ratio > UNIT_F64 {
+    if !config.min_coverage_ratio.is_finite()
+        || config.min_coverage_ratio <= ZERO_F64
+        || config.min_coverage_ratio > UNIT_F64
+    {
         return Err("min_coverage_ratio must be in (0, 1]".to_string());
     }
     if !config.max_cross_source_dispersion.is_finite()

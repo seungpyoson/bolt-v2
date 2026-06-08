@@ -264,6 +264,7 @@ struct RealizedVolSourceBinding {
     data_client_id: String,
     source_class: RealizedVolSourceClass,
     sample_kind: RealizedVolSampleKind,
+    enabled: bool,
 }
 
 impl OutcomePreparedBooks {
@@ -391,7 +392,7 @@ fn realized_vol_source_bindings(
     sources: &[RealizedVolSourceConfig],
 ) -> BTreeMap<InstrumentId, Vec<RealizedVolSourceBinding>> {
     let mut bindings: BTreeMap<InstrumentId, Vec<RealizedVolSourceBinding>> = BTreeMap::new();
-    for source in sources.iter().filter(|source| source.enabled) {
+    for source in sources {
         let Ok(instrument_id) = InstrumentId::from_str(source.instrument_id.as_str()) else {
             continue;
         };
@@ -400,6 +401,7 @@ fn realized_vol_source_bindings(
             data_client_id: source.data_client_id.clone(),
             source_class: source.source_class,
             sample_kind: source.sample_kind,
+            enabled: source.enabled,
         };
         match bindings.entry(instrument_id) {
             std::collections::btree_map::Entry::Occupied(mut entry) => {
@@ -1342,6 +1344,7 @@ impl BinaryOracleEdgeTaker {
             .flat_map(|(instrument_id, bindings)| {
                 bindings
                     .iter()
+                    .filter(|binding| binding.enabled)
                     .map(|binding| (*instrument_id, binding.clone()))
             })
             .collect::<Vec<_>>();
@@ -1396,6 +1399,7 @@ impl BinaryOracleEdgeTaker {
             .flat_map(|(instrument_id, bindings)| {
                 bindings
                     .iter()
+                    .filter(|binding| binding.enabled)
                     .map(|binding| (*instrument_id, binding.clone()))
             })
             .collect::<Vec<_>>();
@@ -3504,6 +3508,188 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
+    fn realized_volatility_evidence_fields(
+        &self,
+        fallback_realized_volatility: Option<f64>,
+    ) -> RealizedVolatilityEvidenceFields {
+        let realized_volatility_snapshot = self
+            .pricing
+            .latest_realized_vol_snapshot
+            .as_ref()
+            .filter(|snapshot| {
+                self.config.realized_volatility_surface_id.as_str() == snapshot.surface_id.as_str()
+            });
+        match realized_volatility_snapshot {
+            Some(snapshot) => RealizedVolatilityEvidenceFields {
+                surface_id: snapshot.surface_id.clone(),
+                as_of_ms: Some(snapshot.as_of_ms),
+                annualized_decimal: snapshot
+                    .annualized_realized_vol_decimal
+                    .map_or_else(String::new, evidence_number),
+                seconds_per_annum: evidence_number(snapshot.seconds_per_annum),
+                aggregation: realized_volatility_aggregation_evidence_label(snapshot.aggregate_method)
+                    .to_string(),
+                sources_used: snapshot.sources_used.clone(),
+                source_diagnostics: snapshot
+                    .source_diagnostics
+                    .iter()
+                    .map(
+                        BoltV3RealizedVolatilitySourceDiagnosticEvidence::from_realized_vol_diagnostic,
+                    )
+                    .collect(),
+                unknown_source_rejections: snapshot.unknown_source_rejections.clone(),
+                blockers: snapshot
+                    .blocked_reasons
+                    .iter()
+                    .map(|reason| {
+                        realized_volatility_block_reason_evidence_label(*reason).to_string()
+                    })
+                    .collect(),
+                config_fingerprint: snapshot.config_fingerprint.clone(),
+            },
+            None => RealizedVolatilityEvidenceFields {
+                surface_id: String::new(),
+                as_of_ms: None,
+                annualized_decimal: fallback_realized_volatility
+                    .map_or_else(String::new, evidence_number),
+                seconds_per_annum: String::new(),
+                aggregation: String::new(),
+                sources_used: Vec::new(),
+                source_diagnostics: Vec::new(),
+                unknown_source_rejections: BTreeMap::new(),
+                blockers: Vec::new(),
+                config_fingerprint: String::new(),
+            },
+        }
+    }
+
+    fn blocked_entry_strategy_input_evidence_snapshot_at(
+        &self,
+        now_ms: u64,
+        decision: &EntrySubmissionDecision,
+    ) -> Result<BoltV3StrategyInputEvidenceSnapshot> {
+        let realized_volatility = self.realized_volatility_evidence_fields(None);
+        let market_selection_outcome =
+            strategy_input_market_selection_outcome(self.active.market_selection_outcome);
+        let reference_quote_ts_event = self.active.last_reference_ts_ms.ok_or_else(|| {
+            anyhow::anyhow!(
+                "blocked entry strategy input evidence requires reference quote timestamp"
+            )
+        })?;
+        let seconds_to_market_end = self.current_seconds_to_expiry_at(now_ms).ok_or_else(|| {
+            anyhow::anyhow!("blocked entry strategy input evidence requires seconds to market end")
+        })?;
+        let expected_edge_basis_points = decision
+            .evaluation
+            .expected_ev_per_notional
+            .filter(|value| value.is_finite())
+            .map(|value| value * BPS_DENOMINATOR);
+        let worst_case_edge_basis_points = match decision.evaluation.selected_side {
+            Some(OutcomeSide::Up) => decision.evaluation.up_worst_case_ev_bps,
+            Some(OutcomeSide::Down) => decision.evaluation.down_worst_case_ev_bps,
+            None => None,
+        };
+
+        Ok(BoltV3StrategyInputEvidenceSnapshot {
+            strategy_id: self.config.strategy_id.clone(),
+            configured_target_id: self.config.configured_target_id.clone(),
+            market_selection_ruleset_id: self.config.configured_target_id.clone(),
+            market_selection_outcome: market_selection_outcome.to_string(),
+            market_id: self.active.market_id.clone(),
+            polymarket_condition_id: self
+                .active
+                .source_identity
+                .as_ref()
+                .map(|identity| identity.condition_id.clone()),
+            polymarket_market_slug: self
+                .active
+                .source_identity
+                .as_ref()
+                .map(|identity| identity.market_slug.clone()),
+            polymarket_question_id: self
+                .active
+                .source_identity
+                .as_ref()
+                .map(|identity| identity.question_id.clone()),
+            up_instrument_id: self
+                .active
+                .books
+                .up
+                .instrument_id
+                .map(|instrument_id| instrument_id.to_string()),
+            down_instrument_id: self
+                .active
+                .books
+                .down
+                .instrument_id
+                .map(|instrument_id| instrument_id.to_string()),
+            market_selection_timestamp_ms: self.active.selection_published_at_ms,
+            selected_market_observed_timestamp_ms: self.active.selection_published_at_ms,
+            polymarket_market_start_timestamp_ms: self.active.interval_start_ms,
+            polymarket_market_end_timestamp_ms: self.active.interval_end_ms,
+            price_to_beat_source: self.config.price_to_beat_source.clone(),
+            price_to_beat_value: self
+                .active
+                .price_to_beat
+                .filter(|value| is_positive_finite(*value))
+                .map_or_else(String::new, evidence_number),
+            reference_quote_ts_event,
+            spot_price: self
+                .pricing
+                .spot_price()
+                .filter(|value| is_positive_finite(*value))
+                .map_or_else(String::new, evidence_number),
+            reference_fair_value: self.pricing.last_reference_fair_value.map(evidence_number),
+            realized_volatility: String::new(),
+            realized_volatility_surface_id: realized_volatility.surface_id,
+            realized_volatility_as_of_ms: realized_volatility.as_of_ms,
+            realized_volatility_annualized_decimal: realized_volatility.annualized_decimal,
+            realized_volatility_seconds_per_annum: realized_volatility.seconds_per_annum,
+            realized_volatility_aggregation: realized_volatility.aggregation,
+            realized_volatility_sources_used: realized_volatility.sources_used,
+            realized_volatility_source_diagnostics: realized_volatility.source_diagnostics,
+            realized_volatility_unknown_source_rejections: realized_volatility
+                .unknown_source_rejections,
+            realized_volatility_blockers: realized_volatility.blockers,
+            realized_volatility_config_fingerprint: realized_volatility.config_fingerprint,
+            seconds_to_market_end,
+            pricing_kurtosis: evidence_number(self.config.pricing_kurtosis),
+            theta_decay_factor: evidence_number(self.config.theta_decay_factor),
+            theta_scaled_min_edge_bps: decision
+                .evaluation
+                .min_worst_case_ev_bps
+                .filter(|value| value.is_finite())
+                .map_or_else(String::new, evidence_number),
+            fair_probability_up: decision
+                .evaluation
+                .fair_probability_up
+                .filter(|value| value.is_finite())
+                .map_or_else(String::new, evidence_number),
+            uncertainty_band_probability: decision
+                .evaluation
+                .uncertainty_band_probability
+                .filter(|value| value.is_finite())
+                .map_or_else(String::new, evidence_number),
+            expected_edge_basis_points: expected_edge_basis_points
+                .filter(|value| value.is_finite())
+                .map_or_else(String::new, evidence_number),
+            worst_case_edge_basis_points: worst_case_edge_basis_points
+                .filter(|value| value.is_finite())
+                .map_or_else(String::new, evidence_number),
+            fee_rate_basis_points: String::new(),
+            selected_side: decision
+                .evaluation
+                .selected_side
+                .map(outcome_side_evidence_label)
+                .map(str::to_string),
+            submission_instrument_id: String::new(),
+            submission_order_side: String::new(),
+            submission_price: String::new(),
+            submission_quantity: String::new(),
+            client_order_id: String::new(),
+        })
+    }
+
     fn entry_strategy_input_evidence_snapshot_at(
         &self,
         now_ms: u64,
@@ -4073,6 +4259,27 @@ impl BinaryOracleEdgeTaker {
         self.refresh_realized_volatility_snapshot_at(now_ms);
         let decision = self.entry_submission_decision_at(now_ms);
         self.log_entry_evaluation(now_ms, &decision);
+
+        if decision.blocked_reason == Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED)
+            && decision
+                .evaluation
+                .pricing_blocked_by
+                .contains(&EntryPricingBlockReason::RealizedVolNotReady)
+            && self
+                .pricing
+                .latest_realized_vol_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| {
+                    snapshot.surface_id.as_str()
+                        == self.config.realized_volatility_surface_id.as_str()
+                })
+        {
+            let strategy_input_snapshot =
+                self.blocked_entry_strategy_input_evidence_snapshot_at(now_ms, &decision)?;
+            self.context
+                .decision_evidence()
+                .record_strategy_input_snapshot(&strategy_input_snapshot)?;
+        }
 
         let Some(instrument_id) = decision.instrument_id else {
             if let Some(reason) = decision.blocked_reason {
@@ -5262,6 +5469,20 @@ enum EntryPricingBlockReason {
     FeeUnavailable(OutcomeSide),
     ExecutableEntryCostUnavailable(OutcomeSide),
     WorstCaseEvUnavailable(OutcomeSide),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RealizedVolatilityEvidenceFields {
+    surface_id: String,
+    as_of_ms: Option<u64>,
+    annualized_decimal: String,
+    seconds_per_annum: String,
+    aggregation: String,
+    sources_used: Vec<String>,
+    source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
+    unknown_source_rejections: BTreeMap<String, u64>,
+    blockers: Vec<String>,
+    config_fingerprint: String,
 }
 
 fn entry_pricing_block_reason_from_taker(

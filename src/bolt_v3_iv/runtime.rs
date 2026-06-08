@@ -1042,7 +1042,7 @@ mod tests {
         assert!(poison_result.is_err());
 
         let recovered = catch_unwind(AssertUnwindSafe(|| {
-            engine.state_for_profile("configured-missing-profile")
+            engine.state_for_profile("missing_profile")
         }));
 
         assert_eq!(recovered.unwrap(), None);

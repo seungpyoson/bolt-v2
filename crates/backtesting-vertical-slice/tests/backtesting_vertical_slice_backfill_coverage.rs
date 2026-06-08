@@ -235,6 +235,85 @@ table_family = "synthetic_wrong_family"
 }
 
 #[test]
+fn coverage_ledger_rejects_source_proof_path_with_invalid_accepted_proof() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let manifest_path = dir.path().join("manifest.json");
+    let source_proof_path = dir.path().join("source-proof.json");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "run_id": "manifest-synthetic-invalid-accepted-proof",
+            "coverage_axis": "synthetic_ingest_time",
+            "write_mode": "canonical_s3",
+            "canonical_s3_write": true,
+            "planned_payload_object_count": 1,
+            "completed_payload_object_count": 1,
+            "completed_payload_bytes": 500,
+            "errors": []
+        }))
+        .expect("serialize manifest"),
+    )
+    .expect("write manifest");
+    let mut source_proof =
+        synthetic_pending_source_proof("synthetic-archive-index", "synthetic_order_book_deltas");
+    let source_proof_object = source_proof
+        .as_object_mut()
+        .expect("synthetic source proof object");
+    source_proof_object.insert("status".to_string(), serde_json::json!("accepted"));
+    source_proof_object.insert(
+        "source_selection_status".to_string(),
+        serde_json::json!("ACCEPTED_FOR_REQUIRED_FIDELITY"),
+    );
+    source_proof_object.insert("acceptance_mode".to_string(), serde_json::json!("manual"));
+    source_proof_object.insert("accepted_by".to_string(), serde_json::json!("operator"));
+    source_proof_object.insert(
+        "accepted_at".to_string(),
+        serde_json::json!("2026-06-09T00:00:00Z"),
+    );
+    source_proof_object.insert(
+        "acceptance_scope".to_string(),
+        serde_json::json!({
+            "planned_objects": 1,
+            "completed_objects": 1,
+            "failed_objects": 0,
+            "skipped_objects": 0,
+            "accepted_bytes": 500,
+            "selector_scope_violations": 0
+        }),
+    );
+    fs::write(
+        &source_proof_path,
+        serde_json::to_vec_pretty(&source_proof).expect("serialize source proof"),
+    )
+    .expect("write source proof");
+    let spec_path = dir.path().join("coverage-ledger.toml");
+    let output_dir = dir.path().join("coverage-ledger");
+    fs::write(
+        &spec_path,
+        format!(
+            r#"
+ledger_id = "ledger-synthetic-invalid-accepted-proof"
+output_dir = "{}"
+
+[[manifest]]
+manifest_uri = "manifest://synthetic/invalid-accepted-proof.json"
+path = "{}"
+source_proof_path = "{}"
+"#,
+            output_dir.display(),
+            manifest_path.display(),
+            source_proof_path.display()
+        ),
+    )
+    .expect("write coverage ledger spec");
+
+    let err = write_coverage_ledger_artifact_from_spec_file(&spec_path)
+        .expect_err("invalid accepted source proof must not reach coverage output");
+
+    assert!(err.to_string().contains("source proof acceptance"), "{err}");
+}
+
+#[test]
 fn coverage_ledger_classifies_inventory_without_manifest_as_physical_only() {
     let inventory = BackfillPhysicalInventory {
         inventory_id: "s3-prefix-synthetic-raw".to_string(),

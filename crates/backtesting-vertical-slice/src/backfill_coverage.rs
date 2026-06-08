@@ -165,6 +165,11 @@ pub enum BackfillCoverageManifestFileError {
         path: String,
         error: String,
     },
+    SourceProofAcceptanceRejected {
+        manifest_uri: String,
+        path: String,
+        error: String,
+    },
     SourceProofMetadataMismatch {
         manifest_uri: String,
         field: &'static str,
@@ -215,6 +220,14 @@ impl fmt::Display for BackfillCoverageManifestFileError {
             } => write!(
                 f,
                 "parse backfill coverage source proof JSON for {manifest_uri} from {path}: {error}"
+            ),
+            Self::SourceProofAcceptanceRejected {
+                manifest_uri,
+                path,
+                error,
+            } => write!(
+                f,
+                "backfill coverage source proof acceptance rejected for {manifest_uri} from {path}: {error}"
             ),
             Self::SourceProofMetadataMismatch {
                 manifest_uri,
@@ -786,13 +799,23 @@ fn read_source_proof_metadata(
             path: path_display.clone(),
             error: error.to_string(),
         })?;
-    serde_json::from_slice(&bytes).map_err(|error| {
+    let proof: SourceProofReport = serde_json::from_slice(&bytes).map_err(|error| {
         BackfillCoverageManifestFileError::ParseSourceProofJson {
             manifest_uri: manifest_uri.to_string(),
-            path: path_display,
+            path: path_display.clone(),
             error: error.to_string(),
         }
-    })
+    })?;
+    if proof.status == SourceProofStatus::Accepted {
+        proof.evaluate_acceptance().map_err(|error| {
+            BackfillCoverageManifestFileError::SourceProofAcceptanceRejected {
+                manifest_uri: manifest_uri.to_string(),
+                path: path_display,
+                error: error.to_string(),
+            }
+        })?;
+    }
+    Ok(proof)
 }
 
 fn merge_source_proof_metadata_string(

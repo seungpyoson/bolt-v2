@@ -1932,3 +1932,48 @@ Current conclusion:
   parameter set are provisioned, and a real `artifact_index_commit_proof` run
   shows denied-kind event, snapshot, and latest-pointer writes rejected by
   permissions.
+
+## 2026-06-09 coverage-ledger source-proof acceptance checkpoint
+
+Root cause addressed:
+
+- `SourceProofReport::evaluate_acceptance()` already rejects invalid accepted
+  proofs, including one-off backfill data that cannot become canonical source
+  input.
+- `backfill_coverage` imported metadata from `source_proof_path` by parsing the
+  JSON and copying `status`, `source_binding`, `table_family`, proof id, and
+  proof version. It did not re-run accepted-proof validation when the file
+  claimed `status = accepted`.
+- That left the downstream coverage/readiness path weaker than the
+  source-proof gate: a hand-edited accepted-looking source proof could reach
+  coverage output even when the canonical acceptance validator would reject it.
+
+Change:
+
+- `backfill_coverage` now calls `SourceProofReport::evaluate_acceptance()` for
+  any `source_proof_path` whose parsed status is `accepted`.
+- If validation fails, coverage artifact writing fails with
+  `SourceProofAcceptanceRejected` before a ledger record can become accepted or
+  canonical-ready.
+- Pending source proofs still bind source-proof metadata and produce rejected
+  coverage records, preserving the efficient no-download PMXT evidence path.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_coverage coverage_ledger_rejects_source_proof_path_with_invalid_accepted_proof -- --nocapture`
+  failed because the invalid accepted proof wrote
+  `backfill-coverage-ledger.json`.
+- GREEN: the same focused test passed after coverage revalidated accepted
+  source-proof files.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_coverage source_proof -- --nocapture`
+  passed 4 focused source-proof coverage tests.
+
+Current conclusion:
+
+- This closes a concrete slow-backfill guardrail gap without adding venue,
+  source, PMXT, or table-family constants to generic production code.
+- It does not close `BACKTESTING_ENGINE-022`; PMXT broad backfill still needs
+  durable accepted source proof, coverage/cost/storage evidence, and dynamic
+  tick-size replay proof or an accepted bounded-exclusion policy.

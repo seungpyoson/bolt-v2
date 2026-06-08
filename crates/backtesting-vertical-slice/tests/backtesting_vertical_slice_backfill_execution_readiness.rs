@@ -9,8 +9,8 @@ use backtesting_vertical_slice::{
     },
     backfill_execution_readiness::{
         BACKFILL_EXECUTION_READINESS_REPORT_FILE, BackfillExecutionReadinessBlocker,
-        BackfillExecutionReadinessStatus, BackfillExecutionReadinessSupportedDataPath,
-        evaluate_backfill_execution_readiness,
+        BackfillExecutionReadinessInput, BackfillExecutionReadinessStatus,
+        BackfillExecutionReadinessSupportedDataPath, evaluate_backfill_execution_readiness,
         write_backfill_execution_readiness_report_from_spec_file,
     },
 };
@@ -20,16 +20,16 @@ fn execution_readiness_is_ready_for_matching_accepted_tranche_and_ready_plan() {
     let tranche = accepted_tranche();
     let plan = matching_execution_plan(&tranche);
 
-    let report = evaluate_backfill_execution_readiness(
-        "synthetic-readiness",
-        "synthetic-tranche-file-hash",
-        &tranche,
-        "synthetic-plan-file-hash",
-        &plan,
-        "trades",
-        "TradeTick",
-        supported_data_paths(),
-    );
+    let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+        readiness_id: "synthetic-readiness",
+        accepted_tranche_manifest_hash: "synthetic-tranche-file-hash",
+        tranche: &tranche,
+        execution_plan_hash: "synthetic-plan-file-hash",
+        plan: &plan,
+        required_table_family: "trades",
+        required_nt_data_type: "TradeTick",
+        supported_data_paths: supported_data_paths(),
+    });
 
     assert_eq!(report.status, BackfillExecutionReadinessStatus::Ready);
     assert!(report.blockers.is_empty());
@@ -49,16 +49,16 @@ fn execution_readiness_blocks_when_plan_is_not_bound_to_the_tranche_file_hash() 
     let mut plan = matching_execution_plan(&tranche);
     plan.accepted_tranche_manifest_hash = "different-tranche-file-hash".to_string();
 
-    let report = evaluate_backfill_execution_readiness(
-        "synthetic-readiness",
-        "synthetic-tranche-file-hash",
-        &tranche,
-        "synthetic-plan-file-hash",
-        &plan,
-        "trades",
-        "TradeTick",
-        supported_data_paths(),
-    );
+    let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+        readiness_id: "synthetic-readiness",
+        accepted_tranche_manifest_hash: "synthetic-tranche-file-hash",
+        tranche: &tranche,
+        execution_plan_hash: "synthetic-plan-file-hash",
+        plan: &plan,
+        required_table_family: "trades",
+        required_nt_data_type: "TradeTick",
+        supported_data_paths: supported_data_paths(),
+    });
 
     assert_eq!(report.status, BackfillExecutionReadinessStatus::Blocked);
     assert!(

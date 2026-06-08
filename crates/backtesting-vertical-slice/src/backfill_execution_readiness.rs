@@ -106,6 +106,17 @@ pub struct BackfillExecutionReadinessArtifact {
     pub bytes: u64,
 }
 
+pub struct BackfillExecutionReadinessInput<'a> {
+    pub readiness_id: &'a str,
+    pub accepted_tranche_manifest_hash: &'a str,
+    pub tranche: &'a BackfillAcceptedTrancheManifest,
+    pub execution_plan_hash: &'a str,
+    pub plan: &'a BackfillExecutionPlan,
+    pub required_table_family: &'a str,
+    pub required_nt_data_type: &'a str,
+    pub supported_data_paths: Vec<BackfillExecutionReadinessSupportedDataPath>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackfillExecutionReadinessError {
     ReadSpec { path: String, error: String },
@@ -178,22 +189,18 @@ impl Error for BackfillExecutionReadinessError {}
 
 #[must_use]
 pub fn evaluate_backfill_execution_readiness(
-    readiness_id: impl Into<String>,
-    accepted_tranche_manifest_hash: impl Into<String>,
-    tranche: &BackfillAcceptedTrancheManifest,
-    execution_plan_hash: impl Into<String>,
-    plan: &BackfillExecutionPlan,
-    required_table_family: impl Into<String>,
-    required_nt_data_type: impl Into<String>,
-    supported_data_paths: Vec<BackfillExecutionReadinessSupportedDataPath>,
+    input: BackfillExecutionReadinessInput<'_>,
 ) -> BackfillExecutionReadinessReport {
-    let readiness_id = readiness_id.into();
-    let accepted_tranche_manifest_hash = accepted_tranche_manifest_hash.into();
-    let execution_plan_hash = execution_plan_hash.into();
-    let required_table_family = required_table_family.into();
-    let required_nt_data_type = required_nt_data_type.into();
+    let readiness_id = input.readiness_id.to_string();
+    let accepted_tranche_manifest_hash = input.accepted_tranche_manifest_hash.to_string();
+    let execution_plan_hash = input.execution_plan_hash.to_string();
+    let required_table_family = input.required_table_family.to_string();
+    let required_nt_data_type = input.required_nt_data_type.to_string();
     let required_table_family_trimmed = required_table_family.trim();
     let required_nt_data_type_trimmed = required_nt_data_type.trim();
+    let tranche = input.tranche;
+    let plan = input.plan;
+    let supported_data_paths = input.supported_data_paths;
     let mut blockers = Vec::new();
 
     if readiness_id.trim().is_empty() {
@@ -368,16 +375,16 @@ pub fn write_backfill_execution_readiness_report_from_spec_file(
     let (tranche, tranche_hash) =
         read_accepted_tranche_manifest(&spec.accepted_tranche_manifest_path)?;
     let (plan, plan_hash) = read_execution_plan(&spec.execution_plan_path)?;
-    let report = evaluate_backfill_execution_readiness(
-        spec.readiness_id,
-        tranche_hash,
-        &tranche,
-        plan_hash,
-        &plan,
-        spec.required_table_family,
-        spec.required_nt_data_type,
-        spec.supported_data_paths,
-    );
+    let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+        readiness_id: &spec.readiness_id,
+        accepted_tranche_manifest_hash: &tranche_hash,
+        tranche: &tranche,
+        execution_plan_hash: &plan_hash,
+        plan: &plan,
+        required_table_family: &spec.required_table_family,
+        required_nt_data_type: &spec.required_nt_data_type,
+        supported_data_paths: spec.supported_data_paths,
+    });
     write_backfill_execution_readiness_report(&spec.output_dir, &report)
 }
 

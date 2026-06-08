@@ -6,8 +6,8 @@ use backtesting_vertical_slice::{
         BackfillExecutionPlan, BackfillExecutionRunBinding, evaluate_backfill_execution_plan,
     },
     backfill_execution_readiness::{
-        BackfillExecutionReadinessStatus, BackfillExecutionReadinessSupportedDataPath,
-        evaluate_backfill_execution_readiness,
+        BackfillExecutionReadinessInput, BackfillExecutionReadinessStatus,
+        BackfillExecutionReadinessSupportedDataPath, evaluate_backfill_execution_readiness,
     },
     backfill_source_proof_scope::{
         BackfillSourceProofScopeReport, evaluate_backfill_source_proof_scope,
@@ -79,19 +79,21 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
     assert_eq!(actual_plan, expected_plan);
     assert!(actual_plan.blocking_issues.is_empty());
 
-    let readiness = evaluate_backfill_execution_readiness(
-        "binance-bnbusdc-2026-03-01-reference-readiness",
-        sha256_hex(ACCEPTED_TRANCHE_MANIFEST_BYTES),
-        &actual_tranche,
-        execution_plan_hash(&actual_plan),
-        &actual_plan,
-        &actual_plan.table_family,
-        "TradeTick",
-        vec![BackfillExecutionReadinessSupportedDataPath {
+    let accepted_tranche_manifest_hash = sha256_hex(ACCEPTED_TRANCHE_MANIFEST_BYTES);
+    let execution_plan_hash = execution_plan_hash(&actual_plan);
+    let readiness = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+        readiness_id: "binance-bnbusdc-2026-03-01-reference-readiness",
+        accepted_tranche_manifest_hash: &accepted_tranche_manifest_hash,
+        tranche: &actual_tranche,
+        execution_plan_hash: &execution_plan_hash,
+        plan: &actual_plan,
+        required_table_family: &actual_plan.table_family,
+        required_nt_data_type: "TradeTick",
+        supported_data_paths: vec![BackfillExecutionReadinessSupportedDataPath {
             table_family: actual_plan.table_family.clone(),
             nt_data_type: "TradeTick".to_string(),
         }],
-    );
+    });
 
     assert_eq!(readiness.status, BackfillExecutionReadinessStatus::Ready);
     assert!(readiness.blockers.is_empty());

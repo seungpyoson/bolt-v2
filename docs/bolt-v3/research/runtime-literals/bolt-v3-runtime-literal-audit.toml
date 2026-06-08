@@ -8135,6 +8135,22 @@ reason = "PolyResearch reference-price WebSocket frame type for price updates; c
 [[allowed]]
 path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
+literal = '''"subscribe"'''
+context = '''const POLYRESEARCH_SUBSCRIBE_ACTION: &str = "subscribe";'''
+classification = "provider_protocol_field"
+reason = "PolyResearch WebSocket subscribe action required by the provider wire protocol; configured TOML sources still select the runtime feed."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
+literal = '''"chainlink"'''
+context = '''const POLYRESEARCH_REFERENCE_SUBSCRIPTION_TYPE: &str = "chainlink";'''
+classification = "provider_protocol_field"
+reason = "PolyResearch reference-price subscription type required by the provider wire protocol; configured TOML sources still select the runtime feed."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
 literal = '''"key"'''
 context = '''const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "key";'''
 classification = "provider_protocol_field"

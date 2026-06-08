@@ -34,7 +34,7 @@ use nautilus_network::{
     transport::Message,
     websocket::{MessageHandler, TransportBackend, WebSocketClient, WebSocketConfig},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use url::Url;
 use zeroize::Zeroizing;
 
@@ -59,6 +59,8 @@ use crate::{
 const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "key";
 const POLYRESEARCH_LEGACY_API_KEY_QUERY_FIELD: &str = "apiKey";
 const POLYRESEARCH_PRICE_FEED_FRAME_TYPE: &str = "price_feed";
+const POLYRESEARCH_SUBSCRIBE_ACTION: &str = "subscribe";
+const POLYRESEARCH_REFERENCE_SUBSCRIPTION_TYPE: &str = "chainlink";
 pub const KEY: &str = "POLYRESEARCH_REFERENCE_PRICE";
 pub const REFERENCE_PRICE_PROVIDER_KEY: &str = "polyresearch_ws";
 pub const POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS: &[&str] =
@@ -186,7 +188,6 @@ impl DataClientFactory for PolyResearchReferencePriceClientFactory {
             client_id: ClientId::from(name),
             config: config.clone(),
             subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
-            websocket: None,
             outbound: None,
             data_sender: get_data_event_sender(),
             connected: false,
@@ -207,7 +208,6 @@ struct PolyResearchReferencePriceClient {
     client_id: ClientId,
     config: PolyResearchReferencePriceClientConfig,
     subscriptions: Arc<Mutex<BTreeMap<String, PolyResearchReferenceSubscription>>>,
-    websocket: Option<WebSocketClient>,
     outbound: Option<PolyResearchReferenceOutboundHandle>,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     connected: bool,
@@ -219,6 +219,36 @@ struct PolyResearchReferenceOutboundHandle {
 }
 
 impl PolyResearchReferenceOutboundHandle {
+    fn send_text(&self, frame: String) -> anyhow::Result<()> {
+        self.sender
+            .send(PolyResearchReferenceOutboundCommand::SendText(frame))
+            .map_err(|error| {
+                anyhow::anyhow!("PolyResearch reference outbound task unavailable: {error}")
+            })
+    }
+
+    async fn disconnect(&self) -> anyhow::Result<()> {
+        let (complete_sender, complete_receiver) = tokio::sync::oneshot::channel();
+        self.sender
+            .send(PolyResearchReferenceOutboundCommand::Disconnect(Some(
+                complete_sender,
+            )))
+            .map_err(|error| {
+                anyhow::anyhow!("PolyResearch reference outbound task unavailable: {error}")
+            })?;
+        complete_receiver
+            .await
+            .map_err(|error| anyhow::anyhow!("PolyResearch reference disconnect failed: {error}"))
+    }
+
+    fn spawn_disconnect(&self) -> anyhow::Result<()> {
+        self.sender
+            .send(PolyResearchReferenceOutboundCommand::Disconnect(None))
+            .map_err(|error| {
+                anyhow::anyhow!("PolyResearch reference outbound task unavailable: {error}")
+            })
+    }
+
     #[cfg(test)]
     fn from_sender(
         sender: tokio::sync::mpsc::UnboundedSender<PolyResearchReferenceOutboundCommand>,
@@ -227,9 +257,10 @@ impl PolyResearchReferenceOutboundHandle {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 enum PolyResearchReferenceOutboundCommand {
     SendText(String),
+    Disconnect(Option<tokio::sync::oneshot::Sender<()>>),
 }
 
 impl PolyResearchReferencePriceClient {
@@ -242,10 +273,10 @@ impl PolyResearchReferencePriceClient {
     }
 
     fn spawn_disconnect(&mut self) {
-        if let Some(websocket) = self.websocket.take() {
-            get_runtime().spawn(async move {
-                websocket.disconnect().await;
-            });
+        if let Some(outbound) = self.outbound.take()
+            && let Err(error) = outbound.spawn_disconnect()
+        {
+            log::warn!("PolyResearch reference disconnect dropped: {error}");
         }
     }
 }
@@ -292,7 +323,7 @@ impl DataClient for PolyResearchReferencePriceClient {
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {
-        if self.websocket.is_some() {
+        if self.outbound.is_some() {
             self.disconnect().await?;
         }
         let url = polyresearch_websocket_url(&PolyResearchAuthConfig {
@@ -305,17 +336,19 @@ impl DataClient for PolyResearchReferencePriceClient {
             Arc::clone(&self.subscriptions),
             self.data_sender.clone(),
         );
-        self.websocket = Some(
+        let websocket =
             WebSocketClient::connect(config, Some(message_handler), None, None, vec![], None)
-                .await?,
-        );
+                .await?;
+        let outbound = polyresearch_reference_outbound_handle(websocket);
+        replay_polyresearch_reference_subscriptions(&self.subscriptions, &outbound)?;
+        self.outbound = Some(outbound);
         self.connected = true;
         Ok(())
     }
 
     async fn disconnect(&mut self) -> anyhow::Result<()> {
-        if let Some(websocket) = self.websocket.take() {
-            websocket.disconnect().await;
+        if let Some(outbound) = self.outbound.take() {
+            outbound.disconnect().await?;
         }
         self.connected = false;
         Ok(())
@@ -328,7 +361,10 @@ impl DataClient for PolyResearchReferencePriceClient {
         self.subscriptions
             .lock()
             .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
-            .insert(subscription.source_id.clone(), subscription);
+            .insert(subscription.source_id.clone(), subscription.clone());
+        if let Some(outbound) = self.outbound.as_ref() {
+            outbound.send_text(polyresearch_reference_subscribe_frame(&subscription)?)?;
+        }
         Ok(())
     }
 
@@ -349,6 +385,71 @@ pub(crate) struct PolyResearchReferenceSubscription {
     pub(crate) asset: String,
     pub(crate) source_id: String,
     pub(crate) symbol: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PolyResearchReferenceSubscribeFrame<'a> {
+    action: &'static str,
+    r#type: &'static str,
+    filters: PolyResearchReferenceSubscribeFilters<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct PolyResearchReferenceSubscribeFilters<'a> {
+    feeds: [&'a str; 1],
+}
+
+fn polyresearch_reference_subscribe_frame(
+    subscription: &PolyResearchReferenceSubscription,
+) -> Result<String, String> {
+    let frame = PolyResearchReferenceSubscribeFrame {
+        action: POLYRESEARCH_SUBSCRIBE_ACTION,
+        r#type: POLYRESEARCH_REFERENCE_SUBSCRIPTION_TYPE,
+        filters: PolyResearchReferenceSubscribeFilters {
+            feeds: [subscription.symbol.as_str()],
+        },
+    };
+    serde_json::to_string(&frame)
+        .map_err(|error| format!("PolyResearch subscribe frame serialization failed: {error}"))
+}
+
+fn polyresearch_reference_outbound_handle(
+    websocket: WebSocketClient,
+) -> PolyResearchReferenceOutboundHandle {
+    let (sender, mut receiver) =
+        tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
+    get_runtime().spawn(async move {
+        while let Some(command) = receiver.recv().await {
+            match command {
+                PolyResearchReferenceOutboundCommand::SendText(frame) => {
+                    if let Err(error) = websocket.send_text(frame, None).await {
+                        log::warn!("PolyResearch reference outbound frame dropped: {error}");
+                    }
+                }
+                PolyResearchReferenceOutboundCommand::Disconnect(complete_sender) => {
+                    websocket.disconnect().await;
+                    if let Some(complete_sender) = complete_sender {
+                        let _ = complete_sender.send(());
+                    }
+                    break;
+                }
+            }
+        }
+    });
+    PolyResearchReferenceOutboundHandle { sender }
+}
+
+fn replay_polyresearch_reference_subscriptions(
+    subscriptions: &Arc<Mutex<BTreeMap<String, PolyResearchReferenceSubscription>>>,
+    outbound: &PolyResearchReferenceOutboundHandle,
+) -> anyhow::Result<()> {
+    let subscriptions = subscriptions
+        .lock()
+        .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?;
+    for subscription in subscriptions.values() {
+        outbound.send_text(polyresearch_reference_subscribe_frame(subscription)?)?;
+    }
+    Ok(())
 }
 
 fn polyresearch_reference_subscription_from_command(
@@ -879,7 +980,6 @@ mod tests {
                 client_id: ClientId::from("polyresearch_reference"),
                 config: fixture_config(),
                 subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
-                websocket: None,
                 outbound: None,
                 data_sender,
                 connected: false,
@@ -1007,12 +1107,12 @@ mod tests {
         let outbound_command = outbound_receiver
             .try_recv()
             .expect("PRR subscription should send a provider subscribe frame");
+        let PolyResearchReferenceOutboundCommand::SendText(frame) = outbound_command else {
+            panic!("PRR subscription should send text, got {outbound_command:?}");
+        };
         assert_eq!(
-            outbound_command,
-            PolyResearchReferenceOutboundCommand::SendText(
-                r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["BTC/USD"]}}"#
-                    .to_string()
-            )
+            frame,
+            r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["BTC/USD"]}}"#
         );
     }
 

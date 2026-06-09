@@ -196,8 +196,9 @@ fn unsupported_optional_reference_price_source_does_not_subscribe() {
     DataActor::on_start(&mut strategy).expect("strategy should start");
 
     assert_eq!(strategy.reference_price_subscribe_events.len(), 1);
-    assert_reference_price_subscription(
+    assert_reference_price_subscription_for_asset(
         &strategy.reference_price_subscribe_events[0],
+        "BNB",
         REFERENCE_PRICE_SUBSCRIBE_ACTION,
         CHAINLINK_PRIMARY_SOURCE_ID,
         CHAINLINK_REFERENCE_PROVIDER,

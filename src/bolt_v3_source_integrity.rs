@@ -243,8 +243,10 @@ mod tests {
     // price support to BTC, ETH, SOL, and XRP.
     // Re-derived again after #606 made the unsupported optional source
     // regression assert asset-scoped subscription metadata.
+    // Re-derived again after #606 fixed the remaining unsupported optional
+    // source subscription assertion to use the configured asset.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "cd758c654afc31cd90251ec793437ab35e6e657846dc618974cc3403ceb34ebd";
+        "9bfb0013051b6f4bd532809d3f54182a85b9461b93c5789a3109602ff1d97d15";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

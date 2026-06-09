@@ -1,7 +1,7 @@
 {
   "schema": "bolt-v2.bte.objective-current-head-audit.v1",
   "created_at_utc": "2026-06-09T02:32:25Z",
-  "updated_at_utc": "2026-06-09T03:37:27Z",
+  "updated_at_utc": "2026-06-09T10:17:21Z",
   "objective_prompt": {
     "declared_path": "/Users/spson/Downloads/prompts/backtesting.md",
     "declared_path_status": "missing_on_disk",
@@ -28,6 +28,21 @@
         "run_id": 27181340518,
         "conclusion": "success"
       }
+    },
+    "post_audit_native_trade_cli_recheck": {
+      "observed_at_utc": "2026-06-09T10:17:21Z",
+      "head_sha": "3e38528369372e75399d01386ab7b5f74f9c9f82",
+      "head_commit": "Fail closed on unaccepted binding coverage",
+      "scope": "bounded accepted Binance native-trades materialized-run-spec CLI rerun only",
+      "scratch_output_dir": "/private/tmp/bte-binance-materialized-run-current-pYrehuc1",
+      "publish_output": false,
+      "raw_object_sha256": "433d32b8d828abee5e1937e01372d16f7edadc14c41fe736b0b9577541fa5e81",
+      "result_contract_sha256_after_idempotence_rerun": "c523e5b27266e52cc1f05f79674a3a016c933fae5897970c224987d4c11e05f7",
+      "catalog_hash": "8c128fe5acbb2e0df7c0f9b30d80de16acb285ca95f67a7bfc08c969f6b48362",
+      "canonical_trades_rows": 71431,
+      "catalog_read_back_trade_ticks": 71431,
+      "nt_iterations": 71431,
+      "ci_status_for_this_head": "not_checked"
     }
   },
   "bounded_current_head_claims": [
@@ -46,7 +61,7 @@
       "evidence": [
         "RED focused test failed before the fix because nt_result.instance_id rewrote backtest-result-contract.json.",
         "GREEN focused test passed after preserving existing stable result-contract bytes.",
-        "Real CLI rerun from the committed materialized run spec preserved backtest-result-contract.json SHA-256 a26454203c485e89a718bdac96e09bb5a5b3798c3a0b1a57702c198d2a25b96b."
+        "Post-audit real CLI rerun from the committed materialized run spec preserved backtest-result-contract.json SHA-256 c523e5b27266e52cc1f05f79674a3a016c933fae5897970c224987d4c11e05f7 on head 3e38528369372e75399d01386ab7b5f74f9c9f82."
       ]
     },
     {
@@ -85,7 +100,7 @@
     },
     {
       "requirement": "Inventory artifacts and classify dirty/partial/complete outputs.",
-      "current_evidence": "Large investigation report records artifact inventory and dirty-output guidance; current accepted native-trades proof uses committed materialized run spec plus scratch output /private/tmp/bte-binance-materialized-run.nb5q9A and classifies it as clean only for the bounded proof. Existing converted/NT catalog outputs remain reference-only unless separately verified.",
+      "current_evidence": "Large investigation report records artifact inventory and dirty-output guidance; current accepted native-trades proof uses committed materialized run spec plus scratch output /private/tmp/bte-binance-materialized-run-current-pYrehuc1 and classifies it as clean only for the bounded proof. Existing converted/NT catalog outputs remain reference-only unless separately verified.",
       "status": "partially_proven_bounded_clean_path_only"
     },
     {
@@ -95,7 +110,7 @@
     },
     {
       "requirement": "Investigate existing Bolt BTE implementation and unsafe converter/idempotency behavior.",
-      "current_evidence": "Existing tests cover dirty output rejection, mismatched conversion fingerprints, checkpoint resume/refusal, clean manifest/checkpoint/catalog metadata writes, NT catalog readback, BacktestNode consumption, result-contract provenance, and accepted-tranche-to-run-spec materialization. The newest idempotence gap was fixed at ef716813 and preserved in current head e78c00d6f25dac3d9f05e0424119ca9ce9aacadd.",
+      "current_evidence": "Existing tests cover dirty output rejection, mismatched conversion fingerprints, checkpoint resume/refusal, clean manifest/checkpoint/catalog metadata writes, NT catalog readback, BacktestNode consumption, result-contract provenance, and accepted-tranche-to-run-spec materialization. The newest idempotence gap was fixed at ef716813 and rechecked by CLI on post-guard head 3e38528369372e75399d01386ab7b5f74f9c9f82.",
       "status": "proven_for_current_slice"
     },
     {
@@ -177,7 +192,7 @@
   "remaining_unknowns_or_open_work": [
     {
       "item": "Production/broad backfill publishing and old-output disposition",
-      "reason": "Current clean proofs use bounded scratch outputs or bounded S3 proof paths; the latest accepted native-trades proof used /private/tmp/bte-binance-materialized-run.nb5q9A from the committed materialized run spec. Deleting or replacing old partial converted outputs still requires separately approved production action after clean new catalog proof.",
+      "reason": "Current clean proofs use bounded scratch outputs or bounded S3 proof paths; the latest accepted native-trades proof used /private/tmp/bte-binance-materialized-run-current-pYrehuc1 from the committed materialized run spec. Deleting or replacing old partial converted outputs still requires separately approved production action after clean new catalog proof.",
       "next_evidence_needed": "Artifact Index producer IAM or approved coordinator proof, production output prefix proof, and explicit delete/archive approval."
     },
     {

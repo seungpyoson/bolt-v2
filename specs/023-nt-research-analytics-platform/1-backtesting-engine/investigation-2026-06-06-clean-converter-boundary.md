@@ -2821,3 +2821,57 @@ Current conclusion:
 - It does not close `BACKTESTING_ENGINE-022`: broad PMXT/Polymarket backfill
   still requires durable accepted source proof, broad coverage/cost/storage
   evidence, bounded budgets, and NT-compatible dynamic tick-size policy.
+
+## 2026-06-09 current-head bounded native-trades conversion rerun
+
+Scope:
+
+- Rechecked only the accepted Binance BNBUSDC native-trades materialized run
+  spec on post-guard head `3e38528369372e75399d01386ab7b5f74f9c9f82`
+  (`Fail closed on unaccepted binding coverage`).
+- The run wrote only to the clean scratch root
+  `/private/tmp/bte-binance-materialized-run-current-pYrehuc1`.
+- `--publish-output` was not used; no production artifact publication or
+  deletion was performed.
+
+Command:
+
+```text
+python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin backtesting-vertical-slice -- --run-spec /Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/materialized-run-spec/backfill-run-spec.toml --execution-plan /Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-plan/backfill-execution-plan.json --object /private/tmp/bte-binance-bnbusdc-2026-03-01.zip --output-dir /private/tmp/bte-binance-materialized-run-current-pYrehuc1
+```
+
+Observed evidence:
+
+- Run-spec SHA256:
+  `498fcdea74e5089d722e26913e77a53d49bb6245a3234f157107184100782bfe`.
+- Execution-plan SHA256:
+  `a27e8a9094a990e700eb63a700207a46bffa3452426b6203c4de1d079b995855`.
+- Raw accepted object SHA256:
+  `433d32b8d828abee5e1937e01372d16f7edadc14c41fe736b0b9577541fa5e81`.
+- `canonical_trades_rows = 71431`,
+  `catalog_read_back_trade_ticks = 71431`, and NT BacktestNode iterations
+  `71431`.
+- Catalog hash:
+  `8c128fe5acbb2e0df7c0f9b30d80de16acb285ca95f67a7bfc08c969f6b48362`.
+- Result contract file SHA256 after the rerun:
+  `c523e5b27266e52cc1f05f79674a3a016c933fae5897970c224987d4c11e05f7`.
+- Catalog metadata file SHA256:
+  `dadd665097a494e3ea8301bc3f343b14fa7213466557e5d3ea925329bd0f4aef`.
+- Conversion manifest file SHA256:
+  `419fa73d941cdfe819dfdb051ad48b0ab614c231301aad8a61d61ddabc28e6cb`.
+- Conversion checkpoint file SHA256:
+  `7e203ac5d90fc8d1b48e0455a54c9c0edb40bed8e7a943818624bc1e28c28119`.
+- Canonical parquet file SHA256:
+  `be908f312b61d112a25748d6641a9162f12d568f80d3f2ca94180285cc821a91`.
+- The pre-rerun and post-rerun result-contract file hashes were both
+  `c523e5b27266e52cc1f05f79674a3a016c933fae5897970c224987d4c11e05f7`,
+  proving byte-idempotent completed-output reuse for this bounded path.
+
+Current conclusion:
+
+- The accepted native-trades converter, NT catalog readback, BacktestNode
+  consumption, and result-contract idempotence proof still hold on current
+  head after the execution-readiness and coverage guard commits.
+- This evidence does not close `BACKTESTING_ENGINE-006` or
+  `BACKTESTING_ENGINE-022`, and it does not authorize broad PMXT/Polymarket
+  backfill or production publish/delete actions.

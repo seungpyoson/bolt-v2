@@ -281,10 +281,15 @@ impl IvQueryStateHandle {
 
         let mut reject_counts = BTreeMap::new();
         reject_counts.insert(reject_reason, REJECT_COUNT_INCREMENT);
+        let subscription_state = if mark_rejected {
+            super::health::IvSourceHealthState::Rejected
+        } else {
+            super::health::IvSourceHealthState::Active
+        };
         state.source_health.push(IvSourceHealth {
             profile_id,
             source_id,
-            subscription_state: super::health::IvSourceHealthState::Rejected,
+            subscription_state,
             last_event_ts_ns: Some(last_event_ts_ns),
             last_reject_reason: Some(reject_reason),
             reject_counts,
@@ -1614,6 +1619,33 @@ mod tests {
             .source_health_for("test-profile", "test-source")
             .unwrap();
         assert_eq!(health.subscription_state, IvSourceHealthState::Removed);
+        assert_eq!(
+            health.last_reject_reason,
+            Some(IvRejectReason::InvalidIvValue)
+        );
+        assert_eq!(health.last_event_ts_ns, Some(UnixNanos::new(42)));
+        assert_eq!(
+            health.reject_counts.get(&IvRejectReason::InvalidIvValue),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn record_source_rejection_without_mark_rejected_does_not_reject_missing_health_row() {
+        let handle = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+        handle.record_source_rejection(
+            "test-profile".to_string(),
+            "test-source".to_string(),
+            2,
+            UnixNanos::new(42),
+            IvRejectReason::InvalidIvValue,
+            false,
+        );
+
+        let health = handle
+            .source_health_for("test-profile", "test-source")
+            .unwrap();
+        assert_eq!(health.subscription_state, IvSourceHealthState::Active);
         assert_eq!(
             health.last_reject_reason,
             Some(IvRejectReason::InvalidIvValue)

@@ -7687,6 +7687,14 @@ reason = "This is a stable decision-evidence reason code for missing NT cache st
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
+literal = '''"limit_notional_exceeds_sized_notional"'''
+context = '''"limit_notional_exceeds_sized_notional";'''
+classification = "strategy_entry_block_reason_code"
+reason = "This is a stable decision-evidence reason code for fail-closing entry submission when limit-price liability exceeds the TOML-sized notional cap."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
 literal = '''"lead_quality_thresholds_applied_to_live_fast_spot_selection"'''
 context = '''"lead_quality_thresholds_applied_to_live_fast_spot_selection";'''
 classification = "strategy_evidence_reason_code"
@@ -8115,6 +8123,14 @@ literal = '''"src/bolt_v3_book_sizing.rs"'''
 context = '''"src/bolt_v3_book_sizing.rs",'''
 classification = '''gated_source_registry_relative_root'''
 reason = '''Repo-relative root path of the shared book-sizing source included in the binary-oracle strategy source set after A4; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"src/bolt_v3_executable_edge.rs"'''
+context = '''"src/bolt_v3_executable_edge.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the shared executable-edge source included in the binary-oracle strategy source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''

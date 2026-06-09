@@ -216,6 +216,18 @@ fn selector_scoped_source_health_authorization() -> IvSelectorAuthorization {
     }
 }
 
+fn selector_scoped_projection_authorization() -> IvSelectorAuthorization {
+    IvSelectorAuthorization {
+        authorization_mode: IvAuthorizationMode::SelectorScoped,
+        strategy_id: "configured-strategy".to_string(),
+        allowed_product_kinds: BTreeSet::from([IvProductKind::ProjectedScalarIv]),
+        allowed_selector_fingerprints: BTreeSet::from([
+            "configured-selector-fingerprint".to_string()
+        ]),
+        allowed_source_ids: BTreeSet::from(["configured-source".to_string()]),
+    }
+}
+
 fn point_query(source_filter: Option<&str>, ts: u64) -> IvQuery {
     IvQuery::Product(IvProductQuery {
         strategy_id: "configured-strategy".to_string(),
@@ -867,6 +879,126 @@ fn projected_scalar_point_query_aggregates_matching_sources_for_quorum() {
                     ]
                 )
             })
+    );
+}
+
+#[test]
+fn selector_scoped_projection_rejects_when_any_input_source_is_not_authorized() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event(
+            "configured-source",
+            "configured-selector-fingerprint",
+            2_000,
+            test_implied_volatility(40),
+        ))
+        .unwrap();
+    store
+        .ingest_event(greeks_event(
+            "configured-backup-source",
+            "configured-backup-selector-fingerprint",
+            2_000,
+            test_implied_volatility(42),
+        ))
+        .unwrap();
+    let mut projection_policy =
+        projection_policy_with_refs(2, None, None, Some("configured-quorum-policy"));
+    projection_policy.source_eligibility = vec![
+        "configured-source".to_string(),
+        "configured-backup-source".to_string(),
+    ];
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        selector_scoped_projection_authorization(),
+        store,
+    )
+    .with_projection_policies(vec![projection_policy])
+    .with_quorum_policies(vec![IvQuorumPolicy {
+        policy_id: "configured-quorum-policy".to_string(),
+        minimum_sources: 2,
+        eligible_sources: vec![
+            "configured-source".to_string(),
+            "configured-backup-source".to_string(),
+        ],
+        agreement_band: 0.05,
+        tie_break: IvQuorumTieBreak::Mean,
+    }]);
+
+    assert_eq!(
+        handle.query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(match point_query(None, 2_000) {
+                    IvQuery::Product(query) => query.selector,
+                    IvQuery::RawPayload(_) => panic!("expected product query"),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        })),
+        Err(IvQueryError::StrategyNotAuthorized)
+    );
+}
+
+#[test]
+fn projected_scalar_query_rejects_when_any_input_source_is_stale() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event(
+            "configured-source",
+            "configured-selector-fingerprint",
+            2_000,
+            test_implied_volatility(40),
+        ))
+        .unwrap();
+    store
+        .ingest_event(greeks_event(
+            "configured-backup-source",
+            "configured-backup-selector-fingerprint",
+            2_000,
+            test_implied_volatility(42),
+        ))
+        .unwrap();
+    let mut projection_policy =
+        projection_policy_with_refs(2, None, None, Some("configured-quorum-policy"));
+    projection_policy.source_eligibility = vec![
+        "configured-source".to_string(),
+        "configured-backup-source".to_string(),
+    ];
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_current_subscription_generations(BTreeMap::from([
+            ("configured-source".to_string(), 1),
+            ("configured-backup-source".to_string(), 2),
+        ]))
+        .with_projection_policies(vec![projection_policy])
+        .with_quorum_policies(vec![IvQuorumPolicy {
+            policy_id: "configured-quorum-policy".to_string(),
+            minimum_sources: 2,
+            eligible_sources: vec![
+                "configured-source".to_string(),
+                "configured-backup-source".to_string(),
+            ],
+            agreement_band: 0.05,
+            tie_break: IvQuorumTieBreak::Mean,
+        }]);
+
+    assert_eq!(
+        handle.query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(match point_query(None, 2_000) {
+                    IvQuery::Product(query) => query.selector,
+                    IvQuery::RawPayload(_) => panic!("expected product query"),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        })),
+        Err(IvQueryError::ProductNotFound)
     );
 }
 

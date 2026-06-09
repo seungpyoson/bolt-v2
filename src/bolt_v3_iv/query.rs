@@ -752,7 +752,21 @@ impl IvQueryHandle {
             selector: input_selector.clone(),
         };
         let input_products = self.find_projection_products(&input_query, state)?;
+        if !input_products
+            .iter()
+            .all(|product| product_satisfies_current_state(product, state))
+        {
+            return Err(IvQueryError::ProductNotFound);
+        }
         let inputs = projection_inputs_from_products(&input_products)?;
+        if !projection_inputs_authorized(
+            &self.authorization,
+            &query.strategy_id,
+            query.product_kind,
+            &inputs,
+        ) {
+            return Err(IvQueryError::StrategyNotAuthorized);
+        }
         let mut policy_decisions = Vec::new();
         if let Some(quorum_policy_ref) = &policy.quorum_policy_ref {
             let quorum_policy = state
@@ -1205,6 +1219,22 @@ fn projection_inputs_from_products(
     } else {
         Ok(inputs)
     }
+}
+
+fn projection_inputs_authorized(
+    authorization: &IvSelectorAuthorization,
+    strategy_id: &str,
+    product_kind: IvProductKind,
+    inputs: &[IvPolicyInput],
+) -> bool {
+    inputs.iter().all(|input| {
+        authorization.authorizes(
+            strategy_id,
+            product_kind,
+            Some(&input.source_id),
+            &input.selector_fingerprint,
+        )
+    })
 }
 
 fn same_derived_output_cache_slot(left: &IvDerivedOutput, right: &IvDerivedOutput) -> bool {

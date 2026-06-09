@@ -709,7 +709,7 @@ fn profile_source_matches(
         && candidate.source_id == source_ref.source_id
         && candidate.selector_fingerprint == source_ref.selector_fingerprint
         && candidate.instrument_id == request.instrument_id
-        && candidate.as_of_ns == request.as_of_ns
+        && candidate.as_of_ns.get() <= request.as_of_ns.get()
 }
 
 fn validate_allowed_source_kind(

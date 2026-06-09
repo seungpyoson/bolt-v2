@@ -534,7 +534,9 @@ impl IvQueryHandle {
             return Err(IvQueryError::StrategyNotAuthorized);
         }
 
-        if let IvQueryProduct::DerivedIv(derived) = &product {
+        if let IvQueryProduct::DerivedIv(derived) = &product
+            && should_cache_derived_output(query)
+        {
             self.state.record_derived_output((**derived).clone());
             self.enforce_retention_policy();
         }
@@ -1240,6 +1242,13 @@ fn projection_inputs_authorized(
             &input.selector_fingerprint,
         )
     })
+}
+
+fn should_cache_derived_output(query: &IvProductQuery) -> bool {
+    matches!(
+        &query.selector,
+        IvSelector::DerivedIvQuery { inputs: None, .. }
+    )
 }
 
 fn same_derived_output_cache_slot(left: &IvDerivedOutput, right: &IvDerivedOutput) -> bool {

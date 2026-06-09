@@ -313,6 +313,61 @@ fn derived_input_policy_resolves_profile_source_and_operator_fields_before_helpe
 }
 
 #[test]
+fn derived_input_policy_resolves_fresh_profile_source_from_older_snapshot() {
+    let mut request_inputs = complete_inputs();
+    request_inputs.underlying_price = None;
+
+    let mut profile_source_inputs = complete_inputs();
+    profile_source_inputs.source_id = "configured-underlying-source".to_string();
+    profile_source_inputs.selector_fingerprint = "configured-underlying-selector".to_string();
+    profile_source_inputs.as_of_ns = UnixNanos::new(997);
+    profile_source_inputs.underlying_price = Some(IvTimedInput {
+        value: 100.0,
+        ts_ns: UnixNanos::new(996),
+        source_kind: IvDerivedInputSourceKind::ProfileSourceRef,
+        expires_at_ns: None,
+    });
+    profile_source_inputs.input_event_ids = vec!["configured-underlying-event".to_string()];
+
+    let policy = IvDerivedInputPolicy {
+        input_policy_id: "configured-derived-input-policy".to_string(),
+        helper_policy_ref: "configured-helper-policy".to_string(),
+        required_fields: vec![IvDerivedInputField::UnderlyingPrice],
+        field_sources: vec![IvDerivedInputFieldPolicy {
+            field: IvDerivedInputField::UnderlyingPrice,
+            allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::ProfileSourceRef]),
+            profile_source_ref: Some(IvDerivedProfileSourceRef {
+                source_id: "configured-underlying-source".to_string(),
+                selector_fingerprint: "configured-underlying-selector".to_string(),
+            }),
+            operator_number: None,
+            operator_side: None,
+        }],
+        freshness_ns: 10,
+        max_input_skew_ns: 10,
+        bounds: input_bounds(),
+        convention_policy: IvConventionBounds {
+            allowed_conventions: BTreeSet::from([convention()]),
+        },
+        operator_value_refresh_policy: IvOperatorValueRefreshPolicy::RejectExpiredOperatorValues,
+    };
+
+    let resolved =
+        resolve_derived_input_policy(&policy, request_inputs, &[profile_source_inputs]).unwrap();
+
+    assert_eq!(
+        resolved.underlying_price.unwrap().ts_ns,
+        UnixNanos::new(996)
+    );
+    assert!(
+        resolved
+            .input_event_ids
+            .iter()
+            .any(|event_id| event_id == "configured-underlying-event")
+    );
+}
+
+#[test]
 fn profile_source_resolution_skips_mismatched_instrument_candidates() {
     let mut request_inputs = complete_inputs();
     request_inputs.underlying_price = None;

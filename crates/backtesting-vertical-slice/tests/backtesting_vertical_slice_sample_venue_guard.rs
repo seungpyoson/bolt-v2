@@ -19,6 +19,11 @@ fn production_rust_does_not_hardcode_sample_venue_or_instrument() {
             "bithumb",
             "korbit",
             "coinone",
+            "kimchi",
+            "korean_spot",
+            "reference_price",
+            "fx_quote",
+            "token_mapping",
         ] {
             if lower.contains(needle) && !needle_allowed_in_production_path(needle, &path, &src) {
                 failures.push(format!("{} contains {needle:?}", path.display()));

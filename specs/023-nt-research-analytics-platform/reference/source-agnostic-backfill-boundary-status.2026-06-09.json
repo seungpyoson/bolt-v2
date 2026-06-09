@@ -10,7 +10,7 @@
     {
       "surface": "sample venue hardcode guard",
       "path": "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_sample_venue_guard.rs",
-      "evidence": "The guard rejects Bybit, Binance, BNBUSDC, public_archive, Korean venue names, and other sample values in generic production Rust. PMXT/Polymarket names are allowed only in explicit one-off/proof modules and thin bins."
+      "evidence": "The guard rejects Bybit, Binance, BNBUSDC, public_archive, Korean venue names, former Kimchi/cross-market sample role literals, and other sample values in generic production Rust. PMXT/Polymarket names are allowed only in explicit one-off/proof modules and thin bins."
     },
     {
       "surface": "source binding registry",
@@ -25,7 +25,7 @@
     {
       "surface": "registry-driven cross-market role policy",
       "path": "repo://crates/backtesting-vertical-slice/src/source_proof.rs",
-      "evidence": "Production Rust no longer contains KIMCHI_PREMIUM_SIGNAL_FAMILY or KIMCHI_REQUIRED_CROSS_MARKET_ROLES. Source-binding rows may declare required_cross_market_component_roles, and focused RED/GREEN tests prove a non-Kimchi cross-market source fails when a configured role is missing and passes when the configured role is present."
+      "evidence": "Production Rust no longer contains KIMCHI_PREMIUM_SIGNAL_FAMILY, KIMCHI_REQUIRED_CROSS_MARKET_ROLES, or the former concrete sample role names. Source-binding rows may declare required_cross_market_component_roles, focused tests prove a non-Kimchi cross-market source fails when a configured role is missing and passes when the configured role is present, and source-proof-policy-hardcode-audit.2026-06-09.json records the production-region literal scan."
     },
     {
       "surface": "source-to-catalog mapping readiness",
@@ -155,11 +155,11 @@
     "Adding any new venue or data type is TOML-only today.",
     "PMXT is a durable canonical Polymarket source today.",
     "The accepted-object operator is a general raw-source adapter runner today.",
-    "Every future source-proof policy has been fully audited as hardcode-free today."
+    "Every future adapter/source policy is TOML-only today."
   ],
   "next_required_evidence": [
     "Extend the registered adapter contract into a durable non-trade-CSV adapter runner before adding any non-trade-CSV durable source.",
-    "Complete a source-proof policy hardcode audit before claiming every future source-proof policy is config-owned.",
+    "Keep the source-proof policy hardcode guard in CI and extend it when new source-family policy literals are introduced.",
     "For Polymarket/PMXT, accept durable source proof plus coverage/cost/storage/dynamic-tick-size evidence before broad backfill.",
     "Apply the accepted-tranche materializer to bounded accepted native-trade tranches before expanding payload work.",
     "Keep GitHub CI as the broad verification gate for any committed changes."

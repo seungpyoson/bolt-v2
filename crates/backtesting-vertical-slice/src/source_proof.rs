@@ -434,9 +434,8 @@ impl SourceProofClaimLimit {
 
 /// One point-in-time source component used to build a cross-market signal.
 ///
-/// Roles such as `korean_spot`, `reference_price`, and `fx_quote` are source
-/// roles, not venue identities. Concrete venues/providers stay in TOML source
-/// bindings and source-proof evidence.
+/// Component roles are source roles, not venue identities. Concrete role names,
+/// venues, and providers stay in TOML source bindings and source-proof evidence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CrossMarketJoinComponent {
     pub role: String,

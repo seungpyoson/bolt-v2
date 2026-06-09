@@ -2403,11 +2403,11 @@ What is not source-agnostic enough yet:
 - PMXT L2 projection is correctly isolated as a `one_off_backfill_data` adapter.
   It must not be promoted into a durable generic source path without accepted
   source proof, dynamic tick-size policy, and broad-backfill efficiency proof.
-- `source_proof.rs` still has production constants for the
-  `kimchi-premium` cross-market signal family and required component roles. The
-  roles are source roles, not venue identities, but this is still source-family
-  policy in Rust and should move into registry/schema config before claiming
-  complete no-hardcode compliance.
+- The previously recorded `source_proof.rs` cross-market role-policy gap has
+  been rechecked later on this branch: role requirements now come from
+  `required_cross_market_component_roles` in the source-binding registry, and
+  the production hardcode guard rejects the former sample source-family and
+  component-role literals in generic production Rust.
 
 New evidence:
 
@@ -2424,6 +2424,44 @@ Current conclusion:
   contract and proof, not venue branches in generic readiness gates.
 - This checkpoint does not close `BACKTESTING_ENGINE-022`; it prevents the
   incorrect claim that every future venue/data type is TOML-only today.
+
+## 2026-06-09 source-proof policy hardcode audit checkpoint
+
+Root cause addressed:
+
+- The source-proof cross-market role validator had already been moved to
+  `required_cross_market_component_roles` in the source-binding registry, but
+  the generic hardcode guard did not reject the former sample source-family and
+  component-role literals in production Rust.
+- `source_proof.rs` still carried those concrete role names in a production
+  doc comment, which weakened the no-hardcode evidence even though runtime
+  enforcement was registry-driven.
+
+Change:
+
+- Extended
+  `backtesting_vertical_slice_sample_venue_guard::production_rust_does_not_hardcode_sample_venue_or_instrument`
+  to reject `kimchi`, `korean_spot`, `reference_price`, `fx_quote`, and
+  `token_mapping` in generic production Rust.
+- Reworded the `CrossMarketJoinComponent` production doc comment so role names,
+  venues, and providers remain in TOML source bindings, source-proof evidence,
+  or tests.
+- Recorded
+  `reference/source-proof-policy-hardcode-audit.2026-06-09.json`.
+
+Evidence:
+
+- Static production-region scan:
+  `awk '/^#\\[cfg\\(test\\)\\]/{exit} {print}' crates/backtesting-vertical-slice/src/source_proof.rs | rg -n "kimchi|korean_spot|reference_price|fx_quote|token_mapping"`
+  returns no matches.
+
+Conclusion:
+
+- Source-proof cross-market role policy is now config-owned and guarded against
+  reintroducing the former sample source-family/role literals in generic
+  production Rust.
+- This still does not close `BACKTESTING_ENGINE-022`: the broad adapter/source
+  acceptance and PMXT/Polymarket dynamic tick-size evidence remain open.
 
 ## 2026-06-09 PMXT Nautilus Polymarket surface-usage checkpoint
 

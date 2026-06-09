@@ -110,7 +110,7 @@
     },
     {
       "requirement": "No hardcoded runtime IDs, paths, quantities, venues, instruments, or hashes.",
-      "current_evidence": "Sample-value guard test rejects Bybit/Binance/BNBUSDC/PMXT/Polymarket/public_archive and Korean venue names in generic production Rust. The run-spec materializer reads source_binding and table_family from the accepted tranche instead of matching venue names. Search still finds sample values in tests and explicit PMXT/Polymarket proof modules, which the guard allows. The remaining adapter gap is structural, not generic venue branching.",
+      "current_evidence": "Sample-value guard test rejects Bybit/Binance/BNBUSDC/PMXT/Polymarket/public_archive, Korean venue names, and former cross-market sample source-family/role literals in generic production Rust. The run-spec materializer reads source_binding and table_family from the accepted tranche instead of matching venue names, and source-proof cross-market role requirements come from required_cross_market_component_roles in the source-binding registry. Search still finds sample values in tests and explicit PMXT/Polymarket proof modules, which the guard allows. The remaining adapter gap is structural, not generic venue branching.",
       "status": "mostly_proven_current_slice"
     }
   ],

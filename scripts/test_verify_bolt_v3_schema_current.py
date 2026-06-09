@@ -686,6 +686,17 @@ def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> 
 def test_validate_docs_rejects_reference_current_price_schema_drift() -> None:
     missing_enabled = CURRENT_SCHEMA.replace("enabled = true\nrequired = false", "required = true")
     missing_catalog = CURRENT_SCHEMA.replace("### `[chainlink_data_streams]`", "### `[clients.foo]`")
+    stale_schema = (
+        CURRENT_SCHEMA
+        + """
+### `[reference_data]`
+
+Legacy reference_data path.
+
+[[clients.chainlink_strike.data.feed_bindings]]
+feed_catalog = "chainlink_data_streams"
+"""
+    )
 
     enabled_findings = VERIFIER.validate_docs(missing_enabled, CURRENT_STATUS_MAP)
     if not any("missing `enabled = true`" in finding for finding in enabled_findings):
@@ -696,6 +707,17 @@ def test_validate_docs_rejects_reference_current_price_schema_drift() -> None:
     catalog_findings = VERIFIER.validate_docs(missing_catalog, CURRENT_STATUS_MAP)
     if not any("chainlink_data_streams" in finding for finding in catalog_findings):
         raise AssertionError(f"expected missing catalog finding, got {catalog_findings!r}")
+
+    stale_findings = VERIFIER.validate_docs(stale_schema, CURRENT_STATUS_MAP)
+    expected_fragments = [
+        "schema still contains stale reference-current-price phrase",
+        "[reference_data]",
+        "clients.chainlink_strike.data.feed_bindings",
+        'feed_catalog = "chainlink_data_streams"',
+    ]
+    for fragment in expected_fragments:
+        if not any(fragment in finding for finding in stale_findings):
+            raise AssertionError(f"expected {fragment!r} in findings, got {stale_findings!r}")
 
 
 def test_validate_docs_rejects_reference_current_price_plan_spec_drift() -> None:

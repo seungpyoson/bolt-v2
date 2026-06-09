@@ -94,7 +94,45 @@ pub struct PolyResearchReferencePriceDataConfig {
     pub reconnect_delay_max_ms: u64,
     pub reconnect_backoff_factor: f64,
     pub reconnect_jitter_ms: u64,
+    pub reconnect_max_attempts: PolyResearchReconnectMaxAttempts,
     pub idle_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolyResearchReconnectMaxAttempts {
+    Unlimited,
+    Limited(u32),
+}
+
+impl PolyResearchReconnectMaxAttempts {
+    fn as_websocket_config(self) -> Option<u32> {
+        match self {
+            Self::Unlimited => None,
+            Self::Limited(max_attempts) => Some(max_attempts),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PolyResearchReconnectMaxAttempts {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Text(String),
+            Number(u32),
+        }
+
+        match Wire::deserialize(deserializer)? {
+            Wire::Text(value) if value == "unlimited" => Ok(Self::Unlimited),
+            Wire::Text(value) => Err(serde::de::Error::custom(format!(
+                "expected \"unlimited\" or a positive integer, got {value:?}"
+            ))),
+            Wire::Number(max_attempts) => Ok(Self::Limited(max_attempts)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -141,6 +179,7 @@ pub struct PolyResearchReferencePriceClientConfig {
     pub reconnect_delay_max_ms: u64,
     pub reconnect_backoff_factor: f64,
     pub reconnect_jitter_ms: u64,
+    pub reconnect_max_attempts: PolyResearchReconnectMaxAttempts,
     pub idle_timeout_ms: u64,
     pub api_key: Zeroizing<String>,
 }
@@ -160,6 +199,7 @@ impl std::fmt::Debug for PolyResearchReferencePriceClientConfig {
             .field("reconnect_delay_max_ms", &self.reconnect_delay_max_ms)
             .field("reconnect_backoff_factor", &self.reconnect_backoff_factor)
             .field("reconnect_jitter_ms", &self.reconnect_jitter_ms)
+            .field("reconnect_max_attempts", &self.reconnect_max_attempts)
             .field("idle_timeout_ms", &self.idle_timeout_ms)
             .field("api_key", &REDACTED)
             .finish()
@@ -1077,7 +1117,7 @@ fn polyresearch_websocket_client_config(
         reconnect_delay_max_ms: Some(config.reconnect_delay_max_ms),
         reconnect_backoff_factor: Some(config.reconnect_backoff_factor),
         reconnect_jitter_ms: Some(config.reconnect_jitter_ms),
-        reconnect_max_attempts: None,
+        reconnect_max_attempts: config.reconnect_max_attempts.as_websocket_config(),
         idle_timeout_ms: Some(config.idle_timeout_ms),
         backend: config.transport_backend,
         proxy_url: None,
@@ -1186,6 +1226,14 @@ fn validate_data_bounds(key: &str, data: &PolyResearchReferencePriceDataConfig) 
         data.reconnect_jitter_ms,
         &mut errors,
     );
+    if matches!(
+        data.reconnect_max_attempts,
+        PolyResearchReconnectMaxAttempts::Limited(0)
+    ) {
+        errors.push(format!(
+            "clients.{key}.data.reconnect_max_attempts must be positive or \"unlimited\""
+        ));
+    }
     validate_positive_u64(
         &format!("clients.{key}.data.idle_timeout_ms"),
         data.idle_timeout_ms,
@@ -1327,6 +1375,7 @@ fn map_data(
         reconnect_delay_max_ms: cfg.reconnect_delay_max_ms,
         reconnect_backoff_factor: cfg.reconnect_backoff_factor,
         reconnect_jitter_ms: cfg.reconnect_jitter_ms,
+        reconnect_max_attempts: cfg.reconnect_max_attempts,
         idle_timeout_ms: cfg.idle_timeout_ms,
         api_key: secrets.api_key.clone(),
     })
@@ -1366,9 +1415,30 @@ mod tests {
             reconnect_delay_max_ms: 5_000,
             reconnect_backoff_factor: 1.5,
             reconnect_jitter_ms: 100,
+            reconnect_max_attempts: PolyResearchReconnectMaxAttempts::Unlimited,
             idle_timeout_ms: 10_000,
             api_key: Zeroizing::new("polyresearch-api-key".to_string()),
         }
+    }
+
+    #[test]
+    fn websocket_config_carries_toml_owned_reconnect_max_attempts() {
+        let mut config = fixture_config();
+        config.reconnect_max_attempts = PolyResearchReconnectMaxAttempts::Limited(3);
+        let websocket = polyresearch_websocket_client_config(
+            &config,
+            Url::parse("wss://ws.polyresearch.xyz/reference?key=test")
+                .expect("fixture URL should parse"),
+        );
+        assert_eq!(websocket.reconnect_max_attempts, Some(3));
+
+        config.reconnect_max_attempts = PolyResearchReconnectMaxAttempts::Unlimited;
+        let websocket = polyresearch_websocket_client_config(
+            &config,
+            Url::parse("wss://ws.polyresearch.xyz/reference?key=test")
+                .expect("fixture URL should parse"),
+        );
+        assert_eq!(websocket.reconnect_max_attempts, None);
     }
 
     fn fixture_client() -> (

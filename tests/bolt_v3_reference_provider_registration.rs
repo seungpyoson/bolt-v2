@@ -93,6 +93,7 @@ reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000
 reconnect_backoff_factor = 1.5
 reconnect_jitter_ms = 100
+reconnect_max_attempts = "unlimited"
 idle_timeout_ms = 10000
 
 [secrets]
@@ -188,6 +189,7 @@ reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000
 reconnect_backoff_factor = 1.5
 reconnect_jitter_ms = 100
+reconnect_max_attempts = "unlimited"
 idle_timeout_ms = 10000
 
 [execution]
@@ -202,5 +204,70 @@ api_key_ssm_parameter = "/bolt/polyresearch/api-key"
             message.contains("POLYRESEARCH_REFERENCE_PRICE") && message.contains("data-only")
         }),
         "polyresearch reference execution block should fail validation, got: {errors:#?}"
+    );
+}
+
+#[test]
+fn polyresearch_reference_provider_requires_toml_owned_reconnect_max_attempts() {
+    let client = client_from_toml(
+        r#"
+venue = "POLYRESEARCH_REFERENCE_PRICE"
+
+[data]
+websocket_endpoint = "wss://stream.polyresearch.example/reference"
+transport_backend = "sockudo"
+heartbeat_secs = 5
+heartbeat_message = "ping"
+reconnect_timeout_ms = 5000
+reconnect_delay_initial_ms = 250
+reconnect_delay_max_ms = 5000
+reconnect_backoff_factor = 1.5
+reconnect_jitter_ms = 100
+idle_timeout_ms = 10000
+
+[secrets]
+api_key_ssm_parameter = "/bolt/polyresearch/api-key"
+"#,
+    );
+    let errors = validate_client_block("polyresearch_reference", &client);
+    assert!(
+        errors.iter().any(|message| {
+            message.contains("reconnect_max_attempts") && message.contains("missing")
+        }),
+        "missing PolyResearch reconnect_max_attempts should fail validation, got: {errors:#?}"
+    );
+}
+
+#[test]
+fn polyresearch_reference_provider_rejects_zero_reconnect_max_attempts() {
+    let client = client_from_toml(
+        r#"
+venue = "POLYRESEARCH_REFERENCE_PRICE"
+
+[data]
+websocket_endpoint = "wss://stream.polyresearch.example/reference"
+transport_backend = "sockudo"
+heartbeat_secs = 5
+heartbeat_message = "ping"
+reconnect_timeout_ms = 5000
+reconnect_delay_initial_ms = 250
+reconnect_delay_max_ms = 5000
+reconnect_backoff_factor = 1.5
+reconnect_jitter_ms = 100
+reconnect_max_attempts = 0
+idle_timeout_ms = 10000
+
+[secrets]
+api_key_ssm_parameter = "/bolt/polyresearch/api-key"
+"#,
+    );
+    let errors = validate_client_block("polyresearch_reference", &client);
+    assert!(
+        errors.iter().any(|message| {
+            message.contains("reconnect_max_attempts")
+                && message.contains("positive")
+                && message.contains("unlimited")
+        }),
+        "zero PolyResearch reconnect_max_attempts should fail validation, got: {errors:#?}"
     );
 }

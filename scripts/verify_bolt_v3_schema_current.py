@@ -75,6 +75,15 @@ ROOT_CHAINLINK_CATALOG_FIELDS = (
 REFERENCE_CURRENT_PRICE_STALE_DOC_PHRASES = (
     'feed_catalog = "chainlink_data_streams"',
 )
+REFERENCE_CURRENT_PRICE_STALE_SCHEMA_PHRASES = (
+    "[reference_data]",
+    "reference_data",
+    "reference_venue",
+    "reference_instrument_id",
+    'feed_catalog = "chainlink_data_streams"',
+    "clients.chainlink_strike.data.feed_bindings",
+    "clients.chainlink_reference.data.feed_bindings",
+)
 REFERENCE_CURRENT_PRICE_REQUIRED_DOC_PHRASES = (
     "Chainlink current-price and strike clients resolve feed ids from the root-owned `[chainlink_data_streams]` catalog by convention; clients do not declare a `feed_catalog` pointer.",
 )
@@ -378,6 +387,12 @@ def validate_speckit_context(agents_doc: str | None, feature_json: str | None) -
 
 def validate_reference_current_price_schema(schema: str) -> list[str]:
     findings: list[str] = []
+
+    for phrase in REFERENCE_CURRENT_PRICE_STALE_SCHEMA_PHRASES:
+        if phrase in schema:
+            findings.append(
+                f"schema still contains stale reference-current-price phrase: {phrase}"
+            )
 
     source_examples = list(REFERENCE_CURRENT_PRICE_SOURCE_EXAMPLE_PATTERN.finditer(schema))
     if not source_examples:

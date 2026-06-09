@@ -628,7 +628,7 @@ or:
 Add an explicit shipped PRR-active strategy fixture used by tests and operators.
 ```
 
-Do not make unsupported assets require PRR.
+Do not configure enabled PRR sources for unsupported assets. `required = false` only affects quorum; it does not make an enabled unsupported provider/asset pair valid.
 
 - [ ] **Step 4: Commit**
 

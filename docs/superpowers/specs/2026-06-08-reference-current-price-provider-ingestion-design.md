@@ -183,6 +183,8 @@ Current repo evidence:
 - `src/bolt_v3_providers/polyresearch.rs` owns PRR provider registration and credential redaction.
 - `polyresearch_websocket_url` appends `key` exactly once and rejects endpoints already containing `key` or legacy credential query `apiKey`.
 - `POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS` currently allows BTC, ETH, SOL, XRP.
+- Enabled PRR reference-current-price sources must validate against `POLYRESEARCH_REFERENCE_PRICE_SUPPORTED_ASSETS`; optional source quorum does not make an unsupported asset valid.
+- PRR `reconnect_max_attempts` is TOML-owned; `"unlimited"` maps to NT's unlimited reconnect setting and positive integers map to a finite cap.
 - Prior local plan evidence records a secret-safe live PRR probe showing JSON text frames with key set `price,symbol,ts`, symbols `BTC/USD`, `ETH/USD`, `SOL/USD`, `XRP/USD`, no initial subscribe message, and no application heartbeat required over the probe window.
 
 Evidence gap:

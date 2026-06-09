@@ -1345,6 +1345,10 @@ Fields:
 - type: boolean
 - required
 
+An enabled source must support the configured `reference_current_price.asset`.
+For the current provider metadata, `polyresearch_ws` supports BTC, ETH, SOL, and XRP.
+`required = false` only affects quorum; it does not make an enabled unsupported provider/asset pair valid.
+
 The TOML value is the literal NautilusTrader `InstrumentId` string.
 The field name maps one-to-one to `nautilus_model::identifiers::InstrumentId`; aliases are forbidden.
 bolt does not define a second identifier format here.

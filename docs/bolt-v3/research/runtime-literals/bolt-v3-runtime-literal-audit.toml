@@ -8207,6 +8207,22 @@ reason = "Internal PolyResearch auth config field name used for secret validatio
 [[allowed]]
 path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
+literal = '''"unlimited"'''
+context = '''Wire::Text(value) if value == "unlimited" => Ok(Self::Unlimited),'''
+classification = "provider_config_schema_enum_label"
+reason = "PolyResearch reconnect_max_attempts TOML enum label for preserving unlimited provider reconnect behavior under explicit operator configuration; the selected behavior comes from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "number"
+literal = '''0'''
+context = '''PolyResearchReconnectMaxAttempts::Limited(0)'''
+classification = "provider_config_validation_guard"
+reason = "Rejects zero as an invalid limited reconnect attempt count so PolyResearch reconnect behavior remains positive or explicitly unlimited from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
 literal = '''"wss"'''
 context = '''if url.scheme() != "wss" || !url.has_host() || !value[url.scheme().len()..].starts_with("://") {'''
 classification = "provider_transport_scheme"

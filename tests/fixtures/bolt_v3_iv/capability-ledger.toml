@@ -295,6 +295,13 @@ matched_terms = ["greeks"]
 classification = "supported"
 
 [[surfaces]]
+surface_id = "nt.crates.common.src.messages.data.subscribe.subscribe_option_chain"
+evidence_path = "crates/common/src/messages/data/subscribe.rs"
+symbol = "SubscribeOptionChain"
+matched_terms = ["chain", "option"]
+classification = "supported"
+
+[[surfaces]]
 surface_id = "nt.crates.common.src.messages.data.unsubscribe.new"
 evidence_path = "crates/common/src/messages/data/unsubscribe.rs"
 symbol = "new"
@@ -307,6 +314,34 @@ evidence_path = "crates/common/src/messages/data/unsubscribe.rs"
 symbol = "UnsubscribeOptionGreeks"
 matched_terms = ["greeks"]
 classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.messages.data.unsubscribe.unsubscribe_option_chain"
+evidence_path = "crates/common/src/messages/data/unsubscribe.rs"
+symbol = "UnsubscribeOptionChain"
+matched_terms = ["chain", "option"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.switchboard.reconciliation_raw_order_status_report_topic"
+evidence_path = "crates/common/src/msgbus/switchboard.rs"
+symbol = "reconciliation_raw_order_status_report_topic"
+matched_terms = ["surface"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.switchboard.reconciliation_raw_fill_report_topic"
+evidence_path = "crates/common/src/msgbus/switchboard.rs"
+symbol = "reconciliation_raw_fill_report_topic"
+matched_terms = ["surface"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.switchboard.reconciliation_raw_position_status_report_topic"
+evidence_path = "crates/common/src/msgbus/switchboard.rs"
+symbol = "reconciliation_raw_position_status_report_topic"
+matched_terms = ["surface"]
+classification = "not_iv_options"
 
 [[surfaces]]
 surface_id = "nt.crates.common.src.msgbus.api.exact_subscriber_count_option_greeks"
@@ -1361,6 +1396,35 @@ seed_family = "greeks_helper"
 classification = "supported"
 
 [[surfaces]]
+surface_id = "nt.crates.model.src.enums.has_expiration"
+evidence_path = "crates/model/src/enums.rs"
+symbol = "has_expiration"
+matched_terms = ["expiration", "option"]
+seed_family = "greeks_helper"
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.identifiers.instrument_id.blockchain"
+evidence_path = "crates/model/src/identifiers/instrument_id.rs"
+symbol = "blockchain"
+matched_terms = ["chain"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.identifiers.venue.parse_dex"
+evidence_path = "crates/model/src/identifiers/venue.rs"
+symbol = "parse_dex"
+matched_terms = ["chain"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.identifiers.venue.validate_blockchain_venue"
+evidence_path = "crates/model/src/identifiers/venue.rs"
+symbol = "validate_blockchain_venue"
+matched_terms = ["chain"]
+classification = "not_iv_options"
+
+[[surfaces]]
 surface_id = "nt.crates.model.src.identifiers.mod.option_series_id"
 evidence_path = "crates/model/src/identifiers/mod.rs"
 symbol = "option_series_id"
@@ -1575,11 +1639,19 @@ surface_id_prefix = "nt.crates.common.src.live."
 classification = "not_iv_options"
 
 [[classification_rules]]
+surface_id_prefix = "nt.crates.common.src.messages.defi."
+classification = "not_iv_options"
+
+[[classification_rules]]
 surface_id_prefix = "nt.crates.common.src.python."
 classification = "excluded"
 
 [[classification_rules]]
 surface_id_prefix = "nt.crates.core."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.data.src.defi."
 classification = "not_iv_options"
 
 [[classification_rules]]
@@ -1603,6 +1675,10 @@ surface_id_prefix = "nt.crates.infrastructure."
 classification = "not_iv_options"
 
 [[classification_rules]]
+surface_id_prefix = "nt.crates.live."
+classification = "not_iv_options"
+
+[[classification_rules]]
 surface_id_prefix = "nt.crates.model.src.defi."
 classification = "not_iv_options"
 
@@ -1613,6 +1689,14 @@ classification = "excluded"
 [[classification_rules]]
 surface_id_prefix = "nt.crates.model.src.python."
 classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.model.src.types.fixed."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.network."
+classification = "not_iv_options"
 
 [[classification_rules]]
 surface_id_prefix = "nt.crates.persistence."

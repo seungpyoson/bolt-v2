@@ -207,6 +207,33 @@ fn whole_checkout_scan_surfaces_microstructure_terms_without_iv_anchor_words() {
 }
 
 #[test]
+fn whole_checkout_scan_handles_public_const_functions_as_named_surfaces() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    write_source(
+        root,
+        "crates/model/src/enums.rs",
+        "/// Returns whether this option class has an expiration.\npub const fn has_expiration(&self) -> bool { true }\n",
+    );
+
+    let candidates = scan_whole_checkout_candidates(root).unwrap();
+
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.surface_id == "nt.crates.model.src.enums.has_expiration"),
+        "pub const fn should surface by function name"
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.surface_id != "nt.crates.model.src.enums.fn"),
+        "pub const fn must not produce a synthetic `fn` surface"
+    );
+}
+
+#[test]
 fn ledger_rejects_unclassified_candidates_and_loads_fixture() {
     let candidate = IvCapabilityCandidate {
         surface_id: "nt.model.unclassified_candidate".to_string(),

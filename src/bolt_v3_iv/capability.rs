@@ -555,6 +555,7 @@ fn public_symbols(text: &str) -> Vec<PublicSymbol> {
         "pub struct ",
         "pub enum ",
         "pub trait ",
+        "pub const fn ",
         "pub fn ",
         "pub async fn ",
         "pub type ",

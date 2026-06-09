@@ -1,7 +1,7 @@
 {
   "schema_version": "source-proof-pmxt-broad-backfill-efficiency-status.v1",
   "created_date": "2026-06-09",
-  "verified_at_utc": "2026-06-09T01:09:44Z",
+  "verified_at_utc": "2026-06-09T01:18:42Z",
   "source_binding": "polymarket-parquet-archive-index",
   "table_family": "order_book_snapshot_deltas",
   "status": "open_broad_backfill_efficiency_unproven_bounded_one_off_guardrails_present",
@@ -50,6 +50,15 @@
         "tick_size_change"
       ],
       "current_index_sample": "2026-06-08 hourly objects listed around 451.5 MB to 603.6 MB.",
+      "canonical_object_head_probe": {
+        "command": "curl -sS -I https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet",
+        "observed_utc": "2026-06-09T01:18:42Z",
+        "status": 200,
+        "content_length_bytes": 361365244,
+        "accept_ranges": "bytes",
+        "last_modified": "Wed, 20 May 2026 23:07:44 GMT",
+        "finding": "The bounded one-hour proof source is a 361 MB object and supports byte ranges. Broad planning must use source-proof/index/range/row-group metadata before payload work; full-object scans are acceptable only inside explicitly bounded accepted tranches."
+      },
       "license": "CC BY 4.0 with attribution per PMXT docs"
     }
   },

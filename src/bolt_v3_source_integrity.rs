@@ -241,8 +241,10 @@ mod tests {
     // Clippy-preferred equivalent expression.
     // Re-derived again after #606 constrained PolyResearch reference-current
     // price support to BTC, ETH, SOL, and XRP.
+    // Re-derived again after #606 made the unsupported optional source
+    // regression assert asset-scoped subscription metadata.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "9f5d60c81b6fbe29e3f5571f2baf7530e6ac40923348dcceb9358e82dfa9c554";
+        "cd758c654afc31cd90251ec793437ab35e6e657846dc618974cc3403ceb34ebd";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

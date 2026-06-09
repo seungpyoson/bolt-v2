@@ -2934,3 +2934,64 @@ Current conclusion:
 - It does not close `BACKTESTING_ENGINE-022`. New non-trade-CSV raw formats or
   NT data families still require a real adapter implementation, source-proof
   acceptance, coverage/cost/storage evidence, and NT catalog/BacktestNode proof.
+
+## 2026-06-09 current-head PMXT selected-source conversion rerun
+
+Scope:
+
+- Rechecked only the bounded PMXT selected-source one-off path on current head
+  `4ea54d806183fb82371de2088034de03c737b633`.
+- The run used the already bounded selected-source artifact at
+  `/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selected-source/selected-source.parquet`.
+- The run wrote only to the clean scratch root
+  `/private/tmp/bte-pmxt-current-head-rerun-2026-06-09`.
+- No production artifact publication, deletion, or broad PMXT payload work was
+  performed.
+
+Root-cause check:
+
+- Rerunning the older current-schema scratch prefix
+  `/private/tmp/bte-pmxt-current-schema-rerun-2026-06-09` failed because the
+  existing result contract differed from newly generated stable current-head
+  content.
+- That prefix is now historical only. The create-only result-contract guard did
+  the correct thing by refusing to overwrite it.
+
+Command:
+
+```text
+python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-current-head-rerun-2026-06-09/artifact-root-run.toml
+```
+
+Observed evidence:
+
+- Result contract hash:
+  `6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de`.
+- Conversion manifest logical hash:
+  `a2b5407aa56068bb31e094e2d28dec71c8c2a87d592c6e1b3f30803a2ddc3c7f`.
+- Catalog hash:
+  `3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236`.
+- Selected-source parquet hash:
+  `0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e`.
+- Event-count ledger hash:
+  `985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a`.
+- Selected asset ids hash:
+  `1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110`.
+- The run projected `5` selected L2 source rows into an NT catalog containing
+  `103` `OrderBookDelta` rows and `1` `TradeTick` row.
+- NT BacktestNode consumed `104` iterations.
+- Repeating the same clean-prefix command preserved result contract hash
+  `6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de`
+  and `nt_iterations = 104`.
+
+Current conclusion:
+
+- The bounded PMXT selected-source conversion, NT catalog write/read path, and
+  BacktestNode consumption still reproduce on current head when run against a
+  clean current-schema output prefix.
+- This evidence supersedes the older `/private/tmp/bte-pmxt-current-schema-rerun-2026-06-09`
+  prefix as current evidence.
+- This does not close `BACKTESTING_ENGINE-022`: PMXT is still one-off only,
+  durable Polymarket source proof remains unaccepted, dynamic tick-size replay
+  remains unproven, and broad PMXT coverage/cost/storage evidence remains
+  unaccepted.

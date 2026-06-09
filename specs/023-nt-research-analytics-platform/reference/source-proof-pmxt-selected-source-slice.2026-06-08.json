@@ -140,16 +140,17 @@
     "finding": "The only current full-object pass is the explicitly byte-budgeted two-column event-count ledger. The selected-source stage consumes selector-carried source_row_groups and projected 1 of 62 row groups without the historical asset-column rescan."
   },
   "current_code_reconciliation": {
-    "status": "current_artifact_regenerated_with_selector_source_row_groups",
+    "status": "current_head_artifact_root_rerun_from_selector_source_row_groups",
     "artifact_generation_head": "6aaf1bd0",
-    "current_head": "82c19678cc463bae708b96ceb2d80157e5a63a03",
+    "current_head": "4ea54d806183fb82371de2088034de03c737b633",
     "pull_request": "https://github.com/seungpyoson/bolt-v2/pull/610",
-    "finding": "The selected-source artifact was regenerated from an event-count ledger and selector report that carry source_row_groups. Current selected_source_slice validates selector.selected_assets[].source_row_groups against Parquet metadata and projects those row groups directly; commit 82c19678 records the current CI-green reconciliation without regenerating broad PMXT data.",
+    "finding": "The selected-source artifact was regenerated from an event-count ledger and selector report that carry source_row_groups. Current selected_source_slice validates selector.selected_assets[].source_row_groups against Parquet metadata and projects those row groups directly; current head 4ea54d806183fb82371de2088034de03c737b633 reran the bounded one-off artifact-root conversion/backtest on a clean output prefix without regenerating broad PMXT data.",
     "evidence": [
       "The refreshed ledger contains source_row_groups for event-count rows and selected asset families book=1, last_trade_price=1, price_change=3 all in row group 35.",
       "The refreshed selector report has selected_assets[0].source_row_groups = [35] and selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110.",
       "The refreshed selected-source report binds selector_report_sha256 8bbf34e5f743ec9fdf3cbf05c23c71c75ca310eb4278ffa1c9d29403386dba27, output_parquet_sha256 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, source_row_groups 62, projected_row_groups 1, selected_rows 5, and selected_asset_count 1.",
-      "PR #610 CI on 82c19678 passed CI, Backtester CI, and actionlint after the selected-source and accepted TradeTick evidence reconciliations."
+      "Current-head clean-prefix artifact-root run produced result_contract_hash 6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de, conversion_manifest_hash a2b5407aa56068bb31e094e2d28dec71c8c2a87d592c6e1b3f30803a2ddc3c7f, catalog_hash 3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236, and nt_iterations 104.",
+      "Rerunning the same current-head clean-prefix artifact-root spec preserved result_contract_hash 6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de and nt_iterations 104."
     ],
     "supersedes": {
       "selector_report_path": "/private/tmp/bte-pmxt-first-proof-selector-2026-06-08/selector-gamma-candidates/first-proof-selector-report.json",
@@ -170,8 +171,8 @@
     "nt_parser_surface": "nautilus_polymarket::http::parse::parse_gamma_market"
   },
   "artifact_root_proof_ref": {
-    "path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/backtests/pmxt-run/backtest-result-contract.json",
-    "result_contract_hash": "1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe",
+    "path": "/private/tmp/bte-pmxt-current-head-rerun-2026-06-09/backtests/pmxt-run/backtest-result-contract.json",
+    "result_contract_hash": "6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de",
     "catalog_hash": "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236",
     "catalog_nt_data_types": [
       "OrderBookDelta",
@@ -187,7 +188,7 @@
     "Selected-source report read-back returned selected_rows=5, selected_asset_count=1, source_row_groups=62, projected_row_groups=1.",
     "Selected asset event-count ledger rows prove book=1, last_trade_price=1, price_change=3, all from source_row_groups [35].",
     "The selected-source report binds source_parquet_sha256, selector_report_sha256, output_parquet_sha256, selected_rows, selected_asset_count, selected_asset_ids_hash, source_row_groups, and projected_row_groups.",
-    "The refreshed artifact-root run wrote the selected rows to NT ParquetDataCatalog, ran BacktestNode over OrderBookDelta and TradeTick catalog inputs, and emitted nt_iterations=104."
+    "The current-head clean-prefix artifact-root run wrote the selected rows to NT ParquetDataCatalog, ran BacktestNode over OrderBookDelta and TradeTick catalog inputs, emitted nt_iterations=104, and reran idempotently with result_contract_hash 6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de."
   ],
   "claim_limits": [
     "This artifact is one-off PMXT selected-source evidence only.",

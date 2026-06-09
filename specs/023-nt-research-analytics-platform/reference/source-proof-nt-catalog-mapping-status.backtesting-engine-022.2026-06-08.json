@@ -319,11 +319,14 @@
       "CURRENT RECHECK python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08/spec.toml fails because /private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08/manifest.toml still uses removed [catalog_input] schema; current code expects [[catalog_inputs]].",
       "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin first_proof_event_count_ledger -- --spec /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/event-count-ledger.toml regenerated source_row_groups-aware event-count ledger file_sha256 538f992b836f356ed8b50815530ec270013797da27d76a65473e2a2ac95cb5c3 with selected asset event families book=1, last_trade_price=1, price_change=3 all in source_row_groups [35].",
       "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin selected_source_slice -- --spec /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selected-source.toml projected 1 of 62 row groups, selected_rows 5, selected_asset_count 1, output_parquet_sha256 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, report_hash 9d3e2f100f8f6047b89e8ce1355defef82476b9ecacc79ebc5a1ace85f21d5f3.",
-      "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/artifact-root-run.toml produced current result_contract_hash 1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe and nt_iterations 104; rerun preserved the same stable hashes."
+      "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/artifact-root-run.toml produced current result_contract_hash 1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe and nt_iterations 104; rerun preserved the same stable hashes.",
+      "EXPECTED_FAIL_CURRENT_HEAD python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-current-schema-rerun-2026-06-09/artifact-root-run.toml refused to overwrite the older current-schema scratch prefix because the existing result contract differs from newly generated stable content on current head.",
+      "GREEN_CURRENT_HEAD python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin pmxt_one_off_l2_artifact_root_run -- --spec /private/tmp/bte-pmxt-current-head-rerun-2026-06-09/artifact-root-run.toml produced result_contract_hash 6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de, conversion_manifest_hash a2b5407aa56068bb31e094e2d28dec71c8c2a87d592c6e1b3f30803a2ddc3c7f, catalog_hash 3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236, selected_source_parquet_hash 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, event_count_ledger_hash 985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a, selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110, projected_l2_rows 5, and nt_iterations 104.",
+      "GREEN_CURRENT_HEAD_RERUN repeating /private/tmp/bte-pmxt-current-head-rerun-2026-06-09/artifact-root-run.toml preserved result_contract_hash 6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de, conversion_manifest_hash a2b5407aa56068bb31e094e2d28dec71c8c2a87d592c6e1b3f30803a2ddc3c7f, catalog_hash 3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236, selected_source_parquet_hash 0102068effdcdbb308d9390746afa6a75dfda1b3ba8fc3239ecdb4c74d9ae99e, event_count_ledger_hash 985808244f540656dc5021703f2a2d9ae9a93305ebb5afe0b05f45a58027f00a, selected_asset_ids_hash 1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110, projected_l2_rows 5, and nt_iterations 104."
     ],
     "claim_limits": [
       "Proves PMXT one-off L2+TradeTick conversion metadata code path over bounded selected-source rows.",
-      "PMXT mixed OrderBookDelta+TradeTick artifact-root/result-contract metadata binding is proven by tests, CI, and the refreshed bounded one-off selected-source sample.",
+      "PMXT mixed OrderBookDelta+TradeTick artifact-root/result-contract metadata binding is proven by tests, CI, and the current-head bounded one-off selected-source sample.",
       "The older PMXT mixed artifact and pre-source_row_groups selected-source artifacts are historical only.",
       "Does not authorize broad PMXT backfill."
     ]
@@ -333,8 +336,8 @@
     "recommendation": "keep_as_historical_reference_only",
     "current_stale_scratch_path": "/private/tmp/bte-pmxt-one-off-artifact-root-run-mixed-2026-06-08",
     "reason": "The old mixed PMXT scratch artifact still uses the removed [catalog_input] schema and fails the current artifact-root run. It must not be resumed, promoted, or cited as current acceptance evidence.",
-    "current_one_off_evidence_path": "/private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/backtests/pmxt-run",
-    "current_one_off_result_contract_hash": "1814b0affa63a8975879022cad7979acf77a2b43969b43c865e065f06ea907fe",
+    "current_one_off_evidence_path": "/private/tmp/bte-pmxt-current-head-rerun-2026-06-09/backtests/pmxt-run",
+    "current_one_off_result_contract_hash": "6c2b71bca7e5e40800aa72c0b9b2395b3d1ed08dce052349c4662d8cbc9a46de",
     "delete_policy": "Do not delete historical scratch artifacts as part of BTE-022; archive or delete only after a separately approved cleanup."
   },
   "accepted_trade_replay_runtime_recheck": {
@@ -390,7 +393,7 @@
     },
     {
       "blocker": "source_agnostic_adapter_contract_gap",
-      "required_evidence": "repo://specs/023-nt-research-analytics-platform/reference/source-agnostic-backfill-boundary-status.2026-06-09.json records the boundary audit: generic gates are source_binding/table_family/NT-data-type driven, source-proof cross-market roles are registry-owned, and registered converters now declare table_family, but the accepted-object operator still has only the native trade CSV adapter while PMXT is an explicit one-off adapter. Adding a new raw format or data family still requires a registered adapter implementation/runner, not just TOML."
+      "required_evidence": "repo://specs/023-nt-research-analytics-platform/reference/source-agnostic-backfill-boundary-status.2026-06-09.json records the boundary audit: generic gates are source_binding/table_family/NT-data-type driven, source-proof cross-market roles are registry-owned, registered adapters declare table_family/NT data type, and the durable operator now rejects registered adapter kinds without explicit runner dispatch before artifact writes. The remaining gap is real adapter coverage: only the native trade CSV adapter is durable while PMXT remains an explicit one-off adapter. Adding a new raw format or data family still requires a registered adapter implementation/runner and proof, not just TOML."
     }
   ],
   "next_required_evidence": [

@@ -161,9 +161,11 @@
     "why": "The converter/backtest path works for the bounded slice, but old hand-carried scratch specs drifted. The next robust deliverable is a source-agnostic generator that emits current-schema manifests/specs and clean output prefixes for each accepted tranche."
   },
   "current_head_follow_up": {
-    "head_sha": "0ece3cffa39ccc3f4520f291e33827e9e7b6dc16",
-    "status": "partially_addressed_for_accepted_tranche_to_run_spec",
-    "evidence": "repo://specs/023-nt-research-analytics-platform/reference/backfill-run-spec-materialization-current-head.2026-06-09.json",
+    "head_sha": "4ea54d806183fb82371de2088034de03c737b633",
+    "status": "superseded_by_clean_current_head_rerun",
+    "evidence": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-current-head-existing-data-conversion.2026-06-09.json",
+    "superseded_scratch_prefix": "/private/tmp/bte-pmxt-current-schema-rerun-2026-06-09",
+    "reason": "The older scratch prefix is historical only on current head; its existing result contract is stable-content incompatible with a fresh current-head run, and the create-only guard correctly refuses to overwrite it.",
     "remaining_scope": "PMXT remains one-off only. Broad PMXT/Polymarket backfill still requires durable source proof, manifest/index-only coverage, bounded row-group/object budgets, and dynamic tick-size replay proof or accepted exclusion policy."
   }
 }

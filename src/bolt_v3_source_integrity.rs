@@ -223,8 +223,9 @@ mod tests {
     // Re-derived again after selected-side sized-notional executable-edge
     // re-evaluation started recomputing the uncertainty band from the sized
     // limit-price fee.
+    // Re-derived after deriving VWAP assertion expectations from test inputs.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "815bee45346b3d0148adac9403e598a3d77e8f86c3bf2de2946213ffd3735615";
+        "18ebe1c9a4bc4cb0bd2908a0a541cd20b39bed4149474bb55b4a3ecfcc75c79f";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

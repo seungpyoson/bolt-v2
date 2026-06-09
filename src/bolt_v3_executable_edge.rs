@@ -401,14 +401,26 @@ mod tests {
 
     #[test]
     fn exact_size_vwap_prices_requested_notional_across_levels() {
-        let book = priced_book(&[(0.50, 5.0), (0.60, 100.0)]);
+        let levels = [(0.50, 5.0), (0.60, 100.0)];
+        let [
+            (best_level_price, best_level_quantity),
+            (second_level_price, _),
+        ] = levels;
+        let requested_notional = best_level_price * best_level_quantity * levels.len() as f64;
+        let book = priced_book(&levels);
 
-        let priced = price_exact_size_vwap(&book, OrderSide::Buy, 5.0, 2_000)
+        let priced = price_exact_size_vwap(&book, OrderSide::Buy, requested_notional, 2_000)
             .expect("exact notional should fill inside the depth limit");
 
-        assert!((priced.vwap_price - 0.5454545454545454).abs() < EPSILON);
-        assert!((priced.vwap_quantity - 9.166666666666668).abs() < EPSILON);
-        assert_eq!(priced.limit_price, 0.60);
+        let best_level_notional = best_level_price * best_level_quantity;
+        let second_level_notional = requested_notional - best_level_notional;
+        let expected_vwap_quantity =
+            best_level_quantity + (second_level_notional / second_level_price);
+        let expected_vwap_price = requested_notional / expected_vwap_quantity;
+
+        assert!((priced.vwap_price - expected_vwap_price).abs() < EPSILON);
+        assert!((priced.vwap_quantity - expected_vwap_quantity).abs() < EPSILON);
+        assert_eq!(priced.limit_price, second_level_price);
         assert!(priced.exact_size_filled);
     }
 

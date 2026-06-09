@@ -274,8 +274,8 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
 
 #[test]
 fn binance_backfill_gate_commits_materialized_run_spec_before_execution_plan() {
-    let materialization_spec_path = Path::new(BINANCE_GATE_ROOT)
-        .join("backfill-run-spec-materialization.toml");
+    let materialization_spec_path =
+        Path::new(BINANCE_GATE_ROOT).join("backfill-run-spec-materialization.toml");
     let materialized_run_spec_path = Path::new(BINANCE_GATE_ROOT)
         .join("materialized-run-spec")
         .join("backfill-run-spec.toml");

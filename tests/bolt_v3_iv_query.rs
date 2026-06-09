@@ -21,7 +21,8 @@ use bolt_v2::bolt_v3_iv::{
     },
     provenance::IvPolicyDecision,
     query::{
-        IvProductQuery, IvQuery, IvQueryError, IvQueryHandle, IvQueryProduct, IvRawPayloadQuery,
+        IvProductQuery, IvQuery, IvQueryError, IvQueryHandle, IvQueryProduct, IvQueryState,
+        IvQueryStateHandle, IvRawPayloadQuery,
     },
     selector::IvSelector,
     store::{IvRetentionPolicy, IvStore},
@@ -572,6 +573,109 @@ fn selector_scoped_strategy_query_requires_matching_source_and_selector() {
     ));
     assert_eq!(
         handle.query(&point_query(Some("configured-denied-source"), 2_000)),
+        Err(IvQueryError::StrategyNotAuthorized)
+    );
+}
+
+#[test]
+fn two_strategy_instances_query_shared_engine_state_with_different_selectors() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event(
+            "configured-source-a",
+            "configured-selector-a",
+            2_000,
+            test_implied_volatility(41),
+        ))
+        .unwrap();
+    store
+        .ingest_event(greeks_event(
+            "configured-source-b",
+            "configured-selector-b",
+            2_001,
+            test_implied_volatility(43),
+        ))
+        .unwrap();
+    let shared_state = IvQueryStateHandle::new(IvQueryState::new(store));
+    let strategy_a = IvQueryHandle::from_state(
+        "configured-profile",
+        IvSelectorAuthorization {
+            authorization_mode: IvAuthorizationMode::SelectorScoped,
+            strategy_id: "configured-strategy-a".to_string(),
+            allowed_product_kinds: BTreeSet::from([IvProductKind::IvPoint]),
+            allowed_selector_fingerprints: BTreeSet::from(["configured-selector-a".to_string()]),
+            allowed_source_ids: BTreeSet::from(["configured-source-a".to_string()]),
+        },
+        shared_state.clone(),
+    );
+    let strategy_b = IvQueryHandle::from_state(
+        "configured-profile",
+        IvSelectorAuthorization {
+            authorization_mode: IvAuthorizationMode::SelectorScoped,
+            strategy_id: "configured-strategy-b".to_string(),
+            allowed_product_kinds: BTreeSet::from([IvProductKind::IvPoint]),
+            allowed_selector_fingerprints: BTreeSet::from(["configured-selector-b".to_string()]),
+            allowed_source_ids: BTreeSet::from(["configured-source-b".to_string()]),
+        },
+        shared_state,
+    );
+    let query = |strategy_id: &str, source_id: &str, as_of_ns: u64| {
+        IvQuery::Product(IvProductQuery {
+            strategy_id: strategy_id.to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::IvPoint,
+            selector: IvSelector::PointQuery {
+                instrument_ids: vec!["configured-option-instrument".to_string()],
+                basis: IvBasis::Mark,
+                as_of_ns: UnixNanos::new(as_of_ns),
+                source_filter: Some(source_id.to_string()),
+            },
+        })
+    };
+
+    let IvQueryProduct::IvPoint(point_a) = strategy_a
+        .query(&query(
+            "configured-strategy-a",
+            "configured-source-a",
+            2_000,
+        ))
+        .unwrap()
+    else {
+        panic!("expected strategy A IV point");
+    };
+    let IvQueryProduct::IvPoint(point_b) = strategy_b
+        .query(&query(
+            "configured-strategy-b",
+            "configured-source-b",
+            2_001,
+        ))
+        .unwrap()
+    else {
+        panic!("expected strategy B IV point");
+    };
+
+    assert_eq!(
+        point_a.provenance.selector_fingerprint,
+        "configured-selector-a"
+    );
+    assert_eq!(
+        point_b.provenance.selector_fingerprint,
+        "configured-selector-b"
+    );
+    assert_eq!(
+        strategy_a.query(&query(
+            "configured-strategy-a",
+            "configured-source-b",
+            2_001
+        )),
+        Err(IvQueryError::StrategyNotAuthorized)
+    );
+    assert_eq!(
+        strategy_b.query(&query(
+            "configured-strategy-b",
+            "configured-source-a",
+            2_000
+        )),
         Err(IvQueryError::StrategyNotAuthorized)
     );
 }

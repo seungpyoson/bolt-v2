@@ -581,6 +581,18 @@ fn resolve_number_field(
         return Ok(());
     }
 
+    if field_policy
+        .allowed_source_kinds
+        .contains(&IvDerivedInputSourceKind::InstrumentMetadata)
+        && let Some((input, event_ids)) =
+            instrument_metadata_number_field(profile_inputs, request, field)
+    {
+        validate_allowed_source_kind(Some(field_policy), field, input.source_kind)?;
+        set_number_field(request, field, input);
+        merge_input_event_ids(&mut request.input_event_ids, event_ids);
+        return Ok(());
+    }
+
     Err(IvDeriveError::MissingInput { field })
 }
 
@@ -607,6 +619,17 @@ fn resolve_side_field(
 
     if let Some(source_ref) = &field_policy.profile_source_ref
         && let Some((input, event_ids)) = profile_side_field(profile_inputs, request, source_ref)
+    {
+        validate_allowed_source_kind(Some(field_policy), field, input.source_kind)?;
+        request.option_side = Some(input);
+        merge_input_event_ids(&mut request.input_event_ids, event_ids);
+        return Ok(());
+    }
+
+    if field_policy
+        .allowed_source_kinds
+        .contains(&IvDerivedInputSourceKind::InstrumentMetadata)
+        && let Some((input, event_ids)) = instrument_metadata_side_field(profile_inputs, request)
     {
         validate_allowed_source_kind(Some(field_policy), field, input.source_kind)?;
         request.option_side = Some(input);
@@ -708,6 +731,50 @@ fn profile_side_field(
         .map(|(candidate, input)| (input, candidate.input_event_ids.clone()))
 }
 
+fn instrument_metadata_number_field(
+    profile_inputs: &[IvDerivedInputSet],
+    request: &IvDerivedInputSet,
+    field: IvDerivedInputField,
+) -> Option<(IvTimedInput<f64>, Vec<String>)> {
+    profile_inputs
+        .iter()
+        .filter_map(|candidate| {
+            if instrument_metadata_matches(candidate, request) {
+                number_field(candidate, field)
+                    .filter(|input| {
+                        input.source_kind == IvDerivedInputSourceKind::InstrumentMetadata
+                    })
+                    .map(|input| (candidate, input))
+            } else {
+                None
+            }
+        })
+        .max_by_key(|(candidate, _)| candidate.as_of_ns.get())
+        .map(|(candidate, input)| (input, candidate.input_event_ids.clone()))
+}
+
+fn instrument_metadata_side_field(
+    profile_inputs: &[IvDerivedInputSet],
+    request: &IvDerivedInputSet,
+) -> Option<(IvTimedInput<IvOptionSide>, Vec<String>)> {
+    profile_inputs
+        .iter()
+        .filter_map(|candidate| {
+            if instrument_metadata_matches(candidate, request) {
+                candidate
+                    .option_side
+                    .filter(|input| {
+                        input.source_kind == IvDerivedInputSourceKind::InstrumentMetadata
+                    })
+                    .map(|input| (candidate, input))
+            } else {
+                None
+            }
+        })
+        .max_by_key(|(candidate, _)| candidate.as_of_ns.get())
+        .map(|(candidate, input)| (input, candidate.input_event_ids.clone()))
+}
+
 fn profile_source_matches(
     candidate: &IvDerivedInputSet,
     request: &IvDerivedInputSet,
@@ -716,6 +783,12 @@ fn profile_source_matches(
     candidate.profile_id == request.profile_id
         && candidate.source_id == source_ref.source_id
         && candidate.selector_fingerprint == source_ref.selector_fingerprint
+        && candidate.instrument_id == request.instrument_id
+        && candidate.as_of_ns.get() <= request.as_of_ns.get()
+}
+
+fn instrument_metadata_matches(candidate: &IvDerivedInputSet, request: &IvDerivedInputSet) -> bool {
+    candidate.profile_id == request.profile_id
         && candidate.instrument_id == request.instrument_id
         && candidate.as_of_ns.get() <= request.as_of_ns.get()
 }

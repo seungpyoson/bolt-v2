@@ -209,8 +209,18 @@ pub fn interpolate_smile(
 
     let mut points = points.to_vec();
     points.sort_by(|left, right| left.strike.total_cmp(&right.strike));
-    let first = points.first().expect("minimum_points checked");
-    let last = points.last().expect("minimum_points checked");
+    let Some(first) = points.first() else {
+        return Err(rejected(
+            policy.policy_id.clone(),
+            IvRejectReason::InterpolationRejected,
+        ));
+    };
+    let Some(last) = points.last() else {
+        return Err(rejected(
+            policy.policy_id.clone(),
+            IvRejectReason::InterpolationRejected,
+        ));
+    };
 
     if points.len() == 1 && strike == first.strike {
         return Ok(IvPolicyOutput {

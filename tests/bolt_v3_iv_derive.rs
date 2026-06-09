@@ -515,6 +515,112 @@ fn profile_source_resolution_skips_mismatched_instrument_candidates() {
 }
 
 #[test]
+fn derived_input_policy_resolves_instrument_metadata_fields() {
+    let mut request_inputs = complete_inputs();
+    request_inputs.strike = None;
+    request_inputs.option_side = None;
+
+    let mut wrong_instrument_metadata = complete_inputs();
+    wrong_instrument_metadata.source_id = "configured-instrument-metadata-source".to_string();
+    wrong_instrument_metadata.selector_fingerprint =
+        "configured-instrument-metadata-selector".to_string();
+    wrong_instrument_metadata.instrument_id = "configured-other-option-instrument".to_string();
+    wrong_instrument_metadata.strike = Some(IvTimedInput {
+        value: 125.0,
+        ts_ns: UnixNanos::new(996),
+        source_kind: IvDerivedInputSourceKind::InstrumentMetadata,
+        expires_at_ns: None,
+    });
+    wrong_instrument_metadata.option_side = Some(IvTimedInput {
+        value: IvOptionSide::Put,
+        ts_ns: UnixNanos::new(997),
+        source_kind: IvDerivedInputSourceKind::InstrumentMetadata,
+        expires_at_ns: None,
+    });
+    wrong_instrument_metadata.input_event_ids =
+        vec!["configured-wrong-instrument-metadata-event".to_string()];
+
+    let mut matching_instrument_metadata = complete_inputs();
+    matching_instrument_metadata.source_id = "configured-instrument-metadata-source".to_string();
+    matching_instrument_metadata.selector_fingerprint =
+        "configured-instrument-metadata-selector".to_string();
+    matching_instrument_metadata.as_of_ns = UnixNanos::new(998);
+    matching_instrument_metadata.strike = Some(IvTimedInput {
+        value: 100.0,
+        ts_ns: UnixNanos::new(996),
+        source_kind: IvDerivedInputSourceKind::InstrumentMetadata,
+        expires_at_ns: None,
+    });
+    matching_instrument_metadata.option_side = Some(IvTimedInput {
+        value: IvOptionSide::Call,
+        ts_ns: UnixNanos::new(997),
+        source_kind: IvDerivedInputSourceKind::InstrumentMetadata,
+        expires_at_ns: None,
+    });
+    matching_instrument_metadata.input_event_ids =
+        vec!["configured-instrument-metadata-event".to_string()];
+
+    let policy = IvDerivedInputPolicy {
+        input_policy_id: "configured-derived-input-policy".to_string(),
+        helper_policy_ref: "configured-helper-policy".to_string(),
+        required_fields: vec![IvDerivedInputField::Strike, IvDerivedInputField::OptionSide],
+        field_sources: vec![
+            IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::Strike,
+                allowed_source_kinds: BTreeSet::from([
+                    IvDerivedInputSourceKind::InstrumentMetadata,
+                ]),
+                profile_source_ref: None,
+                operator_number: None,
+                operator_side: None,
+            },
+            IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::OptionSide,
+                allowed_source_kinds: BTreeSet::from([
+                    IvDerivedInputSourceKind::InstrumentMetadata,
+                ]),
+                profile_source_ref: None,
+                operator_number: None,
+                operator_side: None,
+            },
+        ],
+        freshness_ns: 10,
+        max_input_skew_ns: 10,
+        bounds: input_bounds(),
+        convention_policy: IvConventionBounds {
+            allowed_conventions: BTreeSet::from([convention()]),
+        },
+        operator_value_refresh_policy: IvOperatorValueRefreshPolicy::RejectExpiredOperatorValues,
+    };
+
+    let resolved = resolve_derived_input_policy(
+        &policy,
+        request_inputs,
+        &[wrong_instrument_metadata, matching_instrument_metadata],
+    )
+    .unwrap();
+
+    assert_eq!(resolved.strike.unwrap().value, 100.0);
+    assert_eq!(
+        resolved.strike.unwrap().source_kind,
+        IvDerivedInputSourceKind::InstrumentMetadata
+    );
+    assert_eq!(resolved.option_side.unwrap().value, IvOptionSide::Call);
+    assert!(
+        resolved
+            .input_event_ids
+            .iter()
+            .any(|event_id| event_id == "configured-instrument-metadata-event")
+    );
+    assert!(
+        !resolved
+            .input_event_ids
+            .iter()
+            .any(|event_id| event_id == "configured-wrong-instrument-metadata-event")
+    );
+}
+
+#[test]
 fn missing_required_inputs_reject_with_field_specific_reason() {
     for field in IvDerivedInputField::required_fields() {
         let mut inputs = complete_inputs();

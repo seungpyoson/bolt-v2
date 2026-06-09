@@ -758,6 +758,126 @@ fn projected_scalar_query_applies_configured_interpolation_policy_for_smile_inpu
 }
 
 #[test]
+fn projected_scalar_query_interpolates_exact_single_point_smile_when_policy_allows_one_point() {
+    let mut event = option_chain_event(2_010);
+    let IvRawPayload::OptionChainSlice(payload) = &mut event.payload else {
+        panic!("expected option-chain fixture");
+    };
+    payload.calls.remove(0);
+
+    let mut store = IvStore::empty();
+    store.ingest_event(event).unwrap();
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy_with_refs(
+            1,
+            None,
+            Some("configured-interpolation-policy"),
+            None,
+        )])
+        .with_interpolation_policies(vec![IvInterpolationPolicy {
+            policy_id: "configured-interpolation-policy".to_string(),
+            method: IvInterpolationMethod::Linear,
+            strike_axis: "configured-strike-axis".to_string(),
+            tenor_axis: "configured-tenor-axis".to_string(),
+            minimum_points: 1,
+            eligible_sources: vec!["configured-source".to_string()],
+            extrapolation: IvExtrapolationPolicy::Reject,
+        }]);
+
+    let product = handle
+        .query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(IvSelector::SmileQuery {
+                    series_id: "configured-series".to_string(),
+                    side: None,
+                    basis: IvBasis::Mark,
+                    as_of_ns: UnixNanos::new(2_010),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_010),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::ProjectedScalarIv(projected) = product else {
+        panic!("expected projected scalar IV product");
+    };
+    assert_eq!(projected.value, test_implied_volatility(44));
+}
+
+#[test]
+fn projected_scalar_query_uses_fallback_when_single_smile_interpolation_rejects() {
+    let mut event = option_chain_event(2_010);
+    let IvRawPayload::OptionChainSlice(payload) = &mut event.payload else {
+        panic!("expected option-chain fixture");
+    };
+    payload.calls.remove(0);
+
+    let mut store = IvStore::empty();
+    store.ingest_event(event).unwrap();
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy_with_refs(
+            2,
+            Some("configured-fallback-policy"),
+            Some("configured-interpolation-policy"),
+            None,
+        )])
+        .with_interpolation_policies(vec![IvInterpolationPolicy {
+            policy_id: "configured-interpolation-policy".to_string(),
+            method: IvInterpolationMethod::Linear,
+            strike_axis: "configured-strike-axis".to_string(),
+            tenor_axis: "configured-tenor-axis".to_string(),
+            minimum_points: 2,
+            eligible_sources: vec!["configured-source".to_string()],
+            extrapolation: IvExtrapolationPolicy::Reject,
+        }])
+        .with_fallback_policies(vec![IvFallbackPolicy {
+            policy_id: "configured-fallback-policy".to_string(),
+            candidate_order: vec!["configured-series".to_string()],
+            eligible_sources: vec!["configured-source".to_string()],
+            maximum_timestamp_skew_ns: 10,
+            required_provenance_fields: vec!["raw_event_id".to_string()],
+        }]);
+
+    let product = handle
+        .query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(IvSelector::SmileQuery {
+                    series_id: "configured-series".to_string(),
+                    side: None,
+                    basis: IvBasis::Mark,
+                    as_of_ns: UnixNanos::new(2_010),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_010),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::ProjectedScalarIv(projected) = product else {
+        panic!("expected projected scalar IV product");
+    };
+    assert_eq!(projected.value, test_implied_volatility(44));
+    assert!(
+        projected
+            .provenance
+            .policy_decisions
+            .iter()
+            .any(|decision| matches!(
+                decision,
+                IvPolicyDecision::FallbackDecision { policy_id, .. }
+                    if policy_id == "configured-fallback-policy"
+            ))
+    );
+}
+
+#[test]
 fn projected_scalar_query_requires_configured_quorum_before_projecting() {
     let mut store = IvStore::empty();
     store
@@ -1393,6 +1513,44 @@ fn source_health_query_applies_configured_state_filter() {
     };
     assert_eq!(health.source_id, "configured-stale-source");
     assert_eq!(health.subscription_state, IvSourceHealthState::Stale);
+}
+
+#[test]
+fn source_health_rejected_filter_returns_active_rows_with_rejection_diagnostics() {
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    );
+    handle.state_handle().record_source_rejection(
+        "configured-profile".to_string(),
+        "configured-source".to_string(),
+        1,
+        UnixNanos::new(2_010),
+        IvRejectReason::InvalidIvValue,
+        false,
+    );
+
+    let product = handle
+        .query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::SourceHealth,
+            selector: IvSelector::SourceHealthQuery {
+                source_filter: Some("configured-source".to_string()),
+                state_filter: vec!["rejected".to_string()],
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::SourceHealth(health) = product else {
+        panic!("expected source health product");
+    };
+    assert_eq!(health.subscription_state, IvSourceHealthState::Active);
+    assert_eq!(
+        health.last_reject_reason,
+        Some(IvRejectReason::InvalidIvValue)
+    );
 }
 
 #[test]

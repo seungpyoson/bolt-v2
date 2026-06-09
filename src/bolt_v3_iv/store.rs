@@ -354,6 +354,9 @@ impl IvStore {
     ) -> Result<bool, IvStoreError> {
         let mut points_by_basis = BTreeMap::<IvBasis, Vec<IvSmilePoint>>::new();
         for strike in strikes {
+            if !strike.strike.is_finite() {
+                continue;
+            }
             let Some(greeks) = &strike.greeks else {
                 continue;
             };

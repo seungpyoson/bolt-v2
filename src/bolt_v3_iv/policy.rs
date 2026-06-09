@@ -212,6 +212,24 @@ pub fn interpolate_smile(
     let first = points.first().expect("minimum_points checked");
     let last = points.last().expect("minimum_points checked");
 
+    if points.len() == 1 && strike == first.strike {
+        return Ok(IvPolicyOutput {
+            value: first.iv,
+            policy_decisions: vec![IvPolicyDecision::InterpolationDecision {
+                policy_id: policy.policy_id.clone(),
+                input_point_ids: points.iter().map(strike_id).collect(),
+                strike_axis: policy.strike_axis.clone(),
+                tenor_axis: policy.tenor_axis.clone(),
+                method: policy.method.as_str().to_string(),
+                minimum_points: policy.minimum_points,
+                extrapolation: policy.extrapolation.as_str().to_string(),
+                eligible_sources: policy.eligible_sources.clone(),
+                accepted_range: Some(format!("{}..{}", first.strike, last.strike)),
+                rejected_range: None,
+            }],
+        });
+    }
+
     if strike < first.strike || strike > last.strike {
         if !policy.extrapolation.allows_extrapolation() {
             return Err(rejected(

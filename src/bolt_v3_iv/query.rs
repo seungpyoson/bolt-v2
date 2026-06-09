@@ -1331,13 +1331,13 @@ fn interpolate_projected_input(
         .ok_or(IvQueryError::ProjectionRejected)?;
     match input_product {
         IvQueryProduct::Smile(smile) => {
-            let strike = smile
+            let Some(strike) = smile
                 .atm_strike
                 .or_else(|| smile.points_by_strike.first().map(|point| point.strike))
-                .ok_or(IvQueryError::ProjectionRejected)?;
-            interpolate_smile(policy, &smile.points_by_strike, strike)
-                .map(Some)
-                .map_err(|_| IvQueryError::ProjectionRejected)
+            else {
+                return Ok(None);
+            };
+            Ok(interpolate_smile(policy, &smile.points_by_strike, strike).ok())
         }
         IvQueryProduct::Surface(surface) => {
             let smile = surface
@@ -1345,13 +1345,13 @@ fn interpolate_projected_input(
                 .iter()
                 .find(|smile| !smile.points_by_strike.is_empty())
                 .ok_or(IvQueryError::ProjectionRejected)?;
-            let strike = smile
+            let Some(strike) = smile
                 .atm_strike
                 .or_else(|| smile.points_by_strike.first().map(|point| point.strike))
-                .ok_or(IvQueryError::ProjectionRejected)?;
-            interpolate_smile(policy, &smile.points_by_strike, strike)
-                .map(Some)
-                .map_err(|_| IvQueryError::ProjectionRejected)
+            else {
+                return Ok(None);
+            };
+            Ok(interpolate_smile(policy, &smile.points_by_strike, strike).ok())
         }
         _ => Ok(None),
     }

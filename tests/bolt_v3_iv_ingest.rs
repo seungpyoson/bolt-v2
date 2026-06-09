@@ -281,6 +281,41 @@ fn option_chain_strikes_with_invalid_nested_iv_are_skipped_without_dropping_usab
 }
 
 #[test]
+fn option_chain_strikes_with_non_finite_strikes_are_skipped_without_dropping_usable_points() {
+    let mut store = IvStore::empty();
+
+    store
+        .ingest_event(base_event(
+            IvSourceKind::OptionChain,
+            IvRawPayload::OptionChainSlice(IvOptionChainSlicePayload {
+                series_id: "configured-series-a".to_string(),
+                surface_selector: "configured-surface-selector".to_string(),
+                atm_strike: Some(100.0),
+                calls: vec![
+                    IvOptionChainStrikePayload {
+                        strike: f64::NAN,
+                        quote: chain_quote_payload("configured-call-invalid-strike"),
+                        greeks: Some(chain_greeks_payload("configured-call-invalid-strike", 0.32)),
+                    },
+                    IvOptionChainStrikePayload {
+                        strike: 100.0,
+                        quote: chain_quote_payload("configured-call-valid"),
+                        greeks: Some(chain_greeks_payload("configured-call-valid", 0.35)),
+                    },
+                ],
+                puts: Vec::new(),
+            }),
+        ))
+        .unwrap();
+
+    assert_eq!(store.raw_events().len(), 1);
+    assert_eq!(store.smiles().len(), 1);
+    assert_eq!(store.smiles()[0].points_by_strike.len(), 1);
+    assert_eq!(store.smiles()[0].points_by_strike[0].strike, 100.0);
+    assert_eq!(store.smiles()[0].points_by_strike[0].iv, 0.35);
+}
+
+#[test]
 fn aggregate_greeks_events_are_preserved_and_indexed_as_products() {
     let mut store = IvStore::empty();
 

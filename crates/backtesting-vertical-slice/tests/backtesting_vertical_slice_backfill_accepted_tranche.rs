@@ -35,6 +35,25 @@ fn accepted_tranche_manifest_contains_only_selected_scope_object() {
 }
 
 #[test]
+fn accepted_tranche_carries_object_selection_metadata() {
+    let mut scope = candidate_scope_report();
+    let selected = scope.selected_object.as_mut().expect("selected object");
+    selected.source_row_groups = vec![3, 5];
+    selected.predicate_ref = Some("source-proof://synthetic/row-groups".to_string());
+    let scope_hash = scope_hash(&scope);
+
+    let manifest = evaluate_backfill_accepted_tranche("synthetic-tranche", &scope, &scope_hash)
+        .expect("manifest");
+
+    assert_eq!(manifest.status, BackfillAcceptedTrancheStatus::Accepted);
+    assert_eq!(manifest.objects[0].source_row_groups, vec![3, 5]);
+    assert_eq!(
+        manifest.objects[0].predicate_ref.as_deref(),
+        Some("source-proof://synthetic/row-groups")
+    );
+}
+
+#[test]
 fn accepted_tranche_blocks_when_scope_has_no_selected_object() {
     let mut scope = candidate_scope_report();
     scope.selected_object = None;
@@ -113,6 +132,8 @@ fn candidate_scope_report() -> BackfillSourceProofScopeReport {
             sha256: "selected-object".to_string(),
             bytes: 11,
             archive_date: "2026-03-01".to_string(),
+            source_row_groups: Vec::new(),
+            predicate_ref: None,
         }),
         source_proof_acceptance_error: None,
         blocking_issues: Vec::new(),

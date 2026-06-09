@@ -136,6 +136,7 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
             max_source_rows: expected_plan.max_source_rows,
             max_projected_row_groups: expected_plan.max_projected_row_groups,
             max_wall_seconds: expected_plan.max_wall_seconds,
+            require_object_selection_metadata: expected_plan.require_object_selection_metadata,
         },
     );
 

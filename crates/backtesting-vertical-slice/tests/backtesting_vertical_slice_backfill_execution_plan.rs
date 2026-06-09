@@ -48,6 +48,51 @@ fn execution_plan_is_ready_only_for_matching_accepted_tranche_and_run_spec_bindi
 }
 
 #[test]
+fn execution_plan_carries_object_selection_metadata() {
+    let mut tranche = accepted_tranche();
+    tranche.objects[0].source_row_groups = vec![3, 5];
+    tranche.objects[0].predicate_ref = Some("source-proof://synthetic/row-groups".to_string());
+
+    let plan = evaluate_backfill_execution_plan(
+        "synthetic-plan",
+        "synthetic-tranche-hash",
+        &tranche,
+        "synthetic-run-spec-hash",
+        &matching_run_binding(),
+        work_budget(),
+    );
+
+    assert_eq!(plan.status, BackfillExecutionPlanStatus::Ready);
+    assert_eq!(plan.objects[0].source_row_groups, vec![3, 5]);
+    assert_eq!(
+        plan.objects[0].predicate_ref.as_deref(),
+        Some("source-proof://synthetic/row-groups")
+    );
+}
+
+#[test]
+fn execution_plan_blocks_required_object_selection_metadata_before_payload_fetch() {
+    let mut budget = work_budget();
+    budget.require_object_selection_metadata = true;
+
+    let plan = evaluate_backfill_execution_plan(
+        "synthetic-plan",
+        "synthetic-tranche-hash",
+        &accepted_tranche(),
+        "synthetic-run-spec-hash",
+        &matching_run_binding(),
+        budget,
+    );
+
+    assert_eq!(plan.status, BackfillExecutionPlanStatus::Blocked);
+    assert!(plan.objects.is_empty());
+    assert!(
+        plan.blocking_issues
+            .contains(&BackfillExecutionPlanIssue::ExecutionPlanObjectSelectionMetadataMissing)
+    );
+}
+
+#[test]
 fn execution_plan_blocks_run_spec_object_mismatch_before_payload_fetch() {
     let tranche = accepted_tranche();
     let mut binding = matching_run_binding();
@@ -108,6 +153,7 @@ fn execution_plan_blocks_missing_work_budgets_before_payload_fetch() {
             max_source_rows: 0,
             max_projected_row_groups: 0,
             max_wall_seconds: 0,
+            require_object_selection_metadata: false,
         },
     );
 
@@ -171,6 +217,8 @@ fn accepted_tranche() -> BackfillAcceptedTrancheManifest {
             sha256: "synthetic-object-sha".to_string(),
             bytes: 17,
             archive_date: "2026-03-01".to_string(),
+            source_row_groups: Vec::new(),
+            predicate_ref: None,
         }],
         blocking_issues: Vec::new(),
     }
@@ -204,5 +252,6 @@ fn work_budget() -> BackfillExecutionWorkBudget {
         max_source_rows: 128,
         max_projected_row_groups: 1,
         max_wall_seconds: 30,
+        require_object_selection_metadata: false,
     }
 }

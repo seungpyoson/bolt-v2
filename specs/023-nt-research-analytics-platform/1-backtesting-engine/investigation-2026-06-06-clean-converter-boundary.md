@@ -2995,3 +2995,64 @@ Current conclusion:
   durable Polymarket source proof remains unaccepted, dynamic tick-size replay
   remains unproven, and broad PMXT coverage/cost/storage evidence remains
   unaccepted.
+
+## 2026-06-09 object selection metadata gate checkpoint
+
+Scope:
+
+- Addressed only the generic broad-backfill efficiency guard for carrying
+  object-level selection metadata through pre-payload gates.
+- No PMXT source proof was accepted, no PMXT payload was downloaded, and no
+  broad conversion/backtest was started.
+
+Root-cause check:
+
+- The prior broad-backfill status required object-level row-group or predicate
+  metadata before broad payload work, but the source-proof-scope,
+  accepted-tranche, and execution-plan structures could not yet carry that
+  metadata.
+- Without a required-metadata gate, a future execution plan could be marked
+  ready for a broad source even though selected-source projection would have to
+  rediscover row groups by payload scanning.
+
+Change:
+
+- `BackfillSourceProofScopeObject` now preserves optional `source_row_groups`
+  or `row_groups` arrays and optional `predicate_ref` from manifest payload
+  records.
+- `BackfillAcceptedTrancheObject` and `BackfillExecutionPlanObject` now carry
+  `source_row_groups` and `predicate_ref` forward.
+- `BackfillExecutionPlanSpec` and `BackfillExecutionWorkBudget` now expose
+  `require_object_selection_metadata`; when true, execution planning blocks
+  with `ExecutionPlanObjectSelectionMetadataMissing` before payload fetch if an
+  object has neither row-group nor predicate metadata.
+- The flag defaults false, preserving existing accepted Binance/native
+  reference gates.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_source_proof_scope --test backtesting_vertical_slice_backfill_accepted_tranche --test backtesting_vertical_slice_backfill_execution_plan -- --nocapture`
+  failed because the metadata fields and required-metadata issue did not exist.
+- GREEN focused:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_source_proof_scope --test backtesting_vertical_slice_backfill_accepted_tranche --test backtesting_vertical_slice_backfill_execution_plan --test backtesting_vertical_slice_backfill_run_spec_materialization --test backtesting_vertical_slice_backfill_execution_readiness --test backtesting_vertical_slice_backfill_gate_reference_artifacts`
+  passed 35 tests after metadata propagation and the opt-in fail-closed guard.
+- Formatting:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- fmt --check`
+  passed.
+- Clippy:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- clippy --locked --lib -- -D warnings`
+  passed.
+- Library tests:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --lib --quiet`
+  passed 251 tests.
+
+Current conclusion:
+
+- This narrows one BTE-022 broad-backfill efficiency gap at the generic gate
+  layer: accepted object-selection metadata can now flow into the execution
+  plan and can be required before payload-scale work.
+- It does not close `BACKTESTING_ENGINE-022`. Broad PMXT still needs accepted
+  durable source proof, manifest/index-only coverage and cost, accepted object
+  hashes, actual PMXT row-group or predicate metadata, bounded execution
+  budgets, and dynamic tick-size replay or bounded-exclusion proof.

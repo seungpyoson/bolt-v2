@@ -47,6 +47,44 @@ fn source_proof_scope_selects_one_manifest_object_without_accepting_whole_run() 
 }
 
 #[test]
+fn source_proof_scope_preserves_object_selection_metadata() {
+    let binding = first_trade_binding();
+    let selected_uri = raw_uri("selected-object");
+    let proof = proof_json(&binding, &selected_uri, "selected-object", 11);
+    let mut selected_object = object_json(&selected_uri, "selected-object", 11);
+    selected_object["source_row_groups"] = json!([3, 5]);
+    selected_object["predicate_ref"] = json!("source-proof://synthetic/row-groups");
+    selected_object["source_url"] = json!(concrete_source_url(&binding.source_uri));
+    let manifest = json!({
+        "run_id": "synthetic-run",
+        "write_mode": "s3_staging_only",
+        "canonical_s3_write": false,
+        "object_count_excluding_manifest": 1,
+        "bytes_excluding_manifest": 11,
+        "errors": [],
+        "payload_records": [selected_object]
+    });
+
+    let report = evaluate_backfill_source_proof_scope(
+        "synthetic-source-proof-scope",
+        &proof.to_string(),
+        &manifest.to_string(),
+    )
+    .expect("report");
+
+    assert_eq!(
+        report.status,
+        BackfillSourceProofScopeStatus::CandidateFound
+    );
+    let selected = report.selected_object.expect("selected object");
+    assert_eq!(selected.source_row_groups, vec![3, 5]);
+    assert_eq!(
+        selected.predicate_ref.as_deref(),
+        Some("source-proof://synthetic/row-groups")
+    );
+}
+
+#[test]
 fn source_proof_scope_blocks_when_manifest_does_not_contain_raw_sample() {
     let binding = first_trade_binding();
     let proof = proof_json(&binding, &raw_uri("selected-object"), "selected-object", 11);

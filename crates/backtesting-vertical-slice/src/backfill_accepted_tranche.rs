@@ -54,6 +54,10 @@ pub struct BackfillAcceptedTrancheObject {
     pub sha256: String,
     pub bytes: u64,
     pub archive_date: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_row_groups: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicate_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,6 +270,8 @@ fn evaluate_backfill_accepted_tranche_report(
                     sha256: object.sha256.clone(),
                     bytes: object.bytes,
                     archive_date: object.archive_date.clone(),
+                    source_row_groups: object.source_row_groups.clone(),
+                    predicate_ref: object.predicate_ref.clone(),
                 }]
             })
             .unwrap_or_default()

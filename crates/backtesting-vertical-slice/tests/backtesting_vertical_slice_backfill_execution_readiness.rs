@@ -658,12 +658,15 @@ fn matching_execution_plan(tranche: &BackfillAcceptedTrancheManifest) -> Backfil
         max_source_rows: 128,
         max_projected_row_groups: 1,
         max_wall_seconds: 30,
+        require_object_selection_metadata: false,
         objects: vec![BackfillExecutionPlanObject {
             s3_uri: object.s3_uri,
             source_url: object.source_url,
             sha256: object.sha256,
             bytes: object.bytes,
             archive_date: object.archive_date,
+            source_row_groups: object.source_row_groups,
+            predicate_ref: object.predicate_ref,
         }],
         blocking_issues: Vec::new(),
     }
@@ -676,6 +679,8 @@ fn accepted_object() -> BackfillAcceptedTrancheObject {
         sha256: "synthetic-object-sha".to_string(),
         bytes: 17,
         archive_date: "2026-03-01".to_string(),
+        source_row_groups: Vec::new(),
+        predicate_ref: None,
     }
 }
 

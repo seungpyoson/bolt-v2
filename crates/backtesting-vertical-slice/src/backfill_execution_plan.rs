@@ -33,6 +33,8 @@ pub struct BackfillExecutionPlanSpec {
     pub max_source_rows: u64,
     pub max_projected_row_groups: u64,
     pub max_wall_seconds: u64,
+    #[serde(default)]
+    pub require_object_selection_metadata: bool,
     pub output_dir: PathBuf,
 }
 
@@ -41,6 +43,7 @@ pub struct BackfillExecutionWorkBudget {
     pub max_source_rows: u64,
     pub max_projected_row_groups: u64,
     pub max_wall_seconds: u64,
+    pub require_object_selection_metadata: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +75,7 @@ pub enum BackfillExecutionPlanIssue {
     ExecutionPlanSourceRowBudgetMissing,
     ExecutionPlanProjectedRowGroupBudgetMissing,
     ExecutionPlanWallTimeBudgetMissing,
+    ExecutionPlanObjectSelectionMetadataMissing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +129,10 @@ pub struct BackfillExecutionPlanObject {
     pub sha256: String,
     pub bytes: u64,
     pub archive_date: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_row_groups: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicate_ref: Option<String>,
 }
 
 impl From<&BackfillAcceptedTrancheObject> for BackfillExecutionPlanObject {
@@ -135,6 +143,8 @@ impl From<&BackfillAcceptedTrancheObject> for BackfillExecutionPlanObject {
             sha256: object.sha256.clone(),
             bytes: object.bytes,
             archive_date: object.archive_date.clone(),
+            source_row_groups: object.source_row_groups.clone(),
+            predicate_ref: object.predicate_ref.clone(),
         }
     }
 }
@@ -161,6 +171,8 @@ pub struct BackfillExecutionPlan {
     pub max_source_rows: u64,
     pub max_projected_row_groups: u64,
     pub max_wall_seconds: u64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub require_object_selection_metadata: bool,
     pub objects: Vec<BackfillExecutionPlanObject>,
     pub blocking_issues: Vec<BackfillExecutionPlanIssue>,
 }
@@ -314,6 +326,13 @@ pub fn evaluate_backfill_execution_plan(
         if object.bytes > run_binding.max_object_bytes {
             blocking_issues.push(BackfillExecutionPlanIssue::RunSpecObjectBudgetTooSmall);
         }
+        if work_budget.require_object_selection_metadata
+            && object.source_row_groups.is_empty()
+            && object.predicate_ref.is_none()
+        {
+            blocking_issues
+                .push(BackfillExecutionPlanIssue::ExecutionPlanObjectSelectionMetadataMissing);
+        }
     }
 
     let status = if blocking_issues.is_empty() {
@@ -351,6 +370,7 @@ pub fn evaluate_backfill_execution_plan(
         max_source_rows: work_budget.max_source_rows,
         max_projected_row_groups: work_budget.max_projected_row_groups,
         max_wall_seconds: work_budget.max_wall_seconds,
+        require_object_selection_metadata: work_budget.require_object_selection_metadata,
         objects,
         blocking_issues,
     }
@@ -377,6 +397,7 @@ pub fn write_backfill_execution_plan_from_spec_file(
         max_source_rows: spec.max_source_rows,
         max_projected_row_groups: spec.max_projected_row_groups,
         max_wall_seconds: spec.max_wall_seconds,
+        require_object_selection_metadata: spec.require_object_selection_metadata,
     };
     let plan = evaluate_backfill_execution_plan(
         spec.plan_id,
@@ -466,6 +487,10 @@ fn read_run_spec(path: &Path) -> Result<(RunSpec, String), BackfillExecutionPlan
 
 fn sha256_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn content_hash(plan: &BackfillExecutionPlan) -> Result<String, BackfillExecutionPlanError> {

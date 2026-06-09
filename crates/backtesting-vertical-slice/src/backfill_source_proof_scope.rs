@@ -59,6 +59,10 @@ pub struct BackfillSourceProofScopeObject {
     pub sha256: String,
     pub bytes: u64,
     pub archive_date: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_row_groups: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicate_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -412,6 +416,10 @@ fn manifest_payload_object(value: &Value) -> Option<BackfillSourceProofScopeObje
         sha256,
         bytes,
         archive_date,
+        source_row_groups: u64_array_at(value, &["source_row_groups"])
+            .or_else(|| u64_array_at(value, &["row_groups"]))
+            .unwrap_or_default(),
+        predicate_ref: string_at(value, &["predicate_ref"]),
     })
 }
 
@@ -425,6 +433,15 @@ fn string_at(value: &Value, path: &[&str]) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn u64_array_at(value: &Value, path: &[&str]) -> Option<Vec<u64>> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    let values = current.as_array()?;
+    values.iter().map(Value::as_u64).collect()
 }
 
 fn content_hash(

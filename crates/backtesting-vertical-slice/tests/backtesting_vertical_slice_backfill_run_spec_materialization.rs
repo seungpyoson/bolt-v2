@@ -62,6 +62,7 @@ fn materialized_run_spec_binds_accepted_tranche_before_payload_fetch() {
                 max_source_rows: 128,
                 max_projected_row_groups: 1,
                 max_wall_seconds: 30,
+                require_object_selection_metadata: false,
             },
         );
 
@@ -102,6 +103,8 @@ fn accepted_tranche() -> BackfillAcceptedTrancheManifest {
             sha256: "synthetic-object-sha".to_string(),
             bytes: 17,
             archive_date: "2026-03-01".to_string(),
+            source_row_groups: Vec::new(),
+            predicate_ref: None,
         }],
         blocking_issues: Vec::new(),
     }

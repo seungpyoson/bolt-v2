@@ -1,7 +1,7 @@
 {
   "schema": "bolt-v2.bte.objective-current-head-audit.v1",
   "created_at_utc": "2026-06-09T02:32:25Z",
-  "updated_at_utc": "2026-06-09T03:22:58Z",
+  "updated_at_utc": "2026-06-09T03:37:27Z",
   "objective_prompt": {
     "declared_path": "/Users/spson/Downloads/prompts/backtesting.md",
     "declared_path_status": "missing_on_disk",
@@ -35,7 +35,7 @@
       "claim": "Accepted native-trades CSV/ZIP/GZIP sources can flow through source-proof acceptance, canonical TradeTick parquet, NT ParquetDataCatalog, NT BacktestNode, and objective result-contract binding.",
       "status": "proven_for_committed_binance_daily_sample_and_existing_bybit_reference_sample",
       "evidence": [
-        "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.binance-bnbusdc-2026-03-01.toml",
+        "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/materialized-run-spec/backfill-run-spec.toml",
         "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.binance-bnbusdc-2026-03-01.json",
         "repo://specs/023-nt-research-analytics-platform/reference/result-contract-idempotence-native-trades-current-head.2026-06-09.json"
       ]
@@ -46,7 +46,7 @@
       "evidence": [
         "RED focused test failed before the fix because nt_result.instance_id rewrote backtest-result-contract.json.",
         "GREEN focused test passed after preserving existing stable result-contract bytes.",
-        "Real CLI rerun preserved backtest-result-contract.json SHA-256 a095d4503bb2490c92fd758ac1af54042628409fd909a32fdbe2e090262a0e15."
+        "Real CLI rerun from the committed materialized run spec preserved backtest-result-contract.json SHA-256 a26454203c485e89a718bdac96e09bb5a5b3798c3a0b1a57702c198d2a25b96b."
       ]
     },
     {
@@ -85,7 +85,7 @@
     },
     {
       "requirement": "Inventory artifacts and classify dirty/partial/complete outputs.",
-      "current_evidence": "Large investigation report records artifact inventory and dirty-output guidance; current accepted native-trades proof uses scratch output /private/tmp/bte-binance-idempotence-fix.rGFFLF and classifies it as clean only for the bounded proof. Existing converted/NT catalog outputs remain reference-only unless separately verified.",
+      "current_evidence": "Large investigation report records artifact inventory and dirty-output guidance; current accepted native-trades proof uses committed materialized run spec plus scratch output /private/tmp/bte-binance-materialized-run.nb5q9A and classifies it as clean only for the bounded proof. Existing converted/NT catalog outputs remain reference-only unless separately verified.",
       "status": "partially_proven_bounded_clean_path_only"
     },
     {
@@ -100,7 +100,7 @@
     },
     {
       "requirement": "Do not implement unless hard-stop unknowns are resolved.",
-      "current_evidence": "For the accepted Binance native-trades path: raw object/source proof, clean scratch output prefix, accepted-tranche-to-run-spec materialization, idempotence proof, NT catalog/backtest mechanism, BacktestNode consumption, and result-contract provenance are all proven. For broad PMXT/production backfill: these are not all proven, so the current decision remains no-go.",
+      "current_evidence": "For the accepted Binance native-trades path: raw object/source proof, clean scratch output prefix, accepted-tranche-to-run-spec materialization, execution-plan gating, materialized-run-spec operator CLI run, idempotence proof, NT catalog/backtest mechanism, BacktestNode consumption, and result-contract provenance are all proven. For broad PMXT/production backfill: these are not all proven, so the current decision remains no-go.",
       "status": "bounded_go_broad_no_go"
     },
     {
@@ -127,7 +127,7 @@
     },
     {
       "prompt_test": "Same manifest/checkpoint rerun is idempotent.",
-      "evidence": "backtesting_vertical_slice_conversion_boundary::same_manifest_and_checkpoint_rerun_is_idempotent and operator::run_from_run_spec_reuses_completed_output_without_rebuilding_catalog, extended at ef716813 and verified on current head e78c00d6f25dac3d9f05e0424119ca9ce9aacadd to assert result-contract bytes are unchanged",
+      "evidence": "backtesting_vertical_slice_conversion_boundary::same_manifest_and_checkpoint_rerun_is_idempotent and operator::run_from_run_spec_reuses_completed_output_without_rebuilding_catalog, extended at ef716813 and verified by the materialized-run-spec CLI proof to assert result-contract bytes are unchanged",
       "status": "covered_current_head"
     },
     {
@@ -152,12 +152,12 @@
     },
     {
       "prompt_test": "Converter output projects into NT ParquetDataCatalog and reads back faithfully.",
-      "evidence": "backtesting_vertical_slice_catalog_and_node::catalog_round_trips_trade_ticks_and_node_runs_compiled_strategy, catalog_round_trips_binary_option_l2_deltas_and_node_consumes_them, and accepted CLI evidence with 71431 read-back TradeTicks",
+      "evidence": "backtesting_vertical_slice_catalog_and_node::catalog_round_trips_trade_ticks_and_node_runs_compiled_strategy, catalog_round_trips_binary_option_l2_deltas_and_node_consumes_them, and accepted materialized-run-spec CLI evidence with 71431 read-back TradeTicks",
       "status": "covered"
     },
     {
       "prompt_test": "BacktestNode consumes only the verified clean NT catalog.",
-      "evidence": "runner/operator assert NT iterations equal the accepted in-window row count; current CLI evidence shows 71431 accepted rows, 71431 catalog read-back rows, and 71431 NT iterations.",
+      "evidence": "runner/operator assert NT iterations equal the accepted in-window row count; current materialized-run-spec CLI evidence shows 71431 accepted rows, 71431 catalog read-back rows, and 71431 NT iterations.",
       "status": "covered_for_bounded_clean_paths"
     },
     {
@@ -177,7 +177,7 @@
   "remaining_unknowns_or_open_work": [
     {
       "item": "Production/broad backfill publishing and old-output disposition",
-      "reason": "Current clean proofs use bounded scratch outputs or bounded S3 proof paths. Deleting or replacing old partial converted outputs still requires separately approved production action after clean new catalog proof.",
+      "reason": "Current clean proofs use bounded scratch outputs or bounded S3 proof paths; the latest accepted native-trades proof used /private/tmp/bte-binance-materialized-run.nb5q9A from the committed materialized run spec. Deleting or replacing old partial converted outputs still requires separately approved production action after clean new catalog proof.",
       "next_evidence_needed": "Artifact Index producer IAM or approved coordinator proof, production output prefix proof, and explicit delete/archive approval."
     },
     {

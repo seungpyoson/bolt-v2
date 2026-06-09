@@ -1,6 +1,7 @@
 {
   "schema": "bolt-v2.bte.result-contract-idempotence-proof.v1",
   "created_at_utc": "2026-06-09T00:24:30Z",
+  "updated_at_utc": "2026-06-09T03:37:27Z",
   "base_commit_before_fix": "21c544aae9dc35c8a74990ca59de101f897764aa",
   "scope": "accepted native-trades converter/backtest completed-output reuse path",
   "root_cause": "The completed-output path re-ran NautilusTrader to prove catalog consumption, then rewrote backtest-result-contract.json with volatile NT pointer fields. The conversion manifest, checkpoint, catalog metadata, catalog hash, and semantic contract bindings were stable, but the result-contract artifact bytes were not.",
@@ -18,9 +19,11 @@
     }
   },
   "real_cli_evidence": {
-    "run_spec": "specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.binance-bnbusdc-2026-03-01.toml",
+    "run_spec": "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/materialized-run-spec/backfill-run-spec.toml",
+    "run_spec_sha256": "498fcdea74e5089d722e26913e77a53d49bb6245a3234f157107184100782bfe",
     "execution_plan": "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-plan/backfill-execution-plan.json",
-    "scratch_output_dir": "/private/tmp/bte-binance-idempotence-fix.rGFFLF",
+    "execution_plan_sha256": "7b9b1b4903f8e50f1d4336f6cb0d5a4bb0cccfe030162184c8f31a4ce3fb591d",
+    "scratch_output_dir": "/private/tmp/bte-binance-materialized-run.nb5q9A",
     "raw_object": "/private/tmp/bte-binance-bnbusdc-2026-03-01.zip",
     "raw_object_sha256": "433d32b8d828abee5e1937e01372d16f7edadc14c41fe736b0b9577541fa5e81",
     "source_proof_id": "source-proof-binance-spot-native-trades-bnbusdc-2026-03-01",
@@ -35,12 +38,12 @@
       "canonical_trades_parquet_sha256": "be908f312b61d112a25748d6641a9162f12d568f80d3f2ca94180285cc821a91",
       "conversion_manifest_json_sha256": "419fa73d941cdfe819dfdb051ad48b0ab614c231301aad8a61d61ddabc28e6cb",
       "conversion_checkpoint_json_sha256": "7e203ac5d90fc8d1b48e0455a54c9c0edb40bed8e7a943818624bc1e28c28119",
-      "catalog_metadata_json_sha256": "6031600b9ad08f594858b5325d591242878a97b8ace303b5a04a9f63eb0b1be5",
-      "backtest_result_contract_json_sha256": "a095d4503bb2490c92fd758ac1af54042628409fd909a32fdbe2e090262a0e15"
+      "catalog_metadata_json_sha256": "8c1fbe57a732ef2027ee89505e710ab138af9cb57343f984090ed4d770e57c7d",
+      "backtest_result_contract_json_sha256": "a26454203c485e89a718bdac96e09bb5a5b3798c3a0b1a57702c198d2a25b96b"
     },
     "idempotence_check": {
-      "first_result_contract_json_sha256": "a095d4503bb2490c92fd758ac1af54042628409fd909a32fdbe2e090262a0e15",
-      "second_result_contract_json_sha256": "a095d4503bb2490c92fd758ac1af54042628409fd909a32fdbe2e090262a0e15",
+      "first_result_contract_json_sha256": "a26454203c485e89a718bdac96e09bb5a5b3798c3a0b1a57702c198d2a25b96b",
+      "second_result_contract_json_sha256": "a26454203c485e89a718bdac96e09bb5a5b3798c3a0b1a57702c198d2a25b96b",
       "same_result_contract_bytes": true
     }
   },

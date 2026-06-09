@@ -9105,6 +9105,38 @@ classification = "iv_config_schema_literal"
 reason = "IV config parsing emits fail-closed diagnostics for duplicate profile-owned projection policy ids; operator values remain TOML-owned."
 
 [[allowed]]
+path = "src/bolt_v3_iv/types.rs"
+kind = "string"
+literal = '''"an IV convention string or a named convention record"'''
+context = '''formatter.write_str("an IV convention string or a named convention record")'''
+classification = "iv_config_schema_literal"
+reason = "IV convention deserialization describes the accepted TOML schema shapes; operator convention values are supplied by TOML, not this diagnostic literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/types.rs"
+kind = "string"
+literal = '''"named"'''
+context = '''"named" => {'''
+classification = "iv_config_schema_literal"
+reason = "IV convention deserialization accepts the structured named-convention schema key; operator convention values are supplied by TOML, not this key literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/types.rs"
+kind = "string"
+literal = '''"named"'''
+context = '''_ => return Err(de::Error::unknown_field(&key, &["named"])),'''
+classification = "iv_config_schema_literal"
+reason = "IV convention deserialization reports the structured named-convention schema key for unknown-field diagnostics; operator convention values are supplied by TOML, not this key literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/types.rs"
+kind = "string"
+literal = '''"named"'''
+context = '''return Err(de::Error::duplicate_field("named"));'''
+classification = "iv_config_schema_literal"
+reason = "IV convention deserialization reports duplicate use of the structured named-convention schema key; operator convention values are supplied by TOML, not this key literal."
+
+[[allowed]]
 path = "src/bolt_v3_iv/health.rs"
 kind = "string"
 literal = '''"configured"'''

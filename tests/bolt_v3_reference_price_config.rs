@@ -92,6 +92,29 @@ instrument_id = "BTC-USD.CHAINLINK"
 }
 
 #[test]
+fn reference_current_price_requires_explicit_source_table() {
+    let err = try_parse_strategy(
+        r#"
+[reference_current_price]
+asset = "BTC"
+sources = ["chainlink_primary"]
+min_valid_sources = 1
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+"#,
+    )
+    .expect_err("reference_current_price.source must be explicit TOML");
+
+    assert!(
+        err.to_string().contains("source"),
+        "missing source table should be the parse error, got: {err}"
+    );
+}
+
+#[test]
 fn reference_current_price_sources_require_explicit_enabled_and_required() {
     let err = try_parse_strategy(
         r#"

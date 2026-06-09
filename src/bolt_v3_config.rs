@@ -551,7 +551,7 @@ struct ReferencePriceBlockWire {
     drift_policy: ReferencePriceDriftPolicy,
     stale_policy: ReferencePriceStalePolicy,
     #[serde(rename = "source")]
-    sources: Option<BTreeMap<String, ReferencePriceSourceBlock>>,
+    sources: BTreeMap<String, ReferencePriceSourceBlock>,
 }
 
 impl<'de> Deserialize<'de> for ReferencePriceBlock {
@@ -569,10 +569,7 @@ impl<'de> Deserialize<'de> for ReferencePriceBlock {
             max_source_drift_bps: wire.max_source_drift_bps,
             drift_policy: wire.drift_policy,
             stale_policy: wire.stale_policy,
-            sources: match wire.sources {
-                Some(sources) => sources,
-                None => BTreeMap::new(),
-            },
+            sources: wire.sources,
         })
     }
 }

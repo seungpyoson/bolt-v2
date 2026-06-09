@@ -379,10 +379,13 @@ pub fn resolve_derived_input_policy(
     profile_inputs: &[IvDerivedInputSet],
 ) -> Result<IvDerivedInputSet, IvDeriveError> {
     for field in &policy.required_fields {
-        let field_policy = policy
+        let Some(field_policy) = policy
             .field_sources
             .iter()
-            .find(|field_policy| field_policy.field == *field);
+            .find(|field_policy| field_policy.field == *field)
+        else {
+            return Err(IvDeriveError::MissingInput { field: *field });
+        };
         match *field {
             IvDerivedInputField::OptionPrice
             | IvDerivedInputField::UnderlyingPrice
@@ -390,10 +393,10 @@ pub fn resolve_derived_input_policy(
             | IvDerivedInputField::TimeToExpiryYears
             | IvDerivedInputField::Rate
             | IvDerivedInputField::Carry => {
-                resolve_number_field(*field, field_policy, &mut request, profile_inputs)?;
+                resolve_number_field(*field, Some(field_policy), &mut request, profile_inputs)?;
             }
             IvDerivedInputField::OptionSide => {
-                resolve_side_field(field_policy, &mut request, profile_inputs)?;
+                resolve_side_field(Some(field_policy), &mut request, profile_inputs)?;
             }
         }
     }

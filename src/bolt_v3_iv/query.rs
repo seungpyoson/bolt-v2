@@ -811,11 +811,15 @@ impl IvQueryHandle {
                 .cloned()
                 .ok_or(IvQueryError::DerivedInputNotFound)?
         };
-        let inputs = if let Some(input_policy) = state
+        let Some(input_policy) = state
             .derived_input_policies
             .iter()
-            .find(|input_policy| input_policy.helper_policy_ref == helper_policy_id)
-        {
+            .find(|input_policy| input_policy.input_policy_id == policy.input_policy_ref)
+        else {
+            self.record_derived_rejection(&inputs, IvRejectReason::HelperNotConfigured);
+            return Err(IvQueryError::DerivationRejected);
+        };
+        let inputs =
             match resolve_derived_input_policy(input_policy, inputs.clone(), &state.derived_inputs)
             {
                 Ok(inputs) => inputs,
@@ -823,10 +827,7 @@ impl IvQueryHandle {
                     self.record_derived_rejection(&inputs, derive_reject_reason(&error));
                     return Err(IvQueryError::DerivationRejected);
                 }
-            }
-        } else {
-            inputs
-        };
+            };
         match derive_iv(policy, inputs.clone()) {
             Ok(output) => Ok(IvQueryProduct::DerivedIv(Box::new(output))),
             Err(error) => {

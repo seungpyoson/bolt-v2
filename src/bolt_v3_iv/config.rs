@@ -474,9 +474,7 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.helper_policy_id
             ));
         }
-        if !derived_input_policy_ids.is_empty()
-            && !derived_input_policy_ids.contains(policy.input_policy_ref.as_str())
-        {
+        if !derived_input_policy_ids.contains(policy.input_policy_ref.as_str()) {
             errors.push(format!(
                 "{context}.helper_policies.{}.input_policy_ref must reference a configured derived input policy",
                 policy.helper_policy_id
@@ -522,6 +520,19 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 "{context}.derived_input_policies.{}.field_sources must be non-empty",
                 policy.input_policy_id
             ));
+        }
+        for required_field in &policy.required_fields {
+            if !policy
+                .field_sources
+                .iter()
+                .any(|field_policy| field_policy.field == *required_field)
+            {
+                errors.push(format!(
+                    "{context}.derived_input_policies.{}.field_sources must include {}",
+                    policy.input_policy_id,
+                    required_field.as_str()
+                ));
+            }
         }
         if policy.max_input_skew_ns == 0 {
             errors.push(format!(

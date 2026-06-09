@@ -566,6 +566,34 @@ fn derived_input_policy_must_require_every_helper_input_field() {
 }
 
 #[test]
+fn helper_policy_input_policy_ref_requires_configured_derived_input_policy() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    config.profiles[0].derived_input_policies.clear();
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("helper_policies.configured-helper-policy.input_policy_ref")
+            && message.contains("configured derived input policy")
+    }));
+}
+
+#[test]
+fn derived_input_policy_field_sources_must_cover_required_fields() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    config.profiles[0].derived_input_policies[0]
+        .field_sources
+        .retain(|field_source| field_source.field != IvDerivedInputField::Carry);
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("derived_input_policies.configured-derived-input-policy.field_sources")
+            && message.contains("carry")
+    }));
+}
+
+#[test]
 fn selector_scoped_authorization_rejects_unknown_selector_fingerprint() {
     let invalid = valid_iv_toml()
         .replace(

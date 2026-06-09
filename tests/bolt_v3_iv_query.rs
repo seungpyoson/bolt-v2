@@ -349,6 +349,34 @@ fn profile_resolving_derived_input_policy() -> IvDerivedInputPolicy {
                 operator_side: None,
             },
             IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::OptionPrice,
+                allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::QuerySupplied]),
+                profile_source_ref: None,
+                operator_number: None,
+                operator_side: None,
+            },
+            IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::Strike,
+                allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::QuerySupplied]),
+                profile_source_ref: None,
+                operator_number: None,
+                operator_side: None,
+            },
+            IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::OptionSide,
+                allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::QuerySupplied]),
+                profile_source_ref: None,
+                operator_number: None,
+                operator_side: None,
+            },
+            IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::TimeToExpiryYears,
+                allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::QuerySupplied]),
+                profile_source_ref: None,
+                operator_number: None,
+                operator_side: None,
+            },
+            IvDerivedInputFieldPolicy {
                 field: IvDerivedInputField::Rate,
                 allowed_source_kinds: BTreeSet::from([
                     IvDerivedInputSourceKind::OperatorConfigured,
@@ -375,6 +403,22 @@ fn profile_resolving_derived_input_policy() -> IvDerivedInputPolicy {
         },
         operator_value_refresh_policy: IvOperatorValueRefreshPolicy::RejectExpiredOperatorValues,
     }
+}
+
+fn query_supplied_derived_input_policy(input_policy_id: &str) -> IvDerivedInputPolicy {
+    let mut policy = profile_resolving_derived_input_policy();
+    policy.input_policy_id = input_policy_id.to_string();
+    for field_source in &mut policy.field_sources {
+        match field_source.field {
+            IvDerivedInputField::Rate | IvDerivedInputField::Carry => {}
+            _ => {
+                field_source.allowed_source_kinds =
+                    BTreeSet::from([IvDerivedInputSourceKind::QuerySupplied]);
+                field_source.profile_source_ref = None;
+            }
+        }
+    }
+    policy
 }
 
 fn source_health(source_id: &str, state: IvSourceHealthState) -> IvSourceHealth {
@@ -916,6 +960,9 @@ fn derived_iv_query_uses_engine_owned_nt_helper_inputs() {
         IvStore::empty(),
     )
     .with_helper_policies(vec![helper_policy()])
+    .with_derived_input_policies(vec![query_supplied_derived_input_policy(
+        "configured-derived-input-policy",
+    )])
     .with_derived_inputs(vec![complete_inputs()]);
 
     let product = handle
@@ -1125,7 +1172,10 @@ fn derived_iv_query_uses_request_supplied_inputs_without_preseeded_bundle() {
         profile_wide_authorization(),
         IvStore::empty(),
     )
-    .with_helper_policies(vec![helper_policy()]);
+    .with_helper_policies(vec![helper_policy()])
+    .with_derived_input_policies(vec![query_supplied_derived_input_policy(
+        "configured-derived-input-policy",
+    )]);
 
     let product = handle
         .query(&IvQuery::Product(IvProductQuery {
@@ -1146,4 +1196,40 @@ fn derived_iv_query_uses_request_supplied_inputs_without_preseeded_bundle() {
     };
     assert_eq!(derived.point.ts_event_ns, UnixNanos::new(2_050));
     assert!(derived.point.iv > 0.0);
+}
+
+#[test]
+fn derived_iv_query_uses_helper_input_policy_ref_not_first_policy_for_helper() {
+    let mut helper = helper_policy();
+    helper.input_policy_ref = "configured-strict-derived-input-policy".to_string();
+    let permissive_policy = query_supplied_derived_input_policy("configured-permissive-policy");
+    let mut strict_policy = profile_resolving_derived_input_policy();
+    strict_policy.input_policy_id = "configured-strict-derived-input-policy".to_string();
+
+    let mut request_inputs = complete_inputs();
+    request_inputs.as_of_ns = UnixNanos::new(2_050);
+    request_inputs.received_ts_ns = UnixNanos::new(2_055);
+
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_helper_policies(vec![helper])
+    .with_derived_input_policies(vec![permissive_policy, strict_policy]);
+
+    assert_eq!(
+        handle.query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::DerivedIv,
+            selector: IvSelector::DerivedIvQuery {
+                instrument_id: "configured-option-instrument".to_string(),
+                helper_policy_id: "configured-helper-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_050),
+                inputs: Some(Box::new(request_inputs)),
+            },
+        })),
+        Err(IvQueryError::DerivationRejected)
+    );
 }

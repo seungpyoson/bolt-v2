@@ -15,6 +15,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_DOC = REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-schema.md"
 RUNTIME_CONTRACTS_DOC = REPO_ROOT / "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"
 STATUS_MAP = REPO_ROOT / "docs/bolt-v3/2026-04-28-source-grounded-status-map.md"
+PRODUCTION_READINESS_TRACE_DOC = (
+    REPO_ROOT / "docs/bolt-v3/2026-05-20-production-readiness-end-to-end-trace.md"
+)
 RESEARCH_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/research.md"
 TASKS_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/tasks.md"
 CONTRACT_DOC = REPO_ROOT / "specs/023-nt-order-intent-layer/contracts/order-intent-layer.md"
@@ -74,6 +77,13 @@ REFERENCE_CURRENT_PRICE_STALE_DOC_PHRASES = (
 )
 REFERENCE_CURRENT_PRICE_REQUIRED_DOC_PHRASES = (
     "Chainlink current-price and strike clients resolve feed ids from the root-owned `[chainlink_data_streams]` catalog by convention; clients do not declare a `feed_catalog` pointer.",
+)
+PRODUCTION_READINESS_TRACE_STALE_PHRASES = (
+    "strategy-free reference quote probe",
+    "live reference-data freshness",
+)
+PRODUCTION_READINESS_TRACE_REQUIRED_PHRASES = (
+    "reference_current_price health subscribes to configured custom-data sources",
 )
 
 ENABLED_ORDER_TYPES = (
@@ -420,6 +430,21 @@ def validate_reference_current_price_design_docs(plan: str, design_spec: str) ->
     return findings
 
 
+def validate_production_readiness_trace(production_readiness_trace: str) -> list[str]:
+    findings: list[str] = []
+    if not production_readiness_trace:
+        return findings
+
+    for phrase in PRODUCTION_READINESS_TRACE_STALE_PHRASES:
+        if phrase in production_readiness_trace:
+            findings.append(f"production readiness trace still contains stale phrase: {phrase}")
+    for phrase in PRODUCTION_READINESS_TRACE_REQUIRED_PHRASES:
+        if phrase not in production_readiness_trace:
+            findings.append(f"production readiness trace missing current phrase: {phrase}")
+
+    return findings
+
+
 def validate_docs(
     schema: str,
     status_map: str,
@@ -433,6 +458,7 @@ def validate_docs(
     maker_scope_data_model: str = "",
     reference_current_price_plan: str = "",
     reference_current_price_spec: str = "",
+    production_readiness_trace: str = "",
     agents_doc: str | None = None,
     feature_json: str | None = None,
     validate_source: str = "",
@@ -460,6 +486,7 @@ def validate_docs(
             reference_current_price_spec,
         )
     )
+    findings.extend(validate_production_readiness_trace(production_readiness_trace))
 
     if runtime_contracts:
         for field in ORDER_TEMPLATE_FIELDS:
@@ -610,6 +637,7 @@ def main() -> int:
         spec=SPEC_DOC.read_text(encoding="utf-8"),
         data_model=DATA_MODEL_DOC.read_text(encoding="utf-8"),
         runtime_contracts=RUNTIME_CONTRACTS_DOC.read_text(encoding="utf-8"),
+        production_readiness_trace=PRODUCTION_READINESS_TRACE_DOC.read_text(encoding="utf-8"),
         maker_scope_contract=MAKER_SCOPE_CONTRACT_DOC.read_text(encoding="utf-8"),
         maker_scope_data_model=MAKER_SCOPE_DATA_MODEL_DOC.read_text(encoding="utf-8"),
         reference_current_price_plan=REFERENCE_CURRENT_PRICE_PLAN_DOC.read_text(encoding="utf-8"),

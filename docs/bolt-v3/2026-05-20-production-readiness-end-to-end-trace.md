@@ -108,8 +108,8 @@ Current source code contains the intended single bolt-v3 production path and loc
 3. Controlled connect/reference/disconnect stages
    - `src/bolt_v3_live_node.rs:721-843`
    - Stage builder records operator approval, secret resolution, live-node build, controlled connect, reference readiness, controlled disconnect, report write, and top-level `generated_at_unix_seconds`.
-   - Reference readiness required configured quote evidence from the strategy-free reference quote probe. Cache-only instrument-ID membership remained fail-closed and was not treated as live reference-data freshness.
-   - Configured quote freshness and wait-timeout fields bounded the accepted quote age and the probe wait before the runner stopped.
+   - reference_current_price health subscribes to configured custom-data sources through the strategy-free LiveNode transport path. Cache-only instrument-ID membership remains fail-closed and is not treated as live current-price freshness.
+   - Configured source-age and observation-timeout fields bound accepted custom-data age and the wait before the runner stops.
 
 4. Readiness consumption
    - Current live submit safety is owned by submit admission and strategy decision evidence, not by a separate pre-run evidence gate.

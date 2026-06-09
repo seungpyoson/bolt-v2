@@ -729,6 +729,27 @@ feed_catalog = "chainlink_data_streams"
         raise AssertionError(f"expected current reference-current-price docs to pass, got {current_findings!r}")
 
 
+def test_validate_docs_rejects_retired_reference_readiness_trace() -> None:
+    stale_trace = """
+Reference readiness required configured quote evidence from the strategy-free reference quote probe.
+Cache-only instrument-ID membership remained fail-closed and was not treated as live reference-data freshness.
+"""
+
+    findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        production_readiness_trace=stale_trace,
+    )
+
+    expected_fragments = [
+        "production readiness trace still contains stale phrase",
+        "reference_current_price health subscribes to configured custom-data sources",
+    ]
+    for fragment in expected_fragments:
+        if not any(fragment in finding for finding in findings):
+            raise AssertionError(f"expected {fragment!r} in findings, got {findings!r}")
+
+
 def test_validate_docs_rejects_stale_strategy_schema_version_examples() -> None:
     stale_schema = CURRENT_SCHEMA.replace("schema_version = 2", "schema_version = 1")
     findings = VERIFIER.validate_docs(
@@ -842,6 +863,8 @@ def main() -> int:
         test_validate_docs_requires_all_enabled_and_factory_gap_order_types,
         test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift,
         test_validate_docs_rejects_reference_current_price_schema_drift,
+        test_validate_docs_rejects_reference_current_price_plan_spec_drift,
+        test_validate_docs_rejects_retired_reference_readiness_trace,
         test_validate_docs_rejects_stale_strategy_schema_version_examples,
         test_validate_docs_rejects_stale_decision_evidence_record_type_wording,
         test_validate_docs_rejects_retired_financial_envelope_schema_section,

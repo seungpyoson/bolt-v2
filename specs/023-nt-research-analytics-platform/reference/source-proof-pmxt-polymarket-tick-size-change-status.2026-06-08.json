@@ -119,6 +119,7 @@
   "bte_manifest_surface_evidence": [
     "BTE now maps NT InstrumentStatus and InstrumentClose BacktestDataConfig classes as auxiliary catalog streams for TradeReplay and L2Replay.",
     "InstrumentStatus and InstrumentClose are Data enum replay items, not InstrumentAny instrument-definition updates, so this does not close tick_size_change epoch replay.",
+    "SourceProofReport L2Replay acceptance now requires l2_replay_evidence.no_tick_size_change_universe_ref or l2_replay_evidence.timed_instrument_epoch_replay_ref, so this policy is enforced by the generic source-proof contract.",
     "The branch adds regression coverage that auxiliary InstrumentStatus/InstrumentClose inputs cannot satisfy TradeReplay without a primary TradeTick; PR CI is the broad gate for this commit."
   ],
   "compile_checked_bte_surface_proof": {
@@ -158,10 +159,10 @@
   "required_green_tests_when_implementation_starts": [
     "Write and query multiple BinaryOption snapshots for one instrument id through ParquetDataCatalog and prove returned order/ts_init.",
     "If dynamic tick-size inclusion is attempted, prove a separate explicitly approved timed InstrumentAny replay mechanism; ordinary BacktestDataConfig InstrumentStatus/InstrumentClose auxiliary streams are not sufficient evidence.",
-    "If first proof excludes tick-changing assets, assert the exclusion is source-proof-bound and appears as a result-contract claim limit.",
+    "If first proof excludes tick-changing assets, assert the exclusion is source-proof-bound, appears as l2_replay_evidence.no_tick_size_change_universe_ref, and appears as a result-contract claim limit.",
     "If tick-size changes are included, prove post-change book deltas are not consumed until a source snapshot rebuilds the book epoch.",
-    "RED rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_projection_rejects_ignored_tick_size_change_rows failed because tick_size_change in ignored_event_types was silently skipped.",
-    "GREEN rust_verification cargo test --test backtesting_vertical_slice_pmxt_one_off_projection pmxt_selected_source_projection_rejects_ignored_tick_size_change_rows passed after the selected-source schema rejected ignored_event_types that overlap forbidden_ignored_event_types."
+    "CI must prove SourceProofReport rejects L2Replay when order-book replay evidence exists but both tick-size policy refs are absent.",
+    "CI must prove SourceProofReport accepts L2Replay when either no_tick_size_change_universe_ref or timed_instrument_epoch_replay_ref is present."
   ],
   "current_decision": {
     "standard_backtestnode_catalog_replay_supports_dynamic_instrument_any": false,
@@ -169,6 +170,7 @@
     "first_proof_exclusion_policy_can_close": true,
     "bte_022_can_close": false,
     "broad_backfill_allowed": false,
+    "source_proof_acceptance_contract": "Generic L2Replay acceptance requires l2_replay_evidence.no_tick_size_change_universe_ref or l2_replay_evidence.timed_instrument_epoch_replay_ref in addition to order-book replay evidence.",
     "next_required_evidence": "For full L2 acceptance, either accept a source-proof-bound no-tick-size-change universe with explicit claim limits, or implement and prove a separate approved timed InstrumentAny replay mechanism. The configured first-proof selector, NT catalog read-back, and BacktestNode run over selected unaffected instruments are bounded one-off evidence only; standard BacktestNode catalog replay must not be used to claim dynamic tick-size replay."
   }
 }

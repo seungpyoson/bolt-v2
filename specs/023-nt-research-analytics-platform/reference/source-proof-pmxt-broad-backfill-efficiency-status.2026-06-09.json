@@ -5,7 +5,7 @@
   "source_binding": "polymarket-parquet-archive-index",
   "table_family": "order_book_snapshot_deltas",
   "status": "open_broad_backfill_efficiency_unproven_bounded_one_off_guardrails_present",
-  "decision": "Do not start broad PMXT/Polymarket L2 backfill. The current code proves a bounded one-off selected-source path and records several fail-fast guardrails, but broad backfill still lacks accepted source proof, accepted expanded coverage/cost/storage evidence, and a dynamic tick-size replay or bounded-exclusion policy.",
+  "decision": "Do not start broad PMXT/Polymarket L2 backfill. The current code proves a bounded one-off selected-source path and records several fail-fast guardrails, but broad backfill still lacks accepted source proof, accepted expanded coverage/cost/storage evidence, and an L2 source-proof tick-size policy: either dynamic timed instrument-epoch replay or a source-proof-bound no-tick-size-change universe.",
   "root_cause": {
     "previous_slow_backfill_failure_mode": "Large hourly PMXT Parquet objects were treated as payloads to scan, hash, or stage before the acceptance gates proved a bounded source/window/instrument scope.",
     "why_repeating_it_is_unsafe": [
@@ -122,7 +122,7 @@
     "Replace broad full-object hashing in planning/projection with accepted object hashes from staging or Artifact Index records; full payload reads belong only inside bounded accepted tranches.",
     "Carry object-level row-group or predicate metadata from the accepted source proof into the execution plan so selected-source projection does not rediscover it by rescanning payloads.",
     "Set explicit object byte, row count, projected row-group count, and wall-time budgets in the accepted tranche plan; selected_source_slice now enforces its source parquet byte budget before full-file hashing.",
-    "Prove dynamic tick-size replay through NT BacktestNode/catalog, or accept a source-proof-bound no-tick-size-change exclusion policy before full L2 replay claims.",
+    "Prove dynamic tick-size replay through NT BacktestNode/catalog, or accept a source-proof-bound no-tick-size-change exclusion policy before full L2 replay claims; generic SourceProofReport L2Replay acceptance now requires l2_replay_evidence.no_tick_size_change_universe_ref or l2_replay_evidence.timed_instrument_epoch_replay_ref.",
     "Use GitHub CI as the broad verification gate for committed changes; avoid broad local cargo test runs as the default verification path."
   ],
   "claim_limits": [

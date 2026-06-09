@@ -161,6 +161,8 @@ fn accepted_dataset() -> AcceptedDataset {
         l2_replay_evidence: L2ReplayEvidence {
             order_book_delta_ref: None,
             sufficient_snapshot_cadence_ref: None,
+            no_tick_size_change_universe_ref: None,
+            timed_instrument_epoch_replay_ref: None,
         },
         // Mirrors the committed reference source proof exactly so the fixture
         // carries the full set of fidelity constraints through to the contract.

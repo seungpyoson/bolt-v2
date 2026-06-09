@@ -452,14 +452,21 @@ pub struct CrossMarketJoinComponent {
 ///
 /// `L2_REPLAY` requires at least one of these fields to identify historical
 /// source-order-preserving deltas or snapshots with cadence sufficient for the
-/// strategy decision interval. Non-L2 proofs still carry this object with both
-/// fields empty so the schema surface is explicit and stable.
+/// strategy decision interval. L2 proofs also require an explicit tick-size
+/// policy pointer: either a source-proof-bound no-tick-size-change universe or
+/// an approved timed instrument-epoch replay mechanism. Non-L2 proofs still
+/// carry this object with all fields empty so the schema surface is explicit
+/// and stable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct L2ReplayEvidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order_book_delta_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sufficient_snapshot_cadence_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_tick_size_change_universe_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timed_instrument_epoch_replay_ref: Option<String>,
 }
 
 impl L2ReplayEvidence {
@@ -469,6 +476,16 @@ impl L2ReplayEvidence {
             .is_some_and(|value| !value.trim().is_empty())
             || self
                 .sufficient_snapshot_cadence_ref
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty())
+    }
+
+    fn has_tick_size_policy_evidence(&self) -> bool {
+        self.no_tick_size_change_universe_ref
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
+            || self
+                .timed_instrument_epoch_replay_ref
                 .as_ref()
                 .is_some_and(|value| !value.trim().is_empty())
     }
@@ -1461,11 +1478,15 @@ fn validate_l2_replay_evidence(proof: &SourceProofReport) -> Result<(), Acceptan
     if proof.fidelity_class != SourceProofFidelityClass::L2Replay {
         return Ok(());
     }
-    if proof.l2_replay_evidence.has_replay_evidence() {
-        Ok(())
-    } else {
-        Err(AcceptanceError::MissingField("l2_replay_evidence"))
+    if !proof.l2_replay_evidence.has_replay_evidence() {
+        return Err(AcceptanceError::MissingField("l2_replay_evidence"));
     }
+    if !proof.l2_replay_evidence.has_tick_size_policy_evidence() {
+        return Err(AcceptanceError::MissingField(
+            "l2_replay_evidence.tick_size_policy",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_claim_limits(proof: &SourceProofReport) -> Result<(), AcceptanceError> {
@@ -1913,6 +1934,8 @@ mod tests {
             l2_replay_evidence: L2ReplayEvidence {
                 order_book_delta_ref: None,
                 sufficient_snapshot_cadence_ref: None,
+                no_tick_size_change_universe_ref: None,
+                timed_instrument_epoch_replay_ref: None,
             },
             forbidden_claims: forbidden_claims.clone(),
             claim_limits: claim_limits_for(&forbidden_claims),
@@ -2316,11 +2339,70 @@ required_cross_market_component_roles = [{roles}]
         proof.l2_replay_evidence = L2ReplayEvidence {
             order_book_delta_ref: None,
             sufficient_snapshot_cadence_ref: None,
+            no_tick_size_change_universe_ref: None,
+            timed_instrument_epoch_replay_ref: None,
         };
 
         let err = proof.evaluate_acceptance().unwrap_err();
 
         assert_eq!(err, AcceptanceError::MissingField("l2_replay_evidence"));
+    }
+
+    #[test]
+    fn l2_replay_requires_tick_size_policy_evidence() {
+        let mut proof = candidate_proof();
+        proof.fidelity_class = SourceProofFidelityClass::L2Replay;
+        proof.forbidden_claims.clear();
+        proof.claim_limits.clear();
+        proof.l2_replay_evidence = L2ReplayEvidence {
+            order_book_delta_ref: Some("source-proof://order-book-deltas".to_string()),
+            sufficient_snapshot_cadence_ref: None,
+            no_tick_size_change_universe_ref: None,
+            timed_instrument_epoch_replay_ref: None,
+        };
+
+        let err = proof.evaluate_acceptance().unwrap_err();
+
+        assert_eq!(
+            err,
+            AcceptanceError::MissingField("l2_replay_evidence.tick_size_policy")
+        );
+    }
+
+    #[test]
+    fn l2_replay_accepts_source_bound_no_tick_size_change_policy() {
+        let mut proof = candidate_proof();
+        proof.fidelity_class = SourceProofFidelityClass::L2Replay;
+        proof.forbidden_claims.clear();
+        proof.claim_limits.clear();
+        proof.l2_replay_evidence = L2ReplayEvidence {
+            order_book_delta_ref: Some("source-proof://order-book-deltas".to_string()),
+            sufficient_snapshot_cadence_ref: None,
+            no_tick_size_change_universe_ref: Some(
+                "source-proof://no-tick-size-change-universe".to_string(),
+            ),
+            timed_instrument_epoch_replay_ref: None,
+        };
+
+        proof.evaluate_acceptance().unwrap();
+    }
+
+    #[test]
+    fn l2_replay_accepts_timed_instrument_epoch_replay_policy() {
+        let mut proof = candidate_proof();
+        proof.fidelity_class = SourceProofFidelityClass::L2Replay;
+        proof.forbidden_claims.clear();
+        proof.claim_limits.clear();
+        proof.l2_replay_evidence = L2ReplayEvidence {
+            order_book_delta_ref: Some("source-proof://order-book-deltas".to_string()),
+            sufficient_snapshot_cadence_ref: None,
+            no_tick_size_change_universe_ref: None,
+            timed_instrument_epoch_replay_ref: Some(
+                "source-proof://timed-instrument-epoch-replay".to_string(),
+            ),
+        };
+
+        proof.evaluate_acceptance().unwrap();
     }
 
     #[test]

@@ -33,7 +33,7 @@
 //! future archetype can introduce its own message contract without
 //! reaching back into core validation.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::{Deserialize, Deserializer};
@@ -50,7 +50,6 @@ use crate::{
     },
     bolt_v3_config::{
         BoltV3StrategyConfig, DECISION_REFERENCE_GATE_ROLE, LoadedStrategy, RESOLUTION_GATE_ROLE,
-        realized_volatility_engine_config,
     },
     bolt_v3_order_intent::{NtOrderTemplateConfig, check_nt_order_template_config},
     bolt_v3_position_contract::{
@@ -407,26 +406,13 @@ pub fn register_runtime_strategy(
                 ),
             )
         })?;
-    let realized_volatility_surfaces = realized_volatility_surface_engine_configs(context.loaded)
-        .map_err(|message| {
-        BoltV3StrategyRegistrationError::Binding {
-            strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
-            strategy_archetype: context
-                .strategy
-                .config
-                .strategy_archetype
-                .as_str()
-                .to_string(),
-            message,
-        }
-    })?;
     let build_context = StrategyBuildContext::new(
         fee_provider,
         context.decision_evidence.clone(),
         context.submit_admission.clone(),
         execution_venue,
     )
-    .with_realized_volatility_surfaces(realized_volatility_surfaces);
+    .with_realized_volatility_runtime(context.realized_volatility_runtime.clone());
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry
@@ -437,27 +423,6 @@ pub fn register_runtime_strategy(
             node.kernel().trader(),
         )
         .map_err(|error| binding_message(&context, error.to_string()))
-}
-
-fn realized_volatility_surface_engine_configs(
-    loaded: &crate::bolt_v3_config::LoadedBoltV3Config,
-) -> Result<BTreeMap<String, crate::bolt_v3_realized_volatility::RealizedVolEngineConfig>, String> {
-    loaded
-        .root
-        .realized_volatility_surfaces
-        .as_ref()
-        .into_iter()
-        .flat_map(|surfaces| surfaces.iter())
-        .map(|(surface_id, surface)| {
-            realized_volatility_engine_config(surface_id, surface)
-                .map(|config| (surface_id.clone(), config))
-                .map_err(|error| {
-                    format!(
-                        "realized_volatility_surfaces.{surface_id} could not build engine config: {error}"
-                    )
-                })
-        })
-        .collect()
 }
 
 pub fn raw_taker_config(

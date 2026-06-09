@@ -13,6 +13,7 @@ use crate::bolt_v3_numeric::{
 };
 
 const ZERO_MILLIS_U64: u64 = u64::MIN;
+const ZERO_COUNT_USIZE: usize = usize::MIN;
 const INITIAL_REJECTION_COUNT: u64 = u64::MIN;
 const COUNTER_INCREMENT_U64: u64 = 1;
 
@@ -29,12 +30,177 @@ pub struct RealizedVolEngineConfig {
     pub max_cross_source_dispersion: f64,
     pub seconds_per_annum: f64,
     pub aggregation: RealizedVolAggregation,
+    pub estimator: RealizedVolEstimatorConfig,
     pub sources: Vec<RealizedVolSourceConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub enum RealizedVolAggregation {
-    UpperQuantile { quantile: f64 },
+    UpperQuantile {
+        quantile: f64,
+    },
+    Median,
+    TrimmedMean {
+        trim_fraction: f64,
+    },
+    MedianWithUpperQuantileGuard {
+        upper_quantile: f64,
+        guard_weight: f64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RealizedVolEstimatorConfig {
+    pub horizons: Vec<RealizedVolHorizonConfig>,
+    pub horizon_policy: RealizedVolHorizonPolicy,
+    pub noise: RealizedVolNoiseConfig,
+    pub jump: RealizedVolJumpConfig,
+    pub forecast: RealizedVolForecastConfig,
+    pub pricing_component: RealizedVolPricingComponent,
+}
+
+impl RealizedVolEstimatorConfig {
+    pub fn measured() -> Self {
+        Self {
+            horizons: Vec::new(),
+            horizon_policy: RealizedVolHorizonPolicy::Measured,
+            noise: RealizedVolNoiseConfig::none(),
+            jump: RealizedVolJumpConfig::none(),
+            forecast: RealizedVolForecastConfig::none(),
+            pricing_component: RealizedVolPricingComponent::Measured,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RealizedVolHorizonConfig {
+    pub horizon_id: String,
+    pub window_ms: u64,
+    pub sampling_interval_ms: u64,
+    pub required: bool,
+    pub weight: f64,
+    pub role: Option<RealizedVolHorizonRole>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RealizedVolHorizonRole {
+    Short,
+    Medium,
+    Long,
+    Primary,
+    Floor,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum RealizedVolHorizonPolicy {
+    Measured,
+    WeightedBlend,
+    MaxFloor {
+        primary_horizon_id: String,
+        floor_horizon_id: String,
+        floor_multiplier: f64,
+    },
+    ShortWithLongFloor {
+        short_horizon_id: String,
+        long_horizon_id: String,
+        floor_multiplier: f64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RealizedVolNoiseConfig {
+    pub method: RealizedVolNoiseMethod,
+}
+
+impl RealizedVolNoiseConfig {
+    pub fn none() -> Self {
+        Self {
+            method: RealizedVolNoiseMethod::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum RealizedVolNoiseMethod {
+    None,
+    CoarserGrid {
+        coarse_sampling_interval_ms: u64,
+        policy: RealizedVolCoarserGridPolicy,
+    },
+    Subsampled {
+        subsamples: usize,
+        min_ready_subsamples: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RealizedVolCoarserGridPolicy {
+    CoarseOnly,
+    MinBaseCoarse,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RealizedVolJumpConfig {
+    pub policy: RealizedVolJumpPolicy,
+}
+
+impl RealizedVolJumpConfig {
+    pub fn none() -> Self {
+        Self {
+            policy: RealizedVolJumpPolicy::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RealizedVolJumpPolicy {
+    None,
+    Separate,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RealizedVolForecastConfig {
+    pub method: RealizedVolForecastMethod,
+}
+
+impl RealizedVolForecastConfig {
+    pub fn none() -> Self {
+        Self {
+            method: RealizedVolForecastMethod::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum RealizedVolForecastMethod {
+    None,
+    Ewma {
+        alpha: f64,
+    },
+    HarLite {
+        intercept: f64,
+        short_weight: f64,
+        medium_weight: f64,
+        long_weight: f64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RealizedVolPricingComponent {
+    Measured,
+    NoiseRobust,
+    Continuous,
+    Forecast,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RealizedVolHorizonEstimate {
+    pub horizon_id: String,
+    pub measured_annualized_vol_decimal: Option<f64>,
+    pub noise_robust_annualized_vol_decimal: Option<f64>,
+    pub continuous_annualized_vol_decimal: Option<f64>,
+    pub jump_annualized_vol_decimal: Option<f64>,
+    pub grid_sample_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -80,9 +246,16 @@ pub struct RealizedVolSnapshot {
     pub surface_id: String,
     pub as_of_ms: u64,
     pub annualized_realized_vol_decimal: Option<f64>,
+    pub measured_annualized_realized_vol_decimal: Option<f64>,
+    pub noise_robust_annualized_realized_vol_decimal: Option<f64>,
+    pub continuous_annualized_realized_vol_decimal: Option<f64>,
+    pub jump_annualized_realized_vol_decimal: Option<f64>,
+    pub forecast_annualized_realized_vol_decimal: Option<f64>,
+    pub pricing_component: RealizedVolPricingComponent,
     pub ready: bool,
     pub sources_used: Vec<String>,
     pub source_diagnostics: Vec<RealizedVolSourceDiagnostic>,
+    pub horizon_estimates: Vec<RealizedVolHorizonEstimate>,
     pub unknown_source_rejections: BTreeMap<String, u64>,
     pub blocked_reasons: Vec<RealizedVolBlockReason>,
     pub aggregate_method: RealizedVolAggregation,
@@ -128,9 +301,16 @@ impl RealizedVolSnapshot {
             surface_id: surface_id.to_string(),
             as_of_ms,
             annualized_realized_vol_decimal: None,
+            measured_annualized_realized_vol_decimal: None,
+            noise_robust_annualized_realized_vol_decimal: None,
+            continuous_annualized_realized_vol_decimal: None,
+            jump_annualized_realized_vol_decimal: None,
+            forecast_annualized_realized_vol_decimal: None,
+            pricing_component: RealizedVolPricingComponent::Measured,
             ready: false,
             sources_used: Vec::new(),
             source_diagnostics: Vec::new(),
+            horizon_estimates: Vec::new(),
             unknown_source_rejections: BTreeMap::new(),
             blocked_reasons: vec![RealizedVolBlockReason::InvalidConfig],
             aggregate_method,
@@ -159,6 +339,10 @@ pub struct RealizedVolSourceDiagnostic {
     pub counts_toward_quorum: bool,
     pub status: RealizedVolSourceStatus,
     pub annualized_realized_vol_decimal: Option<f64>,
+    pub measured_annualized_realized_vol_decimal: Option<f64>,
+    pub noise_robust_annualized_realized_vol_decimal: Option<f64>,
+    pub continuous_annualized_realized_vol_decimal: Option<f64>,
+    pub jump_annualized_realized_vol_decimal: Option<f64>,
     pub first_sample_ts_ms: Option<u64>,
     pub last_sample_ts_ms: Option<u64>,
     pub raw_sample_count: usize,
@@ -261,6 +445,10 @@ impl RealizedVolEngine {
         })
     }
 
+    pub fn config(&self) -> &RealizedVolEngineConfig {
+        &self.config
+    }
+
     pub fn observe(&mut self, observation: RealizedVolObservation) -> bool {
         let Some(source) = self.sources.get_mut(&observation.source_id) else {
             increment_counter(&mut self.unknown_source_rejections, observation.source_id);
@@ -314,12 +502,16 @@ impl RealizedVolEngine {
                 diagnostic.annualized_realized_vol_decimal,
                 diagnostic.block_reason,
             ) {
-                ready_values.push((
-                    diagnostic.source_id.clone(),
-                    diagnostic.source_class,
-                    diagnostic.sample_kind,
-                    value,
-                ));
+                ready_values.push(ReadySourceValue {
+                    source_id: diagnostic.source_id.clone(),
+                    source_class: diagnostic.source_class,
+                    sample_kind: diagnostic.sample_kind,
+                    final_value: value,
+                    measured: diagnostic.measured_annualized_realized_vol_decimal,
+                    noise_robust: diagnostic.noise_robust_annualized_realized_vol_decimal,
+                    continuous: diagnostic.continuous_annualized_realized_vol_decimal,
+                    jump: diagnostic.jump_annualized_realized_vol_decimal,
+                });
             }
             diagnostics.push(diagnostic);
         }
@@ -334,6 +526,20 @@ impl RealizedVolEngine {
             blockers.insert(RealizedVolBlockReason::SampleKindMismatch);
         }
         let aggregate = upper_quantile(&ready_values, self.config.aggregation);
+        let measured_aggregate =
+            aggregate_component(&ready_values, self.config.aggregation, |value| {
+                value.measured
+            });
+        let noise_robust_aggregate =
+            aggregate_component(&ready_values, self.config.aggregation, |value| {
+                value.noise_robust
+            });
+        let continuous_aggregate =
+            aggregate_component(&ready_values, self.config.aggregation, |value| {
+                value.continuous
+            });
+        let jump_aggregate =
+            aggregate_component(&ready_values, self.config.aggregation, |value| value.jump);
         match aggregate {
             Some(value)
                 if dispersion(&ready_values, value) > self.config.max_cross_source_dispersion =>
@@ -347,16 +553,31 @@ impl RealizedVolEngine {
             surface_id: self.config.surface_id.clone(),
             as_of_ms,
             annualized_realized_vol_decimal: if ready { aggregate } else { None },
+            measured_annualized_realized_vol_decimal: if ready { measured_aggregate } else { None },
+            noise_robust_annualized_realized_vol_decimal: if ready {
+                noise_robust_aggregate
+            } else {
+                None
+            },
+            continuous_annualized_realized_vol_decimal: if ready {
+                continuous_aggregate
+            } else {
+                None
+            },
+            jump_annualized_realized_vol_decimal: if ready { jump_aggregate } else { None },
+            forecast_annualized_realized_vol_decimal: None,
+            pricing_component: self.config.estimator.pricing_component,
             ready,
             sources_used: if ready {
                 ready_values
                     .iter()
-                    .map(|(source_id, _, _, _)| source_id.clone())
+                    .map(|value| value.source_id.clone())
                     .collect()
             } else {
                 Vec::new()
             },
             source_diagnostics: diagnostics,
+            horizon_estimates: Vec::new(),
             unknown_source_rejections: self.unknown_source_rejections.clone(),
             blocked_reasons: blockers.into_iter().collect(),
             aggregate_method: self.config.aggregation,
@@ -400,6 +621,85 @@ fn validate_config(config: &RealizedVolEngineConfig) -> Result<(), String> {
             return Err("upper_quantile must be in [0.5, 1.0]".to_string());
         }
         RealizedVolAggregation::UpperQuantile { .. } => {}
+        RealizedVolAggregation::Median => {}
+        RealizedVolAggregation::TrimmedMean { trim_fraction }
+            if !trim_fraction.is_finite() || !(ZERO_F64..HALF_F64).contains(&trim_fraction) =>
+        {
+            return Err("trim_fraction must be finite and in [0, 0.5)".to_string());
+        }
+        RealizedVolAggregation::TrimmedMean { .. } => {}
+        RealizedVolAggregation::MedianWithUpperQuantileGuard {
+            upper_quantile,
+            guard_weight,
+        } if !(HALF_F64..=UNIT_F64).contains(&upper_quantile)
+            || !guard_weight.is_finite()
+            || !(ZERO_F64..=UNIT_F64).contains(&guard_weight) =>
+        {
+            return Err(
+                "median_with_upper_quantile_guard requires upper_quantile in [0.5, 1.0] and guard_weight in [0, 1]"
+                    .to_string(),
+            );
+        }
+        RealizedVolAggregation::MedianWithUpperQuantileGuard { .. } => {}
+    }
+    match config.estimator.noise.method {
+        RealizedVolNoiseMethod::None => {}
+        RealizedVolNoiseMethod::CoarserGrid {
+            coarse_sampling_interval_ms,
+            ..
+        } if coarse_sampling_interval_ms <= config.sampling_interval_ms => {
+            return Err(
+                "coarser_grid coarse_sampling_interval_ms must be greater than sampling_interval_ms"
+                    .to_string(),
+            );
+        }
+        RealizedVolNoiseMethod::CoarserGrid { .. } => {}
+        RealizedVolNoiseMethod::Subsampled {
+            subsamples,
+            min_ready_subsamples,
+        } if subsamples == 0 || min_ready_subsamples == 0 => {
+            return Err(
+                "subsampled RV requires positive subsamples and min_ready_subsamples".to_string(),
+            );
+        }
+        RealizedVolNoiseMethod::Subsampled {
+            subsamples,
+            min_ready_subsamples,
+        } if min_ready_subsamples > subsamples => {
+            return Err(
+                "subsampled RV min_ready_subsamples must be less than or equal to subsamples"
+                    .to_string(),
+            );
+        }
+        RealizedVolNoiseMethod::Subsampled { .. } => {}
+    }
+    if matches!(
+        config.estimator.pricing_component,
+        RealizedVolPricingComponent::NoiseRobust
+    ) && matches!(config.estimator.noise.method, RealizedVolNoiseMethod::None)
+    {
+        return Err(
+            "pricing_component noise_robust requires a noise_robust_method other than none"
+                .to_string(),
+        );
+    }
+    if matches!(
+        config.estimator.pricing_component,
+        RealizedVolPricingComponent::Continuous
+    ) && !matches!(
+        config.estimator.jump.policy,
+        RealizedVolJumpPolicy::Separate
+    ) {
+        return Err("pricing_component continuous requires jump_policy separate".to_string());
+    }
+    if matches!(
+        config.estimator.pricing_component,
+        RealizedVolPricingComponent::Forecast
+    ) || !matches!(
+        config.estimator.forecast.method,
+        RealizedVolForecastMethod::None
+    ) {
+        return Err("forecast RV is not enabled in this implementation slice".to_string());
     }
     let mut ids = BTreeSet::new();
     let mut enabled_quorum_sources = 0usize;
@@ -484,7 +784,23 @@ fn reject_observation(
 #[derive(Debug, Clone, PartialEq)]
 struct SourceComputation {
     rv: Option<f64>,
+    measured_rv: Option<f64>,
+    noise_robust_rv: Option<f64>,
+    continuous_rv: Option<f64>,
+    jump_rv: Option<f64>,
     block_reason: Option<RealizedVolBlockReason>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ReadySourceValue {
+    source_id: String,
+    source_class: RealizedVolSourceClass,
+    sample_kind: RealizedVolSampleKind,
+    final_value: f64,
+    measured: Option<f64>,
+    noise_robust: Option<f64>,
+    continuous: Option<f64>,
+    jump: Option<f64>,
 }
 
 fn source_diagnostic(
@@ -509,7 +825,7 @@ fn source_diagnostic(
         .windows(2)
         .map(|pair| pair[1].0.saturating_sub(pair[0].0))
         .max();
-    let computation = compute_rv(config, &grid, coverage_ratio, max_gap, as_of_ms);
+    let computation = compute_rv(config, &samples, &grid, coverage_ratio, max_gap, as_of_ms);
     let window_samples = samples
         .iter()
         .copied()
@@ -538,6 +854,10 @@ fn source_diagnostic(
         counts_toward_quorum: state.config.counts_toward_quorum,
         status,
         annualized_realized_vol_decimal: computation.rv,
+        measured_annualized_realized_vol_decimal: computation.measured_rv,
+        noise_robust_annualized_realized_vol_decimal: computation.noise_robust_rv,
+        continuous_annualized_realized_vol_decimal: computation.continuous_rv,
+        jump_annualized_realized_vol_decimal: computation.jump_rv,
         first_sample_ts_ms: window_samples.first().map(|sample| sample.event_ts_ms),
         last_sample_ts_ms: samples.last().map(|sample| sample.event_ts_ms),
         raw_sample_count: window_samples.len(),
@@ -601,98 +921,265 @@ fn grid_prices(
 
 fn compute_rv(
     config: &RealizedVolEngineConfig,
+    samples: &[&RealizedVolObservation],
     grid: &[(u64, f64)],
     coverage_ratio: f64,
     max_gap: Option<u64>,
     as_of_ms: u64,
 ) -> SourceComputation {
     let Some((last_grid_ts_ms, _)) = grid.last() else {
-        return SourceComputation {
-            rv: None,
-            block_reason: Some(RealizedVolBlockReason::NotWarm),
-        };
+        return blocked_computation(RealizedVolBlockReason::NotWarm);
     };
     if as_of_ms.saturating_sub(*last_grid_ts_ms) > config.max_source_age_ms {
-        return SourceComputation {
-            rv: None,
-            block_reason: Some(RealizedVolBlockReason::SourceStale),
-        };
+        return blocked_computation(RealizedVolBlockReason::SourceStale);
     }
     if grid.len() < 2 {
-        return SourceComputation {
-            rv: None,
-            block_reason: Some(RealizedVolBlockReason::NotWarm),
-        };
+        return blocked_computation(RealizedVolBlockReason::NotWarm);
     }
     if coverage_ratio < config.min_coverage_ratio {
-        return SourceComputation {
-            rv: None,
-            block_reason: Some(RealizedVolBlockReason::CoverageBelowMinimum),
-        };
+        return blocked_computation(RealizedVolBlockReason::CoverageBelowMinimum);
     }
     if max_gap.is_some_and(|gap| gap > config.max_inter_sample_gap_ms) {
-        return SourceComputation {
-            rv: None,
-            block_reason: Some(RealizedVolBlockReason::InterSampleGapExceeded),
-        };
+        return blocked_computation(RealizedVolBlockReason::InterSampleGapExceeded);
     }
     if !is_positive_finite(config.seconds_per_annum) {
-        return SourceComputation {
-            rv: None,
-            block_reason: Some(RealizedVolBlockReason::AnnualizationBasisInvalid),
-        };
+        return blocked_computation(RealizedVolBlockReason::AnnualizationBasisInvalid);
     }
+    let Some(measured) = variance_from_grid(config, grid) else {
+        return blocked_computation(RealizedVolBlockReason::NotWarm);
+    };
+    let Some(noise_robust_variance) = noise_robust_variance(config, samples, grid, measured) else {
+        return blocked_computation(RealizedVolBlockReason::NotWarm);
+    };
+    let (continuous_variance, jump_variance) = match config.estimator.jump.policy {
+        RealizedVolJumpPolicy::None => (measured, ZERO_F64),
+        RealizedVolJumpPolicy::Separate => {
+            let Some(bipower_variance) = bipower_variation(config, grid) else {
+                return blocked_computation(RealizedVolBlockReason::NotWarm);
+            };
+            let continuous = measured.min(bipower_variance);
+            let jump = (measured - continuous).max(ZERO_F64);
+            (continuous, jump)
+        }
+    };
+    let Some(measured_rv) = valid_vol_from_variance(measured) else {
+        return blocked_computation(RealizedVolBlockReason::AnnualizationBasisInvalid);
+    };
+    let Some(noise_robust_rv) = valid_vol_from_variance(noise_robust_variance) else {
+        return blocked_computation(RealizedVolBlockReason::AnnualizationBasisInvalid);
+    };
+    let Some(continuous_rv) = valid_vol_from_variance(continuous_variance) else {
+        return blocked_computation(RealizedVolBlockReason::AnnualizationBasisInvalid);
+    };
+    let Some(jump_rv) = valid_vol_from_variance(jump_variance) else {
+        return blocked_computation(RealizedVolBlockReason::AnnualizationBasisInvalid);
+    };
+    let final_rv = match config.estimator.pricing_component {
+        RealizedVolPricingComponent::Measured => measured_rv,
+        RealizedVolPricingComponent::NoiseRobust => noise_robust_rv,
+        RealizedVolPricingComponent::Continuous => continuous_rv,
+        // Unreachable for engines built through from_config: forecast pricing is future scope and
+        // validation rejects it. Keep a deterministic value here so private computation stays total.
+        RealizedVolPricingComponent::Forecast => measured_rv,
+    };
+    SourceComputation {
+        rv: Some(final_rv),
+        measured_rv: Some(measured_rv),
+        noise_robust_rv: Some(noise_robust_rv),
+        continuous_rv: Some(continuous_rv),
+        jump_rv: Some(jump_rv),
+        block_reason: None,
+    }
+}
+
+fn blocked_computation(reason: RealizedVolBlockReason) -> SourceComputation {
+    SourceComputation {
+        rv: None,
+        measured_rv: None,
+        noise_robust_rv: None,
+        continuous_rv: None,
+        jump_rv: None,
+        block_reason: Some(reason),
+    }
+}
+
+fn valid_vol_from_variance(variance: f64) -> Option<f64> {
+    ValidRealizedVol::new(variance.sqrt()).map(ValidRealizedVol::get)
+}
+
+fn variance_from_grid(config: &RealizedVolEngineConfig, grid: &[(u64, f64)]) -> Option<f64> {
     let mut sum = ZERO_F64;
     let mut elapsed_ms = 0;
     for pair in grid.windows(2) {
         let dt = pair[1].0.saturating_sub(pair[0].0);
         let log_return = (pair[1].1 / pair[0].1).ln();
         if dt == ZERO_MILLIS_U64 || !log_return.is_finite() {
-            return SourceComputation {
-                rv: None,
-                block_reason: Some(RealizedVolBlockReason::NotWarm),
-            };
+            return None;
         }
         sum += log_return.powi(POWER_OF_TWO);
         elapsed_ms += dt;
     }
     let elapsed_seconds = elapsed_ms as f64 / MILLIS_PER_SECOND_F64;
-    let variance = (sum / elapsed_seconds) * config.seconds_per_annum;
-    let rv = variance.sqrt();
-    if let Some(rv) = ValidRealizedVol::new(rv) {
-        SourceComputation {
-            rv: Some(rv.get()),
-            block_reason: None,
+    Some((sum / elapsed_seconds) * config.seconds_per_annum)
+}
+
+fn noise_robust_variance(
+    config: &RealizedVolEngineConfig,
+    samples: &[&RealizedVolObservation],
+    grid: &[(u64, f64)],
+    measured_variance: f64,
+) -> Option<f64> {
+    match &config.estimator.noise.method {
+        RealizedVolNoiseMethod::None => Some(measured_variance),
+        RealizedVolNoiseMethod::CoarserGrid {
+            coarse_sampling_interval_ms,
+            policy,
+        } => {
+            if *coarse_sampling_interval_ms == ZERO_MILLIS_U64 {
+                return None;
+            }
+            let (Some((first_grid_ts, _)), Some((last_grid_ts, _))) = (grid.first(), grid.last())
+            else {
+                return None;
+            };
+            let coarse_grid = grid_prices_with_interval(
+                *coarse_sampling_interval_ms,
+                config.max_source_age_ms,
+                samples,
+                first_grid_ts.saturating_sub(*coarse_sampling_interval_ms),
+                *last_grid_ts,
+            );
+            let coarse = variance_from_grid(config, &coarse_grid)?;
+            match policy {
+                RealizedVolCoarserGridPolicy::CoarseOnly => Some(coarse),
+                RealizedVolCoarserGridPolicy::MinBaseCoarse => Some(measured_variance.min(coarse)),
+            }
         }
-    } else {
-        SourceComputation {
-            rv: None,
-            block_reason: Some(RealizedVolBlockReason::AnnualizationBasisInvalid),
+        RealizedVolNoiseMethod::Subsampled {
+            subsamples,
+            min_ready_subsamples,
+        } => {
+            if *subsamples == ZERO_COUNT_USIZE || *min_ready_subsamples == ZERO_COUNT_USIZE {
+                return None;
+            }
+            let (Some((first_grid_ts, _)), Some((last_grid_ts, _))) = (grid.first(), grid.last())
+            else {
+                return None;
+            };
+            let window_start_ms = first_grid_ts.saturating_sub(config.sampling_interval_ms);
+            let mut variances = Vec::new();
+            for offset in ZERO_COUNT_USIZE..*subsamples {
+                let offset_ms = ((config.sampling_interval_ms as u128 * offset as u128)
+                    / *subsamples as u128) as u64;
+                let lane = grid_prices_with_interval(
+                    config.sampling_interval_ms,
+                    config.max_source_age_ms,
+                    samples,
+                    window_start_ms.saturating_add(offset_ms),
+                    *last_grid_ts,
+                );
+                if lane.len() < POWER_OF_TWO as usize {
+                    continue;
+                }
+                if let Some(variance) = variance_from_grid(config, &lane) {
+                    variances.push(variance);
+                }
+            }
+            if variances.len() < *min_ready_subsamples {
+                return None;
+            }
+            Some(variances.iter().sum::<f64>() / variances.len() as f64)
         }
     }
 }
 
-fn ready_values_have_mismatched_classes(
-    values: &[(String, RealizedVolSourceClass, RealizedVolSampleKind, f64)],
-) -> bool {
-    values
-        .first()
-        .is_some_and(|first| values.iter().any(|value| value.1 != first.1))
+fn grid_prices_with_interval(
+    sampling_interval_ms: u64,
+    max_source_age_ms: u64,
+    samples: &[&RealizedVolObservation],
+    window_start_ms: u64,
+    as_of_ms: u64,
+) -> Vec<(u64, f64)> {
+    let mut out = Vec::new();
+    let mut latest = None;
+    let mut index = 0;
+    let mut ts = window_start_ms.saturating_add(sampling_interval_ms);
+    while ts <= as_of_ms {
+        while index < samples.len() && samples[index].event_ts_ms <= ts {
+            latest = Some(samples[index]);
+            index += 1;
+        }
+        if let Some(sample) = latest
+            && ts.saturating_sub(sample.event_ts_ms) <= max_source_age_ms
+        {
+            out.push((ts, sample.price));
+        }
+        let Some(next_ts) = ts.checked_add(sampling_interval_ms) else {
+            break;
+        };
+        if next_ts <= ts {
+            break;
+        }
+        ts = next_ts;
+    }
+    out
 }
 
-fn ready_values_have_mismatched_sample_kinds(
-    values: &[(String, RealizedVolSourceClass, RealizedVolSampleKind, f64)],
-) -> bool {
-    values
-        .first()
-        .is_some_and(|first| values.iter().any(|value| value.2 != first.2))
+fn bipower_variation(config: &RealizedVolEngineConfig, grid: &[(u64, f64)]) -> Option<f64> {
+    let mut returns = Vec::new();
+    let mut elapsed_ms = 0;
+    for pair in grid.windows(2) {
+        let dt = pair[1].0.saturating_sub(pair[0].0);
+        let log_return = (pair[1].1 / pair[0].1).ln();
+        if dt == ZERO_MILLIS_U64 || !log_return.is_finite() {
+            return None;
+        }
+        elapsed_ms += dt;
+        returns.push(log_return);
+    }
+    if returns.len() < POWER_OF_TWO as usize {
+        return None;
+    }
+    let adjacent_abs_products = returns
+        .windows(POWER_OF_TWO as usize)
+        .map(|pair| {
+            let [left, right] = pair else {
+                return ZERO_F64;
+            };
+            left.abs() * right.abs()
+        })
+        .sum::<f64>();
+    let n = returns.len() as f64;
+    let mu_one_squared = crate::bolt_v3_numeric::TWO_F64 / std::f64::consts::PI;
+    let finite_sample = n / (n - UNIT_F64);
+    let elapsed_seconds = elapsed_ms as f64 / MILLIS_PER_SECOND_F64;
+    Some(
+        (adjacent_abs_products / mu_one_squared) * finite_sample / elapsed_seconds
+            * config.seconds_per_annum,
+    )
 }
 
-fn upper_quantile(
-    values: &[(String, RealizedVolSourceClass, RealizedVolSampleKind, f64)],
-    aggregation: RealizedVolAggregation,
-) -> Option<f64> {
-    let mut sorted = values.iter().map(|value| value.3).collect::<Vec<_>>();
+fn ready_values_have_mismatched_classes(values: &[ReadySourceValue]) -> bool {
+    values.first().is_some_and(|first| {
+        values
+            .iter()
+            .any(|value| value.source_class != first.source_class)
+    })
+}
+
+fn ready_values_have_mismatched_sample_kinds(values: &[ReadySourceValue]) -> bool {
+    values.first().is_some_and(|first| {
+        values
+            .iter()
+            .any(|value| value.sample_kind != first.sample_kind)
+    })
+}
+
+fn upper_quantile(values: &[ReadySourceValue], aggregation: RealizedVolAggregation) -> Option<f64> {
+    let mut sorted = values
+        .iter()
+        .map(|value| value.final_value)
+        .collect::<Vec<_>>();
     sorted.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
     match aggregation {
         RealizedVolAggregation::UpperQuantile { quantile } => {
@@ -701,17 +1188,84 @@ fn upper_quantile(
                 .min(sorted.len().saturating_sub(1));
             sorted.get(index).copied()
         }
+        RealizedVolAggregation::Median => median_sorted(&sorted),
+        RealizedVolAggregation::TrimmedMean { trim_fraction } => {
+            if sorted.is_empty() {
+                return None;
+            }
+            let trim_count = (trim_fraction * sorted.len() as f64).floor() as usize;
+            let start = trim_count.min(sorted.len());
+            let end = sorted.len().saturating_sub(trim_count);
+            if start >= end {
+                return None;
+            }
+            let trimmed = &sorted[start..end];
+            Some(trimmed.iter().sum::<f64>() / trimmed.len() as f64)
+        }
+        RealizedVolAggregation::MedianWithUpperQuantileGuard {
+            upper_quantile,
+            guard_weight,
+        } => {
+            let median = median_sorted(&sorted)?;
+            let guard_index = ((upper_quantile * sorted.len() as f64).ceil() as usize)
+                .saturating_sub(1)
+                .min(sorted.len().saturating_sub(1));
+            let guard = *sorted.get(guard_index)?;
+            Some(median.mul_add(UNIT_F64 - guard_weight, guard * guard_weight))
+        }
     }
 }
 
-fn dispersion(
-    values: &[(String, RealizedVolSourceClass, RealizedVolSampleKind, f64)],
-    aggregate: f64,
-) -> f64 {
+fn median_sorted(sorted: &[f64]) -> Option<f64> {
+    if sorted.is_empty() {
+        return None;
+    }
+    let divisor = POWER_OF_TWO as usize;
+    let mid = sorted.len() / divisor;
+    if sorted.len() % divisor == ZERO_COUNT_USIZE {
+        let left = sorted[..mid].last().copied()?;
+        let right = sorted.get(mid).copied()?;
+        Some((left + right) / POWER_OF_TWO as f64)
+    } else {
+        sorted.get(mid).copied()
+    }
+}
+
+fn aggregate_component(
+    values: &[ReadySourceValue],
+    aggregation: RealizedVolAggregation,
+    component: impl Fn(&ReadySourceValue) -> Option<f64>,
+) -> Option<f64> {
+    let component_values = values
+        .iter()
+        .filter_map(|value| {
+            component(value).map(|component| ReadySourceValue {
+                source_id: value.source_id.clone(),
+                source_class: value.source_class,
+                sample_kind: value.sample_kind,
+                final_value: component,
+                measured: None,
+                noise_robust: None,
+                continuous: None,
+                jump: None,
+            })
+        })
+        .collect::<Vec<_>>();
+    if component_values.len() == values.len() {
+        upper_quantile(&component_values, aggregation)
+    } else {
+        None
+    }
+}
+
+fn dispersion(values: &[ReadySourceValue], aggregate: f64) -> f64 {
     if values.len() < 2 {
         return ZERO_F64;
     }
-    let mut sorted = values.iter().map(|value| value.3).collect::<Vec<_>>();
+    let mut sorted = values
+        .iter()
+        .map(|value| value.final_value)
+        .collect::<Vec<_>>();
     sorted.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
     let range = sorted[sorted.len() - 1] - sorted[0];
     if range <= ZERO_F64 {
@@ -804,7 +1358,44 @@ fn config_fingerprint(config: &RealizedVolEngineConfig) -> String {
             )
             .expect("canonical fingerprint write should not fail");
         }
+        RealizedVolAggregation::Median => {
+            writeln!(&mut canonical, "aggregation=median")
+                .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolAggregation::TrimmedMean { trim_fraction } => {
+            writeln!(&mut canonical, "aggregation=trimmed_mean")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(
+                &mut canonical,
+                "aggregation.trim_fraction={}",
+                canonical_f64(trim_fraction)
+            )
+            .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolAggregation::MedianWithUpperQuantileGuard {
+            upper_quantile,
+            guard_weight,
+        } => {
+            writeln!(
+                &mut canonical,
+                "aggregation=median_with_upper_quantile_guard"
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                &mut canonical,
+                "aggregation.upper_quantile={}",
+                canonical_f64(upper_quantile)
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                &mut canonical,
+                "aggregation.guard_weight={}",
+                canonical_f64(guard_weight)
+            )
+            .expect("canonical fingerprint write should not fail");
+        }
     }
+    write_estimator_fingerprint(&mut canonical, &config.estimator);
     for source in sources {
         writeln!(&mut canonical, "source.id={}", source.source_id)
             .expect("canonical fingerprint write should not fail");
@@ -855,6 +1446,201 @@ fn canonical_f64(value: f64) -> String {
     format!("{:016x}", value.to_bits())
 }
 
+fn write_estimator_fingerprint(canonical: &mut String, estimator: &RealizedVolEstimatorConfig) {
+    writeln!(
+        canonical,
+        "estimator.pricing_component={}",
+        pricing_component_fingerprint_label(estimator.pricing_component)
+    )
+    .expect("canonical fingerprint write should not fail");
+    match &estimator.horizon_policy {
+        RealizedVolHorizonPolicy::Measured => {
+            writeln!(canonical, "estimator.horizon_policy=measured")
+                .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolHorizonPolicy::WeightedBlend => {
+            writeln!(canonical, "estimator.horizon_policy=weighted_blend")
+                .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolHorizonPolicy::MaxFloor {
+            primary_horizon_id,
+            floor_horizon_id,
+            floor_multiplier,
+        } => {
+            writeln!(canonical, "estimator.horizon_policy=max_floor")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.horizon_policy.primary_horizon_id={primary_horizon_id}"
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.horizon_policy.floor_horizon_id={floor_horizon_id}"
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.horizon_policy.floor_multiplier={}",
+                canonical_f64(*floor_multiplier)
+            )
+            .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolHorizonPolicy::ShortWithLongFloor {
+            short_horizon_id,
+            long_horizon_id,
+            floor_multiplier,
+        } => {
+            writeln!(canonical, "estimator.horizon_policy=short_with_long_floor")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.horizon_policy.short_horizon_id={short_horizon_id}"
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.horizon_policy.long_horizon_id={long_horizon_id}"
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.horizon_policy.floor_multiplier={}",
+                canonical_f64(*floor_multiplier)
+            )
+            .expect("canonical fingerprint write should not fail");
+        }
+    }
+    let mut horizons = estimator.horizons.clone();
+    horizons.sort_by(|left, right| left.horizon_id.cmp(&right.horizon_id));
+    for horizon in horizons {
+        writeln!(canonical, "estimator.horizon.id={}", horizon.horizon_id)
+            .expect("canonical fingerprint write should not fail");
+        writeln!(
+            canonical,
+            "estimator.horizon.window_ms={}",
+            horizon.window_ms
+        )
+        .expect("canonical fingerprint write should not fail");
+        writeln!(
+            canonical,
+            "estimator.horizon.sampling_interval_ms={}",
+            horizon.sampling_interval_ms
+        )
+        .expect("canonical fingerprint write should not fail");
+        writeln!(canonical, "estimator.horizon.required={}", horizon.required)
+            .expect("canonical fingerprint write should not fail");
+        writeln!(
+            canonical,
+            "estimator.horizon.weight={}",
+            canonical_f64(horizon.weight)
+        )
+        .expect("canonical fingerprint write should not fail");
+        writeln!(
+            canonical,
+            "estimator.horizon.role={}",
+            horizon
+                .role
+                .map(horizon_role_fingerprint_label)
+                .unwrap_or("none")
+        )
+        .expect("canonical fingerprint write should not fail");
+    }
+    match estimator.noise.method {
+        RealizedVolNoiseMethod::None => {
+            writeln!(canonical, "estimator.noise.method=none")
+                .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolNoiseMethod::CoarserGrid {
+            coarse_sampling_interval_ms,
+            policy,
+        } => {
+            writeln!(canonical, "estimator.noise.method=coarser_grid")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.noise.coarse_sampling_interval_ms={coarse_sampling_interval_ms}"
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.noise.coarser_grid_policy={}",
+                coarser_grid_policy_fingerprint_label(policy)
+            )
+            .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolNoiseMethod::Subsampled {
+            subsamples,
+            min_ready_subsamples,
+        } => {
+            writeln!(canonical, "estimator.noise.method=subsampled")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(canonical, "estimator.noise.subsamples={subsamples}")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.noise.min_ready_subsamples={min_ready_subsamples}"
+            )
+            .expect("canonical fingerprint write should not fail");
+        }
+    }
+    writeln!(
+        canonical,
+        "estimator.jump.policy={}",
+        jump_policy_fingerprint_label(estimator.jump.policy)
+    )
+    .expect("canonical fingerprint write should not fail");
+    match &estimator.forecast.method {
+        RealizedVolForecastMethod::None => {
+            writeln!(canonical, "estimator.forecast.method=none")
+                .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolForecastMethod::Ewma { alpha } => {
+            writeln!(canonical, "estimator.forecast.method=ewma")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.forecast.alpha={}",
+                canonical_f64(*alpha)
+            )
+            .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolForecastMethod::HarLite {
+            intercept,
+            short_weight,
+            medium_weight,
+            long_weight,
+        } => {
+            writeln!(canonical, "estimator.forecast.method=har_lite")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.forecast.intercept={}",
+                canonical_f64(*intercept)
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.forecast.short_weight={}",
+                canonical_f64(*short_weight)
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.forecast.medium_weight={}",
+                canonical_f64(*medium_weight)
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.forecast.long_weight={}",
+                canonical_f64(*long_weight)
+            )
+            .expect("canonical fingerprint write should not fail");
+        }
+    }
+}
+
 fn source_class_fingerprint_label(source_class: RealizedVolSourceClass) -> &'static str {
     match source_class {
         RealizedVolSourceClass::SpotQuote => "spot_quote",
@@ -870,6 +1656,39 @@ fn sample_kind_fingerprint_label(sample_kind: RealizedVolSampleKind) -> &'static
         RealizedVolSampleKind::Trade => "trade",
         RealizedVolSampleKind::Mark => "mark",
         RealizedVolSampleKind::Index => "index",
+    }
+}
+
+fn horizon_role_fingerprint_label(role: RealizedVolHorizonRole) -> &'static str {
+    match role {
+        RealizedVolHorizonRole::Short => "short",
+        RealizedVolHorizonRole::Medium => "medium",
+        RealizedVolHorizonRole::Long => "long",
+        RealizedVolHorizonRole::Primary => "primary",
+        RealizedVolHorizonRole::Floor => "floor",
+    }
+}
+
+fn coarser_grid_policy_fingerprint_label(policy: RealizedVolCoarserGridPolicy) -> &'static str {
+    match policy {
+        RealizedVolCoarserGridPolicy::CoarseOnly => "coarse_only",
+        RealizedVolCoarserGridPolicy::MinBaseCoarse => "min_base_coarse",
+    }
+}
+
+fn jump_policy_fingerprint_label(policy: RealizedVolJumpPolicy) -> &'static str {
+    match policy {
+        RealizedVolJumpPolicy::None => "none",
+        RealizedVolJumpPolicy::Separate => "separate",
+    }
+}
+
+fn pricing_component_fingerprint_label(component: RealizedVolPricingComponent) -> &'static str {
+    match component {
+        RealizedVolPricingComponent::Measured => "measured",
+        RealizedVolPricingComponent::NoiseRobust => "noise_robust",
+        RealizedVolPricingComponent::Continuous => "continuous",
+        RealizedVolPricingComponent::Forecast => "forecast",
     }
 }
 
@@ -893,6 +1712,7 @@ mod tests {
             max_cross_source_dispersion: 0.50,
             seconds_per_annum: 31_536_000.0,
             aggregation: RealizedVolAggregation::UpperQuantile { quantile: 1.0 },
+            estimator: RealizedVolEstimatorConfig::measured(),
             sources: vec![RealizedVolSourceConfig {
                 source_id: SOURCE_ID.to_string(),
                 data_client_id: "<DATA_CLIENT_ID>".to_string(),

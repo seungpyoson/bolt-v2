@@ -687,10 +687,10 @@ reason = "This domain separator pins the config-bundle checksum format used to b
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''8'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 8;'''
+literal = '''9'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 9;'''
 classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v8 adds realized-volatility source diagnostic config-state fields so disabled and non-quorum sources are auditable without TOML side-channel context; it is part of the audit-record contract, not an operator runtime value."
+reason = "This is the decision-evidence JSONL envelope schema version. v9 adds global realized-volatility runtime and robust-estimator fields, including measured, noise-robust, continuous, jump, forecast-placeholder, and pricing-component evidence; it is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -8379,6 +8379,30 @@ reason = "Stable realized-volatility aggregation evidence label emitted with str
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
+literal = '''"median"'''
+context = '''RealizedVolAggregation::Median => "median",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility aggregation evidence label emitted with strategy input evidence; it records engine provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"trimmed_mean"'''
+context = '''RealizedVolAggregation::TrimmedMean { .. } => "trimmed_mean",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility aggregation evidence label emitted with strategy input evidence; it records engine provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"median_with_upper_quantile_guard"'''
+context = '''"median_with_upper_quantile_guard"'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility aggregation evidence label emitted with strategy input evidence; it records engine provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
 literal = '''"invalid_config"'''
 context = '''RealizedVolBlockReason::InvalidConfig => "invalid_config",'''
 classification = "realized_volatility_evidence_label"
@@ -8455,6 +8479,38 @@ literal = '''"not_warm"'''
 context = '''RealizedVolBlockReason::NotWarm => "not_warm",'''
 classification = "realized_volatility_evidence_label"
 reason = "Stable realized-volatility blocker evidence label emitted from engine diagnostics; it records fail-closed provenance and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"measured"'''
+context = '''RealizedVolPricingComponent::Measured => "measured",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility pricing-component evidence label emitted with strategy input evidence; it records which audited RV component pricing consumed and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"noise_robust"'''
+context = '''RealizedVolPricingComponent::NoiseRobust => "noise_robust",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility pricing-component evidence label emitted with strategy input evidence; it records which audited RV component pricing consumed and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"continuous"'''
+context = '''RealizedVolPricingComponent::Continuous => "continuous",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility pricing-component evidence label emitted with strategy input evidence; it records which audited RV component pricing consumed and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"forecast"'''
+context = '''RealizedVolPricingComponent::Forecast => "forecast",'''
+classification = "realized_volatility_evidence_label"
+reason = "Stable realized-volatility pricing-component evidence label emitted with strategy input evidence; it records which audited RV component pricing consumed and does not configure trading behavior."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -8732,30 +8788,6 @@ reason = "Two-sample arity or adjacent-pair index used to compute inter-sample g
 path = "src/bolt_v3_realized_volatility.rs"
 kind = "number"
 literal = '''1'''
-context = '''.is_some_and(|first| values.iter().any(|value| value.1 != first.1))'''
-classification = "realized_volatility_ready_value_tuple_field_index"
-reason = "Internal tuple field index for source id/class/kind/RV values produced by the RV engine; not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_realized_volatility.rs"
-kind = "number"
-literal = '''2'''
-context = '''.is_some_and(|first| values.iter().any(|value| value.2 != first.2))'''
-classification = "realized_volatility_ready_value_tuple_field_index"
-reason = "Internal tuple field index for source id/class/kind/RV values produced by the RV engine; not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_realized_volatility.rs"
-kind = "number"
-literal = '''3'''
-context = '''let mut sorted = values.iter().map(|value| value.3).collect::<Vec<_>>();'''
-classification = "realized_volatility_ready_value_tuple_field_index"
-reason = "Internal tuple field index for source id/class/kind/RV values produced by the RV engine; not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_realized_volatility.rs"
-kind = "number"
-literal = '''1'''
 context = '''.saturating_sub(1)'''
 classification = "realized_volatility_vector_index_bound"
 reason = "Zero-based vector index bound used for quantile and dispersion calculations over already computed RV values; not an operator runtime value."
@@ -8861,6 +8893,38 @@ path = "src/bolt_v3_realized_volatility.rs"
 kind = "string"
 literal = '''"aggregation.quantile={}"'''
 context = '''"aggregation.quantile={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"aggregation.trim_fraction={}"'''
+context = '''"aggregation.trim_fraction={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"aggregation.upper_quantile={}"'''
+context = '''"aggregation.upper_quantile={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"aggregation.guard_weight={}"'''
+context = '''"aggregation.guard_weight={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"aggregation=median_with_upper_quantile_guard"'''
+context = '''"aggregation=median_with_upper_quantile_guard"'''
 classification = "realized_volatility_config_fingerprint_field_label"
 reason = "Stable canonical field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
 
@@ -9031,6 +9095,270 @@ literal = '''"min_ready_sources exceeds enabled quorum source count"'''
 context = '''return Err("min_ready_sources exceeds enabled quorum source count".to_string());'''
 classification = "realized_volatility_config_diagnostic_template"
 reason = "Fail-closed realized-volatility engine config validation diagnostic; the threshold and eligible source count come from TOML-owned RV config."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.pricing_component={}"'''
+context = '''"estimator.pricing_component={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.horizon_policy.primary_horizon_id={primary_horizon_id}"'''
+context = '''"estimator.horizon_policy.primary_horizon_id={primary_horizon_id}"'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.horizon_policy.floor_horizon_id={floor_horizon_id}"'''
+context = '''"estimator.horizon_policy.floor_horizon_id={floor_horizon_id}"'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.horizon_policy.floor_multiplier={}"'''
+context = '''"estimator.horizon_policy.floor_multiplier={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.horizon_policy.short_horizon_id={short_horizon_id}"'''
+context = '''"estimator.horizon_policy.short_horizon_id={short_horizon_id}"'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.horizon_policy.long_horizon_id={long_horizon_id}"'''
+context = '''"estimator.horizon_policy.long_horizon_id={long_horizon_id}"'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.horizon.window_ms={}"'''
+context = '''"estimator.horizon.window_ms={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.horizon.sampling_interval_ms={}"'''
+context = '''"estimator.horizon.sampling_interval_ms={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.horizon.weight={}"'''
+context = '''"estimator.horizon.weight={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.horizon.role={}"'''
+context = '''"estimator.horizon.role={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.noise.coarse_sampling_interval_ms={coarse_sampling_interval_ms}"'''
+context = '''"estimator.noise.coarse_sampling_interval_ms={coarse_sampling_interval_ms}"'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.noise.coarser_grid_policy={}"'''
+context = '''"estimator.noise.coarser_grid_policy={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.noise.min_ready_subsamples={min_ready_subsamples}"'''
+context = '''"estimator.noise.min_ready_subsamples={min_ready_subsamples}"'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.jump.policy={}"'''
+context = '''"estimator.jump.policy={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.forecast.alpha={}"'''
+context = '''"estimator.forecast.alpha={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.forecast.intercept={}"'''
+context = '''"estimator.forecast.intercept={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.forecast.short_weight={}"'''
+context = '''"estimator.forecast.short_weight={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.forecast.medium_weight={}"'''
+context = '''"estimator.forecast.medium_weight={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"estimator.forecast.long_weight={}"'''
+context = '''"estimator.forecast.long_weight={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical estimator field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"short"'''
+context = '''RealizedVolHorizonRole::Short => "short",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable estimator enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"medium"'''
+context = '''RealizedVolHorizonRole::Medium => "medium",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable estimator enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"long"'''
+context = '''RealizedVolHorizonRole::Long => "long",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable estimator enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"primary"'''
+context = '''RealizedVolHorizonRole::Primary => "primary",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable estimator enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"floor"'''
+context = '''RealizedVolHorizonRole::Floor => "floor",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable estimator enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"coarse_only"'''
+context = '''RealizedVolCoarserGridPolicy::CoarseOnly => "coarse_only",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable estimator enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"min_base_coarse"'''
+context = '''RealizedVolCoarserGridPolicy::MinBaseCoarse => "min_base_coarse",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable estimator enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"none"'''
+context = '''.unwrap_or("none")'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable estimator enum label used only inside the realized-volatility config fingerprint payload; it records missing optional configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"none"'''
+context = '''RealizedVolJumpPolicy::None => "none",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable estimator enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"separate"'''
+context = '''RealizedVolJumpPolicy::Separate => "separate",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable estimator enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"measured"'''
+context = '''RealizedVolPricingComponent::Measured => "measured",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable estimator enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"noise_robust"'''
+context = '''RealizedVolPricingComponent::NoiseRobust => "noise_robust",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable estimator enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"continuous"'''
+context = '''RealizedVolPricingComponent::Continuous => "continuous",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable estimator enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"forecast"'''
+context = '''RealizedVolPricingComponent::Forecast => "forecast",'''
+classification = "realized_volatility_config_fingerprint_enum_label"
+reason = "Stable estimator enum label used only inside the realized-volatility config fingerprint payload; it records configuration identity and does not configure runtime behavior."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"

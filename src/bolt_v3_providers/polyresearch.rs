@@ -17,6 +17,9 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+
 use nautilus_common::{
     cache::CacheView,
     clients::DataClient,
@@ -269,10 +272,29 @@ struct PolyResearchReferencePriceClient {
 #[derive(Debug, Clone)]
 struct PolyResearchReferenceOutboundHandle {
     sender: tokio::sync::mpsc::UnboundedSender<PolyResearchReferenceOutboundCommand>,
+    #[cfg(test)]
+    send_failures_remaining: Arc<AtomicUsize>,
 }
 
 impl PolyResearchReferenceOutboundHandle {
     fn send_text(&self, frame: String) -> anyhow::Result<()> {
+        #[cfg(test)]
+        if self
+            .send_failures_remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            let (sender, receiver) =
+                tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
+            drop(receiver);
+            return sender
+                .send(PolyResearchReferenceOutboundCommand::SendText(frame))
+                .map_err(|error| {
+                    anyhow::anyhow!("PolyResearch reference outbound task unavailable: {error}")
+                });
+        }
         self.sender
             .send(PolyResearchReferenceOutboundCommand::SendText(frame))
             .map_err(|error| {
@@ -306,7 +328,21 @@ impl PolyResearchReferenceOutboundHandle {
     fn from_sender(
         sender: tokio::sync::mpsc::UnboundedSender<PolyResearchReferenceOutboundCommand>,
     ) -> Self {
-        Self { sender }
+        Self {
+            sender,
+            send_failures_remaining: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    #[cfg(test)]
+    fn from_sender_with_send_failures(
+        sender: tokio::sync::mpsc::UnboundedSender<PolyResearchReferenceOutboundCommand>,
+        send_failures: usize,
+    ) -> Self {
+        Self {
+            sender,
+            send_failures_remaining: Arc::new(AtomicUsize::new(send_failures)),
+        }
     }
 }
 
@@ -468,7 +504,7 @@ impl DataClient for PolyResearchReferencePriceClient {
                 anyhow::anyhow!("PolyResearch subscription state poisoned: {error}")
             })?;
             if let std::collections::btree_map::Entry::Vacant(entry) =
-                subscriptions.entry(subscription_key)
+                subscriptions.entry(subscription_key.clone())
             {
                 entry.insert(subscription.clone());
                 true
@@ -476,12 +512,21 @@ impl DataClient for PolyResearchReferencePriceClient {
                 false
             }
         };
-        if inserted && let Some(outbound) = self.outbound.as_ref() {
-            queue_polyresearch_reference_subscribe(
+        if inserted
+            && let Some(outbound) = self.outbound.as_ref()
+            && let Err(error) = queue_polyresearch_reference_subscribe(
                 &subscription,
                 &self.pending_provider_subscriptions,
                 outbound,
-            )?;
+            )
+        {
+            self.subscriptions
+                .lock()
+                .map_err(|lock_error| {
+                    anyhow::anyhow!("PolyResearch subscription state poisoned: {lock_error}")
+                })?
+                .remove(&subscription_key);
+            return Err(error);
         }
         Ok(())
     }
@@ -600,7 +645,14 @@ fn polyresearch_reference_outbound_channel() -> (
 ) {
     let (sender, receiver) =
         tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
-    (PolyResearchReferenceOutboundHandle { sender }, receiver)
+    (
+        PolyResearchReferenceOutboundHandle {
+            sender,
+            #[cfg(test)]
+            send_failures_remaining: Arc::new(AtomicUsize::new(0)),
+        },
+        receiver,
+    )
 }
 
 fn polyresearch_reference_spawn_outbound_task(
@@ -975,18 +1027,21 @@ fn polyresearch_reference_record_subscription_ack_from_parsed(
         .map_err(|error| format!("PolyResearch subscription state poisoned: {error}"))?
         .contains_key(&subscription_key);
     if !subscription_active {
-        if let Some(outbound) = outbound {
+        let unsubscribe_result = if let Some(outbound) = outbound {
             let frame = polyresearch_reference_unsubscribe_frame(Some(provider_subscription_id))
                 .map_err(|error| error.to_string())?;
             outbound
                 .send_text(frame)
-                .map_err(|error| format!("PolyResearch unsubscribe frame send failed: {error}"))?;
-            send_next_polyresearch_pending_subscription(
-                subscriptions,
-                pending_provider_subscriptions,
-                Some(outbound),
-            )?;
-        }
+                .map_err(|error| format!("PolyResearch unsubscribe frame send failed: {error}"))
+        } else {
+            Ok(())
+        };
+        send_next_polyresearch_pending_subscription(
+            subscriptions,
+            pending_provider_subscriptions,
+            outbound,
+        )?;
+        unsubscribe_result?;
         return Ok(true);
     }
     provider_subscription_ids
@@ -1686,6 +1741,51 @@ mod tests {
     }
 
     #[test]
+    fn failed_prr_provider_subscribe_enqueue_rolls_back_local_subscription() {
+        let (mut client, _data_receiver) = fixture_client();
+        let (outbound_sender, mut outbound_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
+        client.outbound = Some(
+            PolyResearchReferenceOutboundHandle::from_sender_with_send_failures(outbound_sender, 1),
+        );
+
+        let error = client
+            .subscribe(reference_price_subscribe_cmd(
+                "BTC",
+                "polyresearch_primary",
+                "BTC/USD",
+            ))
+            .expect_err("failed provider enqueue should reject subscription");
+
+        assert!(
+            error
+                .to_string()
+                .contains("PolyResearch reference outbound task unavailable"),
+            "unexpected subscription error: {error}"
+        );
+        assert!(
+            !client
+                .subscriptions
+                .lock()
+                .expect("PRR reference subscriptions should not be poisoned")
+                .contains_key(&subscription_key("BTC", "polyresearch_primary", "BTC/USD")),
+            "failed provider enqueue must roll back the local subscription"
+        );
+        assert!(
+            client
+                .pending_provider_subscriptions
+                .lock()
+                .expect("provider subscription queue should not be poisoned")
+                .is_empty(),
+            "failed provider enqueue must not leave stale pending state"
+        );
+        assert!(
+            outbound_receiver.try_recv().is_err(),
+            "failed provider enqueue must not emit a provider subscribe frame"
+        );
+    }
+
+    #[test]
     fn prr_provider_subscribe_frames_are_single_flight_until_ack() {
         let (mut client, _data_receiver) = fixture_client();
         let (outbound_sender, mut outbound_receiver) =
@@ -2044,6 +2144,60 @@ mod tests {
                 ))
                 .map(String::as_str),
             Some("chainlink:eth")
+        );
+    }
+
+    #[test]
+    fn failed_late_cancel_unsubscribe_still_advances_prr_pending_queue() {
+        let subscriptions = Arc::new(Mutex::new(BTreeMap::new()));
+        subscriptions
+            .lock()
+            .expect("test subscription state should lock")
+            .insert(
+                subscription_key("ETH", "polyresearch_secondary", "ETH/USD"),
+                subscription("ETH", "polyresearch_secondary", "ETH/USD"),
+            );
+        let pending_provider_subscriptions = Arc::new(Mutex::new(VecDeque::from([
+            subscription_key("BTC", "polyresearch_primary", "BTC/USD"),
+            subscription_key("ETH", "polyresearch_secondary", "ETH/USD"),
+        ])));
+        let provider_subscription_ids = Arc::new(Mutex::new(BTreeMap::new()));
+        let (outbound_sender, mut outbound_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
+        let outbound =
+            PolyResearchReferenceOutboundHandle::from_sender_with_send_failures(outbound_sender, 1);
+
+        let error = polyresearch_reference_record_subscription_ack(
+            &subscriptions,
+            &pending_provider_subscriptions,
+            &provider_subscription_ids,
+            Some(&outbound),
+            r#"{"type":"subscribed","subscription_id":"chainlink:btc"}"#,
+        )
+        .expect_err("failed late-cancel provider unsubscribe should be surfaced");
+
+        assert!(
+            error.contains("PolyResearch unsubscribe frame send failed"),
+            "unexpected late-cancel error: {error}"
+        );
+        let PolyResearchReferenceOutboundCommand::SendText(eth_subscribe_frame) = outbound_receiver
+            .try_recv()
+            .expect("next PRR subscription must send even after late-cancel cleanup fails")
+        else {
+            panic!("next PRR subscription should send text after failed late-cancel cleanup");
+        };
+        assert_eq!(
+            eth_subscribe_frame,
+            r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["ETH/USD"]}}"#
+        );
+        assert_eq!(
+            pending_provider_subscriptions
+                .lock()
+                .expect("provider subscription queue should not be poisoned")
+                .front()
+                .cloned(),
+            Some(subscription_key("ETH", "polyresearch_secondary", "ETH/USD")),
+            "failed late-cancel cleanup must not leave the canceled subscription at the queue head"
         );
     }
 

@@ -160,6 +160,54 @@ fn selected_source_slice_uses_selector_row_groups_without_full_asset_rescan() {
     );
 }
 
+#[test]
+fn selected_source_slice_rejects_source_above_configured_byte_budget_before_output() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let source_path = dir.path().join("source.parquet");
+    let selector_path = dir.path().join("selector.json");
+    let output_path = dir.path().join("selected.parquet");
+    let report_path = dir.path().join("selected-report.json");
+    let spec_path = dir.path().join("selected.toml");
+    write_source_parquet(&source_path);
+    write_selector_report(&selector_path);
+    std::fs::write(
+        &spec_path,
+        format!(
+            r#"source_parquet_path = "{}"
+selector_report_path = "{}"
+output_parquet_path = "{}"
+report_path = "{}"
+asset_id_column = "asset"
+usage_scope = "one_off_backfill_data"
+max_source_parquet_bytes = 1
+projected_columns = ["asset", "event_type", "payload"]
+"#,
+            source_path.display(),
+            selector_path.display(),
+            output_path.display(),
+            report_path.display()
+        ),
+    )
+    .expect("write spec");
+
+    let err = write_selected_source_slice_from_spec_file(&spec_path)
+        .expect_err("oversized source parquet must be rejected");
+
+    assert!(
+        err.to_string()
+            .contains("exceeds selected_source_slice.max_source_parquet_bytes"),
+        "{err}"
+    );
+    assert!(
+        !output_path.exists(),
+        "oversized source must not write output"
+    );
+    assert!(
+        !report_path.exists(),
+        "oversized source must not write report"
+    );
+}
+
 fn write_selector_report(path: &std::path::Path) -> Vec<u8> {
     let selector_bytes = serde_json::to_vec_pretty(&FirstProofSelectorReport {
         schema_version: FIRST_PROOF_SELECTOR_SCHEMA_VERSION.to_string(),
@@ -228,6 +276,9 @@ fn write_spec(
     output_path: &std::path::Path,
     report_path: &std::path::Path,
 ) {
+    let max_source_parquet_bytes = std::fs::metadata(source_path)
+        .expect("source parquet metadata")
+        .len();
     std::fs::write(
         spec_path,
         format!(
@@ -237,6 +288,7 @@ output_parquet_path = "{}"
 report_path = "{}"
 asset_id_column = "asset"
 usage_scope = "one_off_backfill_data"
+max_source_parquet_bytes = {max_source_parquet_bytes}
 projected_columns = ["asset", "event_type", "payload"]
 "#,
             source_path.display(),

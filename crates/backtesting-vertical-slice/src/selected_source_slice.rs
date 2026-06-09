@@ -42,6 +42,7 @@ pub struct SelectedSourceSliceSpec {
     pub report_path: PathBuf,
     pub asset_id_column: String,
     pub usage_scope: SelectedSourceSliceUsageScope,
+    pub max_source_parquet_bytes: u64,
     pub projected_columns: Vec<String>,
 }
 
@@ -107,6 +108,18 @@ pub fn write_selected_source_slice(
     ensure!(
         !spec.projected_columns.is_empty(),
         "projected_columns must not be empty"
+    );
+    ensure!(
+        spec.max_source_parquet_bytes > 0,
+        "selected_source_slice.max_source_parquet_bytes must be positive"
+    );
+    let source_parquet_bytes = fs::metadata(&spec.source_parquet_path)
+        .with_context(|| format!("stat source parquet {}", spec.source_parquet_path.display()))?
+        .len();
+    ensure!(
+        source_parquet_bytes <= spec.max_source_parquet_bytes,
+        "source parquet byte length {source_parquet_bytes} exceeds selected_source_slice.max_source_parquet_bytes {}",
+        spec.max_source_parquet_bytes
     );
 
     let source_parquet_sha256 = sha256_file(&spec.source_parquet_path)?;

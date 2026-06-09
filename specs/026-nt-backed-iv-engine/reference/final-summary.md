@@ -18,6 +18,7 @@ The exact final pushed SHA cannot be embedded in the commit that contains this f
 - Raw event preservation, including serialized NT custom-data JSON for custom-data backed sources, audit-only raw access, and strategy-safe indexed IV products.
 - IV points, greeks points, smiles, surfaces, aggregate greeks, custom IV evidence, source health, projected scalar IV, and derived IV query products.
 - Typed projection policy selectors with Rust-validated TOML values, all-strikes smile projection, fail-closed single-strike interpolation fallback/rejection, quorum fallback routing, accepted-candidate fallback provenance, per-source smile interpolation before quorum, selector-scoped product candidate selection, current-generation product filtering, helper-output config validation, and read-guard based non-derived query execution.
+- Rust validation for policy and derived-input source references, including interpolation/fallback/quorum `eligible_sources`, derived-input `profile_source_ref` source-selector pairs, and duplicate derived-input field policies.
 - NT helper-backed derived IV through `nautilus_model::data::imply_vol_and_greeks`.
 - Strategy query handle registration through `StrategyRegistrationContext::iv_query_handles`.
 - Live-node IV lifecycle planning through `IvEngineLifecyclePlan` and `plan_iv_engine_lifecycle`, plus runtime IV root reload state updates and removed-source invalidation for existing query handles.

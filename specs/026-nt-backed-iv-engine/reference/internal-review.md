@@ -172,3 +172,24 @@ Current PR verification uses GitHub CI rather than local cargo reruns. Because a
 - `cargo test --locked --test bolt_v3_iv_query projected_scalar_fallback_provenance_uses_accepted_candidate_source -- --nocapture`: RED before fix, GREEN after fix.
 - `cargo test --locked --test bolt_v3_iv_query`: PASS, 48 tests.
 - `cargo test --locked --test bolt_v3_iv_config`: PASS, 25 tests.
+
+## 2026-06-10 Internal Adversarial Review After `fb84d603`
+
+**Reviewed working tree**: branch `026-nt-backed-iv-engine`, local delta after head `fb84d6038a884e0855b8e93c89efc0fbd6fb9c5c`
+**Recommendation**: PASS for the locally reviewed fixes below; GitHub CI and external relay approvals must be refreshed after this delta is committed and pushed.
+
+| Issue | Evidence | Resolution |
+|---|---|---|
+| Interpolation, fallback, and quorum policies could reference source IDs that were not configured in the owning IV profile. Projection `source_eligibility` was validated, but these policy-local `eligible_sources` fields were not. | RED: `cargo test --locked --test bolt_v3_iv_config policy_source_references_must_point_to_configured_sources -- --nocapture` failed because the invalid config produced no validation error. | Config validation now rejects unknown source IDs in interpolation, fallback, and quorum `eligible_sources`, and the valid config fixture no longer names an unconfigured quorum source. |
+| A derived-input `profile_source_ref` could name a source/selector pair that does not exist in the owning profile. | RED: `cargo test --locked --test bolt_v3_iv_config derived_input_profile_source_ref_must_point_to_configured_source_selector_pair -- --nocapture` failed because validation accepted a missing selector. | Config validation now requires `profile_source_ref` to match a configured source ID and selector fingerprint pair. |
+| Duplicate derived-input `field_sources` for the same helper field could load, and query-time resolution would silently use the first match. | RED: `cargo test --locked --test bolt_v3_iv_config derived_input_policy_field_sources_must_not_duplicate_fields -- --nocapture` failed because validation accepted duplicate `option_price` field policies. | Config validation now rejects duplicate `field_sources` entries per derived-input policy. |
+
+### 2026-06-10 Post-`fb84d603` Verification
+
+- `cargo test --locked --test bolt_v3_iv_config policy_source_references_must_point_to_configured_sources -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_config derived_input_profile_source_ref_must_point_to_configured_source_selector_pair -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_config derived_input_policy_field_sources_must_not_duplicate_fields -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_config`: PASS, 28 tests.
+- `cargo fmt --check`: PASS.
+- `git diff --check`: PASS.
+- `just source-fence`: PASS.

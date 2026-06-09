@@ -9075,6 +9075,14 @@ reason = "IV config parsing uses typed profile-owned policy family names for val
 [[allowed]]
 path = "src/bolt_v3_iv/config.rs"
 kind = "string"
+literal = '''"eligible_sources"'''
+context = '''"eligible_sources",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses this profile-owned policy field name for validation diagnostics; source IDs are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
 literal = '''"helper_policies"'''
 context = '''"helper_policies",'''
 classification = "iv_config_schema_literal"

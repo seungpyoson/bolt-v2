@@ -71,7 +71,7 @@ required_provenance_fields = ["raw_event_id"]
 [[profiles.quorum_policies]]
 policy_id = "configured-quorum-policy"
 minimum_sources = 2
-eligible_sources = ["configured-greeks-source", "configured-backup-source"]
+eligible_sources = ["configured-greeks-source", "configured-chain-source"]
 agreement_band = 0.05
 tie_break = "mean"
 
@@ -717,6 +717,75 @@ fn helper_policy_allowed_outputs_must_include_engine_helper_output() {
     assert!(errors.iter().any(|message| {
         message.contains("helper_policies.configured-helper-policy.allowed_outputs")
             && message.contains("iv_and_greeks")
+    }));
+}
+
+#[test]
+fn policy_source_references_must_point_to_configured_sources() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    config.profiles[0].interpolation_policies[0]
+        .eligible_sources
+        .push("configured-missing-interpolation-source".to_string());
+    config.profiles[0].fallback_policies[0]
+        .eligible_sources
+        .push("configured-missing-fallback-source".to_string());
+    config.profiles[0].quorum_policies[0]
+        .eligible_sources
+        .push("configured-missing-quorum-source".to_string());
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("interpolation_policies.configured-interpolation-policy.eligible_sources")
+            && message.contains("configured-missing-interpolation-source")
+    }));
+    assert!(errors.iter().any(|message| {
+        message.contains("fallback_policies.configured-fallback-policy.eligible_sources")
+            && message.contains("configured-missing-fallback-source")
+    }));
+    assert!(errors.iter().any(|message| {
+        message.contains("quorum_policies.configured-quorum-policy.eligible_sources")
+            && message.contains("configured-missing-quorum-source")
+    }));
+}
+
+#[test]
+fn derived_input_profile_source_ref_must_point_to_configured_source_selector_pair() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    let field_source = config.profiles[0].derived_input_policies[0]
+        .field_sources
+        .iter_mut()
+        .find(|field_source| field_source.field == IvDerivedInputField::UnderlyingPrice)
+        .unwrap();
+    field_source.profile_source_ref =
+        Some(bolt_v2::bolt_v3_iv::derive::IvDerivedProfileSourceRef {
+            source_id: "configured-greeks-source".to_string(),
+            selector_fingerprint: "configured-missing-selector".to_string(),
+        });
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("derived_input_policies.configured-derived-input-policy.field_sources")
+            && message.contains("profile_source_ref")
+            && message.contains("configured-greeks-source")
+            && message.contains("configured-missing-selector")
+    }));
+}
+
+#[test]
+fn derived_input_policy_field_sources_must_not_duplicate_fields() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    let duplicate = config.profiles[0].derived_input_policies[0].field_sources[0].clone();
+    config.profiles[0].derived_input_policies[0]
+        .field_sources
+        .push(duplicate);
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("derived_input_policies.configured-derived-input-policy.field_sources")
+            && message.contains("duplicate option_price")
     }));
 }
 

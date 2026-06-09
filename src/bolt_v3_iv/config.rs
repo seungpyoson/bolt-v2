@@ -422,6 +422,21 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
         .iter()
         .map(|policy| policy.input_policy_id.as_str())
         .collect::<BTreeSet<_>>();
+    let source_ids = profile
+        .sources
+        .iter()
+        .map(|source| source.source_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let source_selector_pairs = profile
+        .sources
+        .iter()
+        .map(|source| {
+            (
+                source.source_id.as_str(),
+                source.selector_fingerprint.as_str(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
 
     for policy in &profile.interpolation_policies {
         if policy.minimum_points == 0 {
@@ -436,6 +451,15 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.policy_id
             ));
         }
+        validate_known_source_refs(
+            context,
+            "interpolation_policies",
+            &policy.policy_id,
+            "eligible_sources",
+            &policy.eligible_sources,
+            &source_ids,
+            &mut errors,
+        );
     }
     for policy in &profile.fallback_policies {
         if policy.candidate_order.is_empty() {
@@ -450,6 +474,15 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.policy_id
             ));
         }
+        validate_known_source_refs(
+            context,
+            "fallback_policies",
+            &policy.policy_id,
+            "eligible_sources",
+            &policy.eligible_sources,
+            &source_ids,
+            &mut errors,
+        );
     }
     for policy in &profile.quorum_policies {
         if policy.minimum_sources == 0 {
@@ -472,6 +505,15 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.policy_id
             ));
         }
+        validate_known_source_refs(
+            context,
+            "quorum_policies",
+            &policy.policy_id,
+            "eligible_sources",
+            &policy.eligible_sources,
+            &source_ids,
+            &mut errors,
+        );
     }
     for policy in &profile.helper_policies {
         if policy.parameter_signature.trim().is_empty() {
@@ -541,6 +583,30 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.input_policy_id
             ));
         }
+        let mut seen_field_sources = BTreeSet::new();
+        for field_policy in &policy.field_sources {
+            if !seen_field_sources.insert(field_policy.field) {
+                errors.push(format!(
+                    "{context}.derived_input_policies.{}.field_sources contains duplicate {}",
+                    policy.input_policy_id,
+                    field_policy.field.as_str()
+                ));
+            }
+            if let Some(source_ref) = &field_policy.profile_source_ref
+                && !source_selector_pairs.contains(&(
+                    source_ref.source_id.as_str(),
+                    source_ref.selector_fingerprint.as_str(),
+                ))
+            {
+                errors.push(format!(
+                    "{context}.derived_input_policies.{}.field_sources.{}.profile_source_ref must reference a configured source and selector pair: {} / {}",
+                    policy.input_policy_id,
+                    field_policy.field.as_str(),
+                    source_ref.source_id,
+                    source_ref.selector_fingerprint
+                ));
+            }
+        }
         for required_field in &policy.required_fields {
             if !policy
                 .field_sources
@@ -572,6 +638,24 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
     }
 
     errors
+}
+
+fn validate_known_source_refs(
+    context: &str,
+    policy_family: &str,
+    policy_id: &str,
+    field: &str,
+    configured_refs: &[String],
+    source_ids: &BTreeSet<&str>,
+    errors: &mut Vec<String>,
+) {
+    for source_id in configured_refs {
+        if !source_ids.contains(source_id.as_str()) {
+            errors.push(format!(
+                "{context}.{policy_family}.{policy_id}.{field} contains unknown source {source_id}"
+            ));
+        }
+    }
 }
 
 fn validate_derived_input_policy_bounds(

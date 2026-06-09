@@ -15,8 +15,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::source_proof::SourceProofUsageScope;
+
 pub const SOURCE_CATALOG_MAPPING_READINESS_SCHEMA_VERSION: &str =
-    "source-catalog-mapping-readiness-report.v1";
+    "source-catalog-mapping-readiness-report.v2";
 pub const SOURCE_CATALOG_MAPPING_READINESS_REPORT_FILE: &str =
     "source-catalog-mapping-readiness-report.json";
 
@@ -33,6 +35,7 @@ pub struct SourceCatalogMappingReadinessSpec {
     pub required_nt_data_types: Vec<String>,
     pub allowed_current_bte_statuses: Vec<String>,
     pub allowed_parquet_catalog_statuses: Vec<String>,
+    pub allowed_usage_scopes: Vec<SourceProofUsageScope>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,12 +55,15 @@ pub enum SourceCatalogMappingReadinessBlocker {
     EmptyRequiredNtDataTypes,
     EmptyAllowedCurrentBteStatuses,
     EmptyAllowedParquetCatalogStatuses,
+    EmptyAllowedUsageScopes,
     MappingEntryNotFound,
     DuplicateMappingEntries,
     TableFamilyMismatch,
     RequiredNtDataTypeMissing,
     RequiredNtDataTypeEvidenceMissing,
     SourceProofMismatch,
+    UsageScopeMissing,
+    UsageScopeNotAllowed,
     CurrentBteStatusNotAllowed,
     ParquetCatalogStatusNotAllowed,
 }
@@ -76,10 +82,12 @@ pub struct SourceCatalogMappingReadinessReport {
     pub required_nt_data_types: Vec<String>,
     pub allowed_current_bte_statuses: Vec<String>,
     pub allowed_parquet_catalog_statuses: Vec<String>,
+    pub allowed_usage_scopes: Vec<SourceProofUsageScope>,
     pub observed_source_proof_id: Option<String>,
     pub observed_source_proof_version: Option<u32>,
     pub observed_source_binding: Option<String>,
     pub observed_table_family: Option<String>,
+    pub observed_usage_scope: Option<SourceProofUsageScope>,
     pub observed_nt_data_types: Vec<String>,
     pub observed_nt_data_type_evidence_refs: BTreeMap<String, Vec<String>>,
     pub observed_current_bte_status: Option<String>,
@@ -95,6 +103,8 @@ pub struct SourceCatalogMappingStatusEntry {
     #[serde(default)]
     pub source_proof_version: Option<u32>,
     pub source_binding: String,
+    #[serde(default)]
+    pub usage_scope: Option<SourceProofUsageScope>,
     pub table_family: String,
     pub candidate_nt_data_classes: Vec<String>,
     #[serde(default)]
@@ -121,6 +131,7 @@ pub struct SourceCatalogMappingReadinessInput<'a> {
     pub required_nt_data_types: Vec<String>,
     pub allowed_current_bte_statuses: Vec<String>,
     pub allowed_parquet_catalog_statuses: Vec<String>,
+    pub allowed_usage_scopes: Vec<SourceProofUsageScope>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,6 +205,7 @@ pub fn evaluate_source_catalog_mapping_readiness(
     let required_nt_data_types = input.required_nt_data_types;
     let allowed_current_bte_statuses = input.allowed_current_bte_statuses;
     let allowed_parquet_catalog_statuses = input.allowed_parquet_catalog_statuses;
+    let allowed_usage_scopes = input.allowed_usage_scopes;
 
     let source_proof_id_trimmed = source_proof_id.trim();
     let source_binding_trimmed = source_binding.trim();
@@ -258,6 +270,9 @@ pub fn evaluate_source_catalog_mapping_readiness(
     {
         blockers.push(SourceCatalogMappingReadinessBlocker::EmptyAllowedParquetCatalogStatuses);
     }
+    if allowed_usage_scopes.is_empty() {
+        blockers.push(SourceCatalogMappingReadinessBlocker::EmptyAllowedUsageScopes);
+    }
     if binding_entries.is_empty() && !source_binding_trimmed.is_empty() {
         blockers.push(SourceCatalogMappingReadinessBlocker::MappingEntryNotFound);
     }
@@ -308,6 +323,16 @@ pub fn evaluate_source_catalog_mapping_readiness(
         {
             blockers.push(SourceCatalogMappingReadinessBlocker::SourceProofMismatch);
         }
+        if let Some(usage_scope) = entry.usage_scope {
+            if !allowed_usage_scopes
+                .iter()
+                .any(|allowed_scope| *allowed_scope == usage_scope)
+            {
+                blockers.push(SourceCatalogMappingReadinessBlocker::UsageScopeNotAllowed);
+            }
+        } else {
+            blockers.push(SourceCatalogMappingReadinessBlocker::UsageScopeMissing);
+        }
         if !allowed_current_bte_statuses
             .iter()
             .any(|status| status.trim() == entry.current_bte_status.trim())
@@ -341,10 +366,12 @@ pub fn evaluate_source_catalog_mapping_readiness(
         required_nt_data_types,
         allowed_current_bte_statuses,
         allowed_parquet_catalog_statuses,
+        allowed_usage_scopes,
         observed_source_proof_id: observed_entry.and_then(|entry| entry.source_proof_id.clone()),
         observed_source_proof_version: observed_entry.and_then(|entry| entry.source_proof_version),
         observed_source_binding: observed_entry.map(|entry| entry.source_binding.clone()),
         observed_table_family: observed_entry.map(|entry| entry.table_family.clone()),
+        observed_usage_scope: observed_entry.and_then(|entry| entry.usage_scope),
         observed_nt_data_types: observed_entry
             .map(|entry| entry.candidate_nt_data_classes.clone())
             .unwrap_or_default(),
@@ -402,6 +429,7 @@ pub fn write_source_catalog_mapping_readiness_report_from_spec_file(
         required_nt_data_types: spec.required_nt_data_types,
         allowed_current_bte_statuses: spec.allowed_current_bte_statuses,
         allowed_parquet_catalog_statuses: spec.allowed_parquet_catalog_statuses,
+        allowed_usage_scopes: spec.allowed_usage_scopes,
     });
     write_source_catalog_mapping_readiness_report(&spec.output_dir, &report)
 }

@@ -8,3 +8,4 @@ required_table_family = "order_book_snapshot_deltas"
 required_nt_data_types = ["OrderBookDelta", "TradeTick"]
 allowed_current_bte_statuses = ["accepted"]
 allowed_parquet_catalog_statuses = ["proven"]
+allowed_usage_scopes = ["canonical_backfill_input"]

@@ -2544,3 +2544,49 @@ Current conclusion:
 - This does not close `BACKTESTING_ENGINE-006`; it removes ambiguity about the
   remaining security decision and prevents another ineffective rerun with the
   broad artifact-store credential.
+
+## 2026-06-09 source-catalog mapping usage-scope checkpoint
+
+Root cause addressed:
+
+- Source-catalog mapping readiness already checked source proof id/version, NT
+  data-class evidence, current BTE status, and Parquet catalog status.
+- The canonical gate still relied on status strings to keep bounded
+  `one_off_backfill_data` evidence separate from canonical backfill input.
+- A stale or hand-edited mapping row could therefore look accepted/proven while
+  carrying the wrong source-proof usage boundary.
+
+Change:
+
+- `SourceCatalogMappingStatusEntry` now carries optional structured
+  `usage_scope`.
+- `SourceCatalogMappingReadinessSpec` and reports now carry configured
+  `allowed_usage_scopes`; canonical specs allow only
+  `canonical_backfill_input`.
+- Readiness blocks on missing usage scope or disallowed usage scope before a
+  mapping report can become ready.
+- The committed Binance mapping row records `canonical_backfill_input`; the
+  PMXT/Polymarket mapping row records `one_off_backfill_data`, and its
+  canonical readiness report is blocked with `usage_scope_not_allowed`.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_source_catalog_mapping_readiness source_catalog_mapping_readiness_blocks_one_off_usage_scope_for_canonical_gate -- --nocapture`
+  failed because mapping readiness had no usage-scope field, allowed-scope
+  config, observed-scope report field, or blocker.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_source_catalog_mapping_readiness source_catalog_mapping_readiness_blocks_one_off_usage_scope_for_canonical_gate -- --nocapture`
+  passed after adding the structured scope gate.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_source_catalog_mapping_readiness --test backtesting_vertical_slice_backfill_execution_readiness --test backtesting_vertical_slice_backfill_gate_reference_artifacts -- --nocapture`
+  passed 19 focused mapping/readiness/reference tests.
+
+Current conclusion:
+
+- This closes a generic `BACKTESTING_ENGINE-022` bypass without adding
+  venue/source/data-family branches.
+- It does not close `BACKTESTING_ENGINE-022`: durable accepted PMXT/Polymarket
+  source proof, broad coverage/cost/storage evidence, and dynamic tick-size
+  replay proof or an accepted bounded-exclusion policy are still required
+  before broad PMXT backfill can become canonical.

@@ -30,7 +30,7 @@
     {
       "surface": "source-to-catalog mapping readiness",
       "path": "repo://crates/backtesting-vertical-slice/src/source_catalog_mapping_readiness.rs",
-      "evidence": "Readiness uses configured source_binding, required_table_family, required_nt_data_types, allowed current BTE statuses, and allowed Parquet catalog statuses. It blocks on missing mapping entries, missing NT data types, missing per-required-data-class evidence refs, source-proof mismatch, or disallowed status values without venue-specific branches."
+      "evidence": "Readiness uses configured source_binding, required_table_family, required_nt_data_types, allowed source-proof usage scopes, allowed current BTE statuses, and allowed Parquet catalog statuses. It blocks on missing mapping entries, missing NT data types, missing per-required-data-class evidence refs, source-proof mismatch, missing or disallowed usage scope, or disallowed status values without venue-specific branches."
     },
     {
       "surface": "backfill binding coverage",

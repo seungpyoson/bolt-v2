@@ -191,6 +191,9 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
             allowed_parquet_catalog_statuses: expected_catalog_mapping_readiness
                 .allowed_parquet_catalog_statuses
                 .clone(),
+            allowed_usage_scopes: expected_catalog_mapping_readiness
+                .allowed_usage_scopes
+                .clone(),
         });
 
     assert_eq!(
@@ -329,6 +332,7 @@ fn blocked_canonical_source_catalog_mapping_reference_artifact_matches_generic_e
             allowed_parquet_catalog_statuses: expected_blocked_readiness
                 .allowed_parquet_catalog_statuses
                 .clone(),
+            allowed_usage_scopes: expected_blocked_readiness.allowed_usage_scopes.clone(),
         });
 
     assert_eq!(actual_blocked_readiness, expected_blocked_readiness);

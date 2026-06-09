@@ -22,7 +22,7 @@
   "source_selection_readiness_status": null,
   "source_catalog_mapping_readiness_required": true,
   "source_catalog_mapping_readiness_id": "binance-bnbusdc-2026-03-01-source-catalog-mapping-readiness",
-  "source_catalog_mapping_readiness_hash": "3d7e1a378377c1c0a2cba355a1f0a7f73b2e6018746a7a287ecb0ca0a62bbd9d",
+  "source_catalog_mapping_readiness_hash": "3091121792c28199822d97e8a1f6fdd5a7d9fe23a9e835239284d8464057196d",
   "source_catalog_mapping_readiness_status": "ready",
   "accepted_tranche_id": "backfill-accepted-tranche-binance-bnbusdc-2026-03-01",
   "accepted_tranche_manifest_hash": "1777b31080b7c0003479504116cbd6346bdab8a992805c0514e009927ba1126b",

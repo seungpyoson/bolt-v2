@@ -555,10 +555,12 @@ fn source_catalog_mapping_readiness_report(
         required_nt_data_types: vec!["TradeTick".to_string()],
         allowed_current_bte_statuses: vec!["accepted".to_string()],
         allowed_parquet_catalog_statuses: vec!["proven".to_string()],
+        allowed_usage_scopes: vec![SourceProofUsageScope::CanonicalBackfillInput],
         observed_source_proof_id: Some(tranche.source_proof_id.clone()),
         observed_source_proof_version: Some(tranche.source_proof_version),
         observed_source_binding: Some(tranche.source_binding.clone()),
         observed_table_family: Some(tranche.table_family.clone()),
+        observed_usage_scope: Some(SourceProofUsageScope::CanonicalBackfillInput),
         observed_nt_data_types: vec!["TradeTick".to_string()],
         observed_nt_data_type_evidence_refs: BTreeMap::from([(
             "TradeTick".to_string(),

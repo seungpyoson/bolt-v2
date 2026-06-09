@@ -1,10 +1,13 @@
 use std::collections::BTreeMap;
 
-use backtesting_vertical_slice::source_catalog_mapping_readiness::{
-    SOURCE_CATALOG_MAPPING_READINESS_REPORT_FILE, SourceCatalogMappingReadinessBlocker,
-    SourceCatalogMappingReadinessInput, SourceCatalogMappingReadinessStatus,
-    SourceCatalogMappingStatusEntry, evaluate_source_catalog_mapping_readiness,
-    write_source_catalog_mapping_readiness_report_from_spec_file,
+use backtesting_vertical_slice::{
+    source_catalog_mapping_readiness::{
+        SOURCE_CATALOG_MAPPING_READINESS_REPORT_FILE, SourceCatalogMappingReadinessBlocker,
+        SourceCatalogMappingReadinessInput, SourceCatalogMappingReadinessStatus,
+        SourceCatalogMappingStatusEntry, evaluate_source_catalog_mapping_readiness,
+        write_source_catalog_mapping_readiness_report_from_spec_file,
+    },
+    source_proof::SourceProofUsageScope,
 };
 
 #[test]
@@ -22,6 +25,7 @@ fn source_catalog_mapping_readiness_accepts_configured_nt_catalog_statuses() {
         required_nt_data_types: vec!["TradeTick".to_string()],
         allowed_current_bte_statuses: vec!["accepted".to_string()],
         allowed_parquet_catalog_statuses: vec!["proven".to_string()],
+        allowed_usage_scopes: vec![SourceProofUsageScope::CanonicalBackfillInput],
     });
 
     assert_eq!(report.status, SourceCatalogMappingReadinessStatus::Ready);
@@ -45,6 +49,7 @@ fn source_catalog_mapping_readiness_blocks_status_only_mapping_without_data_clas
         source_proof_id: Some("source-proof-synthetic-native-trades".to_string()),
         source_proof_version: Some(1),
         source_binding: "synthetic-native-trades".to_string(),
+        usage_scope: Some(SourceProofUsageScope::CanonicalBackfillInput),
         table_family: "trades".to_string(),
         candidate_nt_data_classes: vec!["TradeTick".to_string()],
         nt_data_class_evidence_refs: BTreeMap::new(),
@@ -63,6 +68,7 @@ fn source_catalog_mapping_readiness_blocks_status_only_mapping_without_data_clas
         required_nt_data_types: vec!["TradeTick".to_string()],
         allowed_current_bte_statuses: vec!["accepted".to_string()],
         allowed_parquet_catalog_statuses: vec!["proven".to_string()],
+        allowed_usage_scopes: vec![SourceProofUsageScope::CanonicalBackfillInput],
     });
 
     assert_eq!(report.status, SourceCatalogMappingReadinessStatus::Blocked);
@@ -80,6 +86,7 @@ fn source_catalog_mapping_readiness_blocks_unaccepted_mapping_statuses() {
         source_proof_id: Some("source-proof-synthetic-book-deltas".to_string()),
         source_proof_version: Some(1),
         source_binding: "synthetic-book-deltas".to_string(),
+        usage_scope: Some(SourceProofUsageScope::CanonicalBackfillInput),
         table_family: "order_book_snapshot_deltas".to_string(),
         candidate_nt_data_classes: vec!["OrderBookDelta".to_string(), "TradeTick".to_string()],
         nt_data_class_evidence_refs: nt_data_class_evidence_refs([(
@@ -101,6 +108,7 @@ fn source_catalog_mapping_readiness_blocks_unaccepted_mapping_statuses() {
         required_nt_data_types: vec!["OrderBookDelta".to_string()],
         allowed_current_bte_statuses: vec!["accepted".to_string()],
         allowed_parquet_catalog_statuses: vec!["proven".to_string()],
+        allowed_usage_scopes: vec![SourceProofUsageScope::CanonicalBackfillInput],
     });
 
     assert_eq!(report.status, SourceCatalogMappingReadinessStatus::Blocked);
@@ -123,6 +131,7 @@ fn source_catalog_mapping_readiness_blocks_source_proof_mismatches() {
         source_proof_id: Some("source-proof-old-version".to_string()),
         source_proof_version: Some(1),
         source_binding: "synthetic-native-trades".to_string(),
+        usage_scope: Some(SourceProofUsageScope::CanonicalBackfillInput),
         table_family: "trades".to_string(),
         candidate_nt_data_classes: vec!["TradeTick".to_string()],
         nt_data_class_evidence_refs: nt_data_class_evidence_refs([(
@@ -144,6 +153,7 @@ fn source_catalog_mapping_readiness_blocks_source_proof_mismatches() {
         required_nt_data_types: vec!["TradeTick".to_string()],
         allowed_current_bte_statuses: vec!["accepted".to_string()],
         allowed_parquet_catalog_statuses: vec!["proven".to_string()],
+        allowed_usage_scopes: vec![SourceProofUsageScope::CanonicalBackfillInput],
     });
 
     assert_eq!(report.status, SourceCatalogMappingReadinessStatus::Blocked);
@@ -152,6 +162,50 @@ fn source_catalog_mapping_readiness_blocks_source_proof_mismatches() {
         report
             .blockers
             .contains(&SourceCatalogMappingReadinessBlocker::SourceProofMismatch)
+    );
+}
+
+#[test]
+fn source_catalog_mapping_readiness_blocks_one_off_usage_scope_for_canonical_gate() {
+    let entries = vec![SourceCatalogMappingStatusEntry {
+        source_proof_id: Some("source-proof-one-off-book-deltas".to_string()),
+        source_proof_version: Some(1),
+        source_binding: "synthetic-book-deltas".to_string(),
+        usage_scope: Some(SourceProofUsageScope::OneOffBackfillData),
+        table_family: "order_book_snapshot_deltas".to_string(),
+        candidate_nt_data_classes: vec!["OrderBookDelta".to_string()],
+        nt_data_class_evidence_refs: nt_data_class_evidence_refs([(
+            "OrderBookDelta",
+            "repo://synthetic/order-book-delta-catalog-proof.json",
+        )]),
+        current_bte_status: "accepted".to_string(),
+        parquet_catalog_status: "proven".to_string(),
+    }];
+
+    let report = evaluate_source_catalog_mapping_readiness(SourceCatalogMappingReadinessInput {
+        readiness_id: "synthetic-catalog-mapping",
+        catalog_mapping_evaluation_hash: "synthetic-evaluation-hash",
+        source_sample_mapping_status: &entries,
+        source_proof_id: "source-proof-one-off-book-deltas",
+        source_proof_version: 1,
+        source_binding: "synthetic-book-deltas",
+        required_table_family: "order_book_snapshot_deltas",
+        required_nt_data_types: vec!["OrderBookDelta".to_string()],
+        allowed_current_bte_statuses: vec!["accepted".to_string()],
+        allowed_parquet_catalog_statuses: vec!["proven".to_string()],
+        allowed_usage_scopes: vec![SourceProofUsageScope::CanonicalBackfillInput],
+    });
+
+    assert_eq!(report.status, SourceCatalogMappingReadinessStatus::Blocked);
+    assert!(!report.nt_catalog_mapping_proven);
+    assert_eq!(
+        report.observed_usage_scope,
+        Some(SourceProofUsageScope::OneOffBackfillData)
+    );
+    assert!(
+        report
+            .blockers
+            .contains(&SourceCatalogMappingReadinessBlocker::UsageScopeNotAllowed)
     );
 }
 
@@ -170,6 +224,7 @@ fn source_catalog_mapping_readiness_writer_reads_evaluation_and_writes_idempoten
       "source_binding": "synthetic-native-trades",
       "source_proof_id": "source-proof-synthetic-native-trades",
       "source_proof_version": 1,
+      "usage_scope": "canonical_backfill_input",
       "fixture_type": "synthetic-fixture",
       "table_family": "trades",
       "source_sample_status": "sample_available",
@@ -198,6 +253,7 @@ required_table_family = "trades"
 required_nt_data_types = ["TradeTick"]
 allowed_current_bte_statuses = ["accepted"]
 allowed_parquet_catalog_statuses = ["proven"]
+allowed_usage_scopes = ["canonical_backfill_input"]
 "#,
             evaluation_path.display(),
             output_dir.display()
@@ -222,6 +278,7 @@ fn accepted_mapping_entry() -> SourceCatalogMappingStatusEntry {
         source_proof_id: Some("source-proof-synthetic-native-trades".to_string()),
         source_proof_version: Some(1),
         source_binding: "synthetic-native-trades".to_string(),
+        usage_scope: Some(SourceProofUsageScope::CanonicalBackfillInput),
         table_family: "trades".to_string(),
         candidate_nt_data_classes: vec!["TradeTick".to_string()],
         nt_data_class_evidence_refs: nt_data_class_evidence_refs([(

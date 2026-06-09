@@ -324,10 +324,7 @@ pub fn evaluate_source_catalog_mapping_readiness(
             blockers.push(SourceCatalogMappingReadinessBlocker::SourceProofMismatch);
         }
         if let Some(usage_scope) = entry.usage_scope {
-            if !allowed_usage_scopes
-                .iter()
-                .any(|allowed_scope| *allowed_scope == usage_scope)
-            {
+            if !allowed_usage_scopes.contains(&usage_scope) {
                 blockers.push(SourceCatalogMappingReadinessBlocker::UsageScopeNotAllowed);
             }
         } else {

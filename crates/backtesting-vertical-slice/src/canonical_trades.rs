@@ -55,6 +55,8 @@ const NANOS_PER_MILLISECOND: i64 = 1_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceAdapterKind {
     CsvNativeTrades,
+    #[cfg(test)]
+    SyntheticOrderBookDeltas,
 }
 
 /// Registered raw-source adapter.
@@ -150,11 +152,28 @@ pub const CSV_NATIVE_TRADES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefi
     nt_data_type: "TradeTick",
 };
 
+#[cfg(test)]
+pub const SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
+    identity: "synthetic-order-book-deltas-fixture.v1",
+    version: "1",
+    kind: SourceAdapterKind::SyntheticOrderBookDeltas,
+    table_family: "order_book_snapshot_deltas",
+    normalized_schema_version: "market_data.v1",
+    nt_data_type: "OrderBookDelta",
+};
+
+#[cfg(not(test))]
 pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[CSV_NATIVE_TRADES_ADAPTER];
+
+#[cfg(test)]
+pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
+    CSV_NATIVE_TRADES_ADAPTER,
+    SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER,
+];
 
 pub const CSV_NATIVE_TRADES_CONVERTER: TradeConverterDefinition = CSV_NATIVE_TRADES_ADAPTER;
 
-pub const REGISTERED_TRADE_CONVERTERS: &[TradeConverterDefinition] = REGISTERED_SOURCE_ADAPTERS;
+pub const REGISTERED_TRADE_CONVERTERS: &[TradeConverterDefinition] = &[CSV_NATIVE_TRADES_ADAPTER];
 
 #[must_use]
 pub fn registered_source_adapter(
@@ -706,6 +725,10 @@ pub fn normalize_registered_trade_converter(
             capture_time_nanos,
             ingest_run_id,
         ),
+        #[cfg(test)]
+        SourceAdapterKind::SyntheticOrderBookDeltas => {
+            bail!("test fixture adapter cannot normalize native trades")
+        }
     }
 }
 
@@ -1141,7 +1164,8 @@ mod tests {
         assert_eq!(adapter.table_family, TRADE_TABLE_FAMILY);
         assert_eq!(adapter.normalized_schema_version, NORMALIZED_SCHEMA_VERSION);
         assert_eq!(adapter.nt_data_type, NT_DATA_TYPE_TRADE_TICK);
-        assert_eq!(REGISTERED_SOURCE_ADAPTERS, REGISTERED_TRADE_CONVERTERS);
+        assert!(REGISTERED_SOURCE_ADAPTERS.contains(&CSV_NATIVE_TRADES_ADAPTER));
+        assert_eq!(REGISTERED_TRADE_CONVERTERS, &[CSV_NATIVE_TRADES_ADAPTER]);
     }
 
     #[test]

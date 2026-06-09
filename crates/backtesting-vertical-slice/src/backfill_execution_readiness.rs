@@ -568,8 +568,7 @@ pub fn evaluate_backfill_execution_readiness(
                 }
                 if !readiness
                     .allowed_usage_scopes
-                    .iter()
-                    .any(|usage_scope| *usage_scope == required_source_usage_scope)
+                    .contains(&required_source_usage_scope)
                     || readiness.observed_usage_scope != Some(required_source_usage_scope)
                 {
                     blockers.push(

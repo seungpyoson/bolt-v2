@@ -1201,7 +1201,9 @@ mod tests {
     use flate2::{Compression, write::GzEncoder};
 
     use super::*;
-    use crate::canonical_trades::{CsvTimestampUnit, RawPayloadConfig, RawPayloadContainer};
+    use crate::canonical_trades::{
+        CsvTimestampUnit, REGISTERED_SOURCE_ADAPTERS, RawPayloadConfig, RawPayloadContainer,
+    };
     use crate::conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionManifest,
@@ -1907,6 +1909,30 @@ mod tests {
         assert!(
             err.to_string().contains("registered source adapter"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn run_from_run_spec_rejects_registered_non_durable_adapter_before_artifacts() {
+        let gz = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&gz);
+        let unsupported_adapter = REGISTERED_SOURCE_ADAPTERS
+            .iter()
+            .find(|adapter| adapter.kind != SourceAdapterKind::CsvNativeTrades)
+            .expect("test registry must include a non-durable adapter fixture");
+        spec.converter.identity = unsupported_adapter.identity.to_string();
+        spec.converter.version = unsupported_adapter.version.to_string();
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let err = run_from_run_spec(&spec, &gz, dir.path())
+            .err()
+            .expect("registered adapter without durable runner dispatch must be rejected");
+
+        assert!(err.to_string().contains("durable path"), "{err}");
+        assert!(err.to_string().contains("runner dispatch"), "{err}");
+        assert!(
+            !dir.path().join(CONVERSION_CHECKPOINT_FILE).exists(),
+            "durable adapter-kind rejection must happen before conversion checkpoint writes"
         );
     }
 

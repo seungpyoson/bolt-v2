@@ -2875,3 +2875,62 @@ Current conclusion:
 - This evidence does not close `BACKTESTING_ENGINE-006` or
   `BACKTESTING_ENGINE-022`, and it does not authorize broad PMXT/Polymarket
   backfill or production publish/delete actions.
+
+## 2026-06-09 durable adapter dispatch guard checkpoint
+
+Root cause addressed:
+
+- The source adapter registry declared adapter kind, table family, normalized
+  schema version, and NT data type.
+- The durable accepted-object operator path already intended to support only
+  `CsvNativeTrades`, but there was no regression test proving that a registered
+  non-durable adapter kind without an explicit runner dispatch fails before
+  artifact writes.
+- That left the source-agnostic adapter boundary under-proven: future adapter
+  registration drift could look like TOML-only support for a new data family.
+
+Change:
+
+- Added a test-only synthetic `OrderBookDelta` source adapter fixture under
+  `cfg(test)`.
+- Production `REGISTERED_SOURCE_ADAPTERS` still contains only the native-trade
+  CSV adapter; `REGISTERED_TRADE_CONVERTERS` remains only that durable trade
+  converter.
+- Added an operator regression test proving a registered non-durable adapter
+  kind is rejected with the durable runner-dispatch guard before
+  `conversion-checkpoint.json` can be written.
+- Applied the two current clippy `manual_contains` mechanical fixes in
+  readiness membership checks.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked operator::tests::run_from_run_spec_rejects_registered_non_durable_adapter_before_artifacts -- --nocapture`
+  failed because the test registry did not include a non-durable adapter
+  fixture.
+- GREEN focused:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --lib operator::tests::run_from_run_spec_rejects_registered_non_durable_adapter_before_artifacts -- --nocapture`
+  passed after adding the test-only fixture.
+- Registry focused:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --lib source_adapter_registry -- --nocapture`
+  passed.
+- Library tests:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --lib --quiet`
+  passed with 251 tests on the final code state.
+- Focused readiness tests:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_execution_readiness --test backtesting_vertical_slice_source_catalog_mapping_readiness`
+  passed with 21 tests after the clippy membership cleanup.
+- Formatting:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- fmt --check`
+  passed.
+- Clippy:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- clippy --locked --lib -- -D warnings`
+  passed.
+
+Current conclusion:
+
+- This strengthens the BTE-022 source-agnostic adapter boundary: registering an
+  adapter metadata row is not enough to make the durable operator run it.
+- It does not close `BACKTESTING_ENGINE-022`. New non-trade-CSV raw formats or
+  NT data families still require a real adapter implementation, source-proof
+  acceptance, coverage/cost/storage evidence, and NT catalog/BacktestNode proof.

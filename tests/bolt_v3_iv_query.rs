@@ -1125,8 +1125,7 @@ fn derived_iv_query_uses_request_supplied_inputs_without_preseeded_bundle() {
         profile_wide_authorization(),
         IvStore::empty(),
     )
-    .with_helper_policies(vec![helper_policy()])
-    .with_derived_input_policies(vec![profile_resolving_derived_input_policy()]);
+    .with_helper_policies(vec![helper_policy()]);
 
     let product = handle
         .query(&IvQuery::Product(IvProductQuery {

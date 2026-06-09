@@ -749,12 +749,12 @@ impl IvQueryHandle {
         }
 
         let output = if let Some(interpolation_policy_ref) = &policy.interpolation_policy_ref {
+            let input_product = input_products
+                .first()
+                .ok_or(IvQueryError::ProductNotFound)?;
             if input_products.len() == 1
-                && let Some(interpolation_output) = interpolate_projected_input(
-                    state,
-                    interpolation_policy_ref,
-                    &input_products[0],
-                )?
+                && let Some(interpolation_output) =
+                    interpolate_projected_input(state, interpolation_policy_ref, input_product)?
             {
                 interpolation_output
             } else {
@@ -763,7 +763,9 @@ impl IvQueryHandle {
         } else {
             project_or_fallback(policy, state, &inputs)?
         };
-        let mut provenance = input_products[0]
+        let mut provenance = input_products
+            .first()
+            .ok_or(IvQueryError::ProductNotFound)?
             .provenance()
             .cloned()
             .ok_or(IvQueryError::UnsupportedProductKind)?;

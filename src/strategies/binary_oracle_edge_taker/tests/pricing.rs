@@ -402,8 +402,20 @@ fn entry_evaluation_uses_price_adjusted_fee_bps_not_cached_base_fee_rate() {
     let decision = strategy.entry_submission_decision_at(1_200);
     let fields = strategy.entry_evaluation_log_fields_at(1_200, &decision);
 
-    assert_eq!(fields.up_fee_bps, Some(511.111111111111));
-    assert_eq!(fields.down_fee_bps, Some(182.027027027027));
+    assert!(
+        fields
+            .up_fee_bps
+            .is_some_and(|value| (value - 511.111111111111).abs() < 1e-9),
+        "up fee bps should use price-adjusted fee: {:?}",
+        fields.up_fee_bps
+    );
+    assert!(
+        fields
+            .down_fee_bps
+            .is_some_and(|value| (value - 182.027027027027).abs() < 1e-9),
+        "down fee bps should use price-adjusted fee: {:?}",
+        fields.down_fee_bps
+    );
 }
 
 #[test]

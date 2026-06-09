@@ -106,9 +106,12 @@ fn book_impact_cap_is_derived_from_vwap_slippage_against_best_touch() {
 
 #[test]
 fn book_impact_cap_config_changes_sizing_decision() {
+    let outcome_side = OutcomeSide::Up;
     let mut loose = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     loose.config.book_impact_cap_bps = 5_000;
-    let loose_instrument_id = selected_entry_instrument(&loose);
+    let loose_instrument_id = loose
+        .instrument_id_for_side(outcome_side)
+        .expect("fixture should configure the UP outcome instrument");
     loose.active.books.update_from_deltas(&book_deltas(
         loose_instrument_id,
         &[
@@ -120,7 +123,9 @@ fn book_impact_cap_config_changes_sizing_decision() {
 
     let mut tight = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     tight.config.book_impact_cap_bps = 0;
-    let tight_instrument_id = selected_entry_instrument(&tight);
+    let tight_instrument_id = tight
+        .instrument_id_for_side(outcome_side)
+        .expect("fixture should configure the UP outcome instrument");
     tight.active.books.update_from_deltas(&book_deltas(
         tight_instrument_id,
         &[
@@ -130,8 +135,8 @@ fn book_impact_cap_config_changes_sizing_decision() {
         ],
     ));
 
-    let loose_cap = loose.visible_book_notional_cap(selected_entry_side(&loose));
-    let tight_cap = tight.visible_book_notional_cap(selected_entry_side(&tight));
+    let loose_cap = loose.visible_book_notional_cap(outcome_side);
+    let tight_cap = tight.visible_book_notional_cap(outcome_side);
 
     assert!(
         loose_cap

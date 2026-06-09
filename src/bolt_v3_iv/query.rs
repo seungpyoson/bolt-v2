@@ -376,7 +376,7 @@ impl IvQueryStateHandle {
                     && health.source_id == *source_id
                     && health.subscription_generation == *subscription_generation
             }) {
-                *existing = removed_health;
+                existing.subscription_state = super::health::IvSourceHealthState::Removed;
             } else {
                 state.source_health.push(removed_health);
             }
@@ -1288,6 +1288,40 @@ mod tests {
         assert_eq!(
             generation_two.subscription_state,
             IvSourceHealthState::Removed
+        );
+    }
+
+    #[test]
+    fn mark_sources_removed_preserves_rejection_history_for_exact_generation() {
+        let handle = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+        handle
+            .write_state()
+            .current_subscription_generations
+            .insert("test-source".to_string(), 2);
+        handle.record_source_rejection(
+            "test-profile".to_string(),
+            "test-source".to_string(),
+            2,
+            UnixNanos::new(42),
+            IvRejectReason::InvalidIvValue,
+            false,
+        );
+        let removed = BTreeMap::from([("test-source".to_string(), 2)]);
+
+        handle.mark_sources_removed("test-profile", &removed);
+
+        let health = handle
+            .source_health_for("test-profile", "test-source")
+            .unwrap();
+        assert_eq!(health.subscription_state, IvSourceHealthState::Removed);
+        assert_eq!(
+            health.last_reject_reason,
+            Some(IvRejectReason::InvalidIvValue)
+        );
+        assert_eq!(health.last_event_ts_ns, Some(UnixNanos::new(42)));
+        assert_eq!(
+            health.reject_counts.get(&IvRejectReason::InvalidIvValue),
+            Some(&1)
         );
     }
 

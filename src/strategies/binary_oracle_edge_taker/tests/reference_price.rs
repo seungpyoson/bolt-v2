@@ -419,6 +419,77 @@ fn selected_backup_with_older_timestamp_replaces_previous_source() {
 }
 
 #[test]
+fn selection_retry_refreshes_reference_failover_before_forced_flat_check() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price
+        .sources
+        .get_mut(CHAINLINK_PRIMARY_SOURCE_ID)
+        .expect("chainlink source should exist")
+        .required = false;
+    reference_price.max_source_age_ms = 100;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.config.forced_flat_stale_reference_ms = 100;
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let (_cache, clock) = register_test_strategy_with_clock(&mut strategy);
+
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_120_u64 * NANOS_PER_MILLI_U64));
+    let primary = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.0,
+        1_100,
+        1_105,
+    );
+    DataActor::on_data(&mut strategy, &primary).expect("primary quote should be handled");
+
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_140_u64 * NANOS_PER_MILLI_U64));
+    let backup = reference_price_update(
+        POLYRESEARCH_BACKUP_SOURCE_ID,
+        POLYRESEARCH_REFERENCE_PROVIDER,
+        POLYRESEARCH_REFERENCE_SYMBOL,
+        101.0,
+        1_130,
+        1_135,
+    );
+    DataActor::on_data(&mut strategy, &backup)
+        .expect("backup quote should be held while primary is still valid");
+    assert_eq!(
+        strategy.active.reference_current_price_source_id.as_deref(),
+        Some(CHAINLINK_PRIMARY_SOURCE_ID)
+    );
+    assert!(
+        strategy
+            .active_forced_flat_reasons_at(1_220)
+            .contains(&ForcedFlatReason::StaleReference),
+        "precondition: stale primary would force-flat before retry failover"
+    );
+
+    let mut retry_snapshot = active_snapshot_with_start("MKT-1", 1_000);
+    retry_snapshot.published_at_ms = 1_220;
+    strategy.apply_selection_snapshot(retry_snapshot);
+
+    assert_eq!(
+        strategy.active.reference_current_price_source_id.as_deref(),
+        Some(POLYRESEARCH_BACKUP_SOURCE_ID)
+    );
+    assert_eq!(strategy.active.reference_current_price, Some(101.0));
+    assert_eq!(strategy.active.last_reference_ts_ms, Some(1_130));
+    assert!(
+        !strategy
+            .active_forced_flat_reasons_at(1_220)
+            .contains(&ForcedFlatReason::StaleReference),
+        "retry failover should refresh reference state before stale-reference exit evaluation"
+    );
+}
+
+#[test]
 fn reference_price_interval_transition_clears_stale_quotes_and_health() {
     let mut strategy = test_strategy();
     let mut reference_price = reference_price_config();

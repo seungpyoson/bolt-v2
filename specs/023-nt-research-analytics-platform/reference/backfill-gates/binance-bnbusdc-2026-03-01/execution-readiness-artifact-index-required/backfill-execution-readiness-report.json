@@ -27,7 +27,7 @@
   "accepted_tranche_id": "backfill-accepted-tranche-binance-bnbusdc-2026-03-01",
   "accepted_tranche_manifest_hash": "1777b31080b7c0003479504116cbd6346bdab8a992805c0514e009927ba1126b",
   "execution_plan_id": "backfill-execution-plan-binance-bnbusdc-2026-03-01",
-  "execution_plan_hash": "7b9b1b4903f8e50f1d4336f6cb0d5a4bb0cccfe030162184c8f31a4ce3fb591d",
+  "execution_plan_hash": "a27e8a9094a990e700eb63a700207a46bffa3452426b6203c4de1d079b995855",
   "operator_run_id": "backtesting-vertical-slice-binance-bnbusdc-2026-03-01-accepted",
   "source_proof_id": "source-proof-binance-spot-native-trades-bnbusdc-2026-03-01",
   "source_proof_version": 1,

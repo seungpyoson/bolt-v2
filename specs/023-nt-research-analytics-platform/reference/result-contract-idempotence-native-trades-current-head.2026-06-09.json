@@ -22,7 +22,7 @@
     "run_spec": "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/materialized-run-spec/backfill-run-spec.toml",
     "run_spec_sha256": "498fcdea74e5089d722e26913e77a53d49bb6245a3234f157107184100782bfe",
     "execution_plan": "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-plan/backfill-execution-plan.json",
-    "execution_plan_sha256": "7b9b1b4903f8e50f1d4336f6cb0d5a4bb0cccfe030162184c8f31a4ce3fb591d",
+    "execution_plan_sha256": "a27e8a9094a990e700eb63a700207a46bffa3452426b6203c4de1d079b995855",
     "scratch_output_dir": "/private/tmp/bte-binance-materialized-run.nb5q9A",
     "raw_object": "/private/tmp/bte-binance-bnbusdc-2026-03-01.zip",
     "raw_object_sha256": "433d32b8d828abee5e1937e01372d16f7edadc14c41fe736b0b9577541fa5e81",

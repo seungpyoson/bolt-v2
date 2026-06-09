@@ -1025,7 +1025,8 @@ fn source_health(
 mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    use super::{super::config::SUPPORTED_IV_SCHEMA_VERSION, *};
+    use super::super::config::SUPPORTED_IV_SCHEMA_VERSION;
+    use super::*;
 
     #[test]
     fn runtime_engine_recovers_from_poisoned_lock() {
@@ -1045,6 +1046,6 @@ mod tests {
             engine.state_for_profile("missing_profile")
         }));
 
-        assert_eq!(recovered.unwrap(), None);
+        assert!(recovered.unwrap().is_none());
     }
 }

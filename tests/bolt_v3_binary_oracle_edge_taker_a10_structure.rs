@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const EXPECTED_SPLIT_TEST_COUNT: usize = 246;
+const EXPECTED_SPLIT_TEST_COUNT: usize = 247;
 const EXPECTED_DECLARED_MODULES: &[&str] = &[
     "shared_fixture",
     "book_sizing",

@@ -4,6 +4,7 @@ execution_plan_path = "specs/023-nt-research-analytics-platform/reference/backfi
 output_dir = "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-readiness"
 required_table_family = "trades"
 required_nt_data_type = "TradeTick"
+required_source_usage_scope = "canonical_backfill_input"
 source_catalog_mapping_readiness_required = true
 source_catalog_mapping_readiness_report_path = "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/source-catalog-mapping-readiness/source-catalog-mapping-readiness-report.json"
 

@@ -2590,3 +2590,47 @@ Current conclusion:
   source proof, broad coverage/cost/storage evidence, and dynamic tick-size
   replay proof or an accepted bounded-exclusion policy are still required
   before broad PMXT backfill can become canonical.
+
+## 2026-06-09 execution-readiness mapping usage-scope checkpoint
+
+Root cause addressed:
+
+- Source-catalog mapping readiness now records allowed and observed
+  source-proof usage scope.
+- The final execution-readiness gate still trusted a mapping report's
+  `ready` status plus proof/binding/table/data-type fields.
+- A stale or hand-edited mapping-readiness report could therefore carry a
+  non-canonical observed scope while still being accepted by the final
+  execution-readiness evaluator.
+
+Change:
+
+- `BackfillExecutionReadinessSpec` and reports now carry
+  `required_source_usage_scope`.
+- Execution readiness compares the source-catalog mapping readiness report's
+  configured allowed scopes and observed scope against the required scope.
+- A mismatch blocks with
+  `source_catalog_mapping_readiness_usage_scope_mismatch`.
+- The committed Binance execution-readiness specs and reports now record
+  `canonical_backfill_input`.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_execution_readiness execution_readiness_blocks_when_source_catalog_mapping_readiness_usage_scope_mismatches -- --nocapture`
+  failed because execution readiness had no required source-usage-scope input
+  or mismatch blocker.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_execution_readiness execution_readiness_blocks_when_source_catalog_mapping_readiness_usage_scope_mismatches -- --nocapture`
+  passed after adding the final gate check.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_source_catalog_mapping_readiness --test backtesting_vertical_slice_backfill_execution_readiness --test backtesting_vertical_slice_backfill_gate_reference_artifacts -- --nocapture`
+  passed 20 focused mapping/execution/reference tests.
+
+Current conclusion:
+
+- This closes another generic `BACKTESTING_ENGINE-022` bypass without adding
+  source-specific execution branches.
+- It still does not close `BACKTESTING_ENGINE-022`: PMXT/Polymarket broad
+  backfill remains blocked by source acceptance, broad safety evidence, and
+  dynamic tick-size replay or accepted bounded-exclusion proof.

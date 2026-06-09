@@ -1,9 +1,10 @@
 {
-  "schema_version": "backfill-execution-readiness-report.v1",
+  "schema_version": "backfill-execution-readiness-report.v2",
   "readiness_id": "binance-bnbusdc-2026-03-01-artifact-index-required-readiness",
   "status": "blocked",
   "required_table_family": "trades",
   "required_nt_data_type": "TradeTick",
+  "required_source_usage_scope": "canonical_backfill_input",
   "supported_data_paths": [
     {
       "table_family": "trades",

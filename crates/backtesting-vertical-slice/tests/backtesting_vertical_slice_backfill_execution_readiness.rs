@@ -45,6 +45,7 @@ fn execution_readiness_is_ready_for_matching_accepted_tranche_and_ready_plan() {
         plan: &plan,
         required_table_family: "trades",
         required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
         supported_data_paths: supported_data_paths(),
         artifact_index_commit_required: false,
         required_artifact_index_kind: None,
@@ -84,6 +85,7 @@ fn execution_readiness_blocks_when_plan_is_not_bound_to_the_tranche_file_hash() 
         plan: &plan,
         required_table_family: "trades",
         required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
         supported_data_paths: supported_data_paths(),
         artifact_index_commit_required: false,
         required_artifact_index_kind: None,
@@ -133,6 +135,7 @@ execution_plan_path = "{}"
 output_dir = "{}"
 required_table_family = "trades"
 required_nt_data_type = "TradeTick"
+required_source_usage_scope = "canonical_backfill_input"
 
 [[supported_data_paths]]
 table_family = "trades"
@@ -171,6 +174,7 @@ fn execution_readiness_blocks_index_backfill_when_producer_iam_scope_is_unproven
         plan: &plan,
         required_table_family: "trades",
         required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
         supported_data_paths: supported_data_paths(),
         artifact_index_commit_required: true,
         required_artifact_index_kind: Some(ArtifactKind::Backtests),
@@ -218,6 +222,7 @@ fn execution_readiness_is_ready_when_required_source_selection_readiness_matches
         plan: &plan,
         required_table_family: "trades",
         required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
         supported_data_paths: supported_data_paths(),
         artifact_index_commit_required: false,
         required_artifact_index_kind: None,
@@ -259,6 +264,7 @@ fn execution_readiness_blocks_when_source_selection_readiness_is_required_but_mi
         plan: &plan,
         required_table_family: "trades",
         required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
         supported_data_paths: supported_data_paths(),
         artifact_index_commit_required: false,
         required_artifact_index_kind: None,
@@ -294,6 +300,7 @@ fn execution_readiness_is_ready_when_required_source_catalog_mapping_readiness_m
         plan: &plan,
         required_table_family: "trades",
         required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
         supported_data_paths: supported_data_paths(),
         artifact_index_commit_required: false,
         required_artifact_index_kind: None,
@@ -335,6 +342,7 @@ fn execution_readiness_blocks_when_source_catalog_mapping_readiness_is_required_
         plan: &plan,
         required_table_family: "trades",
         required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
         supported_data_paths: supported_data_paths(),
         artifact_index_commit_required: false,
         required_artifact_index_kind: None,
@@ -370,6 +378,7 @@ fn execution_readiness_blocks_when_source_catalog_mapping_readiness_source_proof
         plan: &plan,
         required_table_family: "trades",
         required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
         supported_data_paths: supported_data_paths(),
         artifact_index_commit_required: false,
         required_artifact_index_kind: None,
@@ -386,6 +395,42 @@ fn execution_readiness_blocks_when_source_catalog_mapping_readiness_source_proof
     assert_eq!(report.status, BackfillExecutionReadinessStatus::Blocked);
     assert!(report.blockers.contains(
         &BackfillExecutionReadinessBlocker::SourceCatalogMappingReadinessSourceProofMismatch
+    ));
+}
+
+#[test]
+fn execution_readiness_blocks_when_source_catalog_mapping_readiness_usage_scope_mismatches() {
+    let tranche = accepted_tranche();
+    let plan = matching_execution_plan(&tranche);
+    let mut catalog_mapping = source_catalog_mapping_readiness_report(&tranche);
+    catalog_mapping.allowed_usage_scopes = vec![SourceProofUsageScope::OneOffBackfillData];
+    catalog_mapping.observed_usage_scope = Some(SourceProofUsageScope::OneOffBackfillData);
+
+    let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+        readiness_id: "synthetic-readiness",
+        accepted_tranche_manifest_hash: "synthetic-tranche-file-hash",
+        tranche: &tranche,
+        execution_plan_hash: "synthetic-plan-file-hash",
+        plan: &plan,
+        required_table_family: "trades",
+        required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
+        supported_data_paths: supported_data_paths(),
+        artifact_index_commit_required: false,
+        required_artifact_index_kind: None,
+        artifact_index_commit_proof_report_hash: None,
+        artifact_index_commit_proof_report: None,
+        source_selection_readiness_required: false,
+        source_selection_readiness_report_hash: None,
+        source_selection_readiness_report: None,
+        source_catalog_mapping_readiness_required: true,
+        source_catalog_mapping_readiness_report_hash: Some("synthetic-catalog-mapping-hash"),
+        source_catalog_mapping_readiness_report: Some(&catalog_mapping),
+    });
+
+    assert_eq!(report.status, BackfillExecutionReadinessStatus::Blocked);
+    assert!(report.blockers.contains(
+        &BackfillExecutionReadinessBlocker::SourceCatalogMappingReadinessUsageScopeMismatch
     ));
 }
 

@@ -22,6 +22,7 @@ use backtesting_vertical_slice::{
         SourceCatalogMappingReadinessStatus, SourceCatalogMappingStatusEntry,
         evaluate_source_catalog_mapping_readiness,
     },
+    source_proof::SourceProofUsageScope,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -215,6 +216,7 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
         plan: &actual_plan,
         required_table_family: &actual_plan.table_family,
         required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
         supported_data_paths: vec![BackfillExecutionReadinessSupportedDataPath {
             table_family: actual_plan.table_family.clone(),
             nt_data_type: "TradeTick".to_string(),
@@ -250,6 +252,7 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
             plan: &actual_plan,
             required_table_family: &actual_plan.table_family,
             required_nt_data_type: "TradeTick",
+            required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
             supported_data_paths: vec![BackfillExecutionReadinessSupportedDataPath {
                 table_family: actual_plan.table_family.clone(),
                 nt_data_type: "TradeTick".to_string(),

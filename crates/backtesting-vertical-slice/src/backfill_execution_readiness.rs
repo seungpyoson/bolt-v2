@@ -22,11 +22,12 @@ use crate::{
     source_catalog_mapping_readiness::{
         SourceCatalogMappingReadinessReport, SourceCatalogMappingReadinessStatus,
     },
+    source_proof::SourceProofUsageScope,
     source_selection_readiness::{SourceSelectionReadinessReport, SourceSelectionReadinessStatus},
 };
 
 pub const BACKFILL_EXECUTION_READINESS_SCHEMA_VERSION: &str =
-    "backfill-execution-readiness-report.v1";
+    "backfill-execution-readiness-report.v2";
 pub const BACKFILL_EXECUTION_READINESS_REPORT_FILE: &str =
     "backfill-execution-readiness-report.json";
 
@@ -39,6 +40,7 @@ pub struct BackfillExecutionReadinessSpec {
     pub output_dir: PathBuf,
     pub required_table_family: String,
     pub required_nt_data_type: String,
+    pub required_source_usage_scope: SourceProofUsageScope,
     pub supported_data_paths: Vec<BackfillExecutionReadinessSupportedDataPath>,
     #[serde(default)]
     pub artifact_index_commit_required: bool,
@@ -112,6 +114,7 @@ pub enum BackfillExecutionReadinessBlocker {
     SourceCatalogMappingReadinessSourceBindingMismatch,
     SourceCatalogMappingReadinessTableFamilyMismatch,
     SourceCatalogMappingReadinessNtDataTypeMismatch,
+    SourceCatalogMappingReadinessUsageScopeMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +125,7 @@ pub struct BackfillExecutionReadinessReport {
     pub status: BackfillExecutionReadinessStatus,
     pub required_table_family: String,
     pub required_nt_data_type: String,
+    pub required_source_usage_scope: SourceProofUsageScope,
     pub supported_data_paths: Vec<BackfillExecutionReadinessSupportedDataPath>,
     pub artifact_index_commit_required: bool,
     pub required_artifact_index_kind: Option<ArtifactKind>,
@@ -166,6 +170,7 @@ pub struct BackfillExecutionReadinessInput<'a> {
     pub plan: &'a BackfillExecutionPlan,
     pub required_table_family: &'a str,
     pub required_nt_data_type: &'a str,
+    pub required_source_usage_scope: SourceProofUsageScope,
     pub supported_data_paths: Vec<BackfillExecutionReadinessSupportedDataPath>,
     pub artifact_index_commit_required: bool,
     pub required_artifact_index_kind: Option<ArtifactKind>,
@@ -286,6 +291,7 @@ pub fn evaluate_backfill_execution_readiness(
     let execution_plan_hash = input.execution_plan_hash.to_string();
     let required_table_family = input.required_table_family.to_string();
     let required_nt_data_type = input.required_nt_data_type.to_string();
+    let required_source_usage_scope = input.required_source_usage_scope;
     let required_table_family_trimmed = required_table_family.trim();
     let required_nt_data_type_trimmed = required_nt_data_type.trim();
     let tranche = input.tranche;
@@ -533,6 +539,16 @@ pub fn evaluate_backfill_execution_readiness(
                         BackfillExecutionReadinessBlocker::SourceCatalogMappingReadinessNtDataTypeMismatch,
                     );
                 }
+                if !readiness
+                    .allowed_usage_scopes
+                    .iter()
+                    .any(|usage_scope| *usage_scope == required_source_usage_scope)
+                    || readiness.observed_usage_scope != Some(required_source_usage_scope)
+                {
+                    blockers.push(
+                        BackfillExecutionReadinessBlocker::SourceCatalogMappingReadinessUsageScopeMismatch,
+                    );
+                }
             }
         }
     }
@@ -549,6 +565,7 @@ pub fn evaluate_backfill_execution_readiness(
         status,
         required_table_family,
         required_nt_data_type,
+        required_source_usage_scope,
         supported_data_paths,
         artifact_index_commit_required,
         required_artifact_index_kind,
@@ -664,6 +681,7 @@ pub fn write_backfill_execution_readiness_report_from_spec_file(
         plan: &plan,
         required_table_family: &spec.required_table_family,
         required_nt_data_type: &spec.required_nt_data_type,
+        required_source_usage_scope: spec.required_source_usage_scope,
         supported_data_paths: spec.supported_data_paths,
         artifact_index_commit_required: spec.artifact_index_commit_required,
         required_artifact_index_kind: spec.required_artifact_index_kind,

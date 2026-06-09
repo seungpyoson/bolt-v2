@@ -127,4 +127,20 @@ fn producer_iam_provisioning_plan_rejects_unscoped_prefix_and_self_denial() {
     )
     .expect_err("producer kind cannot be denied by its own proof");
     assert!(self_denial.to_string().contains("denied_artifact_kinds"));
+
+    let broad_artifact_store_prefix = artifact_index_producer_iam_provisioning_plan(
+        ArtifactIndexProducerIamProvisioningPlanSpec {
+            artifact_root: "s3://example-bucket/example-root".to_string(),
+            artifact_kind: ArtifactKind::Backtests,
+            proof_artifact_roots: Vec::new(),
+            ssm_parameter_prefix: "/example/artifact-store/s3".to_string(),
+            denied_artifact_kinds: vec![ArtifactKind::ResearchAnalytics],
+        },
+    )
+    .expect_err("broad artifact-store SSM prefix cannot back producer IAM");
+    assert!(
+        broad_artifact_store_prefix
+            .to_string()
+            .contains("artifact-index/producers")
+    );
 }

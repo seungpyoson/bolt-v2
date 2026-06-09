@@ -67,6 +67,18 @@
     "producer_iam_scope_proven": false,
     "conclusion": "Rerunning the denied-kind proof with current SSM parameters cannot close BTE-006 because the available credential can write research_analytics event, snapshot, and latest-pointer paths."
   },
+  "local_fail_closed_guardrails": {
+    "updated_at_utc": "2026-06-09T11:56:47Z",
+    "producer_iam_plan_ssm_prefix_guard": {
+      "status": "code_guardrail_added_aws_mutation_still_required",
+      "scope": "Artifact Index producer IAM provisioning plans now reject broad artifact-store SSM prefixes and require an Artifact Index producer namespace before emitting credential parameter paths.",
+      "evidence": [
+        "RED python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_artifact_index_iam_policy -- --nocapture failed because /example/artifact-store/s3 generated /example/artifact-store/s3/backtests/access-key-id and secret-access-key paths.",
+        "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_artifact_index_iam_policy -- --nocapture passed after validate_ssm_parameter_prefix required prefixes ending with /artifact-index/producers."
+      ],
+      "claim_limit": "This only prevents newly generated producer IAM plans from using the broad artifact-store SSM namespace; it does not create AWS IAM users, write SSM parameters, prove denied-kind S3 rejections, or close BTE-006."
+    }
+  },
   "preferred_close_path": {
     "path": "per_kind_artifact_index_producer_credentials",
     "requires_explicit_aws_security_mutation_approval": true,

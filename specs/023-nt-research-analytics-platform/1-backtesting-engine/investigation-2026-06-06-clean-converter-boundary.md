@@ -3056,3 +3056,55 @@ Current conclusion:
   durable source proof, manifest/index-only coverage and cost, accepted object
   hashes, actual PMXT row-group or predicate metadata, bounded execution
   budgets, and dynamic tick-size replay or bounded-exclusion proof.
+
+## 2026-06-09 Artifact Index producer SSM prefix guard checkpoint
+
+Scope:
+
+- Addressed only a local BTE-006 provisioning-plan guard.
+- No AWS IAM users, policies, access keys, SSM parameters, S3 objects, or
+  Artifact Index pointers were created or mutated.
+
+Root-cause check:
+
+- The BTE-006 closeout plan requires per-kind Artifact Index producer
+  credentials or an approved coordinator/table format.
+- The local IAM provisioning-plan generator already produced the preferred
+  `/artifact-index/producers/<kind>/...` shape, but its SSM prefix validator did
+  not reject a broad artifact-store prefix before generating credential paths.
+
+Change:
+
+- `validate_ssm_parameter_prefix` in `artifact_index_iam_policy.rs` now requires
+  prefixes to end with `/artifact-index/producers`.
+- The guard still allows environment-specific leading path components, but
+  rejects broad prefixes such as `/example/artifact-store/s3`.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_artifact_index_iam_policy -- --nocapture`
+  failed because `/example/artifact-store/s3` generated
+  `/example/artifact-store/s3/backtests/access-key-id` and
+  `/example/artifact-store/s3/backtests/secret-access-key`.
+- GREEN focused:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_artifact_index_iam_policy -- --nocapture`
+  passed after the prefix guard.
+- Reference artifact focused:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_artifact_index_iam_policy --test backtesting_vertical_slice_backfill_gate_reference_artifacts`
+  passed 7 tests.
+- Formatting:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- fmt --check`
+  passed.
+- Clippy:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- clippy --locked --lib -- -D warnings`
+  passed.
+
+Current conclusion:
+
+- This reduces the chance of regenerating a BTE-006 closeout plan against the
+  current broad artifact-store credential namespace.
+- It does not close `BACKTESTING_ENGINE-006`: AWS security mutation or an
+  approved coordinator/table design is still required before producer IAM scope
+  can be proven and before broad backfill can rely on Artifact Index producer
+  commits.

@@ -169,6 +169,12 @@ fn validate_ssm_parameter_prefix(prefix: &str) -> Result<String, ArtifactIndexIa
             reason: "SSM parameter prefix cannot contain wildcard characters",
         });
     }
+    if !trimmed.ends_with("/artifact-index/producers") {
+        return Err(ArtifactIndexIamPolicyError::InvalidSsmParameterPrefix {
+            prefix: prefix.to_string(),
+            reason: "expected Artifact Index producer SSM parameter prefix ending with /artifact-index/producers",
+        });
+    }
     Ok(trimmed.to_string())
 }
 

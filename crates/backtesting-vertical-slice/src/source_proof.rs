@@ -2972,6 +2972,8 @@ required_cross_market_component_roles = [{roles}]
         proof.fidelity_class = SourceProofFidelityClass::L2Replay;
         proof.l2_replay_evidence.order_book_delta_ref =
             Some("source-proof://l2-order-book-deltas".to_string());
+        proof.l2_replay_evidence.no_tick_size_change_universe_ref =
+            Some("source-proof://no-tick-size-change-universe".to_string());
         proof.forbidden_claims = vec!["No dynamic instrument-epoch replay claim.".to_string()];
         proof.claim_limits.clear();
 

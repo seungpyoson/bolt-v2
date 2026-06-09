@@ -9,11 +9,12 @@
   },
   "current_state": {
     "branch": "codex/bte-clean-converter-nt-use-main-reconcile",
-    "head_sha": "132553d38b20765f04b45dbd6a4bfa3f5d0ad93a",
-    "head_commit": "Record BTE current-head audit",
-    "local_worktree": "clean",
+    "audited_subject_head_sha": "132553d38b20765f04b45dbd6a4bfa3f5d0ad93a",
+    "audited_subject_commit": "Record BTE current-head audit",
+    "audit_record_note": "This JSON is committed after the audited subject head; use the containing Git commit or PR head for the record carrier identity, not as the audited subject itself.",
+    "local_worktree": "clean_at_audit_time",
     "github_pr": "https://github.com/seungpyoson/bolt-v2/pull/610",
-    "pushed_head_ci": {
+    "audited_subject_ci": {
       "actionlint": {
         "run_id": 27176271436,
         "conclusion": "success"
@@ -67,7 +68,7 @@
   "prompt_requirement_audit": [
     {
       "requirement": "Confirm repo state, branch, status, and relevant PRs.",
-      "current_evidence": "Local branch codex/bte-clean-converter-nt-use-main-reconcile is clean at 132553d38b20765f04b45dbd6a4bfa3f5d0ad93a. PR #610 is the active BTE branch PR and its body has been updated with current-head evidence. Pushed-head actionlint, Backtester CI, and CI are green.",
+      "current_evidence": "Local branch codex/bte-clean-converter-nt-use-main-reconcile was clean at audited subject head 132553d38b20765f04b45dbd6a4bfa3f5d0ad93a. PR #610 is the active BTE branch PR and its body has been updated with current-head evidence. Audited subject actionlint, Backtester CI, and CI are green.",
       "status": "proven_current_head"
     },
     {

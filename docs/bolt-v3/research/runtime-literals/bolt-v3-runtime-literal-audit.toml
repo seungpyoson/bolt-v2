@@ -9403,6 +9403,14 @@ reason = "IV policy code uses a mathematical zero guard to avoid averaging empty
 [[allowed]]
 path = "src/bolt_v3_iv/runtime.rs"
 kind = "number"
+literal = '''0'''
+context = '''const INITIAL_SUBSCRIPTION_GENERATION: u64 = 0;'''
+classification = "iv_source_health_counter_literal"
+reason = "IV runtime uses a zero generation sentinel when an event references an unconfigured source with no subscribed source config; the value is source-health lifecycle metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "number"
 literal = '''1'''
 context = '''reject_counts.insert(reason, 1);'''
 classification = "iv_source_health_counter_literal"

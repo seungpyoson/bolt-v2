@@ -305,6 +305,10 @@ fn binance_backfill_gate_commits_materialized_run_spec_before_execution_plan() {
         "Binance reference gate must commit the materialized run spec used by the execution plan"
     );
     assert!(
+        RUN_SPEC.contains(r#"usage_scope = "canonical_backfill_input""#),
+        "Binance materialized run spec must explicitly bind canonical source usage scope"
+    );
+    assert!(
         EXECUTION_PLAN_SPEC.contains(
             "backfill-gates/binance-bnbusdc-2026-03-01/materialized-run-spec/backfill-run-spec.toml"
         ),

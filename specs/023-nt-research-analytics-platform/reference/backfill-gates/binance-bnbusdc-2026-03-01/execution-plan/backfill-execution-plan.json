@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "backfill-accepted-tranche-binance-bnbusdc-2026-03-01",
   "accepted_tranche_manifest_hash": "1777b31080b7c0003479504116cbd6346bdab8a992805c0514e009927ba1126b",
-  "run_spec_hash": "498fcdea74e5089d722e26913e77a53d49bb6245a3234f157107184100782bfe",
+  "run_spec_hash": "90a6be6a7512339581c35292464806cdb46e61af7ec65abf41497fb4f0349455",
   "operator_run_id": "backtesting-vertical-slice-binance-bnbusdc-2026-03-01-accepted",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-binance-bnbusdc-2026-03-01-accepted",
   "source_proof_id": "source-proof-binance-spot-native-trades-bnbusdc-2026-03-01",

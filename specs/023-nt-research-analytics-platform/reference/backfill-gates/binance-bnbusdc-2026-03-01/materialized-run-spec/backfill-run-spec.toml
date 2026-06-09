@@ -166,6 +166,7 @@ source_proof_version = 1
 source_selection_status = "ACCEPTED_LOWER_FIDELITY"
 status = "accepted"
 table_family = "trades"
+usage_scope = "canonical_backfill_input"
 venue = "binance"
 
 [source_proof.acceptance_scope]

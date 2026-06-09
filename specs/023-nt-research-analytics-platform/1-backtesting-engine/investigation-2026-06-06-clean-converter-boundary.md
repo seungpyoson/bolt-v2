@@ -3165,3 +3165,78 @@ Current conclusion:
   durable canonical source proof, accepted manifest/index coverage and cost,
   actual row-group or predicate metadata, and dynamic tick-size replay or a
   bounded-exclusion proof.
+
+## 2026-06-09 materialized run-spec usage-scope refresh checkpoint
+
+Scope:
+
+- Refreshed only the committed Binance BNBUSDC accepted native-trades reference
+  gate after materialization began explicitly writing `source_proof.usage_scope`.
+- No broad PMXT/Polymarket payload work, production publish, delete, or AWS
+  mutation was performed.
+
+Root-cause check:
+
+- The materializer now writes `usage_scope = "canonical_backfill_input"` into
+  materialized run specs, but the committed Binance reference TOML was produced
+  before that field existed.
+- Because the materializer is create-only/idempotent, rerunning from the
+  committed spec would reject the old committed TOML as dirty unless the
+  reference artifact and dependent plan hashes were refreshed.
+
+Change:
+
+- Added explicit `usage_scope = "canonical_backfill_input"` to the committed
+  Binance materialized run spec.
+- Updated the committed execution plan `run_spec_hash` to
+  `90a6be6a7512339581c35292464806cdb46e61af7ec65abf41497fb4f0349455`.
+- Updated both committed execution-readiness reports to bind execution-plan
+  SHA256 `77ee3edf0a31a5d9b55ba84e3e21e2030bde3295a4a7e925f84e1fffa58d4bbe`.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_gate_reference_artifacts binance_backfill_gate_commits_materialized_run_spec_before_execution_plan -- --nocapture`
+  failed because the committed materialized run spec did not explicitly bind
+  canonical source usage scope.
+- GREEN reference artifacts:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_gate_reference_artifacts -- --nocapture`
+  passed 4 tests after the TOML, execution plan, and readiness hash refresh.
+- GREEN local conversion/backtest:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin backtesting-vertical-slice -- --run-spec /Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/materialized-run-spec/backfill-run-spec.toml --execution-plan /Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-plan/backfill-execution-plan.json --object /private/tmp/bte-binance-bnbusdc-2026-03-01.zip --output-dir /private/tmp/bte-binance-materialized-run-scope-current-20260609`
+  exited 0, then an idempotence rerun against the same output prefix also
+  exited 0.
+
+Observed evidence:
+
+- Run-spec SHA256:
+  `90a6be6a7512339581c35292464806cdb46e61af7ec65abf41497fb4f0349455`.
+- Execution-plan SHA256:
+  `77ee3edf0a31a5d9b55ba84e3e21e2030bde3295a4a7e925f84e1fffa58d4bbe`.
+- Output root:
+  `/private/tmp/bte-binance-materialized-run-scope-current-20260609`.
+- Raw accepted object SHA256:
+  `433d32b8d828abee5e1937e01372d16f7edadc14c41fe736b0b9577541fa5e81`.
+- `canonical_trades_rows = 71431`,
+  `catalog_read_back_trade_ticks = 71431`, and NT BacktestNode iterations
+  `71431`.
+- Catalog hash:
+  `8c128fe5acbb2e0df7c0f9b30d80de16acb285ca95f67a7bfc08c969f6b48362`.
+- Result contract file SHA256 after completed-output reuse:
+  `d0e074e1aa033f91d4dd3691d16af81b765f764069b0feac022f081f65258a36`.
+- Catalog metadata file SHA256:
+  `f1a75bcc80476c29b8adc7e51cc53859f1090acec912977647c3b30930491fdf`.
+- Conversion manifest file SHA256:
+  `419fa73d941cdfe819dfdb051ad48b0ab614c231301aad8a61d61ddabc28e6cb`.
+- Conversion checkpoint file SHA256:
+  `7e203ac5d90fc8d1b48e0455a54c9c0edb40bed8e7a943818624bc1e28c28119`.
+- Canonical parquet file SHA256:
+  `be908f312b61d112a25748d6641a9162f12d568f80d3f2ca94180285cc821a91`.
+
+Current conclusion:
+
+- The accepted Binance native-trades conversion/backtest path remains current
+  after explicit source-usage-scope materialization.
+- This does not close `BACKTESTING_ENGINE-006` or `BACKTESTING_ENGINE-022`, and
+  it does not authorize broad PMXT/Polymarket backfill or production
+  publish/delete actions.

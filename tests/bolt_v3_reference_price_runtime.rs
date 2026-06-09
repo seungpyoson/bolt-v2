@@ -94,6 +94,30 @@ fn reference_quote_rejects_non_positive_price() {
 }
 
 #[test]
+fn reference_quote_provenance_rejects_secret_bearing_key_names() {
+    for key in [
+        "authorization",
+        "auth_header",
+        "credential_id",
+        "api_key",
+        "session_token",
+        "password_hash",
+        "secret_name",
+    ] {
+        let error = ReferenceQuoteProvenance::try_from_fields(BTreeMap::from([(
+            key.to_string(),
+            "redacted".to_string(),
+        )]))
+        .expect_err("secret-bearing provenance key names must fail closed");
+
+        assert!(
+            error.contains("secret-bearing"),
+            "secret-bearing provenance rejection should name the class, got: {error}"
+        );
+    }
+}
+
+#[test]
 fn selector_fails_over_once_without_flipback_until_next_interval() {
     let mut selector = ReferencePriceSelector::new(
         "BTC",
@@ -533,6 +557,45 @@ fn reference_price_update_try_new_preserves_explicit_provider_instrument() {
         .to_reference_quote()
         .expect("update should convert to reference quote");
     assert_eq!(quote.provider_instrument(), "BTC-USD.CHAINLINK_REFERENCE");
+}
+
+#[test]
+fn reference_price_update_rejects_timestamp_ms_that_cannot_convert_to_unix_nanos() {
+    let overflowing_timestamp_ms = u64::MAX / 1_000_000 + 1;
+
+    let observed_error = ReferencePriceUpdate::try_new(
+        "BTC",
+        "chainlink_primary",
+        "chainlink_ws",
+        "BTC-USD.CHAINLINK_REFERENCE",
+        66300.25,
+        Some(66299.0),
+        Some(66301.0),
+        overflowing_timestamp_ms,
+        1774672089300,
+    )
+    .expect_err("overflowing observed timestamp must fail closed");
+    assert!(
+        observed_error.contains("observed_ts_ms"),
+        "observed timestamp overflow rejection should name observed_ts_ms, got: {observed_error}"
+    );
+
+    let received_error = ReferencePriceUpdate::try_new(
+        "BTC",
+        "chainlink_primary",
+        "chainlink_ws",
+        "BTC-USD.CHAINLINK_REFERENCE",
+        66300.25,
+        Some(66299.0),
+        Some(66301.0),
+        1774672089200,
+        overflowing_timestamp_ms,
+    )
+    .expect_err("overflowing received timestamp must fail closed");
+    assert!(
+        received_error.contains("received_ts_ms"),
+        "received timestamp overflow rejection should name received_ts_ms, got: {received_error}"
+    );
 }
 
 #[test]

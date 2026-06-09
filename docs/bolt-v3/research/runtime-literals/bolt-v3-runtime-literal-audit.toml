@@ -9225,14 +9225,6 @@ reason = "Diagnostic for an invalid reference-current-price source plan after co
 # Entries merged from current main after resolving PR #606 runtime-literal audit conflicts.
 
 [[allowed]]
-path = "src/bolt_v3_decision_evidence.rs"
-kind = "number"
-literal = '''8'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 8;'''
-classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v8 adds realized-volatility source diagnostic config-state fields so disabled and non-quorum sources are auditable without TOML side-channel context; it is part of the audit-record contract, not an operator runtime value."
-
-[[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"realized_volatility_surface_id"'''

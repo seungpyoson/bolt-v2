@@ -7519,14 +7519,6 @@ reason = "This labels the TOML-owned entry order section for NT order constructi
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/mod.rs"
 kind = "string"
-literal = '''"entry_cost_missing"'''
-context = '''const ENTRY_BLOCK_REASON_ENTRY_COST_MISSING: &str = "entry_cost_missing";'''
-classification = "strategy_entry_block_reason_code"
-reason = "This is a stable decision-evidence reason code, not an operator runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
-kind = "string"
 literal = '''"entry_gate_blocked"'''
 context = '''const ENTRY_BLOCK_REASON_ENTRY_GATE_BLOCKED: &str = "entry_gate_blocked";'''
 classification = "strategy_entry_block_reason_code"
@@ -9445,6 +9437,14 @@ path = "src/bolt_v3_executable_edge.rs"
 kind = "string"
 literal = '''"invalid_cost"'''
 context = '''Self::InvalidCost => "invalid_cost",'''
+classification = "executable_edge_block_reason_label"
+reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_executable_edge.rs"
+kind = "string"
+literal = '''"unsupported_order_shape"'''
+context = '''Self::UnsupportedOrderShape => "unsupported_order_shape",'''
 classification = "executable_edge_block_reason_label"
 reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
 

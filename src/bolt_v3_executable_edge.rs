@@ -18,6 +18,7 @@ pub(crate) enum ExecutableEdgeBlockReason {
     FeeUnavailable,
     InvalidProbability,
     InvalidCost,
+    UnsupportedOrderShape,
     EdgeBelowThreshold,
     SpreadOrSlippageWipedEdge,
 }
@@ -30,6 +31,7 @@ impl ExecutableEdgeBlockReason {
             Self::FeeUnavailable => "fee_unavailable",
             Self::InvalidProbability => "invalid_probability",
             Self::InvalidCost => "invalid_cost",
+            Self::UnsupportedOrderShape => "unsupported_order_shape",
             Self::EdgeBelowThreshold => "edge_below_threshold",
             Self::SpreadOrSlippageWipedEdge => "spread_or_slippage_wiped_edge",
         }
@@ -60,6 +62,7 @@ pub(crate) struct ExecutableEdgeInputs<'a> {
 pub(crate) struct ExactSizeVwap {
     pub(crate) vwap_price: f64,
     pub(crate) vwap_quantity: f64,
+    pub(crate) limit_price: f64,
     pub(crate) exact_size_filled: bool,
 }
 
@@ -67,6 +70,7 @@ pub(crate) struct ExactSizeVwap {
 pub(crate) struct ExecutableCostBreakdown {
     pub(crate) vwap_price: Option<f64>,
     pub(crate) vwap_quantity: Option<f64>,
+    pub(crate) limit_price: Option<f64>,
     pub(crate) exact_size_filled: bool,
     pub(crate) gross_cost_cents: f64,
     pub(crate) fee_cost_cents: f64,
@@ -81,6 +85,7 @@ impl ExecutableCostBreakdown {
         Self {
             vwap_price: None,
             vwap_quantity: None,
+            limit_price: None,
             exact_size_filled: false,
             gross_cost_cents: ZERO_F64,
             fee_cost_cents: ZERO_F64,
@@ -148,10 +153,12 @@ pub(crate) fn price_exact_size_vwap(
     let mut remaining_notional = edge_pricing_notional;
     let mut filled_quantity = ZERO_F64;
     let mut filled_notional = ZERO_F64;
+    let mut limit_price = None;
 
     match order_side {
         OrderSide::Buy => {
             for (price, size) in &book.ask_levels {
+                let previous_remaining_notional = remaining_notional;
                 consume_exact_notional_level(
                     price.as_f64(),
                     *size,
@@ -159,6 +166,9 @@ pub(crate) fn price_exact_size_vwap(
                     &mut filled_quantity,
                     &mut filled_notional,
                 );
+                if remaining_notional < previous_remaining_notional {
+                    limit_price = Some(price.as_f64());
+                }
                 if remaining_notional <= ZERO_F64 {
                     break;
                 }
@@ -166,6 +176,7 @@ pub(crate) fn price_exact_size_vwap(
         }
         OrderSide::Sell => {
             for (price, size) in book.bid_levels.iter().rev() {
+                let previous_remaining_notional = remaining_notional;
                 consume_exact_notional_level(
                     price.as_f64(),
                     *size,
@@ -173,6 +184,9 @@ pub(crate) fn price_exact_size_vwap(
                     &mut filled_quantity,
                     &mut filled_notional,
                 );
+                if remaining_notional < previous_remaining_notional {
+                    limit_price = Some(price.as_f64());
+                }
                 if remaining_notional <= ZERO_F64 {
                     break;
                 }
@@ -188,6 +202,9 @@ pub(crate) fn price_exact_size_vwap(
     if !is_positive_finite(vwap_price) {
         return Err(ExecutableEdgeBlockReason::InvalidCost);
     }
+    let limit_price = limit_price
+        .filter(|value| is_positive_finite(*value))
+        .ok_or(ExecutableEdgeBlockReason::InvalidCost)?;
     let within_limit = if is_buy {
         vwap_price <= allowed_vwap
     } else {
@@ -200,6 +217,7 @@ pub(crate) fn price_exact_size_vwap(
     Ok(ExactSizeVwap {
         vwap_price,
         vwap_quantity: filled_quantity,
+        limit_price,
         exact_size_filled: true,
     })
 }
@@ -310,6 +328,7 @@ pub(crate) fn evaluate_executable_edge(inputs: &ExecutableEdgeInputs<'_>) -> Exe
     let cost_breakdown = ExecutableCostBreakdown {
         vwap_price: Some(vwap.vwap_price),
         vwap_quantity: Some(vwap.vwap_quantity),
+        limit_price: Some(vwap.limit_price),
         exact_size_filled: vwap.exact_size_filled,
         gross_cost_cents,
         fee_cost_cents,
@@ -381,6 +400,7 @@ mod tests {
 
         assert!((priced.vwap_price - 0.5454545454545454).abs() < EPSILON);
         assert!((priced.vwap_quantity - 9.166666666666668).abs() < EPSILON);
+        assert_eq!(priced.limit_price, 0.60);
         assert!(priced.exact_size_filled);
     }
 

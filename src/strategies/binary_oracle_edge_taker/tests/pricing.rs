@@ -704,6 +704,71 @@ fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap
 }
 
 #[test]
+fn executable_edge_blocks_unsupported_post_only_entry_shape() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+    strategy.config.entry_order.is_post_only = true;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert_eq!(
+        evaluation.pricing_blocked_by,
+        vec![
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Up,
+                ExecutableEdgeBlockReason::UnsupportedOrderShape
+            ),
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Down,
+                ExecutableEdgeBlockReason::UnsupportedOrderShape
+            ),
+        ]
+    );
+    assert_eq!(evaluation.selected_side, None);
+}
+
+#[test]
+fn entry_submission_uses_exact_vwap_limit_price_and_quantity() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.order_notional_target = 5.0;
+    strategy.config.maximum_position_notional = 5.0;
+    strategy.config.risk_lambda = 0.0;
+    strategy.config.book_impact_cap_bps = 1_000;
+    strategy.config.vwap_depth_limit_bps = 1_000;
+    strategy.config.slippage_buffer_bps = 0;
+    strategy.config.edge_threshold_basis_points = 0;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+    set_configured_books_depth(
+        &mut strategy,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 5.0),
+            (BookAction::Add, OrderSide::Sell, 0.60, 100.0),
+        ],
+    );
+
+    let decision = strategy.entry_submission_decision_at(1_200);
+
+    assert_eq!(decision.blocked_reason, None);
+    assert_eq!(decision.price, Some(0.60));
+    assert!(
+        decision
+            .quantity_value
+            .is_some_and(|quantity| (quantity - 9.17).abs() < 1e-9),
+        "submission should use normalized VWAP quantity, got {decision:#?}"
+    );
+}
+
+#[test]
 fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
     let mut strategy =
         ready_to_trade_strategy_with_live_fees(Decimal::new(250, 2), Decimal::new(250, 2));
@@ -816,6 +881,18 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
         fields.uncertainty_band_reason,
         "derived_from_lead_gap_jitter_time_and_fee"
     );
+    assert!(fields.up_entry_limit_price.is_some());
+    assert!(fields.down_entry_limit_price.is_some());
+    assert!(fields.up_gross_cost_cents.is_some());
+    assert!(fields.down_gross_cost_cents.is_some());
+    assert!(fields.up_fee_cost_cents.is_some());
+    assert!(fields.down_fee_cost_cents.is_some());
+    assert!(fields.up_slippage_buffer_cents.is_some());
+    assert!(fields.down_slippage_buffer_cents.is_some());
+    assert!(fields.up_total_adjusted_cost_cents.is_some());
+    assert!(fields.down_total_adjusted_cost_cents.is_some());
+    assert!(fields.up_edge_cents_per_share.is_some());
+    assert!(fields.down_edge_cents_per_share.is_some());
     assert!(fields.lead_quality_policy_applied);
     assert!(
         fields

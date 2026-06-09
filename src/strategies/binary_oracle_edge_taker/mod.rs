@@ -58,10 +58,6 @@ use crate::{
         STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
         normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
     },
-    bolt_v3_realized_volatility::{
-        RealizedVolEngine, RealizedVolObservation, RealizedVolSampleKind, RealizedVolSourceClass,
-        RealizedVolSourceConfig,
-    },
     bolt_v3_reference_price::{
         REFERENCE_PRICE_ASSET_PARAM, REFERENCE_PRICE_INSTRUMENT_ID_PARAM,
         REFERENCE_PRICE_PROVIDER_PARAM, REFERENCE_PRICE_SOURCE_KEY_PARAM,

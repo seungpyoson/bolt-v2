@@ -247,8 +247,10 @@ mod tests {
     // source subscription assertion to use the configured asset.
     // Re-derived again after merging global realized-volatility runtime and
     // unifying reference-price source availability policy.
+    // Re-derived again after removing unused realized-volatility imports from
+    // the merged strategy module.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "1853a2fff33dac9badb6293703329fafb6d6dd0d3e722ff959287a24a5e2d921";
+        "5a30485c4832a296a2619df5299a17429b75372f44d7cec26b469a2c169ccdad";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

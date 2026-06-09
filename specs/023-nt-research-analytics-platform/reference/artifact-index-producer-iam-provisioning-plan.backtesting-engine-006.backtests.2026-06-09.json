@@ -1,0 +1,44 @@
+{
+  "artifact_kind": "backtests",
+  "ssm_parameter_paths": {
+    "access_key_id": "/bolt/artifact-index/producers/backtests/access-key-id",
+    "secret_access_key": "/bolt/artifact-index/producers/backtests/secret-access-key"
+  },
+  "policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "AllowArtifactIndexCommitProductionRoot",
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetObject",
+          "s3:PutObject"
+        ],
+        "Resource": [
+          "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/v1/events/kind=backtests/*",
+          "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/v1/snapshots/kind=backtests/*",
+          "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/v1/pointers/kind=backtests/latest.json",
+          "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/v1/audit/epochs/*"
+        ]
+      },
+      {
+        "Sid": "AllowArtifactIndexCommitProofRoot0",
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetObject",
+          "s3:PutObject"
+        ],
+        "Resource": [
+          "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-backtests/artifact-index/v1/events/kind=backtests/*",
+          "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-backtests/artifact-index/v1/snapshots/kind=backtests/*",
+          "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-backtests/artifact-index/v1/pointers/kind=backtests/latest.json",
+          "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-backtests/artifact-index/v1/audit/epochs/*"
+        ]
+      }
+    ]
+  },
+  "proof_denied_artifact_kinds": [
+    "research_analytics"
+  ],
+  "expected_denied_write_attempts": 3
+}

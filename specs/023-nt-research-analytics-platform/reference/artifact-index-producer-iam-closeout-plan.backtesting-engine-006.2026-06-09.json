@@ -18,6 +18,21 @@
     ],
     "conclusion": "Current SSM state still exposes only the broad artifact-store S3 credential pair and no per-kind Artifact Index producer namespace."
   },
+  "current_state_probe_2026_06_09": {
+    "observed_at_utc": "2026-06-09T03:55:04Z",
+    "credential_values_read": false,
+    "aws_mutation_performed": false,
+    "commands": [
+      "aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/bolt/artifact-index --query 'Parameters[].Name' --output text",
+      "aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/bolt/artifact-store --query 'Parameters[].Name' --output text"
+    ],
+    "artifact_index_parameter_names": [],
+    "artifact_store_parameter_names": [
+      "/bolt/artifact-store/s3/access-key-id",
+      "/bolt/artifact-store/s3/secret-access-key"
+    ],
+    "conclusion": "The per-kind /bolt/artifact-index producer namespace is still absent; only the broad artifact-store credential pair is discoverable."
+  },
   "already_proven": {
     "direct_s3_commit_mechanics_report": "repo://specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/artifact-index-commit-proof-report.backtesting-engine-006-direct-s3.2026-06-08.json",
     "direct_s3_commit_proven": true,
@@ -53,6 +68,10 @@
     ],
     "policy_generator": "repo://crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs::artifact_index_producer_iam_policy",
     "provisioning_plan_generator": "repo://crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs::artifact_index_producer_iam_provisioning_plan",
+    "provisioning_plan_cli": "repo://crates/backtesting-vertical-slice/src/bin/artifact_index_iam_plan.rs",
+    "generated_plan_spec": "repo://specs/023-nt-research-analytics-platform/reference/artifact-index-producer-iam-provisioning-plan.backtesting-engine-006.backtests.2026-06-09.toml",
+    "generated_plan_artifact": "repo://specs/023-nt-research-analytics-platform/reference/artifact-index-producer-iam-provisioning-plan.backtesting-engine-006.backtests.2026-06-09.json",
+    "generated_plan_command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --bin artifact_index_iam_plan -- --spec /Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/artifact-index-producer-iam-provisioning-plan.backtesting-engine-006.backtests.2026-06-09.toml",
     "policy_shape_for_artifact_root_s3_bolt_parquet_nt_research_analytics": {
       "effect": "Allow",
       "actions": [

@@ -36,6 +36,7 @@
   },
   "read_only_ssm_probe": {
     "observed_at_utc": "2026-06-08T21:29:52Z",
+    "rechecked_at_utc": "2026-06-09T03:55:04Z",
     "commands": [
       "aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/bolt/artifact-index --query Parameters[].Name --output text",
       "aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/bolt/artifact-store --query Parameters[].Name --output text"
@@ -52,6 +53,10 @@
   "repo_side_progress": {
     "per_kind_policy_generator": "crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs",
     "per_kind_provisioning_plan": "crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs::artifact_index_producer_iam_provisioning_plan",
+    "provisioning_plan_cli": "crates/backtesting-vertical-slice/src/bin/artifact_index_iam_plan.rs",
+    "backtests_provisioning_plan_spec": "specs/023-nt-research-analytics-platform/reference/artifact-index-producer-iam-provisioning-plan.backtesting-engine-006.backtests.2026-06-09.toml",
+    "backtests_provisioning_plan_artifact": "specs/023-nt-research-analytics-platform/reference/artifact-index-producer-iam-provisioning-plan.backtesting-engine-006.backtests.2026-06-09.json",
+    "backtests_provisioning_plan_generated_at_utc": "2026-06-09T03:55:04Z",
     "policy_test": "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_artifact_index_iam_policy.rs",
     "provisioning_plan_test": "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_artifact_index_iam_policy.rs::producer_iam_provisioning_plan_binds_policy_ssm_paths_and_denied_probe_kinds",
     "policy_shape": "The generated policy allows S3 GetObject/PutObject only for the configured Artifact Index kind's events, snapshots, latest pointer, and audit epoch paths under the configured artifact_root and optional proof roots.",

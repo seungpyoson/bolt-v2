@@ -1,8 +1,15 @@
 use bolt_v2::bolt_v3_iv::{
     authz::IvAuthorizationMode,
     config::{IvConfigError, IvRootConfig, load_iv_config_from_toml, validate_iv_root_config},
+    derive::{
+        IvDeriveError, IvDerivedInputField, IvDerivedInputSet, IvDerivedInputSourceKind,
+        IvOptionSide, IvTimedInput, resolve_derived_input_policy,
+    },
+    error::IvRejectReason,
+    health::IvSourceHealthState,
     selector::IvSelector,
-    types::{IvProductKind, IvSourceKind},
+    time::UnixNanos,
+    types::{IvBasis, IvConvention, IvProductKind, IvSourceKind},
 };
 
 fn valid_iv_toml() -> &'static str {
@@ -97,9 +104,18 @@ helper_policy_ref = "configured-helper-policy"
 required_fields = ["option_price", "underlying_price", "strike", "option_side", "time_to_expiry_years", "rate", "carry"]
 freshness_ns = 100
 max_input_skew_ns = 10
-bounds = "configured-derived-input-bounds"
-convention_policy = "configured-convention-policy"
 operator_value_refresh_policy = "reject_expired_operator_values"
+
+[profiles.derived_input_policies.bounds]
+option_price = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 10000.0, unit = "price", allowed_conventions = { allowed_conventions = [] } }
+underlying_price = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 99.0, unit = "price", allowed_conventions = { allowed_conventions = [] } }
+strike = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 10000.0, unit = "strike", allowed_conventions = { allowed_conventions = [] } }
+time_to_expiry_years = { finite_required = true, positive_required = true, inclusive_min = 0.0, inclusive_max = 100.0, unit = "time_to_expiry", allowed_conventions = { allowed_conventions = [] } }
+rate = { finite_required = true, positive_required = false, inclusive_min = -1.0, inclusive_max = 1.0, unit = "rate", allowed_conventions = { allowed_conventions = [] } }
+carry = { finite_required = true, positive_required = false, inclusive_min = -1.0, inclusive_max = 1.0, unit = "carry", allowed_conventions = { allowed_conventions = [] } }
+
+[profiles.derived_input_policies.convention_policy]
+allowed_conventions = ["configured-convention"]
 
 [[profiles.derived_input_policies.field_sources]]
 field = "option_price"
@@ -251,6 +267,135 @@ fn full_profile_toml_maps_to_typed_iv_config_without_defaults() {
         config.profiles[0].sources[0].selector,
         IvSelector::SourceOptionGreeks { .. }
     ));
+}
+
+fn derived_config_inputs() -> IvDerivedInputSet {
+    IvDerivedInputSet {
+        profile_id: "configured-profile".to_string(),
+        source_id: "configured-greeks-source".to_string(),
+        source_kind: IvSourceKind::OptionGreeks,
+        selector_fingerprint: "configured-greeks-selector".to_string(),
+        instrument_id: "configured-option-instrument".to_string(),
+        basis: IvBasis::Mark,
+        convention: IvConvention::Named("configured-convention".to_string()),
+        as_of_ns: UnixNanos::new(1_000),
+        received_ts_ns: UnixNanos::new(1_001),
+        subscription_generation: 7,
+        source_health_state: IvSourceHealthState::Active,
+        nt_revision: "configured-nt-revision".to_string(),
+        nt_evidence_path: "configured/nt/evidence/path.rs".to_string(),
+        input_event_ids: vec!["configured-input-event".to_string()],
+        option_price: Some(timed_number(
+            1.0,
+            995,
+            IvDerivedInputSourceKind::QuerySupplied,
+        )),
+        underlying_price: Some(timed_number(
+            100.0,
+            996,
+            IvDerivedInputSourceKind::QuerySupplied,
+        )),
+        strike: Some(timed_number(
+            100.0,
+            997,
+            IvDerivedInputSourceKind::QuerySupplied,
+        )),
+        option_side: Some(IvTimedInput {
+            value: IvOptionSide::Call,
+            ts_ns: UnixNanos::new(998),
+            source_kind: IvDerivedInputSourceKind::QuerySupplied,
+            expires_at_ns: None,
+        }),
+        time_to_expiry_years: Some(timed_number(
+            0.5,
+            999,
+            IvDerivedInputSourceKind::QuerySupplied,
+        )),
+        rate: Some(timed_number(
+            0.01,
+            994,
+            IvDerivedInputSourceKind::OperatorConfigured,
+        )),
+        carry: Some(timed_number(
+            0.0,
+            993,
+            IvDerivedInputSourceKind::OperatorConfigured,
+        )),
+    }
+}
+
+fn timed_number(
+    value: f64,
+    ts_ns: u64,
+    source_kind: IvDerivedInputSourceKind,
+) -> IvTimedInput<f64> {
+    IvTimedInput {
+        value,
+        ts_ns: UnixNanos::new(ts_ns),
+        source_kind,
+        expires_at_ns: None,
+    }
+}
+
+#[test]
+fn structured_derived_input_bounds_reject_out_of_bounds_resolved_inputs() {
+    let config = load_iv_config_from_toml(valid_iv_toml()).unwrap();
+    let policy = &config.profiles[0].derived_input_policies[0];
+
+    assert_eq!(
+        resolve_derived_input_policy(policy, derived_config_inputs(), &[]),
+        Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::InvalidDerivedInput,
+            field: IvDerivedInputField::UnderlyingPrice.as_str().to_string(),
+        })
+    );
+}
+
+#[test]
+fn structured_derived_input_convention_policy_rejects_disallowed_conventions() {
+    let config = load_iv_config_from_toml(valid_iv_toml()).unwrap();
+    let policy = &config.profiles[0].derived_input_policies[0];
+    let mut inputs = derived_config_inputs();
+    inputs.underlying_price = Some(timed_number(
+        98.0,
+        996,
+        IvDerivedInputSourceKind::QuerySupplied,
+    ));
+    inputs.convention = IvConvention::Named("configured-other-convention".to_string());
+
+    assert_eq!(
+        resolve_derived_input_policy(policy, inputs, &[]),
+        Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::InvalidDerivedInput,
+            field: "convention_policy".to_string(),
+        })
+    );
+}
+
+#[test]
+fn operator_value_refresh_policy_rejects_expired_operator_inputs() {
+    let config = load_iv_config_from_toml(valid_iv_toml()).unwrap();
+    let policy = &config.profiles[0].derived_input_policies[0];
+    let mut inputs = derived_config_inputs();
+    inputs.underlying_price = Some(timed_number(
+        98.0,
+        996,
+        IvDerivedInputSourceKind::QuerySupplied,
+    ));
+    inputs.rate = Some(IvTimedInput {
+        value: 0.01,
+        ts_ns: UnixNanos::new(994),
+        source_kind: IvDerivedInputSourceKind::OperatorConfigured,
+        expires_at_ns: Some(UnixNanos::new(999)),
+    });
+
+    assert_eq!(
+        resolve_derived_input_policy(policy, inputs, &[]),
+        Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::OperatorInputExpired,
+            field: IvDerivedInputField::Rate.as_str().to_string(),
+        })
+    );
 }
 
 #[test]

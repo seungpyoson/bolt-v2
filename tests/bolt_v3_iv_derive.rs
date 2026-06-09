@@ -173,6 +173,7 @@ fn derived_input_policy_resolves_profile_source_and_operator_fields_before_helpe
     let mut profile_source_inputs = complete_inputs();
     profile_source_inputs.source_id = "configured-underlying-source".to_string();
     profile_source_inputs.selector_fingerprint = "configured-underlying-selector".to_string();
+    profile_source_inputs.instrument_id = "configured-underlying-instrument".to_string();
     profile_source_inputs.underlying_price = Some(IvTimedInput {
         value: 100.0,
         ts_ns: UnixNanos::new(996),

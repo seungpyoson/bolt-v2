@@ -1162,7 +1162,10 @@ fn retain_source_health_events(
 
 #[cfg(test)]
 mod tests {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::{
+        collections::BTreeMap,
+        panic::{AssertUnwindSafe, catch_unwind},
+    };
 
     use super::*;
 
@@ -1180,5 +1183,56 @@ mod tests {
 
         assert!(recovered.is_ok());
         assert_eq!(recovered.unwrap().store.raw_events().len(), 0);
+    }
+
+    #[test]
+    fn upsert_source_health_preserves_historical_generation_entries() {
+        let handle = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+        handle
+            .write_state()
+            .current_subscription_generations
+            .insert("configured-source".to_string(), 1);
+        handle.upsert_source_health(source_health_with_generation(
+            "configured-source",
+            super::health::IvSourceHealthState::Active,
+            1,
+        ));
+        handle
+            .write_state()
+            .current_subscription_generations
+            .insert("configured-source".to_string(), 2);
+        handle.upsert_source_health(source_health_with_generation(
+            "configured-source",
+            super::health::IvSourceHealthState::Active,
+            2,
+        ));
+
+        let generations = handle
+            .snapshot()
+            .source_health
+            .iter()
+            .filter(|health| health.source_id == "configured-source")
+            .map(|health| health.subscription_generation)
+            .collect::<Vec<_>>();
+
+        assert_eq!(generations, vec![1, 2]);
+    }
+
+    fn source_health_with_generation(
+        source_id: &str,
+        state: super::health::IvSourceHealthState,
+        subscription_generation: u64,
+    ) -> IvSourceHealth {
+        IvSourceHealth {
+            profile_id: "configured-profile".to_string(),
+            source_id: source_id.to_string(),
+            subscription_state: state,
+            last_event_ts_ns: None,
+            last_reject_reason: None,
+            reject_counts: BTreeMap::new(),
+            stale_state: false,
+            retention_state: false,
+            subscription_generation,
+        }
     }
 }

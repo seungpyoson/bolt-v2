@@ -30,10 +30,10 @@ const SOURCE_PROOF: &str = include_str!(
     "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.binance-bnbusdc-2026-03-01.json"
 );
 const RUN_SPEC: &str = include_str!(
-    "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.binance-bnbusdc-2026-03-01.toml"
+    "../../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/materialized-run-spec/backfill-run-spec.toml"
 );
 const RUN_SPEC_BYTES: &[u8] = include_bytes!(
-    "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.binance-bnbusdc-2026-03-01.toml"
+    "../../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/materialized-run-spec/backfill-run-spec.toml"
 );
 const OBJECT_STAGING_MANIFEST: &str = include_str!(
     "../../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/object-staging/backfill-object-staging-manifest.json"
@@ -46,6 +46,9 @@ const ACCEPTED_TRANCHE_MANIFEST: &str = include_str!(
 );
 const ACCEPTED_TRANCHE_MANIFEST_BYTES: &[u8] = include_bytes!(
     "../../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/accepted-tranche/backfill-accepted-tranche-manifest.json"
+);
+const EXECUTION_PLAN_SPEC: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/backfill-execution-plan.toml"
 );
 const EXECUTION_PLAN: &str = include_str!(
     "../../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-plan/backfill-execution-plan.json"
@@ -287,6 +290,12 @@ fn binance_backfill_gate_commits_materialized_run_spec_before_execution_plan() {
     assert!(
         materialized_run_spec_path.exists(),
         "Binance reference gate must commit the materialized run spec used by the execution plan"
+    );
+    assert!(
+        EXECUTION_PLAN_SPEC.contains(
+            "backfill-gates/binance-bnbusdc-2026-03-01/materialized-run-spec/backfill-run-spec.toml"
+        ),
+        "Binance reference execution plan must consume the materialized run spec"
     );
 }
 

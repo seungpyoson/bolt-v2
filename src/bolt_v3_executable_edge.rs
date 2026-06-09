@@ -5,7 +5,7 @@ use crate::{
     bolt_v3_market_families::OutcomeSide,
     bolt_v3_numeric::{
         BPS_DENOMINATOR, UNIT_F64, ZERO_F64, is_non_negative_finite, is_positive_finite,
-        sanitize_probability,
+        notional_float_tolerance, sanitize_probability,
     },
 };
 
@@ -231,10 +231,6 @@ pub(crate) fn price_exact_size_vwap(
         limit_price,
         exact_size_filled: true,
     })
-}
-
-fn notional_float_tolerance(reference_notional: f64) -> f64 {
-    reference_notional.abs() * f64::EPSILON * BPS_DENOMINATOR
 }
 
 fn consume_exact_notional_level(

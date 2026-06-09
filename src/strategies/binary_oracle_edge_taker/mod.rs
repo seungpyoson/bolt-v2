@@ -53,7 +53,7 @@ use crate::{
     },
     bolt_v3_numeric::{
         BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, UNIT_F64, clamp_probability,
-        is_non_negative_finite, is_positive_finite,
+        is_non_negative_finite, is_positive_finite, notional_float_tolerance,
     },
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_position_contract::is_observed_open_side,
@@ -5449,10 +5449,6 @@ fn limit_notional_exceeds_sized_notional(limit_notional: f64, sized_notional: f6
         return true;
     }
     limit_notional > sized_notional + notional_float_tolerance(sized_notional)
-}
-
-fn notional_float_tolerance(reference_notional: f64) -> f64 {
-    reference_notional.abs() * f64::EPSILON * BPS_DENOMINATOR
 }
 
 fn refresh_fee_readiness_for_active(

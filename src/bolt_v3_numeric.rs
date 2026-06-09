@@ -31,6 +31,10 @@ pub(crate) fn is_non_negative_finite(value: f64) -> bool {
     value.is_finite() && value >= ZERO_F64
 }
 
+pub(crate) fn notional_float_tolerance(reference_notional: f64) -> f64 {
+    reference_notional.abs() * f64::EPSILON * BPS_DENOMINATOR
+}
+
 pub(crate) fn clamp_probability(value: f64) -> f64 {
     value.clamp(ZERO_F64, UNIT_F64)
 }
@@ -136,6 +140,16 @@ mod tests {
         assert!(!is_non_negative_finite(f64::NAN));
         assert!(!is_non_negative_finite(f64::INFINITY));
         assert!(!is_non_negative_finite(f64::NEG_INFINITY));
+    }
+
+    #[test]
+    fn notional_float_tolerance_scales_with_reference_notional() {
+        assert_eq!(notional_float_tolerance(ZERO_F64), ZERO_F64);
+        assert_eq!(
+            notional_float_tolerance(-BPS_DENOMINATOR),
+            notional_float_tolerance(BPS_DENOMINATOR)
+        );
+        assert!(notional_float_tolerance(BPS_DENOMINATOR) > notional_float_tolerance(UNIT_F64));
     }
 
     #[test]

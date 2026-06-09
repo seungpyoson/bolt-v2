@@ -231,8 +231,11 @@ mod tests {
     // pricing blocks.
     // Re-derived after exact-head review follow-ups made negative threshold
     // checks authoritative and omitted unavailable executable-cost EV evidence.
+    // Re-derived after moving notional float tolerance into the shared numeric
+    // helper to remove duplicate tolerance definitions from the strategy source
+    // set.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "2097d98847bc01d5b2f443cebb924e3e18f1ac28e0606c5b0cdb2a0333a730f2";
+        "5e425923e184bb2752a714974da604e0e9c5d32d70698005aa949541ec3dadcb";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

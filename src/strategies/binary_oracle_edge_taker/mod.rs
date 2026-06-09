@@ -832,6 +832,13 @@ impl ActiveMarketState {
         true
     }
 
+    fn clear_reference_price_quote(&mut self) {
+        self.reference_current_price = None;
+        self.reference_current_price_source_id = None;
+        self.reference_current_price_ts_ms = None;
+        self.last_reference_ts_ms = None;
+    }
+
     #[cfg(test)]
     fn observe_reference_snapshot(&mut self, snapshot: &ReferenceSnapshot) {
         if self.phase == SelectionPhase::Idle {
@@ -1511,6 +1518,7 @@ impl BinaryOracleEdgeTaker {
         let selection = selector.select(interval_start_ms, interval_end_ms, now_ms, &quotes);
         self.refresh_reference_price_source_statuses(interval_start_ms, interval_end_ms, now_ms);
         if selection.is_none() {
+            self.clear_reference_current_price_selection_state();
             return;
         };
         let selection = selection.expect("reference price selection was checked for absence above");
@@ -1562,11 +1570,26 @@ impl BinaryOracleEdgeTaker {
                                 || now_ms.saturating_sub(quote.observed_ts_ms())
                                     > reference_price.max_source_age_ms =>
                         {
-                            (
-                                ReferencePriceSourceStatus::Stale,
-                                Some(quote.observed_ts_ms()),
-                                Some(quote.received_ts_ms()),
-                            )
+                            self.reference_price_source_health
+                                .get(source_id)
+                                .filter(|health| {
+                                    health.status() == ReferencePriceSourceStatus::Stale
+                                        && health.observed_ts_ms().is_some_and(|observed_ts_ms| {
+                                            observed_ts_ms > quote.observed_ts_ms()
+                                        })
+                                })
+                                .map(|health| {
+                                    (
+                                        health.status(),
+                                        health.observed_ts_ms(),
+                                        health.received_ts_ms(),
+                                    )
+                                })
+                                .unwrap_or((
+                                    ReferencePriceSourceStatus::Stale,
+                                    Some(quote.observed_ts_ms()),
+                                    Some(quote.received_ts_ms()),
+                                ))
                         }
                         Some(quote) if drift_exceeded => (
                             ReferencePriceSourceStatus::DriftExceeded,
@@ -1622,13 +1645,18 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
+    fn clear_reference_current_price_selection_state(&mut self) {
+        self.active.clear_reference_price_quote();
+        self.pricing.clear_reference_current_price_state();
+        self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
+    }
+
     fn reset_reference_current_price_runtime_state(&mut self) {
         self.reference_price_quotes.clear();
         self.reference_price_source_health =
             reference_price_source_health_from_config(&self.config);
         self.reference_price_selector = reference_price_selector_from_config(&self.config);
-        self.pricing.clear_reference_current_price_state();
-        self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
+        self.clear_reference_current_price_selection_state();
     }
 
     fn mark_reference_price_source_status(

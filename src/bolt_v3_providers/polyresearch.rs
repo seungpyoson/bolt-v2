@@ -558,13 +558,11 @@ impl DataClient for PolyResearchReferencePriceClient {
                     provider_subscription_id.as_str(),
                 ))?)?;
             } else if subscriptions_empty {
-                let unsubscribe_result =
-                    outbound.send_text(polyresearch_reference_unsubscribe_frame(None)?);
+                outbound.send_text(polyresearch_reference_unsubscribe_frame(None)?)?;
                 remove_polyresearch_pending_subscription(
                     &self.pending_provider_subscriptions,
                     &subscription_key,
                 )?;
-                unsubscribe_result?;
             }
         }
         Ok(())
@@ -2309,13 +2307,12 @@ mod tests {
     }
 
     #[test]
-    fn failed_bare_unsubscribe_removes_canceled_prr_pending_subscription() {
+    fn failed_bare_unsubscribe_keeps_canceled_prr_pending_until_late_ack() {
         let (mut client, _data_receiver) = fixture_client();
         let (outbound_sender, mut outbound_receiver) =
             tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
-        client.outbound = Some(PolyResearchReferenceOutboundHandle::from_sender(
-            outbound_sender,
-        ));
+        let outbound = PolyResearchReferenceOutboundHandle::from_sender(outbound_sender);
+        client.outbound = Some(outbound.clone());
 
         client
             .subscribe(reference_price_subscribe_cmd(
@@ -2355,13 +2352,15 @@ mod tests {
                 .contains("PolyResearch reference outbound task unavailable"),
             "unexpected bare unsubscribe error: {error}"
         );
-        assert!(
+        assert_eq!(
             client
                 .pending_provider_subscriptions
                 .lock()
                 .expect("provider subscription queue should not be poisoned")
-                .is_empty(),
-            "failed bare unsubscribe must not leave the canceled subscription at the queue head"
+                .front()
+                .cloned(),
+            Some(subscription_key("BTC", "polyresearch_primary", "BTC/USD")),
+            "failed bare unsubscribe must preserve the canceled in-flight subscription until its ack drains"
         );
 
         client
@@ -2371,15 +2370,53 @@ mod tests {
                 "ETH/USD",
             ))
             .expect("ETH PRR reference subscription should be accepted after cleanup failure");
+        assert!(
+            outbound_receiver.try_recv().is_err(),
+            "new PRR subscription must wait behind the canceled in-flight provider subscribe"
+        );
+
+        let handled = polyresearch_reference_record_subscription_ack(
+            &client.subscriptions,
+            &client.pending_provider_subscriptions,
+            &client.provider_subscription_ids,
+            Some(&outbound),
+            r#"{"type":"subscribed","subscription_id":"chainlink:btc"}"#,
+        )
+        .expect("late ack for failed bare unsubscribe should drain canceled provider subscribe");
+        assert!(handled, "late subscribed ack must be handled");
+        let PolyResearchReferenceOutboundCommand::SendText(unsubscribe_frame) = outbound_receiver
+            .try_recv()
+            .expect("late ack for canceled PRR subscription should send provider unsubscribe")
+        else {
+            panic!("PRR late ack should send provider unsubscribe");
+        };
+        assert_eq!(
+            unsubscribe_frame,
+            r#"{"action":"unsubscribe","subscription_id":"chainlink:btc"}"#
+        );
         let PolyResearchReferenceOutboundCommand::SendText(eth_subscribe_frame) = outbound_receiver
             .try_recv()
-            .expect("new PRR subscription should send after failed bare cleanup")
+            .expect("new PRR subscription should send after canceled ack drains")
         else {
-            panic!("new PRR subscription should send text after failed bare cleanup");
+            panic!("new PRR subscription should send text after canceled ack drains");
         };
         assert_eq!(
             eth_subscribe_frame,
             r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["ETH/USD"]}}"#
+        );
+        assert_eq!(
+            client
+                .provider_subscription_ids
+                .lock()
+                .expect("provider subscription ids should not be poisoned")
+                .get(&subscription_key(
+                    "ETH",
+                    "polyresearch_secondary",
+                    "ETH/USD"
+                ))
+                .map(String::as_str),
+            None,
+            "late BTC ack must not be recorded as ETH provider subscription id"
         );
     }
 

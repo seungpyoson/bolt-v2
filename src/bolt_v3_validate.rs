@@ -2511,7 +2511,7 @@ fn validate_reference_current_price(
 
         let unsupported_asset = source.enabled
             && reference_price_source_is_unsupported(reference_current_price, source);
-        if unsupported_asset {
+        if unsupported_asset && configured.contains(source_id.as_str()) {
             valid_enabled_sources = valid_enabled_sources.saturating_sub(1);
         }
         if unsupported_asset {

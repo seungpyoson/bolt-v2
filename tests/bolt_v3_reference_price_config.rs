@@ -418,6 +418,58 @@ symbol = "BTC"
 }
 
 #[test]
+fn unlisted_unsupported_source_does_not_reduce_supported_source_quorum() {
+    let messages = validate_reference_current_price(
+        r#"
+[reference_current_price]
+asset = "ADA"
+sources = ["chainlink_primary"]
+min_valid_sources = 1
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.chainlink_primary]
+provider = "chainlink_ws"
+enabled = true
+required = false
+client_id = "chainlink_reference"
+instrument_id = "ADA-USD.CHAINLINK"
+
+[reference_current_price.source.unlisted_backup]
+provider = "polyresearch_ws"
+enabled = true
+required = false
+client_id = "polyresearch_reference"
+symbol = "ADA/USD"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("[reference_current_price.source.unlisted_backup]")
+                && message.contains("not listed")
+        }),
+        "unlisted source section should fail validation, got: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("reference_current_price.source.unlisted_backup")
+                && message.contains("unsupported")
+        }),
+        "unsupported unlisted source should still be reported, got: {messages:#?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| !message.contains("cannot be met by 0 enabled supported source")),
+        "unlisted unsupported source must not reduce the listed-source quorum, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn reference_current_price_validation_rejects_min_valid_sources_above_enabled_source_count() {
     let messages = validate_reference_current_price(
         r#"

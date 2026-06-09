@@ -257,8 +257,13 @@ mod tests {
     // timestamps through selection block refreshes.
     // Re-derived again after ignoring valid out-of-order reference-current-price
     // replays instead of replacing fresher same-source quotes.
+    // Re-derived again after making selector-level no-selection clear active
+    // and pricing reference-current-price state fail-closed.
+    // Re-derived again after formatting that fail-closed selector clear.
+    // Re-derived again after removing fee-readiness side effects from
+    // reference-current-price selection invalidation.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "e5e737b63ecaacd0da09923af5372d12c2331d61c2db5b672830705d73061b03";
+        "bd950a350b6971fbd3a3469c1c694fee4be68a3ccb1d0317197534743a4d8cb6";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

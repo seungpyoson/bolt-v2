@@ -51,7 +51,13 @@ pub const SAMPLE_SPOT_TICK_TRADES_HEADER: [&str; 6] =
 #[cfg(test)]
 const NANOS_PER_MILLISECOND: i64 = 1_000_000;
 
-/// Registered raw-source converter adapter.
+/// Registered source adapter implementation kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceAdapterKind {
+    CsvNativeTrades,
+}
+
+/// Registered raw-source adapter.
 ///
 /// A new venue that can emit the same CSV native-trades shape selects this
 /// converter from TOML and supplies its column/side mapping in `[converter.csv]`.
@@ -59,13 +65,17 @@ const NANOS_PER_MILLISECOND: i64 = 1_000_000;
 /// leaving operator, runner, result contract, and NT catalog/backtest wiring
 /// unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TradeConverterDefinition {
+pub struct SourceAdapterDefinition {
     pub identity: &'static str,
     pub version: &'static str,
+    pub kind: SourceAdapterKind,
     pub table_family: &'static str,
     pub normalized_schema_version: &'static str,
     pub nt_data_type: &'static str,
 }
+
+/// Backwards-compatible name for the currently implemented trade adapter path.
+pub type TradeConverterDefinition = SourceAdapterDefinition;
 
 /// Run-spec owned converter config.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,33 +141,79 @@ pub enum CsvTimestampUnit {
     Nanoseconds,
 }
 
-pub const CSV_NATIVE_TRADES_CONVERTER: TradeConverterDefinition = TradeConverterDefinition {
+pub const CSV_NATIVE_TRADES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
     identity: TRANSFORM_IDENTITY,
     version: TRANSFORM_VERSION,
+    kind: SourceAdapterKind::CsvNativeTrades,
     table_family: TRADE_TABLE_FAMILY,
     normalized_schema_version: NORMALIZED_SCHEMA_VERSION,
     nt_data_type: "TradeTick",
 };
 
-pub const REGISTERED_TRADE_CONVERTERS: &[TradeConverterDefinition] = &[CSV_NATIVE_TRADES_CONVERTER];
+pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[CSV_NATIVE_TRADES_ADAPTER];
+
+pub const CSV_NATIVE_TRADES_CONVERTER: TradeConverterDefinition = CSV_NATIVE_TRADES_ADAPTER;
+
+pub const REGISTERED_TRADE_CONVERTERS: &[TradeConverterDefinition] = REGISTERED_SOURCE_ADAPTERS;
+
+#[must_use]
+pub fn registered_source_adapter(
+    identity: &str,
+    version: &str,
+) -> Option<&'static SourceAdapterDefinition> {
+    REGISTERED_SOURCE_ADAPTERS
+        .iter()
+        .find(|adapter| adapter.identity == identity && adapter.version == version)
+}
+
+pub fn require_registered_source_adapter(
+    identity: &str,
+    version: &str,
+) -> Result<&'static SourceAdapterDefinition> {
+    registered_source_adapter(identity, version).with_context(|| {
+        format!("adapter {identity:?} version {version:?} is not a registered source adapter")
+    })
+}
+
+pub fn require_registered_source_adapter_for_table_family(
+    identity: &str,
+    version: &str,
+    table_family: &str,
+) -> Result<&'static SourceAdapterDefinition> {
+    let adapter = require_registered_source_adapter(identity, version)?;
+    ensure!(
+        adapter.table_family == table_family,
+        "adapter {:?} version {:?} supports table_family {:?}, got {:?}",
+        adapter.identity,
+        adapter.version,
+        adapter.table_family,
+        table_family
+    );
+    Ok(adapter)
+}
 
 #[must_use]
 pub fn registered_trade_converter(
     identity: &str,
     version: &str,
 ) -> Option<&'static TradeConverterDefinition> {
-    REGISTERED_TRADE_CONVERTERS
-        .iter()
-        .find(|converter| converter.identity == identity && converter.version == version)
+    registered_source_adapter(identity, version)
+        .filter(|adapter| adapter.kind == SourceAdapterKind::CsvNativeTrades)
 }
 
 pub fn require_registered_trade_converter(
     identity: &str,
     version: &str,
 ) -> Result<&'static TradeConverterDefinition> {
-    registered_trade_converter(identity, version).with_context(|| {
-        format!("converter {identity:?} version {version:?} is not a registered converter")
-    })
+    let adapter = require_registered_source_adapter(identity, version)?;
+    ensure!(
+        adapter.kind == SourceAdapterKind::CsvNativeTrades,
+        "adapter {:?} version {:?} is {:?}, not a CSV native-trades converter",
+        adapter.identity,
+        adapter.version,
+        adapter.kind
+    );
+    Ok(adapter)
 }
 
 pub fn require_registered_trade_converter_for_table_family(
@@ -165,16 +221,15 @@ pub fn require_registered_trade_converter_for_table_family(
     version: &str,
     table_family: &str,
 ) -> Result<&'static TradeConverterDefinition> {
-    let converter = require_registered_trade_converter(identity, version)?;
+    let adapter = require_registered_source_adapter_for_table_family(identity, version, table_family)?;
     ensure!(
-        converter.table_family == table_family,
-        "converter {:?} version {:?} supports table_family {:?}, got {:?}",
-        converter.identity,
-        converter.version,
-        converter.table_family,
-        table_family
+        adapter.kind == SourceAdapterKind::CsvNativeTrades,
+        "adapter {:?} version {:?} is {:?}, not a CSV native-trades converter",
+        adapter.identity,
+        adapter.version,
+        adapter.kind
     );
-    Ok(converter)
+    Ok(adapter)
 }
 
 /// Aggressor side of a native trade print.
@@ -641,8 +696,8 @@ pub fn normalize_registered_trade_converter(
         &converter_config.version,
         &accepted.table_family,
     )?;
-    match converter.identity {
-        TRANSFORM_IDENTITY => normalize_csv_native_trades(
+    match converter.kind {
+        SourceAdapterKind::CsvNativeTrades => normalize_csv_native_trades(
             accepted,
             identity,
             &converter_config.csv,
@@ -650,7 +705,6 @@ pub fn normalize_registered_trade_converter(
             capture_time_nanos,
             ingest_run_id,
         ),
-        other => bail!("registered converter {other:?} has no normalization adapter"),
     }
 }
 
@@ -1069,12 +1123,39 @@ fn optional_i64(column: &Int64Array, row: usize) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog_projection::NT_DATA_TYPE_TRADE_TICK;
     use crate::source_proof::{
         AcceptanceMode, AcceptanceScope, EvidenceState, FixtureType, IngestManifestObjectRecord,
         L2ReplayEvidence, LicenseScope, NtMappingStatus, RequiredCheck, RequiredChecks,
         SourceCandidateClass, SourceProofClaimLimit, SourceProofReport, SourceProofStatus,
         SourceProofUsageScope, SourceSelectionStatus, TimeRange,
     };
+
+    #[test]
+    fn source_adapter_registry_exposes_data_family_metadata() {
+        let adapter = require_registered_source_adapter(TRANSFORM_IDENTITY, TRANSFORM_VERSION)
+            .expect("registered source adapter");
+
+        assert_eq!(adapter.kind, SourceAdapterKind::CsvNativeTrades);
+        assert_eq!(adapter.table_family, TRADE_TABLE_FAMILY);
+        assert_eq!(adapter.normalized_schema_version, NORMALIZED_SCHEMA_VERSION);
+        assert_eq!(adapter.nt_data_type, NT_DATA_TYPE_TRADE_TICK);
+        assert_eq!(REGISTERED_SOURCE_ADAPTERS, REGISTERED_TRADE_CONVERTERS);
+    }
+
+    #[test]
+    fn source_adapter_registry_rejects_table_family_mismatch() {
+        let mismatch = format!("{TRADE_TABLE_FAMILY}_mismatch");
+        let err = require_registered_source_adapter_for_table_family(
+            TRANSFORM_IDENTITY,
+            TRANSFORM_VERSION,
+            &mismatch,
+        )
+        .expect_err("adapter table-family mismatch must fail closed");
+
+        assert!(err.to_string().contains("adapter"), "{err}");
+        assert!(err.to_string().contains("table_family"), "{err}");
+    }
 
     fn accepted_dataset() -> AcceptedDataset {
         let checks = |evidence: &str| RequiredChecks {

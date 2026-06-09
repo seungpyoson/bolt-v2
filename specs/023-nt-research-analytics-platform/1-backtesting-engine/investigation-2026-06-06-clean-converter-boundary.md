@@ -2396,10 +2396,14 @@ What is source-agnostic today:
 
 What is not source-agnostic enough yet:
 
-- The accepted-object operator path is registered for one converter:
-  `csv-native-trades-to-canonical-trades.v1`. It is systematic for accepted
-  native trade CSV/GZIP/ZIP sources with TOML-owned column and side mappings,
-  but it is not a general raw-source adapter runner.
+- The accepted-object registry is source/data-family shaped now:
+  `SourceAdapterDefinition` declares adapter kind, table family, normalized
+  schema version, and NT data type without venue constants. It has one durable
+  registered adapter, `csv-native-trades-to-canonical-trades.v1`, which is
+  systematic for accepted native trade CSV/GZIP/ZIP sources with TOML-owned
+  column and side mappings. The operator preflight fails closed unless an
+  explicit runner dispatch exists for the adapter kind; today that dispatch is
+  only `CsvNativeTrades`, so it is not a general raw-source adapter runner.
 - PMXT L2 projection is correctly isolated as a `one_off_backfill_data` adapter.
   It must not be promoted into a durable generic source path without accepted
   source proof, dynamic tick-size policy, and broad-backfill efficiency proof.

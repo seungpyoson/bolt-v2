@@ -4,8 +4,8 @@
     "BACKTESTING_ENGINE-022"
   ],
   "created_at_utc": "2026-06-09T02:32:25Z",
-  "status": "generic_gates_and_run_spec_materialization_source_agnostic_adapter_registry_gap_remains",
-  "decision": "The current BTE gate/readiness/catalog/result-contract boundary is mostly source-agnostic, cross-market component role requirements are source-binding registry policy instead of product-name constants, converter registrations declare their accepted table family, and accepted-tranche metadata now materializes into a validated operator run-spec without venue branches. The accepted-object converter path is still a registered native-trades CSV adapter and PMXT remains a separate one-off adapter. Adding a new source is easy only when it can reuse an existing registered adapter and NT data class; adding a new raw format or data family still requires a new adapter and proof.",
+  "status": "generic_gates_and_run_spec_materialization_source_agnostic_single_durable_adapter_registered",
+  "decision": "The current BTE gate/readiness/catalog/result-contract boundary is mostly source-agnostic, cross-market component role requirements are source-binding registry policy instead of product-name constants, source adapter registrations declare their accepted table family and NT data type, and accepted-tranche metadata now materializes into a validated operator run-spec without venue branches. The accepted-object registry is generic, but only the native-trades CSV adapter is registered for durable canonical use and PMXT remains a separate one-off adapter. Adding a new source is easy only when it can reuse an existing registered adapter and NT data class; adding a new raw format or data family still requires a new adapter and proof.",
   "generic_surfaces_proven": [
     {
       "surface": "sample venue hardcode guard",
@@ -48,9 +48,9 @@
       "evidence": "BacktestingRunManifest owns NT BacktestRunConfig, BacktestDataConfig, BacktestVenueConfig, catalog inputs, artifact_root, and result-contract provenance. It also records unsupported NT venue/query surfaces explicitly rather than silently ignoring them."
     },
     {
-      "surface": "registered converter table-family contract",
+      "surface": "registered source adapter data-family contract",
       "path": "repo://crates/backtesting-vertical-slice/src/canonical_trades.rs",
-      "evidence": "TradeConverterDefinition now declares table_family as well as normalized_schema_version and nt_data_type. Operator preflight and normalization reject a source proof whose accepted table_family does not match the registered converter before conversion artifacts are written."
+      "evidence": "SourceAdapterDefinition now declares adapter kind, table_family, normalized_schema_version, and nt_data_type. Operator preflight rejects a source proof whose accepted table_family does not match the registered source adapter before conversion artifacts are written, and also fails closed unless an explicit runner dispatch exists for the adapter kind. The current durable dispatch supports CsvNativeTrades only."
     },
     {
       "surface": "accepted-tranche to operator run-spec materialization",
@@ -67,15 +67,15 @@
     {
       "surface": "accepted-object converter registry",
       "path": "repo://crates/backtesting-vertical-slice/src/canonical_trades.rs",
-      "status": "registered_single_native_trade_csv_adapter",
-      "evidence": "REGISTERED_TRADE_CONVERTERS currently contains csv-native-trades-to-canonical-trades.v1 for table_family=trades and nt_data_type=TradeTick. normalize_registered_trade_converter dispatches only this adapter to normalize_csv_native_trades.",
+      "status": "generic_registry_single_native_trade_csv_adapter",
+      "evidence": "REGISTERED_SOURCE_ADAPTERS currently contains csv-native-trades-to-canonical-trades.v1 with kind=CsvNativeTrades, table_family=trades, and nt_data_type=TradeTick. Compatibility helpers expose the same entry as REGISTERED_TRADE_CONVERTERS, and normalize_registered_trade_converter dispatches CsvNativeTrades to normalize_csv_native_trades.",
       "impact": "A new venue whose accepted object is native trade CSV/GZIP/ZIP can reuse this path by TOML config. A new raw container, schema family, bars, L2 deltas, snapshots, or non-trade event stream cannot be added by TOML alone."
     },
     {
       "surface": "accepted-object operator",
       "path": "repo://crates/backtesting-vertical-slice/src/operator.rs",
       "status": "trade_csv_oriented",
-      "evidence": "run_from_run_spec validates a registered trade converter, decodes CSV text from CsvGzip/CsvText/SingleCsvZip, writes canonical-trades.parquet, and projects TradeTicks. This is systematic for native trade CSV sources but not a general raw-source adapter runner."
+      "evidence": "run_from_run_spec validates a registered source adapter by identity/version and table_family, then the current durable runner decodes CSV text from CsvGzip/CsvText/SingleCsvZip, writes canonical-trades.parquet, and projects TradeTicks. This is systematic for native trade CSV sources but not a general raw-source adapter runner."
     },
     {
       "surface": "PMXT one-off projection",

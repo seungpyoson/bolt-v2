@@ -28,8 +28,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     canonical_trades::{
         CanonicalInstrumentIdentity, CanonicalTradesTable, ConverterConfig, RawPayloadConfig,
-        RawPayloadContainer, require_registered_trade_converter,
-        require_registered_trade_converter_for_table_family,
+        RawPayloadContainer, SourceAdapterKind, require_registered_source_adapter,
+        require_registered_source_adapter_for_table_family,
     },
     catalog_projection::{
         CatalogProjection, SpotInstrumentSpec, logical_catalog_hash, read_back_trade_ticks,
@@ -208,13 +208,18 @@ fn validate_converter_config(converter: &ConverterConfig) -> Result<()> {
         !converter.version.trim().is_empty(),
         "run-spec converter.version must not be empty"
     );
-    require_registered_trade_converter(&converter.identity, &converter.version)?;
+    let adapter = require_registered_source_adapter(&converter.identity, &converter.version)?;
+    ensure!(
+        adapter.kind == SourceAdapterKind::CsvNativeTrades,
+        "operator durable path supports adapter kind {:?} only after an explicit runner dispatch is implemented",
+        adapter.kind
+    );
     validate_raw_payload_config(&converter.raw_payload)?;
     Ok(())
 }
 
 fn validate_converter_table_family(converter: &ConverterConfig, table_family: &str) -> Result<()> {
-    require_registered_trade_converter_for_table_family(
+    require_registered_source_adapter_for_table_family(
         &converter.identity,
         &converter.version,
         table_family,

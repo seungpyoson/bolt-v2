@@ -1,6 +1,6 @@
 {
   "schema": "bolt-v2.bte.objective-current-head-audit.v1",
-  "created_at_utc": "2026-06-09T00:46:00Z",
+  "created_at_utc": "2026-06-09T00:49:44Z",
   "objective_prompt": {
     "declared_path": "/Users/spson/Downloads/prompts/backtesting.md",
     "declared_path_status": "missing_on_disk",
@@ -9,21 +9,21 @@
   },
   "current_state": {
     "branch": "codex/bte-clean-converter-nt-use-main-reconcile",
-    "head_sha": "ef71681309e3dfe7a2657c1f856dd1d74119d5d1",
-    "head_commit": "Preserve completed result contracts",
+    "head_sha": "132553d38b20765f04b45dbd6a4bfa3f5d0ad93a",
+    "head_commit": "Record BTE current-head audit",
     "local_worktree": "clean",
     "github_pr": "https://github.com/seungpyoson/bolt-v2/pull/610",
     "pushed_head_ci": {
       "actionlint": {
-        "run_id": 27175790379,
+        "run_id": 27176271436,
         "conclusion": "success"
       },
       "Backtester CI": {
-        "run_id": 27175790373,
+        "run_id": 27176271428,
         "conclusion": "success"
       },
       "CI": {
-        "run_id": 27175790371,
+        "run_id": 27176271484,
         "conclusion": "success"
       }
     }
@@ -67,7 +67,7 @@
   "prompt_requirement_audit": [
     {
       "requirement": "Confirm repo state, branch, status, and relevant PRs.",
-      "current_evidence": "Local branch codex/bte-clean-converter-nt-use-main-reconcile is clean at ef71681309e3dfe7a2657c1f856dd1d74119d5d1. PR #610 is the active BTE branch PR. Pushed-head actionlint, Backtester CI, and CI are green.",
+      "current_evidence": "Local branch codex/bte-clean-converter-nt-use-main-reconcile is clean at 132553d38b20765f04b45dbd6a4bfa3f5d0ad93a. PR #610 is the active BTE branch PR and its body has been updated with current-head evidence. Pushed-head actionlint, Backtester CI, and CI are green.",
       "status": "proven_current_head"
     },
     {
@@ -82,7 +82,7 @@
     },
     {
       "requirement": "Investigate existing Bolt BTE implementation and unsafe converter/idempotency behavior.",
-      "current_evidence": "Existing tests cover dirty output rejection, mismatched conversion fingerprints, checkpoint resume/refusal, clean manifest/checkpoint/catalog metadata writes, NT catalog readback, BacktestNode consumption, and result-contract provenance. The newest idempotence gap was fixed at ef716813.",
+      "current_evidence": "Existing tests cover dirty output rejection, mismatched conversion fingerprints, checkpoint resume/refusal, clean manifest/checkpoint/catalog metadata writes, NT catalog readback, BacktestNode consumption, and result-contract provenance. The newest idempotence gap was fixed at ef716813 and preserved in current head 132553d38b20765f04b45dbd6a4bfa3f5d0ad93a.",
       "status": "proven_for_current_slice"
     },
     {
@@ -114,7 +114,7 @@
     },
     {
       "prompt_test": "Same manifest/checkpoint rerun is idempotent.",
-      "evidence": "backtesting_vertical_slice_conversion_boundary::same_manifest_and_checkpoint_rerun_is_idempotent and operator::run_from_run_spec_reuses_completed_output_without_rebuilding_catalog, extended at ef716813 to assert result-contract bytes are unchanged",
+      "evidence": "backtesting_vertical_slice_conversion_boundary::same_manifest_and_checkpoint_rerun_is_idempotent and operator::run_from_run_spec_reuses_completed_output_without_rebuilding_catalog, extended at ef716813 and verified on current head 132553d38b20765f04b45dbd6a4bfa3f5d0ad93a to assert result-contract bytes are unchanged",
       "status": "covered_current_head"
     },
     {
@@ -173,9 +173,9 @@
       "next_evidence_needed": "A registered adapter contract and TDD proof for the next durable non-trade data family."
     },
     {
-      "item": "PR #610 body is stale relative to head ef716813",
-      "reason": "The PR body still cites older head 6b104e and omits the result-contract idempotence fix.",
-      "next_evidence_needed": "Update PR body with current head, CI, and latest bounded deliverable."
+      "item": "Full production BTE/research-analytics rollout",
+      "reason": "PR #610 is current and green, but it remains a draft slice rather than the full production rollout. Research analytics can consume result contracts without mutating them, but production source selection, manifest finalization, and broad backfill scheduling remain outside the bounded proof.",
+      "next_evidence_needed": "Accepted production manifest, approved publish/delete plan, broad source proof where applicable, and final non-draft review once production scope is intentionally selected."
     }
   ],
   "goal_completion_status": "not_complete",

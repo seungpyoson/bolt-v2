@@ -1944,9 +1944,9 @@ table_families = ["trades", "bars"]
             dir.path(),
             &spec.accepted_object.sha256,
         )
-        .expect_err("trade converter must reject a non-trades source table family");
+        .expect_err("source adapter must reject a mismatched source table family");
 
-        assert!(err.to_string().contains("converter"), "{err}");
+        assert!(err.to_string().contains("adapter"), "{err}");
         assert!(err.to_string().contains("table_family"), "{err}");
         assert!(
             !dir.path().join(CONVERSION_CHECKPOINT_FILE).exists(),

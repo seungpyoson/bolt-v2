@@ -421,14 +421,20 @@ impl DataClient for PolyResearchReferencePriceClient {
         let subscription =
             polyresearch_reference_subscription_from_command(&cmd.data_type, cmd.params.as_ref())
                 .map_err(anyhow::Error::msg)?;
-        self.subscriptions
-            .lock()
-            .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
-            .insert(
-                PolyResearchReferenceSubscriptionKey::from_subscription(&subscription),
-                subscription.clone(),
-            );
-        if let Some(outbound) = self.outbound.as_ref() {
+        let subscription_key =
+            PolyResearchReferenceSubscriptionKey::from_subscription(&subscription);
+        let inserted = {
+            let mut subscriptions = self.subscriptions.lock().map_err(|error| {
+                anyhow::anyhow!("PolyResearch subscription state poisoned: {error}")
+            })?;
+            if subscriptions.contains_key(&subscription_key) {
+                false
+            } else {
+                subscriptions.insert(subscription_key, subscription.clone());
+                true
+            }
+        };
+        if inserted && let Some(outbound) = self.outbound.as_ref() {
             queue_polyresearch_reference_subscribe(
                 &subscription,
                 &self.pending_provider_subscriptions,

@@ -294,10 +294,10 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
-    validate_iv_strategy_references(loaded)?;
     if loaded.strategies.is_empty() {
         return Ok(BoltV3StrategyRegistrationSummary::empty());
     }
+    validate_iv_strategy_references(loaded)?;
     let iv_query_handles = Arc::new(build_iv_query_handle_registry(loaded, IvStore::empty())?);
     register_bolt_v3_strategies_on_node_with_handle_registry(
         node,
@@ -319,10 +319,10 @@ pub fn register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     iv_runtime: &IvRuntimeEngine,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
-    validate_iv_strategy_references(loaded)?;
     if loaded.strategies.is_empty() {
         return Ok(BoltV3StrategyRegistrationSummary::empty());
     }
+    validate_iv_strategy_references(loaded)?;
     let iv_query_handles = Arc::new(build_iv_query_handle_registry_for_runtime(
         &loaded.root,
         iv_runtime,

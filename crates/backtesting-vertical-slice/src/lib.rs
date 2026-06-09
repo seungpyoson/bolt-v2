@@ -31,6 +31,7 @@ pub mod backfill_execution_readiness;
 pub mod backfill_object_staging;
 pub mod backfill_preflight;
 pub mod backfill_readiness;
+pub mod backfill_run_spec_materialization;
 pub mod backfill_source_proof_scope;
 pub mod canonical_trades;
 pub mod catalog_projection;

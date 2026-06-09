@@ -84,6 +84,18 @@ The `kind` field is `order_intent` for `intent` payloads and `admission_decision
 - `report_decimal_scale`
 - `price_precision`
 
+#### Chainlink reference-price data fields
+
+- `reconnect_max_attempts`: required; must be `0` so Chainlink reference WebSocket auth headers are regenerated only on DataClient connect
+
+Secrets must be SSM-only fields `api_key_ssm_parameter` and `api_secret_ssm_parameter`.
+
+#### PolyResearch reference-price data fields
+
+- `reconnect_max_attempts`: required, either `"unlimited"` or a positive integer
+
+Secrets must be the SSM-only field `api_key_ssm_parameter`.
+
 schema_version = 2
 strategy_instance_id = "configured_updown_main"
 
@@ -686,6 +698,10 @@ def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> 
 def test_validate_docs_rejects_reference_current_price_schema_drift() -> None:
     missing_enabled = CURRENT_SCHEMA.replace("enabled = true\nrequired = false", "required = true")
     missing_catalog = CURRENT_SCHEMA.replace("### `[chainlink_data_streams]`", "### `[clients.foo]`")
+    missing_prr_reconnect = CURRENT_SCHEMA.replace(
+        '`reconnect_max_attempts`: required, either `"unlimited"` or a positive integer',
+        '`reconnect_max_attempts`: optional',
+    )
     stale_schema = (
         CURRENT_SCHEMA
         + """
@@ -707,6 +723,12 @@ feed_catalog = "chainlink_data_streams"
     catalog_findings = VERIFIER.validate_docs(missing_catalog, CURRENT_STATUS_MAP)
     if not any("chainlink_data_streams" in finding for finding in catalog_findings):
         raise AssertionError(f"expected missing catalog finding, got {catalog_findings!r}")
+
+    reconnect_findings = VERIFIER.validate_docs(missing_prr_reconnect, CURRENT_STATUS_MAP)
+    if not any("PolyResearch" in finding or '"unlimited"' in finding for finding in reconnect_findings):
+        raise AssertionError(
+            f"expected missing PolyResearch reconnect_max_attempts finding, got {reconnect_findings!r}"
+        )
 
     stale_findings = VERIFIER.validate_docs(stale_schema, CURRENT_STATUS_MAP)
     expected_fragments = [

@@ -745,6 +745,42 @@ No other Polymarket data-client fields are exposed in the current schema unless 
 For current data clients other than Polymarket, each client's `venue` defines its own allowed `[data]` field set.
 Unknown fields fail validation against the venue-specific set in Section 8.
 
+#### Chainlink reference-price data fields
+
+For `venue = "CHAINLINK_REFERENCE_PRICE"`, `[clients.<identifier>.data]` must define:
+
+- `websocket_endpoint`: credential-free `wss://` origin
+- `transport_backend`: string enum; current allowed value `sockudo`
+- `heartbeat_secs`: optional positive integer
+- `heartbeat_message`: optional string
+- `reconnect_timeout_ms`: positive integer
+- `reconnect_delay_initial_ms`: positive integer
+- `reconnect_delay_max_ms`: positive integer
+- `reconnect_backoff_factor`: positive finite number
+- `reconnect_jitter_ms`: positive integer
+- `reconnect_max_attempts`: required; must be `0` so Chainlink reference WebSocket auth headers are regenerated only on DataClient connect
+- `idle_timeout_ms`: positive integer
+
+Secrets must be SSM-only fields `api_key_ssm_parameter` and `api_secret_ssm_parameter`.
+
+#### PolyResearch reference-price data fields
+
+For `venue = "POLYRESEARCH_REFERENCE_PRICE"`, `[clients.<identifier>.data]` must define:
+
+- `websocket_endpoint`: credential-free `wss://` endpoint with no `key` or `apiKey` query parameter
+- `transport_backend`: string enum; current allowed value `sockudo`
+- `heartbeat_secs`: optional positive integer
+- `heartbeat_message`: optional string
+- `reconnect_timeout_ms`: positive integer
+- `reconnect_delay_initial_ms`: positive integer
+- `reconnect_delay_max_ms`: positive integer
+- `reconnect_backoff_factor`: positive finite number
+- `reconnect_jitter_ms`: positive integer
+- `reconnect_max_attempts`: required, either `"unlimited"` or a positive integer
+- `idle_timeout_ms`: positive integer
+
+Secrets must be the SSM-only field `api_key_ssm_parameter`.
+
 ### `[clients.<identifier>.execution]`
 
 Presence of `[execution]` means an execution client is configured.

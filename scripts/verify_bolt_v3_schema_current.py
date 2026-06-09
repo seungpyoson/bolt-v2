@@ -84,6 +84,12 @@ REFERENCE_CURRENT_PRICE_STALE_SCHEMA_PHRASES = (
     "clients.chainlink_strike.data.feed_bindings",
     "clients.chainlink_reference.data.feed_bindings",
 )
+REFERENCE_CURRENT_PRICE_REQUIRED_SCHEMA_PHRASES = (
+    '`reconnect_max_attempts`: required; must be `0` so Chainlink reference WebSocket auth headers are regenerated only on DataClient connect',
+    '`reconnect_max_attempts`: required, either `"unlimited"` or a positive integer',
+    "Secrets must be SSM-only fields `api_key_ssm_parameter` and `api_secret_ssm_parameter`.",
+    "Secrets must be the SSM-only field `api_key_ssm_parameter`.",
+)
 REFERENCE_CURRENT_PRICE_REQUIRED_DOC_PHRASES = (
     "Chainlink current-price and strike clients resolve feed ids from the root-owned `[chainlink_data_streams]` catalog by convention; clients do not declare a `feed_catalog` pointer.",
 )
@@ -393,6 +399,9 @@ def validate_reference_current_price_schema(schema: str) -> list[str]:
             findings.append(
                 f"schema still contains stale reference-current-price phrase: {phrase}"
             )
+    for phrase in REFERENCE_CURRENT_PRICE_REQUIRED_SCHEMA_PHRASES:
+        if phrase not in schema:
+            findings.append(f"schema missing reference-current-price phrase: {phrase}")
 
     source_examples = list(REFERENCE_CURRENT_PRICE_SOURCE_EXAMPLE_PATTERN.finditer(schema))
     if not source_examples:

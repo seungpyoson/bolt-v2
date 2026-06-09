@@ -18,6 +18,34 @@ const TEST_PRICING_SNAPSHOT_FRESH_SIGNAL_PRICE: f64 = TEST_PRICING_SNAPSHOT_NEWE
 const TEST_PRICING_SNAPSHOT_MISMATCHED_STALE_REFERENCE_PRICE: f64 =
     TEST_PRICING_SNAPSHOT_REFERENCE_PRICE_STEP;
 
+struct PriceSensitiveEntryFeeProvider;
+
+impl FeeProvider for PriceSensitiveEntryFeeProvider {
+    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
+        Some(Decimal::ZERO)
+    }
+
+    fn entry_fee_bps(&self, _instrument: &InstrumentAny, entry_price: Decimal) -> Option<Decimal> {
+        if entry_price <= Decimal::new(55, 2) {
+            Some(Decimal::from(5_000))
+        } else {
+            Some(Decimal::ZERO)
+        }
+    }
+
+    fn max_entry_fee_bps(
+        &self,
+        _instrument: &InstrumentAny,
+        _entry_price: Decimal,
+    ) -> Option<Decimal> {
+        Some(Decimal::from(5_000))
+    }
+
+    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
+        async move { Ok(()) }.boxed()
+    }
+}
+
 #[test]
 fn reference_quote_tick_updates_fair_value_without_becoming_signal() {
     let mut strategy = test_strategy();
@@ -753,6 +781,75 @@ fn executable_edge_selects_tradeable_side_when_opposite_side_is_blocked() {
     assert_eq!(
         down_edge.block_reason,
         Some(ExecutableEdgeBlockReason::InsufficientDepth)
+    );
+}
+
+#[test]
+fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
+    let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
+    strategy.config.order_notional_target = 10.0;
+    strategy.config.maximum_position_notional = 100.0;
+    strategy.config.risk_lambda = 0.10;
+    strategy.config.vwap_depth_limit_bps = 5_000;
+    strategy.config.edge_threshold_basis_points = 0;
+    strategy.config.slippage_buffer_bps = 0;
+    strategy.config.warmup_tick_count = 2;
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    strategy.active.price_to_beat = Some(3_100.0);
+    strategy.active.interval_open = Some(3_100.0);
+    strategy.active.warmup_count = 2;
+    strategy.active.last_reference_ts_ms = Some(1_200);
+    strategy.active.fast_venue_incoherent = false;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_500.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
+    strategy.pricing.last_lead_gap_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    register_test_strategy_with_active_instruments(&mut strategy);
+
+    let up_instrument_id = strategy
+        .instrument_id_for_side(OutcomeSide::Up)
+        .expect("UP instrument should be configured");
+    let down_instrument_id = strategy
+        .instrument_id_for_side(OutcomeSide::Down)
+        .expect("DOWN instrument should be configured");
+    assert!(strategy.active.books.update_from_deltas(&book_deltas(
+        up_instrument_id,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 10.0),
+            (BookAction::Add, OrderSide::Sell, 0.70, 100.0),
+        ],
+    )));
+    assert!(strategy.active.books.update_from_deltas(&book_deltas(
+        down_instrument_id,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.90, 100.0),
+        ],
+    )));
+
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert_eq!(
+        evaluation.selected_side, None,
+        "sized re-evaluation must block when the sized limit price has a wider fee band: {evaluation:#?}"
+    );
+    assert_eq!(
+        evaluation
+            .up_executable_edge
+            .as_ref()
+            .and_then(|edge| edge.block_reason),
+        Some(ExecutableEdgeBlockReason::EdgeBelowThreshold)
+    );
+    assert!(
+        evaluation
+            .uncertainty_band_probability
+            .is_some_and(|band| (band - 0.5).abs() < 1e-9),
+        "final selected-side band should be recomputed from the sized fee: {evaluation:#?}"
     );
 }
 

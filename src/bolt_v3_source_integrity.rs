@@ -220,8 +220,11 @@ mod tests {
     // Re-derived again after removing the dead strategy evidence fallback RV
     // parameter, then after adding executable-edge cost breakdown to the gated
     // strategy source set and aligning its strategy test coverage.
+    // Re-derived again after selected-side sized-notional executable-edge
+    // re-evaluation started recomputing the uncertainty band from the sized
+    // limit-price fee.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "806c4c34c7376970203be1675a7060cd3858a2a304ec119c23119f8eb08b6d02";
+        "815bee45346b3d0148adac9403e598a3d77e8f86c3bf2de2946213ffd3735615";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

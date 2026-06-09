@@ -2421,6 +2421,26 @@ impl BinaryOracleEdgeTaker {
         })
     }
 
+    fn adjusted_probability_up_for_side_fee(
+        &self,
+        now_ms: u64,
+        side: OutcomeSide,
+        fair_probability_up: f64,
+        fee_bps: f64,
+    ) -> Option<(f64, f64)> {
+        let uncertainty_band_probability =
+            self.current_uncertainty_band_probability_at(now_ms, fee_bps, fee_bps)?;
+        let adjusted_probability_up = match side {
+            OutcomeSide::Up => {
+                clamp_probability(fair_probability_up - uncertainty_band_probability)
+            }
+            OutcomeSide::Down => {
+                clamp_probability(fair_probability_up + uncertainty_band_probability)
+            }
+        };
+        Some((uncertainty_band_probability, adjusted_probability_up))
+    }
+
     #[cfg(test)]
     fn submission_entry_price(&self, side: OutcomeSide) -> Option<f64> {
         self.executable_entry_cost(side)
@@ -4636,9 +4656,54 @@ impl BinaryOracleEdgeTaker {
                 .sized_notional
                 .filter(|value| is_positive_finite(*value))
             {
-                let selected_adjusted_probability_up = match selected_side {
-                    OutcomeSide::Up => up_adjusted_probability_up,
-                    OutcomeSide::Down => down_adjusted_probability_up,
+                let selected_sized_probe =
+                    self.executable_entry_probe_for_side(selected_side, order_side, sized_notional);
+                let selected_adjusted_probability_up = match selected_sized_probe {
+                    Ok(probe) => {
+                        let Some((selected_uncertainty_band, adjusted_probability_up)) = self
+                            .adjusted_probability_up_for_side_fee(
+                                now_ms,
+                                selected_side,
+                                fair_probability_up,
+                                probe.fee_bps,
+                            )
+                        else {
+                            evaluation
+                                .pricing_blocked_by
+                                .push(EntryPricingBlockReason::UncertaintyBandUnavailable);
+                            evaluation.selected_side = None;
+                            evaluation.sized_notional = None;
+                            evaluation.expected_ev_per_notional = None;
+                            return evaluation;
+                        };
+                        evaluation.uncertainty_band_probability = Some(selected_uncertainty_band);
+                        adjusted_probability_up
+                    }
+                    Err(reason) => {
+                        let sized_executable_edge =
+                            ExecutableEdgeResult::blocked(selected_side, reason);
+                        match selected_side {
+                            OutcomeSide::Up => {
+                                evaluation.up_worst_case_ev_bps =
+                                    Some(sized_executable_edge.edge_bps);
+                                evaluation.up_executable_edge = Some(sized_executable_edge);
+                            }
+                            OutcomeSide::Down => {
+                                evaluation.down_worst_case_ev_bps =
+                                    Some(sized_executable_edge.edge_bps);
+                                evaluation.down_executable_edge = Some(sized_executable_edge);
+                            }
+                        }
+                        push_executable_edge_pricing_block(
+                            &mut evaluation.pricing_blocked_by,
+                            selected_side,
+                            Some(reason),
+                        );
+                        evaluation.selected_side = None;
+                        evaluation.sized_notional = None;
+                        evaluation.expected_ev_per_notional = None;
+                        return evaluation;
+                    }
                 };
                 let sized_executable_edge = self.executable_edge_for_side(
                     selected_side,

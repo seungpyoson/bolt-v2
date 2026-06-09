@@ -76,6 +76,7 @@ pub struct IvCapabilityCandidate {
     pub symbol: String,
     pub matched_terms: BTreeSet<String>,
     pub seed_family: Option<SeedFamily>,
+    pub engine_mapping: Option<IvCapabilityEngineMapping>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +84,7 @@ pub struct IvCapabilityLedger {
     pub surfaces: Vec<IvCapabilityCandidate>,
     pub classifications: BTreeMap<String, CapabilityClassification>,
     pub classification_rules: Vec<IvCapabilityClassificationRule>,
+    pub engine_mapping_rules: Vec<IvCapabilityEngineMappingRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,12 +93,35 @@ pub struct IvCapabilityClassificationRule {
     pub classification: CapabilityClassification,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IvCapabilityEngineMapping {
+    pub mapping_kind: IvCapabilityEngineMappingKind,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IvCapabilityEngineMappingKind {
+    SourceKind,
+    ProductKind,
+    Helper,
+    RuntimeOperation,
+    Api,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IvCapabilityEngineMappingRule {
+    pub surface_id_prefix: String,
+    pub engine_mapping: IvCapabilityEngineMapping,
+}
+
 impl IvCapabilityLedger {
     pub fn empty() -> Self {
         Self {
             surfaces: Vec::new(),
             classifications: BTreeMap::new(),
             classification_rules: Vec::new(),
+            engine_mapping_rules: Vec::new(),
         }
     }
 
@@ -109,6 +134,19 @@ impl IvCapabilityLedger {
         })
     }
 
+    pub fn engine_mapping_for(&self, surface_id: &str) -> Option<&IvCapabilityEngineMapping> {
+        self.surfaces
+            .iter()
+            .find(|surface| surface.surface_id == surface_id)
+            .and_then(|surface| surface.engine_mapping.as_ref())
+            .or_else(|| {
+                self.engine_mapping_rules
+                    .iter()
+                    .find(|rule| surface_id.starts_with(&rule.surface_id_prefix))
+                    .map(|rule| &rule.engine_mapping)
+            })
+    }
+
     pub fn validate_candidates(
         &self,
         candidates: &[IvCapabilityCandidate],
@@ -118,6 +156,14 @@ impl IvCapabilityLedger {
                 .classifications
                 .contains_key(candidate.surface_id.as_str())
             {
+                if self.classification_for(&candidate.surface_id)
+                    == Some(CapabilityClassification::Supported)
+                    && self.engine_mapping_for(&candidate.surface_id).is_none()
+                {
+                    return Err(IvCapabilityError::MissingEngineMapping {
+                        surface_id: candidate.surface_id.clone(),
+                    });
+                }
                 continue;
             }
 
@@ -170,6 +216,9 @@ pub enum IvCapabilityError {
     UnclassifiedCandidate {
         surface_id: String,
     },
+    MissingEngineMapping {
+        surface_id: String,
+    },
 }
 
 impl From<io::Error> for IvCapabilityError {
@@ -193,6 +242,7 @@ struct CargoMetadataPackage {
 #[derive(Debug, Deserialize)]
 struct FixtureLedger {
     surfaces: Vec<FixtureSurface>,
+    engine_mapping_rules: Vec<IvCapabilityEngineMappingRule>,
     classification_rules: Vec<IvCapabilityClassificationRule>,
 }
 
@@ -204,6 +254,7 @@ struct FixtureSurface {
     matched_terms: Vec<String>,
     seed_family: Option<SeedFamily>,
     classification: CapabilityClassification,
+    engine_mapping: Option<IvCapabilityEngineMapping>,
 }
 
 pub fn resolve_nt_cargo_evidence(
@@ -292,6 +343,7 @@ pub fn load_capability_ledger_fixture(
             symbol: surface.symbol,
             matched_terms: surface.matched_terms.into_iter().collect(),
             seed_family: surface.seed_family,
+            engine_mapping: surface.engine_mapping,
         });
     }
 
@@ -299,6 +351,7 @@ pub fn load_capability_ledger_fixture(
         surfaces,
         classifications,
         classification_rules: fixture.classification_rules,
+        engine_mapping_rules: fixture.engine_mapping_rules,
     })
 }
 
@@ -418,6 +471,7 @@ fn scan_candidates(root: &Path) -> Result<Vec<IvCapabilityCandidate>, IvCapabili
                 symbol: public_symbol.symbol,
                 matched_terms: matched_terms.clone(),
                 seed_family,
+                engine_mapping: None,
             });
         }
     }

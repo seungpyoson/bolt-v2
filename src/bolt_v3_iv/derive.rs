@@ -679,10 +679,15 @@ fn profile_number_field(
 ) -> Option<(IvTimedInput<f64>, Vec<String>)> {
     profile_inputs
         .iter()
-        .find(|candidate| profile_source_matches(candidate, request, source_ref))
-        .and_then(|candidate| {
-            number_field(candidate, field).map(|input| (input, candidate.input_event_ids.clone()))
+        .filter_map(|candidate| {
+            if profile_source_matches(candidate, request, source_ref) {
+                number_field(candidate, field).map(|input| (candidate, input))
+            } else {
+                None
+            }
         })
+        .max_by_key(|(candidate, _)| candidate.as_of_ns.get())
+        .map(|(candidate, input)| (input, candidate.input_event_ids.clone()))
 }
 
 fn profile_side_field(
@@ -692,12 +697,15 @@ fn profile_side_field(
 ) -> Option<(IvTimedInput<IvOptionSide>, Vec<String>)> {
     profile_inputs
         .iter()
-        .find(|candidate| profile_source_matches(candidate, request, source_ref))
-        .and_then(|candidate| {
-            candidate
-                .option_side
-                .map(|input| (input, candidate.input_event_ids.clone()))
+        .filter_map(|candidate| {
+            if profile_source_matches(candidate, request, source_ref) {
+                candidate.option_side.map(|input| (candidate, input))
+            } else {
+                None
+            }
         })
+        .max_by_key(|(candidate, _)| candidate.as_of_ns.get())
+        .map(|(candidate, input)| (input, candidate.input_event_ids.clone()))
 }
 
 fn profile_source_matches(

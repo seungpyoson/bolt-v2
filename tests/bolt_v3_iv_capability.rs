@@ -6,8 +6,9 @@ use std::{
 };
 
 use bolt_v2::bolt_v3_iv::capability::{
-    CapabilityClassification, IvCapabilityCandidate, IvCapabilityError, IvCapabilityLedger,
-    REQUIRED_CANDIDATE_SWEEP_TERMS, SeedFamily, load_capability_ledger_fixture,
+    CapabilityClassification, IvCapabilityCandidate, IvCapabilityEngineMapping,
+    IvCapabilityEngineMappingKind, IvCapabilityEngineMappingRule, IvCapabilityError,
+    IvCapabilityLedger, REQUIRED_CANDIDATE_SWEEP_TERMS, SeedFamily, load_capability_ledger_fixture,
     resolve_nt_cargo_evidence, scan_seed_families, scan_whole_checkout_candidates,
 };
 
@@ -241,6 +242,7 @@ fn ledger_rejects_unclassified_candidates_and_loads_fixture() {
         symbol: "UnclassifiedCandidate".to_string(),
         matched_terms: BTreeSet::from(["option".to_string()]),
         seed_family: None,
+        engine_mapping: None,
     };
     let empty = IvCapabilityLedger::empty();
 
@@ -264,6 +266,41 @@ fn ledger_rejects_unclassified_candidates_and_loads_fixture() {
 }
 
 #[test]
+fn fixture_maps_seed_surfaces_to_specific_engine_owners() {
+    let fixture = load_capability_ledger_fixture(&repo_path(
+        "tests/fixtures/bolt_v3_iv/capability-ledger.toml",
+    ))
+    .unwrap();
+
+    let greeks_helper = fixture
+        .engine_mapping_for("nt.crates.model.src.data.greeks.imply_vol_and_greeks")
+        .unwrap();
+    assert_eq!(
+        greeks_helper.mapping_kind,
+        IvCapabilityEngineMappingKind::Helper
+    );
+    assert_eq!(greeks_helper.target, "iv_derived_helper");
+
+    let option_chain = fixture
+        .engine_mapping_for("nt.crates.model.src.data.option_chain.option_chain_slice")
+        .unwrap();
+    assert_eq!(
+        option_chain.mapping_kind,
+        IvCapabilityEngineMappingKind::ProductKind
+    );
+    assert_eq!(option_chain.target, "iv_option_chain_slice");
+
+    let subscription = fixture
+        .engine_mapping_for("nt.crates.common.src.actor.data_actor.subscribe_option_greeks")
+        .unwrap();
+    assert_eq!(
+        subscription.mapping_kind,
+        IvCapabilityEngineMappingKind::RuntimeOperation
+    );
+    assert_eq!(subscription.target, "iv_subscription_lifecycle");
+}
+
+#[test]
 fn ledger_requires_exact_review_for_supported_candidates() {
     let candidate = IvCapabilityCandidate {
         surface_id: "nt.crates.model.src.data.new_option_surface".to_string(),
@@ -271,6 +308,7 @@ fn ledger_requires_exact_review_for_supported_candidates() {
         symbol: "NewOptionSurface".to_string(),
         matched_terms: BTreeSet::from(["option".to_string(), "surface".to_string()]),
         seed_family: None,
+        engine_mapping: None,
     };
     let mut ledger = IvCapabilityLedger::empty();
     ledger.classification_rules.push(
@@ -290,7 +328,39 @@ fn ledger_requires_exact_review_for_supported_candidates() {
         candidate.surface_id.clone(),
         CapabilityClassification::Supported,
     );
+    ledger
+        .engine_mapping_rules
+        .push(IvCapabilityEngineMappingRule {
+            surface_id_prefix: candidate.surface_id.clone(),
+            engine_mapping: IvCapabilityEngineMapping {
+                mapping_kind: IvCapabilityEngineMappingKind::ProductKind,
+                target: "iv_option_surface".to_string(),
+            },
+        });
     ledger.validate_candidates(&[candidate]).unwrap();
+}
+
+#[test]
+fn ledger_requires_engine_mapping_for_supported_candidates() {
+    let candidate = IvCapabilityCandidate {
+        surface_id: "nt.crates.model.src.data.greeks.imply_vol_and_greeks".to_string(),
+        evidence_path: "crates/model/src/data/greeks.rs".to_string(),
+        symbol: "imply_vol_and_greeks".to_string(),
+        matched_terms: BTreeSet::from(["greeks".to_string(), "implied".to_string()]),
+        seed_family: Some(SeedFamily::GreeksHelper),
+        engine_mapping: None,
+    };
+    let mut ledger = IvCapabilityLedger::empty();
+    ledger.classifications.insert(
+        candidate.surface_id.clone(),
+        CapabilityClassification::Supported,
+    );
+
+    assert!(matches!(
+        ledger.validate_candidates(std::slice::from_ref(&candidate)),
+        Err(IvCapabilityError::MissingEngineMapping { surface_id })
+            if surface_id == candidate.surface_id
+    ));
 }
 
 #[test]

@@ -1614,6 +1614,146 @@ symbol = "OptionSpread"
 matched_terms = ["option", "options"]
 classification = "supported"
 
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.model.option_greeks"
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_greeks" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.model.option_chain_slice"
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_chain_slice" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.data.actor.subscribe_option_greeks"
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_subscription_lifecycle" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.data.engine.publish_option_chain_slice"
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_chain_publication" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.common.msgbus.option_greeks_topic"
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_msgbus_topic" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.data.option_chains."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_option_chain_manager" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.model.greeks."
+engine_mapping = { mapping_kind = "helper", target = "iv_derived_helper" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.adapters.option_greeks_subscription"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.model.custom_data_registration"
+engine_mapping = { mapping_kind = "api", target = "iv_custom_data_registration" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.common.src.actor.data_actor."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_subscription_lifecycle" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.common.src.cache."
+engine_mapping = { mapping_kind = "api", target = "iv_nt_cache_api" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.common.src.greeks."
+engine_mapping = { mapping_kind = "helper", target = "iv_derived_helper" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.common.src.lib.greeks"
+engine_mapping = { mapping_kind = "helper", target = "iv_derived_helper" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.common.src.messages.data.subscribe."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_subscription_lifecycle" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.common.src.messages.data.unsubscribe."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_subscription_lifecycle" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.common.src.msgbus.api."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_msgbus_topic" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.data.src.aggregation."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_vega_aggregation" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.data.src.client."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_data_client_subscription" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.data.src.engine."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_data_engine" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.data.src.lib.option_chains"
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_option_chain_manager" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.data.src.option_chains."
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_option_chain_manager" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.black_scholes."
+engine_mapping = { mapping_kind = "helper", target = "iv_derived_helper" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.custom."
+engine_mapping = { mapping_kind = "api", target = "iv_custom_data_api" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.greeks.imply_vol"
+engine_mapping = { mapping_kind = "helper", target = "iv_derived_helper" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.greeks.refine_vol"
+engine_mapping = { mapping_kind = "helper", target = "iv_derived_helper" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.greeks."
+engine_mapping = { mapping_kind = "product_kind", target = "iv_greeks_data" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.mod."
+engine_mapping = { mapping_kind = "api", target = "iv_model_data_api" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.option_chain."
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_chain_slice" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.registry."
+engine_mapping = { mapping_kind = "api", target = "iv_custom_data_registration" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.data.stubs."
+engine_mapping = { mapping_kind = "api", target = "iv_custom_data_api" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.enums."
+engine_mapping = { mapping_kind = "api", target = "iv_option_metadata_api" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.identifiers.mod.option_series_id"
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_series_id" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.identifiers.option_series_id."
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_series_id" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.identifiers.symbol."
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_instrument" }
+
+[[engine_mapping_rules]]
+surface_id_prefix = "nt.crates.model.src.instruments."
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_instrument" }
+
 [[classification_rules]]
 surface_id_prefix = "nt.crates.adapters."
 classification = "excluded"

@@ -146,6 +146,11 @@ fn validate_profile(profile: &IvProfile) -> Vec<String> {
     if profile.profile_id.trim().is_empty() {
         errors.push("iv.profiles.profile_id must be non-empty".to_string());
     }
+    if profile.profile_id != profile.profile_id.trim() {
+        errors.push(
+            "iv.profiles.profile_id must not contain leading or trailing whitespace".to_string(),
+        );
+    }
     if profile.strategy_ids.is_empty() {
         errors.push(format!("{profile_context}.strategy_ids must be non-empty"));
     }

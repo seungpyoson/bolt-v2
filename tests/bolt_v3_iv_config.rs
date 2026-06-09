@@ -562,6 +562,83 @@ fn duplicate_profile_ids_reject_at_config_validation() {
 }
 
 #[test]
+fn duplicate_profile_ids_reject_through_toml_loader() {
+    let duplicate_profile = valid_iv_toml()
+        .trim_start()
+        .strip_prefix("schema_version = 1\n\n")
+        .unwrap();
+    let invalid = format!("{}\n{}", valid_iv_toml(), duplicate_profile);
+
+    let error =
+        load_iv_config_from_toml(&invalid).expect_err("duplicate profile_id must reject at load");
+
+    assert!(matches!(
+        error,
+        IvConfigError::Validation(errors)
+            if errors.iter().any(|message| {
+                message.contains("iv.profiles.configured-profile")
+                    && message.contains("profile_id is duplicated")
+            })
+    ));
+}
+
+#[test]
+fn duplicate_profile_ids_report_every_extra_occurrence() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    let duplicate = config.profiles[0].clone();
+    config.profiles.push(duplicate.clone());
+    config.profiles.push(duplicate);
+
+    let errors = validate_iv_root_config(&config);
+
+    let duplicate_profile_errors = errors
+        .iter()
+        .filter(|message| message.contains("profile_id is duplicated"))
+        .count();
+    assert_eq!(duplicate_profile_errors, 2);
+}
+
+#[test]
+fn duplicate_profile_validation_still_reports_nested_profile_errors() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    let mut duplicate = config.profiles[0].clone();
+    duplicate.sources.push(duplicate.sources[0].clone());
+    config.profiles.push(duplicate);
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("iv.profiles.configured-profile")
+            && message.contains("profile_id is duplicated")
+    }));
+    assert!(errors.iter().any(|message| {
+        message.contains("sources.configured-greeks-source")
+            && message.contains("source_id is duplicated")
+    }));
+}
+
+#[test]
+fn profile_ids_reject_surrounding_whitespace() {
+    let invalid = valid_iv_toml().replacen(
+        "profile_id = \"configured-profile\"",
+        "profile_id = \" configured-profile \"",
+        1,
+    );
+
+    let error = load_iv_config_from_toml(&invalid)
+        .expect_err("profile_id with surrounding whitespace must reject");
+
+    assert!(matches!(
+        error,
+        IvConfigError::Validation(errors)
+            if errors.iter().any(|message| {
+                message.contains("iv.profiles.profile_id")
+                    && message.contains("leading or trailing whitespace")
+            })
+    ));
+}
+
+#[test]
 fn derived_input_policy_must_require_every_helper_input_field() {
     let invalid = valid_iv_toml().replacen(
         "required_fields = [\"option_price\", \"underlying_price\", \"strike\", \"option_side\", \"time_to_expiry_years\", \"rate\", \"carry\"]",

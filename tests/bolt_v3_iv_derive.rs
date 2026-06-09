@@ -222,12 +222,40 @@ fn derived_input_policy_resolves_profile_source_and_operator_fields_before_helpe
         required_fields: IvDerivedInputField::required_fields().to_vec(),
         field_sources: vec![
             IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::OptionPrice,
+                allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::QuerySupplied]),
+                profile_source_ref: None,
+                operator_number: None,
+                operator_side: None,
+            },
+            IvDerivedInputFieldPolicy {
                 field: IvDerivedInputField::UnderlyingPrice,
                 allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::ProfileSourceRef]),
                 profile_source_ref: Some(IvDerivedProfileSourceRef {
                     source_id: "configured-underlying-source".to_string(),
                     selector_fingerprint: "configured-underlying-selector".to_string(),
                 }),
+                operator_number: None,
+                operator_side: None,
+            },
+            IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::Strike,
+                allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::QuerySupplied]),
+                profile_source_ref: None,
+                operator_number: None,
+                operator_side: None,
+            },
+            IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::OptionSide,
+                allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::QuerySupplied]),
+                profile_source_ref: None,
+                operator_number: None,
+                operator_side: None,
+            },
+            IvDerivedInputFieldPolicy {
+                field: IvDerivedInputField::TimeToExpiryYears,
+                allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::QuerySupplied]),
+                profile_source_ref: None,
                 operator_number: None,
                 operator_side: None,
             },

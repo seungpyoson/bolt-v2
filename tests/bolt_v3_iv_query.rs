@@ -1063,6 +1063,9 @@ fn derived_iv_helper_output_rejection_updates_source_health() {
         IvStore::empty(),
     )
     .with_helper_policies(vec![helper])
+    .with_derived_input_policies(vec![query_supplied_derived_input_policy(
+        "configured-derived-input-policy",
+    )])
     .with_derived_inputs(vec![complete_inputs()]);
 
     assert_eq!(
@@ -1107,6 +1110,9 @@ fn derived_iv_outputs_are_retained_by_profile_memory_bounds() {
         IvStore::empty(),
     )
     .with_helper_policies(vec![helper_policy()])
+    .with_derived_input_policies(vec![query_supplied_derived_input_policy(
+        "configured-derived-input-policy",
+    )])
     .with_derived_inputs(vec![first_inputs, second_inputs]);
 
     for as_of_ns in [UnixNanos::new(2_000), UnixNanos::new(2_010)] {

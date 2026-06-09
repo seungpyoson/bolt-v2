@@ -795,7 +795,7 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
     strategy.config.maximum_position_notional = 100.0;
     strategy.config.risk_lambda = 0.10;
     strategy.config.vwap_depth_limit_bps = 5_000;
-    strategy.config.edge_threshold_basis_points = 0;
+    strategy.config.edge_threshold_basis_points = i64::default();
     strategy.config.slippage_buffer_bps = 0;
     strategy.config.warmup_tick_count = 2;
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
@@ -973,15 +973,41 @@ fn entry_submission_notional_guard_allows_scaled_float_noise() {
 
 #[test]
 fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
-    let mut strategy =
-        ready_to_trade_strategy_with_live_fees(Decimal::new(250, 2), Decimal::new(250, 2));
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    strategy.config.order_notional_target = UNIT_F64;
+    strategy.config.maximum_position_notional = UNIT_F64;
+    strategy.config.edge_threshold_basis_points = 0;
+    let cheap_outcome_price = UNIT_F64 / BPS_DENOMINATOR.sqrt();
+    let book_quantity = BPS_DENOMINATOR;
+    set_configured_books_depth(
+        &mut strategy,
+        &[
+            (
+                BookAction::Clear,
+                OrderSide::Buy,
+                cheap_outcome_price,
+                book_quantity,
+            ),
+            (
+                BookAction::Add,
+                OrderSide::Buy,
+                cheap_outcome_price,
+                book_quantity,
+            ),
+            (
+                BookAction::Add,
+                OrderSide::Sell,
+                cheap_outcome_price,
+                book_quantity,
+            ),
+        ],
+    );
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.4, 1_200));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(0.02);
     strategy.pricing.last_jitter_penalty_probability = Some(0.01);
-    strategy.config.edge_threshold_basis_points = -(BPS_DENOMINATOR as i64);
 
     let decision = strategy.entry_evaluation_at(1_200);
 

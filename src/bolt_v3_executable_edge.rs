@@ -334,7 +334,10 @@ pub(crate) fn evaluate_executable_edge(inputs: &ExecutableEdgeInputs<'_>) -> Exe
     }
 
     let mut block_reason = None;
-    if !inputs.minimum_edge_bps.is_finite() || edge_bps <= inputs.minimum_edge_bps {
+    if edge_cents_per_share <= ZERO_F64
+        || !inputs.minimum_edge_bps.is_finite()
+        || edge_bps <= inputs.minimum_edge_bps
+    {
         block_reason = Some(
             if gross_edge_cents_per_share > ZERO_F64 && edge_cents_per_share <= ZERO_F64 {
                 ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge
@@ -505,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn negative_threshold_allows_fee_wiped_edge_that_still_clears_threshold() {
+    fn negative_threshold_does_not_allow_fee_wiped_net_negative_edge() {
         let ask_price = HALF_F64;
         let ask_quantity = CENTS_PER_SHARE;
         let fee_bps = BPS_DENOMINATOR / (CENTS_PER_SHARE * HALF_F64);
@@ -520,8 +523,33 @@ mod tests {
         let result = evaluate_executable_edge(&inputs);
 
         assert!(result.edge_bps > inputs.minimum_edge_bps);
-        assert!(result.trade_allowed);
-        assert_eq!(result.block_reason, None);
+        assert!(!result.trade_allowed);
+        assert_eq!(
+            result.block_reason,
+            Some(ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge)
+        );
+    }
+
+    #[test]
+    fn exact_size_vwap_blocks_sell_when_limit_price_exceeds_depth_limit() {
+        let best_bid_price = HALF_F64;
+        let best_bid_quantity = CENTS_PER_SHARE;
+        let outside_depth_bid_price = best_bid_price * HALF_F64 * HALF_F64;
+        let requested_notional = best_bid_price * best_bid_quantity * (UNIT_F64 + UNIT_F64);
+        let depth_limit_bps = (BPS_DENOMINATOR * HALF_F64) as u64;
+        let book = priced_book_with_levels(
+            &[
+                (best_bid_price, best_bid_quantity),
+                (outside_depth_bid_price, CENTS_PER_SHARE),
+            ],
+            &[(UNIT_F64, CENTS_PER_SHARE)],
+        );
+
+        let reason =
+            price_exact_size_vwap(&book, OrderSide::Sell, requested_notional, depth_limit_bps)
+                .expect_err("last consumed sell level outside the depth limit must fail closed");
+
+        assert_eq!(reason, ExecutableEdgeBlockReason::InsufficientDepth);
     }
 
     #[test]

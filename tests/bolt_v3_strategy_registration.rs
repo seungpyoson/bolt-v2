@@ -787,7 +787,7 @@ fn binary_oracle_runtime_mapping_rejects_decision_reference_resolution_identity_
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_post_only_gtc_entry_order() {
+fn binary_oracle_runtime_mapping_rejects_post_only_gtc_entry_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -841,6 +841,8 @@ fn binary_oracle_runtime_mapping_preserves_post_only_gtc_entry_order() {
             .and_then(toml::Value::as_bool),
         Some(false)
     );
+
+    assert_unsupported_executable_entry_order_shape(&raw, "PostOnlyGtc");
 }
 
 #[test]

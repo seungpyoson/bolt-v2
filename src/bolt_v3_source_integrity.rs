@@ -234,8 +234,10 @@ mod tests {
     // Re-derived after moving notional float tolerance into the shared numeric
     // helper to remove duplicate tolerance definitions from the strategy source
     // set.
+    // Re-derived after executable-edge review cleanup made non-positive net
+    // edge untradeable regardless of a negative configured threshold.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "5e425923e184bb2752a714974da604e0e9c5d32d70698005aa949541ec3dadcb";
+        "eee3c04d3ba7bb028650ba036bac2b056dac6cd8242c91d6b69dd82cdf040902";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

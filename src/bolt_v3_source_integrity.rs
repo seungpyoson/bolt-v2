@@ -255,8 +255,10 @@ mod tests {
     // reference-current-price runtime state while preserving realized volatility.
     // Re-derived again after preserving reference-current-price source health
     // timestamps through selection block refreshes.
+    // Re-derived again after ignoring valid out-of-order reference-current-price
+    // replays instead of replacing fresher same-source quotes.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "9e665bc4d7e0464038ffb6b8392d0480e92e4780330531757a40f04e21e7e1dd";
+        "d51e41f94d46ff49e497829674cc8df811e0decd9819f00e179b65fe323c3d8f";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

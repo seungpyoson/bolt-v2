@@ -505,6 +505,78 @@ fn stale_reference_price_replay_does_not_evict_fresh_same_interval_quotes() {
 }
 
 #[test]
+fn valid_out_of_order_reference_price_replay_does_not_replace_fresher_quote() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price.min_valid_sources = 2;
+    reference_price.max_source_drift_bps = 50;
+    reference_price.drift_policy = ReferencePriceDriftPolicy::Block;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let _cache = register_test_strategy(&mut strategy);
+
+    let fresh_primary = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.0,
+        1_100,
+        1_110,
+    );
+    DataActor::on_data(&mut strategy, &fresh_primary)
+        .expect("fresh primary quote should be handled");
+
+    let fresh_backup = reference_price_update(
+        POLYRESEARCH_BACKUP_SOURCE_ID,
+        POLYRESEARCH_REFERENCE_PROVIDER,
+        POLYRESEARCH_REFERENCE_SYMBOL,
+        100.1,
+        1_105,
+        1_115,
+    );
+    DataActor::on_data(&mut strategy, &fresh_backup).expect("fresh backup quote should be handled");
+
+    let out_of_order_primary = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        150.0,
+        1_090,
+        1_120,
+    );
+    DataActor::on_data(&mut strategy, &out_of_order_primary)
+        .expect("valid out-of-order primary replay should be handled");
+
+    let primary_quote = strategy
+        .reference_price_quotes
+        .get(CHAINLINK_PRIMARY_SOURCE_ID)
+        .expect("fresh primary quote should survive valid out-of-order replay");
+    assert_eq!(primary_quote.price(), 100.0);
+    assert_eq!(primary_quote.observed_ts_ms(), 1_100);
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
+            .map(|health| health.status()),
+        Some(ReferencePriceSourceStatus::Available)
+    );
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
+            .and_then(|health| health.observed_ts_ms()),
+        Some(1_100)
+    );
+    assert_eq!(strategy.active.reference_current_price, Some(100.0));
+    assert_eq!(
+        strategy.active.reference_current_price_source_id.as_deref(),
+        Some(CHAINLINK_PRIMARY_SOURCE_ID)
+    );
+    assert_eq!(strategy.active.reference_current_price_ts_ms, Some(1_100));
+}
+
+#[test]
 fn reference_price_update_with_wrong_provider_does_not_satisfy_source() {
     let mut strategy = test_strategy();
     let mut reference_price = reference_price_config();

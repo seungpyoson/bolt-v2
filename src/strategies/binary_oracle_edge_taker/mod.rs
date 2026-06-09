@@ -1481,6 +1481,14 @@ impl BinaryOracleEdgeTaker {
             return;
         }
 
+        if self
+            .reference_price_quotes
+            .get(quote.source_id())
+            .is_some_and(|existing| existing.observed_ts_ms() >= quote.observed_ts_ms())
+        {
+            return;
+        }
+
         self.reference_price_source_health.insert(
             quote.source_id().to_string(),
             ReferencePriceSourceHealth::available(&quote),

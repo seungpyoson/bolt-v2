@@ -9,10 +9,10 @@ use crate::{
         ReferencePriceBlock, ReferencePriceDriftPolicy, ReferencePriceProvider,
         ReferencePriceSourceBlock,
     },
+    bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_providers::reference_price_provider_supports_asset,
 };
 
-const NANOS_PER_MILLI_U64: u64 = 1_000_000;
 const REFERENCE_PRICE_UPDATE_TYPE: &str = "BoltV3ReferencePriceUpdate";
 const REFERENCE_PRICE_ASSET_METADATA_FIELD: &str = "asset";
 const REFERENCE_PRICE_SOURCE_KEY_METADATA_FIELD: &str = "source_key";
@@ -110,6 +110,8 @@ impl ReferencePriceUpdate {
         let provider_instrument =
             valid_reference_identity_field(provider_instrument.into(), "provider_instrument")?;
         validate_reference_values(price, bid, ask, observed_ts_ms, received_ts_ms)?;
+        let ts_event = reference_timestamp_ms_to_unix_nanos(observed_ts_ms, "observed_ts_ms")?;
+        let ts_init = reference_timestamp_ms_to_unix_nanos(received_ts_ms, "received_ts_ms")?;
 
         Ok(Self {
             asset,
@@ -122,8 +124,8 @@ impl ReferencePriceUpdate {
             observed_ts_ms,
             received_ts_ms,
             provenance,
-            ts_event: UnixNanos::from(observed_ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
-            ts_init: UnixNanos::from(received_ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+            ts_event,
+            ts_init,
         })
     }
 
@@ -235,6 +237,9 @@ impl ReferenceQuoteProvenance {
             validate_provenance_component(value, "value")?;
             let key_lower = key.to_ascii_lowercase();
             if key_lower.contains("secret")
+                || key_lower.contains("authorization")
+                || key_lower.contains("auth_header")
+                || key_lower.contains("credential")
                 || key_lower.contains("api_key")
                 || key_lower.contains("apikey")
                 || key_lower.contains("token")
@@ -816,4 +821,14 @@ fn validate_reference_values(
     }
 
     Ok(())
+}
+
+fn reference_timestamp_ms_to_unix_nanos(
+    timestamp_ms: u64,
+    field: &'static str,
+) -> Result<UnixNanos, String> {
+    timestamp_ms
+        .checked_mul(NANOS_PER_MILLI_U64)
+        .map(UnixNanos::from)
+        .ok_or_else(|| format!("reference quote {field} cannot convert to UnixNanos"))
 }

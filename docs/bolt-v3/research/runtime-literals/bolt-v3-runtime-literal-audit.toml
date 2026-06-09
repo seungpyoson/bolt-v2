@@ -8800,14 +8800,6 @@ reason = "PolyResearch reference-price secret config field name used in redacted
 
 [[allowed]]
 path = "src/bolt_v3_reference_price.rs"
-kind = "number"
-literal = '''1_000_000'''
-context = '''const NANOS_PER_MILLI_U64: u64 = 1_000_000;'''
-classification = "time_unit_conversion"
-reason = "Nanoseconds-per-millisecond conversion constant used to build NT timestamps from provider millisecond observations."
-
-[[allowed]]
-path = "src/bolt_v3_reference_price.rs"
 kind = "string"
 literal = '''"BoltV3ReferencePriceUpdate"'''
 context = '''const REFERENCE_PRICE_UPDATE_TYPE: &str = "BoltV3ReferencePriceUpdate";'''
@@ -8905,6 +8897,22 @@ reason = "Validation field label for normalized reference-price provider identif
 [[allowed]]
 path = "src/bolt_v3_reference_price.rs"
 kind = "string"
+literal = '''"observed_ts_ms"'''
+context = '''let ts_event = reference_timestamp_ms_to_unix_nanos(observed_ts_ms, "observed_ts_ms")?;'''
+classification = "reference_price_validation_field"
+reason = "Validation field label for fail-closed observed timestamp conversion into NT UnixNanos."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"received_ts_ms"'''
+context = '''let ts_init = reference_timestamp_ms_to_unix_nanos(received_ts_ms, "received_ts_ms")?;'''
+classification = "reference_price_validation_field"
+reason = "Validation field label for fail-closed received timestamp conversion into NT UnixNanos."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
 literal = '''"provider"'''
 context = '''let provider = valid_reference_identity_field(provider.into(), "provider")?;'''
 classification = "reference_price_validation_field"
@@ -8933,6 +8941,30 @@ literal = '''"secret"'''
 context = '''if key_lower.contains("secret")'''
 classification = "secret_bearing_field_guard"
 reason = "Forbidden provenance key substring used to prevent secret-bearing metadata from entering normalized reference-price updates."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"authorization"'''
+context = '''|| key_lower.contains("authorization")'''
+classification = "secret_bearing_field_guard"
+reason = "Forbidden provenance key substring used to prevent authorization metadata from entering normalized reference-price updates."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"auth_header"'''
+context = '''|| key_lower.contains("auth_header")'''
+classification = "secret_bearing_field_guard"
+reason = "Forbidden provenance key substring used to prevent auth-header metadata from entering normalized reference-price updates."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"credential"'''
+context = '''|| key_lower.contains("credential")'''
+classification = "secret_bearing_field_guard"
+reason = "Forbidden provenance key substring used to prevent credential metadata from entering normalized reference-price updates."
 
 [[allowed]]
 path = "src/bolt_v3_reference_price.rs"

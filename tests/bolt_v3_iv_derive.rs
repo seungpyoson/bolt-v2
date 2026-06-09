@@ -3,9 +3,10 @@ use std::collections::BTreeSet;
 use bolt_v2::bolt_v3_iv::{
     bounds::{IvBoundUnit, IvConventionBounds, IvNumericBounds},
     derive::{
-        IvDeriveError, IvDerivedInputField, IvDerivedInputFieldPolicy, IvDerivedInputPolicy,
-        IvDerivedInputSet, IvDerivedInputSourceKind, IvDerivedProfileSourceRef, IvHelperOutput,
-        IvHelperPolicy, IvNtHelperSymbol, IvOptionSide, IvTimedInput, derive_iv,
+        IvDeriveError, IvDerivedInputBounds, IvDerivedInputField, IvDerivedInputFieldPolicy,
+        IvDerivedInputPolicy, IvDerivedInputSet, IvDerivedInputSourceKind,
+        IvDerivedProfileSourceRef, IvHelperFailurePolicy, IvHelperOutput, IvHelperPolicy,
+        IvNtHelperSymbol, IvOperatorValueRefreshPolicy, IvOptionSide, IvTimedInput, derive_iv,
         resolve_derived_input_policy, select_helper_policy,
     },
     error::IvRejectReason,
@@ -42,10 +43,43 @@ fn helper_policy() -> IvHelperPolicy {
         allowed_outputs: BTreeSet::from([IvHelperOutput::IvAndGreeks]),
         input_policy_ref: "configured-derived-input-policy".to_string(),
         output_bounds: bounds(2.0),
-        convention_policy: "configured-convention-policy".to_string(),
-        failure_policy: "reject_invalid_helper_output".to_string(),
+        convention_policy: IvConventionBounds {
+            allowed_conventions: BTreeSet::from([convention()]),
+        },
+        failure_policy: IvHelperFailurePolicy::RejectInvalidHelperOutput,
         max_input_timestamp_skew_ns: 20,
         max_operator_input_age_ns: 100,
+    }
+}
+
+fn input_bounds() -> IvDerivedInputBounds {
+    IvDerivedInputBounds {
+        option_price: Some(input_bound(true, 0.0, 10_000.0, IvBoundUnit::Price)),
+        underlying_price: Some(input_bound(true, 0.0, 10_000.0, IvBoundUnit::Price)),
+        strike: Some(input_bound(true, 0.0, 10_000.0, IvBoundUnit::Strike)),
+        time_to_expiry_years: Some(input_bound(true, 0.0, 100.0, IvBoundUnit::TimeToExpiry)),
+        rate: Some(input_bound(false, -1.0, 1.0, IvBoundUnit::Rate)),
+        carry: Some(input_bound(false, -1.0, 1.0, IvBoundUnit::Carry)),
+    }
+}
+
+fn input_bound(
+    positive_required: bool,
+    inclusive_min: f64,
+    inclusive_max: f64,
+    unit: IvBoundUnit,
+) -> IvNumericBounds {
+    IvNumericBounds {
+        finite_required: true,
+        positive_required,
+        inclusive_min: Some(inclusive_min),
+        inclusive_max: Some(inclusive_max),
+        exclusive_min: None,
+        exclusive_max: None,
+        unit,
+        allowed_conventions: IvConventionBounds {
+            allowed_conventions: BTreeSet::new(),
+        },
     }
 }
 
@@ -218,9 +252,11 @@ fn derived_input_policy_resolves_profile_source_and_operator_fields_before_helpe
         ],
         freshness_ns: 100,
         max_input_skew_ns: 20,
-        bounds: "configured-derived-input-bounds".to_string(),
-        convention_policy: "configured-convention-policy".to_string(),
-        operator_value_refresh_policy: "reject_expired_operator_values".to_string(),
+        bounds: input_bounds(),
+        convention_policy: IvConventionBounds {
+            allowed_conventions: BTreeSet::from([convention()]),
+        },
+        operator_value_refresh_policy: IvOperatorValueRefreshPolicy::RejectExpiredOperatorValues,
     };
 
     let resolved =

@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    bounds::IvNumericBounds,
+    bounds::{IvConventionBounds, IvNumericBounds},
     error::IvRejectReason,
     health::IvSourceHealthState,
     ingest::IvGreekValues,
@@ -36,8 +36,8 @@ pub struct IvHelperPolicy {
     pub allowed_outputs: BTreeSet<IvHelperOutput>,
     pub input_policy_ref: String,
     pub output_bounds: IvNumericBounds,
-    pub convention_policy: String,
-    pub failure_policy: String,
+    pub convention_policy: IvConventionBounds,
+    pub failure_policy: IvHelperFailurePolicy,
     pub max_input_timestamp_skew_ns: u64,
     pub max_operator_input_age_ns: u64,
 }
@@ -48,6 +48,12 @@ pub enum IvHelperOutput {
     Iv,
     Greeks,
     IvAndGreeks,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IvHelperFailurePolicy {
+    RejectInvalidHelperOutput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -145,9 +151,40 @@ pub struct IvDerivedInputPolicy {
     pub field_sources: Vec<IvDerivedInputFieldPolicy>,
     pub freshness_ns: u64,
     pub max_input_skew_ns: u64,
-    pub bounds: String,
-    pub convention_policy: String,
-    pub operator_value_refresh_policy: String,
+    pub bounds: IvDerivedInputBounds,
+    pub convention_policy: IvConventionBounds,
+    pub operator_value_refresh_policy: IvOperatorValueRefreshPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IvDerivedInputBounds {
+    pub option_price: Option<IvNumericBounds>,
+    pub underlying_price: Option<IvNumericBounds>,
+    pub strike: Option<IvNumericBounds>,
+    pub time_to_expiry_years: Option<IvNumericBounds>,
+    pub rate: Option<IvNumericBounds>,
+    pub carry: Option<IvNumericBounds>,
+}
+
+impl IvDerivedInputBounds {
+    pub fn numeric_bound(&self, field: IvDerivedInputField) -> Option<&IvNumericBounds> {
+        match field {
+            IvDerivedInputField::OptionPrice => self.option_price.as_ref(),
+            IvDerivedInputField::UnderlyingPrice => self.underlying_price.as_ref(),
+            IvDerivedInputField::Strike => self.strike.as_ref(),
+            IvDerivedInputField::TimeToExpiryYears => self.time_to_expiry_years.as_ref(),
+            IvDerivedInputField::Rate => self.rate.as_ref(),
+            IvDerivedInputField::Carry => self.carry.as_ref(),
+            IvDerivedInputField::OptionSide => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IvOperatorValueRefreshPolicy {
+    RejectExpiredOperatorValues,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -235,6 +272,12 @@ pub fn derive_iv(
         return Err(IvDeriveError::Rejected {
             reason: IvRejectReason::InvalidDerivedInput,
             field: "allowed_outputs".to_string(),
+        });
+    }
+    if !convention_policy_accepts(&policy.convention_policy, &inputs.convention) {
+        return Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::InvalidDerivedInput,
+            field: "convention_policy".to_string(),
         });
     }
 
@@ -405,8 +448,69 @@ fn validate_resolved_input_policy(
             field: "freshness".to_string(),
         });
     }
+    if !convention_policy_accepts(&policy.convention_policy, &inputs.convention) {
+        return Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::InvalidDerivedInput,
+            field: "convention_policy".to_string(),
+        });
+    }
+    for field in policy.required_fields.iter().copied() {
+        validate_input_bounds(policy, inputs, field)?;
+        validate_operator_refresh_policy(policy, inputs, field)?;
+    }
 
     Ok(())
+}
+
+fn convention_policy_accepts(policy: &IvConventionBounds, convention: &IvConvention) -> bool {
+    policy.allowed_conventions.is_empty() || policy.allowed_conventions.contains(convention)
+}
+
+fn validate_input_bounds(
+    policy: &IvDerivedInputPolicy,
+    inputs: &IvDerivedInputSet,
+    field: IvDerivedInputField,
+) -> Result<(), IvDeriveError> {
+    let Some(bound) = policy.bounds.numeric_bound(field) else {
+        return Ok(());
+    };
+    let Some(value) = number_field(inputs, field).map(|input| input.value) else {
+        return Ok(());
+    };
+    if !bound.accepts(value, &inputs.convention) {
+        return Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::InvalidDerivedInput,
+            field: field.as_str().to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_operator_refresh_policy(
+    policy: &IvDerivedInputPolicy,
+    inputs: &IvDerivedInputSet,
+    field: IvDerivedInputField,
+) -> Result<(), IvDeriveError> {
+    let Some(input) = number_field(inputs, field) else {
+        return Ok(());
+    };
+    if input.source_kind != IvDerivedInputSourceKind::OperatorConfigured {
+        return Ok(());
+    }
+    match policy.operator_value_refresh_policy {
+        IvOperatorValueRefreshPolicy::RejectExpiredOperatorValues
+            if input
+                .expires_at_ns
+                .is_some_and(|expires_at_ns| expires_at_ns.get() < inputs.as_of_ns.get()) =>
+        {
+            Err(IvDeriveError::Rejected {
+                reason: IvRejectReason::OperatorInputExpired,
+                field: field.as_str().to_string(),
+            })
+        }
+        _ => Ok(()),
+    }
 }
 
 fn resolve_number_field(
@@ -556,7 +660,6 @@ fn profile_source_matches(
     source_ref: &IvDerivedProfileSourceRef,
 ) -> bool {
     candidate.profile_id == request.profile_id
-        && candidate.instrument_id == request.instrument_id
         && candidate.source_id == source_ref.source_id
         && candidate.selector_fingerprint == source_ref.selector_fingerprint
 }

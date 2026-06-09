@@ -243,10 +243,8 @@ impl IvQueryStateHandle {
         if let Some(existing) = state.source_health.iter_mut().find(|existing| {
             existing.profile_id == source_health.profile_id
                 && existing.source_id == source_health.source_id
+                && existing.subscription_generation == source_health.subscription_generation
         }) {
-            if existing.subscription_generation > source_health.subscription_generation {
-                return;
-            }
             *existing = source_health;
         } else {
             state.source_health.push(source_health);
@@ -1191,18 +1189,18 @@ mod tests {
         handle
             .write_state()
             .current_subscription_generations
-            .insert("configured-source".to_string(), 1);
+            .insert("test-source".to_string(), 1);
         handle.upsert_source_health(source_health_with_generation(
-            "configured-source",
+            "test-source",
             super::health::IvSourceHealthState::Active,
             1,
         ));
         handle
             .write_state()
             .current_subscription_generations
-            .insert("configured-source".to_string(), 2);
+            .insert("test-source".to_string(), 2);
         handle.upsert_source_health(source_health_with_generation(
-            "configured-source",
+            "test-source",
             super::health::IvSourceHealthState::Active,
             2,
         ));
@@ -1211,7 +1209,7 @@ mod tests {
             .snapshot()
             .source_health
             .iter()
-            .filter(|health| health.source_id == "configured-source")
+            .filter(|health| health.source_id == "test-source")
             .map(|health| health.subscription_generation)
             .collect::<Vec<_>>();
 
@@ -1224,7 +1222,7 @@ mod tests {
         subscription_generation: u64,
     ) -> IvSourceHealth {
         IvSourceHealth {
-            profile_id: "configured-profile".to_string(),
+            profile_id: "test-profile".to_string(),
             source_id: source_id.to_string(),
             subscription_state: state,
             last_event_ts_ns: None,

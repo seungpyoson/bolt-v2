@@ -482,12 +482,6 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.helper_policy_id
             ));
         }
-        if policy.convention_policy.trim().is_empty() || policy.failure_policy.trim().is_empty() {
-            errors.push(format!(
-                "{context}.helper_policies.{} convention_policy and failure_policy must be non-empty",
-                policy.helper_policy_id
-            ));
-        }
         if policy.max_input_timestamp_skew_ns == 0 {
             errors.push(format!(
                 "{context}.helper_policies.{}.max_input_timestamp_skew_ns must be positive",
@@ -526,15 +520,7 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.input_policy_id
             ));
         }
-        if policy.bounds.trim().is_empty()
-            || policy.convention_policy.trim().is_empty()
-            || policy.operator_value_refresh_policy.trim().is_empty()
-        {
-            errors.push(format!(
-                "{context}.derived_input_policies.{} bounds, convention_policy, and operator_value_refresh_policy must be non-empty",
-                policy.input_policy_id
-            ));
-        }
+        validate_derived_input_policy_bounds(context, policy, &mut errors);
     }
     for input in &profile.derived_inputs {
         if input.profile_id != profile.profile_id {
@@ -546,6 +532,25 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
     }
 
     errors
+}
+
+fn validate_derived_input_policy_bounds(
+    context: &str,
+    policy: &super::derive::IvDerivedInputPolicy,
+    errors: &mut Vec<String>,
+) {
+    for field in policy.required_fields.iter().copied() {
+        if field == super::derive::IvDerivedInputField::OptionSide {
+            continue;
+        }
+        if policy.bounds.numeric_bound(field).is_none() {
+            errors.push(format!(
+                "{context}.derived_input_policies.{} bounds must define {}",
+                policy.input_policy_id,
+                field.as_str()
+            ));
+        }
+    }
 }
 
 fn validate_unique_policy_ids<'a>(

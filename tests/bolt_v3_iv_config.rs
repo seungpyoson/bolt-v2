@@ -81,10 +81,12 @@ nt_helper_symbol = "imply_vol_and_greeks"
 parameter_signature = "configured-helper-signature"
 allowed_outputs = ["iv_and_greeks"]
 input_policy_ref = "configured-derived-input-policy"
-convention_policy = "configured-convention-policy"
 failure_policy = "reject_invalid_helper_output"
 max_input_timestamp_skew_ns = 10
 max_operator_input_age_ns = 100
+
+[profiles.helper_policies.convention_policy]
+allowed_conventions = ["configured-convention"]
 
 [profiles.helper_policies.output_bounds]
 finite_required = true

@@ -1,0 +1,126 @@
+{
+  "schema_version": "backfill-run-spec-materialization-current-head.v1",
+  "evidence_id": "backfill-run-spec-materialization-current-head-2026-06-09",
+  "created_at_utc": "2026-06-09T02:32:25Z",
+  "branch": "codex/bte-clean-converter-nt-use-main-reconcile",
+  "head_sha": "0ece3cffa39ccc3f4520f291e33827e9e7b6dc16",
+  "head_commit": "Format backfill run spec materialization",
+  "purpose": "Record the current-head deliverable that turns an accepted backfill tranche into a validated operator run-spec before payload fetch or conversion.",
+  "claim": {
+    "status": "bounded_go",
+    "statement": "A single accepted tranche can be materialized into a source-agnostic operator run-spec from a TOML template, parsed as the existing RunSpec, and evaluated by the existing backfill execution-plan gate before payload work starts.",
+    "scope": [
+      "accepted object count must be exactly one",
+      "accepted tranche status must be accepted",
+      "blocking issues must be empty",
+      "accepted tranche byte total must match the accepted object",
+      "runtime values are copied from accepted-tranche manifest, materialization spec, and TOML template",
+      "no venue, instrument, or source-specific runtime values are embedded in production code"
+    ]
+  },
+  "ci": {
+    "verification_policy": "GitHub Actions only; no local cargo test was run for this evidence update.",
+    "head_sha": "0ece3cffa39ccc3f4520f291e33827e9e7b6dc16",
+    "checks": [
+      {
+        "name": "actionlint",
+        "run_id": 27179666409,
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Backtester CI",
+        "run_id": 27179666387,
+        "status": "completed",
+        "conclusion": "success",
+        "jobs": [
+          "bvs-detect",
+          "bvs-fmt",
+          "bvs-clippy",
+          "bvs-test",
+          "backtester-gate"
+        ]
+      },
+      {
+        "name": "CI",
+        "run_id": 27179666398,
+        "status": "completed",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "tdd_evidence": {
+    "red_commits": [
+      {
+        "sha": "7530b46fcf764de58eaf643fa78f99a4f4aecd28",
+        "summary": "Add RED test for run spec materialization"
+      },
+      {
+        "sha": "f8f5a47972337d83099a790d7a623a5b436630cb",
+        "summary": "Format RED run spec materialization test"
+      }
+    ],
+    "red_ci": {
+      "workflow": "Backtester CI",
+      "run_id": 27179257266,
+      "expected_failure": "bvs-test failed with unresolved import backtesting_vertical_slice::backfill_run_spec_materialization after runner disk-pressure retry was cleared"
+    },
+    "green_commits": [
+      {
+        "sha": "0eacb4f131c88c2f06eb3393fec3a0592189cd90",
+        "summary": "Materialize backfill run specs from accepted tranches"
+      },
+      {
+        "sha": "0ece3cffa39ccc3f4520f291e33827e9e7b6dc16",
+        "summary": "Format backfill run spec materialization"
+      }
+    ],
+    "green_ci": {
+      "workflow": "Backtester CI",
+      "run_id": 27179666387,
+      "conclusion": "success"
+    }
+  },
+  "implementation": {
+    "production_paths": [
+      "repo://crates/backtesting-vertical-slice/src/backfill_run_spec_materialization.rs",
+      "repo://crates/backtesting-vertical-slice/src/bin/backfill_run_spec_materialization.rs",
+      "repo://crates/backtesting-vertical-slice/src/lib.rs"
+    ],
+    "test_paths": [
+      "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_run_spec_materialization.rs",
+      "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_sample_venue_guard.rs"
+    ],
+    "materialized_artifact_name": "backfill-run-spec.toml",
+    "template_sections_patched": [
+      "accepted_object",
+      "source_proof",
+      "source_proof.acceptance_scope",
+      "converter.raw_payload",
+      "manifest"
+    ],
+    "existing_artifact_policy": "create-only/idempotent: existing identical backfill-run-spec.toml is accepted; existing different content is rejected as dirty",
+    "post_materialization_validation": "The serialized TOML is parsed as operator::RunSpec before it is written as a deliverable artifact."
+  },
+  "source_agnostic_properties": [
+    "Production materialization code reads source_binding and table_family from the accepted tranche rather than matching venue names.",
+    "The focused test uses synthetic source IDs and verifies stale template source/object/table-family values are replaced.",
+    "BackfillExecutionRunBinding::from_run_spec plus evaluate_backfill_execution_plan prove the generated run-spec is Ready before payload fetch.",
+    "The sample venue guard continues to scan generic production Rust for Bybit, Binance, BNBUSDC, PMXT, Polymarket, public_archive, and related sample values."
+  ],
+  "remaining_limits": [
+    {
+      "limit": "This does not make arbitrary raw formats TOML-only.",
+      "next_evidence_needed": "A registered adapter and source proof for each new raw container, schema family, or NT data class."
+    },
+    {
+      "limit": "This does not start or approve broad PMXT/Polymarket backfill.",
+      "next_evidence_needed": "Durable source proof, manifest/index-only coverage, bounded row-group/object budgets, and dynamic tick-size replay proof or explicit exclusion policy."
+    },
+    {
+      "limit": "This does not close production artifact publication governance.",
+      "next_evidence_needed": "Artifact Index producer IAM or approved coordinator proof before broad production publish/delete actions."
+    }
+  ],
+  "next_safe_action": "Use this materializer for accepted native-trade tranches before payload conversion, then keep broad PMXT/Polymarket and production publish/delete blocked until their separate evidence gates are complete."
+}

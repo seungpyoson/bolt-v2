@@ -159,5 +159,11 @@
   "next_backfill_action": {
     "recommendation": "Promote the current-schema spec generation into the accepted-tranche/backfill execution path before expanding coverage.",
     "why": "The converter/backtest path works for the bounded slice, but old hand-carried scratch specs drifted. The next robust deliverable is a source-agnostic generator that emits current-schema manifests/specs and clean output prefixes for each accepted tranche."
+  },
+  "current_head_follow_up": {
+    "head_sha": "0ece3cffa39ccc3f4520f291e33827e9e7b6dc16",
+    "status": "partially_addressed_for_accepted_tranche_to_run_spec",
+    "evidence": "repo://specs/023-nt-research-analytics-platform/reference/backfill-run-spec-materialization-current-head.2026-06-09.json",
+    "remaining_scope": "PMXT remains one-off only. Broad PMXT/Polymarket backfill still requires durable source proof, manifest/index-only coverage, bounded row-group/object budgets, and dynamic tick-size replay proof or accepted exclusion policy."
   }
 }

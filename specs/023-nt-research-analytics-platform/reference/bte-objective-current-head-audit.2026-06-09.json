@@ -1,6 +1,6 @@
 {
   "schema": "bolt-v2.bte.objective-current-head-audit.v1",
-  "created_at_utc": "2026-06-09T00:49:44Z",
+  "created_at_utc": "2026-06-09T02:32:25Z",
   "objective_prompt": {
     "declared_path": "/Users/spson/Downloads/prompts/backtesting.md",
     "declared_path_status": "missing_on_disk",
@@ -9,22 +9,22 @@
   },
   "current_state": {
     "branch": "codex/bte-clean-converter-nt-use-main-reconcile",
-    "audited_subject_head_sha": "132553d38b20765f04b45dbd6a4bfa3f5d0ad93a",
-    "audited_subject_commit": "Record BTE current-head audit",
+    "audited_subject_head_sha": "0ece3cffa39ccc3f4520f291e33827e9e7b6dc16",
+    "audited_subject_commit": "Format backfill run spec materialization",
     "audit_record_note": "This JSON is committed after the audited subject head; use the containing Git commit or PR head for the record carrier identity, not as the audited subject itself.",
     "local_worktree": "clean_at_audit_time",
     "github_pr": "https://github.com/seungpyoson/bolt-v2/pull/610",
     "audited_subject_ci": {
       "actionlint": {
-        "run_id": 27176271436,
+        "run_id": 27179666409,
         "conclusion": "success"
       },
       "Backtester CI": {
-        "run_id": 27176271428,
+        "run_id": 27179666387,
         "conclusion": "success"
       },
       "CI": {
-        "run_id": 27176271484,
+        "run_id": 27179666398,
         "conclusion": "success"
       }
     }
@@ -50,10 +50,21 @@
     },
     {
       "claim": "Generic BTE gate/readiness logic is source_binding/table_family/NT-data-type driven, not venue-name driven.",
-      "status": "mostly_proven_with_adapter_registry_gap",
+      "status": "mostly_proven_with_adapter_registry_gap_and_run_spec_materialization_proven",
       "evidence": [
         "repo://specs/023-nt-research-analytics-platform/reference/source-agnostic-backfill-boundary-status.2026-06-09.json",
+        "repo://specs/023-nt-research-analytics-platform/reference/backfill-run-spec-materialization-current-head.2026-06-09.json",
         "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_sample_venue_guard.rs"
+      ]
+    },
+    {
+      "claim": "Accepted-tranche metadata can now be bound into a validated operator run-spec before payload fetch.",
+      "status": "proven_on_current_head",
+      "evidence": [
+        "repo://specs/023-nt-research-analytics-platform/reference/backfill-run-spec-materialization-current-head.2026-06-09.json",
+        "repo://crates/backtesting-vertical-slice/src/backfill_run_spec_materialization.rs",
+        "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_run_spec_materialization.rs",
+        "Backtester CI run 27179666387 passed on 0ece3cffa39ccc3f4520f291e33827e9e7b6dc16"
       ]
     },
     {
@@ -68,7 +79,7 @@
   "prompt_requirement_audit": [
     {
       "requirement": "Confirm repo state, branch, status, and relevant PRs.",
-      "current_evidence": "Local branch codex/bte-clean-converter-nt-use-main-reconcile was clean at audited subject head 132553d38b20765f04b45dbd6a4bfa3f5d0ad93a. PR #610 is the active BTE branch PR and its body has been updated with current-head evidence. Audited subject actionlint, Backtester CI, and CI are green.",
+      "current_evidence": "Local branch codex/bte-clean-converter-nt-use-main-reconcile was clean at audited subject head 0ece3cffa39ccc3f4520f291e33827e9e7b6dc16. PR #610 is the active BTE branch PR and its body has been updated with current-head evidence. Audited subject actionlint run 27179666409, Backtester CI run 27179666387, and CI run 27179666398 are green.",
       "status": "proven_current_head"
     },
     {
@@ -83,12 +94,12 @@
     },
     {
       "requirement": "Investigate existing Bolt BTE implementation and unsafe converter/idempotency behavior.",
-      "current_evidence": "Existing tests cover dirty output rejection, mismatched conversion fingerprints, checkpoint resume/refusal, clean manifest/checkpoint/catalog metadata writes, NT catalog readback, BacktestNode consumption, and result-contract provenance. The newest idempotence gap was fixed at ef716813 and preserved in current head 132553d38b20765f04b45dbd6a4bfa3f5d0ad93a.",
+      "current_evidence": "Existing tests cover dirty output rejection, mismatched conversion fingerprints, checkpoint resume/refusal, clean manifest/checkpoint/catalog metadata writes, NT catalog readback, BacktestNode consumption, result-contract provenance, and accepted-tranche-to-run-spec materialization. The newest idempotence gap was fixed at ef716813 and preserved in current head 0ece3cffa39ccc3f4520f291e33827e9e7b6dc16.",
       "status": "proven_for_current_slice"
     },
     {
       "requirement": "Do not implement unless hard-stop unknowns are resolved.",
-      "current_evidence": "For the accepted Binance native-trades path: raw object/source proof, clean scratch output prefix, idempotence proof, NT catalog/backtest mechanism, BacktestNode consumption, and result-contract provenance are all proven. For broad PMXT/production backfill: these are not all proven, so the current decision remains no-go.",
+      "current_evidence": "For the accepted Binance native-trades path: raw object/source proof, clean scratch output prefix, accepted-tranche-to-run-spec materialization, idempotence proof, NT catalog/backtest mechanism, BacktestNode consumption, and result-contract provenance are all proven. For broad PMXT/production backfill: these are not all proven, so the current decision remains no-go.",
       "status": "bounded_go_broad_no_go"
     },
     {
@@ -98,7 +109,7 @@
     },
     {
       "requirement": "No hardcoded runtime IDs, paths, quantities, venues, instruments, or hashes.",
-      "current_evidence": "Sample-value guard test rejects Bybit/Binance/BNBUSDC/PMXT/Polymarket/public_archive and Korean venue names in generic production Rust. Search still finds sample values in tests and explicit PMXT/Polymarket proof modules, which the guard allows. The remaining adapter gap is structural, not generic venue branching.",
+      "current_evidence": "Sample-value guard test rejects Bybit/Binance/BNBUSDC/PMXT/Polymarket/public_archive and Korean venue names in generic production Rust. The run-spec materializer reads source_binding and table_family from the accepted tranche instead of matching venue names. Search still finds sample values in tests and explicit PMXT/Polymarket proof modules, which the guard allows. The remaining adapter gap is structural, not generic venue branching.",
       "status": "mostly_proven_current_slice"
     }
   ],
@@ -115,7 +126,12 @@
     },
     {
       "prompt_test": "Same manifest/checkpoint rerun is idempotent.",
-      "evidence": "backtesting_vertical_slice_conversion_boundary::same_manifest_and_checkpoint_rerun_is_idempotent and operator::run_from_run_spec_reuses_completed_output_without_rebuilding_catalog, extended at ef716813 and verified on current head 132553d38b20765f04b45dbd6a4bfa3f5d0ad93a to assert result-contract bytes are unchanged",
+      "evidence": "backtesting_vertical_slice_conversion_boundary::same_manifest_and_checkpoint_rerun_is_idempotent and operator::run_from_run_spec_reuses_completed_output_without_rebuilding_catalog, extended at ef716813 and verified on current head 0ece3cffa39ccc3f4520f291e33827e9e7b6dc16 to assert result-contract bytes are unchanged",
+      "status": "covered_current_head"
+    },
+    {
+      "prompt_test": "Accepted backfill tranche binds into a current operator run-spec before payload fetch.",
+      "evidence": "backtesting_vertical_slice_backfill_run_spec_materialization::materialized_run_spec_binds_accepted_tranche_before_payload_fetch plus Backtester CI run 27179666387",
       "status": "covered_current_head"
     },
     {
@@ -150,12 +166,12 @@
     }
   ],
   "current_go_no_go": {
-    "native_trade_csv_accepted_object_path": "go_for_bounded_accepted_tranches",
+    "native_trade_csv_accepted_object_path": "go_for_bounded_accepted_tranches_after_source_proof_and_run_spec_materialization",
     "pmxt_one_off_current_schema_path": "go_only_for_one_off_backfill_data_scope",
     "broad_pmxt_or_polymarket_l2_backfill": "no_go",
     "production_broad_backfill_publish_delete_old_outputs": "no_go_without_additional_approval_and_artifact_index_iam_or_coordinator_proof",
-    "new_source_with_existing_native_trade_csv_adapter": "go_after_source_proof_and_run_spec",
-    "new_raw_format_or_new_nt_data_family": "no_go_until_registered_adapter_and_source_proof_are added"
+    "new_source_with_existing_native_trade_csv_adapter": "go_after_source_proof_accepted_tranche_and_run_spec_materialization",
+    "new_raw_format_or_new_nt_data_family": "no_go_until_registered_adapter_and_source_proof_are_added"
   },
   "remaining_unknowns_or_open_work": [
     {
@@ -170,7 +186,7 @@
     },
     {
       "item": "General non-trade-CSV adapter runner",
-      "reason": "The accepted-object operator is systematic for registered native-trades CSV inputs, but not a generic runner for arbitrary raw formats or NT data families.",
+      "reason": "The accepted-tranche-to-run-spec materializer is source-agnostic and the accepted-object operator is systematic for registered native-trades CSV inputs, but the operator is not a generic runner for arbitrary raw formats or NT data families.",
       "next_evidence_needed": "A registered adapter contract and TDD proof for the next durable non-trade data family."
     },
     {
@@ -180,5 +196,5 @@
     }
   ],
   "goal_completion_status": "not_complete",
-  "reason_not_complete": "The bounded native-trades converter/backtest/result-contract path is now proven on current head, but the full objective includes broad backfill/research analytics readiness and full end-to-end production disposition. Those remain explicitly no-go until the remaining evidence exists."
+  "reason_not_complete": "The bounded native-trades converter/backtest/result-contract path and accepted-tranche-to-run-spec materialization are now proven on current head, but the full objective includes broad backfill/research analytics readiness and full end-to-end production disposition. Those remain explicitly no-go until the remaining evidence exists."
 }

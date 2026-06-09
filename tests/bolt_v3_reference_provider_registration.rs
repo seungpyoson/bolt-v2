@@ -93,7 +93,6 @@ reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000
 reconnect_backoff_factor = 1.5
 reconnect_jitter_ms = 100
-reconnect_max_attempts = "unlimited"
 idle_timeout_ms = 10000
 
 [secrets]
@@ -164,6 +163,7 @@ reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000
 reconnect_backoff_factor = 1.5
 reconnect_jitter_ms = 100
+reconnect_max_attempts = "unlimited"
 idle_timeout_ms = 10000
 
 [secrets]

@@ -50,23 +50,8 @@ pub const UNSUPPORTED_NT_VENUE_SURFACES: &[&str] = &[
     "fee_model",
     "settlement_prices",
 ];
-/// NT data-query surfaces declared in TOML but rejected until typed mappings exist.
+/// NT data-query surfaces declared in TOML but rejected until typed mappings are proven.
 pub const UNSUPPORTED_NT_CATALOG_QUERY_SURFACES: &[(&str, &str, &str)] = &[
-    (
-        "catalog.start_time",
-        "catalog_inputs.start_time",
-        "BacktestDataConfig.start_time",
-    ),
-    (
-        "catalog.end_time",
-        "catalog_inputs.end_time",
-        "BacktestDataConfig.end_time",
-    ),
-    (
-        "catalog.filter_expr",
-        "catalog_inputs.filter_expr",
-        "BacktestDataConfig.filter_expr",
-    ),
     (
         "catalog.client_id",
         "catalog_inputs.client_id",
@@ -86,11 +71,6 @@ pub const UNSUPPORTED_NT_CATALOG_QUERY_SURFACES: &[(&str, &str, &str)] = &[
         "catalog.bar_types",
         "catalog_inputs.bar_types",
         "BacktestDataConfig.bar_types",
-    ),
-    (
-        "catalog.optimize_file_loading",
-        "catalog_inputs.optimize_file_loading",
-        "BacktestDataConfig.optimize_file_loading",
     ),
 ];
 /// Artifact-local manifest version written beside each backtest result.
@@ -249,6 +229,15 @@ fn resolved_surface(
         nt_field: nt_field.to_string(),
         resolved_value: resolved_value.into(),
     }
+}
+
+fn manifest_time_to_nanos(
+    field: &'static str,
+    value: i64,
+) -> Result<UnixNanos, ManifestError> {
+    u64::try_from(value)
+        .map(UnixNanos::from)
+        .map_err(|_| ManifestError::NegativeTime { field, value })
 }
 
 /// Structured reason for pinning a non-latest accepted source proof.
@@ -1303,6 +1292,30 @@ impl BacktestingRunManifest {
                     "BacktestDataConfig.instrument_id",
                     option_value(data.instrument_id()),
                 ),
+                resolved_surface(
+                    &format!("{prefix}.start_time"),
+                    NtSurfaceClassification::PassThrough,
+                    "BacktestDataConfig.start_time",
+                    option_value(data.start_time()),
+                ),
+                resolved_surface(
+                    &format!("{prefix}.end_time"),
+                    NtSurfaceClassification::PassThrough,
+                    "BacktestDataConfig.end_time",
+                    option_value(data.end_time()),
+                ),
+                resolved_surface(
+                    &format!("{prefix}.filter_expr"),
+                    NtSurfaceClassification::PassThrough,
+                    "BacktestDataConfig.filter_expr",
+                    option_value(data.filter_expr()),
+                ),
+                resolved_surface(
+                    &format!("{prefix}.optimize_file_loading"),
+                    NtSurfaceClassification::PassThrough,
+                    "BacktestDataConfig.optimize_file_loading",
+                    data.optimize_file_loading().to_string(),
+                ),
             ]);
         }
         surfaces.extend(UNSUPPORTED_NT_VENUE_SURFACES.iter().map(|surface| {
@@ -1627,18 +1640,13 @@ impl BacktestingRunManifest {
     pub fn to_nt_run_config(&self) -> Result<BacktestRunConfig, ManifestError> {
         let venue = self.to_nt_venue_config()?;
         let data = self.to_nt_data_configs()?;
-        let to_nanos = |field: &'static str, value: i64| -> Result<UnixNanos, ManifestError> {
-            u64::try_from(value)
-                .map(UnixNanos::from)
-                .map_err(|_| ManifestError::NegativeTime { field, value })
-        };
         let start = self
             .start_time
-            .map(|value| to_nanos("start_time", value))
+            .map(|value| manifest_time_to_nanos("start_time", value))
             .transpose()?;
         let end = self
             .end_time
-            .map(|value| to_nanos("end_time", value))
+            .map(|value| manifest_time_to_nanos("end_time", value))
             .transpose()?;
         Ok(BacktestRunConfig::builder()
             .id(self.run_id.clone())
@@ -1654,6 +1662,14 @@ fn catalog_input_to_nt_data_config(
     input: &ManifestCatalogInput,
 ) -> Result<BacktestDataConfig, ManifestError> {
     ensure_unsupported_nt_catalog_query_surfaces_absent(input)?;
+    let start_time = input
+        .start_time
+        .map(|value| manifest_time_to_nanos("catalog_inputs.start_time", value))
+        .transpose()?;
+    let end_time = input
+        .end_time
+        .map(|value| manifest_time_to_nanos("catalog_inputs.end_time", value))
+        .transpose()?;
     let data_type = match input.data_type.as_str() {
         "TradeTick" => NautilusDataType::TradeTick,
         "OrderBookDelta" => NautilusDataType::OrderBookDelta,
@@ -1727,6 +1743,10 @@ fn catalog_input_to_nt_data_config(
         )
         .maybe_instrument_id(instrument_id)
         .maybe_instrument_ids(instrument_ids)
+        .maybe_start_time(start_time)
+        .maybe_end_time(end_time)
+        .maybe_filter_expr(input.filter_expr.clone())
+        .maybe_optimize_file_loading(input.optimize_file_loading)
         .build())
 }
 
@@ -1895,35 +1915,19 @@ fn ensure_unsupported_nt_catalog_query_surfaces_absent(
     for (field, present) in [
         (
             UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[0].1,
-            catalog.start_time.is_some(),
-        ),
-        (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[1].1,
-            catalog.end_time.is_some(),
-        ),
-        (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[2].1,
-            catalog.filter_expr.is_some(),
-        ),
-        (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[3].1,
             catalog.client_id.is_some(),
         ),
         (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[4].1,
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[1].1,
             catalog.metadata.is_some(),
         ),
         (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[5].1,
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[2].1,
             catalog.bar_spec.is_some(),
         ),
         (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[6].1,
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[3].1,
             catalog.bar_types.is_some(),
-        ),
-        (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[7].1,
-            catalog.optimize_file_loading.is_some(),
         ),
     ] {
         if present {
@@ -3147,6 +3151,26 @@ mod tests {
                 NtSurfaceClassification::PassThrough,
                 "BacktestDataConfig.instrument_id",
             ),
+            (
+                "catalog.start_time",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.start_time",
+            ),
+            (
+                "catalog.end_time",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.end_time",
+            ),
+            (
+                "catalog.filter_expr",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.filter_expr",
+            ),
+            (
+                "catalog.optimize_file_loading",
+                NtSurfaceClassification::PassThrough,
+                "BacktestDataConfig.optimize_file_loading",
+            ),
         ] {
             assert!(
                 surfaces.iter().any(|resolved| {
@@ -3945,14 +3969,10 @@ mod tests {
         let serialized = toml::to_string(&valid_manifest()).expect("serialize");
         let bar_types = format!("[\"{TEST_BAR_TYPE}\"]");
         for (field, value) in [
-            ("start_time", "1772323200000000000"),
-            ("end_time", "1772409600000000000"),
-            ("filter_expr", "\"price > 0\""),
             ("client_id", "\"TEST-CLIENT\""),
             ("metadata", "{ source = \"proof\" }"),
             ("bar_spec", "\"1-MINUTE-LAST\""),
             ("bar_types", bar_types.as_str()),
-            ("optimize_file_loading", "true"),
         ] {
             let text = serialized.replace(
                 "[[catalog_inputs]]\n",

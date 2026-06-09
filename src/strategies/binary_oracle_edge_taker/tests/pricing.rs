@@ -659,21 +659,23 @@ fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap
         ],
     );
 
-    let decision = strategy.entry_submission_decision_at(1_200);
+    let evaluation = strategy.entry_evaluation_at(1_200);
 
     assert_eq!(
-        decision.blocked_reason,
-        Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED)
+        evaluation.pricing_blocked_by,
+        vec![EntryPricingBlockReason::ExecutableEdgeUnavailable(
+            OutcomeSide::Up,
+            ExecutableEdgeBlockReason::InsufficientDepth
+        )]
     );
     assert_eq!(
-        decision
-            .evaluation
+        evaluation
             .up_executable_edge
             .as_ref()
             .and_then(|result| result.block_reason),
         Some(ExecutableEdgeBlockReason::InsufficientDepth)
     );
-    assert_eq!(decision.evaluation.selected_side, None);
+    assert_eq!(evaluation.selected_side, None);
 }
 
 #[test]

@@ -6,7 +6,7 @@ use bolt_v2::bolt_v3_iv::{
         IvOptionGreeksPayload, IvRawPayload,
     },
     provenance::validate_iv_provenance,
-    store::IvStore,
+    store::{IvStore, IvStoreError},
     time::UnixNanos,
     types::{IvBasis, IvConvention, IvSourceKind},
 };
@@ -313,6 +313,30 @@ fn option_chain_strikes_with_non_finite_strikes_are_skipped_without_dropping_usa
     assert_eq!(store.smiles()[0].points_by_strike.len(), 1);
     assert_eq!(store.smiles()[0].points_by_strike[0].strike, 100.0);
     assert_eq!(store.smiles()[0].points_by_strike[0].iv, 0.35);
+}
+
+#[test]
+fn option_chain_with_non_finite_atm_strike_preserves_raw_event_without_indexing_smiles() {
+    let mut store = IvStore::empty();
+
+    let result = store.ingest_event(base_event(
+        IvSourceKind::OptionChain,
+        IvRawPayload::OptionChainSlice(IvOptionChainSlicePayload {
+            series_id: "configured-series-a".to_string(),
+            surface_selector: "configured-surface-selector".to_string(),
+            atm_strike: Some(f64::NAN),
+            calls: vec![IvOptionChainStrikePayload {
+                strike: 100.0,
+                quote: chain_quote_payload("configured-call-valid"),
+                greeks: Some(chain_greeks_payload("configured-call-valid", 0.35)),
+            }],
+            puts: Vec::new(),
+        }),
+    ));
+
+    assert_eq!(result, Err(IvStoreError::InvalidIvValue));
+    assert_eq!(store.raw_events().len(), 1);
+    assert!(store.smiles().is_empty());
 }
 
 #[test]

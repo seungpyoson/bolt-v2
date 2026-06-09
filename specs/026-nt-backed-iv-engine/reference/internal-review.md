@@ -103,3 +103,18 @@ Current PR verification uses GitHub CI rather than local cargo reruns. Because a
 - `cargo fmt --check`: PASS.
 - `just source-fence`: PASS.
 - `git diff --check`: PASS.
+
+## 2026-06-10 Internal Adversarial Review After `e862650d`
+
+**Reviewed working tree**: branch `026-nt-backed-iv-engine`, local delta after head `e862650d5038b26f6fccae128c57309d740b6aed`
+**Recommendation**: PASS for the locally reviewed fixes below; GitHub CI and external relay approvals must be refreshed after this delta is committed and pushed.
+
+| Issue | Evidence | Resolution |
+|---|---|---|
+| Option-greeks products could cache non-finite strategy-visible metadata even when IV and greeks were finite. | RED: `cargo test --locked --test bolt_v3_iv_store non_finite -- --nocapture` failed because `underlying_price = NaN` and `open_interest = inf` returned `Ok` and indexed products. | Store validation now rejects non-finite optional option-greeks metadata before indexing while preserving the raw event for audit/replay. |
+| Option-chain smiles could expose a non-finite `atm_strike` even though per-strike rows were filtered. | RED: `cargo test --locked --test bolt_v3_iv_ingest option_chain_with_non_finite_atm_strike_preserves_raw_event_without_indexing_smiles -- --nocapture` failed because the slice returned `Ok` and indexed a smile with `atm_strike = NaN`. | Store validation now rejects non-finite chain `atm_strike` before smile construction while preserving the raw event. |
+
+### 2026-06-10 Post-`e862650d` Verification
+
+- `cargo test --locked --test bolt_v3_iv_store non_finite -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_ingest option_chain_with_non_finite_atm_strike_preserves_raw_event_without_indexing_smiles -- --nocapture`: RED before fix, GREEN after fix.

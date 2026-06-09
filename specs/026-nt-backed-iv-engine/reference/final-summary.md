@@ -2,7 +2,7 @@
 
 **Feature**: `specs/026-nt-backed-iv-engine/`
 **Branch**: `026-nt-backed-iv-engine`
-**Base SHA**: `c1b1f7b49414008a11af11da24ebc49762debf54`
+**Base SHA**: `0c427740d9005c1376d3bf008606a1b61a92fc9c`
 **Pull Request**: `#611` (`https://github.com/seungpyoson/bolt-v2/pull/611`)
 **Current review basis**: PR head verified through GitHub CI, not local cargo reruns.
 
@@ -14,7 +14,7 @@ The exact final pushed SHA cannot be embedded in the commit that contains this f
 - Typed IV profile/source config and root `[iv]` config parsing.
 - NT-backed subscription planning for option greeks, option chains, aggregate greeks, and custom IV evidence.
 - Live msgbus event routing for NT option greeks, option-chain slices, aggregate greeks custom data, and custom IV evidence custom data into runtime-backed strategy query handles.
-- Runtime fail-closed checks for configured NT greeks conventions, missing IV basis, stale/reloaded subscription generations, malformed custom data, and audit retention windows.
+- Runtime fail-closed checks for configured NT greeks conventions, missing IV basis, non-finite strategy-visible numeric fields, stale/reloaded subscription generations, malformed custom data, and audit retention windows.
 - Raw event preservation, including serialized NT custom-data JSON for custom-data backed sources, audit-only raw access, and strategy-safe indexed IV products.
 - IV points, greeks points, smiles, surfaces, aggregate greeks, custom IV evidence, source health, projected scalar IV, and derived IV query products.
 - NT helper-backed derived IV through `nautilus_model::data::imply_vol_and_greeks`.
@@ -38,7 +38,7 @@ The exact final pushed SHA cannot be embedded in the commit that contains this f
 
 ## Review Status
 
-- Internal review: complete after the review fixes; no blocking findings remain in `reference/internal-review.md`.
+- Internal review: complete after the 2026-06-10 review fixes; no blocking findings remain in `reference/internal-review.md`.
 - Blocking findings: none remaining from the internal adversarial review.
 - External/PR review: CodeQL and Gemini review threads on PR #611 are replied to and resolved. CodeQL is green on the current PR checks.
 - Open overlap PRs/issues: none found to close for the IV/options overlap search; #158, #488, and #493 remain open because none were fully ported.

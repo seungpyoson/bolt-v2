@@ -258,6 +258,40 @@ fn non_finite_greek_payload_preserves_raw_event_without_indexing_products() {
 }
 
 #[test]
+fn non_finite_underlying_price_preserves_raw_event_without_indexing_products() {
+    let mut event = greeks_event();
+    let IvRawPayload::OptionGreeks(payload) = &mut event.payload else {
+        panic!("fixture must be option greeks");
+    };
+    payload.underlying_price = Some(f64::NAN);
+
+    let mut store = IvStore::empty();
+    let result = store.ingest_event(event);
+
+    assert_eq!(result, Err(IvStoreError::InvalidIvValue));
+    assert_eq!(store.raw_events().len(), 1);
+    assert!(store.iv_points().is_empty());
+    assert!(store.greeks_points().is_empty());
+}
+
+#[test]
+fn non_finite_open_interest_preserves_raw_event_without_indexing_products() {
+    let mut event = greeks_event();
+    let IvRawPayload::OptionGreeks(payload) = &mut event.payload else {
+        panic!("fixture must be option greeks");
+    };
+    payload.open_interest = Some(f64::INFINITY);
+
+    let mut store = IvStore::empty();
+    let result = store.ingest_event(event);
+
+    assert_eq!(result, Err(IvStoreError::InvalidIvValue));
+    assert_eq!(store.raw_events().len(), 1);
+    assert!(store.iv_points().is_empty());
+    assert!(store.greeks_points().is_empty());
+}
+
+#[test]
 fn non_finite_aggregate_greek_preserves_raw_event_without_indexing_products() {
     let mut store = IvStore::empty();
     let result = store.ingest_event(IvIngestEvent {

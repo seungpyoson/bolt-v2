@@ -1,11 +1,13 @@
 # External Review
 
 **Feature**: `specs/026-nt-backed-iv-engine/`
-**Review date**: 2026-06-08
+**Review date**: 2026-06-10
 
 ## Status
 
 External review and PR review comments were requested/reviewed on PR #611.
+
+Relay model approvals from earlier heads are stale after the 2026-06-10 local fix delta. Fresh relay reviews must be requested only after that delta is committed, pushed, and exact-head GitHub CI is green.
 
 Current PR review state:
 

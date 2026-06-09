@@ -295,7 +295,10 @@ impl IvStore {
         if payload.basis_values.is_empty() {
             return Err(IvStoreError::MissingIvBasis);
         }
-        if payload.greeks.has_non_finite_value() {
+        if payload.greeks.has_non_finite_value()
+            || !valid_optional_finite(payload.underlying_price)
+            || !valid_optional_finite(payload.open_interest)
+        {
             return Err(IvStoreError::InvalidIvValue);
         }
         for basis_value in &payload.basis_values {
@@ -331,6 +334,10 @@ impl IvStore {
         raw_event: &IvRawEvent,
         payload: &IvOptionChainSlicePayload,
     ) -> Result<(), IvStoreError> {
+        if !valid_optional_finite(payload.atm_strike) {
+            return Err(IvStoreError::InvalidIvValue);
+        }
+
         let indexed_calls = self.index_option_chain_side(
             raw_event,
             payload,
@@ -454,6 +461,10 @@ impl IvStore {
 
 fn valid_iv(value: f64) -> bool {
     value.is_finite() && value > 0.0
+}
+
+fn valid_optional_finite(value: Option<f64>) -> bool {
+    value.is_none_or(|value| value.is_finite())
 }
 
 fn empty_iv_smile_points() -> Vec<IvSmilePoint> {

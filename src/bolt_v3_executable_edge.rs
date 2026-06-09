@@ -403,13 +403,23 @@ mod tests {
     fn exact_size_vwap_prices_requested_notional_across_levels() {
         let book = priced_book(&[(0.50, 5.0), (0.60, 100.0)]);
 
-        let priced = price_exact_size_vwap(&book, OrderSide::Buy, 5.0, 1_000)
+        let priced = price_exact_size_vwap(&book, OrderSide::Buy, 5.0, 2_000)
             .expect("exact notional should fill inside the depth limit");
 
         assert!((priced.vwap_price - 0.5454545454545454).abs() < EPSILON);
         assert!((priced.vwap_quantity - 9.166666666666668).abs() < EPSILON);
         assert_eq!(priced.limit_price, 0.60);
         assert!(priced.exact_size_filled);
+    }
+
+    #[test]
+    fn exact_size_vwap_blocks_when_limit_price_exceeds_depth_limit() {
+        let book = priced_book(&[(0.50, 5.0), (0.60, 100.0)]);
+
+        let reason = price_exact_size_vwap(&book, OrderSide::Buy, 5.0, 1_000)
+            .expect_err("last consumed level outside the depth limit must fail closed");
+
+        assert_eq!(reason, ExecutableEdgeBlockReason::InsufficientDepth);
     }
 
     #[test]

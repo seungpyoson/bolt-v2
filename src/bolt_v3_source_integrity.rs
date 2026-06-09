@@ -221,7 +221,7 @@ mod tests {
     // parameter, then after adding executable-edge cost breakdown to the gated
     // strategy source set and aligning its strategy test coverage.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "8eb48397d45cef17c445590db0567a34ec1127762047dbf8f3bfc86117810234";
+        "806c4c34c7376970203be1675a7060cd3858a2a304ec119c23119f8eb08b6d02";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

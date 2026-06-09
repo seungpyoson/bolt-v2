@@ -220,7 +220,7 @@ mod tests {
     // Re-derived again after removing the dead strategy evidence fallback RV
     // parameter.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "518cf5338298c4246a19bd002c492ed1fcc6a3206d9a0ca3298a2eed43d96092";
+        "5d0ab3fc1a67075a95b2518791d6722d13ca5a00e2ec46496ef98aeb89c8efae";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

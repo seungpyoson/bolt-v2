@@ -2785,3 +2785,39 @@ Current conclusion:
 - It does not close `BACKTESTING_ENGINE-006`: per-kind producer IAM scope or an
   approved coordinator/table format is still required before relying on
   Artifact Index producer commits for broad backfill.
+
+## 2026-06-09 binding-coverage canonical acceptance checkpoint
+
+Root cause addressed:
+
+- Combined backfill readiness already required the selected binding coverage to
+  have both canonical-ready and accepted ledger records.
+- The lower-level binding coverage report could still return `ready` for a
+  configured required binding when ledger records existed but all were rejected
+  or non-canonical.
+- That left one gate layer too permissive for manifest-only or pending-source
+  coverage evidence.
+
+Change:
+
+- Binding coverage now blocks with
+  `required_binding_without_canonical_ready_coverage` when a required configured
+  binding has ledger records but none are canonical-ready.
+- It also blocks with `required_binding_without_accepted_coverage` when a
+  required configured binding has ledger records but none are accepted.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_binding_coverage binding_coverage_blocks_required_records_without_canonical_ready_acceptance -- --nocapture`
+  failed because the binding-coverage blockers did not exist.
+- GREEN:
+  same command passed after adding the fail-closed lower-level coverage checks.
+
+Current conclusion:
+
+- This closes a generic coverage-readiness bypass for required configured
+  bindings.
+- It does not close `BACKTESTING_ENGINE-022`: broad PMXT/Polymarket backfill
+  still requires durable accepted source proof, broad coverage/cost/storage
+  evidence, bounded budgets, and NT-compatible dynamic tick-size policy.

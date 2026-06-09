@@ -67,6 +67,40 @@ fn binding_coverage_reports_bound_records_without_source_constants() {
 }
 
 #[test]
+fn binding_coverage_blocks_required_records_without_canonical_ready_acceptance() {
+    let source_bindings = synthetic_source_bindings_toml();
+    let ledger = ledger(vec![record("synthetic-native-trades", "trades")]);
+
+    let report = evaluate_backfill_binding_coverage(
+        "synthetic-binding-coverage",
+        &source_bindings,
+        &ledger,
+        vec!["trades".to_string()],
+    )
+    .expect("report");
+
+    assert_eq!(report.status, BackfillBindingCoverageStatus::Blocked);
+    assert!(
+        report
+            .blocking_issues
+            .contains(&BackfillBindingCoverageIssue::RequiredBindingWithoutCanonicalReadyCoverage)
+    );
+    assert!(
+        report
+            .blocking_issues
+            .contains(&BackfillBindingCoverageIssue::RequiredBindingWithoutAcceptedCoverage)
+    );
+    let required = report
+        .bindings
+        .iter()
+        .find(|binding| binding.key == "synthetic-native-trades")
+        .expect("required binding");
+    assert_eq!(required.ledger_record_count, 1);
+    assert_eq!(required.canonical_ready_record_count, 0);
+    assert_eq!(required.accepted_record_count, 0);
+}
+
+#[test]
 fn binding_coverage_blocks_unscoped_records_for_multi_family_binding() {
     let source_bindings = synthetic_multi_family_source_bindings_toml();
     let ledger = ledger(vec![accepted_unscoped_record(

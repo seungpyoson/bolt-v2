@@ -43,6 +43,8 @@ pub enum BackfillBindingCoverageIssue {
     EmptyRequiredTableFamilies,
     NoConfiguredBindingForRequiredTableFamily,
     NoLedgerRecordsForRequiredTableFamily,
+    RequiredBindingWithoutCanonicalReadyCoverage,
+    RequiredBindingWithoutAcceptedCoverage,
     EmptySourceBindingRecords,
     MissingTableFamilyRecords,
     UnconfiguredSourceBindingRecords,
@@ -369,6 +371,23 @@ fn evaluate_backfill_binding_coverage_from_bindings(
             .push(BackfillBindingCoverageIssue::NoConfiguredBindingForRequiredTableFamily);
     } else if ledger_records_for_required_bindings == 0 {
         blocking_issues.push(BackfillBindingCoverageIssue::NoLedgerRecordsForRequiredTableFamily);
+    } else {
+        if bindings.iter().any(|binding| {
+            binding.required_table_family_match
+                && binding.ledger_record_count > 0
+                && binding.canonical_ready_record_count == 0
+        }) {
+            blocking_issues
+                .push(BackfillBindingCoverageIssue::RequiredBindingWithoutCanonicalReadyCoverage);
+        }
+        if bindings.iter().any(|binding| {
+            binding.required_table_family_match
+                && binding.ledger_record_count > 0
+                && binding.accepted_record_count == 0
+        }) {
+            blocking_issues
+                .push(BackfillBindingCoverageIssue::RequiredBindingWithoutAcceptedCoverage);
+        }
     }
     if empty_source_binding_record_count > 0 {
         blocking_issues.push(BackfillBindingCoverageIssue::EmptySourceBindingRecords);

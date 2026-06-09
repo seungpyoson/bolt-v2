@@ -35,7 +35,7 @@
     {
       "surface": "backfill binding coverage",
       "path": "repo://crates/backtesting-vertical-slice/src/backfill_binding_coverage.rs",
-      "evidence": "Coverage counts configured source bindings and table families from TOML and ledger records; it explicitly does not infer bindings from prefixes or venue names."
+      "evidence": "Coverage counts configured source bindings and table families from TOML and ledger records; it explicitly does not infer bindings from prefixes or venue names. The report now blocks required configured bindings whose observed ledger records are not canonical-ready or not accepted, so manifest-only or rejected coverage cannot make the lower-level binding coverage report ready."
     },
     {
       "surface": "combined backfill readiness",

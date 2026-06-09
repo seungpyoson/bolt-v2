@@ -17,6 +17,7 @@ The exact final pushed SHA cannot be embedded in the commit that contains this f
 - Runtime fail-closed checks for configured NT greeks conventions, missing IV basis, non-finite strategy-visible numeric fields, stale/reloaded subscription generations, malformed custom data, and audit retention windows.
 - Raw event preservation, including serialized NT custom-data JSON for custom-data backed sources, audit-only raw access, and strategy-safe indexed IV products.
 - IV points, greeks points, smiles, surfaces, aggregate greeks, custom IV evidence, source health, projected scalar IV, and derived IV query products.
+- Typed projection policy selectors with Rust-validated TOML values, all-strikes smile projection, per-source smile interpolation before quorum, selector-scoped smile/surface candidate selection, and read-guard based non-derived query execution.
 - NT helper-backed derived IV through `nautilus_model::data::imply_vol_and_greeks`.
 - Strategy query handle registration through `StrategyRegistrationContext::iv_query_handles`.
 - Live-node IV lifecycle planning through `IvEngineLifecyclePlan` and `plan_iv_engine_lifecycle`, plus runtime IV root reload state updates and removed-source invalidation for existing query handles.
@@ -34,7 +35,7 @@ The exact final pushed SHA cannot be embedded in the commit that contains this f
 - PR #611 GitHub CI is the current verification source for the branch head.
 - Passing CI gates included `gate`, `test`, `nextest shard 1 of 4`, `nextest shard 2 of 4`, `nextest shard 3 of 4`, `nextest shard 4 of 4`, `nextest archive`, `clippy`, `deny`, `build`, `check-aarch64`, `source-fence`, `fmt-check`, `detector`, `actionlint`, `CodeQL`, `Analyze (rust)`, `Analyze (actions)`, `bvs-detect`, `bvs-fmt`, `bvs-clippy`, `bvs-test`, and `backtester-gate`.
 - Expected non-blocking skips: `deploy` and `same-sha-main-evidence`.
-- Historical local RED/GREEN and local cargo/source-fence evidence remain recorded in `implementation-ledger.md` and `internal-review.md`; current verification for the PR is GitHub CI.
+- Historical and latest local RED/GREEN cargo/source-fence evidence remain recorded in `implementation-ledger.md` and `internal-review.md`; current exact-head verification for the PR is GitHub CI after the final push.
 
 ## Review Status
 

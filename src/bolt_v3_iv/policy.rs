@@ -47,6 +47,32 @@ impl IvProjectionKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum IvBasisSelection {
+    PreserveInputBasis,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IvStrikeSelection {
+    AllConfiguredStrikes,
+    AtmStrike,
+    FirstConfiguredStrike,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IvTenorSelection {
+    AllConfiguredTenors,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IvEvidenceMapping {
+    PreserveEvidenceKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum IvInterpolationMethod {
     Linear,
 }
@@ -98,11 +124,11 @@ impl IvQuorumTieBreak {
 pub struct IvProjectionPolicy {
     pub policy_id: String,
     pub projection_kind: IvProjectionKind,
-    pub basis_selection: String,
+    pub basis_selection: IvBasisSelection,
     pub source_eligibility: Vec<String>,
-    pub strike_selection: String,
-    pub tenor_selection: String,
-    pub evidence_mapping: String,
+    pub strike_selection: IvStrikeSelection,
+    pub tenor_selection: IvTenorSelection,
+    pub evidence_mapping: IvEvidenceMapping,
     pub minimum_points: usize,
     pub max_projection_input_skew_ns: u64,
     pub fallback_policy_ref: Option<String>,

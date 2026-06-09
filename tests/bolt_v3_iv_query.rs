@@ -17,8 +17,9 @@ use bolt_v2::bolt_v3_iv::{
         IvOptionChainStrikePayload, IvOptionGreeksPayload, IvRawPayload,
     },
     policy::{
-        IvExtrapolationPolicy, IvFallbackPolicy, IvInterpolationMethod, IvInterpolationPolicy,
-        IvProjectionKind, IvProjectionPolicy, IvQuorumPolicy, IvQuorumTieBreak,
+        IvBasisSelection, IvEvidenceMapping, IvExtrapolationPolicy, IvFallbackPolicy,
+        IvInterpolationMethod, IvInterpolationPolicy, IvProjectionKind, IvProjectionPolicy,
+        IvQuorumPolicy, IvQuorumTieBreak, IvStrikeSelection, IvTenorSelection,
     },
     provenance::IvPolicyDecision,
     query::{
@@ -218,6 +219,24 @@ fn option_chain_event(ts: u64) -> IvIngestEvent {
     }
 }
 
+fn option_chain_event_with_source(
+    source_id: &str,
+    selector_fingerprint: &str,
+    ts: u64,
+    first_call_iv: f64,
+    atm_call_iv: f64,
+) -> IvIngestEvent {
+    let mut event = option_chain_event(ts);
+    event.source_id = source_id.to_string();
+    event.selector_fingerprint = selector_fingerprint.to_string();
+    let IvRawPayload::OptionChainSlice(payload) = &mut event.payload else {
+        panic!("expected option-chain fixture");
+    };
+    payload.calls[0].greeks = Some(chain_greeks_payload("configured-call-90", first_call_iv));
+    payload.calls[1].greeks = Some(chain_greeks_payload("configured-call-100", atm_call_iv));
+    event
+}
+
 fn profile_wide_authorization() -> IvSelectorAuthorization {
     IvSelectorAuthorization {
         authorization_mode: IvAuthorizationMode::ProfileWide,
@@ -262,6 +281,19 @@ fn selector_scoped_projection_authorization() -> IvSelectorAuthorization {
             "configured-selector-fingerprint".to_string()
         ]),
         allowed_source_ids: BTreeSet::from(["configured-source".to_string()]),
+    }
+}
+
+fn selector_scoped_smile_authorization(
+    source_id: &str,
+    selector_fingerprint: &str,
+) -> IvSelectorAuthorization {
+    IvSelectorAuthorization {
+        authorization_mode: IvAuthorizationMode::SelectorScoped,
+        strategy_id: "configured-strategy".to_string(),
+        allowed_product_kinds: BTreeSet::from([IvProductKind::Smile]),
+        allowed_selector_fingerprints: BTreeSet::from([selector_fingerprint.to_string()]),
+        allowed_source_ids: BTreeSet::from([source_id.to_string()]),
     }
 }
 
@@ -545,11 +577,11 @@ fn projection_policy_with_refs(
     IvProjectionPolicy {
         policy_id: "configured-projection-policy".to_string(),
         projection_kind: IvProjectionKind::Mean,
-        basis_selection: "preserve_input_basis".to_string(),
+        basis_selection: IvBasisSelection::PreserveInputBasis,
         source_eligibility: vec!["configured-source".to_string()],
-        strike_selection: "all_configured_strikes".to_string(),
-        tenor_selection: "all_configured_tenors".to_string(),
-        evidence_mapping: "preserve_evidence_kind".to_string(),
+        strike_selection: IvStrikeSelection::AllConfiguredStrikes,
+        tenor_selection: IvTenorSelection::AllConfiguredTenors,
+        evidence_mapping: IvEvidenceMapping::PreserveEvidenceKind,
         minimum_points,
         max_projection_input_skew_ns: 10,
         fallback_policy_ref: fallback_policy_ref.map(str::to_string),
@@ -717,6 +749,60 @@ fn two_strategy_instances_query_shared_engine_state_with_different_selectors() {
 }
 
 #[test]
+fn selector_scoped_smile_query_skips_unauthorized_matching_source() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(option_chain_event_with_source(
+            "configured-denied-source",
+            "configured-denied-selector",
+            2_010,
+            0.40,
+            0.44,
+        ))
+        .unwrap();
+    store
+        .ingest_event(option_chain_event_with_source(
+            "configured-allowed-source",
+            "configured-allowed-selector",
+            2_010,
+            0.41,
+            0.45,
+        ))
+        .unwrap();
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        selector_scoped_smile_authorization(
+            "configured-allowed-source",
+            "configured-allowed-selector",
+        ),
+        store,
+    );
+
+    let product = handle
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::Smile,
+            selector: IvSelector::SmileQuery {
+                series_id: "configured-series".to_string(),
+                side: None,
+                basis: IvBasis::Mark,
+                as_of_ns: UnixNanos::new(2_010),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::Smile(smile) = product else {
+        panic!("expected smile product");
+    };
+    assert_eq!(smile.source_id, "configured-allowed-source");
+    assert_eq!(
+        smile.provenance.selector_fingerprint,
+        "configured-allowed-selector"
+    );
+}
+
+#[test]
 fn strategy_query_rejects_products_from_non_current_source_state() {
     let mut store = IvStore::empty();
     store
@@ -846,13 +932,11 @@ fn projected_scalar_query_uses_configured_fallback_policy_when_primary_projectio
 fn projected_scalar_query_applies_configured_interpolation_policy_for_smile_inputs() {
     let mut store = IvStore::empty();
     store.ingest_event(option_chain_event(2_010)).unwrap();
+    let mut projection_policy =
+        projection_policy_with_refs(1, None, Some("configured-interpolation-policy"), None);
+    projection_policy.strike_selection = IvStrikeSelection::AtmStrike;
     let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
-        .with_projection_policies(vec![projection_policy_with_refs(
-            1,
-            None,
-            Some("configured-interpolation-policy"),
-            None,
-        )])
+        .with_projection_policies(vec![projection_policy])
         .with_interpolation_policies(vec![IvInterpolationPolicy {
             policy_id: "configured-interpolation-policy".to_string(),
             method: IvInterpolationMethod::Linear,
@@ -894,6 +978,56 @@ fn projected_scalar_query_applies_configured_interpolation_policy_for_smile_inpu
                 IvPolicyDecision::InterpolationDecision { policy_id, .. }
                     if policy_id == "configured-interpolation-policy"
             ))
+    );
+}
+
+#[test]
+fn projected_scalar_all_configured_strikes_uses_all_smile_points_when_interpolation_policy_exists()
+{
+    let mut store = IvStore::empty();
+    store.ingest_event(option_chain_event(2_010)).unwrap();
+    let projection_policy =
+        projection_policy_with_refs(1, None, Some("configured-interpolation-policy"), None);
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy])
+        .with_interpolation_policies(vec![IvInterpolationPolicy {
+            policy_id: "configured-interpolation-policy".to_string(),
+            method: IvInterpolationMethod::Linear,
+            strike_axis: "configured-strike-axis".to_string(),
+            tenor_axis: "configured-tenor-axis".to_string(),
+            minimum_points: 2,
+            eligible_sources: vec!["configured-source".to_string()],
+            extrapolation: IvExtrapolationPolicy::Reject,
+        }]);
+
+    let product = handle
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(IvSelector::SmileQuery {
+                    series_id: "configured-series".to_string(),
+                    side: None,
+                    basis: IvBasis::Mark,
+                    as_of_ns: UnixNanos::new(2_010),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_010),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::ProjectedScalarIv(projected) = product else {
+        panic!("expected projected scalar IV product");
+    };
+    assert!((projected.value - 0.42).abs() < f64::EPSILON);
+    assert!(
+        projected
+            .provenance
+            .policy_decisions
+            .iter()
+            .all(|decision| !matches!(decision, IvPolicyDecision::InterpolationDecision { .. }))
     );
 }
 
@@ -1001,13 +1135,15 @@ fn projected_scalar_query_uses_fallback_when_single_smile_interpolation_rejects(
 
     let mut store = IvStore::empty();
     store.ingest_event(event).unwrap();
+    let mut projection_policy = projection_policy_with_refs(
+        2,
+        Some("configured-fallback-policy"),
+        Some("configured-interpolation-policy"),
+        None,
+    );
+    projection_policy.strike_selection = IvStrikeSelection::AtmStrike;
     let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
-        .with_projection_policies(vec![projection_policy_with_refs(
-            2,
-            Some("configured-fallback-policy"),
-            Some("configured-interpolation-policy"),
-            None,
-        )])
+        .with_projection_policies(vec![projection_policy])
         .with_interpolation_policies(vec![IvInterpolationPolicy {
             policy_id: "configured-interpolation-policy".to_string(),
             method: IvInterpolationMethod::Linear,
@@ -1056,6 +1192,101 @@ fn projected_scalar_query_uses_fallback_when_single_smile_interpolation_rejects(
                 decision,
                 IvPolicyDecision::FallbackDecision { policy_id, .. }
                     if policy_id == "configured-fallback-policy"
+            ))
+    );
+}
+
+#[test]
+fn projected_scalar_smile_quorum_interpolates_each_source_before_quorum() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(option_chain_event_with_source(
+            "configured-source-a",
+            "configured-selector-a",
+            2_010,
+            0.40,
+            0.44,
+        ))
+        .unwrap();
+    store
+        .ingest_event(option_chain_event_with_source(
+            "configured-source-b",
+            "configured-selector-b",
+            2_010,
+            0.41,
+            0.45,
+        ))
+        .unwrap();
+
+    let mut projection_policy = projection_policy_with_refs(
+        2,
+        None,
+        Some("configured-interpolation-policy"),
+        Some("configured-quorum-policy"),
+    );
+    projection_policy.source_eligibility = vec![
+        "configured-source-a".to_string(),
+        "configured-source-b".to_string(),
+    ];
+    projection_policy.strike_selection = IvStrikeSelection::AtmStrike;
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy])
+        .with_interpolation_policies(vec![IvInterpolationPolicy {
+            policy_id: "configured-interpolation-policy".to_string(),
+            method: IvInterpolationMethod::Linear,
+            strike_axis: "configured-strike-axis".to_string(),
+            tenor_axis: "configured-tenor-axis".to_string(),
+            minimum_points: 2,
+            eligible_sources: vec![
+                "configured-source-a".to_string(),
+                "configured-source-b".to_string(),
+            ],
+            extrapolation: IvExtrapolationPolicy::Reject,
+        }])
+        .with_quorum_policies(vec![IvQuorumPolicy {
+            policy_id: "configured-quorum-policy".to_string(),
+            minimum_sources: 2,
+            eligible_sources: vec![
+                "configured-source-a".to_string(),
+                "configured-source-b".to_string(),
+            ],
+            agreement_band: 0.02,
+            tie_break: IvQuorumTieBreak::Mean,
+        }]);
+
+    let product = handle
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(IvSelector::SmileQuery {
+                    series_id: "configured-series".to_string(),
+                    side: None,
+                    basis: IvBasis::Mark,
+                    as_of_ns: UnixNanos::new(2_010),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_010),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::ProjectedScalarIv(projected) = product else {
+        panic!("expected projected scalar IV product");
+    };
+    assert!((projected.value - 0.445).abs() < f64::EPSILON);
+    assert!(
+        projected
+            .provenance
+            .policy_decisions
+            .iter()
+            .any(|decision| matches!(
+                decision,
+                IvPolicyDecision::QuorumDecision {
+                    quorum_met: true,
+                    ..
+                }
             ))
     );
 }
@@ -1773,11 +2004,11 @@ fn projected_scalar_query_uses_configured_projection_policy() {
         .with_projection_policies(vec![IvProjectionPolicy {
             policy_id: "configured-projection-policy".to_string(),
             projection_kind: IvProjectionKind::Mean,
-            basis_selection: "preserve_input_basis".to_string(),
+            basis_selection: IvBasisSelection::PreserveInputBasis,
             source_eligibility: vec!["configured-source".to_string()],
-            strike_selection: "all_configured_strikes".to_string(),
-            tenor_selection: "all_configured_tenors".to_string(),
-            evidence_mapping: "preserve_evidence_kind".to_string(),
+            strike_selection: IvStrikeSelection::AllConfiguredStrikes,
+            tenor_selection: IvTenorSelection::AllConfiguredTenors,
+            evidence_mapping: IvEvidenceMapping::PreserveEvidenceKind,
             minimum_points: 1,
             max_projection_input_skew_ns: 10,
             fallback_policy_ref: None,

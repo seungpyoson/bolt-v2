@@ -657,16 +657,6 @@ fn validate_projection_policies(context: &str, profile: &IvProfile) -> Vec<Strin
                 policy.policy_id
             ));
         }
-        if policy.basis_selection.trim().is_empty()
-            || policy.strike_selection.trim().is_empty()
-            || policy.tenor_selection.trim().is_empty()
-            || policy.evidence_mapping.trim().is_empty()
-        {
-            errors.push(format!(
-                "{policy_context}.{} basis_selection, strike_selection, tenor_selection, and evidence_mapping must be non-empty",
-                policy.policy_id
-            ));
-        }
         if policy.max_projection_input_skew_ns == 0 {
             errors.push(format!(
                 "{policy_context}.{}.max_projection_input_skew_ns must be positive",

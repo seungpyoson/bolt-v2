@@ -291,3 +291,15 @@ Strategy-boundary decisions for US6: strategies receive IV access only through `
 | PR #611 GitHub CI | PASS | GitHub CI is the authoritative verification source for the post-push PR head; passing checks must include CI gate/test/nextest shards/clippy/deny/build/source-fence/fmt-check, CodeQL, actionlint, and Backtester CI. |
 
 Phase 9 source-fence remediation: production `Default` derives and `unwrap_or_default` calls in IV code were replaced with explicit constructors or explicit fallback values. The runtime literal audit was extended for the IV module surface, and the schema-current verifier now accepts the active Speckit pointer for `specs/026-nt-backed-iv-engine/` alongside the existing order-intent pointer policy.
+
+## Post-Review Projection/Quorum Hardening
+
+| Requirement | Evidence | Status |
+|---|---|---|
+| Projection policy values are Rust-validated instead of inert strings. | `cargo test --locked --test bolt_v3_iv_config unknown_projection_policy_values_reject_at_parse` was RED before typed projection selector enums and GREEN after. | Complete |
+| `all_configured_strikes` projects across all smile points even when an interpolation policy is configured. | `cargo test --locked --test bolt_v3_iv_query projected_scalar_all_configured_strikes_uses_all_smile_points_when_interpolation_policy_exists` was RED before the query fix and GREEN after. | Complete |
+| Smile quorum runs across distinct source smiles after configured interpolation to comparable scalar inputs. | `cargo test --locked --test bolt_v3_iv_query projected_scalar_smile_quorum_interpolates_each_source_before_quorum` was RED before multi-source smile discovery and post-interpolation quorum, GREEN after. | Complete |
+| Selector-scoped smile reads do not stop at an unauthorized first matching source. | `cargo test --locked --test bolt_v3_iv_query selector_scoped_smile_query_skips_unauthorized_matching_source` was RED before authorized-candidate fallback and GREEN after. | Complete |
+| Ordinary non-derived product queries avoid full-state snapshot cloning. | `cargo test --locked --lib only_derived_queries_require_snapshot_for_query_time_writes` was RED before query classification and GREEN after. | Complete |
+
+Post-review local verification: `cargo test --locked --test bolt_v3_iv_query` (42 tests), `cargo test --locked --test bolt_v3_iv_config` (24 tests), `cargo test --locked --test bolt_v3_iv_policy` (5 tests), `cargo test --locked --test bolt_v3_iv_live_integration` (20 tests), `cargo fmt --check`, and `just source-fence` passed. Local `cargo clippy --locked --lib -- -D warnings` did not reach linting because the worktree build script canonicalized a missing `.git/worktrees/.../refs/heads/...` path; post-push GitHub CI clippy remains the authoritative verification.

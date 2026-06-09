@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
@@ -16,17 +16,17 @@ use super::{
     ingest::{IvIngestEvent, IvRawEvent},
     policy::{
         IvFallbackCandidate, IvFallbackPolicy, IvInterpolationPolicy, IvPolicyInput,
-        IvPolicyOutput, IvProjectionPolicy, IvQuorumPolicy, interpolate_smile, project_scalar,
-        resolve_fallback, resolve_quorum,
+        IvPolicyOutput, IvProjectionPolicy, IvQuorumPolicy, IvStrikeSelection, interpolate_smile,
+        project_scalar, resolve_fallback, resolve_quorum,
     },
-    provenance::IvProvenance,
+    provenance::{IvPolicyDecision, IvProvenance},
     selector::IvSelector,
     store::{
         IvAggregateGreeks, IvEvidence, IvGreeksPoint, IvPoint, IvRetentionPolicy, IvSmile, IvStore,
         IvStoreError, IvSurface,
     },
     time::UnixNanos,
-    types::{IvConvention, IvProductKind},
+    types::{IvBasis, IvConvention, IvProductKind},
 };
 
 const INITIAL_REJECT_COUNT: u64 = 0;
@@ -524,21 +524,13 @@ impl IvQueryHandle {
             return Err(IvQueryError::ProductKindMismatch);
         }
 
-        let state = self.state.snapshot();
-        let product = self.find_product(query, &state)?;
-        if !product_satisfies_current_state(&product, &state) {
-            return Err(IvQueryError::ProductNotFound);
-        }
-        let source_id = product.source_id();
-        let selector_fingerprint = product.selector_fingerprint();
-        if !self.authorization.authorizes(
-            &query.strategy_id,
-            query.product_kind,
-            source_id,
-            selector_fingerprint,
-        ) {
-            return Err(IvQueryError::StrategyNotAuthorized);
-        }
+        let product = if query_requires_snapshot(query) {
+            let state = self.state.snapshot();
+            self.query_product_from_state(query, &state)?
+        } else {
+            let state = self.state.read_state();
+            self.query_product_from_state(query, &state)?
+        };
 
         if let IvQueryProduct::DerivedIv(derived) = &product
             && should_cache_derived_output(query)
@@ -548,6 +540,79 @@ impl IvQueryHandle {
         }
 
         Ok(product)
+    }
+
+    fn query_product_from_state(
+        &self,
+        query: &IvProductQuery,
+        state: &IvQueryState,
+    ) -> Result<IvQueryProduct, IvQueryError> {
+        let mut product = self.find_product(query, state)?;
+        if !product_satisfies_current_state(&product, state) {
+            return Err(IvQueryError::ProductNotFound);
+        }
+        if !self.authorization.authorizes(
+            &query.strategy_id,
+            query.product_kind,
+            product.source_id(),
+            product.selector_fingerprint(),
+        ) {
+            product = self
+                .find_authorized_current_product(query, state)?
+                .ok_or(IvQueryError::StrategyNotAuthorized)?;
+        }
+
+        Ok(product)
+    }
+
+    fn find_authorized_current_product(
+        &self,
+        query: &IvProductQuery,
+        state: &IvQueryState,
+    ) -> Result<Option<IvQueryProduct>, IvQueryError> {
+        let products = match (&query.product_kind, &query.selector) {
+            (
+                IvProductKind::Smile,
+                IvSelector::SmileQuery {
+                    series_id,
+                    side,
+                    basis,
+                    as_of_ns,
+                },
+            ) => matching_smile_products(
+                state,
+                &query.profile_id,
+                series_id,
+                side,
+                *basis,
+                *as_of_ns,
+            ),
+            (
+                IvProductKind::Surface,
+                IvSelector::SurfaceQuery {
+                    series_selectors,
+                    basis,
+                    as_of_ns,
+                },
+            ) => matching_surface_products(
+                state,
+                &query.profile_id,
+                series_selectors,
+                *basis,
+                *as_of_ns,
+            ),
+            _ => return Ok(None),
+        };
+
+        Ok(products.into_iter().find(|product| {
+            product_satisfies_current_state(product, state)
+                && self.authorization.authorizes(
+                    &query.strategy_id,
+                    query.product_kind,
+                    product.source_id(),
+                    product.selector_fingerprint(),
+                )
+        }))
     }
 
     fn find_product(
@@ -608,20 +673,17 @@ impl IvQueryHandle {
                     basis,
                     as_of_ns,
                 },
-            ) => state
-                .store
-                .smiles()
-                .iter()
-                .find(|smile| {
-                    smile.profile_id == query.profile_id
-                        && smile.series_id == *series_id
-                        && side.as_ref().is_none_or(|side| smile.side == *side)
-                        && smile.basis == *basis
-                        && smile.ts_event_ns == *as_of_ns
-                })
-                .cloned()
-                .map(IvQueryProduct::Smile)
-                .ok_or(IvQueryError::ProductNotFound),
+            ) => matching_smile_products(
+                state,
+                &query.profile_id,
+                series_id,
+                side,
+                *basis,
+                *as_of_ns,
+            )
+            .into_iter()
+            .next()
+            .ok_or(IvQueryError::ProductNotFound),
             (
                 IvProductKind::Surface,
                 IvSelector::SurfaceQuery {
@@ -629,28 +691,16 @@ impl IvQueryHandle {
                     basis,
                     as_of_ns,
                 },
-            ) => state
-                .store
-                .smiles()
-                .iter()
-                .find_map(|smile| {
-                    if smile.profile_id == query.profile_id
-                        && series_selectors.contains(&smile.surface_selector)
-                        && smile.basis == *basis
-                        && smile.ts_event_ns == *as_of_ns
-                    {
-                        state.store.surface(
-                            &smile.surface_selector,
-                            &smile.source_id,
-                            *basis,
-                            *as_of_ns,
-                        )
-                    } else {
-                        None
-                    }
-                })
-                .map(IvQueryProduct::Surface)
-                .ok_or(IvQueryError::ProductNotFound),
+            ) => matching_surface_products(
+                state,
+                &query.profile_id,
+                series_selectors,
+                *basis,
+                *as_of_ns,
+            )
+            .into_iter()
+            .next()
+            .ok_or(IvQueryError::ProductNotFound),
             (
                 IvProductKind::AggregateGreeks,
                 IvSelector::AggregateGreeksQuery {
@@ -775,7 +825,7 @@ impl IvQueryHandle {
         {
             return Err(IvQueryError::ProductNotFound);
         }
-        let inputs = projection_inputs_from_products(&input_products)?;
+        let mut inputs = projection_inputs_from_products(&input_products)?;
         if !projection_inputs_authorized(
             &self.authorization,
             &query.strategy_id,
@@ -785,6 +835,19 @@ impl IvQueryHandle {
             return Err(IvQueryError::StrategyNotAuthorized);
         }
         let mut policy_decisions = Vec::new();
+
+        if let Some(interpolation_policy_ref) = &policy.interpolation_policy_ref
+            && let Some(interpolated) = interpolate_projected_inputs(
+                policy,
+                state,
+                interpolation_policy_ref,
+                &input_products,
+            )?
+        {
+            inputs = interpolated.inputs;
+            policy_decisions.extend(interpolated.policy_decisions);
+        }
+
         if let Some(quorum_policy_ref) = &policy.quorum_policy_ref {
             let quorum_policy = state
                 .quorum_policies
@@ -796,21 +859,7 @@ impl IvQueryHandle {
             policy_decisions.extend(quorum_output.policy_decisions);
         }
 
-        let output = if let Some(interpolation_policy_ref) = &policy.interpolation_policy_ref {
-            let input_product = input_products
-                .first()
-                .ok_or(IvQueryError::ProductNotFound)?;
-            if input_products.len() == 1
-                && let Some(interpolation_output) =
-                    interpolate_projected_input(state, interpolation_policy_ref, input_product)?
-            {
-                interpolation_output
-            } else {
-                project_or_fallback(policy, state, &inputs)?
-            }
-        } else {
-            project_or_fallback(policy, state, &inputs)?
-        };
+        let output = project_or_fallback(policy, state, &inputs)?;
         let mut provenance = input_products
             .first()
             .ok_or(IvQueryError::ProductNotFound)?
@@ -890,6 +939,50 @@ impl IvQueryHandle {
                     .cloned()
                     .map(IvQueryProduct::IvGreeksPoint)
                     .collect::<Vec<_>>();
+                if products.is_empty() {
+                    Err(IvQueryError::ProductNotFound)
+                } else {
+                    Ok(products)
+                }
+            }
+            (
+                IvProductKind::Smile,
+                IvSelector::SmileQuery {
+                    series_id,
+                    side,
+                    basis,
+                    as_of_ns,
+                },
+            ) => {
+                let products = matching_smile_products(
+                    state,
+                    &query.profile_id,
+                    series_id,
+                    side,
+                    *basis,
+                    *as_of_ns,
+                );
+                if products.is_empty() {
+                    Err(IvQueryError::ProductNotFound)
+                } else {
+                    Ok(products)
+                }
+            }
+            (
+                IvProductKind::Surface,
+                IvSelector::SurfaceQuery {
+                    series_selectors,
+                    basis,
+                    as_of_ns,
+                },
+            ) => {
+                let products = matching_surface_products(
+                    state,
+                    &query.profile_id,
+                    series_selectors,
+                    *basis,
+                    *as_of_ns,
+                );
                 if products.is_empty() {
                     Err(IvQueryError::ProductNotFound)
                 } else {
@@ -1184,6 +1277,61 @@ impl IvQueryProduct {
     }
 }
 
+fn matching_smile_products(
+    state: &IvQueryState,
+    profile_id: &str,
+    series_id: &str,
+    side: &Option<String>,
+    basis: IvBasis,
+    as_of_ns: UnixNanos,
+) -> Vec<IvQueryProduct> {
+    state
+        .store
+        .smiles()
+        .iter()
+        .filter(|smile| {
+            smile.profile_id == profile_id
+                && smile.series_id == series_id
+                && side.as_ref().is_none_or(|side| smile.side == *side)
+                && smile.basis == basis
+                && smile.ts_event_ns == as_of_ns
+        })
+        .cloned()
+        .map(IvQueryProduct::Smile)
+        .collect()
+}
+
+fn matching_surface_products(
+    state: &IvQueryState,
+    profile_id: &str,
+    series_selectors: &[String],
+    basis: IvBasis,
+    as_of_ns: UnixNanos,
+) -> Vec<IvQueryProduct> {
+    let mut seen = BTreeSet::new();
+    state
+        .store
+        .smiles()
+        .iter()
+        .filter(|smile| {
+            smile.profile_id == profile_id
+                && series_selectors.contains(&smile.surface_selector)
+                && smile.basis == basis
+                && smile.ts_event_ns == as_of_ns
+        })
+        .filter_map(|smile| {
+            let key = (smile.surface_selector.clone(), smile.source_id.clone());
+            if !seen.insert(key) {
+                return None;
+            }
+            state
+                .store
+                .surface(&smile.surface_selector, &smile.source_id, basis, as_of_ns)
+                .map(IvQueryProduct::Surface)
+        })
+        .collect()
+}
+
 fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQueryError> {
     let inputs = match product {
         IvQueryProduct::IvPoint(point) => vec![IvPolicyInput {
@@ -1314,6 +1462,20 @@ fn should_cache_derived_output(query: &IvProductQuery) -> bool {
     )
 }
 
+fn query_requires_snapshot(query: &IvProductQuery) -> bool {
+    selector_requires_query_time_writes(&query.selector)
+}
+
+fn selector_requires_query_time_writes(selector: &IvSelector) -> bool {
+    match selector {
+        IvSelector::DerivedIvQuery { .. } => true,
+        IvSelector::ProjectedScalarIvQuery { input_selector, .. } => {
+            selector_requires_query_time_writes(input_selector)
+        }
+        _ => false,
+    }
+}
+
 fn same_derived_output_cache_slot(left: &IvDerivedOutput, right: &IvDerivedOutput) -> bool {
     left.point.profile_id == right.point.profile_id
         && left.point.source_id == right.point.source_id
@@ -1382,42 +1544,106 @@ fn project_or_fallback(
     }
 }
 
-fn interpolate_projected_input(
+struct InterpolatedProjectionInputs {
+    inputs: Vec<IvPolicyInput>,
+    policy_decisions: Vec<IvPolicyDecision>,
+}
+
+fn interpolate_projected_inputs(
+    projection_policy: &IvProjectionPolicy,
     state: &IvQueryState,
     interpolation_policy_id: &str,
-    input_product: &IvQueryProduct,
-) -> Result<Option<IvPolicyOutput>, IvQueryError> {
+    input_products: &[IvQueryProduct],
+) -> Result<Option<InterpolatedProjectionInputs>, IvQueryError> {
+    if projection_policy.strike_selection == IvStrikeSelection::AllConfiguredStrikes {
+        return Ok(None);
+    }
+
     let policy = state
         .interpolation_policies
         .iter()
         .find(|policy| policy.policy_id == interpolation_policy_id)
         .ok_or(IvQueryError::ProjectionRejected)?;
-    match input_product {
-        IvQueryProduct::Smile(smile) => {
-            let Some(strike) = smile
-                .atm_strike
-                .or_else(|| smile.points_by_strike.first().map(|point| point.strike))
-            else {
-                return Ok(None);
-            };
-            Ok(interpolate_smile(policy, &smile.points_by_strike, strike).ok())
+
+    let mut inputs = Vec::new();
+    let mut policy_decisions = Vec::new();
+    for product in input_products {
+        match product {
+            IvQueryProduct::Smile(smile) => {
+                interpolate_smile_input(
+                    projection_policy,
+                    policy,
+                    smile,
+                    &mut inputs,
+                    &mut policy_decisions,
+                );
+            }
+            IvQueryProduct::Surface(surface) => {
+                for smile in &surface.smiles {
+                    interpolate_smile_input(
+                        projection_policy,
+                        policy,
+                        smile,
+                        &mut inputs,
+                        &mut policy_decisions,
+                    );
+                }
+            }
+            _ => return Ok(None),
         }
-        IvQueryProduct::Surface(surface) => {
-            let smile = surface
-                .smiles
-                .iter()
-                .find(|smile| !smile.points_by_strike.is_empty())
-                .ok_or(IvQueryError::ProjectionRejected)?;
-            let Some(strike) = smile
-                .atm_strike
-                .or_else(|| smile.points_by_strike.first().map(|point| point.strike))
-            else {
-                return Ok(None);
-            };
-            Ok(interpolate_smile(policy, &smile.points_by_strike, strike).ok())
-        }
-        _ => Ok(None),
     }
+
+    if inputs.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(InterpolatedProjectionInputs {
+            inputs,
+            policy_decisions,
+        }))
+    }
+}
+
+fn interpolate_smile_input(
+    projection_policy: &IvProjectionPolicy,
+    interpolation_policy: &IvInterpolationPolicy,
+    smile: &IvSmile,
+    inputs: &mut Vec<IvPolicyInput>,
+    policy_decisions: &mut Vec<IvPolicyDecision>,
+) {
+    if !interpolation_policy.eligible_sources.is_empty()
+        && !interpolation_policy
+            .eligible_sources
+            .contains(&smile.source_id)
+    {
+        return;
+    }
+
+    let strike = match projection_policy.strike_selection {
+        IvStrikeSelection::AllConfiguredStrikes => return,
+        IvStrikeSelection::AtmStrike => smile.atm_strike,
+        IvStrikeSelection::FirstConfiguredStrike => {
+            smile.points_by_strike.first().map(|point| point.strike)
+        }
+    };
+    let Some(strike) = strike else {
+        return;
+    };
+
+    let Ok(output) = interpolate_smile(interpolation_policy, &smile.points_by_strike, strike)
+    else {
+        return;
+    };
+
+    policy_decisions.extend(output.policy_decisions);
+    inputs.push(IvPolicyInput {
+        product_id: smile.series_id.clone(),
+        source_id: smile.source_id.clone(),
+        selector_fingerprint: smile.provenance.selector_fingerprint.clone(),
+        basis: format!("{:?}", smile.basis),
+        convention: iv_convention_name(&smile.convention),
+        value: output.value,
+        ts_event_ns: smile.ts_event_ns,
+    });
 }
 
 fn iv_convention_name(convention: &IvConvention) -> String {
@@ -1620,6 +1846,46 @@ mod tests {
 
         assert!(recovered.is_ok());
         assert_eq!(recovered.unwrap().store.raw_events().len(), 0);
+    }
+
+    #[test]
+    fn only_derived_queries_require_snapshot_for_query_time_writes() {
+        let point_query = IvProductQuery {
+            strategy_id: "test-strategy".to_string(),
+            profile_id: "test-profile".to_string(),
+            product_kind: IvProductKind::IvPoint,
+            selector: IvSelector::PointQuery {
+                instrument_ids: vec!["test-instrument".to_string()],
+                basis: IvBasis::Mark,
+                as_of_ns: UnixNanos::new(1),
+                source_filter: None,
+            },
+        };
+        let derived_query = IvProductQuery {
+            strategy_id: "test-strategy".to_string(),
+            profile_id: "test-profile".to_string(),
+            product_kind: IvProductKind::DerivedIv,
+            selector: IvSelector::DerivedIvQuery {
+                instrument_id: "test-instrument".to_string(),
+                helper_policy_id: "test-helper-policy".to_string(),
+                as_of_ns: UnixNanos::new(1),
+                inputs: None,
+            },
+        };
+        let projected_from_derived_query = IvProductQuery {
+            strategy_id: "test-strategy".to_string(),
+            profile_id: "test-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(derived_query.selector.clone()),
+                projection_policy_id: "test-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(1),
+            },
+        };
+
+        assert!(!query_requires_snapshot(&point_query));
+        assert!(query_requires_snapshot(&derived_query));
+        assert!(query_requires_snapshot(&projected_from_derived_query));
     }
 
     #[test]

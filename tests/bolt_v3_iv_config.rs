@@ -495,6 +495,22 @@ fn unknown_projection_policy_fields_reject_at_parse() {
 }
 
 #[test]
+fn unknown_projection_policy_values_reject_at_parse() {
+    let invalid = valid_iv_toml().replacen(
+        "strike_selection = \"all_configured_strikes\"",
+        "strike_selection = \"configured-unknown-strike-selection\"",
+        1,
+    );
+
+    assert!(matches!(
+        load_iv_config_from_toml(&invalid),
+        Err(IvConfigError::Parse(message))
+            if message.contains("configured-unknown-strike-selection")
+                || message.contains("unknown variant")
+    ));
+}
+
+#[test]
 fn selector_source_product_mismatch_rejects_with_exact_field() {
     let invalid = valid_iv_toml().replacen(
         "source_kind = \"option_greeks\"",

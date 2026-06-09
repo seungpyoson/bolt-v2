@@ -118,3 +118,31 @@ Current PR verification uses GitHub CI rather than local cargo reruns. Because a
 
 - `cargo test --locked --test bolt_v3_iv_store non_finite -- --nocapture`: RED before fix, GREEN after fix.
 - `cargo test --locked --test bolt_v3_iv_ingest option_chain_with_non_finite_atm_strike_preserves_raw_event_without_indexing_smiles -- --nocapture`: RED before fix, GREEN after fix.
+
+## 2026-06-10 Internal Adversarial Review After `2ce39b4f`
+
+**Reviewed working tree**: branch `026-nt-backed-iv-engine`, local delta after head `2ce39b4f5ae308df730c4986e47bbbbfc019cfe0`
+**Recommendation**: PASS for the locally reviewed fixes below; GitHub CI and external relay approvals must be refreshed after this delta is committed and pushed.
+
+| Issue | Evidence | Resolution |
+|---|---|---|
+| `IvProjectionPolicy` selector fields were parsed as strings and only checked for non-empty values, so unknown policy values could load and then be ignored. | RED: `cargo test --locked --test bolt_v3_iv_config unknown_projection_policy_values_reject_at_parse` failed because `configured-unknown-strike-selection` loaded successfully. | Converted projection selector fields to typed serde enums (`IvBasisSelection`, `IvStrikeSelection`, `IvTenorSelection`, `IvEvidenceMapping`) so unknown TOML values reject at parse. |
+| Smile projection with `strike_selection = "all_configured_strikes"` still applied the interpolation policy to ATM/first strike, silently overriding TOML-owned projection semantics. | RED: `cargo test --locked --test bolt_v3_iv_query projected_scalar_all_configured_strikes_uses_all_smile_points_when_interpolation_policy_exists` failed with the ATM interpolation value instead of the all-strikes mean. | Projection now skips interpolation for `AllConfiguredStrikes`; interpolation only runs for single-strike selections such as `AtmStrike` and falls back to the configured projection/fallback path when interpolation yields no scalar input. |
+| Smile quorum could not operate across multiple sources because projection discovery fell back to first-match smile lookup and quorum ran over flattened smile points before per-source interpolation. | RED: `cargo test --locked --test bolt_v3_iv_query projected_scalar_smile_quorum_interpolates_each_source_before_quorum` failed with `ProjectionRejected`. | Smile/surface projection discovery now collects all matching source products; configured interpolation runs per source before quorum, and quorum gates the projected scalar over the synchronized scalar inputs. |
+| Selector-scoped smile queries could reject an authorized source when an unauthorized matching source was ingested first. | RED: `cargo test --locked --test bolt_v3_iv_query selector_scoped_smile_query_skips_unauthorized_matching_source` failed with `StrategyNotAuthorized`. | Direct smile/surface queries now retry the matching product set and return an authorized current product when one exists. |
+| Ordinary product queries cloned the full `IvQueryState`, including retained raw events, on every query. | RED: `cargo test --locked --lib only_derived_queries_require_snapshot_for_query_time_writes` failed to compile before the query classification helper existed. | Non-derived queries now use the shared read guard. Snapshot cloning is limited to derived query paths that can write derived-output cache or source-health rejection state during query evaluation. |
+
+### 2026-06-10 Post-`2ce39b4f` Verification
+
+- `cargo test --locked --test bolt_v3_iv_query projected_scalar_all_configured_strikes_uses_all_smile_points_when_interpolation_policy_exists`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_query selector_scoped_smile_query_skips_unauthorized_matching_source`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_query projected_scalar_smile_quorum_interpolates_each_source_before_quorum`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_config unknown_projection_policy_values_reject_at_parse`: RED before fix, GREEN after fix.
+- `cargo test --locked --lib only_derived_queries_require_snapshot_for_query_time_writes`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_query`: PASS, 42 tests.
+- `cargo test --locked --test bolt_v3_iv_config`: PASS, 24 tests.
+- `cargo test --locked --test bolt_v3_iv_policy`: PASS, 5 tests.
+- `cargo test --locked --test bolt_v3_iv_live_integration`: PASS, 20 tests.
+- `cargo fmt --check`: PASS.
+- `just source-fence`: PASS.
+- `cargo clippy --locked --lib -- -D warnings`: NOT COMPLETED locally; this worktree's build script panicked before linting while canonicalizing a missing `.git/worktrees/026-nt-backed-iv-engine-fix/refs/heads/026-nt-backed-iv-engine` path. GitHub CI clippy is the required authoritative check after push.

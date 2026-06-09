@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn switch_resets_only_active_market_state() {
+fn switch_resets_active_market_and_reference_price_state_only() {
     let mut strategy = test_strategy();
     strategy.market_lifecycle.insert(
         "A".to_string(),
@@ -13,6 +13,8 @@ fn switch_resets_only_active_market_state() {
         },
     );
     set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
+    strategy.pricing.last_reference_current_price = Some(3_100.5);
+    strategy.pricing.last_reference_current_price_ts_ms = Some(1_200);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
     strategy
         .pricing
@@ -39,10 +41,9 @@ fn switch_resets_only_active_market_state() {
     assert_eq!(active.warmup_count, 0);
     assert!(!active.outcome_fees.up_ready);
     assert!(!active.outcome_fees.down_ready);
-    assert_eq!(
-        strategy.pricing.fast_spot,
-        Some(fast_spot("bybit", 3_100.5, 1_200))
-    );
+    assert_eq!(strategy.pricing.last_reference_current_price, None);
+    assert_eq!(strategy.pricing.last_reference_current_price_ts_ms, None);
+    assert_eq!(strategy.pricing.fast_spot, None);
     assert_eq!(strategy.pricing.current_realized_vol_at(1_200), Some(1.5));
     assert_eq!(
         strategy.pricing.current_realized_vol_source_at(1_200),

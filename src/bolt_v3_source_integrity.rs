@@ -251,8 +251,10 @@ mod tests {
     // the merged strategy module.
     // Re-derived again after making reference-current-price runtime state
     // interval-bound and removing parser defaults for source activation fields.
+    // Re-derived again after pinning market-switch tests to reset selection-bound
+    // reference-current-price runtime state while preserving realized volatility.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "3f22cbdda2a24ba77dfd5eed182e6e1ac647e7960ae226a15b744d156acea7e0";
+        "77aebd09c51fa8632c5152eca57e430940ba1b3257623f0a5e6154ec913bb83f";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

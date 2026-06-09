@@ -2634,3 +2634,37 @@ Current conclusion:
 - It still does not close `BACKTESTING_ENGINE-022`: PMXT/Polymarket broad
   backfill remains blocked by source acceptance, broad safety evidence, and
   dynamic tick-size replay or accepted bounded-exclusion proof.
+
+## 2026-06-09 execution-readiness mapping proof-boolean checkpoint
+
+Root cause addressed:
+
+- Execution readiness checked source-catalog mapping readiness status, empty
+  blockers, source proof id/version, source binding, table family, NT data type,
+  and source usage scope.
+- It did not independently check `nt_catalog_mapping_proven`.
+- A stale or hand-edited mapping-readiness report could therefore carry
+  `status = ready` and no blockers while setting the explicit proof boolean to
+  false.
+
+Change:
+
+- Execution readiness now blocks with
+  `source_catalog_mapping_readiness_not_proven` when a required mapping report
+  has `nt_catalog_mapping_proven = false`.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_execution_readiness execution_readiness_blocks_when_source_catalog_mapping_readiness_proof_boolean_is_false -- --nocapture`
+  failed because the final execution-readiness blocker did not exist.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_execution_readiness execution_readiness_blocks_when_source_catalog_mapping_readiness_proof_boolean_is_false -- --nocapture`
+  passed after adding the final proof-boolean check.
+
+Current conclusion:
+
+- This closes another generic `BACKTESTING_ENGINE-022` final-gate bypass.
+- It still does not close `BACKTESTING_ENGINE-022`; broad PMXT/Polymarket
+  backfill remains blocked by the same source-acceptance, broad evidence, and
+  tick-size policy requirements.

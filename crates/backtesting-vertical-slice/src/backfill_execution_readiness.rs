@@ -110,6 +110,7 @@ pub enum BackfillExecutionReadinessBlocker {
     SourceCatalogMappingReadinessRequiredButMissing,
     SourceCatalogMappingReadinessNotReady,
     SourceCatalogMappingReadinessHasBlockers,
+    SourceCatalogMappingReadinessNotProven,
     SourceCatalogMappingReadinessSourceProofMismatch,
     SourceCatalogMappingReadinessSourceBindingMismatch,
     SourceCatalogMappingReadinessTableFamilyMismatch,
@@ -504,6 +505,11 @@ pub fn evaluate_backfill_execution_readiness(
                 if !readiness.blockers.is_empty() {
                     blockers.push(
                         BackfillExecutionReadinessBlocker::SourceCatalogMappingReadinessHasBlockers,
+                    );
+                }
+                if !readiness.nt_catalog_mapping_proven {
+                    blockers.push(
+                        BackfillExecutionReadinessBlocker::SourceCatalogMappingReadinessNotProven,
                     );
                 }
                 if readiness.source_proof_id != tranche.source_proof_id

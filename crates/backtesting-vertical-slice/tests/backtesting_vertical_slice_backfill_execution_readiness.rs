@@ -434,6 +434,43 @@ fn execution_readiness_blocks_when_source_catalog_mapping_readiness_usage_scope_
     ));
 }
 
+#[test]
+fn execution_readiness_blocks_when_source_catalog_mapping_readiness_proof_boolean_is_false() {
+    let tranche = accepted_tranche();
+    let plan = matching_execution_plan(&tranche);
+    let mut catalog_mapping = source_catalog_mapping_readiness_report(&tranche);
+    catalog_mapping.nt_catalog_mapping_proven = false;
+
+    let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+        readiness_id: "synthetic-readiness",
+        accepted_tranche_manifest_hash: "synthetic-tranche-file-hash",
+        tranche: &tranche,
+        execution_plan_hash: "synthetic-plan-file-hash",
+        plan: &plan,
+        required_table_family: "trades",
+        required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
+        supported_data_paths: supported_data_paths(),
+        artifact_index_commit_required: false,
+        required_artifact_index_kind: None,
+        artifact_index_commit_proof_report_hash: None,
+        artifact_index_commit_proof_report: None,
+        source_selection_readiness_required: false,
+        source_selection_readiness_report_hash: None,
+        source_selection_readiness_report: None,
+        source_catalog_mapping_readiness_required: true,
+        source_catalog_mapping_readiness_report_hash: Some("synthetic-catalog-mapping-hash"),
+        source_catalog_mapping_readiness_report: Some(&catalog_mapping),
+    });
+
+    assert_eq!(report.status, BackfillExecutionReadinessStatus::Blocked);
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillExecutionReadinessBlocker::SourceCatalogMappingReadinessNotProven)
+    );
+}
+
 fn accepted_tranche() -> BackfillAcceptedTrancheManifest {
     BackfillAcceptedTrancheManifest {
         schema_version: BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION.to_string(),

@@ -1485,6 +1485,11 @@ impl BinaryOracleEdgeTaker {
                 now_ms,
                 self.config.strategy_id,
             );
+            self.observe_current_reference_price_selection(
+                interval_start_ms,
+                interval_end_ms,
+                now_ms,
+            );
             return;
         }
 
@@ -1503,13 +1508,21 @@ impl BinaryOracleEdgeTaker {
         self.reference_price_quotes
             .insert(quote.source_id().to_string(), quote.clone());
 
-        let (Some(interval_start_ms), Some(interval_end_ms), Some(selector)) = (
-            self.active.interval_start_ms,
-            self.active.interval_end_ms,
-            self.reference_price_selector.as_mut(),
-        ) else {
+        let (Some(interval_start_ms), Some(interval_end_ms)) =
+            (self.active.interval_start_ms, self.active.interval_end_ms)
+        else {
             return;
         };
+        self.observe_current_reference_price_selection(interval_start_ms, interval_end_ms, now_ms);
+    }
+
+    fn select_current_reference_price_source_id(
+        &mut self,
+        interval_start_ms: u64,
+        interval_end_ms: u64,
+        now_ms: u64,
+    ) -> Option<String> {
+        let selector = self.reference_price_selector.as_mut()?;
         let quotes = self
             .reference_price_quotes
             .values()
@@ -1519,10 +1532,24 @@ impl BinaryOracleEdgeTaker {
         self.refresh_reference_price_source_statuses(interval_start_ms, interval_end_ms, now_ms);
         if selection.is_none() {
             self.clear_reference_current_price_selection_state();
+        }
+        selection.map(|selection| selection.source_id().to_string())
+    }
+
+    fn observe_current_reference_price_selection(
+        &mut self,
+        interval_start_ms: u64,
+        interval_end_ms: u64,
+        now_ms: u64,
+    ) {
+        let Some(selected_source_id) = self.select_current_reference_price_source_id(
+            interval_start_ms,
+            interval_end_ms,
+            now_ms,
+        ) else {
             return;
         };
-        let selection = selection.expect("reference price selection was checked for absence above");
-        if let Some(selected_quote) = self.reference_price_quotes.get(selection.source_id())
+        if let Some(selected_quote) = self.reference_price_quotes.get(&selected_source_id)
             && self.active.observe_reference_price_quote(selected_quote)
         {
             self.pricing

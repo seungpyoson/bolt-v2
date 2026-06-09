@@ -262,8 +262,10 @@ mod tests {
     // Re-derived again after formatting that fail-closed selector clear.
     // Re-derived again after removing fee-readiness side effects from
     // reference-current-price selection invalidation.
+    // Re-derived again after fail-closing stale selected-source updates through
+    // reference-current-price selection invalidation.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "bd950a350b6971fbd3a3469c1c694fee4be68a3ccb1d0317197534743a4d8cb6";
+        "45c9541d7308b37b7cec986ae9efcdb6c8f9f2eaed092312b64b188ad2acb3f2";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

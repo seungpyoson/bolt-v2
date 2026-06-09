@@ -945,6 +945,70 @@ fn stale_attempt_timestamp_survives_later_status_refresh() {
 }
 
 #[test]
+fn stale_selected_source_update_clears_accepted_reference_price_state() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price.source_order = vec![CHAINLINK_PRIMARY_SOURCE_ID.to_string()];
+    reference_price
+        .sources
+        .retain(|source_id, _source| source_id == CHAINLINK_PRIMARY_SOURCE_ID);
+    reference_price.max_source_age_ms = 50;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let (_cache, clock) = register_test_strategy_with_clock(&mut strategy);
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_170_u64 * NANOS_PER_MILLI_U64));
+
+    let fresh_primary = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.0,
+        1_140,
+        1_145,
+    );
+    DataActor::on_data(&mut strategy, &fresh_primary)
+        .expect("fresh primary quote should be handled");
+    assert_eq!(strategy.active.reference_current_price, Some(100.0));
+    assert_eq!(strategy.pricing.last_reference_current_price, Some(100.0));
+    assert_eq!(
+        strategy.pricing.fast_spot.as_ref().map(|spot| spot.price),
+        Some(100.0)
+    );
+
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_250_u64 * NANOS_PER_MILLI_U64));
+    let stale_primary_attempt = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.5,
+        1_180,
+        1_185,
+    );
+    DataActor::on_data(&mut strategy, &stale_primary_attempt)
+        .expect("newer stale primary attempt should be handled fail-closed");
+
+    assert_eq!(strategy.active.reference_current_price, None);
+    assert_eq!(strategy.active.reference_current_price_source_id, None);
+    assert_eq!(strategy.active.reference_current_price_ts_ms, None);
+    assert_eq!(strategy.active.last_reference_ts_ms, None);
+    assert_eq!(strategy.pricing.last_reference_current_price, None);
+    assert_eq!(strategy.pricing.last_reference_current_price_ts_ms, None);
+    assert_eq!(strategy.pricing.fast_spot, None);
+    let primary_health = strategy
+        .reference_price_source_health
+        .get(CHAINLINK_PRIMARY_SOURCE_ID)
+        .expect("primary health should exist");
+    assert_eq!(primary_health.status(), ReferencePriceSourceStatus::Stale);
+    assert_eq!(primary_health.observed_ts_ms(), Some(1_180));
+    assert_eq!(primary_health.received_ts_ms(), Some(1_185));
+}
+
+#[test]
 fn drift_block_marks_reference_price_sources_unavailable() {
     let mut strategy = test_strategy();
     let mut reference_price = reference_price_config();

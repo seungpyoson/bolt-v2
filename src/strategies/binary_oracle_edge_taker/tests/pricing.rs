@@ -663,14 +663,27 @@ fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap
 
     assert_eq!(
         evaluation.pricing_blocked_by,
-        vec![EntryPricingBlockReason::ExecutableEdgeUnavailable(
-            OutcomeSide::Up,
-            ExecutableEdgeBlockReason::InsufficientDepth
-        )]
+        vec![
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Up,
+                ExecutableEdgeBlockReason::InsufficientDepth
+            ),
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Down,
+                ExecutableEdgeBlockReason::InsufficientDepth
+            ),
+        ]
     );
     assert_eq!(
         evaluation
             .up_executable_edge
+            .as_ref()
+            .and_then(|result| result.block_reason),
+        Some(ExecutableEdgeBlockReason::InsufficientDepth)
+    );
+    assert_eq!(
+        evaluation
+            .down_executable_edge
             .as_ref()
             .and_then(|result| result.block_reason),
         Some(ExecutableEdgeBlockReason::InsufficientDepth)

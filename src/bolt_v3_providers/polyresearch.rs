@@ -514,6 +514,10 @@ impl DataClient for PolyResearchReferencePriceClient {
                 ))?)?;
             } else if subscriptions_empty {
                 outbound.send_text(polyresearch_reference_unsubscribe_frame(None)?)?;
+                remove_polyresearch_pending_subscription(
+                    &self.pending_provider_subscriptions,
+                    &subscription_key,
+                )?;
             }
         }
         Ok(())

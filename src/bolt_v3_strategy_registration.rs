@@ -14,7 +14,9 @@ use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::StrategyId;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use crate::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime;
 
 #[derive(Clone, Copy)]
 pub struct StrategyRuntimeBinding {
@@ -35,6 +37,7 @@ pub struct StrategyRegistrationContext<'a> {
     pub decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
     pub iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
+    pub realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -95,6 +98,9 @@ pub enum BoltV3StrategyRegistrationError {
     IvQueryHandleRegistration {
         message: String,
     },
+    RealizedVolatilityRuntime {
+        message: String,
+    },
 }
 
 impl std::fmt::Display for BoltV3StrategyRegistrationError {
@@ -119,6 +125,12 @@ impl std::fmt::Display for BoltV3StrategyRegistrationError {
             }
             Self::IvQueryHandleRegistration { message } => {
                 write!(f, "bolt-v3 IV query handle registration failed: {message}")
+            }
+            Self::RealizedVolatilityRuntime { message } => {
+                write!(
+                    f,
+                    "bolt-v3 realized-volatility runtime setup failed: {message}"
+                )
             }
         }
     }
@@ -318,6 +330,11 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
     iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
     let mut summary = BoltV3StrategyRegistrationSummary::empty();
+    let realized_volatility_runtime = Arc::new(Mutex::new(
+        RealizedVolSurfaceRuntime::from_loaded_config(loaded).map_err(|error| {
+            BoltV3StrategyRegistrationError::RealizedVolatilityRuntime { message: error }
+        })?,
+    ));
 
     for strategy in &loaded.strategies {
         let binding = bindings
@@ -336,6 +353,7 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
                 decision_evidence: decision_evidence.clone(),
                 submit_admission: submit_admission.clone(),
                 iv_query_handles: iv_query_handles.clone(),
+                realized_volatility_runtime: realized_volatility_runtime.clone(),
             },
         )?;
         summary.registered.push(BoltV3RegisteredStrategy {

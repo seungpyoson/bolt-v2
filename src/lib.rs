@@ -24,6 +24,7 @@ pub mod bolt_v3_quote_lifecycle;
 pub mod bolt_v3_quoting;
 pub mod bolt_v3_readiness;
 pub mod bolt_v3_realized_volatility;
+pub mod bolt_v3_realized_volatility_runtime;
 pub mod bolt_v3_requote_budget;
 pub mod bolt_v3_secrets;
 pub mod bolt_v3_source_integrity;

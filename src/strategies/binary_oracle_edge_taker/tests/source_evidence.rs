@@ -24,6 +24,7 @@ fn test_realized_volatility_engine_config()
         aggregation: crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
             quantile: 1.0,
         },
+        estimator: crate::bolt_v3_realized_volatility::RealizedVolEstimatorConfig::measured(),
         sources: vec![
             crate::bolt_v3_realized_volatility::RealizedVolSourceConfig {
                 source_id: TEST_SOURCE_ID.to_string(),
@@ -167,7 +168,7 @@ fn surfaced_realized_volatility_forwards_disabled_source_observations_for_audit(
 }
 
 #[test]
-fn realized_volatility_bindings_keep_disabled_sources_non_subscribable_for_audit_fanout() {
+fn realized_volatility_runtime_keeps_disabled_sources_non_subscribable_for_audit_fanout() {
     let mut engine_config = test_realized_volatility_engine_config();
     engine_config.sources.push(
         crate::bolt_v3_realized_volatility::RealizedVolSourceConfig {
@@ -181,34 +182,30 @@ fn realized_volatility_bindings_keep_disabled_sources_non_subscribable_for_audit
             canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
         },
     );
+    let mut surfaces = std::collections::BTreeMap::new();
+    surfaces.insert(TEST_SURFACE_ID.to_string(), engine_config);
+    let runtime =
+        crate::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime::from_configs(
+            surfaces,
+        )
+        .expect("runtime should build");
 
-    let bindings = realized_vol_source_bindings(&engine_config.sources);
-    let instrument_id =
-        InstrumentId::from_str(TEST_RV_INSTRUMENT_ID).expect("test instrument id should parse");
-    let source_bindings = bindings
-        .get(&instrument_id)
-        .expect("shared instrument should have bindings");
-    assert_eq!(source_bindings.len(), 2);
-    let disabled_binding = source_bindings
-        .iter()
-        .find(|binding| binding.source_id == TEST_SOURCE_ID_B)
-        .expect("disabled source should stay bound for observation fanout");
-    assert!(
-        !disabled_binding.enabled,
-        "disabled source must not become a subscription target"
-    );
+    assert_eq!(runtime.subscription_requests().len(), 1);
 }
 
 #[test]
-fn invalid_realized_volatility_engine_config_does_not_leave_source_bindings() {
+fn invalid_realized_volatility_runtime_config_rejects_subscriptions() {
     let mut engine_config = test_realized_volatility_engine_config();
     engine_config.sampling_interval_ms = engine_config.window_ms + 1;
-    let strategy = test_strategy_with_realized_volatility_surface(engine_config);
+    let mut surfaces = std::collections::BTreeMap::new();
+    surfaces.insert(TEST_SURFACE_ID.to_string(), engine_config);
 
-    assert!(strategy.realized_vol_engine.is_none());
     assert!(
-        strategy.realized_vol_source_bindings.is_empty(),
-        "rejected engine config must not leave source subscriptions behind"
+        crate::bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime::from_configs(
+            surfaces,
+        )
+        .is_err(),
+        "rejected runtime config must not leave source subscriptions behind"
     );
 }
 
@@ -788,9 +785,17 @@ fn strategy_input_evidence_records_realized_volatility_unknown_source_rejections
             surface_id: TEST_SURFACE_ID.to_string(),
             as_of_ms: 1_200,
             annualized_realized_vol_decimal: Some(1.5),
+            measured_annualized_realized_vol_decimal: Some(1.5),
+            noise_robust_annualized_realized_vol_decimal: Some(1.5),
+            continuous_annualized_realized_vol_decimal: Some(1.5),
+            jump_annualized_realized_vol_decimal: Some(0.0),
+            forecast_annualized_realized_vol_decimal: None,
+            pricing_component:
+                crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
             ready: true,
             sources_used: vec![TEST_SOURCE_ID.to_string()],
             source_diagnostics: Vec::new(),
+            horizon_estimates: Vec::new(),
             unknown_source_rejections,
             blocked_reasons: Vec::new(),
             aggregate_method:
@@ -834,9 +839,17 @@ fn strategy_input_evidence_accepts_ready_surfaced_zero_realized_volatility() {
             surface_id: TEST_SURFACE_ID.to_string(),
             as_of_ms: 1_200,
             annualized_realized_vol_decimal: Some(0.0),
+            measured_annualized_realized_vol_decimal: Some(0.0),
+            noise_robust_annualized_realized_vol_decimal: Some(0.0),
+            continuous_annualized_realized_vol_decimal: Some(0.0),
+            jump_annualized_realized_vol_decimal: Some(0.0),
+            forecast_annualized_realized_vol_decimal: None,
+            pricing_component:
+                crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
             ready: true,
             sources_used: vec![TEST_SOURCE_ID.to_string()],
             source_diagnostics: Vec::new(),
+            horizon_estimates: Vec::new(),
             unknown_source_rejections: std::collections::BTreeMap::new(),
             blocked_reasons: Vec::new(),
             aggregate_method:
@@ -880,9 +893,17 @@ fn strategy_input_evidence_records_realized_volatility_not_ready_pricing_block()
             surface_id: TEST_SURFACE_ID.to_string(),
             as_of_ms: 1_200,
             annualized_realized_vol_decimal: None,
+            measured_annualized_realized_vol_decimal: None,
+            noise_robust_annualized_realized_vol_decimal: None,
+            continuous_annualized_realized_vol_decimal: None,
+            jump_annualized_realized_vol_decimal: None,
+            forecast_annualized_realized_vol_decimal: None,
+            pricing_component:
+                crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
             ready: false,
             sources_used: Vec::new(),
             source_diagnostics: Vec::new(),
+            horizon_estimates: Vec::new(),
             unknown_source_rejections: std::collections::BTreeMap::new(),
             blocked_reasons: vec![
                 crate::bolt_v3_realized_volatility::RealizedVolBlockReason::QuorumNotReady,

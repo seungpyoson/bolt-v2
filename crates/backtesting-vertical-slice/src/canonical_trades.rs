@@ -221,7 +221,8 @@ pub fn require_registered_trade_converter_for_table_family(
     version: &str,
     table_family: &str,
 ) -> Result<&'static TradeConverterDefinition> {
-    let adapter = require_registered_source_adapter_for_table_family(identity, version, table_family)?;
+    let adapter =
+        require_registered_source_adapter_for_table_family(identity, version, table_family)?;
     ensure!(
         adapter.kind == SourceAdapterKind::CsvNativeTrades,
         "adapter {:?} version {:?} is {:?}, not a CSV native-trades converter",

@@ -4559,26 +4559,25 @@ impl BinaryOracleEdgeTaker {
         evaluation.down_worst_case_ev_bps = Some(down_executable_edge.edge_bps);
         evaluation.up_executable_edge = Some(up_executable_edge);
         evaluation.down_executable_edge = Some(down_executable_edge);
-        push_executable_edge_pricing_block(
-            &mut evaluation.pricing_blocked_by,
-            OutcomeSide::Up,
-            up_executable_edge.block_reason,
-        );
-        push_executable_edge_pricing_block(
-            &mut evaluation.pricing_blocked_by,
-            OutcomeSide::Down,
-            down_executable_edge.block_reason,
-        );
-
-        if !evaluation.pricing_blocked_by.is_empty() {
-            return evaluation;
-        }
 
         evaluation.selected_side = choose_entry_side(&SideSelectionInputs {
             up_worst_ev_bps: executable_edge_selectable_bps(evaluation.up_executable_edge),
             down_worst_ev_bps: executable_edge_selectable_bps(evaluation.down_executable_edge),
             min_worst_case_ev_bps: pricing_inputs.theta_scaled_min_edge_bps,
         });
+        if evaluation.selected_side.is_none() {
+            push_executable_edge_pricing_block(
+                &mut evaluation.pricing_blocked_by,
+                OutcomeSide::Up,
+                up_executable_edge.block_reason,
+            );
+            push_executable_edge_pricing_block(
+                &mut evaluation.pricing_blocked_by,
+                OutcomeSide::Down,
+                down_executable_edge.block_reason,
+            );
+            return evaluation;
+        }
         if let Some(selected_side) = evaluation.selected_side {
             let selected_worst_case_ev_bps = match selected_side {
                 OutcomeSide::Up => evaluation.up_worst_case_ev_bps,

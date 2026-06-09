@@ -154,16 +154,26 @@ pub(crate) fn choose_entry_side(inputs: &SideSelectionInputs) -> Option<OutcomeS
         return None;
     }
 
-    let up_worst_ev_bps = inputs.up_worst_ev_bps.filter(|value| value.is_finite())?;
-    let down_worst_ev_bps = inputs.down_worst_ev_bps.filter(|value| value.is_finite())?;
-    let up_clears = up_worst_ev_bps > inputs.min_worst_case_ev_bps;
-    let down_clears = down_worst_ev_bps > inputs.min_worst_case_ev_bps;
+    let up_worst_ev_bps = inputs.up_worst_ev_bps.filter(|value| value.is_finite());
+    let down_worst_ev_bps = inputs.down_worst_ev_bps.filter(|value| value.is_finite());
+    let up_clears = up_worst_ev_bps.is_some_and(|value| value > inputs.min_worst_case_ev_bps);
+    let down_clears = down_worst_ev_bps.is_some_and(|value| value > inputs.min_worst_case_ev_bps);
 
     match (up_clears, down_clears) {
         (true, false) => Some(OutcomeSide::Up),
         (false, true) => Some(OutcomeSide::Down),
-        (true, true) if up_worst_ev_bps > down_worst_ev_bps => Some(OutcomeSide::Up),
-        (true, true) if down_worst_ev_bps > up_worst_ev_bps => Some(OutcomeSide::Down),
+        (true, true)
+            if up_worst_ev_bps.expect("clearing UP EV must exist")
+                > down_worst_ev_bps.expect("clearing DOWN EV must exist") =>
+        {
+            Some(OutcomeSide::Up)
+        }
+        (true, true)
+            if down_worst_ev_bps.expect("clearing DOWN EV must exist")
+                > up_worst_ev_bps.expect("clearing UP EV must exist") =>
+        {
+            Some(OutcomeSide::Down)
+        }
         (true, true) | (false, false) => None,
     }
 }
@@ -440,19 +450,27 @@ mod tests {
     }
 
     #[test]
-    fn task4_side_selection_fails_closed_on_missing_or_invalid_side_ev() {
+    fn task4_side_selection_treats_missing_or_invalid_side_ev_as_not_selectable() {
         assert_eq!(
             choose_entry_side(&SideSelectionInputs {
                 up_worst_ev_bps: Some(9.0),
                 down_worst_ev_bps: None,
                 min_worst_case_ev_bps: 8.0,
             }),
-            None
+            Some(OutcomeSide::Up)
         );
         assert_eq!(
             choose_entry_side(&SideSelectionInputs {
                 up_worst_ev_bps: Some(f64::NAN),
                 down_worst_ev_bps: Some(9.0),
+                min_worst_case_ev_bps: 8.0,
+            }),
+            Some(OutcomeSide::Down)
+        );
+        assert_eq!(
+            choose_entry_side(&SideSelectionInputs {
+                up_worst_ev_bps: Some(f64::NAN),
+                down_worst_ev_bps: None,
                 min_worst_case_ev_bps: 8.0,
             }),
             None

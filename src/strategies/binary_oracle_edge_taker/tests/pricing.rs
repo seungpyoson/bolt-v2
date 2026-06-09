@@ -704,6 +704,30 @@ fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap
 }
 
 #[test]
+fn executable_edge_selects_tradeable_side_when_opposite_side_is_blocked() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    strategy.config.edge_threshold_basis_points = 0;
+    strategy.config.slippage_buffer_bps = 0;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert!(
+        evaluation.pricing_blocked_by.is_empty(),
+        "nonselected side blockers must not veto a tradeable selected side: {evaluation:#?}"
+    );
+    assert_eq!(evaluation.selected_side, Some(OutcomeSide::Up));
+    let down_edge = evaluation
+        .down_executable_edge
+        .expect("DOWN executable edge should still be evaluated");
+    assert!(!down_edge.trade_allowed);
+    assert!(down_edge.block_reason.is_some());
+}
+
+#[test]
 fn executable_edge_blocks_unsupported_post_only_entry_shape() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;

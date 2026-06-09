@@ -30,7 +30,7 @@ fn outcome_book_state_applies_incremental_deltas_without_retaining_stale_levels(
 #[test]
 fn entry_book_impact_cap_uses_configured_sell_side_book() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    let selected_side = selected_entry_side(&strategy);
+    let outcome_side = OutcomeSide::Up;
     strategy.config.entry_order.side = "sell".to_string();
     strategy.config.entry_order.position_side = "short".to_string();
     strategy.config.exit_order.side = "buy".to_string();
@@ -46,16 +46,13 @@ fn entry_book_impact_cap_uses_configured_sell_side_book() {
         ],
     );
 
-    assert_eq!(
-        strategy.visible_book_notional_cap(selected_side),
-        Some(3.08)
-    );
+    assert_eq!(strategy.visible_book_notional_cap(outcome_side), Some(3.08));
 }
 
 #[test]
 fn post_only_entry_book_impact_cap_uses_passive_side_book() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    let selected_side = selected_entry_side(&strategy);
+    let outcome_side = OutcomeSide::Up;
     strategy.config.entry_order.is_post_only = true;
     strategy.config.book_impact_cap_bps = 0;
     set_configured_books_depth(
@@ -68,10 +65,7 @@ fn post_only_entry_book_impact_cap_uses_passive_side_book() {
         ],
     );
 
-    assert_eq!(
-        strategy.visible_book_notional_cap(selected_side),
-        Some(3.08)
-    );
+    assert_eq!(strategy.visible_book_notional_cap(outcome_side), Some(3.08));
 }
 
 #[test]
@@ -149,7 +143,7 @@ fn book_impact_cap_config_changes_sizing_decision() {
 #[test]
 fn rotated_position_uses_position_book_for_thin_book_forced_flat() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    let position_outcome_side = selected_entry_side(&strategy);
+    let position_outcome_side = OutcomeSide::Up;
     let position_instrument = InstrumentId::from("condition-MKT-A-UP.POLYMARKET");
     let mut tracked_book = OutcomeBookState::from_instrument_id(position_instrument);
     tracked_book.last_observed_instrument_id = Some(position_instrument);

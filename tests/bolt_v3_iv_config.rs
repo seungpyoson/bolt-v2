@@ -18,7 +18,6 @@ schema_version = 1
 
 [[profiles]]
 profile_id = "configured-profile"
-strategy_ids = ["configured-strategy"]
 enabled_products = ["iv_point", "smile", "surface", "source_health"]
 max_raw_events = 2
 max_indexed_points = 2
@@ -147,7 +146,8 @@ allowed_source_kinds = ["operator_configured"]
 field = "carry"
 allowed_source_kinds = ["operator_configured"]
 
-[profiles.selector_authorization]
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
 authorization_mode = "profile_wide"
 allowed_product_kinds = ["iv_point", "source_health"]
 allowed_selector_fingerprints = []
@@ -211,11 +211,12 @@ fn full_profile_toml_maps_to_typed_iv_config_without_defaults() {
     assert_eq!(config.profiles[0].profile_id, "configured-profile");
     assert!(
         config.profiles[0]
-            .strategy_ids
-            .contains("configured-strategy")
+            .strategy_authorizations
+            .iter()
+            .any(|authorization| authorization.strategy_id == "configured-strategy")
     );
     assert_eq!(
-        config.profiles[0].selector_authorization.authorization_mode,
+        config.profiles[0].strategy_authorizations[0].authorization_mode,
         IvAuthorizationMode::ProfileWide
     );
     assert_eq!(config.profiles[0].max_derived_points, 2);
@@ -401,7 +402,7 @@ fn operator_value_refresh_policy_rejects_expired_operator_inputs() {
 }
 
 #[test]
-fn profile_selector_authorization_expands_to_effective_strategy_authorizations() {
+fn profile_strategy_authorization_expands_to_effective_strategy_authorizations() {
     let scoped = valid_iv_toml()
         .replace(
             "authorization_mode = \"profile_wide\"",
@@ -461,7 +462,7 @@ fn selector_scoped_source_health_authorization_can_scope_by_source_id() {
     let config = load_iv_config_from_toml(&toml).unwrap();
 
     assert_eq!(
-        config.profiles[0].selector_authorization.authorization_mode,
+        config.profiles[0].strategy_authorizations[0].authorization_mode,
         IvAuthorizationMode::SelectorScoped
     );
 }
@@ -906,7 +907,8 @@ fn selector_scoped_authorization_rejects_unknown_selector_fingerprint() {
     let errors = validate_iv_root_config(&config);
 
     assert!(errors.iter().any(|message| {
-        message.contains("selector_authorization.allowed_selector_fingerprints")
+        message
+            .contains("strategy_authorizations.configured-strategy.allowed_selector_fingerprints")
             && message.contains("missing-selector")
     }));
 }

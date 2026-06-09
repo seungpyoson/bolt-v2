@@ -12,7 +12,6 @@ schema_version = 1
 
 [[iv.profiles]]
 profile_id = "operator_iv_profile"
-strategy_ids = ["operator_strategy"]
 enabled_products = [
   "iv_point",
   "iv_greeks_point",
@@ -53,7 +52,8 @@ projection_kind = "mean"
 minimum_points = operator_positive_integer
 max_projection_input_skew_ns = operator_positive_integer
 
-[iv.profiles.selector_authorization]
+[[iv.profiles.strategy_authorizations]]
+strategy_id = "operator_strategy"
 authorization_mode = "operator_authorization_mode"
 allowed_product_kinds = ["operator_product_kind"]
 allowed_selector_fingerprints = ["operator_selector_fingerprint"]

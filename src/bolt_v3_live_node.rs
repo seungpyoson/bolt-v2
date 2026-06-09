@@ -4211,7 +4211,6 @@ schema_version = 1
 
 [[profiles]]
 profile_id = "configured-profile"
-strategy_ids = []
 enabled_products = ["source_health"]
 max_raw_events = 2
 max_indexed_points = 2
@@ -4237,7 +4236,8 @@ eligible_sources = ["configured-greeks-source"]
 max_events = 2
 max_age_ns = 10000
 
-[profiles.selector_authorization]
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
 authorization_mode = "profile_wide"
 allowed_product_kinds = ["source_health"]
 allowed_selector_fingerprints = []
@@ -4307,7 +4307,6 @@ schema_version = 1
 
 [[profiles]]
 profile_id = "configured-profile"
-strategy_ids = []
 enabled_products = ["source_health"]
 max_raw_events = 2
 max_indexed_points = 2
@@ -4333,7 +4332,8 @@ eligible_sources = ["configured-greeks-source"]
 max_events = 2
 max_age_ns = 10000
 
-[profiles.selector_authorization]
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
 authorization_mode = "profile_wide"
 allowed_product_kinds = ["source_health"]
 allowed_selector_fingerprints = []
@@ -4429,7 +4429,6 @@ schema_version = 1
 
 [[profiles]]
 profile_id = "configured-profile"
-strategy_ids = []
 enabled_products = ["source_health"]
 max_raw_events = 2
 max_indexed_points = 2
@@ -4455,7 +4454,8 @@ eligible_sources = ["configured-greeks-source"]
 max_events = 2
 max_age_ns = 10000
 
-[profiles.selector_authorization]
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
 authorization_mode = "profile_wide"
 allowed_product_kinds = ["source_health"]
 allowed_selector_fingerprints = []
@@ -4538,7 +4538,6 @@ schema_version = 1
 
 [[profiles]]
 profile_id = "configured-profile"
-strategy_ids = []
 enabled_products = ["source_health", "aggregate_greeks"]
 max_raw_events = 2
 max_indexed_points = 2
@@ -4564,7 +4563,8 @@ eligible_sources = ["configured-aggregate-source"]
 max_events = 2
 max_age_ns = 10000
 
-[profiles.selector_authorization]
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
 authorization_mode = "profile_wide"
 allowed_product_kinds = ["source_health", "aggregate_greeks"]
 allowed_selector_fingerprints = []

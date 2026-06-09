@@ -101,7 +101,6 @@ schema_version = 1
 
 [[iv.profiles]]
 profile_id = "configured-profile"
-strategy_ids = ["configured-strategy"]
 enabled_products = ["iv_point", "smile", "source_health"]
 max_raw_events = 4
 max_indexed_points = 4
@@ -137,7 +136,8 @@ evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
 
-[iv.profiles.selector_authorization]
+[[iv.profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
 authorization_mode = "profile_wide"
 allowed_product_kinds = ["iv_point", "smile", "source_health"]
 allowed_selector_fingerprints = []
@@ -379,7 +379,6 @@ schema_version = 1
 
 [[iv.profiles]]
 profile_id = "configured-profile"
-strategy_ids = ["configured-strategy"]
 enabled_products = ["aggregate_greeks", "custom_iv_evidence", "source_health"]
 max_raw_events = 4
 max_indexed_points = 4
@@ -405,7 +404,8 @@ eligible_sources = ["configured-aggregate-source", "configured-custom-source"]
 max_events = 4
 max_age_ns = 10000
 
-[iv.profiles.selector_authorization]
+[[iv.profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
 authorization_mode = "profile_wide"
 allowed_product_kinds = ["aggregate_greeks", "custom_iv_evidence", "source_health"]
 allowed_selector_fingerprints = []
@@ -1029,7 +1029,6 @@ schema_version = 1
 
 [[iv.profiles]]
 profile_id = "configured-profile"
-strategy_ids = ["configured-strategy"]
 enabled_products = ["iv_point", "source_health"]
 max_raw_events = 2
 max_indexed_points = 2
@@ -1065,7 +1064,8 @@ evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
 
-[iv.profiles.selector_authorization]
+[[iv.profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
 authorization_mode = "profile_wide"
 allowed_product_kinds = ["iv_point", "source_health"]
 allowed_selector_fingerprints = []
@@ -1116,7 +1116,6 @@ schema_version = 1
 
 [[iv.profiles]]
 profile_id = "configured-profile"
-strategy_ids = ["configured-strategy"]
 enabled_products = ["iv_point", "source_health"]
 max_raw_events = 2
 max_indexed_points = 2
@@ -1152,7 +1151,8 @@ evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
 
-[iv.profiles.selector_authorization]
+[[iv.profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
 authorization_mode = "profile_wide"
 allowed_product_kinds = ["iv_point", "projected_scalar_iv", "source_health"]
 allowed_selector_fingerprints = []
@@ -1266,7 +1266,6 @@ schema_version = 1
 
 [[iv.profiles]]
 profile_id = "configured-profile"
-strategy_ids = ["configured-strategy"]
 enabled_products = ["iv_point", "source_health"]
 max_raw_events = 2
 max_indexed_points = 2
@@ -1302,7 +1301,8 @@ evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
 
-[iv.profiles.selector_authorization]
+[[iv.profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
 authorization_mode = "profile_wide"
 allowed_product_kinds = ["iv_point", "source_health"]
 allowed_selector_fingerprints = []
@@ -1374,7 +1374,6 @@ schema_version = 1
 
 [[iv.profiles]]
 profile_id = "configured-profile"
-strategy_ids = ["configured-strategy"]
 enabled_products = ["iv_point", "source_health"]
 max_raw_events = 2
 max_indexed_points = 2
@@ -1410,7 +1409,8 @@ evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
 
-[iv.profiles.selector_authorization]
+[[iv.profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
 authorization_mode = "profile_wide"
 allowed_product_kinds = ["iv_point", "source_health"]
 allowed_selector_fingerprints = []
@@ -1498,7 +1498,6 @@ schema_version = 1
 
 [[iv.profiles]]
 profile_id = "configured-profile"
-strategy_ids = ["configured-strategy"]
 enabled_products = ["iv_point", "source_health"]
 max_raw_events = 2
 max_indexed_points = 2
@@ -1524,7 +1523,8 @@ eligible_sources = ["configured-greeks-source"]
 max_events = 2
 max_age_ns = 10000
 
-[iv.profiles.selector_authorization]
+[[iv.profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
 authorization_mode = "profile_wide"
 allowed_product_kinds = ["iv_point", "source_health"]
 allowed_selector_fingerprints = []
@@ -1592,7 +1592,6 @@ schema_version = 1
 
 [[iv.profiles]]
 profile_id = "configured-profile"
-strategy_ids = ["missing-strategy"]
 enabled_products = ["iv_point", "source_health"]
 max_raw_events = 2
 max_indexed_points = 2
@@ -1628,7 +1627,8 @@ evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
 
-[iv.profiles.selector_authorization]
+[[iv.profiles.strategy_authorizations]]
+strategy_id = "missing-strategy"
 authorization_mode = "profile_wide"
 allowed_product_kinds = ["iv_point", "source_health"]
 allowed_selector_fingerprints = []
@@ -1676,6 +1676,187 @@ configured_source_param = "configured-value"
 }
 
 #[test]
+fn runtime_registry_supports_two_configured_strategies_with_different_selectors() {
+    let root = fs::read_to_string(repo_path("tests/fixtures/bolt_v3/root.toml")).unwrap();
+    let with_iv = format!(
+        "{root}\n{}",
+        r#"
+[iv]
+schema_version = 1
+
+[[iv.profiles]]
+profile_id = "configured-profile"
+enabled_products = ["iv_point"]
+max_raw_events = 4
+max_indexed_points = 4
+max_smiles = 4
+max_surfaces = 4
+max_derived_points = 4
+max_source_health_events = 4
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+derived_input_policies = []
+
+[iv.profiles.audit_policy]
+enabled_raw_products = ["option_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["configured-source-a", "configured-source-b"]
+
+[iv.profiles.audit_policy.audit_retention]
+max_events = 4
+max_age_ns = 10000
+
+[[iv.profiles.strategy_authorizations]]
+strategy_id = "configured-strategy-a"
+authorization_mode = "selector_scoped"
+allowed_product_kinds = ["iv_point"]
+allowed_selector_fingerprints = ["configured-selector-a"]
+allowed_source_ids = ["configured-source-a"]
+
+[[iv.profiles.strategy_authorizations]]
+strategy_id = "configured-strategy-b"
+authorization_mode = "selector_scoped"
+allowed_product_kinds = ["iv_point"]
+allowed_selector_fingerprints = ["configured-selector-b"]
+allowed_source_ids = ["configured-source-b"]
+
+[[iv.profiles.sources]]
+source_id = "configured-source-a"
+selector_fingerprint = "configured-selector-a"
+source_kind = "option_greeks"
+client_id = "configured-client"
+subscription_generation = 7
+accepted_conventions = ["configured-convention"]
+
+[iv.profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
+
+[iv.profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["configured-option-instrument"]
+
+[iv.profiles.sources.selector.nt_params]
+configured_nt_param = "configured-value-a"
+
+[iv.profiles.sources.params]
+configured_source_param = "configured-value-a"
+
+[[iv.profiles.sources]]
+source_id = "configured-source-b"
+selector_fingerprint = "configured-selector-b"
+source_kind = "option_greeks"
+client_id = "configured-client"
+subscription_generation = 7
+accepted_conventions = ["configured-convention"]
+
+[iv.profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
+
+[iv.profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["configured-option-instrument"]
+
+[iv.profiles.sources.selector.nt_params]
+configured_nt_param = "configured-value-b"
+
+[iv.profiles.sources.params]
+configured_source_param = "configured-value-b"
+"#
+    );
+    let parsed: BoltV3RootConfig = toml::from_str(&with_iv).unwrap();
+    let engine = IvRuntimeEngine::from_iv_root(parsed.iv.as_ref().unwrap()).unwrap();
+    let mut event_a = greeks_event_with_generation(2_000, 7);
+    event_a.source_id = "configured-source-a".to_string();
+    event_a.selector_fingerprint = "configured-selector-a".to_string();
+    let mut event_b = greeks_event_with_generation(2_001, 7);
+    event_b.source_id = "configured-source-b".to_string();
+    event_b.selector_fingerprint = "configured-selector-b".to_string();
+    if let IvRawPayload::OptionGreeks(payload) = &mut event_b.payload {
+        payload.basis_values[0].iv = 0.43;
+    }
+    engine.ingest_event(event_a).unwrap();
+    engine.ingest_event(event_b).unwrap();
+
+    let registry = build_iv_query_handle_registry_for_runtime(&parsed, &engine).unwrap();
+    let handle_a = registry
+        .handle("configured-strategy-a", "configured-profile")
+        .expect("strategy A should receive configured IV profile handle");
+    let handle_b = registry
+        .handle("configured-strategy-b", "configured-profile")
+        .expect("strategy B should receive configured IV profile handle");
+    let query = |strategy_id: &str, source_id: &str, as_of_ns: u64| {
+        IvQuery::product(IvProductQuery {
+            strategy_id: strategy_id.to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: bolt_v2::bolt_v3_iv::types::IvProductKind::IvPoint,
+            selector: IvSelector::PointQuery {
+                instrument_ids: vec!["configured-option-instrument".to_string()],
+                basis: IvBasis::Mark,
+                as_of_ns: UnixNanos::new(as_of_ns),
+                source_filter: Some(source_id.to_string()),
+            },
+        })
+    };
+
+    let IvQueryProduct::IvPoint(point_a) = handle_a
+        .query(&query(
+            "configured-strategy-a",
+            "configured-source-a",
+            2_000,
+        ))
+        .unwrap()
+    else {
+        panic!("expected strategy A IV point");
+    };
+    let IvQueryProduct::IvPoint(point_b) = handle_b
+        .query(&query(
+            "configured-strategy-b",
+            "configured-source-b",
+            2_001,
+        ))
+        .unwrap()
+    else {
+        panic!("expected strategy B IV point");
+    };
+
+    assert_eq!(
+        point_a.provenance.selector_fingerprint,
+        "configured-selector-a"
+    );
+    assert_eq!(
+        point_b.provenance.selector_fingerprint,
+        "configured-selector-b"
+    );
+    assert!(
+        handle_a
+            .query(&query(
+                "configured-strategy-a",
+                "configured-source-b",
+                2_001
+            ))
+            .is_err()
+    );
+    assert!(
+        handle_b
+            .query(&query(
+                "configured-strategy-b",
+                "configured-source-a",
+                2_000
+            ))
+            .is_err()
+    );
+}
+
+#[test]
 fn runtime_engine_rejects_stale_subscription_generation_products() {
     let root = fs::read_to_string(repo_path("tests/fixtures/bolt_v3/root.toml")).unwrap();
     let with_iv = format!(
@@ -1686,7 +1867,6 @@ schema_version = 1
 
 [[iv.profiles]]
 profile_id = "configured-profile"
-strategy_ids = ["configured-strategy"]
 enabled_products = ["iv_point", "source_health"]
 max_raw_events = 2
 max_indexed_points = 2
@@ -1722,7 +1902,8 @@ evidence_mapping = "preserve_evidence_kind"
 minimum_points = 1
 max_projection_input_skew_ns = 10
 
-[iv.profiles.selector_authorization]
+[[iv.profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
 authorization_mode = "profile_wide"
 allowed_product_kinds = ["iv_point", "source_health"]
 allowed_selector_fingerprints = []

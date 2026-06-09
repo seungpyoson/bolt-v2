@@ -265,18 +265,18 @@ pub fn validate_iv_strategy_references(
     let Some(iv) = &loaded.root.iv else {
         return Ok(());
     };
-    let configured_strategy_ids = loaded
+    let configured_strategy_instance_ids = loaded
         .strategies
         .iter()
         .map(|strategy| strategy.config.strategy_instance_id.as_str())
         .collect::<BTreeSet<_>>();
     for profile in &iv.profiles {
-        for strategy_id in &profile.strategy_ids {
-            if !configured_strategy_ids.contains(strategy_id.as_str()) {
+        for authorization in &profile.strategy_authorizations {
+            if !configured_strategy_instance_ids.contains(authorization.strategy_id.as_str()) {
                 return Err(BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
                     message: format!(
                         "iv profile {} references unknown strategy {}",
-                        profile.profile_id, strategy_id
+                        profile.profile_id, authorization.strategy_id
                     ),
                 });
             }

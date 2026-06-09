@@ -32,8 +32,7 @@ TOML lifecycle boundary for one configured IV access domain.
 Fields:
 
 - `profile_id`
-- `strategy_ids`
-- `selector_authorization`
+- `strategy_authorizations`
 - `enabled_products`
 - `max_raw_events`
 - `max_indexed_points`
@@ -57,6 +56,7 @@ Validation:
 - Unknown or unsupported schema versions reject at startup.
 - Supported schema versions and migration behavior are declared in `schema_version_policy`; no best-effort schema compatibility is allowed.
 - Strategy authorization, sources, source lifecycle, enabled products, memory bounds, numeric bounds, and query policies live in this profile boundary.
+- Each strategy authorization carries its own strategy ID, product allowlist, source allowlist, and selector-fingerprint allowlist so two strategies in the same profile can use different configured selectors.
 - Bounds reference named `IvNumericBounds` and convention-bound policies used by ingestion, projection, helper inputs, helper outputs, quorum agreement bands, and configured operator values.
 - Swapping, renaming, adding, or removing a source requires editing only this profile.
 - A profile with no source and no derived-input policy rejects at startup.

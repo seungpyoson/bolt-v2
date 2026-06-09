@@ -9051,6 +9051,14 @@ reason = "IV config parsing emits fail-closed diagnostics for duplicate profile 
 [[allowed]]
 path = "src/bolt_v3_iv/config.rs"
 kind = "string"
+literal = '''"{profile_context}.strategy_authorizations.{} is duplicated"'''
+context = '''"{profile_context}.strategy_authorizations.{} is duplicated",'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic for duplicate per-strategy authorization entries; strategy IDs remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
 literal = '''"interpolation_policies"'''
 context = '''"interpolation_policies",'''
 classification = "iv_config_schema_literal"

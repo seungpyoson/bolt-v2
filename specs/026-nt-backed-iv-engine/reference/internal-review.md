@@ -215,3 +215,21 @@ Current PR verification uses GitHub CI rather than local cargo reruns. Because a
 - `cargo fmt --check`: PASS.
 - `git diff --check`: PASS.
 - `just source-fence`: PASS.
+
+## 2026-06-10 Internal Adversarial Review After `a25760bb`
+
+**Reviewed working tree**: branch `026-nt-backed-iv-engine`, local delta after head `a25760bb686467f16797c574ea9ebf4821757057`
+**Recommendation**: PASS for the locally reviewed fix below; GitHub CI and external relay approvals must be refreshed after this delta is committed and pushed.
+
+| Issue | Evidence | Resolution |
+|---|---|---|
+| SC-006 was only partially proven: `tests/bolt_v3_iv_query.rs` manually built two `IvQueryHandle`s with different selector authorizations, but root TOML and live registration cloned one profile-level selector authorization for every strategy in the profile. | RED: `cargo test --locked --test bolt_v3_iv_live_integration runtime_registry_supports_two_configured_strategies_with_different_selectors -- --nocapture` failed because TOML rejected `strategy_authorizations`, proving the live/config path could not express two strategies with different selectors in one profile. | `IvProfile` now owns `strategy_authorizations: Vec<IvSelectorAuthorization>` entries, each carrying its strategy ID, product allowlist, selector allowlist, and source allowlist. Registry construction and strategy-reference validation consume those entries directly, and the RED test is GREEN. |
+
+### 2026-06-10 Post-`a25760bb` Verification
+
+- `cargo test --locked --test bolt_v3_iv_live_integration runtime_registry_supports_two_configured_strategies_with_different_selectors -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_config --test bolt_v3_iv_subscription --test bolt_v3_iv_live_integration`: PASS, 72 tests.
+- `cargo test --locked --test bolt_v3_iv_query --test bolt_v3_iv_foundation`: PASS, 53 tests.
+- `cargo fmt --check`: PASS.
+- `git diff --check`: PASS.
+- `just source-fence`: PASS.

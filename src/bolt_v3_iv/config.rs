@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     audit::IvAuditPolicy,
-    authz::{IvAuthorizationMode, IvProfileSelectorAuthorization, IvSelectorAuthorization},
+    authz::{IvAuthorizationMode, IvSelectorAuthorization},
     derive::{IvDerivedInputPolicy, IvDerivedInputSet, IvHelperOutput, IvHelperPolicy},
     policy::{IvFallbackPolicy, IvInterpolationPolicy, IvProjectionPolicy, IvQuorumPolicy},
     selector::IvSelector,
@@ -25,8 +25,7 @@ pub struct IvRootConfig {
 #[serde(deny_unknown_fields)]
 pub struct IvProfile {
     pub profile_id: String,
-    pub strategy_ids: BTreeSet<String>,
-    pub selector_authorization: IvProfileSelectorAuthorization,
+    pub strategy_authorizations: Vec<IvSelectorAuthorization>,
     pub enabled_products: BTreeSet<IvProductKind>,
     pub max_raw_events: usize,
     pub max_indexed_points: usize,
@@ -132,10 +131,7 @@ impl IvProfile {
     }
 
     pub fn strategy_authorizations(&self) -> Vec<IvSelectorAuthorization> {
-        self.strategy_ids
-            .iter()
-            .map(|strategy_id| self.selector_authorization.for_strategy(strategy_id))
-            .collect()
+        self.strategy_authorizations.clone()
     }
 }
 
@@ -151,17 +147,26 @@ fn validate_profile(profile: &IvProfile) -> Vec<String> {
             "iv.profiles.profile_id must not contain leading or trailing whitespace".to_string(),
         );
     }
-    if profile.strategy_ids.is_empty() {
-        errors.push(format!("{profile_context}.strategy_ids must be non-empty"));
-    }
-    if profile
-        .strategy_ids
-        .iter()
-        .any(|strategy_id| strategy_id.trim().is_empty())
-    {
+    if profile.strategy_authorizations.is_empty() {
         errors.push(format!(
-            "{profile_context}.strategy_ids must not contain blank values"
+            "{profile_context}.strategy_authorizations must be non-empty"
         ));
+    }
+    let mut seen_strategy_authorizations = BTreeSet::new();
+    for authorization in &profile.strategy_authorizations {
+        if authorization.strategy_id.trim().is_empty() {
+            errors.push(format!(
+                "{profile_context}.strategy_authorizations.strategy_id must be non-empty"
+            ));
+        }
+        if !authorization.strategy_id.trim().is_empty()
+            && !seen_strategy_authorizations.insert(authorization.strategy_id.clone())
+        {
+            errors.push(format!(
+                "{profile_context}.strategy_authorizations.{} is duplicated",
+                authorization.strategy_id
+            ));
+        }
     }
     if profile.enabled_products.is_empty() {
         errors.push(format!(
@@ -237,7 +242,7 @@ fn validate_profile(profile: &IvProfile) -> Vec<String> {
     ));
     errors.extend(validate_projection_policies(&profile_context, profile));
     errors.extend(validate_policy_surface(&profile_context, profile));
-    errors.extend(validate_selector_authorization(
+    errors.extend(validate_strategy_authorizations(
         &profile_context,
         profile,
         &seen_sources,
@@ -953,53 +958,58 @@ fn validate_source(context: &str, source: &IvSourceConfig) -> Vec<String> {
     errors
 }
 
-fn validate_selector_authorization(
+fn validate_strategy_authorizations(
     context: &str,
     profile: &IvProfile,
     source_ids: &BTreeSet<String>,
     selector_fingerprints: &BTreeSet<String>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    let auth = &profile.selector_authorization;
-    let auth_context = format!("{context}.selector_authorization");
+    for auth in &profile.strategy_authorizations {
+        let auth_context = if auth.strategy_id.trim().is_empty() {
+            format!("{context}.strategy_authorizations")
+        } else {
+            format!("{context}.strategy_authorizations.{}", auth.strategy_id)
+        };
 
-    if auth.allowed_product_kinds.is_empty() {
-        errors.push(format!(
-            "{auth_context}.allowed_product_kinds must be non-empty"
-        ));
-    }
-    for product_kind in &auth.allowed_product_kinds {
-        if !profile.enabled_products.contains(product_kind) {
+        if auth.allowed_product_kinds.is_empty() {
             errors.push(format!(
-                "{auth_context}.allowed_product_kinds contains disabled product kind {product_kind:?}"
+                "{auth_context}.allowed_product_kinds must be non-empty"
             ));
         }
-    }
-    for source_id in &auth.allowed_source_ids {
-        if !source_ids.contains(source_id) {
+        for product_kind in &auth.allowed_product_kinds {
+            if !profile.enabled_products.contains(product_kind) {
+                errors.push(format!(
+                    "{auth_context}.allowed_product_kinds contains disabled product kind {product_kind:?}"
+                ));
+            }
+        }
+        for source_id in &auth.allowed_source_ids {
+            if !source_ids.contains(source_id) {
+                errors.push(format!(
+                    "{auth_context}.allowed_source_ids contains unknown source {source_id}"
+                ));
+            }
+        }
+        let source_scoped_source_health_only = auth.allowed_product_kinds.len() == 1
+            && auth
+                .allowed_product_kinds
+                .contains(&IvProductKind::SourceHealth)
+            && !auth.allowed_source_ids.is_empty();
+        if auth.authorization_mode == IvAuthorizationMode::SelectorScoped
+            && auth.allowed_selector_fingerprints.is_empty()
+            && !source_scoped_source_health_only
+        {
             errors.push(format!(
-                "{auth_context}.allowed_source_ids contains unknown source {source_id}"
+                "{auth_context}.allowed_selector_fingerprints must be non-empty for selector_scoped authorization"
             ));
         }
-    }
-    let source_scoped_source_health_only = auth.allowed_product_kinds.len() == 1
-        && auth
-            .allowed_product_kinds
-            .contains(&IvProductKind::SourceHealth)
-        && !auth.allowed_source_ids.is_empty();
-    if auth.authorization_mode == IvAuthorizationMode::SelectorScoped
-        && auth.allowed_selector_fingerprints.is_empty()
-        && !source_scoped_source_health_only
-    {
-        errors.push(format!(
-            "{auth_context}.allowed_selector_fingerprints must be non-empty for selector_scoped authorization"
-        ));
-    }
-    for selector_fingerprint in &auth.allowed_selector_fingerprints {
-        if !selector_fingerprints.contains(selector_fingerprint) {
-            errors.push(format!(
-                "{auth_context}.allowed_selector_fingerprints contains unknown selector {selector_fingerprint}"
-            ));
+        for selector_fingerprint in &auth.allowed_selector_fingerprints {
+            if !selector_fingerprints.contains(selector_fingerprint) {
+                errors.push(format!(
+                    "{auth_context}.allowed_selector_fingerprints contains unknown selector {selector_fingerprint}"
+                ));
+            }
         }
     }
 

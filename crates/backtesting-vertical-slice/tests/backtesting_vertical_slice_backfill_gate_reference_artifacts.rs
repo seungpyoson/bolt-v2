@@ -19,14 +19,14 @@ use backtesting_vertical_slice::{
     operator::RunSpec,
     source_catalog_mapping_readiness::{
         SourceCatalogMappingReadinessInput, SourceCatalogMappingReadinessReport,
-        SourceCatalogMappingReadinessStatus, SourceCatalogMappingStatusEntry,
-        evaluate_source_catalog_mapping_readiness,
+        SourceCatalogMappingReadinessSpec, SourceCatalogMappingReadinessStatus,
+        SourceCatalogMappingStatusEntry, evaluate_source_catalog_mapping_readiness,
     },
     source_proof::SourceProofUsageScope,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::{fs, path::Path};
 
 const SOURCE_PROOF: &str = include_str!(
     "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.binance-bnbusdc-2026-03-01.json"
@@ -97,6 +97,14 @@ const ARTIFACT_INDEX_REQUIRED_EXECUTION_READINESS_REPORT: &str = include_str!(
 const BINANCE_GATE_ROOT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01"
+);
+const BINANCE_2026_03_02_GATE_ROOT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-02"
+);
+const BINANCE_2026_03_02_SOURCE_PROOF_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.binance-bnbusdc-2026-03-02.json"
 );
 
 #[test]
@@ -317,6 +325,14 @@ fn binance_backfill_gate_commits_materialized_run_spec_before_execution_plan() {
 }
 
 #[test]
+fn binance_2026_03_02_backfill_gate_reference_artifacts_match_generic_evaluators() {
+    assert_binance_gate_matches_generic_evaluators(
+        Path::new(BINANCE_2026_03_02_GATE_ROOT),
+        Path::new(BINANCE_2026_03_02_SOURCE_PROOF_PATH),
+    );
+}
+
+#[test]
 fn blocked_canonical_source_catalog_mapping_reference_artifact_matches_generic_evaluator() {
     let mapping_evaluation: SourceCatalogMappingEvaluation =
         serde_json::from_str(CATALOG_MAPPING_EVALUATION).expect("mapping evaluation parses");
@@ -391,6 +407,256 @@ fn artifact_index_commit_status_references_committed_proof_reports() {
 fn source_proof_scope_hash(report: &BackfillSourceProofScopeReport) -> String {
     let bytes = serde_json::to_vec(report).expect("scope report serializes");
     sha256_hex(&bytes)
+}
+
+fn assert_binance_gate_matches_generic_evaluators(gate_root: &Path, source_proof_path: &Path) {
+    let source_proof = read_required_string(source_proof_path);
+    let object_staging_manifest = read_required_string(
+        &gate_root.join("object-staging/backfill-object-staging-manifest.json"),
+    );
+    let source_proof_scope_report = read_required_string(
+        &gate_root.join("source-proof-scope/backfill-source-proof-scope-report.json"),
+    );
+    let accepted_tranche_manifest = read_required_string(
+        &gate_root.join("accepted-tranche/backfill-accepted-tranche-manifest.json"),
+    );
+    let accepted_tranche_manifest_bytes = read_required_bytes(
+        &gate_root.join("accepted-tranche/backfill-accepted-tranche-manifest.json"),
+    );
+    let materialization_spec =
+        read_required_string(&gate_root.join("backfill-run-spec-materialization.toml"));
+    let run_spec_path = gate_root.join("materialized-run-spec/backfill-run-spec.toml");
+    let run_spec = read_required_string(&run_spec_path);
+    let run_spec_bytes = read_required_bytes(&run_spec_path);
+    let execution_plan_spec = read_required_string(&gate_root.join("backfill-execution-plan.toml"));
+    let execution_plan =
+        read_required_string(&gate_root.join("execution-plan/backfill-execution-plan.json"));
+    let execution_plan_bytes =
+        read_required_bytes(&gate_root.join("execution-plan/backfill-execution-plan.json"));
+    let source_catalog_mapping_readiness_report = read_required_string(
+        &gate_root
+            .join("source-catalog-mapping-readiness/source-catalog-mapping-readiness-report.json"),
+    );
+    let source_catalog_mapping_readiness_spec =
+        read_required_string(&gate_root.join("source-catalog-mapping-readiness.toml"));
+    let source_catalog_mapping_readiness_spec: SourceCatalogMappingReadinessSpec =
+        toml::from_str(&source_catalog_mapping_readiness_spec)
+            .expect("source catalog-mapping readiness spec parses");
+    let catalog_mapping_evaluation_path =
+        repo_relative_path(&source_catalog_mapping_readiness_spec.catalog_mapping_evaluation_path);
+    let catalog_mapping_evaluation_bytes = read_required_bytes(&catalog_mapping_evaluation_path);
+    let source_catalog_mapping_readiness_report_bytes = read_required_bytes(
+        &gate_root
+            .join("source-catalog-mapping-readiness/source-catalog-mapping-readiness-report.json"),
+    );
+    let execution_readiness_report = read_required_string(
+        &gate_root.join("execution-readiness/backfill-execution-readiness-report.json"),
+    );
+    let artifact_index_required_execution_readiness_report = read_required_string(&gate_root.join(
+        "execution-readiness-artifact-index-required/backfill-execution-readiness-report.json",
+    ));
+
+    assert!(
+        run_spec.contains(r#"usage_scope = "canonical_backfill_input""#),
+        "Binance materialized run spec must explicitly bind canonical source usage scope"
+    );
+    assert!(
+        materialization_spec.contains("materialized-run-spec"),
+        "Binance gate must commit the materialized run-spec output directory"
+    );
+    assert!(
+        execution_plan_spec.contains("materialized-run-spec/backfill-run-spec.toml"),
+        "Binance execution plan must consume the materialized run spec"
+    );
+
+    let expected_scope: BackfillSourceProofScopeReport =
+        serde_json::from_str(&source_proof_scope_report).expect("scope report parses");
+    let actual_scope = evaluate_backfill_source_proof_scope(
+        expected_scope.report_id.clone(),
+        &source_proof,
+        &object_staging_manifest,
+    )
+    .expect("source-proof scope evaluates");
+
+    assert_eq!(actual_scope, expected_scope);
+
+    let expected_tranche: BackfillAcceptedTrancheManifest =
+        serde_json::from_str(&accepted_tranche_manifest).expect("accepted tranche parses");
+    let actual_tranche = evaluate_backfill_accepted_tranche(
+        expected_tranche.tranche_id.clone(),
+        &actual_scope,
+        &source_proof_scope_hash(&actual_scope),
+    )
+    .expect("accepted tranche evaluates");
+
+    assert_eq!(actual_tranche, expected_tranche);
+
+    let expected_plan: BackfillExecutionPlan =
+        serde_json::from_str(&execution_plan).expect("execution plan parses");
+    let run_spec: RunSpec = toml::from_str(&run_spec).expect("run spec parses");
+    let actual_plan = evaluate_backfill_execution_plan(
+        expected_plan.plan_id.clone(),
+        sha256_hex(&accepted_tranche_manifest_bytes),
+        &actual_tranche,
+        sha256_hex(&run_spec_bytes),
+        &BackfillExecutionRunBinding::from_run_spec(&run_spec),
+        BackfillExecutionWorkBudget {
+            max_source_rows: expected_plan.max_source_rows,
+            max_projected_row_groups: expected_plan.max_projected_row_groups,
+            max_wall_seconds: expected_plan.max_wall_seconds,
+            require_object_selection_metadata: expected_plan.require_object_selection_metadata,
+        },
+    );
+
+    assert_eq!(actual_plan, expected_plan);
+    assert!(actual_plan.blocking_issues.is_empty());
+
+    let mapping_evaluation: SourceCatalogMappingEvaluation =
+        serde_json::from_slice(&catalog_mapping_evaluation_bytes)
+            .expect("mapping evaluation parses");
+    let expected_catalog_mapping_readiness: SourceCatalogMappingReadinessReport =
+        serde_json::from_str(&source_catalog_mapping_readiness_report)
+            .expect("source catalog-mapping readiness parses");
+    let actual_catalog_mapping_readiness =
+        evaluate_source_catalog_mapping_readiness(SourceCatalogMappingReadinessInput {
+            readiness_id: &expected_catalog_mapping_readiness.readiness_id,
+            catalog_mapping_evaluation_hash: &sha256_hex(&catalog_mapping_evaluation_bytes),
+            source_sample_mapping_status: &mapping_evaluation.source_sample_mapping_status,
+            source_proof_id: &expected_catalog_mapping_readiness.source_proof_id,
+            source_proof_version: expected_catalog_mapping_readiness.source_proof_version,
+            source_binding: &expected_catalog_mapping_readiness.source_binding,
+            required_table_family: &expected_catalog_mapping_readiness.required_table_family,
+            required_nt_data_types: expected_catalog_mapping_readiness
+                .required_nt_data_types
+                .clone(),
+            allowed_current_bte_statuses: expected_catalog_mapping_readiness
+                .allowed_current_bte_statuses
+                .clone(),
+            allowed_parquet_catalog_statuses: expected_catalog_mapping_readiness
+                .allowed_parquet_catalog_statuses
+                .clone(),
+            allowed_usage_scopes: expected_catalog_mapping_readiness
+                .allowed_usage_scopes
+                .clone(),
+        });
+
+    assert_eq!(
+        actual_catalog_mapping_readiness,
+        expected_catalog_mapping_readiness
+    );
+
+    let accepted_tranche_manifest_hash = sha256_hex(&accepted_tranche_manifest_bytes);
+    let execution_plan_hash = sha256_hex(&execution_plan_bytes);
+    let source_catalog_mapping_readiness_hash =
+        sha256_hex(&source_catalog_mapping_readiness_report_bytes);
+    let expected_readiness: BackfillExecutionReadinessReport =
+        serde_json::from_str(&execution_readiness_report).expect("execution readiness parses");
+    let readiness = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+        readiness_id: &expected_readiness.readiness_id,
+        accepted_tranche_manifest_hash: &accepted_tranche_manifest_hash,
+        tranche: &actual_tranche,
+        execution_plan_hash: &execution_plan_hash,
+        plan: &actual_plan,
+        required_table_family: &actual_plan.table_family,
+        required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
+        supported_data_paths: vec![BackfillExecutionReadinessSupportedDataPath {
+            table_family: actual_plan.table_family.clone(),
+            nt_data_type: "TradeTick".to_string(),
+        }],
+        artifact_index_commit_required: false,
+        required_artifact_index_kind: None,
+        artifact_index_commit_proof_report_hash: None,
+        artifact_index_commit_proof_report: None,
+        source_selection_readiness_required: false,
+        source_selection_readiness_report_hash: None,
+        source_selection_readiness_report: None,
+        source_catalog_mapping_readiness_required: true,
+        source_catalog_mapping_readiness_report_hash: Some(&source_catalog_mapping_readiness_hash),
+        source_catalog_mapping_readiness_report: Some(&actual_catalog_mapping_readiness),
+    });
+
+    assert_eq!(readiness, expected_readiness);
+    assert_eq!(readiness.status, BackfillExecutionReadinessStatus::Ready);
+    assert!(readiness.blockers.is_empty());
+
+    let artifact_index_proof: ArtifactIndexCommitProofReport =
+        serde_json::from_str(ARTIFACT_INDEX_IAM_SCOPE_PROOF_REPORT)
+            .expect("Artifact Index IAM-scope proof report parses");
+    let expected_artifact_index_required_readiness: BackfillExecutionReadinessReport =
+        serde_json::from_str(&artifact_index_required_execution_readiness_report)
+            .expect("Artifact Index-required execution readiness parses");
+    let artifact_index_required_readiness =
+        evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+            readiness_id: &expected_artifact_index_required_readiness.readiness_id,
+            accepted_tranche_manifest_hash: &accepted_tranche_manifest_hash,
+            tranche: &actual_tranche,
+            execution_plan_hash: &execution_plan_hash,
+            plan: &actual_plan,
+            required_table_family: &actual_plan.table_family,
+            required_nt_data_type: "TradeTick",
+            required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
+            supported_data_paths: vec![BackfillExecutionReadinessSupportedDataPath {
+                table_family: actual_plan.table_family.clone(),
+                nt_data_type: "TradeTick".to_string(),
+            }],
+            artifact_index_commit_required: true,
+            required_artifact_index_kind: Some(ArtifactKind::Backtests),
+            artifact_index_commit_proof_report_hash: Some(&sha256_hex(
+                ARTIFACT_INDEX_IAM_SCOPE_PROOF_REPORT_BYTES,
+            )),
+            artifact_index_commit_proof_report: Some(&artifact_index_proof),
+            source_selection_readiness_required: false,
+            source_selection_readiness_report_hash: None,
+            source_selection_readiness_report: None,
+            source_catalog_mapping_readiness_required: true,
+            source_catalog_mapping_readiness_report_hash: Some(
+                &source_catalog_mapping_readiness_hash,
+            ),
+            source_catalog_mapping_readiness_report: Some(&actual_catalog_mapping_readiness),
+        });
+
+    assert_eq!(
+        artifact_index_required_readiness,
+        expected_artifact_index_required_readiness
+    );
+    assert_eq!(
+        artifact_index_required_readiness.status,
+        BackfillExecutionReadinessStatus::Blocked
+    );
+    assert_eq!(
+        artifact_index_required_readiness.blockers,
+        vec![BackfillExecutionReadinessBlocker::ArtifactIndexProducerIamScopeUnproven]
+    );
+}
+
+fn read_required_string(path: &Path) -> String {
+    assert!(
+        path.exists(),
+        "required reference artifact missing: {}",
+        path.display()
+    );
+    fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("read reference artifact {}: {error}", path.display()))
+}
+
+fn read_required_bytes(path: &Path) -> Vec<u8> {
+    assert!(
+        path.exists(),
+        "required reference artifact missing: {}",
+        path.display()
+    );
+    fs::read(path)
+        .unwrap_or_else(|error| panic!("read reference artifact {}: {error}", path.display()))
+}
+
+fn repo_relative_path(path: &Path) -> std::path::PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(path)
 }
 
 #[derive(Debug, Deserialize)]

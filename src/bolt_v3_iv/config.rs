@@ -98,7 +98,14 @@ pub fn validate_iv_root_config(config: &IvRootConfig) -> Vec<String> {
         errors.push("iv.profiles must contain at least one profile".to_string());
     }
 
+    let mut seen_profile_ids = BTreeSet::new();
     for profile in &config.profiles {
+        if !seen_profile_ids.insert(profile.profile_id.as_str()) {
+            errors.push(format!(
+                "iv.profiles.{} profile_id is duplicated",
+                profile.profile_id
+            ));
+        }
         errors.extend(validate_profile(profile));
     }
 

@@ -549,6 +549,19 @@ fn numeric_bounds_and_empty_selectors_reject() {
 }
 
 #[test]
+fn duplicate_profile_ids_reject_at_config_validation() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    config.profiles.push(config.profiles[0].clone());
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("iv.profiles.configured-profile")
+            && message.contains("profile_id is duplicated")
+    }));
+}
+
+#[test]
 fn derived_input_policy_must_require_every_helper_input_field() {
     let invalid = valid_iv_toml().replacen(
         "required_fields = [\"option_price\", \"underlying_price\", \"strike\", \"option_side\", \"time_to_expiry_years\", \"rate\", \"carry\"]",

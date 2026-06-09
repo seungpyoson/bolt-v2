@@ -808,9 +808,14 @@ impl ActiveMarketState {
         if quote.observed_ts_ms() < interval_start_ms {
             return false;
         }
-        if self
-            .reference_current_price_ts_ms
-            .is_some_and(|last_ts_ms| quote.observed_ts_ms() <= last_ts_ms)
+        let same_reference_source = self
+            .reference_current_price_source_id
+            .as_deref()
+            .is_some_and(|source_id| source_id == quote.source_id());
+        if same_reference_source
+            && self
+                .reference_current_price_ts_ms
+                .is_some_and(|last_ts_ms| quote.observed_ts_ms() <= last_ts_ms)
         {
             return false;
         }

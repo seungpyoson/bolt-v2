@@ -103,6 +103,7 @@ impl VenueTimingState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TakerPricingState {
     pub(crate) last_reference_current_price: Option<f64>,
+    pub(crate) last_reference_current_price_source_id: Option<String>,
     pub(crate) last_reference_current_price_ts_ms: Option<u64>,
     pub(crate) fast_spot: Option<FastSpotObservation>,
     pub(crate) realized_volatility_surface_id: String,
@@ -124,6 +125,7 @@ impl TakerPricingState {
     pub fn from_config(config: &TakerPricingConfig<'_>) -> Self {
         Self {
             last_reference_current_price: None,
+            last_reference_current_price_source_id: None,
             last_reference_current_price_ts_ms: None,
             fast_spot: None,
             realized_volatility_surface_id: config.realized_volatility_surface_id.clone(),
@@ -144,13 +146,19 @@ impl TakerPricingState {
         if !is_positive_finite(quote.price) {
             return;
         }
-        if self
-            .last_reference_current_price_ts_ms
-            .is_some_and(|last_ts_ms| quote.observed_ts_ms <= last_ts_ms)
+        let same_reference_source = self
+            .last_reference_current_price_source_id
+            .as_deref()
+            .is_some_and(|source_id| source_id == quote.venue);
+        if same_reference_source
+            && self
+                .last_reference_current_price_ts_ms
+                .is_some_and(|last_ts_ms| quote.observed_ts_ms <= last_ts_ms)
         {
             return;
         }
 
+        self.last_reference_current_price_source_id = Some(quote.venue.clone());
         self.last_reference_current_price_ts_ms = Some(quote.observed_ts_ms);
         self.last_reference_current_price = Some(quote.price);
         self.fast_spot = Some(quote.clone());
@@ -158,6 +166,7 @@ impl TakerPricingState {
 
     pub(crate) fn clear_reference_current_price_state(&mut self) {
         self.last_reference_current_price = None;
+        self.last_reference_current_price_source_id = None;
         self.last_reference_current_price_ts_ms = None;
         self.fast_spot = None;
         self.last_lead_gap_probability = None;
@@ -558,6 +567,8 @@ mod tests {
         observed_ts_ms: u64,
     ) {
         pricing.last_reference_current_price = Some(price);
+        pricing.last_reference_current_price_source_id =
+            Some(reference_current_price_source().to_string());
         pricing.last_reference_current_price_ts_ms = Some(observed_ts_ms);
         pricing.observe_signal_quote(&quote(venue, price, observed_ts_ms), config);
     }
@@ -620,6 +631,45 @@ mod tests {
             Some(TEST_NEWER_REFERENCE_CURRENT_PRICE)
         );
         assert!(!pricing.fast_venue_incoherent);
+    }
+
+    #[test]
+    fn different_reference_current_price_source_can_replace_newer_timestamp() {
+        let config = config(
+            TEST_MIN_OBSERVATIONS_READY_AFTER_TWO_SAMPLES,
+            TEST_GAP_RESET_SECS,
+            TEST_BRIDGE_VALID_SECS,
+        );
+        let mut pricing = TakerPricingState::from_config(&config);
+
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            TEST_NEWER_REFERENCE_CURRENT_PRICE,
+            TEST_NEWER_REFERENCE_TS_MS,
+        ));
+        pricing.observe_reference_current_price(&quote(
+            "backup_reference_current_price",
+            TEST_STALE_REFERENCE_CURRENT_PRICE,
+            TEST_STALE_REFERENCE_TS_MS,
+        ));
+        pricing.observe_reference_current_price(&quote(
+            "backup_reference_current_price",
+            TEST_REPLACEMENT_REFERENCE_CURRENT_PRICE,
+            TEST_STALE_REFERENCE_TS_MS - 1,
+        ));
+
+        assert_eq!(
+            pricing.last_reference_current_price,
+            Some(TEST_STALE_REFERENCE_CURRENT_PRICE)
+        );
+        assert_eq!(
+            pricing.last_reference_current_price_source_id.as_deref(),
+            Some("backup_reference_current_price")
+        );
+        assert_eq!(
+            pricing.last_reference_current_price_ts_ms,
+            Some(TEST_STALE_REFERENCE_TS_MS)
+        );
     }
 
     #[test]

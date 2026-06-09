@@ -341,6 +341,84 @@ fn non_winning_reference_price_source_updates_health_without_trading_state() {
 }
 
 #[test]
+fn selected_backup_with_older_timestamp_replaces_previous_source() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price
+        .sources
+        .get_mut(CHAINLINK_PRIMARY_SOURCE_ID)
+        .expect("chainlink source should exist")
+        .required = false;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    let _cache = register_test_strategy(&mut strategy);
+
+    let primary = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.0,
+        1_200,
+        1_205,
+    );
+    DataActor::on_data(&mut strategy, &primary).expect("primary quote should be handled");
+    assert_eq!(
+        strategy.active.reference_current_price_source_id.as_deref(),
+        Some(CHAINLINK_PRIMARY_SOURCE_ID)
+    );
+
+    let backup = reference_price_update(
+        POLYRESEARCH_BACKUP_SOURCE_ID,
+        POLYRESEARCH_REFERENCE_PROVIDER,
+        POLYRESEARCH_REFERENCE_SYMBOL,
+        101.0,
+        1_150,
+        1_155,
+    );
+    DataActor::on_data(&mut strategy, &backup).expect("backup quote should be handled");
+    assert_eq!(
+        strategy.active.reference_current_price_source_id.as_deref(),
+        Some(CHAINLINK_PRIMARY_SOURCE_ID),
+        "selector should keep the current source while it remains valid"
+    );
+
+    strategy
+        .reference_price_quotes
+        .remove(CHAINLINK_PRIMARY_SOURCE_ID)
+        .expect("primary quote should be present before simulated source loss");
+    strategy.observe_current_reference_price_selection(
+        strategy
+            .active
+            .interval_start_ms
+            .expect("test market should be interval-bound"),
+        strategy
+            .active
+            .interval_end_ms
+            .expect("test market should be interval-bound"),
+        1_250,
+    );
+
+    assert_eq!(
+        strategy.active.reference_current_price_source_id.as_deref(),
+        Some(POLYRESEARCH_BACKUP_SOURCE_ID)
+    );
+    assert_eq!(strategy.active.reference_current_price, Some(101.0));
+    assert_eq!(strategy.active.reference_current_price_ts_ms, Some(1_150));
+    assert_eq!(strategy.pricing.last_reference_current_price, Some(101.0));
+    assert_eq!(
+        strategy
+            .pricing
+            .last_reference_current_price_source_id
+            .as_deref(),
+        Some(POLYRESEARCH_BACKUP_SOURCE_ID)
+    );
+    assert_eq!(
+        strategy.pricing.last_reference_current_price_ts_ms,
+        Some(1_150)
+    );
+}
+
+#[test]
 fn reference_price_interval_transition_clears_stale_quotes_and_health() {
     let mut strategy = test_strategy();
     let mut reference_price = reference_price_config();

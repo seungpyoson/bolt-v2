@@ -266,8 +266,10 @@ mod tests {
     // reference-current-price selection invalidation.
     // Re-derived again after preserving newer stale source-health attempts
     // against out-of-order stale updates.
+    // Re-derived again after allowing selected reference-current-price failover
+    // to a different source with an older observed timestamp.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "17bcc362dfddd404797f6214e35cadd7d9bd79fd485f8d2677c2d8f4cdf24d96";
+        "c422b1736b8759565039197eb39aa0fac569fde3bf6008ddbc195f93769ebc51";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

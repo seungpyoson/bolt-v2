@@ -218,9 +218,10 @@ mod tests {
     // Re-derived again after root-level surfaced RV readiness redesign moved
     // raw RV validation behind the shared ready snapshot accessor.
     // Re-derived again after removing the dead strategy evidence fallback RV
-    // parameter, then after adding executable-edge cost breakdown.
+    // parameter, then after adding executable-edge cost breakdown and aligning
+    // its strategy test coverage.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "31b7c517c2c247c5e1365b2611587479197efad2115cd7937c2dcfd53603257e";
+        "007c4935d33ad9fd7dcda49e18d174350c5973100d58e0351b1abf0188a93b63";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

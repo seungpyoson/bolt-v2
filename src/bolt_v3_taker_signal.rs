@@ -162,19 +162,12 @@ pub(crate) fn choose_entry_side(inputs: &SideSelectionInputs) -> Option<OutcomeS
     match (up_clears, down_clears) {
         (true, false) => Some(OutcomeSide::Up),
         (false, true) => Some(OutcomeSide::Down),
-        (true, true)
-            if up_worst_ev_bps.expect("clearing UP EV must exist")
-                > down_worst_ev_bps.expect("clearing DOWN EV must exist") =>
-        {
-            Some(OutcomeSide::Up)
-        }
-        (true, true)
-            if down_worst_ev_bps.expect("clearing DOWN EV must exist")
-                > up_worst_ev_bps.expect("clearing UP EV must exist") =>
-        {
-            Some(OutcomeSide::Down)
-        }
-        (true, true) | (false, false) => None,
+        (true, true) => match (up_worst_ev_bps, down_worst_ev_bps) {
+            (Some(up), Some(down)) if up > down => Some(OutcomeSide::Up),
+            (Some(up), Some(down)) if down > up => Some(OutcomeSide::Down),
+            _ => None,
+        },
+        (false, false) => None,
     }
 }
 

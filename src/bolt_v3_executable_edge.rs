@@ -52,6 +52,7 @@ pub(crate) struct ExecutableEdgeInputs<'a> {
     pub(crate) edge_pricing_notional: f64,
     pub(crate) order_side: OrderSide,
     pub(crate) book: Option<&'a OutcomeBookState>,
+    pub(crate) exact_size_vwap: Option<ExactSizeVwap>,
     pub(crate) fee_bps: Option<f64>,
     pub(crate) vwap_depth_limit_bps: u64,
     pub(crate) slippage_buffer_bps: u64,
@@ -203,7 +204,9 @@ pub(crate) fn price_exact_size_vwap(
         _ => return Err(ExecutableEdgeBlockReason::MissingOrderBook),
     }
 
-    if remaining_notional > f64::EPSILON || !is_positive_finite(filled_quantity) {
+    if remaining_notional > notional_float_tolerance(edge_pricing_notional)
+        || !is_positive_finite(filled_quantity)
+    {
         return Err(ExecutableEdgeBlockReason::InsufficientDepth);
     }
     let vwap_price = filled_notional / filled_quantity;
@@ -228,6 +231,10 @@ pub(crate) fn price_exact_size_vwap(
         limit_price,
         exact_size_filled: true,
     })
+}
+
+fn notional_float_tolerance(reference_notional: f64) -> f64 {
+    reference_notional.abs() * f64::EPSILON * BPS_DENOMINATOR
 }
 
 fn consume_exact_notional_level(
@@ -277,14 +284,18 @@ pub(crate) fn evaluate_executable_edge(inputs: &ExecutableEdgeInputs<'_>) -> Exe
             ExecutableEdgeBlockReason::MissingOrderBook,
         );
     };
-    let vwap = match price_exact_size_vwap(
-        book,
-        inputs.order_side,
-        inputs.edge_pricing_notional,
-        inputs.vwap_depth_limit_bps,
-    ) {
-        Ok(vwap) => vwap,
-        Err(reason) => return ExecutableEdgeResult::blocked(inputs.side, reason),
+    let vwap = if let Some(vwap) = inputs.exact_size_vwap {
+        vwap
+    } else {
+        match price_exact_size_vwap(
+            book,
+            inputs.order_side,
+            inputs.edge_pricing_notional,
+            inputs.vwap_depth_limit_bps,
+        ) {
+            Ok(vwap) => vwap,
+            Err(reason) => return ExecutableEdgeResult::blocked(inputs.side, reason),
+        }
     };
     let Some(fee_bps) = inputs.fee_bps else {
         return ExecutableEdgeResult::blocked(
@@ -366,10 +377,12 @@ mod tests {
 
     const EPSILON: f64 = 1e-9;
 
-    fn priced_book(asks: &[(f64, f64)]) -> OutcomeBookState {
+    fn priced_book_with_levels(bids: &[(f64, f64)], asks: &[(f64, f64)]) -> OutcomeBookState {
         let mut book = OutcomeBookState::from_instrument_id(InstrumentId::from("EDGE.TEST"));
-        book.bid_levels.insert(Price::new(0.40, 2), 100.0);
-        book.best_bid = Some(0.40);
+        for (price, size) in bids {
+            book.bid_levels.insert(Price::new(*price, 2), *size);
+        }
+        book.best_bid = bids.iter().map(|(price, _)| *price).max_by(f64::total_cmp);
         for (price, size) in asks {
             book.ask_levels.insert(Price::new(*price, 2), *size);
         }
@@ -379,6 +392,10 @@ mod tests {
                 + book.ask_levels.values().copied().sum::<f64>(),
         );
         book
+    }
+
+    fn priced_book(asks: &[(f64, f64)]) -> OutcomeBookState {
+        priced_book_with_levels(&[(0.40, 100.0)], asks)
     }
 
     fn inputs<'a>(
@@ -392,6 +409,7 @@ mod tests {
             edge_pricing_notional: 5.0,
             order_side: OrderSide::Buy,
             book,
+            exact_size_vwap: None,
             fee_bps: Some(0.0),
             vwap_depth_limit_bps: 0,
             slippage_buffer_bps: 0,
@@ -411,6 +429,31 @@ mod tests {
 
         let priced = price_exact_size_vwap(&book, OrderSide::Buy, requested_notional, 2_000)
             .expect("exact notional should fill inside the depth limit");
+
+        let best_level_notional = best_level_price * best_level_quantity;
+        let second_level_notional = requested_notional - best_level_notional;
+        let expected_vwap_quantity =
+            best_level_quantity + (second_level_notional / second_level_price);
+        let expected_vwap_price = requested_notional / expected_vwap_quantity;
+
+        assert!((priced.vwap_price - expected_vwap_price).abs() < EPSILON);
+        assert!((priced.vwap_quantity - expected_vwap_quantity).abs() < EPSILON);
+        assert_eq!(priced.limit_price, second_level_price);
+        assert!(priced.exact_size_filled);
+    }
+
+    #[test]
+    fn exact_size_vwap_prices_sell_notional_across_bid_levels() {
+        let levels = [(0.60, 5.0), (0.50, 100.0)];
+        let [
+            (best_level_price, best_level_quantity),
+            (second_level_price, _),
+        ] = levels;
+        let requested_notional = best_level_price * best_level_quantity * levels.len() as f64;
+        let book = priced_book_with_levels(&levels, &[(0.70, 100.0)]);
+
+        let priced = price_exact_size_vwap(&book, OrderSide::Sell, requested_notional, 2_000)
+            .expect("sell exact notional should fill inside the depth limit");
 
         let best_level_notional = best_level_price * best_level_quantity;
         let second_level_notional = requested_notional - best_level_notional;
@@ -449,8 +492,13 @@ mod tests {
         );
         assert!(!result.trade_allowed);
         assert_eq!(result.cost_breakdown.vwap_price, Some(0.50));
-        assert!((result.cost_breakdown.fee_cost_cents - 1.0).abs() < EPSILON);
-        assert!((result.edge_cents_per_share + 0.5).abs() < EPSILON);
+        let expected_fee_cost_cents = result.cost_breakdown.gross_cost_cents
+            * inputs.fee_bps.expect("fee configured")
+            / BPS_DENOMINATOR;
+        let expected_edge_cents_per_share = result.adjusted_probability * CENTS_PER_SHARE
+            - result.cost_breakdown.total_adjusted_cost_cents;
+        assert!((result.cost_breakdown.fee_cost_cents - expected_fee_cost_cents).abs() < EPSILON);
+        assert!((result.edge_cents_per_share - expected_edge_cents_per_share).abs() < EPSILON);
     }
 
     #[test]
@@ -467,8 +515,16 @@ mod tests {
             Some(ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge)
         );
         assert!(!result.trade_allowed);
-        assert!((result.cost_breakdown.slippage_buffer_cents - 1.0).abs() < EPSILON);
-        assert!((result.edge_cents_per_share + 0.5).abs() < EPSILON);
+        let expected_slippage_buffer_cents = result.cost_breakdown.gross_cost_cents
+            * inputs.slippage_buffer_bps as f64
+            / BPS_DENOMINATOR;
+        let expected_edge_cents_per_share = result.adjusted_probability * CENTS_PER_SHARE
+            - result.cost_breakdown.total_adjusted_cost_cents;
+        assert!(
+            (result.cost_breakdown.slippage_buffer_cents - expected_slippage_buffer_cents).abs()
+                < EPSILON
+        );
+        assert!((result.edge_cents_per_share - expected_edge_cents_per_share).abs() < EPSILON);
     }
 
     #[test]
@@ -541,12 +597,27 @@ mod tests {
         let result = evaluate_executable_edge(&inputs);
 
         assert!(result.trade_allowed);
-        assert!((result.cost_breakdown.total_adjusted_cost_cents - 51.0).abs() < EPSILON);
-        assert!((result.edge_cents_per_share - 9.0).abs() < EPSILON);
+        let expected_fee_cost_cents = result.cost_breakdown.gross_cost_cents
+            * inputs.fee_bps.expect("fee configured")
+            / BPS_DENOMINATOR;
+        let expected_slippage_buffer_cents = result.cost_breakdown.gross_cost_cents
+            * inputs.slippage_buffer_bps as f64
+            / BPS_DENOMINATOR;
+        let expected_total_adjusted_cost_cents = result.cost_breakdown.gross_cost_cents
+            + expected_fee_cost_cents
+            + expected_slippage_buffer_cents;
+        let expected_edge_cents_per_share =
+            result.adjusted_probability * CENTS_PER_SHARE - expected_total_adjusted_cost_cents;
+        assert!(
+            (result.cost_breakdown.total_adjusted_cost_cents - expected_total_adjusted_cost_cents)
+                .abs()
+                < EPSILON
+        );
+        assert!((result.edge_cents_per_share - expected_edge_cents_per_share).abs() < EPSILON);
         assert!(
             (result.edge_bps
                 - result.edge_cents_per_share / result.cost_breakdown.total_adjusted_cost_cents
-                    * 10_000.0)
+                    * BPS_DENOMINATOR)
                 .abs()
                 < EPSILON
         );
@@ -577,7 +648,13 @@ mod tests {
         let result = evaluate_executable_edge(&inputs);
 
         assert!(result.trade_allowed);
-        assert!((result.adjusted_probability - 0.70).abs() < EPSILON);
-        assert!((result.edge_cents_per_share - 30.0).abs() < EPSILON);
+        let expected_adjusted_probability = UNIT_F64
+            - inputs
+                .adjusted_probability_up
+                .expect("probability configured");
+        let expected_edge_cents_per_share = expected_adjusted_probability * CENTS_PER_SHARE
+            - result.cost_breakdown.total_adjusted_cost_cents;
+        assert!((result.adjusted_probability - expected_adjusted_probability).abs() < EPSILON);
+        assert!((result.edge_cents_per_share - expected_edge_cents_per_share).abs() < EPSILON);
     }
 }

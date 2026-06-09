@@ -19,84 +19,84 @@ pub(super) fn find_error<'a>(
 
 pub(super) fn valid_raw_config() -> Value {
     toml::toml! {
-            strategy_id = "BINARYORACLEEDGETAKER-001"
-            order_id_tag = "001"
-            oms_type = "netting"
-            client_id = "POLYMARKET"
-            configured_target_id = "configured_updown_target"
-            target_kind = "rotating_market"
-            rotating_market_family = "updown"
-            underlying_asset = "CONFIGURED_ASSET"
-            cadence_seconds = 300
-            cadence_slug_token = "configuredwindow"
-            market_selection_rule = "active_or_next"
-            retry_interval_seconds = 5
-            blocked_after_seconds = 60
-            reference_venue = "reference_data_client"
-            reference_instrument_id = "REFERENCE.SOURCE"
-            signal_venue = "signal_data_client"
-            signal_instrument_id = "SIGNAL.SOURCE"
-            use_uuid_client_order_ids = true
-            use_hyphens_in_client_order_ids = false
-            external_order_claims = ["AUXILIARY.SOURCE"]
-            manage_contingent_orders = true
-            manage_gtd_expiry = true
-            manage_stop = true
-            market_exit_interval_ms = 250
-            market_exit_max_attempts = 7
-            log_events = false
-            log_commands = false
-            log_rejected_due_post_only_as_warning = false
-            warmup_tick_count = 20
-            reentry_cooldown_secs = 30
-            order_notional_target = 1000.0
-            maximum_position_notional = 1000.0
-            book_impact_cap_bps = 15
-    vwap_depth_limit_bps = 15
-    slippage_buffer_bps = 15
-            risk_lambda = 0.5
-            edge_threshold_basis_points = -20
-            exit_hysteresis_bps = 5
-            realized_volatility_surface_id = "<surface_id>"
-            trade_flow_window_secs = 30
-            trade_flow_max_samples = 100
-            spike_guard_return_threshold = 0.05
-            spike_guard_cooldown_secs = 5
-            price_to_beat_source = "chainlink_data_streams.report_at_boundary"
-            pricing_kurtosis = 0.0
-            theta_decay_factor = 0.0
-            forced_flat_stale_reference_ms = 1500
-            forced_flat_thin_book_min_liquidity = 100.0
-            lead_agreement_min_corr = 0.8
-            lead_jitter_max_ms = 250
+        strategy_id = "BINARYORACLEEDGETAKER-001"
+        order_id_tag = "001"
+        oms_type = "netting"
+        client_id = "POLYMARKET"
+        configured_target_id = "configured_updown_target"
+        target_kind = "rotating_market"
+        rotating_market_family = "updown"
+        underlying_asset = "CONFIGURED_ASSET"
+        cadence_seconds = 300
+        cadence_slug_token = "configuredwindow"
+        market_selection_rule = "active_or_next"
+        retry_interval_seconds = 5
+        blocked_after_seconds = 60
+        reference_venue = "reference_data_client"
+        reference_instrument_id = "REFERENCE.SOURCE"
+        signal_venue = "signal_data_client"
+        signal_instrument_id = "SIGNAL.SOURCE"
+        use_uuid_client_order_ids = true
+        use_hyphens_in_client_order_ids = false
+        external_order_claims = ["AUXILIARY.SOURCE"]
+        manage_contingent_orders = true
+        manage_gtd_expiry = true
+        manage_stop = true
+        market_exit_interval_ms = 250
+        market_exit_max_attempts = 7
+        log_events = false
+        log_commands = false
+        log_rejected_due_post_only_as_warning = false
+        warmup_tick_count = 20
+        reentry_cooldown_secs = 30
+        order_notional_target = 1000.0
+        maximum_position_notional = 1000.0
+        book_impact_cap_bps = 15
+        vwap_depth_limit_bps = 15
+        slippage_buffer_bps = 15
+        risk_lambda = 0.5
+        edge_threshold_basis_points = -20
+        exit_hysteresis_bps = 5
+        realized_volatility_surface_id = "<surface_id>"
+        trade_flow_window_secs = 30
+        trade_flow_max_samples = 100
+        spike_guard_return_threshold = 0.05
+        spike_guard_cooldown_secs = 5
+        price_to_beat_source = "chainlink_data_streams.report_at_boundary"
+        pricing_kurtosis = 0.0
+        theta_decay_factor = 0.0
+        forced_flat_stale_reference_ms = 1500
+        forced_flat_thin_book_min_liquidity = 100.0
+        lead_agreement_min_corr = 0.8
+        lead_jitter_max_ms = 250
 
-            [entry_order]
-            side = "buy"
-            position_side = "long"
-            order_type = "limit"
-            time_in_force = "fok"
-            is_post_only = false
-            is_reduce_only = false
-            is_quote_quantity = false
+        [entry_order]
+        side = "buy"
+        position_side = "long"
+        order_type = "limit"
+        time_in_force = "fok"
+        is_post_only = false
+        is_reduce_only = false
+        is_quote_quantity = false
 
-            [forced_exit_order]
-            side = "sell"
-            position_side = "long"
-            order_type = "market"
-            time_in_force = "ioc"
-            is_post_only = false
-            is_reduce_only = false
-            is_quote_quantity = false
+        [forced_exit_order]
+        side = "sell"
+        position_side = "long"
+        order_type = "market"
+        time_in_force = "ioc"
+        is_post_only = false
+        is_reduce_only = false
+        is_quote_quantity = false
 
-            [exit_order]
-            side = "sell"
-            position_side = "long"
-            order_type = "market"
-            time_in_force = "ioc"
-            is_post_only = false
-            is_reduce_only = false
-            is_quote_quantity = false
-        }
+        [exit_order]
+        side = "sell"
+        position_side = "long"
+        order_type = "market"
+        time_in_force = "ioc"
+        is_post_only = false
+        is_reduce_only = false
+        is_quote_quantity = false
+    }
     .into()
 }
 

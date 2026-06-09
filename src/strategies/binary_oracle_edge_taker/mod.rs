@@ -214,6 +214,8 @@ impl SubmitContext {
 #[derive(Debug, Clone, Copy)]
 struct ExecutableEntryProbe {
     edge_pricing_notional: f64,
+    order_side: OrderSide,
+    vwap: ExactSizeVwap,
     fee_bps: f64,
 }
 
@@ -373,6 +375,33 @@ fn executable_edge_fee_bps(result: Option<ExecutableEdgeResult>) -> Option<f64> 
 fn executable_edge_selectable_bps(result: Option<ExecutableEdgeResult>) -> Option<f64> {
     let result = result?;
     result.trade_allowed.then_some(result.edge_bps)
+}
+
+fn executable_submission_vwap_from_evaluation(
+    evaluation: &EntryEvaluation,
+    selected_side: OutcomeSide,
+) -> Option<ExactSizeVwap> {
+    let result = match selected_side {
+        OutcomeSide::Up => evaluation.up_executable_edge.as_ref(),
+        OutcomeSide::Down => evaluation.down_executable_edge.as_ref(),
+    }?;
+    if result.selected_side != selected_side || !result.trade_allowed {
+        return None;
+    }
+    let cost = result.cost_breakdown;
+    if !cost.cost_available || !cost.exact_size_filled {
+        return None;
+    }
+    Some(ExactSizeVwap {
+        vwap_price: cost.vwap_price.filter(|value| is_positive_finite(*value))?,
+        vwap_quantity: cost
+            .vwap_quantity
+            .filter(|value| is_positive_finite(*value))?,
+        limit_price: cost
+            .limit_price
+            .filter(|value| is_positive_finite(*value))?,
+        exact_size_filled: cost.exact_size_filled,
+    })
 }
 
 fn executable_edge_cents_per_share(result: Option<ExecutableEdgeResult>) -> Option<f64> {
@@ -2299,7 +2328,9 @@ impl BinaryOracleEdgeTaker {
 
     fn executable_edge_order_shape_block_reason(&self) -> Option<ExecutableEdgeBlockReason> {
         let entry_order = &self.config.entry_order;
-        let unsupported = entry_order.order_type != OrderType::Limit
+        let unsupported = entry_order.side != ORDER_SIDE_BUY_VALUE
+            || entry_order.position_side != POSITION_SIDE_LONG_VALUE
+            || entry_order.order_type != OrderType::Limit
             || entry_order.time_in_force != TimeInForce::Fok
             || entry_order.is_post_only
             || entry_order.is_reduce_only
@@ -2329,24 +2360,6 @@ impl BinaryOracleEdgeTaker {
         let order_side = self.configured_entry_order_side().ok()?;
         let book = self.active_book_for_outcome(side);
         order_price_for_side(book, order_side, self.config.entry_order.is_post_only)
-    }
-
-    fn executable_submission_vwap_for_notional(
-        &self,
-        side: OutcomeSide,
-        notional: f64,
-    ) -> Option<ExactSizeVwap> {
-        if self.executable_edge_order_shape_block_reason().is_some() {
-            return None;
-        }
-        let order_side = self.configured_entry_order_side().ok()?;
-        price_exact_size_vwap(
-            self.active_book_for_outcome(side),
-            order_side,
-            notional,
-            self.config.vwap_depth_limit_bps,
-        )
-        .ok()
     }
 
     fn preliminary_edge_pricing_notional_for_side(&self, side: OutcomeSide) -> f64 {
@@ -2381,6 +2394,8 @@ impl BinaryOracleEdgeTaker {
             .ok_or(ExecutableEdgeBlockReason::FeeUnavailable)?;
         Ok(ExecutableEntryProbe {
             edge_pricing_notional,
+            order_side,
+            vwap,
             fee_bps,
         })
     }
@@ -2391,30 +2406,21 @@ impl BinaryOracleEdgeTaker {
         fair_probability_up: f64,
         adjusted_probability_up: f64,
         minimum_edge_bps: f64,
-        edge_pricing_notional: f64,
+        probe: ExecutableEntryProbe,
     ) -> ExecutableEdgeResult {
         if let Some(reason) = self.executable_edge_order_shape_block_reason() {
             return ExecutableEdgeResult::blocked(side, reason);
         }
-        let Ok(order_side) = self.configured_entry_order_side() else {
-            return ExecutableEdgeResult::blocked(
-                side,
-                ExecutableEdgeBlockReason::MissingOrderBook,
-            );
-        };
         let book = self.active_book_for_outcome(side);
-        let fee_bps = self
-            .executable_entry_probe_for_side(side, order_side, edge_pricing_notional)
-            .ok()
-            .map(|probe| probe.fee_bps);
         evaluate_executable_edge(&ExecutableEdgeInputs {
             side,
             fair_probability_up: Some(fair_probability_up),
             adjusted_probability_up: Some(adjusted_probability_up),
-            edge_pricing_notional,
-            order_side,
+            edge_pricing_notional: probe.edge_pricing_notional,
+            order_side: probe.order_side,
             book: Some(book),
-            fee_bps,
+            exact_size_vwap: Some(probe.vwap),
+            fee_bps: Some(probe.fee_bps),
             vwap_depth_limit_bps: self.config.vwap_depth_limit_bps,
             slippage_buffer_bps: self.config.slippage_buffer_bps,
             minimum_edge_bps,
@@ -4246,7 +4252,7 @@ impl BinaryOracleEdgeTaker {
             return decision;
         };
         let Some(submission_vwap) =
-            self.executable_submission_vwap_for_notional(selected_side, sized_notional)
+            executable_submission_vwap_from_evaluation(&evaluation, selected_side)
         else {
             decision.blocked_reason = Some(ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING);
             return decision;
@@ -4595,7 +4601,7 @@ impl BinaryOracleEdgeTaker {
                 fair_probability_up,
                 up_adjusted_probability_up,
                 pricing_inputs.theta_scaled_min_edge_bps,
-                probe.edge_pricing_notional,
+                probe,
             ),
             Err(reason) => ExecutableEdgeResult::blocked(OutcomeSide::Up, reason),
         };
@@ -4605,7 +4611,7 @@ impl BinaryOracleEdgeTaker {
                 fair_probability_up,
                 down_adjusted_probability_up,
                 pricing_inputs.theta_scaled_min_edge_bps,
-                probe.edge_pricing_notional,
+                probe,
             ),
             Err(reason) => ExecutableEdgeResult::blocked(OutcomeSide::Down, reason),
         };
@@ -4657,9 +4663,11 @@ impl BinaryOracleEdgeTaker {
                 .sized_notional
                 .filter(|value| is_positive_finite(*value))
             {
-                let selected_sized_probe =
-                    self.executable_entry_probe_for_side(selected_side, order_side, sized_notional);
-                let selected_adjusted_probability_up = match selected_sized_probe {
+                let selected_sized_probe = match self.executable_entry_probe_for_side(
+                    selected_side,
+                    order_side,
+                    sized_notional,
+                ) {
                     Ok(probe) => {
                         let Some((selected_uncertainty_band, adjusted_probability_up)) = self
                             .adjusted_probability_up_for_side_fee(
@@ -4678,7 +4686,7 @@ impl BinaryOracleEdgeTaker {
                             return evaluation;
                         };
                         evaluation.uncertainty_band_probability = Some(selected_uncertainty_band);
-                        adjusted_probability_up
+                        (probe, adjusted_probability_up)
                     }
                     Err(reason) => {
                         let sized_executable_edge =
@@ -4706,12 +4714,13 @@ impl BinaryOracleEdgeTaker {
                         return evaluation;
                     }
                 };
+                let (selected_sized_probe, selected_adjusted_probability_up) = selected_sized_probe;
                 let sized_executable_edge = self.executable_edge_for_side(
                     selected_side,
                     fair_probability_up,
                     selected_adjusted_probability_up,
                     pricing_inputs.theta_scaled_min_edge_bps,
-                    sized_notional,
+                    selected_sized_probe,
                 );
                 match selected_side {
                     OutcomeSide::Up => {
@@ -5703,17 +5712,15 @@ fn push_executable_edge_pricing_block(
             | ExecutableEdgeBlockReason::InsufficientDepth
             | ExecutableEdgeBlockReason::InvalidProbability
             | ExecutableEdgeBlockReason::InvalidCost
-            | ExecutableEdgeBlockReason::UnsupportedOrderShape),
+            | ExecutableEdgeBlockReason::UnsupportedOrderShape
+            | ExecutableEdgeBlockReason::EdgeBelowThreshold
+            | ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge),
         ) => {
             reasons.push(EntryPricingBlockReason::ExecutableEdgeUnavailable(
                 side, reason,
             ));
         }
-        Some(
-            ExecutableEdgeBlockReason::EdgeBelowThreshold
-            | ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge,
-        )
-        | None => {}
+        None => {}
     }
 }
 

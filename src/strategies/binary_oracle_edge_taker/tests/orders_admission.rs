@@ -1842,23 +1842,23 @@ fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
 #[test]
 fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
     let mut raw = valid_raw_config();
-    let entry_order = raw
+    let exit_order = raw
         .as_table_mut()
         .expect("valid config must be a table")
-        .get_mut("entry_order")
-        .expect("valid config should include entry_order")
+        .get_mut("exit_order")
+        .expect("valid config should include exit_order")
         .as_table_mut()
-        .expect("entry_order should be a table");
-    entry_order.insert(
+        .expect("exit_order should be a table");
+    exit_order.insert(
         "order_type".to_string(),
         Value::String("stop_market".to_string()),
     );
-    entry_order.insert(
+    exit_order.insert(
         "time_in_force".to_string(),
         Value::String("gtc".to_string()),
     );
-    entry_order.insert("trigger_price".to_string(), Value::Float(0.52));
-    entry_order.insert(
+    exit_order.insert("trigger_price".to_string(), Value::Float(0.52));
+    exit_order.insert(
         "trigger_instrument_id".to_string(),
         Value::String("TRIGGER.SOURCE".to_string()),
     );
@@ -1880,9 +1880,9 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
 
     let order = strategy
-        .build_configured_entry_order(
+        .build_configured_exit_order(
             instrument_id,
-            OrderSide::Buy,
+            OrderSide::Sell,
             Quantity::new(2.0, 2),
             Price::new(0.40, 2),
             ClientOrderId::from("O-19700101-000000-001-021-1"),
@@ -1898,14 +1898,14 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
 #[test]
 fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
     let mut raw = valid_raw_config();
-    let entry_order = raw
+    let exit_order = raw
         .as_table_mut()
         .expect("valid config must be a table")
-        .get_mut("entry_order")
-        .expect("valid config should include entry_order")
+        .get_mut("exit_order")
+        .expect("valid config should include exit_order")
         .as_table_mut()
-        .expect("entry_order should be a table");
-    entry_order.insert(
+        .expect("exit_order should be a table");
+    exit_order.insert(
         "trigger_instrument_id".to_string(),
         Value::String("TRIGGER.SOURCE".to_string()),
     );
@@ -1926,9 +1926,9 @@ fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
 
     let error = strategy
-        .build_configured_entry_order(
+        .build_configured_exit_order(
             instrument_id,
-            OrderSide::Buy,
+            OrderSide::Sell,
             Quantity::new(2.0, 2),
             Price::new(0.40, 2),
             ClientOrderId::from("O-19700101-000000-001-022-1"),

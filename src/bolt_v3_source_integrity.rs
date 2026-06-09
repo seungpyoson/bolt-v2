@@ -226,8 +226,11 @@ mod tests {
     // Re-derived after deriving VWAP assertion expectations from test inputs.
     // Re-derived after scaling the entry limit-notional float tolerance by
     // sized notional.
+    // Re-derived after executable-edge review follow-ups tightened config
+    // validation, reused exact-size VWAP probes, and surfaced edge-threshold
+    // pricing blocks.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "d45a53fb81f1bbffadc4d419c2f9b1152a2bacd36e1a54e0cbbfb0799f58cb58";
+        "97d8bd37e94ff74673589eeb8458f9fdde02f0e238a9283325cb13ff7d1917ab";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

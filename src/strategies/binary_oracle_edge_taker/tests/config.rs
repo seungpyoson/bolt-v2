@@ -8,6 +8,49 @@ const POSITIVE_REQUIRED_INTEGER_FIELDS: &[&str] = &[
     stringify!(trade_flow_window_secs),
     stringify!(spike_guard_cooldown_secs),
 ];
+const BPS_UPPER_BOUND_EXCESS: i64 = (BPS_DENOMINATOR as i64) + 1;
+const BPS_RUNTIME_KNOB_FIELDS: &[&str] = &[
+    stringify!(book_impact_cap_bps),
+    stringify!(vwap_depth_limit_bps),
+    stringify!(slippage_buffer_bps),
+];
+
+fn unsupported_executable_entry_order_shape_cases() -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            stringify!(side),
+            Value::String(stringify!(sell).to_string()),
+        ),
+        (
+            stringify!(position_side),
+            Value::String(stringify!(short).to_string()),
+        ),
+        (
+            stringify!(order_type),
+            Value::String(stringify!(market).to_string()),
+        ),
+        (
+            stringify!(time_in_force),
+            Value::String(stringify!(ioc).to_string()),
+        ),
+        (stringify!(is_post_only), Value::Boolean(true)),
+        (stringify!(is_reduce_only), Value::Boolean(true)),
+        (stringify!(is_quote_quantity), Value::Boolean(true)),
+        (stringify!(trigger_price), Value::Float(1.0)),
+    ]
+}
+
+fn raw_with_entry_order_field(field: &'static str, value: Value) -> Value {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .get_mut(stringify!(entry_order))
+        .expect("valid config must include entry_order")
+        .as_table_mut()
+        .expect("entry_order must be a table")
+        .insert(field.to_string(), value);
+    raw
+}
 
 #[test]
 fn strategy_core_uses_configured_nt_order_tag_and_oms_type() {
@@ -83,6 +126,82 @@ fn parse_config_rejects_zero_positive_required_integer_fields() {
             err.to_string()
                 .contains(&format!("{field} must be positive")),
             "expected positivity rejection for {field}, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn parse_config_rejects_bps_runtime_knobs_above_full_scale() {
+    for field in BPS_RUNTIME_KNOB_FIELDS {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert((*field).to_string(), Value::Integer(BPS_UPPER_BOUND_EXCESS));
+
+        let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("out-of-range bps runtime knob must be rejected");
+
+        assert!(
+            err.to_string()
+                .contains(&format!("{field} must be at most {BPS_DENOMINATOR}")),
+            "expected bps upper-bound rejection for {field}, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn validate_config_rejects_bps_runtime_knobs_above_full_scale() {
+    for field in BPS_RUNTIME_KNOB_FIELDS {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert((*field).to_string(), Value::Integer(BPS_UPPER_BOUND_EXCESS));
+        let mut errors = Vec::new();
+
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+        let error = find_error(
+            &errors,
+            &format!("strategies[0].config.{field}"),
+            "bps_out_of_range",
+        );
+        assert_eq!(
+            error.message,
+            format!("must be at most {BPS_DENOMINATOR} bps")
+        );
+    }
+}
+
+#[test]
+fn parse_config_rejects_unsupported_executable_entry_order_shapes() {
+    for (field, value) in unsupported_executable_entry_order_shape_cases() {
+        let raw = raw_with_entry_order_field(field, value);
+
+        let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("unsupported executable entry shape must fail at parse-time");
+        assert!(
+            err.to_string()
+                .contains("entry_order must be buy/long limit FOK"),
+            "parse error for `{field}` should name executable entry shape: {err}"
+        );
+    }
+}
+
+#[test]
+fn validate_config_rejects_unsupported_executable_entry_order_shapes() {
+    for (field, value) in unsupported_executable_entry_order_shape_cases() {
+        let raw = raw_with_entry_order_field(field, value);
+        let mut errors = Vec::new();
+
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+        assert!(
+            errors.iter().any(|error| {
+                error.field == "strategies[0].config.entry_order"
+                    && error.code == "unsupported_executable_entry_order_shape"
+                    && error.message.contains("must be buy/long limit FOK without")
+            }),
+            "`{field}` must reject unsupported executable entry shape: {errors:#?}"
         );
     }
 }
@@ -313,21 +432,21 @@ fn production_registry_registers_binary_oracle_edge_taker_kind() {
 #[test]
 fn builder_requires_strategy_id_and_client_id() {
     let raw = toml::toml! {
-            warmup_tick_count = 20
-            reentry_cooldown_secs = 30
-            order_notional_target = 1000.0
-            maximum_position_notional = 1000.0
-            book_impact_cap_bps = 15
-    vwap_depth_limit_bps = 15
-    slippage_buffer_bps = 15
-            risk_lambda = 0.5
-            edge_threshold_basis_points = -20
-            exit_hysteresis_bps = 5
-            forced_flat_stale_reference_ms = 1500
-            forced_flat_thin_book_min_liquidity = 100.0
-            lead_agreement_min_corr = 0.8
-            lead_jitter_max_ms = 250
-        }
+        warmup_tick_count = 20
+        reentry_cooldown_secs = 30
+        order_notional_target = 1000.0
+        maximum_position_notional = 1000.0
+        book_impact_cap_bps = 15
+        vwap_depth_limit_bps = 15
+        slippage_buffer_bps = 15
+        risk_lambda = 0.5
+        edge_threshold_basis_points = -20
+        exit_hysteresis_bps = 5
+        forced_flat_stale_reference_ms = 1500
+        forced_flat_thin_book_min_liquidity = 100.0
+        lead_agreement_min_corr = 0.8
+        lead_jitter_max_ms = 250
+    }
     .into();
     let mut errors = Vec::new();
 
@@ -547,41 +666,41 @@ fn builder_accepts_nested_order_shape_without_flat_order_projection() {
 #[test]
 fn builder_requires_pricing_model_fields() {
     let raw = toml::toml! {
-            strategy_id = "BINARYORACLEEDGETAKER-001"
-            client_id = "POLYMARKET"
-            warmup_tick_count = 20
-            reentry_cooldown_secs = 30
-            order_notional_target = 1000.0
-            maximum_position_notional = 1000.0
-            book_impact_cap_bps = 15
-    vwap_depth_limit_bps = 15
-    slippage_buffer_bps = 15
-            risk_lambda = 0.5
-            edge_threshold_basis_points = -20
-            exit_hysteresis_bps = 5
-            forced_flat_stale_reference_ms = 1500
-            forced_flat_thin_book_min_liquidity = 100.0
-            lead_agreement_min_corr = 0.8
-            lead_jitter_max_ms = 250
+        strategy_id = "BINARYORACLEEDGETAKER-001"
+        client_id = "POLYMARKET"
+        warmup_tick_count = 20
+        reentry_cooldown_secs = 30
+        order_notional_target = 1000.0
+        maximum_position_notional = 1000.0
+        book_impact_cap_bps = 15
+        vwap_depth_limit_bps = 15
+        slippage_buffer_bps = 15
+        risk_lambda = 0.5
+        edge_threshold_basis_points = -20
+        exit_hysteresis_bps = 5
+        forced_flat_stale_reference_ms = 1500
+        forced_flat_thin_book_min_liquidity = 100.0
+        lead_agreement_min_corr = 0.8
+        lead_jitter_max_ms = 250
 
-            [entry_order]
-            side = "buy"
-            position_side = "long"
-            order_type = "limit"
-            time_in_force = "fok"
-            is_post_only = false
-            is_reduce_only = false
-            is_quote_quantity = false
+        [entry_order]
+        side = "buy"
+        position_side = "long"
+        order_type = "limit"
+        time_in_force = "fok"
+        is_post_only = false
+        is_reduce_only = false
+        is_quote_quantity = false
 
-            [exit_order]
-            side = "sell"
-            position_side = "long"
-            order_type = "market"
-            time_in_force = "ioc"
-            is_post_only = false
-            is_reduce_only = false
-            is_quote_quantity = false
-        }
+        [exit_order]
+        side = "sell"
+        position_side = "long"
+        order_type = "market"
+        time_in_force = "ioc"
+        is_post_only = false
+        is_reduce_only = false
+        is_quote_quantity = false
+    }
     .into();
     let mut errors = Vec::new();
 

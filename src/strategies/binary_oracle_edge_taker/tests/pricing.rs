@@ -845,6 +845,14 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
             .and_then(|edge| edge.block_reason),
         Some(ExecutableEdgeBlockReason::EdgeBelowThreshold)
     );
+    assert_eq!(
+        evaluation.pricing_blocked_by,
+        vec![EntryPricingBlockReason::ExecutableEdgeUnavailable(
+            OutcomeSide::Up,
+            ExecutableEdgeBlockReason::EdgeBelowThreshold
+        )],
+        "sized selected-side threshold failure should surface as a pricing block"
+    );
     assert!(
         evaluation
             .uncertainty_band_probability
@@ -910,16 +918,35 @@ fn entry_submission_caps_quantity_to_limit_price_liability() {
 
     assert_eq!(decision.blocked_reason, None);
     assert_eq!(decision.price, Some(0.60));
-    assert!(
-        decision
-            .quantity_value
-            .is_some_and(|quantity| (quantity - 8.33).abs() < 1e-9),
-        "submission should cap normalized quantity by limit-price liability, got {decision:#?}"
+    let price = decision.price.expect("decision should price the entry");
+    let sized_notional = decision
+        .evaluation
+        .sized_notional
+        .expect("decision should carry the sized notional");
+    let instrument = strategy
+        .current_instrument(
+            decision
+                .instrument_id
+                .expect("decision should choose an instrument"),
+        )
+        .expect("chosen instrument should stay cached");
+    let capped_quantity = instrument
+        .try_make_qty(sized_notional / price, Some(true))
+        .expect("capped liability quantity should normalize to an NT quantity");
+    let expected_quantity = strategy
+        .normalize_base_order_quantity_for_execution_venue(&instrument, capped_quantity)
+        .expect("venue quantity normalization should succeed")
+        .as_f64();
+
+    assert_eq!(
+        decision.quantity_value,
+        Some(expected_quantity),
+        "submission should cap normalized quantity by limit-price liability"
     );
     assert!(
         decision
             .quantity_value
-            .is_some_and(|quantity| 0.60 * quantity <= 5.0),
+            .is_some_and(|quantity| price * quantity <= sized_notional),
         "limit-price liability must not exceed sized notional, got {decision:#?}"
     );
 }
@@ -950,6 +977,7 @@ fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
     strategy.pricing.last_lead_gap_probability = Some(0.02);
     strategy.pricing.last_jitter_penalty_probability = Some(0.01);
+    strategy.config.edge_threshold_basis_points = -(BPS_DENOMINATOR as i64);
 
     let decision = strategy.entry_evaluation_at(1_200);
 
@@ -1002,7 +1030,15 @@ fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
     let near_expiry = strategy.entry_evaluation_at(291_000);
 
     assert!(near_expiry.gate.blocked_by.is_empty());
-    assert!(near_expiry.pricing_blocked_by.is_empty());
+    assert!(
+        near_expiry.pricing_blocked_by.contains(
+            &EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Up,
+                ExecutableEdgeBlockReason::EdgeBelowThreshold
+            )
+        ),
+        "theta-scaled threshold miss should surface as an executable-edge pricing block: {near_expiry:#?}"
+    );
     assert!(near_expiry.up_worst_case_ev_bps.is_some());
     assert!(near_expiry.min_worst_case_ev_bps.is_some());
     assert_eq!(near_expiry.selected_side, None);

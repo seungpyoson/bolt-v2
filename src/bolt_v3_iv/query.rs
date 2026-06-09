@@ -1360,9 +1360,11 @@ fn source_matches(actual: &str, filter: &Option<String>) -> bool {
 
 fn source_health_state_matches(health: &IvSourceHealth, state_filter: &[String]) -> bool {
     state_filter.is_empty()
-        || state_filter
-            .iter()
-            .any(|expected| expected == health.subscription_state.as_str())
+        || state_filter.iter().any(|expected| {
+            expected == health.subscription_state.as_str()
+                || (expected == super::health::IvSourceHealthState::Rejected.as_str()
+                    && health.last_reject_reason.is_some())
+        })
 }
 
 fn product_satisfies_current_state(product: &IvQueryProduct, state: &IvQueryState) -> bool {

@@ -9383,3 +9383,83 @@ literal = '''"missing_realized_volatility_surface"'''
 context = '''"missing_realized_volatility_surface",'''
 classification = "strategy_runtime_diagnostic"
 reason = "Diagnostic code emitted when taker runtime config omits the required surfaced realized-volatility selector; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"vwap_depth_limit_bps"'''
+context = '''"vwap_depth_limit_bps",'''
+classification = "strategy_runtime_schema_field"
+reason = "Executable-edge VWAP depth limit schema field name; the runtime value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"slippage_buffer_bps"'''
+context = '''"slippage_buffer_bps",'''
+classification = "strategy_runtime_schema_field"
+reason = "Executable-edge slippage buffer schema field name; the runtime value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_executable_edge.rs"
+kind = "number"
+literal = '''100.0'''
+context = '''const CENTS_PER_SHARE: f64 = 100.0;'''
+classification = "executable_edge_unit_conversion_constant"
+reason = "Fixed cents-per-share unit conversion used by the executable-edge formula; it is not an operator runtime knob."
+
+[[allowed]]
+path = "src/bolt_v3_executable_edge.rs"
+kind = "string"
+literal = '''"missing_order_book"'''
+context = '''Self::MissingOrderBook => "missing_order_book",'''
+classification = "executable_edge_block_reason_label"
+reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_executable_edge.rs"
+kind = "string"
+literal = '''"insufficient_depth"'''
+context = '''Self::InsufficientDepth => "insufficient_depth",'''
+classification = "executable_edge_block_reason_label"
+reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_executable_edge.rs"
+kind = "string"
+literal = '''"fee_unavailable"'''
+context = '''Self::FeeUnavailable => "fee_unavailable",'''
+classification = "executable_edge_block_reason_label"
+reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_executable_edge.rs"
+kind = "string"
+literal = '''"invalid_probability"'''
+context = '''Self::InvalidProbability => "invalid_probability",'''
+classification = "executable_edge_block_reason_label"
+reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_executable_edge.rs"
+kind = "string"
+literal = '''"invalid_cost"'''
+context = '''Self::InvalidCost => "invalid_cost",'''
+classification = "executable_edge_block_reason_label"
+reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_executable_edge.rs"
+kind = "string"
+literal = '''"edge_below_threshold"'''
+context = '''Self::EdgeBelowThreshold => "edge_below_threshold",'''
+classification = "executable_edge_block_reason_label"
+reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_executable_edge.rs"
+kind = "string"
+literal = '''"spread_or_slippage_wiped_edge"'''
+context = '''Self::SpreadOrSlippageWipedEdge => "spread_or_slippage_wiped_edge",'''
+classification = "executable_edge_block_reason_label"
+reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."

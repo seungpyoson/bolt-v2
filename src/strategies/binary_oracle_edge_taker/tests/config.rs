@@ -313,19 +313,21 @@ fn production_registry_registers_binary_oracle_edge_taker_kind() {
 #[test]
 fn builder_requires_strategy_id_and_client_id() {
     let raw = toml::toml! {
-        warmup_tick_count = 20
-        reentry_cooldown_secs = 30
-        order_notional_target = 1000.0
-        maximum_position_notional = 1000.0
-        book_impact_cap_bps = 15
-        risk_lambda = 0.5
-        edge_threshold_basis_points = -20
-        exit_hysteresis_bps = 5
-        forced_flat_stale_reference_ms = 1500
-        forced_flat_thin_book_min_liquidity = 100.0
-        lead_agreement_min_corr = 0.8
-        lead_jitter_max_ms = 250
-    }
+            warmup_tick_count = 20
+            reentry_cooldown_secs = 30
+            order_notional_target = 1000.0
+            maximum_position_notional = 1000.0
+            book_impact_cap_bps = 15
+    vwap_depth_limit_bps = 15
+    slippage_buffer_bps = 15
+            risk_lambda = 0.5
+            edge_threshold_basis_points = -20
+            exit_hysteresis_bps = 5
+            forced_flat_stale_reference_ms = 1500
+            forced_flat_thin_book_min_liquidity = 100.0
+            lead_agreement_min_corr = 0.8
+            lead_jitter_max_ms = 250
+        }
     .into();
     let mut errors = Vec::new();
 
@@ -481,6 +483,8 @@ fn builder_accepts_integer_literals_for_f64_fields() {
         ("order_notional_target", 1_000),
         ("maximum_position_notional", 1_000),
         ("book_impact_cap_bps", 15),
+        ("vwap_depth_limit_bps", 15),
+        ("slippage_buffer_bps", 15),
         ("risk_lambda", 1),
         ("edge_threshold_basis_points", -20),
         ("exit_hysteresis_bps", 5),
@@ -543,39 +547,41 @@ fn builder_accepts_nested_order_shape_without_flat_order_projection() {
 #[test]
 fn builder_requires_pricing_model_fields() {
     let raw = toml::toml! {
-        strategy_id = "BINARYORACLEEDGETAKER-001"
-        client_id = "POLYMARKET"
-        warmup_tick_count = 20
-        reentry_cooldown_secs = 30
-        order_notional_target = 1000.0
-        maximum_position_notional = 1000.0
-        book_impact_cap_bps = 15
-        risk_lambda = 0.5
-        edge_threshold_basis_points = -20
-        exit_hysteresis_bps = 5
-        forced_flat_stale_reference_ms = 1500
-        forced_flat_thin_book_min_liquidity = 100.0
-        lead_agreement_min_corr = 0.8
-        lead_jitter_max_ms = 250
+            strategy_id = "BINARYORACLEEDGETAKER-001"
+            client_id = "POLYMARKET"
+            warmup_tick_count = 20
+            reentry_cooldown_secs = 30
+            order_notional_target = 1000.0
+            maximum_position_notional = 1000.0
+            book_impact_cap_bps = 15
+    vwap_depth_limit_bps = 15
+    slippage_buffer_bps = 15
+            risk_lambda = 0.5
+            edge_threshold_basis_points = -20
+            exit_hysteresis_bps = 5
+            forced_flat_stale_reference_ms = 1500
+            forced_flat_thin_book_min_liquidity = 100.0
+            lead_agreement_min_corr = 0.8
+            lead_jitter_max_ms = 250
 
-        [entry_order]
-        side = "buy"
-        position_side = "long"
-        order_type = "limit"
-        time_in_force = "fok"
-        is_post_only = false
-        is_reduce_only = false
-        is_quote_quantity = false
+            [entry_order]
+            side = "buy"
+            position_side = "long"
+            order_type = "limit"
+            time_in_force = "fok"
+            is_post_only = false
+            is_reduce_only = false
+            is_quote_quantity = false
 
-        [exit_order]
-        side = "sell"
-        position_side = "long"
-        order_type = "market"
-        time_in_force = "ioc"
-        is_post_only = false
-        is_reduce_only = false
-        is_quote_quantity = false
-    }
+            [exit_order]
+            side = "sell"
+            position_side = "long"
+            order_type = "market"
+            time_in_force = "ioc"
+            is_post_only = false
+            is_reduce_only = false
+            is_quote_quantity = false
+        }
     .into();
     let mut errors = Vec::new();
 

@@ -62,6 +62,8 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             order_notional_target: f64 => Float;
             maximum_position_notional: f64 => Float;
             book_impact_cap_bps: u64 => Integer;
+            vwap_depth_limit_bps: u64 => Integer;
+            slippage_buffer_bps: u64 => Integer;
             risk_lambda: f64 => Float;
             edge_threshold_basis_points: i64 => Integer;
             exit_hysteresis_bps: i64 => Integer;

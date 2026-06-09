@@ -43,6 +43,10 @@ use crate::{
         realized_volatility_block_reason_evidence_label,
         realized_volatility_pricing_component_evidence_label,
     },
+    bolt_v3_executable_edge::{
+        ExecutableEdgeBlockReason, ExecutableEdgeInputs, ExecutableEdgeResult,
+        evaluate_executable_edge, price_exact_size_vwap,
+    },
     bolt_v3_market_families::{
         self, FairProbabilityInputs, MarketSelectionOutcome, OutcomeSide,
         SelectedMarketSourceIdentity,
@@ -328,6 +332,20 @@ fn visible_book_depth_side_for_order(
         (OrderSide::Sell, false) | (OrderSide::Buy, true) => Some(OrderSide::Sell),
         _ => None,
     }
+}
+
+fn executable_edge_vwap_price(result: Option<ExecutableEdgeResult>) -> Option<f64> {
+    result.and_then(|result| result.cost_breakdown.vwap_price)
+}
+
+fn executable_edge_fee_bps(result: Option<ExecutableEdgeResult>) -> Option<f64> {
+    let result = result?;
+    let gross_cost_cents = result.cost_breakdown.gross_cost_cents;
+    if !is_positive_finite(gross_cost_cents) {
+        return None;
+    }
+    Some(result.cost_breakdown.fee_cost_cents / gross_cost_cents * BPS_DENOMINATOR)
+        .filter(|value| is_non_negative_finite(*value))
 }
 
 fn taker_pricing_config(config: &BinaryOracleEdgeTakerConfig) -> TakerPricingConfig<'_> {
@@ -1932,10 +1950,10 @@ impl BinaryOracleEdgeTaker {
             lead_agreement_corr: self.pricing.last_lead_agreement_corr,
             fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
-            up_fee_bps: self.entry_fee_bps(OutcomeSide::Up),
-            down_fee_bps: self.entry_fee_bps(OutcomeSide::Down),
-            up_entry_cost: self.executable_entry_cost(OutcomeSide::Up),
-            down_entry_cost: self.executable_entry_cost(OutcomeSide::Down),
+            up_fee_bps: executable_edge_fee_bps(evaluation.up_executable_edge),
+            down_fee_bps: executable_edge_fee_bps(evaluation.down_executable_edge),
+            up_entry_cost: executable_edge_vwap_price(evaluation.up_executable_edge),
+            down_entry_cost: executable_edge_vwap_price(evaluation.down_executable_edge),
             up_worst_case_ev_bps: evaluation.up_worst_case_ev_bps,
             down_worst_case_ev_bps: evaluation.down_worst_case_ev_bps,
             expected_ev_per_notional: evaluation.expected_ev_per_notional,
@@ -2093,6 +2111,7 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
+    #[cfg(test)]
     fn entry_fee_bps(&self, side: OutcomeSide) -> Option<f64> {
         let entry_price = self.executable_entry_cost(side)?;
         self.entry_fee_bps_at_price(side, entry_price)
@@ -2193,6 +2212,42 @@ impl BinaryOracleEdgeTaker {
         let order_side = self.configured_entry_order_side().ok()?;
         let book = self.active_book_for_outcome(side);
         order_price_for_side(book, order_side, self.config.entry_order.is_post_only)
+    }
+
+    fn executable_edge_for_side(
+        &self,
+        side: OutcomeSide,
+        fair_probability_up: f64,
+        adjusted_probability_up: f64,
+        minimum_edge_bps: f64,
+    ) -> ExecutableEdgeResult {
+        let Ok(order_side) = self.configured_entry_order_side() else {
+            return ExecutableEdgeResult::blocked(
+                side,
+                ExecutableEdgeBlockReason::MissingOrderBook,
+            );
+        };
+        let book = self.active_book_for_outcome(side);
+        let fee_bps = price_exact_size_vwap(
+            book,
+            order_side,
+            self.config.order_notional_target,
+            self.config.vwap_depth_limit_bps,
+        )
+        .ok()
+        .and_then(|vwap| self.entry_fee_bps_at_price(side, vwap.vwap_price));
+        evaluate_executable_edge(&ExecutableEdgeInputs {
+            side,
+            fair_probability_up: Some(fair_probability_up),
+            adjusted_probability_up: Some(adjusted_probability_up),
+            edge_pricing_notional: self.config.order_notional_target,
+            order_side,
+            book: Some(book),
+            fee_bps,
+            vwap_depth_limit_bps: self.config.vwap_depth_limit_bps,
+            slippage_buffer_bps: self.config.slippage_buffer_bps,
+            minimum_edge_bps,
+        })
     }
 
     fn submission_entry_price(&self, side: OutcomeSide) -> Option<f64> {
@@ -4217,6 +4272,8 @@ impl BinaryOracleEdgeTaker {
             pricing_blocked_by: Vec::new(),
             fair_probability_up: None,
             uncertainty_band_probability: None,
+            up_executable_edge: None,
+            down_executable_edge: None,
             up_worst_case_ev_bps: None,
             down_worst_case_ev_bps: None,
             min_worst_case_ev_bps: None,
@@ -4250,41 +4307,76 @@ impl BinaryOracleEdgeTaker {
         };
         evaluation.fair_probability_up = Some(fair_probability_up);
 
-        let up_entry_cost = match self.executable_entry_cost(OutcomeSide::Up) {
-            Some(value) => value,
-            None => {
-                evaluation.pricing_blocked_by.push(
-                    EntryPricingBlockReason::ExecutableEntryCostUnavailable(OutcomeSide::Up),
-                );
-                return evaluation;
-            }
+        let Ok(order_side) = self.configured_entry_order_side() else {
+            evaluation.pricing_blocked_by.push(
+                EntryPricingBlockReason::ExecutableEntryCostUnavailable(OutcomeSide::Up),
+            );
+            evaluation.pricing_blocked_by.push(
+                EntryPricingBlockReason::ExecutableEntryCostUnavailable(OutcomeSide::Down),
+            );
+            return evaluation;
         };
-        let down_entry_cost = match self.executable_entry_cost(OutcomeSide::Down) {
-            Some(value) => value,
-            None => {
-                evaluation.pricing_blocked_by.push(
-                    EntryPricingBlockReason::ExecutableEntryCostUnavailable(OutcomeSide::Down),
-                );
-                return evaluation;
-            }
+        let up_vwap_probe = price_exact_size_vwap(
+            self.active_book_for_outcome(OutcomeSide::Up),
+            order_side,
+            self.config.order_notional_target,
+            self.config.vwap_depth_limit_bps,
+        );
+        let down_vwap_probe = price_exact_size_vwap(
+            self.active_book_for_outcome(OutcomeSide::Down),
+            order_side,
+            self.config.order_notional_target,
+            self.config.vwap_depth_limit_bps,
+        );
+        if let Err(reason) = up_vwap_probe {
+            evaluation.up_executable_edge =
+                Some(ExecutableEdgeResult::blocked(OutcomeSide::Up, reason));
+            push_executable_edge_pricing_block(
+                &mut evaluation.pricing_blocked_by,
+                OutcomeSide::Up,
+                Some(reason),
+            );
+        }
+        if let Err(reason) = down_vwap_probe {
+            evaluation.down_executable_edge =
+                Some(ExecutableEdgeResult::blocked(OutcomeSide::Down, reason));
+            push_executable_edge_pricing_block(
+                &mut evaluation.pricing_blocked_by,
+                OutcomeSide::Down,
+                Some(reason),
+            );
+        }
+        if !evaluation.pricing_blocked_by.is_empty() {
+            return evaluation;
+        }
+        let up_vwap = up_vwap_probe.expect("up VWAP probe checked above");
+        let down_vwap = down_vwap_probe.expect("down VWAP probe checked above");
+        let Some(up_fee_bps) = self.entry_fee_bps_at_price(OutcomeSide::Up, up_vwap.vwap_price)
+        else {
+            evaluation
+                .pricing_blocked_by
+                .push(EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Up));
+            evaluation.up_executable_edge = Some(self.executable_edge_for_side(
+                OutcomeSide::Up,
+                fair_probability_up,
+                fair_probability_up,
+                pricing_inputs.theta_scaled_min_edge_bps,
+            ));
+            return evaluation;
         };
-        let up_fee_bps = match self.entry_fee_bps_at_price(OutcomeSide::Up, up_entry_cost) {
-            Some(value) => value,
-            None => {
-                evaluation
-                    .pricing_blocked_by
-                    .push(EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Up));
-                return evaluation;
-            }
-        };
-        let down_fee_bps = match self.entry_fee_bps_at_price(OutcomeSide::Down, down_entry_cost) {
-            Some(value) => value,
-            None => {
-                evaluation
-                    .pricing_blocked_by
-                    .push(EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Down));
-                return evaluation;
-            }
+        let Some(down_fee_bps) =
+            self.entry_fee_bps_at_price(OutcomeSide::Down, down_vwap.vwap_price)
+        else {
+            evaluation
+                .pricing_blocked_by
+                .push(EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Down));
+            evaluation.down_executable_edge = Some(self.executable_edge_for_side(
+                OutcomeSide::Down,
+                fair_probability_up,
+                fair_probability_up,
+                pricing_inputs.theta_scaled_min_edge_bps,
+            ));
+            return evaluation;
         };
         let uncertainty_band_probability =
             match self.current_uncertainty_band_probability_at(now_ms, up_fee_bps, down_fee_bps) {
@@ -4298,39 +4390,36 @@ impl BinaryOracleEdgeTaker {
             };
         evaluation.uncertainty_band_probability = Some(uncertainty_band_probability);
 
-        evaluation.up_worst_case_ev_bps = compute_worst_case_ev_bps(
+        let up_adjusted_probability_up =
+            clamp_probability(fair_probability_up - uncertainty_band_probability);
+        let down_adjusted_probability_up =
+            clamp_probability(fair_probability_up + uncertainty_band_probability);
+        let up_executable_edge = self.executable_edge_for_side(
             OutcomeSide::Up,
-            &WorstCaseEvInputs {
-                fair_probability: Some(fair_probability_up),
-                uncertainty_band_probability,
-                executable_entry_cost: up_entry_cost,
-                fee_bps: Some(up_fee_bps),
-            },
+            fair_probability_up,
+            up_adjusted_probability_up,
+            pricing_inputs.theta_scaled_min_edge_bps,
         );
-        if evaluation.up_worst_case_ev_bps.is_none() {
-            evaluation
-                .pricing_blocked_by
-                .push(EntryPricingBlockReason::WorstCaseEvUnavailable(
-                    OutcomeSide::Up,
-                ));
-        }
-
-        evaluation.down_worst_case_ev_bps = compute_worst_case_ev_bps(
+        let down_executable_edge = self.executable_edge_for_side(
             OutcomeSide::Down,
-            &WorstCaseEvInputs {
-                fair_probability: Some(fair_probability_up),
-                uncertainty_band_probability,
-                executable_entry_cost: down_entry_cost,
-                fee_bps: Some(down_fee_bps),
-            },
+            fair_probability_up,
+            down_adjusted_probability_up,
+            pricing_inputs.theta_scaled_min_edge_bps,
         );
-        if evaluation.down_worst_case_ev_bps.is_none() {
-            evaluation
-                .pricing_blocked_by
-                .push(EntryPricingBlockReason::WorstCaseEvUnavailable(
-                    OutcomeSide::Down,
-                ));
-        }
+        evaluation.up_worst_case_ev_bps = Some(up_executable_edge.edge_bps);
+        evaluation.down_worst_case_ev_bps = Some(down_executable_edge.edge_bps);
+        evaluation.up_executable_edge = Some(up_executable_edge);
+        evaluation.down_executable_edge = Some(down_executable_edge);
+        push_executable_edge_pricing_block(
+            &mut evaluation.pricing_blocked_by,
+            OutcomeSide::Up,
+            up_executable_edge.block_reason,
+        );
+        push_executable_edge_pricing_block(
+            &mut evaluation.pricing_blocked_by,
+            OutcomeSide::Down,
+            down_executable_edge.block_reason,
+        );
 
         if !evaluation.pricing_blocked_by.is_empty() {
             return evaluation;
@@ -5258,7 +5347,7 @@ enum EntryPricingBlockReason {
     FairProbabilityUnavailable,
     FeeUnavailable(OutcomeSide),
     ExecutableEntryCostUnavailable(OutcomeSide),
-    WorstCaseEvUnavailable(OutcomeSide),
+    ExecutableEdgeUnavailable(OutcomeSide, ExecutableEdgeBlockReason),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5302,12 +5391,41 @@ fn entry_pricing_block_reason_from_taker(
     }
 }
 
+fn push_executable_edge_pricing_block(
+    reasons: &mut Vec<EntryPricingBlockReason>,
+    side: OutcomeSide,
+    reason: Option<ExecutableEdgeBlockReason>,
+) {
+    match reason {
+        Some(ExecutableEdgeBlockReason::FeeUnavailable) => {
+            reasons.push(EntryPricingBlockReason::FeeUnavailable(side));
+        }
+        Some(
+            reason @ (ExecutableEdgeBlockReason::MissingOrderBook
+            | ExecutableEdgeBlockReason::InsufficientDepth
+            | ExecutableEdgeBlockReason::InvalidProbability
+            | ExecutableEdgeBlockReason::InvalidCost),
+        ) => {
+            reasons.push(EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                side, reason,
+            ));
+        }
+        Some(
+            ExecutableEdgeBlockReason::EdgeBelowThreshold
+            | ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge,
+        )
+        | None => {}
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct EntryEvaluation {
     gate: EntryGateDecision,
     pricing_blocked_by: Vec<EntryPricingBlockReason>,
     fair_probability_up: Option<f64>,
     uncertainty_band_probability: Option<f64>,
+    up_executable_edge: Option<ExecutableEdgeResult>,
+    down_executable_edge: Option<ExecutableEdgeResult>,
     up_worst_case_ev_bps: Option<f64>,
     down_worst_case_ev_bps: Option<f64>,
     min_worst_case_ev_bps: Option<f64>,

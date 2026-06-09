@@ -316,7 +316,16 @@ impl IvQueryStateHandle {
     }
 
     pub fn record_derived_output(&self, output: IvDerivedOutput) {
-        self.write_state().derived_outputs.push(output);
+        let mut state = self.write_state();
+        if let Some(existing) = state
+            .derived_outputs
+            .iter_mut()
+            .find(|existing| same_derived_output_cache_slot(existing, &output))
+        {
+            *existing = output;
+        } else {
+            state.derived_outputs.push(output);
+        }
     }
 
     pub fn set_projection_policies(&self, projection_policies: Vec<IvProjectionPolicy>) {
@@ -889,28 +898,85 @@ impl IvQueryHandle {
                     instrument_id,
                     helper_policy_id,
                     as_of_ns,
-                    ..
+                    inputs,
                 },
-            ) => {
-                let products = state
-                    .derived_outputs
-                    .iter()
-                    .filter(|derived| {
-                        derived.point.profile_id == query.profile_id
-                            && derived.point.instrument_id == *instrument_id
-                            && derived.helper_identity.helper_policy_id == *helper_policy_id
-                            && derived.point.ts_event_ns == *as_of_ns
-                    })
-                    .cloned()
-                    .map(|derived| IvQueryProduct::DerivedIv(Box::new(derived)))
-                    .collect::<Vec<_>>();
-                if products.is_empty() {
-                    self.find_product(query, state).map(|product| vec![product])
-                } else {
-                    Ok(products)
-                }
-            }
+            ) => self.find_derived_projection_products(
+                query,
+                state,
+                instrument_id,
+                helper_policy_id,
+                *as_of_ns,
+                inputs.as_deref(),
+            ),
             _ => self.find_product(query, state).map(|product| vec![product]),
+        }
+    }
+
+    fn find_derived_projection_products(
+        &self,
+        query: &IvProductQuery,
+        state: &IvQueryState,
+        instrument_id: &str,
+        helper_policy_id: &str,
+        as_of_ns: UnixNanos,
+        request_inputs: Option<&IvDerivedInputSet>,
+    ) -> Result<Vec<IvQueryProduct>, IvQueryError> {
+        if request_inputs.is_some() {
+            return self.find_product(query, state).map(|product| vec![product]);
+        }
+
+        let mut outputs = state
+            .derived_outputs
+            .iter()
+            .filter(|derived| {
+                derived_output_matches_query(
+                    derived,
+                    &query.profile_id,
+                    instrument_id,
+                    helper_policy_id,
+                    as_of_ns,
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut derived_any = false;
+        let mut first_derivation_error = None;
+        for inputs in state.derived_inputs.iter().filter(|inputs| {
+            inputs.profile_id == query.profile_id
+                && inputs.instrument_id == instrument_id
+                && inputs.as_of_ns == as_of_ns
+        }) {
+            if outputs
+                .iter()
+                .any(|output| derived_output_matches_input(output, inputs, helper_policy_id))
+            {
+                continue;
+            }
+            let output = match self.derive_iv_from_inputs(state, helper_policy_id, inputs.clone()) {
+                Ok(output) => output,
+                Err(IvQueryError::DerivationRejected) => {
+                    first_derivation_error.get_or_insert(IvQueryError::DerivationRejected);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            self.state.record_derived_output(output.clone());
+            outputs.push(output);
+            derived_any = true;
+        }
+
+        if derived_any {
+            self.enforce_retention_policy();
+        }
+
+        if outputs.is_empty() {
+            Err(first_derivation_error.unwrap_or(IvQueryError::ProductNotFound))
+        } else {
+            Ok(outputs
+                .into_iter()
+                .map(|derived| IvQueryProduct::DerivedIv(Box::new(derived)))
+                .collect())
         }
     }
 
@@ -923,8 +989,6 @@ impl IvQueryHandle {
         as_of_ns: UnixNanos,
         request_inputs: Option<&IvDerivedInputSet>,
     ) -> Result<IvQueryProduct, IvQueryError> {
-        let policy = select_helper_policy(&state.helper_policies, helper_policy_id)
-            .map_err(|_| IvQueryError::HelperPolicyNotFound)?;
         let inputs = if let Some(inputs) = request_inputs {
             if inputs.profile_id != query.profile_id
                 || inputs.instrument_id != instrument_id
@@ -945,6 +1009,18 @@ impl IvQueryHandle {
                 .cloned()
                 .ok_or(IvQueryError::DerivedInputNotFound)?
         };
+        self.derive_iv_from_inputs(state, helper_policy_id, inputs)
+            .map(|output| IvQueryProduct::DerivedIv(Box::new(output)))
+    }
+
+    fn derive_iv_from_inputs(
+        &self,
+        state: &IvQueryState,
+        helper_policy_id: &str,
+        inputs: IvDerivedInputSet,
+    ) -> Result<IvDerivedOutput, IvQueryError> {
+        let policy = select_helper_policy(&state.helper_policies, helper_policy_id)
+            .map_err(|_| IvQueryError::HelperPolicyNotFound)?;
         let Some(input_policy) = state
             .derived_input_policies
             .iter()
@@ -963,7 +1039,7 @@ impl IvQueryHandle {
                 }
             };
         match derive_iv(policy, inputs.clone()) {
-            Ok(output) => Ok(IvQueryProduct::DerivedIv(Box::new(output))),
+            Ok(output) => Ok(output),
             Err(error) => {
                 self.record_derived_rejection(&inputs, derive_reject_reason(&error));
                 Err(IvQueryError::DerivationRejected)
@@ -1129,6 +1205,43 @@ fn projection_inputs_from_products(
     } else {
         Ok(inputs)
     }
+}
+
+fn same_derived_output_cache_slot(left: &IvDerivedOutput, right: &IvDerivedOutput) -> bool {
+    left.point.profile_id == right.point.profile_id
+        && left.point.source_id == right.point.source_id
+        && left.point.instrument_id == right.point.instrument_id
+        && left.point.basis == right.point.basis
+        && left.point.convention == right.point.convention
+        && left.point.ts_event_ns == right.point.ts_event_ns
+        && left.helper_identity.helper_policy_id == right.helper_identity.helper_policy_id
+}
+
+fn derived_output_matches_query(
+    output: &IvDerivedOutput,
+    profile_id: &str,
+    instrument_id: &str,
+    helper_policy_id: &str,
+    as_of_ns: UnixNanos,
+) -> bool {
+    output.point.profile_id == profile_id
+        && output.point.instrument_id == instrument_id
+        && output.helper_identity.helper_policy_id == helper_policy_id
+        && output.point.ts_event_ns == as_of_ns
+}
+
+fn derived_output_matches_input(
+    output: &IvDerivedOutput,
+    inputs: &IvDerivedInputSet,
+    helper_policy_id: &str,
+) -> bool {
+    output.point.profile_id == inputs.profile_id
+        && output.point.source_id == inputs.source_id
+        && output.point.instrument_id == inputs.instrument_id
+        && output.point.basis == inputs.basis
+        && output.point.convention == inputs.convention
+        && output.point.ts_event_ns == inputs.as_of_ns
+        && output.helper_identity.helper_policy_id == helper_policy_id
 }
 
 fn project_or_fallback(

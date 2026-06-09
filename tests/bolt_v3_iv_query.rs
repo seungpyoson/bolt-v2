@@ -1040,6 +1040,88 @@ fn projected_scalar_derived_iv_query_aggregates_retained_outputs_for_quorum() {
 }
 
 #[test]
+fn projected_scalar_derived_iv_query_derives_profile_inputs_for_quorum_without_warm_cache() {
+    let mut projection_policy =
+        projection_policy_with_refs(2, None, None, Some("configured-quorum-policy"));
+    projection_policy.source_eligibility = vec![
+        "configured-source".to_string(),
+        "configured-backup-source".to_string(),
+    ];
+
+    let mut primary_inputs = complete_inputs();
+    primary_inputs.source_id = "configured-source".to_string();
+    primary_inputs.input_event_ids = vec!["configured-source-event".to_string()];
+    let mut backup_inputs = complete_inputs();
+    backup_inputs.source_id = "configured-backup-source".to_string();
+    backup_inputs.input_event_ids = vec!["configured-backup-source-event".to_string()];
+
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_retention_policy(retention_policy(4, 2))
+    .with_helper_policies(vec![helper_policy()])
+    .with_derived_input_policies(vec![query_supplied_derived_input_policy(
+        "configured-derived-input-policy",
+    )])
+    .with_derived_inputs(vec![primary_inputs, backup_inputs])
+    .with_projection_policies(vec![projection_policy])
+    .with_quorum_policies(vec![IvQuorumPolicy {
+        policy_id: "configured-quorum-policy".to_string(),
+        minimum_sources: 2,
+        eligible_sources: vec![
+            "configured-source".to_string(),
+            "configured-backup-source".to_string(),
+        ],
+        agreement_band: 0.05,
+        tie_break: IvQuorumTieBreak::Mean,
+    }]);
+
+    let product = handle
+        .query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(IvSelector::DerivedIvQuery {
+                    instrument_id: "configured-option-instrument".to_string(),
+                    helper_policy_id: "configured-helper-policy".to_string(),
+                    as_of_ns: UnixNanos::new(2_000),
+                    inputs: None,
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::ProjectedScalarIv(projected) = product else {
+        panic!("expected projected scalar IV product");
+    };
+    assert!(
+        projected
+            .provenance
+            .policy_decisions
+            .iter()
+            .any(|decision| {
+                matches!(
+                    decision,
+                    IvPolicyDecision::QuorumDecision {
+                        participating_sources,
+                        ..
+                    } if participating_sources == &vec![
+                        "configured-source".to_string(),
+                        "configured-backup-source".to_string(),
+                    ]
+                )
+            })
+    );
+
+    assert_eq!(handle.state_handle().derived_outputs().len(), 2);
+}
+
+#[test]
 fn current_generation_source_health_lookup_ignores_stale_history() {
     let mut store = IvStore::empty();
     store
@@ -1484,6 +1566,45 @@ fn derived_iv_outputs_are_retained_by_profile_memory_bounds() {
     let retained = handle.state_handle().derived_outputs();
     assert_eq!(retained.len(), 1);
     assert_eq!(retained[0].point.ts_event_ns, UnixNanos::new(2_010));
+}
+
+#[test]
+fn derived_iv_query_deduplicates_cached_output_for_same_source_helper_and_timestamp() {
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_retention_policy(retention_policy(4, 2))
+    .with_helper_policies(vec![helper_policy()])
+    .with_derived_input_policies(vec![query_supplied_derived_input_policy(
+        "configured-derived-input-policy",
+    )])
+    .with_derived_inputs(vec![complete_inputs()]);
+
+    let query = IvQuery::Product(IvProductQuery {
+        strategy_id: "configured-strategy".to_string(),
+        profile_id: "configured-profile".to_string(),
+        product_kind: IvProductKind::DerivedIv,
+        selector: IvSelector::DerivedIvQuery {
+            instrument_id: "configured-option-instrument".to_string(),
+            helper_policy_id: "configured-helper-policy".to_string(),
+            as_of_ns: UnixNanos::new(2_000),
+            inputs: None,
+        },
+    });
+
+    handle.query(&query).unwrap();
+    handle.query(&query).unwrap();
+
+    let retained = handle.state_handle().derived_outputs();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].point.source_id, "configured-source");
+    assert_eq!(
+        retained[0].helper_identity.helper_policy_id,
+        "configured-helper-policy"
+    );
+    assert_eq!(retained[0].point.ts_event_ns, UnixNanos::new(2_000));
 }
 
 #[test]

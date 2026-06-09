@@ -19,6 +19,7 @@ use crate::{
     artifact_index_commit_proof::ArtifactIndexCommitProofReport,
     backfill_accepted_tranche::{BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheStatus},
     backfill_execution_plan::{BackfillExecutionPlan, BackfillExecutionPlanStatus},
+    run_manifest::ArtifactSubpath,
     source_catalog_mapping_readiness::{
         SourceCatalogMappingReadinessReport, SourceCatalogMappingReadinessStatus,
     },
@@ -99,6 +100,7 @@ pub enum BackfillExecutionReadinessBlocker {
     ArtifactIndexCommitProofRequiredButMissing,
     ArtifactIndexCommitProofKindRequiredButMissing,
     ArtifactIndexCommitProofKindMismatch,
+    ArtifactIndexCommitProofArtifactRootMismatch,
     ArtifactIndexCommitMechanicsUnproven,
     ArtifactIndexProducerIamScopeUnproven,
     SourceSelectionReadinessRequiredButMissing,
@@ -441,6 +443,14 @@ pub fn evaluate_backfill_execution_readiness(
                 if !artifact_index_commit_mechanics_proven(proof_report) {
                     blockers.push(
                         BackfillExecutionReadinessBlocker::ArtifactIndexCommitMechanicsUnproven,
+                    );
+                }
+                if !artifact_index_proof_root_matches_plan_output(
+                    &plan.output_prefix,
+                    &proof_report.artifact_root,
+                ) {
+                    blockers.push(
+                        BackfillExecutionReadinessBlocker::ArtifactIndexCommitProofArtifactRootMismatch,
                     );
                 }
                 if !proof_report.producer_iam_scope_proven {
@@ -832,6 +842,41 @@ fn artifact_index_commit_mechanics_proven(report: &ArtifactIndexCommitProofRepor
         && report.stale_etag_update_rejected
         && report.latest_pointer_readback_proven
         && report.snapshot_readback_proven
+}
+
+fn artifact_index_proof_root_matches_plan_output(
+    plan_output_prefix: &str,
+    proof_artifact_root: &str,
+) -> bool {
+    let Some(plan_artifact_root) = artifact_root_from_backtests_output_prefix(plan_output_prefix)
+    else {
+        return false;
+    };
+    let plan_artifact_root = plan_artifact_root.trim_end_matches('/');
+    let proof_artifact_root = proof_artifact_root.trim_end_matches('/');
+    let proof_sandbox_root = format!(
+        "{}/{}/proofs",
+        plan_artifact_root,
+        ArtifactSubpath::ArtifactIndex.as_str()
+    );
+    proof_artifact_root == plan_artifact_root
+        || uri_is_under_root(proof_artifact_root, &proof_sandbox_root)
+}
+
+fn artifact_root_from_backtests_output_prefix(output_prefix: &str) -> Option<&str> {
+    let output_prefix = output_prefix.trim_end_matches('/');
+    let backtests_subpath = format!("/{}/", ArtifactSubpath::Backtests.as_str());
+    let (artifact_root, run_path) = output_prefix.split_once(&backtests_subpath)?;
+    (!artifact_root.is_empty() && !run_path.is_empty()).then_some(artifact_root)
+}
+
+fn uri_is_under_root(uri: &str, root: &str) -> bool {
+    let uri = uri.trim_end_matches('/');
+    let root = root.trim_end_matches('/');
+    uri == root
+        || uri
+            .strip_prefix(root)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 fn source_selection_readiness_proven(report: &SourceSelectionReadinessReport) -> bool {

@@ -33,6 +33,16 @@
     ],
     "conclusion": "The per-kind /bolt/artifact-index producer namespace is still absent; only the broad artifact-store credential pair is discoverable."
   },
+  "current_state_probe_2026_06_09T095157Z": {
+    "observed_at_utc": "2026-06-09T09:51:57Z",
+    "credential_values_read": false,
+    "aws_mutation_performed": false,
+    "commands": [
+      "aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/bolt/artifact-index --query 'Parameters[].Name' --output json"
+    ],
+    "artifact_index_parameter_names": [],
+    "conclusion": "The per-kind /bolt/artifact-index producer namespace remains absent in current SSM parameter metadata."
+  },
   "already_proven": {
     "direct_s3_commit_mechanics_report": "repo://specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/artifact-index-commit-proof-report.backtesting-engine-006-direct-s3.2026-06-08.json",
     "direct_s3_commit_proven": true,

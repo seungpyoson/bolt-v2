@@ -209,6 +209,77 @@ fn execution_readiness_blocks_index_backfill_when_producer_iam_scope_is_unproven
 }
 
 #[test]
+fn execution_readiness_blocks_index_backfill_when_artifact_index_root_mismatches_plan_output() {
+    let tranche = accepted_tranche();
+    let plan = matching_execution_plan(&tranche);
+    let mut proof_report = artifact_index_commit_proof_report(true);
+    proof_report.artifact_root = "s3://different-artifacts".to_string();
+
+    let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+        readiness_id: "synthetic-readiness",
+        accepted_tranche_manifest_hash: "synthetic-tranche-file-hash",
+        tranche: &tranche,
+        execution_plan_hash: "synthetic-plan-file-hash",
+        plan: &plan,
+        required_table_family: "trades",
+        required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
+        supported_data_paths: supported_data_paths(),
+        artifact_index_commit_required: true,
+        required_artifact_index_kind: Some(ArtifactKind::Backtests),
+        artifact_index_commit_proof_report_hash: Some("synthetic-artifact-index-proof-hash"),
+        artifact_index_commit_proof_report: Some(&proof_report),
+        source_selection_readiness_required: false,
+        source_selection_readiness_report_hash: None,
+        source_selection_readiness_report: None,
+        source_catalog_mapping_readiness_required: false,
+        source_catalog_mapping_readiness_report_hash: None,
+        source_catalog_mapping_readiness_report: None,
+    });
+
+    assert_eq!(report.status, BackfillExecutionReadinessStatus::Blocked);
+    assert!(report.blockers.contains(
+        &BackfillExecutionReadinessBlocker::ArtifactIndexCommitProofArtifactRootMismatch
+    ));
+}
+
+#[test]
+fn execution_readiness_accepts_artifact_index_proof_sandbox_under_plan_artifact_root() {
+    let tranche = accepted_tranche();
+    let plan = matching_execution_plan(&tranche);
+    let mut proof_report = artifact_index_commit_proof_report(true);
+    proof_report.artifact_root =
+        "s3://synthetic-artifacts/artifact-index/proofs/synthetic-artifact-index-proof".to_string();
+
+    let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+        readiness_id: "synthetic-readiness",
+        accepted_tranche_manifest_hash: "synthetic-tranche-file-hash",
+        tranche: &tranche,
+        execution_plan_hash: "synthetic-plan-file-hash",
+        plan: &plan,
+        required_table_family: "trades",
+        required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
+        supported_data_paths: supported_data_paths(),
+        artifact_index_commit_required: true,
+        required_artifact_index_kind: Some(ArtifactKind::Backtests),
+        artifact_index_commit_proof_report_hash: Some("synthetic-artifact-index-proof-hash"),
+        artifact_index_commit_proof_report: Some(&proof_report),
+        source_selection_readiness_required: false,
+        source_selection_readiness_report_hash: None,
+        source_selection_readiness_report: None,
+        source_catalog_mapping_readiness_required: false,
+        source_catalog_mapping_readiness_report_hash: None,
+        source_catalog_mapping_readiness_report: None,
+    });
+
+    assert_eq!(report.status, BackfillExecutionReadinessStatus::Ready);
+    assert!(!report.blockers.contains(
+        &BackfillExecutionReadinessBlocker::ArtifactIndexCommitProofArtifactRootMismatch
+    ));
+}
+
+#[test]
 fn execution_readiness_is_ready_when_required_source_selection_readiness_matches() {
     let tranche = accepted_tranche();
     let plan = matching_execution_plan(&tranche);

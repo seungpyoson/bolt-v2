@@ -2738,3 +2738,50 @@ Current conclusion:
   source-selection readiness.
 - It does not close `BACKTESTING_ENGINE-022` or authorize broad
   PMXT/Polymarket backfill.
+
+## 2026-06-09 Artifact Index proof root-binding checkpoint
+
+Root cause addressed:
+
+- Execution readiness required Artifact Index commit proof mechanics,
+  producer IAM scope, and artifact kind.
+- It did not verify that the proof's `artifact_root` belonged to the same
+  configured artifact root as the execution plan's `output_prefix`.
+- A stale proof from a different configured artifact root could therefore
+  authorize an indexed execution plan for the wrong root if all other proof
+  booleans matched.
+
+Change:
+
+- Execution readiness now blocks with
+  `artifact_index_commit_proof_artifact_root_mismatch` when an Artifact Index
+  proof root is neither the plan's configured artifact root nor an
+  `artifact-index/proofs` sandbox under that same root.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_execution_readiness execution_readiness_blocks_index_backfill_when_artifact_index_root_mismatches_plan_output -- --nocapture`
+  failed because the final execution-readiness blocker did not exist.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_execution_readiness execution_readiness_blocks_index_backfill_when_artifact_index_root_mismatches_plan_output -- --nocapture`
+  passed after adding the root-boundary check.
+- RED/GREEN refinement:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_execution_readiness execution_readiness_accepts_artifact_index_proof_sandbox_under_plan_artifact_root -- --nocapture`
+  first failed because same-root proof sandboxes were too strictly rejected,
+  then passed after deriving the configured root from the plan output prefix.
+
+Current external BTE-006 audit:
+
+- A fresh read-only SSM metadata probe at `2026-06-09T09:51:57Z` returned no
+  parameter names under `/bolt/artifact-index`.
+- No credential values were read and no AWS mutation was performed.
+- The observation is recorded in
+  `reference/artifact-index-producer-iam-closeout-plan.backtesting-engine-006.2026-06-09.json`.
+
+Current conclusion:
+
+- This closes a generic final-gate bypass for indexed execution readiness.
+- It does not close `BACKTESTING_ENGINE-006`: per-kind producer IAM scope or an
+  approved coordinator/table format is still required before relying on
+  Artifact Index producer commits for broad backfill.

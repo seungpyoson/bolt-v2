@@ -132,11 +132,12 @@
   },
   "performance_evidence": {
     "event_count_ledger_command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin first_proof_event_count_ledger -- --spec /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/event-count-ledger.toml",
+    "event_count_ledger_command_current_contract_note": "The command remains historical evidence for the regenerated artifact. Current first_proof_event_count_ledger specs must include TOML-owned max_source_parquet_bytes and reject oversized sources before Parquet reader construction.",
     "event_count_ledger_wall_seconds_observed": 90.27,
     "selected_source_command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin selected_source_slice -- --spec /private/tmp/bte-pmxt-current-rowgroup-proof-2026-06-08/selected-source.toml",
     "selected_source_wall_seconds_observed": 18.93,
     "previous_full_projection_wall_seconds": 218.96,
-    "finding": "The only current full-object pass is the bounded two-column event-count ledger. The selected-source stage consumes selector-carried source_row_groups and projected 1 of 62 row groups without the historical asset-column rescan."
+    "finding": "The only current full-object pass is the explicitly byte-budgeted two-column event-count ledger. The selected-source stage consumes selector-carried source_row_groups and projected 1 of 62 row groups without the historical asset-column rescan."
   },
   "current_code_reconciliation": {
     "status": "current_artifact_regenerated_with_selector_source_row_groups",

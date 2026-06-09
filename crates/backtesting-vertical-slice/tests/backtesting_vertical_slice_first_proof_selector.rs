@@ -244,11 +244,15 @@ fn first_proof_event_count_ledger_scans_configured_parquet_columns() {
     let ledger_path = dir.path().join("event-count-ledger.json");
     let spec_path = dir.path().join("ledger.toml");
     write_event_count_source_parquet(&source_path);
+    let max_source_parquet_bytes = std::fs::metadata(&source_path)
+        .expect("source parquet metadata")
+        .len();
     std::fs::write(
         &spec_path,
         format!(
             r#"source_parquet_path = "{}"
 output_path = "{}"
+max_source_parquet_bytes = {max_source_parquet_bytes}
 asset_id_column = "asset"
 event_family_column = "event_type"
 "#,
@@ -320,11 +324,15 @@ fn first_proof_event_count_ledger_cli_writes_artifact_from_config_owned_spec() {
     let ledger_path = dir.path().join("event-count-ledger.json");
     let spec_path = dir.path().join("ledger.toml");
     write_event_count_source_parquet(&source_path);
+    let max_source_parquet_bytes = std::fs::metadata(&source_path)
+        .expect("source parquet metadata")
+        .len();
     std::fs::write(
         &spec_path,
         format!(
             r#"source_parquet_path = "{}"
 output_path = "{}"
+max_source_parquet_bytes = {max_source_parquet_bytes}
 asset_id_column = "asset"
 event_family_column = "event_type"
 "#,
@@ -357,6 +365,41 @@ event_family_column = "event_type"
         serde_json::from_slice(&std::fs::read(ledger_path).expect("read ledger"))
             .expect("ledger json");
     assert_eq!(ledger.source_rows, 7);
+}
+
+#[test]
+fn first_proof_event_count_ledger_rejects_source_above_configured_byte_budget_before_output() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let source_path = dir.path().join("source.parquet");
+    let ledger_path = dir.path().join("event-count-ledger.json");
+    let spec_path = dir.path().join("ledger.toml");
+    write_event_count_source_parquet(&source_path);
+    std::fs::write(
+        &spec_path,
+        format!(
+            r#"source_parquet_path = "{}"
+output_path = "{}"
+max_source_parquet_bytes = 1
+asset_id_column = "asset"
+event_family_column = "event_type"
+"#,
+            source_path.display(),
+            ledger_path.display()
+        ),
+    )
+    .expect("write ledger spec");
+
+    let err = write_first_proof_event_count_ledger_from_spec_file(&spec_path)
+        .expect_err("source above budget must be rejected");
+
+    assert!(
+        err.to_string().contains("exceeds max_source_parquet_bytes"),
+        "{err}"
+    );
+    assert!(
+        !ledger_path.exists(),
+        "oversized source must be rejected before output"
+    );
 }
 
 fn count(asset_id: &str, event_family: &str, rows: u64) -> AssetEventCount {

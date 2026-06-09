@@ -64,6 +64,7 @@ pub struct FirstProofEventCountLedgerReport {
 pub struct FirstProofEventCountLedgerSpec {
     pub source_parquet_path: PathBuf,
     pub output_path: PathBuf,
+    pub max_source_parquet_bytes: u64,
     pub asset_id_column: String,
     pub event_family_column: String,
 }
@@ -218,6 +219,15 @@ pub enum FirstProofSelectorError {
         path: String,
         error: String,
     },
+    StatSourceParquet {
+        path: String,
+        error: String,
+    },
+    InvalidSourceParquetByteBudget,
+    SourceParquetByteBudgetExceeded {
+        source_parquet_bytes: u64,
+        max_source_parquet_bytes: u64,
+    },
     BuildSourceParquetReader {
         path: String,
         error: String,
@@ -277,6 +287,20 @@ impl fmt::Display for FirstProofSelectorError {
             Self::ReadSourceParquet { path, error } => {
                 write!(f, "read first-proof source parquet {path}: {error}")
             }
+            Self::StatSourceParquet { path, error } => {
+                write!(f, "stat first-proof source parquet {path}: {error}")
+            }
+            Self::InvalidSourceParquetByteBudget => write!(
+                f,
+                "first-proof event-count ledger max_source_parquet_bytes must be positive"
+            ),
+            Self::SourceParquetByteBudgetExceeded {
+                source_parquet_bytes,
+                max_source_parquet_bytes,
+            } => write!(
+                f,
+                "first-proof source parquet byte length {source_parquet_bytes} exceeds max_source_parquet_bytes {max_source_parquet_bytes}"
+            ),
             Self::BuildSourceParquetReader { path, error } => {
                 write!(f, "build first-proof source parquet reader {path}: {error}")
             }
@@ -504,6 +528,21 @@ pub fn build_first_proof_event_count_ledger_from_parquet(
     spec: &FirstProofEventCountLedgerSpec,
 ) -> Result<FirstProofEventCountLedgerReport, FirstProofSelectorError> {
     let source_path = spec.source_parquet_path.display().to_string();
+    if spec.max_source_parquet_bytes == 0 {
+        return Err(FirstProofSelectorError::InvalidSourceParquetByteBudget);
+    }
+    let source_parquet_bytes = fs::metadata(&spec.source_parquet_path)
+        .map_err(|error| FirstProofSelectorError::StatSourceParquet {
+            path: source_path.clone(),
+            error: error.to_string(),
+        })?
+        .len();
+    if source_parquet_bytes > spec.max_source_parquet_bytes {
+        return Err(FirstProofSelectorError::SourceParquetByteBudgetExceeded {
+            source_parquet_bytes,
+            max_source_parquet_bytes: spec.max_source_parquet_bytes,
+        });
+    }
     let file = File::open(&spec.source_parquet_path).map_err(|error| {
         FirstProofSelectorError::ReadSourceParquet {
             path: source_path.clone(),

@@ -13,8 +13,8 @@
       "The accepted source proof is still pending; payload work before source acceptance can produce expensive artifacts that cannot become canonical.",
       "Standard pinned NT BacktestNode catalog replay does not currently expose timed InstrumentAny instrument-definition replay, so full L2 over tick-size-changing assets would overclaim correctness."
     ],
-    "current_bounded_improvement": "The current one-off selector path records source_row_groups in the event-count ledger and selector report, selected_source_slice rejects sources above TOML-owned max_source_parquet_bytes before full-file hashing, and selected_source_slice projects only the selector row groups with ParquetRecordBatchReaderBuilder.with_row_groups.",
-    "remaining_efficiency_gap": "first_proof_event_count_ledger still performs a full two-column scan of the accepted one-hour source object to build event counts and source_row_groups. That is acceptable for a bounded proof, not for broad backfill; broad planning still needs manifest/index-owned coverage and row-group/predicate metadata before payload work."
+    "current_bounded_improvement": "The current one-off selector path records source_row_groups in the event-count ledger and selector report, first_proof_event_count_ledger rejects sources above TOML-owned max_source_parquet_bytes before Parquet reader construction, selected_source_slice rejects sources above TOML-owned max_source_parquet_bytes before full-file hashing, and selected_source_slice projects only the selector row groups with ParquetRecordBatchReaderBuilder.with_row_groups.",
+    "remaining_efficiency_gap": "The bounded first-proof event-count ledger still performs a two-column scan only when the configured source byte budget admits it. Broad planning still must not use this as a discovery mechanism across many PMXT objects; it needs manifest/index-owned coverage and row-group/predicate metadata before payload work."
   },
   "external_source_evidence": {
     "polymarket_official_api": {
@@ -98,7 +98,11 @@
     "bounded_full_object_work": [
       {
         "path": "repo://crates/backtesting-vertical-slice/src/first_proof_selector.rs",
-        "evidence": "build_first_proof_event_count_ledger_from_parquet projects only asset_id and event_family columns but reads all row groups to build event counts and source_row_groups."
+        "evidence": "build_first_proof_event_count_ledger_from_parquet now requires TOML-owned max_source_parquet_bytes, stats the source file, and rejects oversized source parquet before Parquet reader construction."
+      },
+      {
+        "path": "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_first_proof_selector.rs",
+        "evidence": "first_proof_event_count_ledger_rejects_source_above_configured_byte_budget_before_output proves the event-count ledger refuses an oversized source before writing output."
       },
       {
         "path": "repo://crates/backtesting-vertical-slice/src/selected_source_slice.rs",
@@ -121,7 +125,7 @@
     "Keep the first gate manifest/index-only: coverage, freshness, completeness, bytes, object count, and cost must be recorded before payload download.",
     "Replace broad full-object hashing in planning/projection with accepted object hashes from staging or Artifact Index records; full payload reads belong only inside bounded accepted tranches.",
     "Carry object-level row-group or predicate metadata from the accepted source proof into the execution plan so selected-source projection does not rediscover it by rescanning payloads.",
-    "Set explicit object byte, row count, projected row-group count, and wall-time budgets in the accepted tranche plan; selected_source_slice now enforces its source parquet byte budget before full-file hashing.",
+    "Set explicit object byte, row count, projected row-group count, and wall-time budgets in the accepted tranche plan; first_proof_event_count_ledger and selected_source_slice now enforce source parquet byte budgets before payload-scale work.",
     "Prove dynamic tick-size replay through NT BacktestNode/catalog, or accept a source-proof-bound no-tick-size-change exclusion policy before full L2 replay claims; generic SourceProofReport L2Replay acceptance now requires l2_replay_evidence.no_tick_size_change_universe_ref or l2_replay_evidence.timed_instrument_epoch_replay_ref.",
     "Use GitHub CI as the broad verification gate for committed changes; avoid broad local cargo test runs as the default verification path."
   ],

@@ -10,6 +10,8 @@ use bolt_v2::bolt_v3_realized_volatility::{
 const SURFACE_ID: &str = "<surface_id>";
 const SOURCE_A: &str = "<SOURCE_ID_A>";
 const SOURCE_B: &str = "<SOURCE_ID_B>";
+const SOURCE_C: &str = "<SOURCE_ID_C>";
+const SOURCE_D: &str = "<SOURCE_ID_D>";
 
 fn source(source_id: &str) -> RealizedVolSourceConfig {
     RealizedVolSourceConfig {
@@ -128,14 +130,14 @@ fn cross_source_dispersion_blocks_instead_of_publishing_low_rv() {
 
 #[test]
 fn median_aggregation_ignores_one_extreme_ready_source_when_quorum_satisfied() {
-    let mut cfg = config(&[SOURCE_A, SOURCE_B, "<SOURCE_ID_C>"]);
+    let mut cfg = config(&[SOURCE_A, SOURCE_B, SOURCE_C]);
     cfg.aggregation = RealizedVolAggregation::Median;
     cfg.max_cross_source_dispersion = 10_000.0;
     let expected_mid = ready_rv_for_prices(&[100.0, 101.0, 102.0, 103.0]);
     let mut engine = RealizedVolEngine::from_config(cfg).unwrap();
     observe_path(&mut engine, SOURCE_A, &[100.0, 100.1, 100.2, 100.3]);
     observe_path(&mut engine, SOURCE_B, &[100.0, 101.0, 102.0, 103.0]);
-    observe_path(&mut engine, "<SOURCE_ID_C>", &[100.0, 125.0, 75.0, 150.0]);
+    observe_path(&mut engine, SOURCE_C, &[100.0, 125.0, 75.0, 150.0]);
 
     let snapshot = engine.snapshot_at(4_000);
 
@@ -144,6 +146,58 @@ fn median_aggregation_ignores_one_extreme_ready_source_when_quorum_satisfied() {
     assert!(
         (actual - expected_mid).abs() < 1e-9,
         "median aggregation should use middle contributor; expected {expected_mid}, got {actual}"
+    );
+}
+
+#[test]
+fn trimmed_mean_aggregation_trims_extreme_ready_sources() {
+    let mut cfg = config(&[SOURCE_A, SOURCE_B, SOURCE_C, SOURCE_D]);
+    cfg.aggregation = RealizedVolAggregation::TrimmedMean {
+        trim_fraction: 0.25,
+    };
+    cfg.max_cross_source_dispersion = 10_000.0;
+    let expected_low_mid = ready_rv_for_prices(&[100.0, 101.0, 102.0, 103.0]);
+    let expected_high_mid = ready_rv_for_prices(&[100.0, 102.0, 104.0, 106.0]);
+    let expected = (expected_low_mid + expected_high_mid) / 2.0;
+    let mut engine = RealizedVolEngine::from_config(cfg).unwrap();
+    observe_path(&mut engine, SOURCE_A, &[100.0, 100.0, 100.0, 100.0]);
+    observe_path(&mut engine, SOURCE_B, &[100.0, 101.0, 102.0, 103.0]);
+    observe_path(&mut engine, SOURCE_C, &[100.0, 102.0, 104.0, 106.0]);
+    observe_path(&mut engine, SOURCE_D, &[100.0, 125.0, 75.0, 150.0]);
+
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    assert_close(
+        snapshot.annualized_realized_vol_decimal.unwrap(),
+        expected,
+        1e-9,
+    );
+}
+
+#[test]
+fn median_with_upper_quantile_guard_blends_median_and_guard_value() {
+    let mut cfg = config(&[SOURCE_A, SOURCE_B, SOURCE_C]);
+    cfg.aggregation = RealizedVolAggregation::MedianWithUpperQuantileGuard {
+        upper_quantile: 1.0,
+        guard_weight: 0.25,
+    };
+    cfg.max_cross_source_dispersion = 10_000.0;
+    let expected_median = ready_rv_for_prices(&[100.0, 101.0, 102.0, 103.0]);
+    let expected_guard = ready_rv_for_prices(&[100.0, 125.0, 75.0, 150.0]);
+    let expected = expected_median.mul_add(0.75, expected_guard * 0.25);
+    let mut engine = RealizedVolEngine::from_config(cfg).unwrap();
+    observe_path(&mut engine, SOURCE_A, &[100.0, 100.1, 100.2, 100.3]);
+    observe_path(&mut engine, SOURCE_B, &[100.0, 101.0, 102.0, 103.0]);
+    observe_path(&mut engine, SOURCE_C, &[100.0, 125.0, 75.0, 150.0]);
+
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    assert_close(
+        snapshot.annualized_realized_vol_decimal.unwrap(),
+        expected,
+        1e-9,
     );
 }
 
@@ -520,6 +574,38 @@ fn disabled_source_diagnostic_exports_config_participation_without_observations(
     assert!(!disabled.counts_toward_quorum);
     assert_eq!(disabled.status, RealizedVolSourceStatus::DiagnosticOnly);
     assert_eq!(disabled.last_rejected_reason, None);
+}
+
+#[test]
+fn enabled_non_quorum_source_with_live_observations_remains_diagnostic_only() {
+    let mut config = config(&[SOURCE_A, SOURCE_B]);
+    config.min_ready_sources = 1;
+    config.sources[1].counts_toward_quorum = false;
+    let mut engine = RealizedVolEngine::from_config(config).unwrap();
+    observe_path(&mut engine, SOURCE_A, &[100.0, 101.0, 102.0, 103.0]);
+    observe_path(&mut engine, SOURCE_B, &[200.0, 202.0, 204.0, 206.0]);
+
+    let snapshot = engine.snapshot_at(4_000);
+
+    assert!(snapshot.ready);
+    assert_eq!(snapshot.sources_used, vec![SOURCE_A.to_string()]);
+    let diagnostic_only = snapshot
+        .source_diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.source_id == SOURCE_B)
+        .expect("non-quorum source should remain visible in diagnostics");
+    assert!(diagnostic_only.enabled);
+    assert!(!diagnostic_only.counts_toward_quorum);
+    assert_eq!(
+        diagnostic_only.status,
+        RealizedVolSourceStatus::DiagnosticOnly
+    );
+    assert!(
+        diagnostic_only
+            .annualized_realized_vol_decimal
+            .is_some_and(|value| value > 0.0),
+        "diagnostic-only source should still compute its own RV components"
+    );
 }
 
 #[test]

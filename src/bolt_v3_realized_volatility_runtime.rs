@@ -298,13 +298,6 @@ impl RealizedVolSurfaceRuntime {
         Some(snapshot)
     }
 
-    pub fn refresh_all_at(&mut self, as_of_ms: u64) -> Vec<RealizedVolSnapshot> {
-        self.surface_ids()
-            .into_iter()
-            .filter_map(|surface_id| self.refresh_surface_at(surface_id.as_str(), as_of_ms))
-            .collect()
-    }
-
     pub fn snapshot(&self, surface_id: &str) -> Option<RealizedVolSnapshot> {
         self.surfaces
             .get(surface_id)

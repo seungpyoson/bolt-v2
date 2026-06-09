@@ -20,7 +20,7 @@ use toml::Value;
 
 use crate::{
     bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
-    bolt_v3_realized_volatility::{RealizedVolEngineConfig, RealizedVolSnapshot},
+    bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
@@ -65,7 +65,6 @@ pub struct StrategyBuildContext {
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     execution_venue: Venue,
-    realized_volatility_surfaces: Arc<BTreeMap<String, RealizedVolEngineConfig>>,
     realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
 }
 
@@ -87,20 +86,22 @@ impl StrategyBuildContext {
             decision_evidence,
             submit_admission,
             execution_venue,
-            realized_volatility_surfaces: Arc::new(BTreeMap::new()),
             realized_volatility_runtime: Arc::new(Mutex::new(RealizedVolSurfaceRuntime::empty())),
         }
     }
 
+    #[cfg(test)]
     pub fn with_realized_volatility_surfaces(
         mut self,
-        surfaces: BTreeMap<String, RealizedVolEngineConfig>,
+        surfaces: std::collections::BTreeMap<
+            String,
+            crate::bolt_v3_realized_volatility::RealizedVolEngineConfig,
+        >,
     ) -> Self {
         self.realized_volatility_runtime = Arc::new(Mutex::new(
-            RealizedVolSurfaceRuntime::from_configs(surfaces.clone())
+            RealizedVolSurfaceRuntime::from_configs(surfaces)
                 .expect("validated realized-volatility surfaces should build runtime"),
         ));
-        self.realized_volatility_surfaces = Arc::new(surfaces);
         self
     }
 
@@ -136,13 +137,6 @@ impl StrategyBuildContext {
     /// real order can only ever fire against an instrument on the venue it routes to.
     pub fn execution_venue(&self) -> Venue {
         self.execution_venue
-    }
-
-    pub fn realized_volatility_surface(
-        &self,
-        surface_id: &str,
-    ) -> Option<&RealizedVolEngineConfig> {
-        self.realized_volatility_surfaces.get(surface_id)
     }
 
     pub fn realized_volatility_quote_subscription_requests(

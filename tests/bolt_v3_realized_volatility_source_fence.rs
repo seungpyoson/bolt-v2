@@ -66,15 +66,20 @@ const FORBIDDEN_LEGACY_RV_TERMS: &[&str] = &[
 
 #[test]
 fn strategy_code_does_not_own_realized_volatility_engine_policy() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src/strategies/binary_oracle_edge_taker/mod.rs");
-    let source = fs::read_to_string(path).expect("strategy source should be readable");
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let strategy_sources = strategy_production_sources(repo);
+    assert!(
+        !strategy_sources.is_empty(),
+        "strategy source fence must scan at least one production strategy source"
+    );
 
-    for forbidden in FORBIDDEN_STRATEGY_RV_TERMS {
-        assert!(
-            !source.contains(forbidden),
-            "strategy code must not own realized-volatility policy term `{forbidden}`"
-        );
+    for (relative_path, source) in strategy_sources {
+        for forbidden in FORBIDDEN_STRATEGY_RV_TERMS {
+            assert!(
+                !source.contains(forbidden),
+                "strategy source `{relative_path}` must not own realized-volatility policy term `{forbidden}`"
+            );
+        }
     }
 }
 
@@ -142,4 +147,45 @@ fn rv_consumers_do_not_revalidate_raw_snapshot_numbers() {
             );
         }
     }
+}
+
+fn strategy_production_sources(repo: &Path) -> Vec<(String, String)> {
+    let strategies_dir = repo.join("src/strategies");
+    let mut pending = fs::read_dir(&strategies_dir)
+        .expect("strategies directory should be readable")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    let mut sources = Vec::new();
+    while let Some(path) = pending.pop() {
+        if path.is_dir() {
+            if path
+                .components()
+                .any(|component| component.as_os_str().to_str() == Some("tests"))
+            {
+                continue;
+            }
+            pending.extend(
+                fs::read_dir(&path)
+                    .expect("strategy subdirectory should be readable")
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path()),
+            );
+            continue;
+        }
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        if path == strategies_dir.join("registry.rs") {
+            continue;
+        }
+        let relative_path = path
+            .strip_prefix(repo)
+            .expect("strategy source should be inside repo")
+            .display()
+            .to_string();
+        let source = fs::read_to_string(&path).expect("strategy source should be readable");
+        sources.push((relative_path, source));
+    }
+    sources
 }

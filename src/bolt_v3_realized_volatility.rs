@@ -978,6 +978,8 @@ fn compute_rv(
         RealizedVolPricingComponent::Measured => measured_rv,
         RealizedVolPricingComponent::NoiseRobust => noise_robust_rv,
         RealizedVolPricingComponent::Continuous => continuous_rv,
+        // Unreachable for engines built through from_config: forecast pricing is future scope and
+        // validation rejects it. Keep a deterministic value here so private computation stays total.
         RealizedVolPricingComponent::Forecast => measured_rv,
     };
     SourceComputation {
@@ -1393,8 +1395,7 @@ fn config_fingerprint(config: &RealizedVolEngineConfig) -> String {
             .expect("canonical fingerprint write should not fail");
         }
     }
-    writeln!(&mut canonical, "estimator={:?}", config.estimator)
-        .expect("canonical fingerprint write should not fail");
+    write_estimator_fingerprint(&mut canonical, &config.estimator);
     for source in sources {
         writeln!(&mut canonical, "source.id={}", source.source_id)
             .expect("canonical fingerprint write should not fail");
@@ -1445,6 +1446,201 @@ fn canonical_f64(value: f64) -> String {
     format!("{:016x}", value.to_bits())
 }
 
+fn write_estimator_fingerprint(canonical: &mut String, estimator: &RealizedVolEstimatorConfig) {
+    writeln!(
+        canonical,
+        "estimator.pricing_component={}",
+        pricing_component_fingerprint_label(estimator.pricing_component)
+    )
+    .expect("canonical fingerprint write should not fail");
+    match &estimator.horizon_policy {
+        RealizedVolHorizonPolicy::Measured => {
+            writeln!(canonical, "estimator.horizon_policy=measured")
+                .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolHorizonPolicy::WeightedBlend => {
+            writeln!(canonical, "estimator.horizon_policy=weighted_blend")
+                .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolHorizonPolicy::MaxFloor {
+            primary_horizon_id,
+            floor_horizon_id,
+            floor_multiplier,
+        } => {
+            writeln!(canonical, "estimator.horizon_policy=max_floor")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.horizon_policy.primary_horizon_id={primary_horizon_id}"
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.horizon_policy.floor_horizon_id={floor_horizon_id}"
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.horizon_policy.floor_multiplier={}",
+                canonical_f64(*floor_multiplier)
+            )
+            .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolHorizonPolicy::ShortWithLongFloor {
+            short_horizon_id,
+            long_horizon_id,
+            floor_multiplier,
+        } => {
+            writeln!(canonical, "estimator.horizon_policy=short_with_long_floor")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.horizon_policy.short_horizon_id={short_horizon_id}"
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.horizon_policy.long_horizon_id={long_horizon_id}"
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.horizon_policy.floor_multiplier={}",
+                canonical_f64(*floor_multiplier)
+            )
+            .expect("canonical fingerprint write should not fail");
+        }
+    }
+    let mut horizons = estimator.horizons.clone();
+    horizons.sort_by(|left, right| left.horizon_id.cmp(&right.horizon_id));
+    for horizon in horizons {
+        writeln!(canonical, "estimator.horizon.id={}", horizon.horizon_id)
+            .expect("canonical fingerprint write should not fail");
+        writeln!(
+            canonical,
+            "estimator.horizon.window_ms={}",
+            horizon.window_ms
+        )
+        .expect("canonical fingerprint write should not fail");
+        writeln!(
+            canonical,
+            "estimator.horizon.sampling_interval_ms={}",
+            horizon.sampling_interval_ms
+        )
+        .expect("canonical fingerprint write should not fail");
+        writeln!(canonical, "estimator.horizon.required={}", horizon.required)
+            .expect("canonical fingerprint write should not fail");
+        writeln!(
+            canonical,
+            "estimator.horizon.weight={}",
+            canonical_f64(horizon.weight)
+        )
+        .expect("canonical fingerprint write should not fail");
+        writeln!(
+            canonical,
+            "estimator.horizon.role={}",
+            horizon
+                .role
+                .map(horizon_role_fingerprint_label)
+                .unwrap_or("none")
+        )
+        .expect("canonical fingerprint write should not fail");
+    }
+    match estimator.noise.method {
+        RealizedVolNoiseMethod::None => {
+            writeln!(canonical, "estimator.noise.method=none")
+                .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolNoiseMethod::CoarserGrid {
+            coarse_sampling_interval_ms,
+            policy,
+        } => {
+            writeln!(canonical, "estimator.noise.method=coarser_grid")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.noise.coarse_sampling_interval_ms={coarse_sampling_interval_ms}"
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.noise.coarser_grid_policy={}",
+                coarser_grid_policy_fingerprint_label(policy)
+            )
+            .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolNoiseMethod::Subsampled {
+            subsamples,
+            min_ready_subsamples,
+        } => {
+            writeln!(canonical, "estimator.noise.method=subsampled")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(canonical, "estimator.noise.subsamples={subsamples}")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.noise.min_ready_subsamples={min_ready_subsamples}"
+            )
+            .expect("canonical fingerprint write should not fail");
+        }
+    }
+    writeln!(
+        canonical,
+        "estimator.jump.policy={}",
+        jump_policy_fingerprint_label(estimator.jump.policy)
+    )
+    .expect("canonical fingerprint write should not fail");
+    match &estimator.forecast.method {
+        RealizedVolForecastMethod::None => {
+            writeln!(canonical, "estimator.forecast.method=none")
+                .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolForecastMethod::Ewma { alpha } => {
+            writeln!(canonical, "estimator.forecast.method=ewma")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.forecast.alpha={}",
+                canonical_f64(*alpha)
+            )
+            .expect("canonical fingerprint write should not fail");
+        }
+        RealizedVolForecastMethod::HarLite {
+            intercept,
+            short_weight,
+            medium_weight,
+            long_weight,
+        } => {
+            writeln!(canonical, "estimator.forecast.method=har_lite")
+                .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.forecast.intercept={}",
+                canonical_f64(*intercept)
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.forecast.short_weight={}",
+                canonical_f64(*short_weight)
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.forecast.medium_weight={}",
+                canonical_f64(*medium_weight)
+            )
+            .expect("canonical fingerprint write should not fail");
+            writeln!(
+                canonical,
+                "estimator.forecast.long_weight={}",
+                canonical_f64(*long_weight)
+            )
+            .expect("canonical fingerprint write should not fail");
+        }
+    }
+}
+
 fn source_class_fingerprint_label(source_class: RealizedVolSourceClass) -> &'static str {
     match source_class {
         RealizedVolSourceClass::SpotQuote => "spot_quote",
@@ -1460,6 +1656,39 @@ fn sample_kind_fingerprint_label(sample_kind: RealizedVolSampleKind) -> &'static
         RealizedVolSampleKind::Trade => "trade",
         RealizedVolSampleKind::Mark => "mark",
         RealizedVolSampleKind::Index => "index",
+    }
+}
+
+fn horizon_role_fingerprint_label(role: RealizedVolHorizonRole) -> &'static str {
+    match role {
+        RealizedVolHorizonRole::Short => "short",
+        RealizedVolHorizonRole::Medium => "medium",
+        RealizedVolHorizonRole::Long => "long",
+        RealizedVolHorizonRole::Primary => "primary",
+        RealizedVolHorizonRole::Floor => "floor",
+    }
+}
+
+fn coarser_grid_policy_fingerprint_label(policy: RealizedVolCoarserGridPolicy) -> &'static str {
+    match policy {
+        RealizedVolCoarserGridPolicy::CoarseOnly => "coarse_only",
+        RealizedVolCoarserGridPolicy::MinBaseCoarse => "min_base_coarse",
+    }
+}
+
+fn jump_policy_fingerprint_label(policy: RealizedVolJumpPolicy) -> &'static str {
+    match policy {
+        RealizedVolJumpPolicy::None => "none",
+        RealizedVolJumpPolicy::Separate => "separate",
+    }
+}
+
+fn pricing_component_fingerprint_label(component: RealizedVolPricingComponent) -> &'static str {
+    match component {
+        RealizedVolPricingComponent::Measured => "measured",
+        RealizedVolPricingComponent::NoiseRobust => "noise_robust",
+        RealizedVolPricingComponent::Continuous => "continuous",
+        RealizedVolPricingComponent::Forecast => "forecast",
     }
 }
 

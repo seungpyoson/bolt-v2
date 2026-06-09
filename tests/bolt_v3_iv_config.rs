@@ -3,7 +3,7 @@ use bolt_v2::bolt_v3_iv::{
     config::{IvConfigError, IvRootConfig, load_iv_config_from_toml, validate_iv_root_config},
     derive::{
         IvDeriveError, IvDerivedInputField, IvDerivedInputSet, IvDerivedInputSourceKind,
-        IvOptionSide, IvTimedInput, resolve_derived_input_policy,
+        IvHelperOutput, IvOptionSide, IvTimedInput, resolve_derived_input_policy,
     },
     error::IvRejectReason,
     health::IvSourceHealthState,
@@ -703,6 +703,20 @@ fn helper_policy_input_policy_ref_requires_configured_derived_input_policy() {
     assert!(errors.iter().any(|message| {
         message.contains("helper_policies.configured-helper-policy.input_policy_ref")
             && message.contains("configured derived input policy")
+    }));
+}
+
+#[test]
+fn helper_policy_allowed_outputs_must_include_engine_helper_output() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    config.profiles[0].helper_policies[0].allowed_outputs =
+        [IvHelperOutput::Iv].into_iter().collect();
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("helper_policies.configured-helper-policy.allowed_outputs")
+            && message.contains("iv_and_greeks")
     }));
 }
 

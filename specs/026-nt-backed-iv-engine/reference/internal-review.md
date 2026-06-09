@@ -148,3 +148,27 @@ Current PR verification uses GitHub CI rather than local cargo reruns. Because a
 - `cargo fmt --check`: PASS.
 - `just source-fence`: PASS.
 - `cargo clippy --locked --lib -- -D warnings`: NOT COMPLETED locally; this worktree's build script panicked before linting while canonicalizing a missing `.git/worktrees/026-nt-backed-iv-engine-fix/refs/heads/026-nt-backed-iv-engine` path. GitHub CI clippy is the required authoritative check after push.
+
+## 2026-06-10 Relay Shard Findings After `ca19dd4a`
+
+**Reviewed working tree**: branch `026-nt-backed-iv-engine`, local delta after head `ca19dd4a5b1c3560f4bf33379fe202acec798740`
+**Recommendation**: PASS for the locally reviewed fixes below; GitHub CI and external relay approvals must be refreshed after this delta is committed and pushed.
+
+| Issue | Evidence | Resolution |
+|---|---|---|
+| Quorum rejection bypassed the configured fallback policy. | Gemini IV-module shard returned `REQUEST_CHANGES`; RED: `cargo test --locked --test bolt_v3_iv_query projected_scalar_query_uses_fallback_when_configured_quorum_rejects -- --nocapture` failed with `ProjectionRejected`. | Quorum rejection now routes through `fallback_only()` when the projection policy has a fallback, preserving fail-closed rejection when no fallback exists. |
+| Selector-scoped point queries could reject an authorized later source when an unauthorized matching source was inserted first. | Gemini IV-module shard returned `REQUEST_CHANGES`; RED: `cargo test --locked --test bolt_v3_iv_query selector_scoped_point_query_skips_unauthorized_matching_source -- --nocapture` failed with `StrategyNotAuthorized`. | Authorized-current fallback selection now uses the matching product set for point, greeks, aggregate, custom evidence, smile, surface, and derived products instead of only smile/surface. |
+| Stale historical indexed products could poison direct and projected queries for the same key before current-generation products were considered. | Grok query/policy shard returned `REQUEST_CHANGES`; RED: `cargo test --locked --test bolt_v3_iv_query strategy_query_skips_non_current_matching_product_for_current_generation -- --nocapture` and `cargo test --locked --test bolt_v3_iv_query projected_scalar_point_query_skips_non_current_matching_product_for_current_generation -- --nocapture` failed with `ProductNotFound`. | Direct queries now search for an authorized current alternative when the first match is non-current; projected scalar queries filter non-current input products before authorization, quorum, projection, or fallback policy evaluation. |
+| Helper policy config accepted `allowed_outputs = ["iv"]`, but runtime derivation requires `iv_and_greeks` and would reject every query later. | Gemini IV-module shard noted the mismatch; RED: `cargo test --locked --test bolt_v3_iv_config helper_policy_allowed_outputs_must_include_engine_helper_output -- --nocapture` failed because validation accepted the config. | Config validation now rejects helper policies whose `allowed_outputs` do not include `iv_and_greeks`. |
+| Projected scalar fallback outputs cloned provenance from the first input product rather than the accepted fallback candidate. | Internal adversarial review found the audit mismatch; RED: `cargo test --locked --test bolt_v3_iv_query projected_scalar_fallback_provenance_uses_accepted_candidate_source -- --nocapture` failed because the projected output reported `configured-source` while fallback selected `configured-backup-source`. | Query projection now carries the fallback-selected input and builds projected output provenance from that accepted candidate, falling back to first-input provenance only for non-selecting policy outputs. |
+
+### 2026-06-10 Relay Shard Fix Verification
+
+- `cargo test --locked --test bolt_v3_iv_query selector_scoped_point_query_skips_unauthorized_matching_source -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_query projected_scalar_query_uses_fallback_when_configured_quorum_rejects -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_query strategy_query_skips_non_current_matching_product_for_current_generation -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_query projected_scalar_point_query_skips_non_current_matching_product_for_current_generation -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_config helper_policy_allowed_outputs_must_include_engine_helper_output -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_query projected_scalar_fallback_provenance_uses_accepted_candidate_source -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_query`: PASS, 48 tests.
+- `cargo test --locked --test bolt_v3_iv_config`: PASS, 25 tests.

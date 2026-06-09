@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     audit::IvAuditPolicy,
     authz::{IvAuthorizationMode, IvProfileSelectorAuthorization, IvSelectorAuthorization},
-    derive::{IvDerivedInputPolicy, IvDerivedInputSet, IvHelperPolicy},
+    derive::{IvDerivedInputPolicy, IvDerivedInputSet, IvHelperOutput, IvHelperPolicy},
     policy::{IvFallbackPolicy, IvInterpolationPolicy, IvProjectionPolicy, IvQuorumPolicy},
     selector::IvSelector,
     subscription::{IvProfileSubscriptionConfig, IvSourceSubscriptionConfig, plan_profile_start},
@@ -483,6 +483,14 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
         if policy.allowed_outputs.is_empty() {
             errors.push(format!(
                 "{context}.helper_policies.{}.allowed_outputs must be non-empty",
+                policy.helper_policy_id
+            ));
+        } else if !policy
+            .allowed_outputs
+            .contains(&IvHelperOutput::IvAndGreeks)
+        {
+            errors.push(format!(
+                "{context}.helper_policies.{}.allowed_outputs must include iv_and_greeks",
                 policy.helper_policy_id
             ));
         }

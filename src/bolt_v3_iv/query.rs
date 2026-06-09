@@ -548,18 +548,31 @@ impl IvQueryHandle {
         state: &IvQueryState,
     ) -> Result<IvQueryProduct, IvQueryError> {
         let mut product = self.find_product(query, state)?;
-        if !product_satisfies_current_state(&product, state) {
-            return Err(IvQueryError::ProductNotFound);
+        let product_is_current = product_satisfies_current_state(&product, state);
+        let product_is_authorized = product_is_current
+            && self.authorization.authorizes(
+                &query.strategy_id,
+                query.product_kind,
+                product.source_id(),
+                product.selector_fingerprint(),
+            );
+        if !product_is_authorized {
+            product = self.find_authorized_current_product(query, state)?.ok_or(
+                if product_is_current {
+                    IvQueryError::StrategyNotAuthorized
+                } else {
+                    IvQueryError::ProductNotFound
+                },
+            )?;
         }
+
         if !self.authorization.authorizes(
             &query.strategy_id,
             query.product_kind,
             product.source_id(),
             product.selector_fingerprint(),
         ) {
-            product = self
-                .find_authorized_current_product(query, state)?
-                .ok_or(IvQueryError::StrategyNotAuthorized)?;
+            return Err(IvQueryError::StrategyNotAuthorized);
         }
 
         Ok(product)
@@ -572,36 +585,22 @@ impl IvQueryHandle {
     ) -> Result<Option<IvQueryProduct>, IvQueryError> {
         let products = match (&query.product_kind, &query.selector) {
             (
-                IvProductKind::Smile,
-                IvSelector::SmileQuery {
-                    series_id,
-                    side,
-                    basis,
-                    as_of_ns,
+                IvProductKind::SourceHealth,
+                IvSelector::SourceHealthQuery {
+                    source_filter,
+                    state_filter,
                 },
-            ) => matching_smile_products(
+            ) => matching_source_health_products(
                 state,
                 &query.profile_id,
-                series_id,
-                side,
-                *basis,
-                *as_of_ns,
+                source_filter,
+                state_filter,
             ),
-            (
-                IvProductKind::Surface,
-                IvSelector::SurfaceQuery {
-                    series_selectors,
-                    basis,
-                    as_of_ns,
-                },
-            ) => matching_surface_products(
-                state,
-                &query.profile_id,
-                series_selectors,
-                *basis,
-                *as_of_ns,
-            ),
-            _ => return Ok(None),
+            _ => match self.find_projection_products(query, state) {
+                Ok(products) => products,
+                Err(IvQueryError::ProductNotFound) => return Ok(None),
+                Err(error) => return Err(error),
+            },
         };
 
         Ok(products.into_iter().find(|product| {
@@ -818,11 +817,9 @@ impl IvQueryHandle {
             product_kind: input_selector.product_kind(),
             selector: input_selector.clone(),
         };
-        let input_products = self.find_projection_products(&input_query, state)?;
-        if !input_products
-            .iter()
-            .all(|product| product_satisfies_current_state(product, state))
-        {
+        let mut input_products = self.find_projection_products(&input_query, state)?;
+        input_products.retain(|product| product_satisfies_current_state(product, state));
+        if input_products.is_empty() {
             return Err(IvQueryError::ProductNotFound);
         }
         let mut inputs = projection_inputs_from_products(&input_products)?;
@@ -857,12 +854,7 @@ impl IvQueryHandle {
 
         if interpolation_rejected {
             let output = fallback_only(policy, state, &inputs)?;
-            let mut provenance = input_products
-                .first()
-                .ok_or(IvQueryError::ProductNotFound)?
-                .provenance()
-                .cloned()
-                .ok_or(IvQueryError::UnsupportedProductKind)?;
+            let mut provenance = projected_output_provenance(&input_products, &output)?;
             provenance.policy_decisions.extend(policy_decisions);
             provenance.policy_decisions.extend(output.policy_decisions);
             provenance.ts_event_ns = as_of_ns;
@@ -884,18 +876,31 @@ impl IvQueryHandle {
                 .iter()
                 .find(|policy| policy.policy_id == *quorum_policy_ref)
                 .ok_or(IvQueryError::ProjectionRejected)?;
-            let quorum_output = resolve_quorum(quorum_policy, &inputs)
-                .map_err(|_| IvQueryError::ProjectionRejected)?;
+            let quorum_output = match resolve_quorum(quorum_policy, &inputs) {
+                Ok(output) => output,
+                Err(_) => {
+                    let output = fallback_only(policy, state, &inputs)?;
+                    let mut provenance = projected_output_provenance(&input_products, &output)?;
+                    provenance.policy_decisions.extend(policy_decisions);
+                    provenance.policy_decisions.extend(output.policy_decisions);
+                    provenance.ts_event_ns = as_of_ns;
+
+                    return Ok(IvQueryProduct::ProjectedScalarIv(IvProjectedScalarIv {
+                        profile_id: query.profile_id.clone(),
+                        source_id: provenance.source_id.clone(),
+                        selector_fingerprint: provenance.selector_fingerprint.clone(),
+                        projection_policy_id: projection_policy_id.to_string(),
+                        value: output.value,
+                        as_of_ns,
+                        provenance,
+                    }));
+                }
+            };
             policy_decisions.extend(quorum_output.policy_decisions);
         }
 
         let output = project_or_fallback(policy, state, &inputs)?;
-        let mut provenance = input_products
-            .first()
-            .ok_or(IvQueryError::ProductNotFound)?
-            .provenance()
-            .cloned()
-            .ok_or(IvQueryError::UnsupportedProductKind)?;
+        let mut provenance = projected_output_provenance(&input_products, &output)?;
         provenance.policy_decisions.extend(policy_decisions);
         provenance.policy_decisions.extend(output.policy_decisions);
         provenance.ts_event_ns = as_of_ns;
@@ -1362,6 +1367,25 @@ fn matching_surface_products(
         .collect()
 }
 
+fn matching_source_health_products(
+    state: &IvQueryState,
+    profile_id: &str,
+    source_filter: &Option<String>,
+    state_filter: &[String],
+) -> Vec<IvQueryProduct> {
+    state
+        .source_health
+        .iter()
+        .filter(|health| {
+            health.profile_id == profile_id
+                && source_matches(&health.source_id, source_filter)
+                && source_health_state_matches(health, state_filter)
+        })
+        .cloned()
+        .map(IvQueryProduct::SourceHealth)
+        .collect()
+}
+
 fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQueryError> {
     let inputs = match product {
         IvQueryProduct::IvPoint(point) => vec![IvPolicyInput {
@@ -1547,10 +1571,43 @@ fn project_or_fallback(
     policy: &IvProjectionPolicy,
     state: &IvQueryState,
     inputs: &[IvPolicyInput],
-) -> Result<IvPolicyOutput, IvQueryError> {
+) -> Result<QueryPolicyOutput, IvQueryError> {
     match project_scalar(policy, inputs) {
-        Ok(output) => Ok(output),
+        Ok(output) => Ok(QueryPolicyOutput::from_policy_output(output)),
         Err(_) => fallback_only(policy, state, inputs),
+    }
+}
+
+struct QueryPolicyOutput {
+    value: f64,
+    policy_decisions: Vec<IvPolicyDecision>,
+    selected_input: Option<SelectedProjectionInput>,
+}
+
+impl QueryPolicyOutput {
+    fn from_policy_output(output: IvPolicyOutput) -> Self {
+        Self {
+            value: output.value,
+            policy_decisions: output.policy_decisions,
+            selected_input: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct SelectedProjectionInput {
+    product_id: String,
+    source_id: String,
+    selector_fingerprint: String,
+}
+
+impl From<&IvPolicyInput> for SelectedProjectionInput {
+    fn from(input: &IvPolicyInput) -> Self {
+        Self {
+            product_id: input.product_id.clone(),
+            source_id: input.source_id.clone(),
+            selector_fingerprint: input.selector_fingerprint.clone(),
+        }
     }
 }
 
@@ -1558,7 +1615,7 @@ fn fallback_only(
     policy: &IvProjectionPolicy,
     state: &IvQueryState,
     inputs: &[IvPolicyInput],
-) -> Result<IvPolicyOutput, IvQueryError> {
+) -> Result<QueryPolicyOutput, IvQueryError> {
     let Some(fallback_policy_ref) = &policy.fallback_policy_ref else {
         return Err(IvQueryError::ProjectionRejected);
     };
@@ -1576,7 +1633,52 @@ fn fallback_only(
                 || fallback_policy.eligible_sources.contains(&input.source_id),
         })
         .collect::<Vec<_>>();
-    resolve_fallback(fallback_policy, &candidates).map_err(|_| IvQueryError::ProjectionRejected)
+    let selected_input = fallback_policy
+        .candidate_order
+        .iter()
+        .find_map(|candidate_id| {
+            inputs
+                .iter()
+                .find(|input| {
+                    input.product_id == *candidate_id
+                        && (fallback_policy.eligible_sources.is_empty()
+                            || fallback_policy.eligible_sources.contains(&input.source_id))
+                })
+                .map(SelectedProjectionInput::from)
+        });
+    let output = resolve_fallback(fallback_policy, &candidates)
+        .map_err(|_| IvQueryError::ProjectionRejected)?;
+    Ok(QueryPolicyOutput {
+        value: output.value,
+        policy_decisions: output.policy_decisions,
+        selected_input,
+    })
+}
+
+fn projected_output_provenance(
+    input_products: &[IvQueryProduct],
+    output: &QueryPolicyOutput,
+) -> Result<IvProvenance, IvQueryError> {
+    let selected_product = output.selected_input.as_ref().and_then(|selected_input| {
+        input_products.iter().find(|product| {
+            projection_inputs(product)
+                .is_ok_and(|inputs| inputs.iter().any(|input| selected_input.matches(input)))
+        })
+    });
+    selected_product
+        .or_else(|| input_products.first())
+        .ok_or(IvQueryError::ProductNotFound)?
+        .provenance()
+        .cloned()
+        .ok_or(IvQueryError::UnsupportedProductKind)
+}
+
+impl SelectedProjectionInput {
+    fn matches(&self, input: &IvPolicyInput) -> bool {
+        self.product_id == input.product_id
+            && self.source_id == input.source_id
+            && self.selector_fingerprint == input.selector_fingerprint
+    }
 }
 
 enum ProjectedInputInterpolation {

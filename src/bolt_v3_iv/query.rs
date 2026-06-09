@@ -728,16 +728,14 @@ impl IvQueryHandle {
             .iter()
             .find(|policy| policy.policy_id == projection_policy_id)
             .ok_or(IvQueryError::ProjectionPolicyNotFound)?;
-        let input_product = self.find_product(
-            &IvProductQuery {
-                strategy_id: query.strategy_id.clone(),
-                profile_id: query.profile_id.clone(),
-                product_kind: input_selector.product_kind(),
-                selector: input_selector.clone(),
-            },
-            state,
-        )?;
-        let inputs = projection_inputs(&input_product)?;
+        let input_query = IvProductQuery {
+            strategy_id: query.strategy_id.clone(),
+            profile_id: query.profile_id.clone(),
+            product_kind: input_selector.product_kind(),
+            selector: input_selector.clone(),
+        };
+        let input_products = self.find_projection_products(&input_query, state)?;
+        let inputs = projection_inputs_from_products(&input_products)?;
         let mut policy_decisions = Vec::new();
         if let Some(quorum_policy_ref) = &policy.quorum_policy_ref {
             let quorum_policy = state
@@ -751,8 +749,12 @@ impl IvQueryHandle {
         }
 
         let output = if let Some(interpolation_policy_ref) = &policy.interpolation_policy_ref {
-            if let Some(interpolation_output) =
-                interpolate_projected_input(state, interpolation_policy_ref, &input_product)?
+            if input_products.len() == 1
+                && let Some(interpolation_output) = interpolate_projected_input(
+                    state,
+                    interpolation_policy_ref,
+                    &input_products[0],
+                )?
             {
                 interpolation_output
             } else {
@@ -761,7 +763,7 @@ impl IvQueryHandle {
         } else {
             project_or_fallback(policy, state, &inputs)?
         };
-        let mut provenance = input_product
+        let mut provenance = input_products[0]
             .provenance()
             .cloned()
             .ok_or(IvQueryError::UnsupportedProductKind)?;
@@ -778,6 +780,45 @@ impl IvQueryHandle {
             as_of_ns,
             provenance,
         }))
+    }
+
+    fn find_projection_products(
+        &self,
+        query: &IvProductQuery,
+        state: &IvQueryState,
+    ) -> Result<Vec<IvQueryProduct>, IvQueryError> {
+        match (&query.product_kind, &query.selector) {
+            (
+                IvProductKind::IvPoint,
+                IvSelector::PointQuery {
+                    instrument_ids,
+                    basis,
+                    as_of_ns,
+                    source_filter,
+                },
+            ) => {
+                let products = state
+                    .store
+                    .iv_points()
+                    .iter()
+                    .filter(|point| {
+                        point.profile_id == query.profile_id
+                            && instrument_ids.contains(&point.instrument_id)
+                            && point.basis == *basis
+                            && point.ts_event_ns == *as_of_ns
+                            && source_matches(&point.source_id, source_filter)
+                    })
+                    .cloned()
+                    .map(IvQueryProduct::IvPoint)
+                    .collect::<Vec<_>>();
+                if products.is_empty() {
+                    Err(IvQueryError::ProductNotFound)
+                } else {
+                    Ok(products)
+                }
+            }
+            _ => self.find_product(query, state).map(|product| vec![product]),
+        }
     }
 
     fn derived_iv_query(
@@ -967,6 +1008,21 @@ fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQ
         | IvQueryProduct::ProjectedScalarIv(_)
         | IvQueryProduct::SourceHealth(_) => return Err(IvQueryError::UnsupportedProductKind),
     };
+
+    if inputs.is_empty() {
+        Err(IvQueryError::ProductNotFound)
+    } else {
+        Ok(inputs)
+    }
+}
+
+fn projection_inputs_from_products(
+    products: &[IvQueryProduct],
+) -> Result<Vec<IvPolicyInput>, IvQueryError> {
+    let mut inputs = Vec::new();
+    for product in products {
+        inputs.extend(projection_inputs(product)?);
+    }
 
     if inputs.is_empty() {
         Err(IvQueryError::ProductNotFound)

@@ -784,6 +784,40 @@ fn runtime_engine_rejects_unconfigured_ingest_source_before_storage() {
 }
 
 #[test]
+fn runtime_engine_bounds_unconfigured_source_rejection_health() {
+    let config = configured_runtime_config();
+    let engine = IvRuntimeEngine::from_iv_root(&config).unwrap();
+
+    for index in 0..4_u64 {
+        let source_id = format!("missing-source-{index}");
+        engine
+            .ingest_event(greeks_ingest_event(&source_id, 7 + index))
+            .expect_err("unknown source must reject before storage");
+    }
+
+    assert!(
+        engine
+            .source_health("iv-profile", "missing-source-0")
+            .is_none()
+    );
+    assert!(
+        engine
+            .source_health("iv-profile", "missing-source-1")
+            .is_none()
+    );
+    assert!(
+        engine
+            .source_health("iv-profile", "missing-source-2")
+            .is_some()
+    );
+    assert!(
+        engine
+            .source_health("iv-profile", "missing-source-3")
+            .is_some()
+    );
+}
+
+#[test]
 fn runtime_engine_rejects_stale_generation_ingest_without_poisoning_active_health() {
     let config = configured_runtime_config();
     let engine = IvRuntimeEngine::from_iv_root(&config).unwrap();

@@ -702,6 +702,9 @@ impl IvRuntimeEngine {
                 reason,
                 mark_rejected,
             );
+            if let Some(policy) = self.retention_policy(&event.profile_id) {
+                state.enforce_retention(&policy);
+            }
         }
         IvRuntimeEngineError::IngestRejected {
             profile_id: event.profile_id.clone(),
@@ -734,6 +737,13 @@ impl IvRuntimeEngine {
             source_id: source_id.to_string(),
             reason,
         }
+    }
+
+    fn retention_policy(&self, profile_id: &str) -> Option<IvRetentionPolicy> {
+        self.read_inner()
+            .retention_policies
+            .get(profile_id)
+            .copied()
     }
 
     pub fn apply_plan_outcomes(

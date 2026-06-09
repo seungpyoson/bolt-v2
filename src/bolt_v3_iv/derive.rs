@@ -413,7 +413,7 @@ fn validate_resolved_input_policy(
     let timed_inputs = policy
         .required_fields
         .iter()
-        .filter_map(|field| timed_input_ns(inputs, *field).map(|ts| (*field, ts)))
+        .filter_map(|field| timed_input_metadata(inputs, *field).map(|metadata| (*field, metadata)))
         .collect::<Vec<_>>();
     if timed_inputs.len() != policy.required_fields.len() {
         let missing = policy
@@ -425,26 +425,42 @@ fn validate_resolved_input_policy(
         return Err(IvDeriveError::MissingInput { field: missing });
     }
 
-    let min_ts = timed_inputs
+    if timed_inputs
         .iter()
-        .map(|(_, ts)| ts.get())
+        .any(|(_, (_, ts))| ts.get() > inputs.as_of_ns.get())
+    {
+        return Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::ClockSkew,
+            field: "max_input_skew_ns".to_string(),
+        });
+    }
+
+    let market_timed_inputs = timed_inputs
+        .iter()
+        .filter(|(_, (source_kind, _))| {
+            *source_kind != IvDerivedInputSourceKind::OperatorConfigured
+        })
+        .collect::<Vec<_>>();
+    let min_ts = market_timed_inputs
+        .iter()
+        .map(|(_, (_, ts))| ts.get())
         .min()
         .unwrap_or(inputs.as_of_ns.get());
-    let max_ts = timed_inputs
+    let max_ts = market_timed_inputs
         .iter()
-        .map(|(_, ts)| ts.get())
+        .map(|(_, (_, ts))| ts.get())
         .max()
         .unwrap_or(inputs.as_of_ns.get());
-    if max_ts > inputs.as_of_ns.get() || max_ts.saturating_sub(min_ts) > policy.max_input_skew_ns {
+    if max_ts.saturating_sub(min_ts) > policy.max_input_skew_ns {
         return Err(IvDeriveError::Rejected {
             reason: IvRejectReason::ClockSkew,
             field: "max_input_skew_ns".to_string(),
         });
     }
     if policy.freshness_ns > 0
-        && timed_inputs
-            .iter()
-            .any(|(_, ts)| inputs.as_of_ns.get().saturating_sub(ts.get()) > policy.freshness_ns)
+        && market_timed_inputs.iter().any(|(_, (_, ts))| {
+            inputs.as_of_ns.get().saturating_sub(ts.get()) > policy.freshness_ns
+        })
     {
         return Err(IvDeriveError::Rejected {
             reason: IvRejectReason::StaleData,
@@ -633,16 +649,25 @@ fn set_number_field(
 }
 
 fn timed_input_ns(inputs: &IvDerivedInputSet, field: IvDerivedInputField) -> Option<UnixNanos> {
+    timed_input_metadata(inputs, field).map(|(_, ts_ns)| ts_ns)
+}
+
+fn timed_input_metadata(
+    inputs: &IvDerivedInputSet,
+    field: IvDerivedInputField,
+) -> Option<(IvDerivedInputSourceKind, UnixNanos)> {
     match field {
-        IvDerivedInputField::OptionPrice => inputs.option_price.map(|input| input.ts_ns),
-        IvDerivedInputField::UnderlyingPrice => inputs.underlying_price.map(|input| input.ts_ns),
-        IvDerivedInputField::Strike => inputs.strike.map(|input| input.ts_ns),
-        IvDerivedInputField::OptionSide => inputs.option_side.map(|input| input.ts_ns),
-        IvDerivedInputField::TimeToExpiryYears => {
-            inputs.time_to_expiry_years.map(|input| input.ts_ns)
+        IvDerivedInputField::OptionPrice
+        | IvDerivedInputField::UnderlyingPrice
+        | IvDerivedInputField::Strike
+        | IvDerivedInputField::TimeToExpiryYears
+        | IvDerivedInputField::Rate
+        | IvDerivedInputField::Carry => {
+            number_field(inputs, field).map(|input| (input.source_kind, input.ts_ns))
         }
-        IvDerivedInputField::Rate => inputs.rate.map(|input| input.ts_ns),
-        IvDerivedInputField::Carry => inputs.carry.map(|input| input.ts_ns),
+        IvDerivedInputField::OptionSide => inputs
+            .option_side
+            .map(|input| (input.source_kind, input.ts_ns)),
     }
 }
 
@@ -739,16 +764,33 @@ impl ResolvedDerivedInputs {
         let rate = required(inputs.rate, IvDerivedInputField::Rate)?;
         let carry = required(inputs.carry, IvDerivedInputField::Carry)?;
         let timed_values = [
-            (IvDerivedInputField::OptionPrice, option_price.ts_ns),
-            (IvDerivedInputField::UnderlyingPrice, underlying_price.ts_ns),
-            (IvDerivedInputField::Strike, strike.ts_ns),
-            (IvDerivedInputField::OptionSide, option_side.ts_ns),
+            (
+                IvDerivedInputField::OptionPrice,
+                option_price.source_kind,
+                option_price.ts_ns,
+            ),
+            (
+                IvDerivedInputField::UnderlyingPrice,
+                underlying_price.source_kind,
+                underlying_price.ts_ns,
+            ),
+            (
+                IvDerivedInputField::Strike,
+                strike.source_kind,
+                strike.ts_ns,
+            ),
+            (
+                IvDerivedInputField::OptionSide,
+                option_side.source_kind,
+                option_side.ts_ns,
+            ),
             (
                 IvDerivedInputField::TimeToExpiryYears,
+                time_to_expiry_years.source_kind,
                 time_to_expiry_years.ts_ns,
             ),
-            (IvDerivedInputField::Rate, rate.ts_ns),
-            (IvDerivedInputField::Carry, carry.ts_ns),
+            (IvDerivedInputField::Rate, rate.source_kind, rate.ts_ns),
+            (IvDerivedInputField::Carry, carry.source_kind, carry.ts_ns),
         ];
 
         validate_numeric(option_price.value, IvDerivedInputField::OptionPrice, true)?;
@@ -836,21 +878,34 @@ fn validate_numeric(
 fn validate_timestamp_skew(
     policy: &IvHelperPolicy,
     as_of_ns: UnixNanos,
-    timed_values: &[(IvDerivedInputField, UnixNanos)],
+    timed_values: &[(IvDerivedInputField, IvDerivedInputSourceKind, UnixNanos)],
 ) -> Result<(), IvDeriveError> {
-    let min_ts = timed_values
+    if timed_values
         .iter()
-        .map(|(_, ts)| ts.get())
+        .any(|(_, _, ts)| ts.get() > as_of_ns.get())
+    {
+        return Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::ClockSkew,
+            field: "input_timestamp_skew".to_string(),
+        });
+    }
+
+    let market_timed_values = timed_values
+        .iter()
+        .filter(|(_, source_kind, _)| *source_kind != IvDerivedInputSourceKind::OperatorConfigured)
+        .collect::<Vec<_>>();
+    let min_ts = market_timed_values
+        .iter()
+        .map(|(_, _, ts)| ts.get())
         .min()
         .unwrap_or(as_of_ns.get());
-    let max_ts = timed_values
+    let max_ts = market_timed_values
         .iter()
-        .map(|(_, ts)| ts.get())
+        .map(|(_, _, ts)| ts.get())
         .max()
         .unwrap_or(as_of_ns.get());
 
-    if max_ts > as_of_ns.get() || max_ts.saturating_sub(min_ts) > policy.max_input_timestamp_skew_ns
-    {
+    if max_ts.saturating_sub(min_ts) > policy.max_input_timestamp_skew_ns {
         return Err(IvDeriveError::Rejected {
             reason: IvRejectReason::ClockSkew,
             field: "input_timestamp_skew".to_string(),

@@ -513,6 +513,54 @@ fn operator_rate_or_carry_without_expiration_derives_when_within_age() {
 }
 
 #[test]
+fn operator_rate_or_carry_uses_operator_age_not_market_timestamp_skew() {
+    for field in [IvDerivedInputField::Rate, IvDerivedInputField::Carry] {
+        let mut inputs = complete_inputs();
+        match field {
+            IvDerivedInputField::Rate => {
+                inputs.rate = Some(operator(0.01, 900, 1_050));
+            }
+            IvDerivedInputField::Carry => {
+                inputs.carry = Some(operator(0.0, 900, 1_050));
+            }
+            _ => unreachable!(),
+        }
+
+        assert!(derive_iv(&helper_policy(), inputs).is_ok());
+    }
+}
+
+#[test]
+fn derived_input_policy_allows_unexpired_operator_input_outside_market_skew() {
+    let mut request_inputs = complete_inputs();
+    request_inputs.rate = None;
+
+    let policy = IvDerivedInputPolicy {
+        input_policy_id: "configured-derived-input-policy".to_string(),
+        helper_policy_ref: "configured-helper-policy".to_string(),
+        required_fields: vec![IvDerivedInputField::Rate],
+        field_sources: vec![IvDerivedInputFieldPolicy {
+            field: IvDerivedInputField::Rate,
+            allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::OperatorConfigured]),
+            profile_source_ref: None,
+            operator_number: Some(operator(0.01, 900, 1_050)),
+            operator_side: None,
+        }],
+        freshness_ns: 20,
+        max_input_skew_ns: 20,
+        bounds: input_bounds(),
+        convention_policy: IvConventionBounds {
+            allowed_conventions: BTreeSet::from([convention()]),
+        },
+        operator_value_refresh_policy: IvOperatorValueRefreshPolicy::RejectExpiredOperatorValues,
+    };
+
+    let resolved = resolve_derived_input_policy(&policy, request_inputs, &[]).unwrap();
+
+    assert_eq!(resolved.rate.unwrap().ts_ns, UnixNanos::new(900));
+}
+
+#[test]
 fn helper_output_outside_configured_bounds_rejects() {
     let policy = IvHelperPolicy {
         output_bounds: bounds(0.10),

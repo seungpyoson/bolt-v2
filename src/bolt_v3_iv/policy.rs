@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -318,8 +320,10 @@ pub fn resolve_quorum(
     let (eligible_inputs, rejected_sources): (Vec<_>, Vec<_>) = inputs.iter().partition(|input| {
         policy.eligible_sources.is_empty() || policy.eligible_sources.contains(&input.source_id)
     });
+    let participating_sources = unique_source_ids(&eligible_inputs);
+    let rejected_sources = unique_source_ids(&rejected_sources);
 
-    if eligible_inputs.is_empty() || eligible_inputs.len() < policy.minimum_sources {
+    if eligible_inputs.is_empty() || participating_sources.len() < policy.minimum_sources {
         return Err(rejected(
             policy.policy_id.clone(),
             IvRejectReason::QuorumNotMet,
@@ -347,19 +351,27 @@ pub fn resolve_quorum(
             .ok_or_else(|| rejected(policy.policy_id.clone(), IvRejectReason::QuorumNotMet))?,
         policy_decisions: vec![IvPolicyDecision::QuorumDecision {
             policy_id: policy.policy_id.clone(),
-            participating_sources: eligible_inputs
-                .iter()
-                .map(|input| input.source_id.clone())
-                .collect(),
-            rejected_sources: rejected_sources
-                .iter()
-                .map(|input| input.source_id.clone())
-                .collect(),
+            participating_sources,
+            rejected_sources,
             agreement_band: policy.agreement_band,
             tie_break: policy.tie_break.as_str().to_string(),
             quorum_met: true,
         }],
     })
+}
+
+fn unique_source_ids(inputs: &[&IvPolicyInput]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    inputs
+        .iter()
+        .filter_map(|input| {
+            if seen.insert(input.source_id.as_str()) {
+                Some(input.source_id.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn inputs_satisfy_source_eligibility(

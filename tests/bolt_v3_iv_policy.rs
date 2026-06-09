@@ -140,6 +140,29 @@ fn interpolation_policy_records_decision_and_rejects_unconfigured_extrapolation(
 }
 
 #[test]
+fn quorum_policy_requires_distinct_source_ids() {
+    assert!(matches!(
+        resolve_quorum(
+            &IvQuorumPolicy {
+                policy_id: "configured-quorum".to_string(),
+                minimum_sources: 2,
+                eligible_sources: vec!["source-a".to_string()],
+                agreement_band: 0.05,
+                tie_break: IvQuorumTieBreak::Mean,
+            },
+            &[
+                input("source-a", 0.30, 1_000),
+                input("source-a", 0.31, 1_000)
+            ],
+        ),
+        Err(IvPolicyError::Rejected {
+            reason: IvRejectReason::QuorumNotMet,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn fallback_and_quorum_policies_record_typed_decisions() {
     let fallback = resolve_fallback(
         &IvFallbackPolicy {

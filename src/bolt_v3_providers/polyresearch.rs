@@ -1657,6 +1657,59 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_prr_provider_subscribe_does_not_queue_duplicate_provider_frame() {
+        let (mut client, _data_receiver) = fixture_client();
+        let (outbound_sender, mut outbound_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
+        let outbound = PolyResearchReferenceOutboundHandle::from_sender(outbound_sender);
+        client.outbound = Some(outbound.clone());
+
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                "BTC",
+                "polyresearch_primary",
+                "BTC/USD",
+            ))
+            .expect("first PRR reference subscription should be accepted");
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                "BTC",
+                "polyresearch_primary",
+                "BTC/USD",
+            ))
+            .expect("duplicate PRR reference subscription should be accepted");
+
+        let PolyResearchReferenceOutboundCommand::SendText(first_frame) = outbound_receiver
+            .try_recv()
+            .expect("first PRR subscription should send provider subscribe")
+        else {
+            panic!("first PRR subscription should send text");
+        };
+        assert_eq!(
+            first_frame,
+            r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["BTC/USD"]}}"#
+        );
+        assert!(
+            outbound_receiver.try_recv().is_err(),
+            "duplicate PRR provider subscribe must not send before the first ack"
+        );
+
+        let handled = polyresearch_reference_record_subscription_ack(
+            &client.subscriptions,
+            &client.pending_provider_subscriptions,
+            &client.provider_subscription_ids,
+            Some(&outbound),
+            r#"{"type":"subscribed","subscription_id":"chainlink:btc"}"#,
+        )
+        .expect("first PRR subscribed ack should be handled");
+        assert!(handled);
+        assert!(
+            outbound_receiver.try_recv().is_err(),
+            "duplicate PRR provider subscribe must not send after the first ack"
+        );
+    }
+
+    #[test]
     fn post_reconnection_replays_prr_reference_subscriptions() {
         let subscriptions = Arc::new(Mutex::new(BTreeMap::new()));
         subscriptions

@@ -558,11 +558,13 @@ impl DataClient for PolyResearchReferencePriceClient {
                     provider_subscription_id.as_str(),
                 ))?)?;
             } else if subscriptions_empty {
-                outbound.send_text(polyresearch_reference_unsubscribe_frame(None)?)?;
+                let unsubscribe_result =
+                    outbound.send_text(polyresearch_reference_unsubscribe_frame(None)?);
                 remove_polyresearch_pending_subscription(
                     &self.pending_provider_subscriptions,
                     &subscription_key,
                 )?;
+                unsubscribe_result?;
             }
         }
         Ok(())
@@ -720,11 +722,14 @@ fn replay_polyresearch_reference_subscriptions(
         .cloned()
         .collect::<Vec<_>>();
     for subscription in &subscriptions {
-        queue_polyresearch_reference_subscribe(
+        if let Err(error) = queue_polyresearch_reference_subscribe(
             subscription,
             pending_provider_subscriptions,
             outbound,
-        )?;
+        ) {
+            let _ = outbound.spawn_disconnect();
+            return Err(error);
+        }
     }
     Ok(())
 }
@@ -1937,6 +1942,47 @@ mod tests {
     }
 
     #[test]
+    fn failed_prr_replay_disconnects_outbound_task() {
+        let subscriptions = Arc::new(Mutex::new(BTreeMap::new()));
+        subscriptions
+            .lock()
+            .expect("test subscription state should lock")
+            .insert(
+                subscription_key("BTC", "polyresearch_primary", "BTC/USD"),
+                PolyResearchReferenceSubscription {
+                    asset: "BTC".to_string(),
+                    source_id: "polyresearch_primary".to_string(),
+                    symbol: "BTC/USD".to_string(),
+                },
+            );
+        let pending_provider_subscriptions = Arc::new(Mutex::new(VecDeque::new()));
+        let (outbound_sender, mut outbound_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
+        let outbound =
+            PolyResearchReferenceOutboundHandle::from_sender_with_send_failures(outbound_sender, 1);
+
+        let error = replay_polyresearch_reference_subscriptions(
+            &subscriptions,
+            &pending_provider_subscriptions,
+            &outbound,
+        )
+        .expect_err("failed PRR replay should be surfaced");
+
+        assert!(
+            error
+                .to_string()
+                .contains("PolyResearch reference outbound task unavailable"),
+            "unexpected replay error: {error}"
+        );
+        let outbound_command = outbound_receiver
+            .try_recv()
+            .expect("failed PRR replay should disconnect the outbound task");
+        let PolyResearchReferenceOutboundCommand::Disconnect(None) = outbound_command else {
+            panic!("failed replay should send a best-effort disconnect, got {outbound_command:?}");
+        };
+    }
+
+    #[test]
     fn unsubscribe_custom_data_removes_prr_reference_subscription() {
         let (mut client, _data_receiver) = fixture_client();
         client
@@ -2255,6 +2301,81 @@ mod tests {
             .expect("new PRR subscription should send without waiting for a canceled ack")
         else {
             panic!("new PRR subscription should send text");
+        };
+        assert_eq!(
+            eth_subscribe_frame,
+            r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["ETH/USD"]}}"#
+        );
+    }
+
+    #[test]
+    fn failed_bare_unsubscribe_removes_canceled_prr_pending_subscription() {
+        let (mut client, _data_receiver) = fixture_client();
+        let (outbound_sender, mut outbound_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
+        client.outbound = Some(PolyResearchReferenceOutboundHandle::from_sender(
+            outbound_sender,
+        ));
+
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                "BTC",
+                "polyresearch_primary",
+                "BTC/USD",
+            ))
+            .expect("BTC PRR reference subscription should be accepted");
+        let PolyResearchReferenceOutboundCommand::SendText(btc_subscribe_frame) = outbound_receiver
+            .try_recv()
+            .expect("first PRR subscription should send provider subscribe")
+        else {
+            panic!("first PRR subscription should send text");
+        };
+        assert_eq!(
+            btc_subscribe_frame,
+            r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["BTC/USD"]}}"#
+        );
+
+        client
+            .outbound
+            .as_ref()
+            .expect("test outbound should be installed")
+            .send_failures_remaining
+            .store(1, Ordering::SeqCst);
+        let error = client
+            .unsubscribe(&reference_price_unsubscribe_cmd(
+                "BTC",
+                "polyresearch_primary",
+                "BTC/USD",
+            ))
+            .expect_err("failed bare provider unsubscribe should be surfaced");
+
+        assert!(
+            error
+                .to_string()
+                .contains("PolyResearch reference outbound task unavailable"),
+            "unexpected bare unsubscribe error: {error}"
+        );
+        assert!(
+            client
+                .pending_provider_subscriptions
+                .lock()
+                .expect("provider subscription queue should not be poisoned")
+                .is_empty(),
+            "failed bare unsubscribe must not leave the canceled subscription at the queue head"
+        );
+
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                "ETH",
+                "polyresearch_secondary",
+                "ETH/USD",
+            ))
+            .expect("ETH PRR reference subscription should be accepted after cleanup failure");
+        let PolyResearchReferenceOutboundCommand::SendText(eth_subscribe_frame) = outbound_receiver
+            .try_recv()
+            .expect("new PRR subscription should send after failed bare cleanup")
+        else {
+            panic!("new PRR subscription should send text after failed bare cleanup");
         };
         assert_eq!(
             eth_subscribe_frame,

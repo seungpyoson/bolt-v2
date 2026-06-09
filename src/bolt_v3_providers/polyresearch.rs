@@ -427,11 +427,13 @@ impl DataClient for PolyResearchReferencePriceClient {
             let mut subscriptions = self.subscriptions.lock().map_err(|error| {
                 anyhow::anyhow!("PolyResearch subscription state poisoned: {error}")
             })?;
-            if subscriptions.contains_key(&subscription_key) {
-                false
-            } else {
-                subscriptions.insert(subscription_key, subscription.clone());
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                subscriptions.entry(subscription_key)
+            {
+                entry.insert(subscription.clone());
                 true
+            } else {
+                false
             }
         };
         if inserted && let Some(outbound) = self.outbound.as_ref() {

@@ -1165,6 +1165,8 @@ mod tests {
         panic::{AssertUnwindSafe, catch_unwind},
     };
 
+    use crate::bolt_v3_iv::health::IvSourceHealthState;
+
     use super::*;
 
     #[test]
@@ -1192,7 +1194,7 @@ mod tests {
             .insert("test-source".to_string(), 1);
         handle.upsert_source_health(source_health_with_generation(
             "test-source",
-            super::health::IvSourceHealthState::Active,
+            IvSourceHealthState::Active,
             1,
         ));
         handle
@@ -1201,7 +1203,7 @@ mod tests {
             .insert("test-source".to_string(), 2);
         handle.upsert_source_health(source_health_with_generation(
             "test-source",
-            super::health::IvSourceHealthState::Active,
+            IvSourceHealthState::Active,
             2,
         ));
 
@@ -1218,7 +1220,7 @@ mod tests {
 
     fn source_health_with_generation(
         source_id: &str,
-        state: super::health::IvSourceHealthState,
+        state: IvSourceHealthState,
         subscription_generation: u64,
     ) -> IvSourceHealth {
         IvSourceHealth {

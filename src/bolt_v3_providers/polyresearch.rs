@@ -1478,6 +1478,66 @@ mod tests {
     }
 
     #[test]
+    fn prr_provider_subscribe_frames_are_single_flight_until_ack() {
+        let (mut client, _data_receiver) = fixture_client();
+        let (outbound_sender, mut outbound_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
+        let outbound = PolyResearchReferenceOutboundHandle::from_sender(outbound_sender);
+        client.outbound = Some(outbound.clone());
+
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                "BTC",
+                "polyresearch_primary",
+                "BTC/USD",
+            ))
+            .expect("first PRR reference subscription should be accepted");
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                "ETH",
+                "polyresearch_secondary",
+                "ETH/USD",
+            ))
+            .expect("second PRR reference subscription should be accepted");
+
+        let PolyResearchReferenceOutboundCommand::SendText(first_frame) = outbound_receiver
+            .try_recv()
+            .expect("first PRR subscription should send provider subscribe")
+        else {
+            panic!("first PRR subscription should send text");
+        };
+        assert_eq!(
+            first_frame,
+            r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["BTC/USD"]}}"#
+        );
+        assert!(
+            outbound_receiver.try_recv().is_err(),
+            "second PRR provider subscribe must wait until the first subscription is acked"
+        );
+
+        let handled = polyresearch_reference_record_subscription_ack(
+            &client.subscriptions,
+            &client.pending_provider_subscriptions,
+            &client.provider_subscription_ids,
+            Some(&outbound),
+            r#"{"type":"subscribed","subscription_id":"chainlink:btc"}"#,
+        )
+        .expect("first PRR subscribed ack should be handled");
+        assert!(handled);
+
+        let PolyResearchReferenceOutboundCommand::SendText(second_frame) = outbound_receiver
+            .try_recv()
+            .expect("second PRR subscription should send only after first ack")
+        else {
+            panic!("second PRR subscription should send text after first ack");
+        };
+        assert_eq!(
+            second_frame,
+            r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["ETH/USD"]}}"#
+        );
+    }
+
+    #[test]
     fn post_reconnection_replays_prr_reference_subscriptions() {
         let subscriptions = Arc::new(Mutex::new(BTreeMap::new()));
         subscriptions

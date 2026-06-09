@@ -1074,6 +1074,22 @@ mod tests {
     }
 
     #[test]
+    fn transport_closed_state_reports_data_client_disconnected() {
+        assert!(
+            !chainlink_reference_transport_connected(true, Some(ConnectionMode::Closed)),
+            "closed Chainlink transport must fail closed instead of reporting stale connected state"
+        );
+        assert!(
+            !chainlink_reference_transport_connected(true, Some(ConnectionMode::Reconnect)),
+            "reconnecting Chainlink transport has not minted fresh auth headers and must not report connected"
+        );
+        assert!(chainlink_reference_transport_connected(
+            true,
+            Some(ConnectionMode::Active)
+        ));
+    }
+
+    #[test]
     fn subscribe_custom_data_records_catalog_backed_chainlink_reference_subscription() {
         let (mut client, _data_receiver) = fixture_client();
 

@@ -92,6 +92,39 @@ instrument_id = "BTC-USD.CHAINLINK"
 }
 
 #[test]
+fn strategy_rejects_legacy_reference_data_block() {
+    let err = try_parse_strategy(
+        r#"
+[reference_data]
+data_client_id = "chainlink_reference"
+instrument_id = "BTC-USD.CHAINLINK"
+
+[reference_current_price]
+asset = "BTC"
+sources = ["chainlink_primary"]
+min_valid_sources = 1
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.chainlink_primary]
+provider = "chainlink_ws"
+enabled = true
+required = false
+client_id = "chainlink_reference"
+instrument_id = "BTC-USD.CHAINLINK"
+"#,
+    )
+    .expect_err("legacy reference_data must fail closed at strategy schema parse");
+    assert!(
+        err.to_string().contains("reference_data"),
+        "legacy reference_data rejection should name the removed block, got: {err}"
+    );
+}
+
+#[test]
 fn reference_current_price_requires_explicit_source_table() {
     let err = try_parse_strategy(
         r#"

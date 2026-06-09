@@ -618,10 +618,75 @@ fn stale_block_marks_reference_price_source_stale() {
     assert_eq!(
         strategy
             .reference_price_source_health
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
+            .and_then(|health| health.observed_ts_ms()),
+        Some(1_100)
+    );
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
+            .and_then(|health| health.received_ts_ms()),
+        Some(1_110)
+    );
+    assert_eq!(
+        strategy
+            .reference_price_source_health
             .get(POLYRESEARCH_BACKUP_SOURCE_ID)
             .map(|health| health.status()),
         Some(ReferencePriceSourceStatus::Silent)
     );
+}
+
+#[test]
+fn stale_reference_price_status_survives_selection_block_refresh() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price
+        .sources
+        .get_mut(CHAINLINK_PRIMARY_SOURCE_ID)
+        .expect("chainlink source should exist")
+        .required = false;
+    reference_price
+        .sources
+        .get_mut(POLYRESEARCH_BACKUP_SOURCE_ID)
+        .expect("polyresearch source should exist")
+        .required = false;
+    reference_price.min_valid_sources = 2;
+    reference_price.max_source_age_ms = 50;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let _cache = register_test_strategy(&mut strategy);
+
+    let stale_primary = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.0,
+        1_100,
+        1_110,
+    );
+    DataActor::on_data(&mut strategy, &stale_primary).expect("stale quote should be handled");
+
+    let fresh_backup = reference_price_update(
+        POLYRESEARCH_BACKUP_SOURCE_ID,
+        POLYRESEARCH_REFERENCE_PROVIDER,
+        POLYRESEARCH_REFERENCE_SYMBOL,
+        101.0,
+        1_180,
+        1_190,
+    );
+    DataActor::on_data(&mut strategy, &fresh_backup)
+        .expect("backup quote should refresh block statuses");
+
+    let primary_health = strategy
+        .reference_price_source_health
+        .get(CHAINLINK_PRIMARY_SOURCE_ID)
+        .expect("primary health should exist");
+    assert_eq!(primary_health.status(), ReferencePriceSourceStatus::Stale);
+    assert_eq!(primary_health.observed_ts_ms(), Some(1_100));
+    assert_eq!(primary_health.received_ts_ms(), Some(1_110));
 }
 
 #[test]
@@ -672,9 +737,37 @@ fn drift_block_marks_reference_price_sources_unavailable() {
     assert_eq!(
         strategy
             .reference_price_source_health
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
+            .and_then(|health| health.observed_ts_ms()),
+        Some(1_100)
+    );
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
+            .and_then(|health| health.received_ts_ms()),
+        Some(1_110)
+    );
+    assert_eq!(
+        strategy
+            .reference_price_source_health
             .get(POLYRESEARCH_BACKUP_SOURCE_ID)
             .map(|health| health.status()),
         Some(ReferencePriceSourceStatus::DriftExceeded)
+    );
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get(POLYRESEARCH_BACKUP_SOURCE_ID)
+            .and_then(|health| health.observed_ts_ms()),
+        Some(1_100)
+    );
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get(POLYRESEARCH_BACKUP_SOURCE_ID)
+            .and_then(|health| health.received_ts_ms()),
+        Some(1_110)
     );
 }
 

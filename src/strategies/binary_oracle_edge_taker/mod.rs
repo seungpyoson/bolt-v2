@@ -1549,25 +1549,59 @@ impl BinaryOracleEdgeTaker {
                 if !reference_price_source_is_runtime_available(reference_price, source) {
                     return None;
                 }
-                let status = match self.reference_price_quotes.get(source_id) {
-                    Some(quote)
-                        if quote.observed_ts_ms() < interval_start_ms
-                            || quote.observed_ts_ms() > interval_end_ms
-                            || quote.observed_ts_ms() > now_ms
-                            || now_ms.saturating_sub(quote.observed_ts_ms())
-                                > reference_price.max_source_age_ms =>
-                    {
-                        ReferencePriceSourceStatus::Stale
-                    }
-                    Some(_) if drift_exceeded => ReferencePriceSourceStatus::DriftExceeded,
-                    Some(_) => ReferencePriceSourceStatus::Available,
-                    None => ReferencePriceSourceStatus::Silent,
-                };
-                Some((source_id.clone(), status))
+                let (status, observed_ts_ms, received_ts_ms) =
+                    match self.reference_price_quotes.get(source_id) {
+                        Some(quote)
+                            if quote.observed_ts_ms() < interval_start_ms
+                                || quote.observed_ts_ms() > interval_end_ms
+                                || quote.observed_ts_ms() > now_ms
+                                || now_ms.saturating_sub(quote.observed_ts_ms())
+                                    > reference_price.max_source_age_ms =>
+                        {
+                            (
+                                ReferencePriceSourceStatus::Stale,
+                                Some(quote.observed_ts_ms()),
+                                Some(quote.received_ts_ms()),
+                            )
+                        }
+                        Some(quote) if drift_exceeded => (
+                            ReferencePriceSourceStatus::DriftExceeded,
+                            Some(quote.observed_ts_ms()),
+                            Some(quote.received_ts_ms()),
+                        ),
+                        Some(quote) => (
+                            ReferencePriceSourceStatus::Available,
+                            Some(quote.observed_ts_ms()),
+                            Some(quote.received_ts_ms()),
+                        ),
+                        None => self
+                            .reference_price_source_health
+                            .get(source_id)
+                            .map(|health| match health.status() {
+                                ReferencePriceSourceStatus::AuthRejected
+                                | ReferencePriceSourceStatus::SubscriptionRejected
+                                | ReferencePriceSourceStatus::Stale
+                                | ReferencePriceSourceStatus::MalformedFrame
+                                | ReferencePriceSourceStatus::Disconnected
+                                | ReferencePriceSourceStatus::DriftExceeded => (
+                                    health.status(),
+                                    health.observed_ts_ms(),
+                                    health.received_ts_ms(),
+                                ),
+                                _ => (ReferencePriceSourceStatus::Silent, None, None),
+                            })
+                            .unwrap_or((ReferencePriceSourceStatus::Silent, None, None)),
+                    };
+                Some((source_id.clone(), status, observed_ts_ms, received_ts_ms))
             })
             .collect::<Vec<_>>();
-        for (source_id, status) in updates {
-            self.mark_reference_price_source_status(&source_id, status, None, None);
+        for (source_id, status, observed_ts_ms, received_ts_ms) in updates {
+            self.mark_reference_price_source_status(
+                &source_id,
+                status,
+                observed_ts_ms,
+                received_ts_ms,
+            );
         }
     }
 

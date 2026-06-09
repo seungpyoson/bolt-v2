@@ -231,10 +231,7 @@ fn resolved_surface(
     }
 }
 
-fn manifest_time_to_nanos(
-    field: &'static str,
-    value: i64,
-) -> Result<UnixNanos, ManifestError> {
+fn manifest_time_to_nanos(field: &'static str, value: i64) -> Result<UnixNanos, ManifestError> {
     u64::try_from(value)
         .map(UnixNanos::from)
         .map_err(|_| ManifestError::NegativeTime { field, value })

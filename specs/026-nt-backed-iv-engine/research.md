@@ -127,7 +127,7 @@ Derived IV is available when `IvHelperPolicy` selects a ledger-supported NT help
 
 ## Decision: Projection is explicit
 
-Scalar IV from smiles, surfaces, aggregate products, or IV evidence requires `IvProjectionPolicy`, including `max_projection_input_skew_ns`.
+Scalar IV from smiles, surfaces, aggregate products with configured aggregate IV values, or IV evidence requires `IvProjectionPolicy`, including `max_projection_input_skew_ns`.
 
 **Rationale**: Projection can change the answer. It must name the basis, source eligibility, strike/tenor selection, evidence mapping, temporal skew bound, and any interpolation/fallback/quorum dependency.
 

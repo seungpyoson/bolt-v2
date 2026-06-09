@@ -128,6 +128,9 @@ gamma_field = "operator_gamma_field"
 vega_field = "operator_vega_field"
 theta_field = "operator_theta_field"
 rho_field = "operator_rho_field"
+iv_field = "operator_aggregate_iv_field"
+iv_basis = "mark"
+iv_convention = "operator_iv_convention"
 
 [iv.profiles.sources.selector.nt_params]
 operator_nt_param = "operator_value"

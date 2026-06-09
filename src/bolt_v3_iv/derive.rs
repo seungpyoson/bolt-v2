@@ -301,6 +301,19 @@ pub fn derive_iv(
             field: "iv".to_string(),
         });
     }
+    let greeks = IvGreekValues {
+        delta: Some(helper_result.delta),
+        gamma: Some(helper_result.gamma),
+        vega: Some(helper_result.vega),
+        theta: Some(helper_result.theta),
+        rho: None,
+    };
+    if greeks.has_non_finite_value() {
+        return Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::InvalidIvValue,
+            field: "iv".to_string(),
+        });
+    }
 
     let helper_identity = IvHelperIdentity {
         nt_symbol: policy.nt_helper_symbol.nt_symbol().to_string(),
@@ -361,13 +374,7 @@ pub fn derive_iv(
 
     Ok(IvDerivedOutput {
         point,
-        greeks: IvGreekValues {
-            delta: Some(helper_result.delta),
-            gamma: Some(helper_result.gamma),
-            vega: Some(helper_result.vega),
-            theta: Some(helper_result.theta),
-            rho: None,
-        },
+        greeks,
         helper_identity,
         provenance,
     })

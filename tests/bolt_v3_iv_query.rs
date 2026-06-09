@@ -12,8 +12,9 @@ use bolt_v2::bolt_v3_iv::{
     error::IvRejectReason,
     health::{IvSourceHealth, IvSourceHealthState},
     ingest::{
-        IvBasisValue, IvCustomIvPayload, IvGreekValues, IvIngestEvent, IvOptionChainQuotePayload,
-        IvOptionChainSlicePayload, IvOptionChainStrikePayload, IvOptionGreeksPayload, IvRawPayload,
+        IvAggregateGreeksPayload, IvAggregateIvValue, IvBasisValue, IvCustomIvPayload,
+        IvGreekValues, IvIngestEvent, IvOptionChainQuotePayload, IvOptionChainSlicePayload,
+        IvOptionChainStrikePayload, IvOptionGreeksPayload, IvRawPayload,
     },
     policy::{
         IvExtrapolationPolicy, IvFallbackPolicy, IvInterpolationMethod, IvInterpolationPolicy,
@@ -95,6 +96,41 @@ fn custom_iv_event(
         payload: IvRawPayload::CustomImpliedVolatility(IvCustomIvPayload {
             iv_evidence_kind: "configured-custom-evidence-kind".to_string(),
             value,
+            nt_custom_data_json: None,
+        }),
+    }
+}
+
+fn aggregate_greeks_event(
+    source_id: &str,
+    selector_fingerprint: &str,
+    ts: u64,
+    aggregate_iv: Option<IvAggregateIvValue>,
+) -> IvIngestEvent {
+    IvIngestEvent {
+        profile_id: "configured-profile".to_string(),
+        source_id: source_id.to_string(),
+        source_kind: IvSourceKind::AggregateGreeks,
+        selector_fingerprint: selector_fingerprint.to_string(),
+        nt_revision: "configured-nt-revision".to_string(),
+        nt_evidence_path: "configured/nt/evidence/path.rs".to_string(),
+        nt_symbol: "ConfiguredAggregateGreeksEvent".to_string(),
+        ts_event_ns: UnixNanos::new(ts),
+        ts_init_ns: Some(UnixNanos::new(ts.saturating_sub(1))),
+        received_ts_ns: UnixNanos::new(ts + 1),
+        subscription_generation: 1,
+        source_health_state: IvSourceHealthState::Active,
+        payload: IvRawPayload::AggregateGreeks(IvAggregateGreeksPayload {
+            aggregate_key: "configured-aggregate-key".to_string(),
+            underlying_selectors: vec!["configured-underlying-selector".to_string()],
+            greeks: IvGreekValues {
+                delta: Some(1.25),
+                gamma: Some(0.15),
+                vega: Some(2.5),
+                theta: Some(-0.03),
+                rho: Some(0.01),
+            },
+            aggregate_iv,
             nt_custom_data_json: None,
         }),
     }
@@ -230,7 +266,7 @@ fn selector_scoped_projection_authorization() -> IvSelectorAuthorization {
 }
 
 fn point_query(source_filter: Option<&str>, ts: u64) -> IvQuery {
-    IvQuery::Product(IvProductQuery {
+    IvQuery::product(IvProductQuery {
         strategy_id: "configured-strategy".to_string(),
         profile_id: "configured-profile".to_string(),
         product_kind: IvProductKind::IvPoint,
@@ -620,7 +656,7 @@ fn two_strategy_instances_query_shared_engine_state_with_different_selectors() {
         shared_state,
     );
     let query = |strategy_id: &str, source_id: &str, as_of_ns: u64| {
-        IvQuery::Product(IvProductQuery {
+        IvQuery::product(IvProductQuery {
             strategy_id: strategy_id.to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::IvPoint,
@@ -774,7 +810,7 @@ fn projected_scalar_query_uses_configured_fallback_policy_when_primary_projectio
         }]);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::ProjectedScalarIv,
@@ -828,7 +864,7 @@ fn projected_scalar_query_applies_configured_interpolation_policy_for_smile_inpu
         }]);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::ProjectedScalarIv,
@@ -862,6 +898,49 @@ fn projected_scalar_query_applies_configured_interpolation_policy_for_smile_inpu
 }
 
 #[test]
+fn projected_scalar_smile_query_records_option_convention_not_nt_symbol() {
+    let mut store = IvStore::empty();
+    store.ingest_event(option_chain_event(2_010)).unwrap();
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy_with_refs(1, None, None, None)]);
+
+    let product = handle
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(IvSelector::SmileQuery {
+                    series_id: "configured-series".to_string(),
+                    side: None,
+                    basis: IvBasis::Mark,
+                    as_of_ns: UnixNanos::new(2_010),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_010),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::ProjectedScalarIv(projected) = product else {
+        panic!("expected projected scalar IV product");
+    };
+    let Some(convention) = projected
+        .provenance
+        .policy_decisions
+        .iter()
+        .find_map(|decision| match decision {
+            IvPolicyDecision::ProjectionDecision { convention, .. } => Some(convention),
+            _ => None,
+        })
+    else {
+        panic!("expected projection policy decision");
+    };
+    assert!((projected.value - 0.42).abs() < f64::EPSILON);
+    assert_eq!(convention, "configured-convention");
+}
+
+#[test]
 fn projected_scalar_query_interpolates_exact_single_point_smile_when_policy_allows_one_point() {
     let mut event = option_chain_event(2_010);
     let IvRawPayload::OptionChainSlice(payload) = &mut event.payload else {
@@ -889,7 +968,7 @@ fn projected_scalar_query_interpolates_exact_single_point_smile_when_policy_allo
         }]);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::ProjectedScalarIv,
@@ -947,7 +1026,7 @@ fn projected_scalar_query_uses_fallback_when_single_smile_interpolation_rejects(
         }]);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::ProjectedScalarIv,
@@ -1011,7 +1090,7 @@ fn projected_scalar_query_requires_configured_quorum_before_projecting() {
         }]);
 
     assert_eq!(
-        handle.query(&IvQuery::Product(IvProductQuery {
+        handle.query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::ProjectedScalarIv,
@@ -1067,7 +1146,7 @@ fn projected_scalar_point_query_aggregates_matching_sources_for_quorum() {
         }]);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::ProjectedScalarIv,
@@ -1149,7 +1228,7 @@ fn selector_scoped_projection_rejects_when_any_input_source_is_not_authorized() 
     }]);
 
     assert_eq!(
-        handle.query(&IvQuery::Product(IvProductQuery {
+        handle.query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::ProjectedScalarIv,
@@ -1209,7 +1288,7 @@ fn projected_scalar_query_rejects_when_any_input_source_is_stale() {
         }]);
 
     assert_eq!(
-        handle.query(&IvQuery::Product(IvProductQuery {
+        handle.query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::ProjectedScalarIv,
@@ -1265,7 +1344,7 @@ fn projected_scalar_custom_evidence_query_aggregates_matching_sources_for_quorum
         }]);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::ProjectedScalarIv,
@@ -1306,6 +1385,157 @@ fn projected_scalar_custom_evidence_query_aggregates_matching_sources_for_quorum
 }
 
 #[test]
+fn projected_scalar_aggregate_greeks_query_projects_configured_aggregate_iv() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(aggregate_greeks_event(
+            "configured-aggregate-source",
+            "configured-aggregate-selector",
+            2_000,
+            Some(IvAggregateIvValue {
+                basis: IvBasis::Mark,
+                value: test_implied_volatility(39),
+                convention: convention(),
+            }),
+        ))
+        .unwrap();
+    let mut projection_policy = projection_policy_with_refs(1, None, None, None);
+    projection_policy.source_eligibility = vec!["configured-aggregate-source".to_string()];
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy]);
+
+    let product = handle
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(IvSelector::AggregateGreeksQuery {
+                    aggregate_key: "configured-aggregate-key".to_string(),
+                    underlying_selectors: vec!["configured-underlying-selector".to_string()],
+                    as_of_ns: UnixNanos::new(2_000),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::ProjectedScalarIv(projected) = product else {
+        panic!("expected projected scalar IV product");
+    };
+    assert_eq!(projected.value, test_implied_volatility(39));
+    assert_eq!(
+        projected.provenance.nt_symbol,
+        "ConfiguredAggregateGreeksEvent"
+    );
+}
+
+#[test]
+fn projected_scalar_aggregate_greeks_query_rejects_without_configured_aggregate_iv() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(aggregate_greeks_event(
+            "configured-aggregate-source",
+            "configured-aggregate-selector",
+            2_000,
+            None,
+        ))
+        .unwrap();
+    let mut projection_policy = projection_policy_with_refs(1, None, None, None);
+    projection_policy.source_eligibility = vec!["configured-aggregate-source".to_string()];
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy]);
+
+    assert_eq!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(IvSelector::AggregateGreeksQuery {
+                    aggregate_key: "configured-aggregate-key".to_string(),
+                    underlying_selectors: vec!["configured-underlying-selector".to_string()],
+                    as_of_ns: UnixNanos::new(2_000),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        })),
+        Err(IvQueryError::ProjectionRejected)
+    );
+}
+
+#[test]
+fn projected_scalar_aggregate_greeks_query_aggregates_matching_sources_for_quorum() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(aggregate_greeks_event(
+            "configured-aggregate-source",
+            "configured-aggregate-selector",
+            2_000,
+            Some(IvAggregateIvValue {
+                basis: IvBasis::Mark,
+                value: test_implied_volatility(39),
+                convention: convention(),
+            }),
+        ))
+        .unwrap();
+    store
+        .ingest_event(aggregate_greeks_event(
+            "configured-aggregate-backup-source",
+            "configured-aggregate-backup-selector",
+            2_000,
+            Some(IvAggregateIvValue {
+                basis: IvBasis::Mark,
+                value: test_implied_volatility(41),
+                convention: convention(),
+            }),
+        ))
+        .unwrap();
+    let mut projection_policy =
+        projection_policy_with_refs(2, None, None, Some("configured-quorum-policy"));
+    projection_policy.source_eligibility = vec![
+        "configured-aggregate-source".to_string(),
+        "configured-aggregate-backup-source".to_string(),
+    ];
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy])
+        .with_quorum_policies(vec![IvQuorumPolicy {
+            policy_id: "configured-quorum-policy".to_string(),
+            minimum_sources: 2,
+            eligible_sources: vec![
+                "configured-aggregate-source".to_string(),
+                "configured-aggregate-backup-source".to_string(),
+            ],
+            agreement_band: 0.05,
+            tie_break: IvQuorumTieBreak::Mean,
+        }]);
+
+    let product = handle
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(IvSelector::AggregateGreeksQuery {
+                    aggregate_key: "configured-aggregate-key".to_string(),
+                    underlying_selectors: vec!["configured-underlying-selector".to_string()],
+                    as_of_ns: UnixNanos::new(2_000),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::ProjectedScalarIv(projected) = product else {
+        panic!("expected projected scalar IV product");
+    };
+    assert!((projected.value - test_implied_volatility(40)).abs() < f64::EPSILON);
+}
+
+#[test]
 fn projected_scalar_derived_iv_query_does_not_quorum_over_request_supplied_outputs() {
     let mut projection_policy =
         projection_policy_with_refs(2, None, None, Some("configured-quorum-policy"));
@@ -1340,7 +1570,7 @@ fn projected_scalar_derived_iv_query_does_not_quorum_over_request_supplied_outpu
         request_inputs.source_id = source_id.to_string();
         request_inputs.input_event_ids = vec![format!("{source_id}-event")];
         handle
-            .query(&IvQuery::Product(IvProductQuery {
+            .query(&IvQuery::product(IvProductQuery {
                 strategy_id: "configured-strategy".to_string(),
                 profile_id: "configured-profile".to_string(),
                 product_kind: IvProductKind::DerivedIv,
@@ -1355,7 +1585,7 @@ fn projected_scalar_derived_iv_query_does_not_quorum_over_request_supplied_outpu
     }
 
     assert_eq!(
-        handle.query(&IvQuery::Product(IvProductQuery {
+        handle.query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::ProjectedScalarIv,
@@ -1414,7 +1644,7 @@ fn projected_scalar_derived_iv_query_derives_profile_inputs_for_quorum_without_w
     }]);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::ProjectedScalarIv,
@@ -1556,7 +1786,7 @@ fn projected_scalar_query_uses_configured_projection_policy() {
         }]);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::ProjectedScalarIv,
@@ -1601,7 +1831,7 @@ fn source_health_query_applies_configured_state_filter() {
     ]);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::SourceHealth,
@@ -1617,6 +1847,40 @@ fn source_health_query_applies_configured_state_filter() {
     };
     assert_eq!(health.source_id, "configured-stale-source");
     assert_eq!(health.subscription_state, IvSourceHealthState::Stale);
+}
+
+#[test]
+fn source_health_query_prefers_current_generation_for_source_filter() {
+    let mut current_generations = BTreeMap::new();
+    current_generations.insert("configured-source".to_string(), 2);
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_current_subscription_generations(current_generations)
+    .with_source_health(vec![
+        source_health_with_generation("configured-source", IvSourceHealthState::Stale, 1),
+        source_health_with_generation("configured-source", IvSourceHealthState::Active, 2),
+    ]);
+
+    let product = handle
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::SourceHealth,
+            selector: IvSelector::SourceHealthQuery {
+                source_filter: Some("configured-source".to_string()),
+                state_filter: Vec::new(),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::SourceHealth(health) = product else {
+        panic!("expected source health product");
+    };
+    assert_eq!(health.subscription_generation, 2);
+    assert_eq!(health.subscription_state, IvSourceHealthState::Active);
 }
 
 #[test]
@@ -1636,7 +1900,7 @@ fn source_health_rejected_filter_returns_active_rows_with_rejection_diagnostics(
     );
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::SourceHealth,
@@ -1670,7 +1934,7 @@ fn selector_scoped_source_health_query_uses_allowed_source_ids() {
     ]);
 
     assert!(matches!(
-        handle.query(&IvQuery::Product(IvProductQuery {
+        handle.query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::SourceHealth,
@@ -1682,7 +1946,7 @@ fn selector_scoped_source_health_query_uses_allowed_source_ids() {
         Ok(IvQueryProduct::SourceHealth(_))
     ));
     assert_eq!(
-        handle.query(&IvQuery::Product(IvProductQuery {
+        handle.query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::SourceHealth,
@@ -1709,7 +1973,7 @@ fn derived_iv_query_uses_engine_owned_nt_helper_inputs() {
     .with_derived_inputs(vec![complete_inputs()]);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::DerivedIv,
@@ -1762,7 +2026,7 @@ fn derived_iv_query_resolves_profile_owned_input_policy_before_helper_call() {
     .with_derived_inputs(vec![request_inputs, profile_source_inputs]);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::DerivedIv,
@@ -1826,7 +2090,7 @@ fn derived_iv_query_rejects_stale_profile_owned_input_candidate() {
     .with_derived_inputs(vec![request_inputs, profile_source_inputs]);
 
     assert_eq!(
-        handle.query(&IvQuery::Product(IvProductQuery {
+        handle.query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::DerivedIv,
@@ -1874,7 +2138,7 @@ fn derived_iv_query_rejects_old_generation_profile_owned_input_candidate() {
     .with_derived_inputs(vec![request_inputs, profile_source_inputs]);
 
     assert_eq!(
-        handle.query(&IvQuery::Product(IvProductQuery {
+        handle.query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::DerivedIv,
@@ -1905,7 +2169,7 @@ fn derived_iv_helper_output_rejection_updates_source_health() {
     .with_derived_inputs(vec![complete_inputs()]);
 
     assert_eq!(
-        handle.query(&IvQuery::Product(IvProductQuery {
+        handle.query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::DerivedIv,
@@ -1954,7 +2218,7 @@ fn derived_iv_query_rejections_are_retained_by_profile_memory_bounds() {
         request_inputs.source_id = format!("configured-derived-source-{index}");
         request_inputs.input_event_ids = vec![format!("configured-derived-event-{index}")];
         assert_eq!(
-            handle.query(&IvQuery::Product(IvProductQuery {
+            handle.query(&IvQuery::product(IvProductQuery {
                 strategy_id: "configured-strategy".to_string(),
                 profile_id: "configured-profile".to_string(),
                 product_kind: IvProductKind::DerivedIv,
@@ -2016,7 +2280,7 @@ fn derived_iv_outputs_are_retained_by_profile_memory_bounds() {
 
     for as_of_ns in [UnixNanos::new(2_000), UnixNanos::new(2_010)] {
         handle
-            .query(&IvQuery::Product(IvProductQuery {
+            .query(&IvQuery::product(IvProductQuery {
                 strategy_id: "configured-strategy".to_string(),
                 profile_id: "configured-profile".to_string(),
                 product_kind: IvProductKind::DerivedIv,
@@ -2049,7 +2313,7 @@ fn derived_iv_query_deduplicates_cached_output_for_same_source_helper_and_timest
     )])
     .with_derived_inputs(vec![complete_inputs()]);
 
-    let query = IvQuery::Product(IvProductQuery {
+    let query = IvQuery::product(IvProductQuery {
         strategy_id: "configured-strategy".to_string(),
         profile_id: "configured-profile".to_string(),
         product_kind: IvProductKind::DerivedIv,
@@ -2113,7 +2377,7 @@ fn derived_iv_query_uses_request_supplied_inputs_without_preseeded_bundle() {
     )]);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::DerivedIv,
@@ -2173,7 +2437,7 @@ fn request_supplied_derived_iv_does_not_persist_to_projection_cache() {
     .with_projection_policies(vec![projection_policy_with_refs(1, None, None, None)]);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::DerivedIv,
@@ -2188,7 +2452,7 @@ fn request_supplied_derived_iv_does_not_persist_to_projection_cache() {
     assert!(matches!(product, IvQueryProduct::DerivedIv(_)));
 
     assert_eq!(
-        handle.query(&IvQuery::Product(IvProductQuery {
+        handle.query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::ProjectedScalarIv,
@@ -2228,7 +2492,7 @@ fn derived_iv_query_uses_helper_input_policy_ref_not_first_policy_for_helper() {
     .with_derived_input_policies(vec![permissive_policy, strict_policy]);
 
     assert_eq!(
-        handle.query(&IvQuery::Product(IvProductQuery {
+        handle.query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: IvProductKind::DerivedIv,

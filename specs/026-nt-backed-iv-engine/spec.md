@@ -124,7 +124,7 @@ As a strategy author, I need a strategy-agnostic IV API that exposes all strateg
 - A derived-IV request has price and underlying inputs from different source timestamps outside configured skew; derivation rejects rather than blending silently.
 - A custom implied-volatility data event represents index-style IV evidence rather than instrument-level IV; it is stored as IV evidence and never mislabelled as an option-chain point.
 - A strategy requests scalar IV when only a smile is available; the request must choose a configured projection policy or reject.
-- A projection combines smiles, surfaces, aggregate products, or IV evidence with event times outside configured projection skew; the query rejects.
+- A projection combines smiles, surfaces, aggregate products with configured aggregate IV values, or IV evidence with event times outside configured projection skew; the query rejects.
 - A strategy requests interpolation outside the configured smile or surface domain; the query rejects unless TOML explicitly permits that extrapolation mode.
 - A query requires quorum across sources and the configured quorum threshold is not met; the query rejects instead of falling back to a single source.
 - A source ID is renamed inside an IV profile; no other TOML section is edited to preserve strategy authorization for that profile.
@@ -172,7 +172,7 @@ As a strategy author, I need a strategy-agnostic IV API that exposes all strateg
 - **FR-036**: System MUST define `IvSelector` as a typed Rust-validated union for option-greeks, option-chain, aggregate-greeks, custom-implied-volatility, smile, surface, and IV-evidence selectors.
 - **FR-037**: System MUST reject source configs and queries whose source-scope or query-scope selector variant does not match the configured source kind or requested product kind.
 - **FR-038**: System MUST define `IvProvenance` and attach it to every raw event, indexed product, derived product, projection, policy output, and rejection.
-- **FR-039**: System MUST define `IvProjectionPolicy` for scalar projection from smiles, surfaces, aggregate products, or custom IV evidence and MUST reject scalar requests when the policy is absent, invalid, or input timestamps exceed configured projection skew.
+- **FR-039**: System MUST define `IvProjectionPolicy` for scalar projection from smiles, surfaces, aggregate products with configured aggregate IV values, or custom IV evidence and MUST reject scalar requests when the policy is absent, invalid, input aggregate products lack aggregate IV values, or input timestamps exceed configured projection skew.
 - **FR-040**: System MUST define `IvDerivedInputPolicy` and `IvDerivedInputSet` so derived IV queries either supply or profile-resolve every NT helper input with provenance.
 - **FR-041**: System MUST bind live sources through NT runtime subscription APIs and event handlers, with source-health transitions for configured, subscribing, active, stale, unsubscribing, removed, subscription-failed, and rejected states.
 - **FR-042**: System MUST generate the capability ledger from Cargo metadata and `Cargo.lock` evidence for the pinned NT checkout; handwritten NT revisions or local checkout paths are not accepted.
@@ -213,7 +213,7 @@ As a strategy author, I need a strategy-agnostic IV API that exposes all strateg
 - **IvDerivedInputPolicy**: Typed policy for resolving option price, underlying, strike, side, time-to-expiry, rate, carry, timestamps, and convention.
 - **IvDerivedInputSet**: Resolved helper input bundle with provenance for one derived-IV request.
 - **IvDerivedPoint**: IV and greeks produced by NT math helpers with complete input provenance.
-- **IvProjectionPolicy**: Typed policy for scalar projection from smile, surface, aggregate, or evidence products.
+- **IvProjectionPolicy**: Typed policy for scalar projection from smile, surface, aggregate-IV, or evidence products.
 - **IvInterpolationPolicy**: Typed policy for smile/surface interpolation and extrapolation rejection or permission.
 - **IvFallbackPolicy**: Typed policy for ordered source/product/basis fallback.
 - **IvQuorumPolicy**: Typed policy for multi-source agreement before returning a value.

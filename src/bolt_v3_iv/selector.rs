@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     derive::IvDerivedInputSet,
     time::UnixNanos,
-    types::{IvBasis, IvProductKind},
+    types::{IvBasis, IvConvention, IvProductKind},
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -26,6 +26,9 @@ pub enum IvSelector {
         vega_field: String,
         theta_field: String,
         rho_field: String,
+        iv_field: Option<String>,
+        iv_basis: Option<IvBasis>,
+        iv_convention: Option<IvConvention>,
         nt_params: toml::Value,
     },
     SourceCustomImpliedVolatility {

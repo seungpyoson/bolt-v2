@@ -861,6 +861,9 @@ fn validate_selector_not_empty(context: &str, selector: &IvSelector) -> Vec<Stri
             vega_field,
             theta_field,
             rho_field,
+            iv_field,
+            iv_basis,
+            iv_convention,
             ..
         } if aggregate_key.trim().is_empty()
             || underlying_selectors.is_empty()
@@ -868,10 +871,15 @@ fn validate_selector_not_empty(context: &str, selector: &IvSelector) -> Vec<Stri
             || gamma_field.trim().is_empty()
             || vega_field.trim().is_empty()
             || theta_field.trim().is_empty()
-            || rho_field.trim().is_empty() =>
+            || rho_field.trim().is_empty()
+            || iv_field
+                .as_ref()
+                .is_some_and(|field| field.trim().is_empty())
+            || (iv_field.is_some() || iv_basis.is_some() || iv_convention.is_some())
+                && !(iv_field.is_some() && iv_basis.is_some() && iv_convention.is_some()) =>
         {
             vec![format!(
-                "{context}.selector.aggregate_key, underlying_selectors, and greek field names must be non-empty"
+                "{context}.selector.aggregate_key, underlying_selectors, greek field names, and optional aggregate IV mapping must be complete and non-empty"
             )]
         }
         IvSelector::SourceCustomImpliedVolatility {

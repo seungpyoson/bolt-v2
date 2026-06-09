@@ -332,6 +332,7 @@ fn aggregate_greeks_events_are_preserved_and_indexed_as_products() {
                     theta: None,
                     rho: None,
                 },
+                aggregate_iv: None,
                 nt_custom_data_json: None,
             }),
         ))

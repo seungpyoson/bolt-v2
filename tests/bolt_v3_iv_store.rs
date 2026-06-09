@@ -241,6 +241,61 @@ fn zero_iv_payload_preserves_raw_event_without_indexing_products() {
 }
 
 #[test]
+fn non_finite_greek_payload_preserves_raw_event_without_indexing_products() {
+    let mut event = greeks_event();
+    let IvRawPayload::OptionGreeks(payload) = &mut event.payload else {
+        panic!("fixture must be option greeks");
+    };
+    payload.greeks.delta = Some(f64::NAN);
+
+    let mut store = IvStore::empty();
+    let result = store.ingest_event(event);
+
+    assert_eq!(result, Err(IvStoreError::InvalidIvValue));
+    assert_eq!(store.raw_events().len(), 1);
+    assert!(store.iv_points().is_empty());
+    assert!(store.greeks_points().is_empty());
+}
+
+#[test]
+fn non_finite_aggregate_greek_preserves_raw_event_without_indexing_products() {
+    let mut store = IvStore::empty();
+    let result = store.ingest_event(IvIngestEvent {
+        profile_id: "configured-profile".to_string(),
+        source_id: "configured-source".to_string(),
+        source_kind: IvSourceKind::AggregateGreeks,
+        selector_fingerprint: "configured-selector-fingerprint".to_string(),
+        nt_revision: "configured-nt-revision".to_string(),
+        nt_evidence_path: "configured/nt/evidence/path.rs".to_string(),
+        nt_symbol: "ConfiguredNtSymbol".to_string(),
+        ts_event_ns: UnixNanos::new(2_000),
+        ts_init_ns: Some(UnixNanos::new(1_900)),
+        received_ts_ns: UnixNanos::new(2_100),
+        subscription_generation: 14,
+        source_health_state: IvSourceHealthState::Active,
+        payload: IvRawPayload::AggregateGreeks(
+            bolt_v2::bolt_v3_iv::ingest::IvAggregateGreeksPayload {
+                aggregate_key: "configured-aggregate-key".to_string(),
+                underlying_selectors: vec!["configured-underlying-selector".to_string()],
+                greeks: IvGreekValues {
+                    delta: Some(0.25),
+                    gamma: Some(f64::INFINITY),
+                    vega: Some(1.5),
+                    theta: None,
+                    rho: None,
+                },
+                aggregate_iv: None,
+                nt_custom_data_json: None,
+            },
+        ),
+    });
+
+    assert_eq!(result, Err(IvStoreError::InvalidIvValue));
+    assert_eq!(store.raw_events().len(), 1);
+    assert!(store.aggregate_greeks().is_empty());
+}
+
+#[test]
 fn indexed_products_reject_incomplete_provenance() {
     let mut store = IvStore::empty();
     store.ingest_event(greeks_event()).unwrap();

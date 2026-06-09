@@ -106,14 +106,14 @@ The lifecycle plan derives start and stop subscription plans from the same root 
 
 ## Projection Contract
 
-Projection is required when a query asks for a scalar value from a smile, surface, aggregate, or custom-IV-evidence product.
+Projection is required when a query asks for a scalar value from a smile, surface, aggregate product with a configured aggregate IV value, or custom-IV-evidence product.
 
 Projection:
 
 - must name the configured projection kind
 - must identify input products and selector fingerprints
 - must record basis, convention, timestamp, source eligibility, and evidence mapping
-- must enforce the configured `max_projection_input_skew_ns` across all input points, smiles, surfaces, aggregate products, or IV evidence
+- must enforce the configured `max_projection_input_skew_ns` across all input points, smiles, surfaces, aggregate products with aggregate IV values, or IV evidence
 - must reject if required interpolation, fallback, or quorum policies are absent or fail
 
 ## Derived Input Contract
@@ -161,7 +161,7 @@ Runtime binding:
 - maps custom-implied-volatility sources to ledger-classified NT custom-data subscription operations
 - routes incoming NT events into raw preservation before indexing or projection
 - records subscription failures, unsupported mappings, stale generations, unsupported conventions, missing IV basis, and malformed custom data in `IvSourceHealth`
-- applies IV root reloads to the existing runtime query state so new subscription generations can satisfy current queries, old generations and removed profiles/sources cannot, and registered strategy handles do not need to be recreated
+- applies IV root reloads to the existing runtime query state so new subscription generations can satisfy current queries, old generations and removed profiles/sources cannot, and already-issued strategy handles for profiles present before reload do not need to be recreated
 
 ## Capability Ledger Contract
 

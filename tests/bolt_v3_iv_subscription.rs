@@ -279,7 +279,7 @@ fn runtime_engine_ingests_nt_option_greeks_as_queryable_iv_point() {
         engine.state_for_profile("iv-profile").unwrap(),
     );
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "iv-profile".to_string(),
             product_kind: IvProductKind::IvPoint,
@@ -372,7 +372,7 @@ fn runtime_engine_ingests_nt_option_chain_slice_as_queryable_smile() {
         engine.state_for_profile("iv-profile").unwrap(),
     );
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "iv-profile".to_string(),
             product_kind: IvProductKind::Smile,
@@ -495,6 +495,9 @@ fn aggregate_greeks_sources_plan_topic_subscribe_operations() {
         vega_field: "configured-vega-field".to_string(),
         theta_field: "configured-theta-field".to_string(),
         rho_field: "configured-rho-field".to_string(),
+        iv_field: None,
+        iv_basis: None,
+        iv_convention: None,
         nt_params: toml::toml! {
             configured_nt_param = "aggregate-value"
         }
@@ -651,7 +654,7 @@ configured_source_param = "greeks-source-value"
         engine.state_for_profile("iv-profile").unwrap(),
     );
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "iv-profile".to_string(),
             product_kind: IvProductKind::SourceHealth,
@@ -753,7 +756,7 @@ configured_source_param = "greeks-source-value"
         engine.state_for_profile("iv-profile").unwrap(),
     );
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "iv-profile".to_string(),
             product_kind: IvProductKind::SourceHealth,
@@ -1044,7 +1047,7 @@ fn runtime_engine_reload_invalidates_existing_handles_for_old_source_health() {
     engine.apply_iv_root_reload(&next).unwrap();
 
     assert_eq!(
-        handle.query(&IvQuery::Product(IvProductQuery {
+        handle.query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "iv-profile".to_string(),
             product_kind: IvProductKind::IvPoint,
@@ -1082,7 +1085,7 @@ fn runtime_engine_reload_invalidates_existing_handles_for_removed_profiles() {
 
     assert!(engine.state_for_profile("iv-profile").is_none());
     assert_eq!(
-        handle.query(&IvQuery::Product(IvProductQuery {
+        handle.query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "iv-profile".to_string(),
             product_kind: IvProductKind::IvPoint,

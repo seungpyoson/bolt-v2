@@ -37,6 +37,14 @@ pub struct IvGreekValues {
     pub rho: Option<f64>,
 }
 
+impl IvGreekValues {
+    pub fn has_non_finite_value(&self) -> bool {
+        [self.delta, self.gamma, self.vega, self.theta, self.rho]
+            .into_iter()
+            .any(|value| value.is_some_and(|value| !value.is_finite()))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct IvBasisValue {
     pub basis: IvBasis,
@@ -81,10 +89,18 @@ pub struct IvOptionChainSlicePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IvAggregateIvValue {
+    pub basis: IvBasis,
+    pub value: f64,
+    pub convention: IvConvention,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IvAggregateGreeksPayload {
     pub aggregate_key: String,
     pub underlying_selectors: Vec<String>,
     pub greeks: IvGreekValues,
+    pub aggregate_iv: Option<IvAggregateIvValue>,
     pub nt_custom_data_json: Option<Value>,
 }
 

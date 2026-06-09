@@ -34,8 +34,14 @@ const REJECT_COUNT_INCREMENT: u64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum IvQuery {
-    Product(IvProductQuery),
+    Product(Box<IvProductQuery>),
     RawPayload(IvRawPayloadQuery),
+}
+
+impl IvQuery {
+    pub fn product(query: IvProductQuery) -> Self {
+        Self::Product(Box::new(query))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -691,17 +697,21 @@ impl IvQueryHandle {
                     source_filter,
                     state_filter,
                 },
-            ) => state
-                .source_health
-                .iter()
-                .find(|health| {
-                    health.profile_id == query.profile_id
-                        && source_matches(&health.source_id, source_filter)
-                        && source_health_state_matches(health, state_filter)
-                })
-                .cloned()
-                .map(IvQueryProduct::SourceHealth)
-                .ok_or(IvQueryError::ProductNotFound),
+            ) => {
+                let health = if let Some(source_id) = source_filter {
+                    select_source_health(state, &query.profile_id, source_id)
+                        .filter(|health| source_health_state_matches(health, state_filter))
+                } else {
+                    state.source_health.iter().find(|health| {
+                        health.profile_id == query.profile_id
+                            && source_health_state_matches(health, state_filter)
+                    })
+                };
+                health
+                    .cloned()
+                    .map(IvQueryProduct::SourceHealth)
+                    .ok_or(IvQueryError::ProductNotFound)
+            }
             (
                 IvProductKind::ProjectedScalarIv,
                 IvSelector::ProjectedScalarIvQuery {
@@ -906,6 +916,33 @@ impl IvQueryHandle {
                     })
                     .cloned()
                     .map(IvQueryProduct::CustomIvEvidence)
+                    .collect::<Vec<_>>();
+                if products.is_empty() {
+                    Err(IvQueryError::ProductNotFound)
+                } else {
+                    Ok(products)
+                }
+            }
+            (
+                IvProductKind::AggregateGreeks,
+                IvSelector::AggregateGreeksQuery {
+                    aggregate_key,
+                    underlying_selectors,
+                    as_of_ns,
+                },
+            ) => {
+                let products = state
+                    .store
+                    .aggregate_greeks()
+                    .iter()
+                    .filter(|aggregate| {
+                        aggregate.profile_id == query.profile_id
+                            && aggregate.aggregate_key == *aggregate_key
+                            && aggregate.underlying_selectors == *underlying_selectors
+                            && aggregate.ts_event_ns == *as_of_ns
+                    })
+                    .cloned()
+                    .map(IvQueryProduct::AggregateGreeks)
                     .collect::<Vec<_>>();
                 if products.is_empty() {
                     Err(IvQueryError::ProductNotFound)
@@ -1128,7 +1165,7 @@ impl IvQueryProduct {
             Self::CustomIvEvidence(evidence) => &evidence.provenance.selector_fingerprint,
             Self::ProjectedScalarIv(projected) => &projected.selector_fingerprint,
             Self::DerivedIv(derived) => &derived.point.provenance.selector_fingerprint,
-            Self::SourceHealth(health) => &health.source_id,
+            Self::SourceHealth(_) => "",
         }
     }
 
@@ -1175,7 +1212,7 @@ fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQ
                 source_id: smile.source_id.clone(),
                 selector_fingerprint: smile.provenance.selector_fingerprint.clone(),
                 basis: format!("{:?}", smile.basis),
-                convention: smile.provenance.nt_symbol.clone(),
+                convention: iv_convention_name(&smile.convention),
                 value: point.iv,
                 ts_event_ns: smile.ts_event_ns,
             })
@@ -1189,12 +1226,26 @@ fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQ
                     source_id: smile.source_id.clone(),
                     selector_fingerprint: smile.provenance.selector_fingerprint.clone(),
                     basis: format!("{:?}", smile.basis),
-                    convention: smile.provenance.nt_symbol.clone(),
+                    convention: iv_convention_name(&smile.convention),
                     value: point.iv,
                     ts_event_ns: smile.ts_event_ns,
                 })
             })
             .collect(),
+        IvQueryProduct::AggregateGreeks(aggregate) => {
+            let Some(aggregate_iv) = &aggregate.aggregate_iv else {
+                return Err(IvQueryError::ProjectionRejected);
+            };
+            vec![IvPolicyInput {
+                product_id: aggregate.aggregate_key.clone(),
+                source_id: aggregate.source_id.clone(),
+                selector_fingerprint: aggregate.provenance.selector_fingerprint.clone(),
+                basis: format!("{:?}", aggregate_iv.basis),
+                convention: iv_convention_name(&aggregate_iv.convention),
+                value: aggregate_iv.value,
+                ts_event_ns: aggregate.ts_event_ns,
+            }]
+        }
         IvQueryProduct::CustomIvEvidence(evidence) => vec![IvPolicyInput {
             product_id: evidence.iv_evidence_kind.clone(),
             source_id: evidence.source_id.clone(),
@@ -1213,9 +1264,9 @@ fn projection_inputs(product: &IvQueryProduct) -> Result<Vec<IvPolicyInput>, IvQ
             value: derived.point.iv,
             ts_event_ns: derived.point.ts_event_ns,
         }],
-        IvQueryProduct::AggregateGreeks(_)
-        | IvQueryProduct::ProjectedScalarIv(_)
-        | IvQueryProduct::SourceHealth(_) => return Err(IvQueryError::UnsupportedProductKind),
+        IvQueryProduct::ProjectedScalarIv(_) | IvQueryProduct::SourceHealth(_) => {
+            return Err(IvQueryError::UnsupportedProductKind);
+        }
     };
 
     if inputs.is_empty() {

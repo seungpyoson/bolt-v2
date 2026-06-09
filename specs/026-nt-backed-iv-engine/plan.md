@@ -125,7 +125,7 @@ tests/
 | Provenance schema was undefined | Add `provenance.rs`, require `IvProvenance` on raw, indexed, derived, projected, policy, and rejected outputs, and fail tests when required fields are absent. |
 | Runtime integration surface was hand-wavy | Add `runtime.rs` binding to NT data actor/msgbus subscription operations and event handlers; source health records subscription failures and stale generations. |
 | Derived query inputs were missing | Add `IvDerivedInputPolicy` and `IvDerivedInputSet` to config, query, policy, and derive tests. |
-| Projection policy entities were missing | Add `IvProjectionPolicy`; scalar IV from smile, surface, aggregate, or evidence products rejects without explicit projection. |
+| Projection policy entities were missing | Add `IvProjectionPolicy`; scalar IV from smile, surface, aggregate products with configured aggregate IV values, or evidence products rejects without explicit projection. |
 | Projection temporal skew was implicit | Add `max_projection_input_skew_ns`; projection tests reject cross-input timestamp skew violations. |
 | Helper selection was implicit | Add `IvHelperPolicy` and helper provenance; derived-IV tests reject missing helper policy or incompatible helper signatures. |
 | Policy provenance was opaque | Add typed `IvPolicyDecision` variants for projection, interpolation, fallback, quorum, helper, audit, and rejection paths. |

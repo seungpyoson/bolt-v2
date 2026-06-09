@@ -251,6 +251,7 @@ struct ConfiguredAggregateGreeksEvent {
     configured_vega: f64,
     configured_theta: f64,
     configured_rho: f64,
+    configured_iv: f64,
     configured_adapter_payload: String,
     ts_event: NtUnixNanos,
     ts_init: NtUnixNanos,
@@ -432,6 +433,9 @@ gamma_field = "configured_gamma"
 vega_field = "configured_vega"
 theta_field = "configured_theta"
 rho_field = "configured_rho"
+iv_field = "configured_iv"
+iv_basis = "mark"
+iv_convention = "configured-convention"
 
 [iv.profiles.sources.selector.nt_params]
 
@@ -481,6 +485,7 @@ fn configured_aggregate_custom_data() -> (DataType, CustomData) {
             configured_vega: 2.5,
             configured_theta: -0.25,
             configured_rho: 0.05,
+            configured_iv: 0.39,
             configured_adapter_payload: "configured-aggregate-extra".to_string(),
             ts_event: NtUnixNanos::from(2_000),
             ts_init: NtUnixNanos::from(1_900),
@@ -574,7 +579,7 @@ fn live_iv_event_bindings_route_nt_option_greeks_into_strategy_handle() {
     );
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: bolt_v2::bolt_v3_iv::types::IvProductKind::IvPoint,
@@ -761,7 +766,7 @@ fn live_iv_event_bindings_route_nt_option_chain_into_strategy_handle() {
     msgbus::publish_option_chain(switchboard::get_option_chain_topic(chain.series_id), &chain);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: bolt_v2::bolt_v3_iv::types::IvProductKind::Smile,
@@ -843,7 +848,7 @@ fn live_iv_event_bindings_route_nt_custom_data_into_aggregate_greeks_handle() {
     msgbus::publish_any(switchboard::get_custom_topic(&data_type), &data);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: bolt_v2::bolt_v3_iv::types::IvProductKind::AggregateGreeks,
@@ -859,6 +864,13 @@ fn live_iv_event_bindings_route_nt_custom_data_into_aggregate_greeks_handle() {
     };
     assert_eq!(aggregate.greeks.delta, Some(1.25));
     assert_eq!(aggregate.greeks.vega, Some(2.5));
+    let aggregate_iv = aggregate.aggregate_iv.expect("configured aggregate IV");
+    assert_eq!(aggregate_iv.basis, IvBasis::Mark);
+    assert_eq!(aggregate_iv.value, 0.39);
+    assert_eq!(
+        aggregate_iv.convention,
+        IvConvention::Named("configured-convention".to_string())
+    );
     assert_eq!(aggregate.provenance.nt_symbol, "ConfiguredAggregateGreeks");
 }
 
@@ -877,7 +889,7 @@ fn live_iv_event_bindings_route_nt_custom_data_into_custom_iv_evidence_handle() 
     msgbus::publish_any(switchboard::get_custom_topic(&data_type), &data);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: bolt_v2::bolt_v3_iv::types::IvProductKind::CustomIvEvidence,
@@ -910,7 +922,7 @@ fn live_iv_event_bindings_record_malformed_aggregate_custom_data_rejection_in_so
     msgbus::publish_any(switchboard::get_custom_topic(&data_type), &data);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: bolt_v2::bolt_v3_iv::types::IvProductKind::SourceHealth,
@@ -950,7 +962,7 @@ fn live_iv_event_bindings_record_malformed_custom_iv_data_rejection_in_source_he
     msgbus::publish_any(switchboard::get_custom_topic(&data_type), &data);
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: bolt_v2::bolt_v3_iv::types::IvProductKind::SourceHealth,
@@ -1182,7 +1194,7 @@ configured_source_param = "configured-value"
         .expect("configured strategy should receive configured IV profile handle");
     assert!(handle.authorization().is_profile_wide());
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: bolt_v2::bolt_v3_iv::types::IvProductKind::ProjectedScalarIv,
@@ -1332,7 +1344,7 @@ configured_source_param = "configured-value"
         .unwrap();
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: bolt_v2::bolt_v3_iv::types::IvProductKind::IvPoint,
@@ -1442,7 +1454,7 @@ configured_source_param = "configured-value"
     }
 
     assert!(matches!(
-        handle.query(&IvQuery::Product(IvProductQuery {
+        handle.query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: bolt_v2::bolt_v3_iv::types::IvProductKind::IvPoint,
@@ -1457,7 +1469,7 @@ configured_source_param = "configured-value"
     ));
 
     let product = handle
-        .query(&IvQuery::Product(IvProductQuery {
+        .query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: bolt_v2::bolt_v3_iv::types::IvProductKind::IvPoint,
@@ -1759,7 +1771,7 @@ configured_source_param = "configured-value"
     ));
 
     assert!(matches!(
-        handle.query(&IvQuery::Product(IvProductQuery {
+        handle.query(&IvQuery::product(IvProductQuery {
             strategy_id: "configured-strategy".to_string(),
             profile_id: "configured-profile".to_string(),
             product_kind: bolt_v2::bolt_v3_iv::types::IvProductKind::IvPoint,

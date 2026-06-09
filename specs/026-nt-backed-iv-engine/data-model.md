@@ -117,7 +117,7 @@ Variants:
 
 - `SourceOptionGreeksSelector`: `instrument_ids`, `nt_params`
 - `SourceOptionChainSelector`: `series_ids`, `strike_range_policy`, `nt_params`
-- `SourceAggregateGreeksSelector`: `aggregate_key`, `underlying_selectors`, `delta_field`, `gamma_field`, `vega_field`, `theta_field`, `rho_field`, `nt_params`
+- `SourceAggregateGreeksSelector`: `aggregate_key`, `underlying_selectors`, `delta_field`, `gamma_field`, `vega_field`, `theta_field`, `rho_field`, optional `iv_field`, optional `iv_basis`, optional `iv_convention`, `nt_params`
 - `SourceCustomImpliedVolatilitySelector`: `custom_iv_data_type`, `custom_iv_data_fields`, `nt_params`
 - `PointQuerySelector`: `instrument_ids`, `basis`, `as_of_ns`, `source_filter`
 - `SmileQuerySelector`: `series_id`, `side`, `basis`, `as_of_ns`
@@ -364,6 +364,7 @@ Fields:
 - `source_id`
 - `selector`
 - `greeks`
+- optional `aggregate_iv`
 - `ts_event_ns`
 - `ts_init_ns`
 - `provenance`
@@ -373,6 +374,7 @@ Validation:
 - Raw NT aggregate greeks payload is preserved before indexing.
 - The preserved raw payload includes the original serialized NT custom-data JSON so adapter-specific fields remain available to audit/replay.
 - Selector and provenance identify the configured aggregate source.
+- Aggregate scalar-IV projection requires `aggregate_iv`, which is populated only when the aggregate source config names an IV field, basis, and convention.
 - Missing or malformed values reject indexing without discarding the raw event.
 
 ## IvSmile
@@ -386,6 +388,7 @@ Fields:
 - `series_id`
 - `side`
 - `basis`
+- `convention`
 - `points_by_strike`
 - `atm_strike`
 - `ts_event_ns`
@@ -395,6 +398,7 @@ Validation:
 
 - Strikes are retained as NT price values.
 - Smile construction does not invent missing points.
+- Scalar projection uses the smile convention from nested NT greeks; it cannot substitute an NT symbol or source label for convention.
 - Interpolation is not part of construction; it is a query policy decision.
 
 ## IvSurface
@@ -554,7 +558,7 @@ Fields:
 
 Validation:
 
-- Scalar IV from a smile, surface, or evidence product requires explicit projection policy.
+- Scalar IV from a smile, surface, aggregate product with configured aggregate IV, or evidence product requires explicit projection policy.
 - Projection cannot silently change basis, convention, source eligibility, timestamp, product kind, or evidence semantics.
 - Projection rejects when input products exceed `max_projection_input_skew_ns`.
 - Unknown projection kinds reject at startup.

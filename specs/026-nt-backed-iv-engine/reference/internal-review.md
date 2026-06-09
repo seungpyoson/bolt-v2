@@ -53,3 +53,53 @@ No blocking findings remain after the local fixes below.
 - `cargo test --locked`: PASS.
 
 Current PR verification uses GitHub CI rather than local cargo reruns. Because any evidence-file commit changes the head SHA, final head status must be confirmed with `gh pr view 611 --json headRefOid` and `gh pr checks 611` after the final push.
+
+## 2026-06-10 Delta Review
+
+**Reviewed working tree**: branch `026-nt-backed-iv-engine`, local delta after head `8b0a0710c7e5f7b07b73f402576d35aea0edf27b`
+**Recommendation**: PASS for the locally reviewed delta after the fixes below; final PR approval still requires commit, push, and green GitHub CI on the new head.
+
+| Issue | Evidence | Resolution |
+|---|---|---|
+| Aggregate projection was specified for aggregate products, but aggregate greeks carried no scalar IV value. Query projection rejected aggregate products unconditionally. | RED: `cargo test --locked --test bolt_v3_iv_query projected_scalar_aggregate_greeks_query_projects_configured_aggregate_iv -- --nocapture` initially failed because aggregate greeks had no configured aggregate-IV payload and projection support. | Added explicit optional aggregate IV mapping (`iv_field`, `iv_basis`, `iv_convention`) for aggregate custom-data sources, stores configured aggregate IV with provenance, rejects missing aggregate IV for scalar projection, and covers single-source plus quorum aggregate projection. |
+| Source-health queries with `source_filter` could return the first retained historical row instead of the current source generation. | RED: `cargo test --locked --test bolt_v3_iv_query source_health_query_prefers_current_generation_for_source_filter -- --nocapture` returned generation 1 stale health before the fix. | Source-filtered health queries now use generation-aware selection before applying the state filter. |
+| Smile/surface scalar projection recorded NT symbol text as convention, which violates the projection contract that basis and convention cannot silently change. | RED: `cargo test --locked --test bolt_v3_iv_query projected_scalar_smile_query_records_option_convention_not_nt_symbol -- --nocapture` failed with `ConfiguredNtSymbol` instead of `configured-convention`. | Indexed smiles now carry the nested NT greeks convention, option-chain smile construction groups by `(basis, convention)`, and smile/surface projection inputs use the typed convention. |
+| Source-health product fingerprint helper returned `source_id` as if it were a selector fingerprint. | Internal review of `IvQueryProduct::selector_fingerprint()` showed the value is ignored for `SourceHealth` authorization but semantically wrong for audit/logging reuse. | `SourceHealth` now returns an empty fingerprint from that helper; source-health selector-scoped authorization remains source-id based. |
+
+### 2026-06-10 Verification
+
+- `cargo test --locked --test bolt_v3_iv_query projected_scalar_aggregate_greeks_query_projects_configured_aggregate_iv -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_query source_health_query_prefers_current_generation_for_source_filter -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_query projected_scalar_smile_query_records_option_convention_not_nt_symbol -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_query -- --nocapture`: PASS, 39 tests.
+- `cargo test --locked --test bolt_v3_iv_ingest -- --nocapture`: PASS, 7 tests.
+- `cargo test --locked --test bolt_v3_iv_store -- --nocapture`: PASS, 7 tests.
+- `cargo test --locked --test bolt_v3_iv_subscription -- --nocapture`: PASS, 19 tests.
+- `cargo test --locked --test bolt_v3_iv_live_integration -- --nocapture`: PASS, 20 tests.
+- `cargo test --locked --test bolt_v3_iv_config -- --nocapture`: PASS, 23 tests.
+- `cargo fmt --check`: PASS.
+- `just source-fence`: PASS.
+- `git diff --check`: PASS.
+
+## 2026-06-10 Relay Follow-Up Review
+
+**Reviewed working tree**: branch `026-nt-backed-iv-engine`, local delta after head `4cd28a966c62fd009894e88367f83f5ac29c35d3`
+**Recommendation**: PASS for the locally reviewed fixes below; external relay approvals and GitHub CI must be refreshed after this delta is committed and pushed.
+
+| Issue | Evidence | Resolution |
+|---|---|---|
+| Option-greeks and aggregate-greeks products could cache non-finite greek values while IV itself was valid. | RED: `cargo test --locked --test bolt_v3_iv_store non_finite -- --nocapture` failed because `NaN`/`inf` greek payloads returned `Ok` and indexed products. | Added `IvGreekValues::has_non_finite_value()`, fail-closed store validation for option greeks and aggregate greeks, and a derived-helper guard before returning helper greeks. Raw events remain preserved before index rollback. |
+| Live-node stop removed IV event bindings but left `self.iv_runtime` reachable, so `has_iv_runtime()` stayed true after stop. | RED: `cargo test --locked --lib live_node_runtime_stop_applies_iv_unsubscribe_lifecycle -- --nocapture` failed on the new stop-state assertion. | `stop_iv_engine_lifecycle()` now takes the runtime, applies unsubscribe outcomes to the shared state, restores it only if outcome application fails, and otherwise leaves the live node without IV runtime or event bindings. |
+| API contract wording could be read as promising dynamic creation of brand-new strategy profile handles during reload. | Internal review of `contracts/iv-engine-api.md` found the reload sentence did not distinguish existing handles from new profile registration. | Narrowed the contract to already-issued strategy handles for profiles present before reload. Existing handles still share reloaded `IvQueryStateHandle` state. |
+
+### 2026-06-10 Relay Follow-Up Verification
+
+- `cargo test --locked --test bolt_v3_iv_store non_finite -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --lib live_node_runtime_stop_applies_iv_unsubscribe_lifecycle -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_store -- --nocapture`: PASS, 9 tests.
+- `cargo test --locked --test bolt_v3_iv_derive -- --nocapture`: PASS, 16 tests.
+- `cargo test --locked --test bolt_v3_iv_live_integration -- --nocapture`: PASS, 20 tests.
+- `cargo test --locked --test bolt_v3_iv_ingest -- --nocapture`: PASS, 7 tests.
+- `cargo fmt --check`: PASS.
+- `just source-fence`: PASS.
+- `git diff --check`: PASS.

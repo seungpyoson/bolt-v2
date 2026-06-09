@@ -52,6 +52,7 @@ pub struct IvSmile {
     pub series_id: String,
     pub side: String,
     pub basis: IvBasis,
+    pub convention: IvConvention,
     pub points_by_strike: Vec<IvSmilePoint>,
     pub atm_strike: Option<f64>,
     pub ts_event_ns: UnixNanos,
@@ -76,6 +77,7 @@ pub struct IvAggregateGreeks {
     pub aggregate_key: String,
     pub underlying_selectors: Vec<String>,
     pub greeks: super::ingest::IvGreekValues,
+    pub aggregate_iv: Option<super::ingest::IvAggregateIvValue>,
     pub ts_event_ns: UnixNanos,
     pub ts_init_ns: Option<UnixNanos>,
     pub provenance: IvProvenance,
@@ -259,8 +261,7 @@ impl IvStore {
                 self.index_option_chain_slice(raw_event, payload)
             }
             IvRawPayload::AggregateGreeks(payload) => {
-                self.index_aggregate_greeks(raw_event, payload);
-                Ok(())
+                self.index_aggregate_greeks(raw_event, payload)
             }
             IvRawPayload::CustomImpliedVolatility(payload) => {
                 self.index_custom_iv(raw_event, payload)
@@ -293,6 +294,9 @@ impl IvStore {
     ) -> Result<(), IvStoreError> {
         if payload.basis_values.is_empty() {
             return Err(IvStoreError::MissingIvBasis);
+        }
+        if payload.greeks.has_non_finite_value() {
+            return Err(IvStoreError::InvalidIvValue);
         }
         for basis_value in &payload.basis_values {
             if !valid_iv(basis_value.iv) {
@@ -352,7 +356,8 @@ impl IvStore {
         side: &str,
         strikes: &[IvOptionChainStrikePayload],
     ) -> Result<bool, IvStoreError> {
-        let mut points_by_basis = BTreeMap::<IvBasis, Vec<IvSmilePoint>>::new();
+        let mut points_by_basis_and_convention =
+            BTreeMap::<(IvBasis, IvConvention), Vec<IvSmilePoint>>::new();
         for strike in strikes {
             if !strike.strike.is_finite() {
                 continue;
@@ -364,8 +369,8 @@ impl IvStore {
                 if !valid_iv(basis_value.iv) {
                     continue;
                 }
-                points_by_basis
-                    .entry(basis_value.basis)
+                points_by_basis_and_convention
+                    .entry((basis_value.basis, greeks.convention.clone()))
                     .or_insert_with(empty_iv_smile_points)
                     .push(IvSmilePoint {
                         strike: strike.strike,
@@ -374,8 +379,8 @@ impl IvStore {
             }
         }
 
-        let indexed_side = !points_by_basis.is_empty();
-        for (basis, mut points_by_strike) in points_by_basis {
+        let indexed_side = !points_by_basis_and_convention.is_empty();
+        for ((basis, convention), mut points_by_strike) in points_by_basis_and_convention {
             points_by_strike.sort_by(|left, right| left.strike.total_cmp(&right.strike));
             self.smiles.push(IvSmile {
                 profile_id: raw_event.profile_id.clone(),
@@ -384,6 +389,7 @@ impl IvStore {
                 series_id: payload.series_id.clone(),
                 side: side.to_string(),
                 basis,
+                convention,
                 points_by_strike,
                 atm_strike: payload.atm_strike,
                 ts_event_ns: raw_event.provenance.ts_event_ns,
@@ -398,17 +404,29 @@ impl IvStore {
         &mut self,
         raw_event: &IvRawEvent,
         payload: &IvAggregateGreeksPayload,
-    ) {
+    ) -> Result<(), IvStoreError> {
+        if payload
+            .aggregate_iv
+            .as_ref()
+            .is_some_and(|aggregate_iv| !valid_iv(aggregate_iv.value))
+            || payload.greeks.has_non_finite_value()
+        {
+            return Err(IvStoreError::InvalidIvValue);
+        }
+
         self.aggregate_greeks.push(IvAggregateGreeks {
             profile_id: raw_event.profile_id.clone(),
             source_id: raw_event.source_id.clone(),
             aggregate_key: payload.aggregate_key.clone(),
             underlying_selectors: payload.underlying_selectors.clone(),
             greeks: payload.greeks,
+            aggregate_iv: payload.aggregate_iv.clone(),
             ts_event_ns: raw_event.provenance.ts_event_ns,
             ts_init_ns: raw_event.provenance.ts_init_ns,
             provenance: raw_event.provenance.clone(),
         });
+
+        Ok(())
     }
 
     fn index_custom_iv(

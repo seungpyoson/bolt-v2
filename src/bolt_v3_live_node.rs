@@ -1909,7 +1909,7 @@ impl BoltV3LiveNodeRuntime {
         &mut self,
         root: &BoltV3RootConfig,
     ) -> Result<(), BoltV3LiveNodeError> {
-        let Some(iv_runtime) = &self.iv_runtime else {
+        let Some(iv_runtime) = self.iv_runtime.take() else {
             return Ok(());
         };
         let lifecycle = plan_iv_engine_lifecycle(root).map_err(|error| {
@@ -1927,13 +1927,16 @@ impl BoltV3LiveNodeRuntime {
             );
             apply_subscription_plans(&mut adapter, &lifecycle.stop_plans)
         };
-        iv_runtime.apply_plan_outcomes(&outcomes).map_err(|error| {
-            BoltV3LiveNodeError::StrategyRegistration(
+        if let Err(error) = iv_runtime.apply_plan_outcomes(&outcomes) {
+            self.iv_runtime = Some(iv_runtime);
+            return Err(BoltV3LiveNodeError::StrategyRegistration(
                 BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
                     message: format!("bolt-v3 IV lifecycle stop state update failed: {error:?}"),
                 },
-            )
-        })
+            ));
+        }
+
+        Ok(())
     }
 
     pub fn reload_iv_engine_lifecycle(
@@ -4510,15 +4513,16 @@ configured_source_param = "configured-value"
             !runtime.has_iv_event_bindings(),
             "stop should drop IV receive-side bindings"
         );
-
-        let health = runtime
-            .iv_source_health("configured-profile", "configured-greeks-source")
-            .expect("stop should update IV source health");
-        assert_eq!(
-            health.subscription_state,
-            crate::bolt_v3_iv::health::IvSourceHealthState::Unsubscribing
+        assert!(
+            !runtime.has_iv_runtime(),
+            "stop should clear the IV runtime after applying unsubscribe outcomes"
         );
-        assert_eq!(health.subscription_generation, 7);
+        assert!(
+            runtime
+                .iv_source_health("configured-profile", "configured-greeks-source")
+                .is_none(),
+            "stopped live node should not expose IV source health through a retained runtime"
+        );
     }
 
     #[test]

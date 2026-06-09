@@ -11,9 +11,9 @@ use super::{
     error::IvRejectReason,
     health::{IvSourceHealth, IvSourceHealthState},
     ingest::{
-        IvAggregateGreeksPayload, IvBasisValue, IvCustomIvPayload, IvGreekValues, IvIngestEvent,
-        IvOptionChainQuotePayload, IvOptionChainSlicePayload, IvOptionChainStrikePayload,
-        IvOptionGreeksPayload, IvRawEvent, IvRawPayload,
+        IvAggregateGreeksPayload, IvAggregateIvValue, IvBasisValue, IvCustomIvPayload,
+        IvGreekValues, IvIngestEvent, IvOptionChainQuotePayload, IvOptionChainSlicePayload,
+        IvOptionChainStrikePayload, IvOptionGreeksPayload, IvRawEvent, IvRawPayload,
     },
     query::{IvQueryState, IvQueryStateHandle},
     selector::IvSelector,
@@ -394,6 +394,9 @@ impl IvRuntimeEngine {
             vega_field,
             theta_field,
             rho_field,
+            iv_field,
+            iv_basis,
+            iv_convention,
             ..
         } = &source.selector
         else {
@@ -490,6 +493,23 @@ impl IvRuntimeEngine {
                 })?,
             ),
         };
+        let aggregate_iv = match (iv_field, iv_basis, iv_convention) {
+            (Some(iv_field), Some(iv_basis), Some(iv_convention)) => Some(IvAggregateIvValue {
+                basis: *iv_basis,
+                value: custom_data_field_f64(&payload, iv_field).map_err(|reason| {
+                    self.reject_runtime_source_event(
+                        profile_id,
+                        source_id,
+                        source,
+                        ts_event_ns,
+                        reason,
+                        false,
+                    )
+                })?,
+                convention: iv_convention.clone(),
+            }),
+            _ => None,
+        };
 
         self.ingest_event(IvIngestEvent {
             profile_id: profile_id.to_string(),
@@ -508,6 +528,7 @@ impl IvRuntimeEngine {
                 aggregate_key: aggregate_key.clone(),
                 underlying_selectors: underlying_selectors.clone(),
                 greeks,
+                aggregate_iv,
                 nt_custom_data_json: Some(payload),
             }),
         })

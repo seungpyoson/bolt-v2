@@ -945,6 +945,60 @@ fn stale_attempt_timestamp_survives_later_status_refresh() {
 }
 
 #[test]
+fn out_of_order_stale_attempt_without_accepted_quote_preserves_newer_health_timestamp() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price.source_order = vec![CHAINLINK_PRIMARY_SOURCE_ID.to_string()];
+    reference_price
+        .sources
+        .retain(|source_id, _source| source_id == CHAINLINK_PRIMARY_SOURCE_ID);
+    reference_price.max_source_age_ms = 50;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let (_cache, clock) = register_test_strategy_with_clock(&mut strategy);
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_250_u64 * NANOS_PER_MILLI_U64));
+
+    let newer_stale_attempt = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.5,
+        1_180,
+        1_185,
+    );
+    DataActor::on_data(&mut strategy, &newer_stale_attempt)
+        .expect("newer stale primary attempt should be handled");
+
+    let older_stale_attempt = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.0,
+        1_170,
+        1_175,
+    );
+    DataActor::on_data(&mut strategy, &older_stale_attempt)
+        .expect("older stale primary attempt should not regress health");
+
+    assert!(
+        strategy
+            .reference_price_quotes
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
+            .is_none()
+    );
+    let primary_health = strategy
+        .reference_price_source_health
+        .get(CHAINLINK_PRIMARY_SOURCE_ID)
+        .expect("primary health should exist");
+    assert_eq!(primary_health.status(), ReferencePriceSourceStatus::Stale);
+    assert_eq!(primary_health.observed_ts_ms(), Some(1_180));
+    assert_eq!(primary_health.received_ts_ms(), Some(1_185));
+}
+
+#[test]
 fn stale_selected_source_update_clears_accepted_reference_price_state() {
     let mut strategy = test_strategy();
     let mut reference_price = reference_price_config();

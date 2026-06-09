@@ -1466,11 +1466,16 @@ impl BinaryOracleEdgeTaker {
             || quote.observed_ts_ms() > now_ms
             || now_ms.saturating_sub(quote.observed_ts_ms()) > reference_price.max_source_age_ms)
         {
-            if self
+            let newer_than_accepted_quote = self
                 .reference_price_quotes
                 .get(quote.source_id())
-                .is_none_or(|existing| existing.observed_ts_ms() < quote.observed_ts_ms())
-            {
+                .is_none_or(|existing| existing.observed_ts_ms() < quote.observed_ts_ms());
+            let newer_than_recorded_health = self
+                .reference_price_source_health
+                .get(quote.source_id())
+                .and_then(ReferencePriceSourceHealth::observed_ts_ms)
+                .is_none_or(|observed_ts_ms| observed_ts_ms < quote.observed_ts_ms());
+            if newer_than_accepted_quote && newer_than_recorded_health {
                 self.mark_reference_price_source_status(
                     quote.source_id(),
                     ReferencePriceSourceStatus::Stale,

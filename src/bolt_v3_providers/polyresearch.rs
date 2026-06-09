@@ -559,10 +559,6 @@ impl DataClient for PolyResearchReferencePriceClient {
                 ))?)?;
             } else if subscriptions_empty {
                 outbound.send_text(polyresearch_reference_unsubscribe_frame(None)?)?;
-                remove_polyresearch_pending_subscription(
-                    &self.pending_provider_subscriptions,
-                    &subscription_key,
-                )?;
             }
         }
         Ok(())
@@ -2246,13 +2242,12 @@ mod tests {
     }
 
     #[test]
-    fn canceled_only_pending_subscription_allows_next_subscribe_without_late_ack() {
+    fn canceled_only_pending_subscription_waits_for_late_ack_before_next_subscribe() {
         let (mut client, _data_receiver) = fixture_client();
         let (outbound_sender, mut outbound_receiver) =
             tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
-        client.outbound = Some(PolyResearchReferenceOutboundHandle::from_sender(
-            outbound_sender,
-        ));
+        let outbound = PolyResearchReferenceOutboundHandle::from_sender(outbound_sender);
+        client.outbound = Some(outbound.clone());
 
         client
             .subscribe(reference_price_subscribe_cmd(
@@ -2294,15 +2289,64 @@ mod tests {
                 "ETH/USD",
             ))
             .expect("ETH PRR reference subscription should be accepted");
+        assert!(
+            outbound_receiver.try_recv().is_err(),
+            "new PRR subscription must wait behind the canceled in-flight provider subscribe"
+        );
+
+        let handled = polyresearch_reference_record_subscription_ack(
+            &client.subscriptions,
+            &client.pending_provider_subscriptions,
+            &client.provider_subscription_ids,
+            Some(&outbound),
+            r#"{"type":"subscribed","subscription_id":"chainlink:btc"}"#,
+        )
+        .expect("late ack for canceled PRR subscription should drain provider subscribe");
+        assert!(handled, "late subscribed ack must be handled");
+        let PolyResearchReferenceOutboundCommand::SendText(provider_unsubscribe_frame) =
+            outbound_receiver
+                .try_recv()
+                .expect("late ack for canceled PRR subscription should send provider unsubscribe")
+        else {
+            panic!("PRR late ack should send provider unsubscribe");
+        };
+        assert_eq!(
+            provider_unsubscribe_frame,
+            r#"{"action":"unsubscribe","subscription_id":"chainlink:btc"}"#
+        );
         let PolyResearchReferenceOutboundCommand::SendText(eth_subscribe_frame) = outbound_receiver
             .try_recv()
-            .expect("new PRR subscription should send without waiting for a canceled ack")
+            .expect("new PRR subscription should send after canceled ack drains")
         else {
-            panic!("new PRR subscription should send text");
+            panic!("new PRR subscription should send text after canceled ack drains");
         };
         assert_eq!(
             eth_subscribe_frame,
             r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["ETH/USD"]}}"#
+        );
+
+        let handled = polyresearch_reference_record_subscription_ack(
+            &client.subscriptions,
+            &client.pending_provider_subscriptions,
+            &client.provider_subscription_ids,
+            Some(&outbound),
+            r#"{"type":"subscribed","subscription_id":"chainlink:eth"}"#,
+        )
+        .expect("ETH ack should record active provider subscription id");
+        assert!(handled, "ETH subscribed ack must be handled");
+        assert_eq!(
+            client
+                .provider_subscription_ids
+                .lock()
+                .expect("provider subscription ids should not be poisoned")
+                .get(&subscription_key(
+                    "ETH",
+                    "polyresearch_secondary",
+                    "ETH/USD"
+                ))
+                .map(String::as_str),
+            Some("chainlink:eth"),
+            "late BTC ack must not be recorded as ETH provider subscription id"
         );
     }
 

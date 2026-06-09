@@ -84,16 +84,25 @@ impl fmt::Display for BackfillRunSpecMaterializationError {
                 write!(f, "accepted-tranche manifest has blocking issues")
             }
             Self::AcceptedTrancheObjectCountNotOne => {
-                write!(f, "accepted-tranche manifest must contain exactly one object")
+                write!(
+                    f,
+                    "accepted-tranche manifest must contain exactly one object"
+                )
             }
             Self::AcceptedTrancheBytesMismatch => {
-                write!(f, "accepted-tranche accepted_bytes does not match its object")
+                write!(
+                    f,
+                    "accepted-tranche accepted_bytes does not match its object"
+                )
             }
             Self::ObjectBytesExceedTomlInteger { bytes } => {
                 write!(f, "accepted object bytes {bytes} exceed TOML integer range")
             }
             Self::ReadSpec { path, error } => {
-                write!(f, "read backfill run-spec materialization spec {path}: {error}")
+                write!(
+                    f,
+                    "read backfill run-spec materialization spec {path}: {error}"
+                )
             }
             Self::ParseSpecToml { path, error } => write!(
                 f,
@@ -149,13 +158,12 @@ pub fn write_backfill_run_spec_from_materialization_spec_file(
             error: error.to_string(),
         }
     })?;
-    let spec: BackfillRunSpecMaterializationSpec =
-        toml::from_str(&spec_text).map_err(|error| {
-            BackfillRunSpecMaterializationError::ParseSpecToml {
-                path: spec_path.display().to_string(),
-                error: error.to_string(),
-            }
-        })?;
+    let spec: BackfillRunSpecMaterializationSpec = toml::from_str(&spec_text).map_err(|error| {
+        BackfillRunSpecMaterializationError::ParseSpecToml {
+            path: spec_path.display().to_string(),
+            error: error.to_string(),
+        }
+    })?;
     write_backfill_run_spec_from_materialization_spec(&spec)
 }
 
@@ -202,9 +210,7 @@ fn read_accepted_tranche_manifest(
     })
 }
 
-fn read_run_spec_template(
-    path: &Path,
-) -> Result<Value, BackfillRunSpecMaterializationError> {
+fn read_run_spec_template(path: &Path) -> Result<Value, BackfillRunSpecMaterializationError> {
     let text = fs::read_to_string(path).map_err(|error| {
         BackfillRunSpecMaterializationError::ReadRunSpecTemplate {
             path: path.display().to_string(),
@@ -281,10 +287,7 @@ fn materialize_run_spec_template(
     acceptance_scope.insert("accepted_bytes".to_string(), Value::Integer(object_bytes));
 
     let raw_payload = required_table_mut(&mut template, &["converter", "raw_payload"])?;
-    raw_payload.insert(
-        "max_object_bytes".to_string(),
-        Value::Integer(object_bytes),
-    );
+    raw_payload.insert("max_object_bytes".to_string(), Value::Integer(object_bytes));
 
     let manifest = required_table_mut(&mut template, &["manifest"])?;
     manifest.insert("run_id".to_string(), Value::String(spec.run_id.clone()));
@@ -343,11 +346,11 @@ fn required_table_mut<'a>(
 ) -> Result<&'a mut toml::Table, BackfillRunSpecMaterializationError> {
     let mut current = value;
     for key in path {
-        current = current
-            .get_mut(*key)
-            .ok_or(BackfillRunSpecMaterializationError::MissingTemplateTable {
+        current = current.get_mut(*key).ok_or(
+            BackfillRunSpecMaterializationError::MissingTemplateTable {
                 path: dotted_path(path),
-            })?;
+            },
+        )?;
     }
     current
         .as_table_mut()
@@ -385,16 +388,17 @@ fn write_materialized_run_spec(
     })?;
     let path = output_dir.join(BACKFILL_RUN_SPEC_MATERIALIZED_FILE);
     if path.exists() {
-        let existing = fs::read(&path).map_err(|error| {
-            BackfillRunSpecMaterializationError::ReadExisting {
+        let existing =
+            fs::read(&path).map_err(|error| BackfillRunSpecMaterializationError::ReadExisting {
                 path: path.display().to_string(),
                 error: error.to_string(),
-            }
-        })?;
+            })?;
         if existing != bytes {
-            return Err(BackfillRunSpecMaterializationError::ExistingArtifactMismatch {
-                path: path.display().to_string(),
-            });
+            return Err(
+                BackfillRunSpecMaterializationError::ExistingArtifactMismatch {
+                    path: path.display().to_string(),
+                },
+            );
         }
     } else {
         fs::write(&path, bytes).map_err(|error| BackfillRunSpecMaterializationError::Write {

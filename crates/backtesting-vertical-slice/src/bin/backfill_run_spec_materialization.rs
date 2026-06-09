@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use anyhow::Result;
 use backtesting_vertical_slice::backfill_run_spec_materialization::{
-    write_backfill_run_spec_from_materialization_spec_file, BackfillRunSpecMaterializationSpec,
+    BackfillRunSpecMaterializationSpec, write_backfill_run_spec_from_materialization_spec_file,
 };
 use clap::Parser;
 
@@ -15,8 +15,7 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let spec: BackfillRunSpecMaterializationSpec =
-        toml::from_str(&fs::read_to_string(&cli.spec)?)?;
+    let spec: BackfillRunSpecMaterializationSpec = toml::from_str(&fs::read_to_string(&cli.spec)?)?;
     let artifact = write_backfill_run_spec_from_materialization_spec_file(&cli.spec)?;
     println!("backfill_run_spec = {}", artifact.path.display());
     println!("content_hash = {}", artifact.content_hash);

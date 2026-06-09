@@ -252,6 +252,43 @@ fn execution_readiness_is_ready_when_required_source_selection_readiness_matches
 }
 
 #[test]
+fn execution_readiness_blocks_when_source_selection_readiness_proof_boolean_is_false() {
+    let tranche = accepted_tranche();
+    let plan = matching_execution_plan(&tranche);
+    let mut source_selection = source_selection_readiness_report(&tranche);
+    source_selection.source_proof_accepted = false;
+
+    let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+        readiness_id: "synthetic-readiness",
+        accepted_tranche_manifest_hash: "synthetic-tranche-file-hash",
+        tranche: &tranche,
+        execution_plan_hash: "synthetic-plan-file-hash",
+        plan: &plan,
+        required_table_family: "trades",
+        required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
+        supported_data_paths: supported_data_paths(),
+        artifact_index_commit_required: false,
+        required_artifact_index_kind: None,
+        artifact_index_commit_proof_report_hash: None,
+        artifact_index_commit_proof_report: None,
+        source_selection_readiness_required: true,
+        source_selection_readiness_report_hash: Some("synthetic-source-selection-hash"),
+        source_selection_readiness_report: Some(&source_selection),
+        source_catalog_mapping_readiness_required: false,
+        source_catalog_mapping_readiness_report_hash: None,
+        source_catalog_mapping_readiness_report: None,
+    });
+
+    assert_eq!(report.status, BackfillExecutionReadinessStatus::Blocked);
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillExecutionReadinessBlocker::SourceSelectionReadinessNotProven)
+    );
+}
+
+#[test]
 fn execution_readiness_blocks_when_source_selection_readiness_is_required_but_missing() {
     let tranche = accepted_tranche();
     let plan = matching_execution_plan(&tranche);

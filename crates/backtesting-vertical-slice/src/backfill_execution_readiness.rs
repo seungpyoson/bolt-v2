@@ -104,6 +104,7 @@ pub enum BackfillExecutionReadinessBlocker {
     SourceSelectionReadinessRequiredButMissing,
     SourceSelectionReadinessNotReady,
     SourceSelectionReadinessHasBlockers,
+    SourceSelectionReadinessNotProven,
     SourceSelectionReadinessSourceProofMismatch,
     SourceSelectionReadinessSourceBindingMismatch,
     SourceSelectionReadinessTableFamilyMismatch,
@@ -464,6 +465,10 @@ pub fn evaluate_backfill_execution_readiness(
                         BackfillExecutionReadinessBlocker::SourceSelectionReadinessHasBlockers,
                     );
                 }
+                if !source_selection_readiness_proven(readiness) {
+                    blockers
+                        .push(BackfillExecutionReadinessBlocker::SourceSelectionReadinessNotProven);
+                }
                 if readiness.source_proof_id != tranche.source_proof_id
                     || readiness.source_proof_version != tranche.source_proof_version
                     || readiness.source_proof_id != plan.source_proof_id
@@ -821,6 +826,26 @@ fn artifact_index_commit_mechanics_proven(report: &ArtifactIndexCommitProofRepor
         && report.stale_etag_update_rejected
         && report.latest_pointer_readback_proven
         && report.snapshot_readback_proven
+}
+
+fn source_selection_readiness_proven(report: &SourceSelectionReadinessReport) -> bool {
+    report.source_proof_accepted
+        && report.canonical_usage_scope_proven
+        && report.source_access_proven
+        && report.license_proven
+        && report.sample_schema_proven
+        && report.time_semantics_proven
+        && report.instrument_universe_proven
+        && report.coverage_proven
+        && report.retention_freshness_proven
+        && report.granularity_proven
+        && report.completeness_proven
+        && report.nt_mapping_proven
+        && report.cost_proven
+        && report.storage_proven
+        && report.claim_limits_recorded
+        && report.source_proof_acceptance_error.is_none()
+        && report.unmet_required_checks.is_empty()
 }
 
 fn content_hash(

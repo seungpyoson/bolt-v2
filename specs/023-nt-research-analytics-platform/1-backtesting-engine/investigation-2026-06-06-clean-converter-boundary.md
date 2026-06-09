@@ -2668,3 +2668,39 @@ Current conclusion:
 - It still does not close `BACKTESTING_ENGINE-022`; broad PMXT/Polymarket
   backfill remains blocked by the same source-acceptance, broad evidence, and
   tick-size policy requirements.
+
+## 2026-06-09 execution-readiness source-selection proof checkpoint
+
+Root cause addressed:
+
+- When `source_selection_readiness_required = true`, execution readiness checked
+  source-selection readiness status, blockers, source proof id/version, source
+  binding, and table family.
+- It did not independently check the source-selection report's explicit proof
+  booleans.
+- A stale or hand-edited source-selection report could therefore carry
+  `status = ready` and no blockers while one of the durable proof flags was
+  false.
+
+Change:
+
+- Execution readiness now blocks with
+  `source_selection_readiness_not_proven` when a required source-selection
+  readiness report has any required proof boolean false, an acceptance error,
+  or unmet required checks.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_execution_readiness execution_readiness_blocks_when_source_selection_readiness_proof_boolean_is_false -- --nocapture`
+  failed because the final execution-readiness blocker did not exist.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_execution_readiness execution_readiness_blocks_when_source_selection_readiness_proof_boolean_is_false -- --nocapture`
+  passed after adding the final source-selection proof check.
+
+Current conclusion:
+
+- This closes a generic final-gate bypass for runs that require
+  source-selection readiness.
+- It does not close `BACKTESTING_ENGINE-022` or authorize broad
+  PMXT/Polymarket backfill.

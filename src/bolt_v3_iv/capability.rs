@@ -27,17 +27,8 @@ pub const REQUIRED_CANDIDATE_SWEEP_TERMS: [&str; 18] = [
     "vol",
 ];
 
-const CAPABILITY_ANCHOR_TERMS: [&str; 9] = [
-    "option",
-    "options",
-    "greeks",
-    "implied",
-    "iv",
-    "volatility",
-    "smile",
-    "custom data",
-    "vol",
-];
+const CAPABILITY_ANCHOR_TERMS: [&str; REQUIRED_CANDIDATE_SWEEP_TERMS.len()] =
+    REQUIRED_CANDIDATE_SWEEP_TERMS;
 
 const REQUIRED_SEED_FAMILIES: [SeedFamily; 8] = [
     SeedFamily::ModelData,

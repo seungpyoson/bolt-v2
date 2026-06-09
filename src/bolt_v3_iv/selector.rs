@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
+    derive::IvDerivedInputSet,
     time::UnixNanos,
     types::{IvBasis, IvProductKind},
 };
@@ -68,6 +69,7 @@ pub enum IvSelector {
         instrument_id: String,
         helper_policy_id: String,
         as_of_ns: UnixNanos,
+        inputs: Option<Box<IvDerivedInputSet>>,
     },
     SourceHealthQuery {
         source_filter: Option<String>,

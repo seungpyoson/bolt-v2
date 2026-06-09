@@ -549,6 +549,23 @@ fn numeric_bounds_and_empty_selectors_reject() {
 }
 
 #[test]
+fn derived_input_policy_must_require_every_helper_input_field() {
+    let invalid = valid_iv_toml().replacen(
+        "required_fields = [\"option_price\", \"underlying_price\", \"strike\", \"option_side\", \"time_to_expiry_years\", \"rate\", \"carry\"]",
+        "required_fields = [\"option_price\", \"underlying_price\", \"strike\", \"option_side\", \"time_to_expiry_years\", \"rate\"]",
+        1,
+    );
+    let config: IvRootConfig = toml::from_str(&invalid).unwrap();
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("derived_input_policies.configured-derived-input-policy.required_fields")
+            && message.contains("carry")
+    }));
+}
+
+#[test]
 fn selector_scoped_authorization_rejects_unknown_selector_fingerprint() {
     let invalid = valid_iv_toml()
         .replace(

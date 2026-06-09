@@ -927,6 +927,7 @@ fn derived_iv_query_uses_engine_owned_nt_helper_inputs() {
                 instrument_id: "configured-option-instrument".to_string(),
                 helper_policy_id: "configured-helper-policy".to_string(),
                 as_of_ns: UnixNanos::new(2_000),
+                inputs: None,
             },
         }))
         .unwrap();
@@ -979,6 +980,7 @@ fn derived_iv_query_resolves_profile_owned_input_policy_before_helper_call() {
                 instrument_id: "configured-option-instrument".to_string(),
                 helper_policy_id: "configured-helper-policy".to_string(),
                 as_of_ns: UnixNanos::new(2_000),
+                inputs: None,
             },
         }))
         .unwrap();
@@ -1025,6 +1027,7 @@ fn derived_iv_helper_output_rejection_updates_source_health() {
                 instrument_id: "configured-option-instrument".to_string(),
                 helper_policy_id: "configured-helper-policy".to_string(),
                 as_of_ns: UnixNanos::new(2_000),
+                inputs: None,
             },
         })),
         Err(IvQueryError::DerivationRejected)
@@ -1069,6 +1072,7 @@ fn derived_iv_outputs_are_retained_by_profile_memory_bounds() {
                     instrument_id: "configured-option-instrument".to_string(),
                     helper_policy_id: "configured-helper-policy".to_string(),
                     as_of_ns,
+                    inputs: None,
                 },
             }))
             .unwrap();
@@ -1086,4 +1090,61 @@ fn derived_iv_outputs_are_retained_by_profile_memory_bounds() {
     let retained = handle.state_handle().derived_outputs();
     assert_eq!(retained.len(), 1);
     assert_eq!(retained[0].point.ts_event_ns, UnixNanos::new(2_010));
+}
+
+#[test]
+fn derived_iv_query_uses_request_supplied_inputs_without_preseeded_bundle() {
+    let mut request_inputs = complete_inputs();
+    request_inputs.as_of_ns = UnixNanos::new(2_050);
+    request_inputs.received_ts_ns = UnixNanos::new(2_055);
+    request_inputs.option_price = Some(timed(request_inputs.option_price.unwrap().value, 2_045));
+    request_inputs.underlying_price = Some(timed(100.0, 2_046));
+    request_inputs.strike = Some(timed(100.0, 2_047));
+    request_inputs.option_side = Some(IvTimedInput {
+        value: IvOptionSide::Call,
+        ts_ns: UnixNanos::new(2_048),
+        source_kind: IvDerivedInputSourceKind::QuerySupplied,
+        expires_at_ns: None,
+    });
+    request_inputs.time_to_expiry_years = Some(timed(0.5, 2_049));
+    request_inputs.rate = Some(IvTimedInput {
+        value: 0.01,
+        ts_ns: UnixNanos::new(2_044),
+        source_kind: IvDerivedInputSourceKind::OperatorConfigured,
+        expires_at_ns: Some(UnixNanos::new(2_100)),
+    });
+    request_inputs.carry = Some(IvTimedInput {
+        value: 0.0,
+        ts_ns: UnixNanos::new(2_043),
+        source_kind: IvDerivedInputSourceKind::OperatorConfigured,
+        expires_at_ns: Some(UnixNanos::new(2_100)),
+    });
+
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_helper_policies(vec![helper_policy()])
+    .with_derived_input_policies(vec![profile_resolving_derived_input_policy()]);
+
+    let product = handle
+        .query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::DerivedIv,
+            selector: IvSelector::DerivedIvQuery {
+                instrument_id: "configured-option-instrument".to_string(),
+                helper_policy_id: "configured-helper-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_050),
+                inputs: Some(Box::new(request_inputs)),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::DerivedIv(derived) = product else {
+        panic!("expected derived IV product");
+    };
+    assert_eq!(derived.point.ts_event_ns, UnixNanos::new(2_050));
+    assert!(derived.point.iv > 0.0);
 }

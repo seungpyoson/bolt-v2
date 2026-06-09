@@ -245,7 +245,7 @@ impl IvQueryStateHandle {
                 && existing.source_id == source_health.source_id
                 && existing.subscription_generation == source_health.subscription_generation
         }) {
-            *existing = source_health;
+            merge_source_health_update(existing, source_health);
         } else {
             state.source_health.push(source_health);
         }
@@ -371,14 +371,12 @@ impl IvQueryStateHandle {
                 retention_state: false,
                 subscription_generation: *subscription_generation,
             };
-            if let Some(existing) = state
-                .source_health
-                .iter_mut()
-                .find(|health| health.profile_id == profile_id && health.source_id == *source_id)
-            {
-                if existing.subscription_generation <= *subscription_generation {
-                    *existing = removed_health;
-                }
+            if let Some(existing) = state.source_health.iter_mut().find(|health| {
+                health.profile_id == profile_id
+                    && health.source_id == *source_id
+                    && health.subscription_generation == *subscription_generation
+            }) {
+                *existing = removed_health;
             } else {
                 state.source_health.push(removed_health);
             }
@@ -700,8 +698,16 @@ impl IvQueryHandle {
                     instrument_id,
                     helper_policy_id,
                     as_of_ns,
+                    inputs,
                 },
-            ) => self.derived_iv_query(query, state, instrument_id, helper_policy_id, *as_of_ns),
+            ) => self.derived_iv_query(
+                query,
+                state,
+                instrument_id,
+                helper_policy_id,
+                *as_of_ns,
+                inputs.as_deref(),
+            ),
             _ => Err(IvQueryError::ProductKindMismatch),
         }
     }
@@ -781,19 +787,30 @@ impl IvQueryHandle {
         instrument_id: &str,
         helper_policy_id: &str,
         as_of_ns: UnixNanos,
+        request_inputs: Option<&IvDerivedInputSet>,
     ) -> Result<IvQueryProduct, IvQueryError> {
         let policy = select_helper_policy(&state.helper_policies, helper_policy_id)
             .map_err(|_| IvQueryError::HelperPolicyNotFound)?;
-        let inputs = state
-            .derived_inputs
-            .iter()
-            .find(|inputs| {
-                inputs.profile_id == query.profile_id
-                    && inputs.instrument_id == instrument_id
-                    && inputs.as_of_ns == as_of_ns
-            })
-            .cloned()
-            .ok_or(IvQueryError::DerivedInputNotFound)?;
+        let inputs = if let Some(inputs) = request_inputs {
+            if inputs.profile_id != query.profile_id
+                || inputs.instrument_id != instrument_id
+                || inputs.as_of_ns != as_of_ns
+            {
+                return Err(IvQueryError::DerivedInputNotFound);
+            }
+            inputs.clone()
+        } else {
+            state
+                .derived_inputs
+                .iter()
+                .find(|inputs| {
+                    inputs.profile_id == query.profile_id
+                        && inputs.instrument_id == instrument_id
+                        && inputs.as_of_ns == as_of_ns
+                })
+                .cloned()
+                .ok_or(IvQueryError::DerivedInputNotFound)?
+        };
         let inputs = if let Some(input_policy) = state
             .derived_input_policies
             .iter()
@@ -1117,6 +1134,24 @@ fn select_source_health<'a>(
         .max_by_key(|health| health.subscription_generation)
 }
 
+fn merge_source_health_update(existing: &mut IvSourceHealth, mut incoming: IvSourceHealth) {
+    if incoming.last_event_ts_ns.is_none() {
+        incoming.last_event_ts_ns = existing.last_event_ts_ns;
+    }
+    if incoming.last_reject_reason.is_none() {
+        incoming.last_reject_reason = existing.last_reject_reason;
+    }
+    for (reason, count) in &existing.reject_counts {
+        *incoming
+            .reject_counts
+            .entry(*reason)
+            .or_insert(INITIAL_REJECT_COUNT) += count;
+    }
+    incoming.stale_state |= existing.stale_state;
+    incoming.retention_state |= existing.retention_state;
+    *existing = incoming;
+}
+
 fn retain_source_health_events(
     source_health: &mut Vec<IvSourceHealth>,
     current_subscription_generations: &BTreeMap<String, u64>,
@@ -1216,6 +1251,81 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(generations, vec![1, 2]);
+    }
+
+    #[test]
+    fn mark_sources_removed_updates_exact_generation_only() {
+        let handle = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+        handle.upsert_source_health(source_health_with_generation(
+            "test-source",
+            IvSourceHealthState::Active,
+            1,
+        ));
+        handle.upsert_source_health(source_health_with_generation(
+            "test-source",
+            IvSourceHealthState::Active,
+            2,
+        ));
+        let removed = BTreeMap::from([("test-source".to_string(), 2)]);
+
+        handle.mark_sources_removed("test-profile", &removed);
+
+        let snapshot = handle.snapshot();
+        let generation_one = snapshot
+            .source_health
+            .iter()
+            .find(|health| health.source_id == "test-source" && health.subscription_generation == 1)
+            .unwrap();
+        let generation_two = snapshot
+            .source_health
+            .iter()
+            .find(|health| health.source_id == "test-source" && health.subscription_generation == 2)
+            .unwrap();
+        assert_eq!(
+            generation_one.subscription_state,
+            IvSourceHealthState::Active
+        );
+        assert_eq!(
+            generation_two.subscription_state,
+            IvSourceHealthState::Removed
+        );
+    }
+
+    #[test]
+    fn upsert_source_health_preserves_rejection_history_for_same_generation() {
+        let handle = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+        handle
+            .write_state()
+            .current_subscription_generations
+            .insert("test-source".to_string(), 3);
+        handle.record_source_rejection(
+            "test-profile".to_string(),
+            "test-source".to_string(),
+            3,
+            UnixNanos::new(42),
+            IvRejectReason::InvalidIvValue,
+            false,
+        );
+
+        handle.upsert_source_health(source_health_with_generation(
+            "test-source",
+            IvSourceHealthState::Active,
+            3,
+        ));
+
+        let health = handle
+            .source_health_for("test-profile", "test-source")
+            .unwrap();
+        assert_eq!(
+            health.last_reject_reason,
+            Some(IvRejectReason::InvalidIvValue)
+        );
+        assert_eq!(health.last_event_ts_ns, Some(UnixNanos::new(42)));
+        assert_eq!(
+            health.reject_counts.get(&IvRejectReason::InvalidIvValue),
+            Some(&1)
+        );
+        assert_eq!(health.subscription_state, IvSourceHealthState::Active);
     }
 
     fn source_health_with_generation(

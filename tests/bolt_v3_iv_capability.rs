@@ -164,6 +164,49 @@ fn whole_checkout_sweep_includes_all_fr054_terms() {
 }
 
 #[test]
+fn whole_checkout_scan_surfaces_microstructure_terms_without_iv_anchor_words() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    for (index, term) in [
+        "strike",
+        "expiry",
+        "expiration",
+        "tenor",
+        "moneyness",
+        "skew",
+        "premium",
+    ]
+    .iter()
+    .enumerate()
+    {
+        write_source(
+            root,
+            &format!("crates/model/src/generated/microstructure_{index}.rs"),
+            &format!("/// discovered {term}\npub struct Candidate{index};\n"),
+        );
+    }
+
+    let candidates = scan_whole_checkout_candidates(root).unwrap();
+    let matched_terms = candidates
+        .iter()
+        .flat_map(|candidate| candidate.matched_terms.iter().cloned())
+        .collect::<BTreeSet<_>>();
+
+    for term in [
+        "strike",
+        "expiry",
+        "expiration",
+        "tenor",
+        "moneyness",
+        "skew",
+        "premium",
+    ] {
+        assert!(matched_terms.contains(term), "missing sweep term {term}");
+    }
+}
+
+#[test]
 fn ledger_rejects_unclassified_candidates_and_loads_fixture() {
     let candidate = IvCapabilityCandidate {
         surface_id: "nt.model.unclassified_candidate".to_string(),

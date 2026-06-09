@@ -8898,14 +8898,6 @@ reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust 
 
 [[allowed]]
 path = "src/bolt_v3_iv/capability.rs"
-kind = "number"
-literal = '''9'''
-context = '''const CAPABILITY_ANCHOR_TERMS: [&str; 9] = ['''
-classification = "iv_capability_discovery_literal"
-reason = "IV capability inventory anchors whole-checkout discovery to IV/options terms before applying the classification ledger; this literal is scan metadata, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_iv/capability.rs"
 kind = "string"
 literal = '''"option"'''
 context = '''if matches!(term, "option" | "options") {'''

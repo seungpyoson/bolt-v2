@@ -508,6 +508,15 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.input_policy_id
             ));
         }
+        for required_field in super::derive::IvDerivedInputField::required_fields() {
+            if !policy.required_fields.contains(&required_field) {
+                errors.push(format!(
+                    "{context}.derived_input_policies.{}.required_fields must include {}",
+                    policy.input_policy_id,
+                    required_field.as_str()
+                ));
+            }
+        }
         if policy.field_sources.is_empty() {
             errors.push(format!(
                 "{context}.derived_input_policies.{}.field_sources must be non-empty",

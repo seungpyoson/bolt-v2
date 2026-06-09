@@ -44,10 +44,15 @@ fn loaded_strategy(strategy: BoltV3StrategyConfig) -> Vec<LoadedStrategy> {
 }
 
 fn parse_strategy(reference_current_price: &str) -> BoltV3StrategyConfig {
+    try_parse_strategy(reference_current_price).expect("strategy fixture should parse")
+}
+
+fn try_parse_strategy(
+    reference_current_price: &str,
+) -> Result<BoltV3StrategyConfig, toml::de::Error> {
     toml::from_str(&strategy_with_reference_current_price(
         reference_current_price,
     ))
-    .expect("strategy fixture should parse")
 }
 
 fn validate_reference_current_price(reference_current_price: &str) -> Vec<String> {
@@ -55,6 +60,64 @@ fn validate_reference_current_price(reference_current_price: &str) -> Vec<String
         &root_fixture(),
         &loaded_strategy(parse_strategy(reference_current_price)),
     )
+}
+
+#[test]
+fn reference_current_price_requires_explicit_min_valid_sources() {
+    let err = try_parse_strategy(
+        r#"
+[reference_current_price]
+asset = "BTC"
+sources = ["chainlink_primary"]
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.chainlink_primary]
+provider = "chainlink_ws"
+enabled = true
+required = false
+client_id = "chainlink_reference"
+instrument_id = "BTC-USD.CHAINLINK"
+"#,
+    )
+    .expect_err("reference_current_price.min_valid_sources must be explicit TOML");
+
+    assert!(
+        err.to_string().contains("min_valid_sources"),
+        "missing min_valid_sources should be the parse error, got: {err}"
+    );
+}
+
+#[test]
+fn reference_current_price_sources_require_explicit_enabled_and_required() {
+    let err = try_parse_strategy(
+        r#"
+[reference_current_price]
+asset = "BTC"
+sources = ["chainlink_primary"]
+min_valid_sources = 1
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.chainlink_primary]
+provider = "chainlink_ws"
+client_id = "chainlink_reference"
+instrument_id = "BTC-USD.CHAINLINK"
+"#,
+    )
+    .expect_err("reference_current_price source enabled/required flags must be explicit TOML");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("enabled") || message.contains("required"),
+        "missing enabled/required should be the parse error, got: {message}"
+    );
 }
 
 #[test]

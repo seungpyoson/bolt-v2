@@ -125,6 +125,48 @@ fn selected_reference_current_price_feeds_entry_pricing_spot() {
 }
 
 #[test]
+fn active_interval_rollover_clears_reference_current_price_pricing_state() {
+    let mut strategy = test_strategy();
+    strategy.config.reference_current_price = Some(reference_price_config());
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    let _cache = register_test_strategy(&mut strategy);
+
+    let update = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        TEST_REFERENCE_CURRENT_PRICE,
+        TEST_REFERENCE_OBSERVED_TS_MS,
+        TEST_REFERENCE_RECEIVED_TS_MS,
+    );
+    DataActor::on_data(&mut strategy, &update)
+        .expect("first interval reference current price should be handled");
+
+    assert_eq!(
+        strategy.pricing.last_reference_current_price,
+        Some(TEST_REFERENCE_CURRENT_PRICE)
+    );
+    assert_eq!(
+        strategy.pricing.fast_spot,
+        Some(fast_spot(
+            CHAINLINK_PRIMARY_SOURCE_ID,
+            TEST_REFERENCE_CURRENT_PRICE,
+            TEST_REFERENCE_OBSERVED_TS_MS
+        ))
+    );
+
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_400));
+
+    assert_eq!(strategy.active.reference_current_price, None);
+    assert_eq!(strategy.active.reference_current_price_source_id, None);
+    assert_eq!(strategy.active.reference_current_price_ts_ms, None);
+    assert_eq!(strategy.active.last_reference_ts_ms, None);
+    assert_eq!(strategy.pricing.last_reference_current_price, None);
+    assert_eq!(strategy.pricing.last_reference_current_price_ts_ms, None);
+    assert_eq!(strategy.pricing.fast_spot, None);
+}
+
+#[test]
 fn reference_price_sources_subscribe_as_custom_data_on_start_and_unsubscribe_on_stop() {
     let mut strategy = test_strategy();
     strategy.config.reference_current_price = Some(reference_price_config());

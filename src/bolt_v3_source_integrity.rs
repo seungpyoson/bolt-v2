@@ -224,8 +224,10 @@ mod tests {
     // re-evaluation started recomputing the uncertainty band from the sized
     // limit-price fee.
     // Re-derived after deriving VWAP assertion expectations from test inputs.
+    // Re-derived after scaling the entry limit-notional float tolerance by
+    // sized notional.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "18ebe1c9a4bc4cb0bd2908a0a541cd20b39bed4149474bb55b4a3ecfcc75c79f";
+        "d45a53fb81f1bbffadc4d419c2f9b1152a2bacd36e1a54e0cbbfb0799f58cb58";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

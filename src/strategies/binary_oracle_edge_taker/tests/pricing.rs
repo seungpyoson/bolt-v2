@@ -925,6 +925,22 @@ fn entry_submission_caps_quantity_to_limit_price_liability() {
 }
 
 #[test]
+fn entry_submission_notional_guard_allows_scaled_float_noise() {
+    let sized_notional = BPS_DENOMINATOR;
+    let representational_overage = sized_notional + (sized_notional * f64::EPSILON);
+    let material_overage = sized_notional + (sized_notional / BPS_DENOMINATOR);
+
+    assert!(!limit_notional_exceeds_sized_notional(
+        representational_overage,
+        sized_notional
+    ));
+    assert!(limit_notional_exceeds_sized_notional(
+        material_overage,
+        sized_notional
+    ));
+}
+
+#[test]
 fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
     let mut strategy =
         ready_to_trade_strategy_with_live_fees(Decimal::new(250, 2), Decimal::new(250, 2));

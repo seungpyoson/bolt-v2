@@ -4273,7 +4273,8 @@ impl BinaryOracleEdgeTaker {
             decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE);
             return decision;
         }
-        if price * quantity_value > sized_notional + f64::EPSILON {
+        let limit_notional = price * quantity_value;
+        if limit_notional_exceeds_sized_notional(limit_notional, sized_notional) {
             decision.blocked_reason =
                 Some(ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL);
             return decision;
@@ -5420,6 +5421,17 @@ fn trailing_offset_from_config(
                 .ok_or_else(|| anyhow::anyhow!("{prefix}_trailing_offset must be decimal"))
         })
         .transpose()
+}
+
+fn limit_notional_exceeds_sized_notional(limit_notional: f64, sized_notional: f64) -> bool {
+    if !is_positive_finite(limit_notional) || !is_positive_finite(sized_notional) {
+        return true;
+    }
+    limit_notional > sized_notional + notional_float_tolerance(sized_notional)
+}
+
+fn notional_float_tolerance(reference_notional: f64) -> f64 {
+    reference_notional.abs() * f64::EPSILON * BPS_DENOMINATOR
 }
 
 fn refresh_fee_readiness_for_active(

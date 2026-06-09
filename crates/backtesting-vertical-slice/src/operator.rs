@@ -1904,7 +1904,7 @@ mod tests {
             .err()
             .expect("unregistered converter version must be rejected");
 
-        assert!(err.to_string().contains("registered converter"), "{err}");
+        assert!(err.to_string().contains("registered source adapter"), "{err}");
     }
 
     #[test]

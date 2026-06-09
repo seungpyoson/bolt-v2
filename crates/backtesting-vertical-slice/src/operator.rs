@@ -40,7 +40,9 @@ use crate::{
         inspect_conversion_output, write_completed_conversion_artifacts,
         write_conversion_checkpoint,
     },
-    result_contract::{ResultArtifactUris, ResultContractInputs, build_result_contract},
+    result_contract::{
+        BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
+    },
     run_manifest::{BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE},
     runner::{
         BacktestRunInputs, BacktestRunOutput, assert_time_window_overlaps_data,
@@ -182,6 +184,23 @@ fn redact_operator_contract(output: &mut BacktestRunOutput, local_catalog_root: 
             *claim_limit = claim_limit.replace(local_catalog_root.as_ref(), &portable_catalog_uri);
         }
     }
+}
+
+fn verify_completed_result_contract(
+    path: &Path,
+    contract: &BacktestResultContract,
+) -> Result<BacktestResultContract> {
+    let existing = read_json_artifact::<BacktestResultContract>(path)?;
+    let mut normalized = contract.clone();
+    normalized.nt_result.machine_id = existing.nt_result.machine_id.clone();
+    normalized.nt_result.instance_id = existing.nt_result.instance_id.clone();
+    normalized.nt_result.elapsed_time_secs = existing.nt_result.elapsed_time_secs;
+    ensure!(
+        existing == normalized,
+        "existing result contract {} differs from newly generated stable content",
+        path.display()
+    );
+    Ok(existing)
 }
 
 fn validate_converter_config(converter: &ConverterConfig) -> Result<()> {
@@ -546,6 +565,7 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         contract,
     };
     redact_operator_contract(&mut output, &inputs.catalog_root);
+    output.contract = verify_completed_result_contract(&inputs.contract_path, &output.contract)?;
 
     fs::write(
         &inputs.proof_path,
@@ -553,11 +573,6 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
             .context("serialize accepted source proof")?,
     )
     .with_context(|| format!("write {}", inputs.proof_path.display()))?;
-    fs::write(
-        &inputs.contract_path,
-        serde_json::to_string_pretty(&output.contract).context("serialize result contract")?,
-    )
-    .with_context(|| format!("write {}", inputs.contract_path.display()))?;
     fs::write(
         &inputs.run_manifest_path,
         serde_json::to_string_pretty(&inputs.spec_manifest.to_artifact_manifest()?)
@@ -1593,6 +1608,7 @@ mod tests {
             fs::read_to_string(&first.conversion_checkpoint_path).expect("checkpoint");
         let manifest_json = fs::read_to_string(&first.conversion_manifest_path).expect("manifest");
         let metadata_json = fs::read_to_string(&first.catalog_metadata_path).expect("metadata");
+        let contract_json = fs::read_to_string(&first.contract_path).expect("contract");
         let catalog_hash = first.output.projection.catalog_hash.clone();
         let read_back_count = first.output.read_back_count;
 
@@ -1616,6 +1632,10 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&second.catalog_metadata_path).expect("metadata"),
             metadata_json
+        );
+        assert_eq!(
+            fs::read_to_string(&second.contract_path).expect("contract"),
+            contract_json
         );
         assert_eq!(second.output.projection.catalog_hash, catalog_hash);
         assert_eq!(second.output.read_back_count, read_back_count);

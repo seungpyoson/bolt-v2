@@ -1,0 +1,51 @@
+{
+  "schema": "bolt-v2.bte.result-contract-idempotence-proof.v1",
+  "created_at_utc": "2026-06-09T00:24:30Z",
+  "base_commit_before_fix": "21c544aae9dc35c8a74990ca59de101f897764aa",
+  "scope": "accepted native-trades converter/backtest completed-output reuse path",
+  "root_cause": "The completed-output path re-ran NautilusTrader to prove catalog consumption, then rewrote backtest-result-contract.json with volatile NT pointer fields. The conversion manifest, checkpoint, catalog metadata, catalog hash, and semantic contract bindings were stable, but the result-contract artifact bytes were not.",
+  "fix_summary": "The completed-output path now verifies the newly generated stable contract content against the existing result contract while normalizing known volatile NT pointer fields, then preserves the existing result-contract artifact bytes.",
+  "tdd_evidence": {
+    "red_test": {
+      "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked operator::tests::run_from_run_spec_reuses_completed_output_without_rebuilding_catalog -- --nocapture",
+      "observed_exit_code": 101,
+      "failure": "second run changed backtest-result-contract.json because nt_result.instance_id differed"
+    },
+    "green_test": {
+      "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked operator::tests::run_from_run_spec_reuses_completed_output_without_rebuilding_catalog -- --nocapture",
+      "observed_exit_code": 0,
+      "result": "focused unit test passed; completed-output rerun preserves conversion artifacts and result-contract bytes"
+    }
+  },
+  "real_cli_evidence": {
+    "run_spec": "specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.binance-bnbusdc-2026-03-01.toml",
+    "execution_plan": "specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-plan/backfill-execution-plan.json",
+    "scratch_output_dir": "/private/tmp/bte-binance-idempotence-fix.rGFFLF",
+    "raw_object": "/private/tmp/bte-binance-bnbusdc-2026-03-01.zip",
+    "raw_object_sha256": "433d32b8d828abee5e1937e01372d16f7edadc14c41fe736b0b9577541fa5e81",
+    "source_proof_id": "source-proof-binance-spot-native-trades-bnbusdc-2026-03-01",
+    "run_id": "backtesting-vertical-slice-binance-bnbusdc-2026-03-01-accepted",
+    "canonical_trades_rows": 71431,
+    "catalog_read_back_trade_ticks": 71431,
+    "nt_iterations": 71431,
+    "nt_catalog_hash": "8c128fe5acbb2e0df7c0f9b30d80de16acb285ca95f67a7bfc08c969f6b48362",
+    "conversion_manifest_hash": "9203c797a0a289838cca1969b95463ab4f1b9764e0402c0be2808401e1c253b5",
+    "conversion_checkpoint_hash": "c2e2ec360c4e3c63a20535a68f515e54d98a846a5bb7f4470feba5a10f3a47fd",
+    "file_hashes_after_second_run": {
+      "canonical_trades_parquet_sha256": "be908f312b61d112a25748d6641a9162f12d568f80d3f2ca94180285cc821a91",
+      "conversion_manifest_json_sha256": "419fa73d941cdfe819dfdb051ad48b0ab614c231301aad8a61d61ddabc28e6cb",
+      "conversion_checkpoint_json_sha256": "7e203ac5d90fc8d1b48e0455a54c9c0edb40bed8e7a943818624bc1e28c28119",
+      "catalog_metadata_json_sha256": "6031600b9ad08f594858b5325d591242878a97b8ace303b5a04a9f63eb0b1be5",
+      "backtest_result_contract_json_sha256": "a095d4503bb2490c92fd758ac1af54042628409fd909a32fdbe2e090262a0e15"
+    },
+    "idempotence_check": {
+      "first_result_contract_json_sha256": "a095d4503bb2490c92fd758ac1af54042628409fd909a32fdbe2e090262a0e15",
+      "second_result_contract_json_sha256": "a095d4503bb2490c92fd758ac1af54042628409fd909a32fdbe2e090262a0e15",
+      "same_result_contract_bytes": true
+    }
+  },
+  "remaining_limits": [
+    "This proves the accepted native-trades converter/backtest completed-output reuse path, not broad production backfill publishing.",
+    "PMXT remains a one-off source proof path and is not promoted to a durable broad backfill source by this evidence."
+  ]
+}

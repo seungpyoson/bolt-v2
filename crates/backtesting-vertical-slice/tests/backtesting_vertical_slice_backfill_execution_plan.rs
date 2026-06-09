@@ -5,7 +5,7 @@ use backtesting_vertical_slice::{
     },
     backfill_execution_plan::{
         BACKFILL_EXECUTION_PLAN_FILE, BackfillExecutionPlanIssue, BackfillExecutionPlanStatus,
-        BackfillExecutionRunBinding, evaluate_backfill_execution_plan,
+        BackfillExecutionRunBinding, BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
         write_backfill_execution_plan,
     },
 };
@@ -21,6 +21,7 @@ fn execution_plan_is_ready_only_for_matching_accepted_tranche_and_run_spec_bindi
         &tranche,
         "synthetic-run-spec-hash",
         &binding,
+        work_budget(),
     );
 
     assert_eq!(plan.status, BackfillExecutionPlanStatus::Ready);
@@ -37,6 +38,11 @@ fn execution_plan_is_ready_only_for_matching_accepted_tranche_and_run_spec_bindi
     assert_eq!(plan.operator_run_id, binding.run_id);
     assert_eq!(plan.object_count, 1);
     assert_eq!(plan.accepted_bytes, 17);
+    assert_eq!(plan.max_object_bytes, 17);
+    assert_eq!(plan.max_decoded_bytes, 4096);
+    assert_eq!(plan.max_source_rows, 128);
+    assert_eq!(plan.max_projected_row_groups, 1);
+    assert_eq!(plan.max_wall_seconds, 30);
     assert_eq!(plan.objects.len(), 1);
     assert_eq!(plan.objects[0].sha256, "synthetic-object-sha");
 }
@@ -53,6 +59,7 @@ fn execution_plan_blocks_run_spec_object_mismatch_before_payload_fetch() {
         &tranche,
         "synthetic-run-spec-hash",
         &binding,
+        work_budget(),
     );
 
     assert_eq!(plan.status, BackfillExecutionPlanStatus::Blocked);
@@ -75,6 +82,7 @@ fn execution_plan_blocks_run_spec_table_family_mismatch_before_payload_fetch() {
         &tranche,
         "synthetic-run-spec-hash",
         &binding,
+        work_budget(),
     );
 
     assert_eq!(plan.status, BackfillExecutionPlanStatus::Blocked);
@@ -82,6 +90,40 @@ fn execution_plan_blocks_run_spec_table_family_mismatch_before_payload_fetch() {
     assert!(
         plan.blocking_issues
             .contains(&BackfillExecutionPlanIssue::RunSpecTableFamilyMismatch)
+    );
+}
+
+#[test]
+fn execution_plan_blocks_missing_work_budgets_before_payload_fetch() {
+    let tranche = accepted_tranche();
+    let binding = matching_run_binding();
+
+    let plan = evaluate_backfill_execution_plan(
+        "synthetic-plan",
+        "synthetic-tranche-hash",
+        &tranche,
+        "synthetic-run-spec-hash",
+        &binding,
+        BackfillExecutionWorkBudget {
+            max_source_rows: 0,
+            max_projected_row_groups: 0,
+            max_wall_seconds: 0,
+        },
+    );
+
+    assert_eq!(plan.status, BackfillExecutionPlanStatus::Blocked);
+    assert!(plan.objects.is_empty());
+    assert!(
+        plan.blocking_issues
+            .contains(&BackfillExecutionPlanIssue::ExecutionPlanSourceRowBudgetMissing)
+    );
+    assert!(
+        plan.blocking_issues
+            .contains(&BackfillExecutionPlanIssue::ExecutionPlanProjectedRowGroupBudgetMissing)
+    );
+    assert!(
+        plan.blocking_issues
+            .contains(&BackfillExecutionPlanIssue::ExecutionPlanWallTimeBudgetMissing)
     );
 }
 
@@ -94,6 +136,7 @@ fn execution_plan_writer_is_idempotent_and_refuses_dirty_existing_artifact() {
         &accepted_tranche(),
         "synthetic-run-spec-hash",
         &matching_run_binding(),
+        work_budget(),
     );
 
     let first = write_backfill_execution_plan(dir.path(), &plan).expect("first write");
@@ -153,5 +196,13 @@ fn matching_run_binding() -> BackfillExecutionRunBinding {
         accepted_object_archive_date: "2026-03-01".to_string(),
         max_object_bytes: 17,
         max_decoded_bytes: 4096,
+    }
+}
+
+fn work_budget() -> BackfillExecutionWorkBudget {
+    BackfillExecutionWorkBudget {
+        max_source_rows: 128,
+        max_projected_row_groups: 1,
+        max_wall_seconds: 30,
     }
 }

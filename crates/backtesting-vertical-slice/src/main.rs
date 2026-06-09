@@ -320,6 +320,18 @@ fn validate_execution_plan_for_run_spec(
         plan.max_decoded_bytes == binding.max_decoded_bytes,
         "execution plan decoded byte budget mismatch"
     );
+    ensure!(
+        plan.max_source_rows > 0,
+        "execution plan max_source_rows must be positive"
+    );
+    ensure!(
+        plan.max_projected_row_groups > 0,
+        "execution plan max_projected_row_groups must be positive"
+    );
+    ensure!(
+        plan.max_wall_seconds > 0,
+        "execution plan max_wall_seconds must be positive"
+    );
     Ok(())
 }
 
@@ -355,6 +367,9 @@ mod tests {
     const COMMITTED_RUN_SPEC: &str = include_str!(
         "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
     );
+    const TEST_MAX_SOURCE_ROWS: u64 = 100_000;
+    const TEST_MAX_PROJECTED_ROW_GROUPS: u64 = 1;
+    const TEST_MAX_WALL_SECONDS: u64 = 300;
 
     fn write_matching_execution_plan(dir: &Path, spec: &RunSpec, run_spec_hash: &str) -> PathBuf {
         let path = dir.join("execution-plan.json");
@@ -376,6 +391,9 @@ mod tests {
             "accepted_bytes": spec.accepted_object.bytes,
             "max_object_bytes": spec.converter.raw_payload.max_object_bytes,
             "max_decoded_bytes": spec.converter.raw_payload.max_decoded_bytes,
+            "max_source_rows": TEST_MAX_SOURCE_ROWS,
+            "max_projected_row_groups": TEST_MAX_PROJECTED_ROW_GROUPS,
+            "max_wall_seconds": TEST_MAX_WALL_SECONDS,
             "objects": [{
                 "s3_uri": spec.accepted_object.s3_uri,
                 "source_url": spec.accepted_object.source_url,
@@ -761,6 +779,9 @@ table_families = ["trades"]
             "accepted_bytes": spec.accepted_object.bytes,
             "max_object_bytes": spec.converter.raw_payload.max_object_bytes,
             "max_decoded_bytes": spec.converter.raw_payload.max_decoded_bytes,
+            "max_source_rows": TEST_MAX_SOURCE_ROWS,
+            "max_projected_row_groups": TEST_MAX_PROJECTED_ROW_GROUPS,
+            "max_wall_seconds": TEST_MAX_WALL_SECONDS,
             "objects": [{
                 "s3_uri": spec.accepted_object.s3_uri,
                 "source_url": spec.accepted_object.source_url,

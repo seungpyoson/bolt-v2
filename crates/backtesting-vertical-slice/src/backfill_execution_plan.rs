@@ -30,7 +30,17 @@ pub struct BackfillExecutionPlanSpec {
     pub plan_id: String,
     pub accepted_tranche_manifest_path: PathBuf,
     pub run_spec_path: PathBuf,
+    pub max_source_rows: u64,
+    pub max_projected_row_groups: u64,
+    pub max_wall_seconds: u64,
     pub output_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackfillExecutionWorkBudget {
+    pub max_source_rows: u64,
+    pub max_projected_row_groups: u64,
+    pub max_wall_seconds: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +69,9 @@ pub enum BackfillExecutionPlanIssue {
     RunSpecObjectBytesMismatch,
     RunSpecObjectArchiveDateMismatch,
     RunSpecObjectBudgetTooSmall,
+    ExecutionPlanSourceRowBudgetMissing,
+    ExecutionPlanProjectedRowGroupBudgetMissing,
+    ExecutionPlanWallTimeBudgetMissing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +158,9 @@ pub struct BackfillExecutionPlan {
     pub accepted_bytes: u64,
     pub max_object_bytes: u64,
     pub max_decoded_bytes: u64,
+    pub max_source_rows: u64,
+    pub max_projected_row_groups: u64,
+    pub max_wall_seconds: u64,
     pub objects: Vec<BackfillExecutionPlanObject>,
     pub blocking_issues: Vec<BackfillExecutionPlanIssue>,
 }
@@ -225,6 +241,7 @@ pub fn evaluate_backfill_execution_plan(
     tranche: &BackfillAcceptedTrancheManifest,
     run_spec_hash: impl Into<String>,
     run_binding: &BackfillExecutionRunBinding,
+    work_budget: BackfillExecutionWorkBudget,
 ) -> BackfillExecutionPlan {
     let plan_id = plan_id.into();
     let accepted_tranche_manifest_hash = accepted_tranche_manifest_hash.into();
@@ -249,6 +266,16 @@ pub fn evaluate_backfill_execution_plan(
         .is_some_and(|object| object.bytes != tranche.accepted_bytes)
     {
         blocking_issues.push(BackfillExecutionPlanIssue::AcceptedTrancheBytesMismatch);
+    }
+    if work_budget.max_source_rows == 0 {
+        blocking_issues.push(BackfillExecutionPlanIssue::ExecutionPlanSourceRowBudgetMissing);
+    }
+    if work_budget.max_projected_row_groups == 0 {
+        blocking_issues
+            .push(BackfillExecutionPlanIssue::ExecutionPlanProjectedRowGroupBudgetMissing);
+    }
+    if work_budget.max_wall_seconds == 0 {
+        blocking_issues.push(BackfillExecutionPlanIssue::ExecutionPlanWallTimeBudgetMissing);
     }
     if tranche.source_proof_id != run_binding.source_proof_id
         || tranche.source_proof_version != run_binding.source_proof_version
@@ -321,6 +348,9 @@ pub fn evaluate_backfill_execution_plan(
         accepted_bytes: objects.iter().map(|object| object.bytes).sum(),
         max_object_bytes: run_binding.max_object_bytes,
         max_decoded_bytes: run_binding.max_decoded_bytes,
+        max_source_rows: work_budget.max_source_rows,
+        max_projected_row_groups: work_budget.max_projected_row_groups,
+        max_wall_seconds: work_budget.max_wall_seconds,
         objects,
         blocking_issues,
     }
@@ -343,12 +373,18 @@ pub fn write_backfill_execution_plan_from_spec_file(
         read_accepted_tranche_manifest(&spec.accepted_tranche_manifest_path)?;
     let (run_spec, run_spec_hash) = read_run_spec(&spec.run_spec_path)?;
     let run_binding = BackfillExecutionRunBinding::from_run_spec(&run_spec);
+    let work_budget = BackfillExecutionWorkBudget {
+        max_source_rows: spec.max_source_rows,
+        max_projected_row_groups: spec.max_projected_row_groups,
+        max_wall_seconds: spec.max_wall_seconds,
+    };
     let plan = evaluate_backfill_execution_plan(
         spec.plan_id,
         accepted_tranche_manifest_hash,
         &tranche,
         run_spec_hash,
         &run_binding,
+        work_budget,
     );
     write_backfill_execution_plan(&spec.output_dir, &plan)
 }

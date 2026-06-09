@@ -426,6 +426,9 @@ fn matching_execution_plan(tranche: &BackfillAcceptedTrancheManifest) -> Backfil
         accepted_bytes: tranche.accepted_bytes,
         max_object_bytes: tranche.accepted_bytes,
         max_decoded_bytes: 4096,
+        max_source_rows: 128,
+        max_projected_row_groups: 1,
+        max_wall_seconds: 30,
         objects: vec![BackfillExecutionPlanObject {
             s3_uri: object.s3_uri,
             source_url: object.source_url,

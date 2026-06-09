@@ -5,7 +5,8 @@ use backtesting_vertical_slice::{
         BackfillAcceptedTrancheManifest, evaluate_backfill_accepted_tranche,
     },
     backfill_execution_plan::{
-        BackfillExecutionPlan, BackfillExecutionRunBinding, evaluate_backfill_execution_plan,
+        BackfillExecutionPlan, BackfillExecutionRunBinding, BackfillExecutionWorkBudget,
+        evaluate_backfill_execution_plan,
     },
     backfill_execution_readiness::{
         BackfillExecutionReadinessBlocker, BackfillExecutionReadinessInput,
@@ -130,6 +131,11 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
         &actual_tranche,
         sha256_hex(RUN_SPEC_BYTES),
         &BackfillExecutionRunBinding::from_run_spec(&run_spec),
+        BackfillExecutionWorkBudget {
+            max_source_rows: expected_plan.max_source_rows,
+            max_projected_row_groups: expected_plan.max_projected_row_groups,
+            max_wall_seconds: expected_plan.max_wall_seconds,
+        },
     );
 
     assert_eq!(actual_plan, expected_plan);

@@ -56,6 +56,11 @@
       "surface": "accepted-tranche to operator run-spec materialization",
       "path": "repo://crates/backtesting-vertical-slice/src/backfill_run_spec_materialization.rs",
       "evidence": "BackfillRunSpecMaterializationSpec reads an accepted-tranche manifest and TOML run-spec template, patches accepted_object, source_proof, source_proof.acceptance_scope, converter.raw_payload, and manifest values, parses the result as operator::RunSpec, and writes a create-only/idempotent backfill-run-spec.toml. The focused test uses synthetic source values and then feeds the generated run-spec into BackfillExecutionRunBinding plus evaluate_backfill_execution_plan before payload fetch."
+    },
+    {
+      "surface": "accepted-tranche execution budget",
+      "path": "repo://crates/backtesting-vertical-slice/src/backfill_execution_plan.rs",
+      "evidence": "BackfillExecutionPlanSpec is source-agnostic and now requires max_source_rows, max_projected_row_groups, and max_wall_seconds in TOML before a ready execution plan can be emitted."
     }
   ],
   "source_specific_surfaces_found": [

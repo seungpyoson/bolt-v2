@@ -2337,11 +2337,12 @@ Root cause addressed:
   count ledger and selector carry `source_row_groups`, and
   `selected_source_slice` calls `with_row_groups(...)`, projecting 1 of 62
   row groups for the selected proof.
-- The remaining inefficiency is explicit and bounded: the event-count ledger
-  still performs a full two-column scan for the one-hour object, and
-  `selected_source_slice` still computes `source_parquet_sha256` by reading the
-  whole source file before row-group projection. That is acceptable only for a
-  bounded proof, not for broad backfill.
+- The bounded proof path now has pre-payload budget controls at both levels:
+  `first_proof_event_count_ledger` and `selected_source_slice` require
+  source-Parquet byte budgets, and `backfill_execution_plan` requires
+  accepted-tranche row-count, projected-row-group-count, and wall-time budgets.
+  The remaining inefficiency is explicit and bounded: any full-object work is
+  acceptable only inside a configured bounded proof, not as broad discovery.
 
 NT/source split:
 
@@ -2371,7 +2372,10 @@ Current conclusion:
 - Broad backfill can proceed only after durable source proof acceptance,
   manifest/index-only coverage/cost/storage evidence, accepted object hashes,
   row-group or predicate metadata, explicit byte/row/time budgets, and dynamic
-  tick-size replay or a source-proof-bound exclusion policy are proven.
+  tick-size replay or a source-proof-bound exclusion policy are proven. The
+  accepted-tranche execution-plan budget fields are now machine-readable, but
+  broad PMXT/Polymarket backfill remains blocked until the other evidence
+  exists.
 - This does not close `BACKTESTING_ENGINE-022`; it makes the slow-backfill
   non-repeat condition machine-readable.
 

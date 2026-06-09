@@ -3,7 +3,9 @@ use backtesting_vertical_slice::{
         BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION, BackfillAcceptedTrancheManifest,
         BackfillAcceptedTrancheObject, BackfillAcceptedTrancheStatus,
     },
-    backfill_execution_plan::{BackfillExecutionPlanStatus, BackfillExecutionRunBinding},
+    backfill_execution_plan::{
+        BackfillExecutionPlanStatus, BackfillExecutionRunBinding, BackfillExecutionWorkBudget,
+    },
     backfill_run_spec_materialization::{
         BACKFILL_RUN_SPEC_MATERIALIZED_FILE, BackfillRunSpecMaterializationSpec,
         write_backfill_run_spec_from_materialization_spec,
@@ -56,6 +58,11 @@ fn materialized_run_spec_binds_accepted_tranche_before_payload_fetch() {
             &accepted_tranche(),
             artifact.content_hash.clone(),
             &binding,
+            BackfillExecutionWorkBudget {
+                max_source_rows: 128,
+                max_projected_row_groups: 1,
+                max_wall_seconds: 30,
+            },
         );
 
     assert_eq!(plan.status, BackfillExecutionPlanStatus::Ready);

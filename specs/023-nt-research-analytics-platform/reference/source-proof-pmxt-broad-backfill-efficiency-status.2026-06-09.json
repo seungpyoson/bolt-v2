@@ -13,7 +13,7 @@
       "The accepted source proof is still pending; payload work before source acceptance can produce expensive artifacts that cannot become canonical.",
       "Standard pinned NT BacktestNode catalog replay does not currently expose timed InstrumentAny instrument-definition replay, so full L2 over tick-size-changing assets would overclaim correctness."
     ],
-    "current_bounded_improvement": "The current one-off selector path records source_row_groups in the event-count ledger and selector report, first_proof_event_count_ledger rejects sources above TOML-owned max_source_parquet_bytes before Parquet reader construction, selected_source_slice rejects sources above TOML-owned max_source_parquet_bytes before full-file hashing, and selected_source_slice projects only the selector row groups with ParquetRecordBatchReaderBuilder.with_row_groups.",
+    "current_bounded_improvement": "The current one-off selector path records source_row_groups in the event-count ledger and selector report, first_proof_event_count_ledger rejects sources above TOML-owned max_source_parquet_bytes before Parquet reader construction, selected_source_slice rejects sources above TOML-owned max_source_parquet_bytes before full-file hashing, selected_source_slice projects only the selector row groups with ParquetRecordBatchReaderBuilder.with_row_groups, and backfill_execution_plan now requires TOML-owned max_source_rows, max_projected_row_groups, and max_wall_seconds before it can emit a ready plan.",
     "remaining_efficiency_gap": "The bounded first-proof event-count ledger still performs a two-column scan only when the configured source byte budget admits it. Broad planning still must not use this as a discovery mechanism across many PMXT objects; it needs manifest/index-owned coverage and row-group/predicate metadata before payload work."
   },
   "external_source_evidence": {
@@ -118,6 +118,20 @@
         "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-coverage-ledger-status.2026-06-09.json",
         "evidence": "The committed coverage ledger status proves source-proof metadata and coverage_axis can be derived without payload download, but both PMXT records remain rejected because source_proof_status is pending."
       }
+    ],
+    "accepted_tranche_budget_gate": [
+      {
+        "path": "repo://crates/backtesting-vertical-slice/src/backfill_execution_plan.rs",
+        "evidence": "BackfillExecutionPlanSpec now carries max_source_rows, max_projected_row_groups, and max_wall_seconds; evaluate_backfill_execution_plan blocks zero values before returning a ready plan."
+      },
+      {
+        "path": "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_execution_plan.rs",
+        "evidence": "execution_plan_blocks_missing_work_budgets_before_payload_fetch covers the pre-payload rejection path without venue-specific literals."
+      },
+      {
+        "path": "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/backfill-execution-plan.toml",
+        "evidence": "The committed accepted-tranche execution-plan spec records explicit source-row, projected-row-group, and wall-time budgets while preserving the existing materialized run-spec hash."
+      }
     ]
   },
   "required_before_any_broad_backfill": [
@@ -125,7 +139,7 @@
     "Keep the first gate manifest/index-only: coverage, freshness, completeness, bytes, object count, and cost must be recorded before payload download.",
     "Replace broad full-object hashing in planning/projection with accepted object hashes from staging or Artifact Index records; full payload reads belong only inside bounded accepted tranches.",
     "Carry object-level row-group or predicate metadata from the accepted source proof into the execution plan so selected-source projection does not rediscover it by rescanning payloads.",
-    "Set explicit object byte, row count, projected row-group count, and wall-time budgets in the accepted tranche plan; first_proof_event_count_ledger and selected_source_slice now enforce source parquet byte budgets before payload-scale work.",
+    "Set explicit object byte, row count, projected row-group count, and wall-time budgets in the accepted tranche plan; backfill_execution_plan now carries row, projected-row-group, and wall-time budgets, while first_proof_event_count_ledger and selected_source_slice enforce source parquet byte budgets before payload-scale work.",
     "Prove dynamic tick-size replay through NT BacktestNode/catalog, or accept a source-proof-bound no-tick-size-change exclusion policy before full L2 replay claims; generic SourceProofReport L2Replay acceptance now requires l2_replay_evidence.no_tick_size_change_universe_ref or l2_replay_evidence.timed_instrument_epoch_replay_ref.",
     "Use GitHub CI as the broad verification gate for committed changes; avoid broad local cargo test runs as the default verification path."
   ],

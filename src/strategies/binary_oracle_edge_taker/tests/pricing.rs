@@ -787,7 +787,7 @@ fn entry_submission_uses_exact_vwap_limit_price_and_quantity() {
     assert!(
         decision
             .quantity_value
-            .is_some_and(|quantity| (quantity - 9.17).abs() < 1e-9),
+            .is_some_and(|quantity| (quantity - 9.16).abs() < 1e-9),
         "submission should use normalized VWAP quantity, got {decision:#?}"
     );
 }

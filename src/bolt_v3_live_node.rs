@@ -318,15 +318,15 @@ pub fn wire_bolt_v3_iv_runtime_event_bindings(
                     IvSourceKind::OptionGreeks,
                     IvSelector::SourceOptionGreeks { instrument_ids, .. },
                 ) => {
+                    let instrument_ids = parse_option_greeks_instrument_ids(instrument_ids)
+                        .map_err(|message| {
+                            iv_runtime_event_binding_error(
+                                &profile.profile_id,
+                                &source.source_id,
+                                message,
+                            )
+                        })?;
                     for instrument_id in instrument_ids {
-                        let instrument_id =
-                            InstrumentId::from_str(instrument_id).map_err(|error| {
-                                iv_runtime_event_binding_error(
-                                    &profile.profile_id,
-                                    &source.source_id,
-                                    format!("invalid NT option-greeks instrument_id: {error}"),
-                                )
-                            })?;
                         bindings
                             .option_greeks
                             .push(wire_option_greeks_event_binding(
@@ -338,14 +338,15 @@ pub fn wire_bolt_v3_iv_runtime_event_bindings(
                     }
                 }
                 (IvSourceKind::OptionChain, IvSelector::SourceOptionChain { series_ids, .. }) => {
-                    for series_id in series_ids {
-                        let series_id = OptionSeriesId::from_str(series_id).map_err(|error| {
+                    let series_ids =
+                        parse_option_chain_series_ids(series_ids).map_err(|message| {
                             iv_runtime_event_binding_error(
                                 &profile.profile_id,
                                 &source.source_id,
-                                format!("invalid NT option-chain series_id: {error}"),
+                                message,
                             )
                         })?;
+                    for series_id in series_ids {
                         bindings.option_chains.push(wire_option_chain_event_binding(
                             &profile.profile_id,
                             &source.source_id,
@@ -420,6 +421,29 @@ pub fn wire_bolt_v3_iv_runtime_event_bindings(
     }
 
     Ok(bindings)
+}
+
+fn parse_option_greeks_instrument_ids(
+    instrument_ids: &[String],
+) -> Result<Vec<InstrumentId>, String> {
+    instrument_ids
+        .iter()
+        .map(|instrument_id| {
+            InstrumentId::from_str(instrument_id).map_err(|error| {
+                format!("invalid NT option-greeks instrument_id {instrument_id}: {error}")
+            })
+        })
+        .collect()
+}
+
+fn parse_option_chain_series_ids(series_ids: &[String]) -> Result<Vec<OptionSeriesId>, String> {
+    series_ids
+        .iter()
+        .map(|series_id| {
+            OptionSeriesId::from_str(series_id)
+                .map_err(|error| format!("invalid NT option-chain series_id {series_id}: {error}"))
+        })
+        .collect()
 }
 
 fn wire_aggregate_greeks_custom_data_event_binding(
@@ -579,13 +603,9 @@ impl<'a> NtIvRuntimeBindingAdapter<'a> {
     ) -> Result<(), IvRuntimeBindingError> {
         let params = merged_nt_params(plan, nt_params)?;
         let client_id = Some(self.client_id(plan)?);
+        let instrument_ids = parse_option_greeks_instrument_ids(instrument_ids)
+            .map_err(|message| binding_error(plan, message))?;
         for instrument_id in instrument_ids {
-            let instrument_id = InstrumentId::from_str(instrument_id).map_err(|error| {
-                binding_error(
-                    plan,
-                    format!("invalid NT option-greeks instrument_id: {error}"),
-                )
-            })?;
             let ts_init = self.node.kernel().clock.borrow().timestamp_ns();
             if subscribe {
                 let command = SubscribeOptionGreeks::new(
@@ -638,10 +658,9 @@ impl<'a> NtIvRuntimeBindingAdapter<'a> {
             .as_ref()
             .and_then(|params| params.get_u64("snapshot_interval_ms"));
         let client_id = Some(self.client_id(plan)?);
+        let series_ids = parse_option_chain_series_ids(series_ids)
+            .map_err(|message| binding_error(plan, message))?;
         for series_id in series_ids {
-            let series_id = OptionSeriesId::from_str(series_id).map_err(|error| {
-                binding_error(plan, format!("invalid NT option-chain series_id: {error}"))
-            })?;
             let ts_init = self.node.kernel().clock.borrow().timestamp_ns();
             if subscribe {
                 let command = SubscribeOptionChain::new(
@@ -1900,6 +1919,7 @@ impl BoltV3LiveNodeRuntime {
                 },
             )
         })?;
+        self.iv_event_bindings = None;
         let outcomes = {
             let mut adapter = NtIvRuntimeBindingAdapter::new(
                 &mut self.node,
@@ -4368,6 +4388,32 @@ configured_source_param = "configured-value"
     }
 
     #[test]
+    fn iv_option_greeks_identifier_list_rejects_before_runtime_commands() {
+        let ids = vec![
+            "BTC-20240101-50000-C.DERIBIT".to_string(),
+            "configured-invalid-option-instrument".to_string(),
+        ];
+
+        let error = parse_option_greeks_instrument_ids(&ids).expect_err("invalid ID should reject");
+
+        assert!(error.contains("invalid NT option-greeks instrument_id"));
+        assert!(error.contains("configured-invalid-option-instrument"));
+    }
+
+    #[test]
+    fn iv_option_chain_identifier_list_rejects_before_runtime_commands() {
+        let ids = vec![
+            "DERIBIT:BTC:BTC:2024-01-01".to_string(),
+            "configured-invalid-option-series".to_string(),
+        ];
+
+        let error = parse_option_chain_series_ids(&ids).expect_err("invalid ID should reject");
+
+        assert!(error.contains("invalid NT option-chain series_id"));
+        assert!(error.contains("configured-invalid-option-series"));
+    }
+
+    #[test]
     fn live_node_runtime_stop_applies_iv_unsubscribe_lifecycle() {
         let mut loaded = fixture_loaded_config();
         loaded.root.clients.clear();
@@ -4452,10 +4498,18 @@ configured_source_param = "configured-value"
             BTreeMap::new(),
         )
         .expect("configured external IV source should build without live transport");
+        assert!(
+            runtime.has_iv_event_bindings(),
+            "startup should install IV receive-side bindings"
+        );
 
         runtime
             .stop_iv_engine_lifecycle(&loaded.root)
             .expect("IV stop lifecycle should apply unsubscribe plans");
+        assert!(
+            !runtime.has_iv_event_bindings(),
+            "stop should drop IV receive-side bindings"
+        );
 
         let health = runtime
             .iv_source_health("configured-profile", "configured-greeks-source")

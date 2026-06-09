@@ -396,7 +396,7 @@ fn chainlink_reference_transport_connected(
     started: bool,
     transport_mode: Option<ConnectionMode>,
 ) -> bool {
-    started && transport_mode.is_none_or(|mode| mode.is_active())
+    started && transport_mode.is_some_and(|mode| mode.is_active())
 }
 
 fn chainlink_reference_websocket_url(
@@ -1078,7 +1078,10 @@ mod tests {
         client
             .start()
             .expect("chainlink reference start should succeed");
-        assert!(client.is_connected());
+        assert!(
+            client.is_disconnected(),
+            "start without a WebSocket transport must not mask a later connect failure"
+        );
 
         client
             .stop()
@@ -1095,6 +1098,10 @@ mod tests {
         assert!(
             !chainlink_reference_transport_connected(true, Some(ConnectionMode::Reconnect)),
             "reconnecting Chainlink transport has not minted fresh auth headers and must not report connected"
+        );
+        assert!(
+            !chainlink_reference_transport_connected(true, None),
+            "missing Chainlink transport state must fail closed instead of reporting connected"
         );
         assert!(chainlink_reference_transport_connected(
             true,

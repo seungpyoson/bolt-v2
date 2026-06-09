@@ -737,7 +737,7 @@ fn polyresearch_reference_transport_connected(
     started: bool,
     transport_mode: Option<ConnectionMode>,
 ) -> bool {
-    started && transport_mode.is_none_or(|mode| mode.is_active())
+    started && transport_mode.is_some_and(|mode| mode.is_active())
 }
 
 fn polyresearch_reference_subscription_from_command(
@@ -1499,7 +1499,10 @@ mod tests {
         client
             .start()
             .expect("polyresearch reference start should succeed");
-        assert!(client.is_connected());
+        assert!(
+            client.is_disconnected(),
+            "start without a WebSocket transport must not mask a later connect failure"
+        );
 
         client
             .stop()
@@ -1516,6 +1519,10 @@ mod tests {
         assert!(
             !polyresearch_reference_transport_connected(true, Some(ConnectionMode::Reconnect)),
             "reconnecting PRR transport must not report healthy connected state"
+        );
+        assert!(
+            !polyresearch_reference_transport_connected(true, None),
+            "missing PRR transport state must fail closed instead of reporting connected"
         );
         assert!(polyresearch_reference_transport_connected(
             true,

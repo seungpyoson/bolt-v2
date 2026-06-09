@@ -24,6 +24,8 @@ use super::{
 };
 use nautilus_model::data::{CustomData, HasTsInit};
 
+const INITIAL_SUBSCRIPTION_GENERATION: u64 = 0;
+
 pub trait IvRuntimeBindingAdapter {
     fn apply_subscription_plan(
         &mut self,
@@ -247,8 +249,8 @@ impl IvRuntimeEngine {
         option_greeks: &nautilus_model::data::OptionGreeks,
         received_ts_ns: UnixNanos,
     ) -> Result<IvRawEvent, IvRuntimeEngineError> {
-        let source = &self.runtime_source_config(profile_id, source_id)?;
         let ts_event_ns = UnixNanos::new(option_greeks.ts_event.as_u64());
+        let source = &self.runtime_source_config(profile_id, source_id, ts_event_ns)?;
         if source.source_kind != IvSourceKind::OptionGreeks
             || !source.selector_matches_option_greeks(&option_greeks.instrument_id.to_string())
         {
@@ -310,8 +312,8 @@ impl IvRuntimeEngine {
         option_chain: &nautilus_model::data::OptionChainSlice,
         received_ts_ns: UnixNanos,
     ) -> Result<IvRawEvent, IvRuntimeEngineError> {
-        let source = &self.runtime_source_config(profile_id, source_id)?;
         let ts_event_ns = UnixNanos::new(option_chain.ts_event.as_u64());
+        let source = &self.runtime_source_config(profile_id, source_id, ts_event_ns)?;
         if source.source_kind != IvSourceKind::OptionChain
             || !source.selector_matches_option_chain(&option_chain.series_id.to_string())
         {
@@ -372,8 +374,8 @@ impl IvRuntimeEngine {
         custom_data: &CustomData,
         received_ts_ns: UnixNanos,
     ) -> Result<IvRawEvent, IvRuntimeEngineError> {
-        let source = &self.runtime_source_config(profile_id, source_id)?;
         let ts_event_ns = UnixNanos::new(custom_data.data.ts_event().as_u64());
+        let source = &self.runtime_source_config(profile_id, source_id, ts_event_ns)?;
         let IvSelector::SourceAggregateGreeks {
             aggregate_key,
             underlying_selectors,
@@ -508,8 +510,8 @@ impl IvRuntimeEngine {
         custom_data: &CustomData,
         received_ts_ns: UnixNanos,
     ) -> Result<IvRawEvent, IvRuntimeEngineError> {
-        let source = &self.runtime_source_config(profile_id, source_id)?;
         let ts_event_ns = UnixNanos::new(custom_data.data.ts_event().as_u64());
+        let source = &self.runtime_source_config(profile_id, source_id, ts_event_ns)?;
         let IvSelector::SourceCustomImpliedVolatility {
             custom_iv_data_type,
             custom_iv_data_fields,
@@ -670,19 +672,26 @@ impl IvRuntimeEngine {
         &self,
         profile_id: &str,
         source_id: &str,
+        ts_event_ns: UnixNanos,
     ) -> Result<IvRuntimeSourceConfig, IvRuntimeEngineError> {
-        let inner = self.read_inner();
-        let profile_sources = inner.profile_sources.get(profile_id).ok_or_else(|| {
-            IvRuntimeEngineError::UnknownProfileId {
-                profile_id: profile_id.to_string(),
-            }
-        })?;
-        profile_sources.get(source_id).cloned().ok_or_else(|| {
-            IvRuntimeEngineError::IngestRejected {
-                profile_id: profile_id.to_string(),
-                source_id: source_id.to_string(),
-                reason: IvRejectReason::SourceNotConfigured,
-            }
+        let source = {
+            let inner = self.read_inner();
+            let profile_sources = inner.profile_sources.get(profile_id).ok_or_else(|| {
+                IvRuntimeEngineError::UnknownProfileId {
+                    profile_id: profile_id.to_string(),
+                }
+            })?;
+            profile_sources.get(source_id).cloned()
+        };
+        source.ok_or_else(|| {
+            self.reject_profile_source_event(
+                profile_id,
+                source_id,
+                INITIAL_SUBSCRIPTION_GENERATION,
+                ts_event_ns,
+                IvRejectReason::SourceNotConfigured,
+                true,
+            )
         })
     }
 
@@ -694,17 +703,15 @@ impl IvRuntimeEngine {
         mark_rejected: bool,
     ) -> IvRuntimeEngineError {
         if let Some(state) = self.state_for_profile(&event.profile_id) {
-            state.record_source_rejection(
-                event.profile_id.clone(),
-                event.source_id.clone(),
+            self.record_source_rejection_with_retention(
+                &state,
+                &event.profile_id,
+                &event.source_id,
                 health_generation,
                 event.ts_event_ns,
                 reason,
                 mark_rejected,
             );
-            if let Some(policy) = self.retention_policy(&event.profile_id) {
-                state.enforce_retention(&policy);
-            }
         }
         IvRuntimeEngineError::IngestRejected {
             profile_id: event.profile_id.clone(),
@@ -723,9 +730,10 @@ impl IvRuntimeEngine {
         mark_rejected: bool,
     ) -> IvRuntimeEngineError {
         if let Some(state) = self.state_for_profile(profile_id) {
-            state.record_source_rejection(
-                profile_id.to_string(),
-                source_id.to_string(),
+            self.record_source_rejection_with_retention(
+                &state,
+                profile_id,
+                source_id,
                 source.subscription_generation,
                 ts_event_ns,
                 reason,
@@ -736,6 +744,56 @@ impl IvRuntimeEngine {
             profile_id: profile_id.to_string(),
             source_id: source_id.to_string(),
             reason,
+        }
+    }
+
+    fn reject_profile_source_event(
+        &self,
+        profile_id: &str,
+        source_id: &str,
+        subscription_generation: u64,
+        ts_event_ns: UnixNanos,
+        reason: IvRejectReason,
+        mark_rejected: bool,
+    ) -> IvRuntimeEngineError {
+        if let Some(state) = self.state_for_profile(profile_id) {
+            self.record_source_rejection_with_retention(
+                &state,
+                profile_id,
+                source_id,
+                subscription_generation,
+                ts_event_ns,
+                reason,
+                mark_rejected,
+            );
+        }
+        IvRuntimeEngineError::IngestRejected {
+            profile_id: profile_id.to_string(),
+            source_id: source_id.to_string(),
+            reason,
+        }
+    }
+
+    fn record_source_rejection_with_retention(
+        &self,
+        state: &IvQueryStateHandle,
+        profile_id: &str,
+        source_id: &str,
+        subscription_generation: u64,
+        ts_event_ns: UnixNanos,
+        reason: IvRejectReason,
+        mark_rejected: bool,
+    ) {
+        state.record_source_rejection(
+            profile_id.to_string(),
+            source_id.to_string(),
+            subscription_generation,
+            ts_event_ns,
+            reason,
+            mark_rejected,
+        );
+        if let Some(policy) = self.retention_policy(profile_id) {
+            state.enforce_retention(&policy);
         }
     }
 

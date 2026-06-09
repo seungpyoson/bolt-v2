@@ -8,7 +8,12 @@ use crate::bolt_v3_config::{
     BoltV3RootConfig, LoadedBoltV3Config, LoadedStrategy, StrategyArchetypeKey,
 };
 use crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter;
-use crate::bolt_v3_iv::{query::IvQueryHandle, runtime::IvRuntimeEngine, store::IvStore};
+use crate::bolt_v3_iv::{
+    config::IvProfile,
+    query::IvQueryHandle,
+    runtime::IvRuntimeEngine,
+    store::{IvRetentionPolicy, IvStore},
+};
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 use nautilus_live::node::LiveNode;
@@ -169,6 +174,7 @@ pub fn build_iv_query_handle_registry_for_root(
                         .with_helper_policies(profile.helper_policies.clone())
                         .with_derived_input_policies(profile.derived_input_policies.clone())
                         .with_derived_inputs(profile.derived_inputs.clone())
+                        .with_retention_policy(retention_policy_from_profile(profile))
                         .with_current_subscription_generations(current_generations),
                 )
                 .is_some()
@@ -214,7 +220,8 @@ pub fn build_iv_query_handle_registry_for_runtime(
             if handles
                 .insert(
                     key.clone(),
-                    IvQueryHandle::from_state(&profile.profile_id, authorization, state.clone()),
+                    IvQueryHandle::from_state(&profile.profile_id, authorization, state.clone())
+                        .with_retention_policy(retention_policy_from_profile(profile)),
                 )
                 .is_some()
             {
@@ -229,6 +236,17 @@ pub fn build_iv_query_handle_registry_for_runtime(
     }
 
     Ok(BoltV3IvQueryHandleRegistry { handles })
+}
+
+fn retention_policy_from_profile(profile: &IvProfile) -> IvRetentionPolicy {
+    IvRetentionPolicy {
+        max_raw_events: profile.max_raw_events,
+        max_indexed_points: profile.max_indexed_points,
+        max_smiles: profile.max_smiles,
+        max_surfaces: profile.max_surfaces,
+        max_derived_points: profile.max_derived_points,
+        max_source_health_events: profile.max_source_health_events,
+    }
 }
 
 pub fn build_iv_query_handle_registry(

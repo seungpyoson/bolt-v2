@@ -105,6 +105,27 @@ fn greeks_ingest_event(source_id: &str, subscription_generation: u64) -> IvInges
     }
 }
 
+fn nt_option_greeks(instrument_id: &str) -> OptionGreeks {
+    OptionGreeks {
+        instrument_id: InstrumentId::from(instrument_id),
+        convention: GreeksConvention::BlackScholes,
+        greeks: OptionGreekValues {
+            delta: 0.51,
+            gamma: 0.02,
+            vega: 0.13,
+            theta: -0.04,
+            rho: 0.01,
+        },
+        mark_iv: Some(0.44),
+        bid_iv: Some(0.43),
+        ask_iv: Some(0.45),
+        underlying_price: Some(102.0),
+        open_interest: Some(2200.0),
+        ts_event: NtUnixNanos::from(2_000),
+        ts_init: NtUnixNanos::from(1_900),
+    }
+}
+
 fn configured_runtime_config() -> bolt_v2::bolt_v3_iv::config::IvRootConfig {
     load_iv_config_from_toml(
         r#"
@@ -813,6 +834,104 @@ fn runtime_engine_bounds_unconfigured_source_rejection_health() {
     assert!(
         engine
             .source_health("iv-profile", "missing-source-3")
+            .is_some()
+    );
+}
+
+#[test]
+fn runtime_engine_bounds_unconfigured_nt_option_greeks_source_rejection_health() {
+    let config = configured_runtime_config();
+    let engine = IvRuntimeEngine::from_iv_root(&config).unwrap();
+    let nt_greeks = nt_option_greeks("BTC-20240101-50000-C.DERIBIT");
+
+    for index in 0..4_u64 {
+        let source_id = format!("missing-nt-source-{index}");
+        engine
+            .ingest_nt_option_greeks(
+                "iv-profile",
+                &source_id,
+                &nt_greeks,
+                UnixNanos::new(2_100 + index),
+            )
+            .expect_err("unknown typed NT source must reject before storage");
+    }
+
+    assert!(
+        engine
+            .source_health("iv-profile", "missing-nt-source-0")
+            .is_none()
+    );
+    assert!(
+        engine
+            .source_health("iv-profile", "missing-nt-source-1")
+            .is_none()
+    );
+    assert!(
+        engine
+            .source_health("iv-profile", "missing-nt-source-2")
+            .is_some()
+    );
+    assert!(
+        engine
+            .source_health("iv-profile", "missing-nt-source-3")
+            .is_some()
+    );
+}
+
+#[test]
+fn runtime_engine_bounds_nt_option_greeks_selector_rejection_health() {
+    let mut config = configured_runtime_config();
+    let template = config.profiles[0].sources[0].clone();
+    config.profiles[0].sources = (0..4_u64)
+        .map(|index| {
+            let mut source = template.clone();
+            source.source_id = format!("selector-reject-source-{index}");
+            source.selector_fingerprint = format!("selector-reject-fingerprint-{index}");
+            source
+        })
+        .collect();
+    let engine = IvRuntimeEngine::from_iv_root(&config).unwrap();
+    let nt_greeks = nt_option_greeks("ETH-20240101-50000-C.DERIBIT");
+
+    for index in 0..4_u64 {
+        let source_id = format!("selector-reject-source-{index}");
+        let error = engine
+            .ingest_nt_option_greeks(
+                "iv-profile",
+                &source_id,
+                &nt_greeks,
+                UnixNanos::new(2_100 + index),
+            )
+            .expect_err("selector mismatch must reject before storage");
+        assert!(matches!(
+            error,
+            IvRuntimeEngineError::IngestRejected {
+                reason: IvRejectReason::SelectorProductMismatch,
+                ..
+            }
+        ));
+    }
+
+    assert!(
+        engine
+            .source_health("iv-profile", "selector-reject-source-0")
+            .is_none()
+    );
+    assert!(
+        engine
+            .source_health("iv-profile", "selector-reject-source-1")
+            .is_none()
+    );
+    let retained = engine
+        .source_health("iv-profile", "selector-reject-source-2")
+        .expect("latest retained selector rejection should be queryable");
+    assert_eq!(
+        retained.last_reject_reason,
+        Some(IvRejectReason::SelectorProductMismatch)
+    );
+    assert!(
+        engine
+            .source_health("iv-profile", "selector-reject-source-3")
             .is_some()
     );
 }

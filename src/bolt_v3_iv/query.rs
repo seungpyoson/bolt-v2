@@ -117,6 +117,7 @@ pub struct IvQueryHandle {
     profile_id: String,
     authorization: IvSelectorAuthorization,
     state: IvQueryStateHandle,
+    retention_policy: Option<IvRetentionPolicy>,
 }
 
 impl IvQueryState {
@@ -406,7 +407,13 @@ impl IvQueryHandle {
             profile_id: profile_id.into(),
             authorization,
             state,
+            retention_policy: None,
         }
+    }
+
+    pub fn with_retention_policy(mut self, retention_policy: IvRetentionPolicy) -> Self {
+        self.retention_policy = Some(retention_policy);
+        self
     }
 
     pub fn with_source_health(self, source_health: Vec<IvSourceHealth>) -> Self {
@@ -515,6 +522,7 @@ impl IvQueryHandle {
 
         if let IvQueryProduct::DerivedIv(derived) = &product {
             self.state.record_derived_output((**derived).clone());
+            self.enforce_retention_policy();
         }
 
         Ok(product)
@@ -819,6 +827,89 @@ impl IvQueryHandle {
                     Ok(products)
                 }
             }
+            (
+                IvProductKind::IvGreeksPoint,
+                IvSelector::PointQuery {
+                    instrument_ids,
+                    basis,
+                    as_of_ns,
+                    source_filter,
+                },
+            ) => {
+                let products = state
+                    .store
+                    .greeks_points()
+                    .iter()
+                    .filter(|point| {
+                        point.point.profile_id == query.profile_id
+                            && instrument_ids.contains(&point.point.instrument_id)
+                            && point.point.basis == *basis
+                            && point.point.ts_event_ns == *as_of_ns
+                            && source_matches(&point.point.source_id, source_filter)
+                    })
+                    .cloned()
+                    .map(IvQueryProduct::IvGreeksPoint)
+                    .collect::<Vec<_>>();
+                if products.is_empty() {
+                    Err(IvQueryError::ProductNotFound)
+                } else {
+                    Ok(products)
+                }
+            }
+            (
+                IvProductKind::CustomIvEvidence,
+                IvSelector::IvEvidenceQuery {
+                    iv_evidence_kind,
+                    source_filter,
+                    as_of_ns,
+                },
+            ) => {
+                let products = state
+                    .store
+                    .iv_evidence()
+                    .iter()
+                    .filter(|evidence| {
+                        evidence.profile_id == query.profile_id
+                            && evidence.iv_evidence_kind == *iv_evidence_kind
+                            && evidence.ts_event_ns == *as_of_ns
+                            && source_matches(&evidence.source_id, source_filter)
+                    })
+                    .cloned()
+                    .map(IvQueryProduct::CustomIvEvidence)
+                    .collect::<Vec<_>>();
+                if products.is_empty() {
+                    Err(IvQueryError::ProductNotFound)
+                } else {
+                    Ok(products)
+                }
+            }
+            (
+                IvProductKind::DerivedIv,
+                IvSelector::DerivedIvQuery {
+                    instrument_id,
+                    helper_policy_id,
+                    as_of_ns,
+                    ..
+                },
+            ) => {
+                let products = state
+                    .derived_outputs
+                    .iter()
+                    .filter(|derived| {
+                        derived.point.profile_id == query.profile_id
+                            && derived.point.instrument_id == *instrument_id
+                            && derived.helper_identity.helper_policy_id == *helper_policy_id
+                            && derived.point.ts_event_ns == *as_of_ns
+                    })
+                    .cloned()
+                    .map(|derived| IvQueryProduct::DerivedIv(Box::new(derived)))
+                    .collect::<Vec<_>>();
+                if products.is_empty() {
+                    self.find_product(query, state).map(|product| vec![product])
+                } else {
+                    Ok(products)
+                }
+            }
             _ => self.find_product(query, state).map(|product| vec![product]),
         }
     }
@@ -889,6 +980,13 @@ impl IvQueryHandle {
             reject_reason,
             true,
         );
+        self.enforce_retention_policy();
+    }
+
+    fn enforce_retention_policy(&self) {
+        if let Some(policy) = self.retention_policy {
+            self.state.enforce_retention(&policy);
+        }
     }
 
     pub fn raw_event(&self, _raw_event_id: &str) -> Result<&IvRawEvent, IvQueryError> {

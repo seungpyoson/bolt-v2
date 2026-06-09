@@ -274,8 +274,7 @@ fn non_winning_reference_price_source_updates_health_without_trading_state() {
         .expect("chainlink source should exist")
         .required = false;
     strategy.config.reference_current_price = Some(reference_price);
-    strategy.active =
-        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
     let _cache = register_test_strategy(&mut strategy);
 
     let backup = reference_price_update(
@@ -379,8 +378,20 @@ fn reference_price_interval_transition_clears_stale_quotes_and_health() {
         Some(ReferencePriceSourceStatus::Available)
     );
 
-    strategy.active =
-        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-2", 1_200), 0);
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 1_200));
+    assert!(
+        !strategy
+            .reference_price_quotes
+            .contains_key(CHAINLINK_PRIMARY_SOURCE_ID)
+    );
+    assert_eq!(
+        strategy
+            .reference_price_source_health
+            .get(CHAINLINK_PRIMARY_SOURCE_ID)
+            .map(|health| health.status()),
+        Some(ReferencePriceSourceStatus::Silent)
+    );
+
     let second_interval_backup = reference_price_update(
         POLYRESEARCH_BACKUP_SOURCE_ID,
         POLYRESEARCH_REFERENCE_PROVIDER,
@@ -478,7 +489,7 @@ fn stale_reference_price_replay_does_not_evict_fresh_same_interval_quotes() {
         strategy
             .reference_price_quotes
             .contains_key(CHAINLINK_PRIMARY_SOURCE_ID),
-        "fresh primary quote must not be cleared by stale replay cleanup"
+        "fresh primary quote must not be evicted by same-interval stale replay"
     );
     assert_eq!(
         strategy

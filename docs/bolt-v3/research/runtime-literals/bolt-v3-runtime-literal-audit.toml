@@ -8471,14 +8471,6 @@ classification = "reference_price_policy_wire_value"
 reason = "Stable config wire value for blocking stale reference-price sources."
 
 [[allowed]]
-path = "src/bolt_v3_config.rs"
-kind = "number"
-literal = '''1'''
-context = '''const REFERENCE_PRICE_DEFAULT_MIN_VALID_SOURCES: usize = 1;'''
-classification = "reference_price_default_quorum"
-reason = "Prompt-required default quorum for omitted reference_current_price.min_valid_sources; explicit TOML may supply a stricter quorum."
-
-[[allowed]]
 path = "src/bolt_v3_providers/chainlink_reference.rs"
 kind = "string"
 literal = '''"CHAINLINK_REFERENCE_PRICE"'''

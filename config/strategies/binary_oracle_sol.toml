@@ -76,12 +76,14 @@ stale_policy = "block"
 provider = "chainlink_ws"
 client_id = "chainlink_reference"
 instrument_id = "SOL-USD.CHAINLINK"
+enabled = true
 required = false
 
 [reference_current_price.source.polyresearch_backup]
 provider = "polyresearch_ws"
 client_id = "polyresearch_reference"
 symbol = "SOL/USD"
+enabled = true
 required = false
 
 [resolution_data]

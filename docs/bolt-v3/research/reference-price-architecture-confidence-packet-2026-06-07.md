@@ -16,7 +16,7 @@ remains gated on a green implementation PR head plus explicit operator approval.
 
 Current implementation state after the local audit:
 
-- `[reference_current_price]` is strategy-scoped. Prompt defaults for omitted `min_valid_sources`, `enabled`, and `required` are applied through a custom TOML wire-deserializer; no `#[serde(default)]` legacy defaults are used.
+- `[reference_current_price]` is strategy-scoped. `min_valid_sources`, `enabled`, and `required` are explicit TOML fields; parser-side runtime defaults are rejected.
 - Provider credentials remain root/client scoped and SSM-only. Chainlink reference and PolyResearch reference providers are registered as data-only provider bindings.
 - `ReferencePriceUpdate` uses deterministic NT custom data, not `IndexPriceUpdate`.
 - Strategy handling keeps Chainlink resolution strike isolated to `price_to_beat`; selected reference-current-price custom data updates strategy current-price state, source health, and the trading spot input.

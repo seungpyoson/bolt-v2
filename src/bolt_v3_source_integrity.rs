@@ -249,8 +249,10 @@ mod tests {
     // unifying reference-price source availability policy.
     // Re-derived again after removing unused realized-volatility imports from
     // the merged strategy module.
+    // Re-derived again after making reference-current-price runtime state
+    // interval-bound and removing parser defaults for source activation fields.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "5a30485c4832a296a2619df5299a17429b75372f44d7cec26b469a2c169ccdad";
+        "3f22cbdda2a24ba77dfd5eed182e6e1ac647e7960ae226a15b744d156acea7e0";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

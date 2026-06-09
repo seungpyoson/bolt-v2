@@ -156,6 +156,19 @@ impl TakerPricingState {
         self.fast_spot = Some(quote.clone());
     }
 
+    pub(crate) fn clear_reference_current_price_state(&mut self) {
+        self.last_reference_current_price = None;
+        self.last_reference_current_price_ts_ms = None;
+        self.fast_spot = None;
+        self.last_lead_gap_probability = None;
+        self.last_jitter_penalty_probability = None;
+        self.last_lead_agreement_corr = None;
+        self.last_fast_venue_age_ms = None;
+        self.last_fast_venue_jitter_ms = None;
+        self.fast_venue_incoherent = false;
+        self.lead_quality_policy_applied = false;
+    }
+
     pub fn observe_signal_quote(
         &mut self,
         quote: &FastSpotObservation,

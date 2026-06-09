@@ -544,7 +544,7 @@ struct ReferencePriceBlockWire {
     asset: String,
     #[serde(rename = "sources")]
     source_order: Vec<String>,
-    min_valid_sources: Option<usize>,
+    min_valid_sources: usize,
     selection_policy: ReferencePriceSelectionPolicy,
     max_source_age_ms: u64,
     max_source_drift_bps: u32,
@@ -555,7 +555,6 @@ struct ReferencePriceBlockWire {
 }
 
 impl<'de> Deserialize<'de> for ReferencePriceBlock {
-    #[allow(clippy::manual_unwrap_or_default)]
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -564,9 +563,7 @@ impl<'de> Deserialize<'de> for ReferencePriceBlock {
         Ok(Self {
             asset: wire.asset,
             source_order: wire.source_order,
-            min_valid_sources: wire
-                .min_valid_sources
-                .unwrap_or(REFERENCE_PRICE_DEFAULT_MIN_VALID_SOURCES),
+            min_valid_sources: wire.min_valid_sources,
             selection_policy: wire.selection_policy,
             max_source_age_ms: wire.max_source_age_ms,
             max_source_drift_bps: wire.max_source_drift_bps,
@@ -594,8 +591,8 @@ pub struct ReferencePriceSourceBlock {
 #[serde(deny_unknown_fields)]
 struct ReferencePriceSourceBlockWire {
     provider: ReferencePriceProvider,
-    enabled: Option<bool>,
-    required: Option<bool>,
+    enabled: bool,
+    required: bool,
     client_id: ClientId,
     instrument_id: Option<String>,
     symbol: Option<String>,
@@ -609,8 +606,8 @@ impl<'de> Deserialize<'de> for ReferencePriceSourceBlock {
         let wire = ReferencePriceSourceBlockWire::deserialize(deserializer)?;
         Ok(Self {
             provider: wire.provider,
-            enabled: wire.enabled.unwrap_or(true),
-            required: wire.required.unwrap_or(false),
+            enabled: wire.enabled,
+            required: wire.required,
             client_id: wire.client_id,
             instrument_id: wire.instrument_id,
             symbol: wire.symbol,
@@ -642,8 +639,6 @@ impl ReferencePriceProvider {
         self.0.as_str()
     }
 }
-
-const REFERENCE_PRICE_DEFAULT_MIN_VALID_SOURCES: usize = 1;
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

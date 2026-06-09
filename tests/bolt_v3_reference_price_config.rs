@@ -121,12 +121,13 @@ instrument_id = "BTC-USD.CHAINLINK"
 }
 
 #[test]
-fn strategy_scoped_reference_current_price_config_parses_ordered_sources_with_defaults() {
+fn reference_current_price_config_parses_ordered_sources_with_explicit_fields() {
     let strategy = parse_strategy(
         r#"
 [reference_current_price]
 asset = "BTC"
 sources = ["chainlink_primary", "polyresearch_backup"]
+min_valid_sources = 1
 selection_policy = "first_valid_per_interval"
 max_source_age_ms = 2000
 max_source_drift_bps = 25
@@ -135,11 +136,15 @@ stale_policy = "block"
 
 [reference_current_price.source.chainlink_primary]
 provider = "chainlink_ws"
+enabled = true
+required = false
 client_id = "chainlink_reference"
 instrument_id = "BTC-USD.CHAINLINK"
 
 [reference_current_price.source.polyresearch_backup]
 provider = "polyresearch_ws"
+enabled = true
+required = false
 client_id = "polyresearch_reference"
 symbol = "BTC/USD"
 "#,
@@ -657,6 +662,7 @@ fn reference_current_price_validation_rejects_chainlink_instrument_missing_from_
 [reference_current_price]
 asset = "BTC"
 sources = ["chainlink_primary"]
+min_valid_sources = 1
 selection_policy = "first_valid_per_interval"
 max_source_age_ms = 2000
 max_source_drift_bps = 25

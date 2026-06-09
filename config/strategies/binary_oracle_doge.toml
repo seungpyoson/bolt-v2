@@ -76,6 +76,7 @@ stale_policy = "block"
 provider = "chainlink_ws"
 client_id = "chainlink_reference"
 instrument_id = "DOGE-USD.CHAINLINK"
+enabled = true
 required = false
 
 [resolution_data]

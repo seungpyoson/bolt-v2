@@ -1248,7 +1248,7 @@ Fields:
 #### `min_valid_sources`
 
 - type: positive integer
-- optional; defaults to `1`
+- required
 - must not exceed the enabled source count
 
 #### `selection_policy`
@@ -1313,12 +1313,12 @@ Fields:
 #### `enabled`
 
 - type: boolean
-- optional; defaults to `true`
+- required
 
 #### `required`
 
 - type: boolean
-- optional; defaults to `false`
+- required
 
 The TOML value is the literal NautilusTrader `InstrumentId` string.
 The field name maps one-to-one to `nautilus_model::identifiers::InstrumentId`; aliases are forbidden.

@@ -383,6 +383,16 @@ fn reference_price_source_health_from_config(
         .collect()
 }
 
+fn reference_current_price_boundary_changed(
+    previous: &ActiveMarketState,
+    current: &ActiveMarketState,
+) -> bool {
+    previous.market_id != current.market_id
+        || previous.instrument_id != current.instrument_id
+        || previous.interval_start_ms != current.interval_start_ms
+        || previous.interval_end_ms != current.interval_end_ms
+}
+
 fn reference_price_source_provider_identifier<'a>(
     reference_price: &'a ReferencePriceBlock,
     source_id: &str,
@@ -953,6 +963,9 @@ impl BinaryOracleEdgeTaker {
         self.active.books.up.instrument_id = next_selection_books.up_instrument_id;
         self.active.books.down.instrument_id = next_selection_books.down_instrument_id;
         self.active.apply_selection_timing(&snapshot);
+        if reference_current_price_boundary_changed(&previous_active, &self.active) {
+            self.reset_reference_current_price_runtime_state();
+        }
         // Bind the live strike to the market's interval-open boundary.
         //
         // Re-issue the strike subscribe whenever the strike is unresolved
@@ -1366,19 +1379,6 @@ impl BinaryOracleEdgeTaker {
 
     fn observe_reference_price_update(&mut self, update: &ReferencePriceUpdate) {
         self.ensure_reference_price_runtime_state();
-        match self.active.interval_start_ms {
-            Some(interval_start_ms)
-                if self
-                    .reference_price_quotes
-                    .values()
-                    .any(|quote| quote.observed_ts_ms() < interval_start_ms) =>
-            {
-                self.reference_price_quotes.clear();
-                self.reference_price_source_health =
-                    reference_price_source_health_from_config(&self.config);
-            }
-            _ => {}
-        }
         let quote = match update.to_reference_quote() {
             Ok(quote) => quote,
             Err(error) => {
@@ -1582,6 +1582,15 @@ impl BinaryOracleEdgeTaker {
             self.reference_price_source_health =
                 reference_price_source_health_from_config(&self.config);
         }
+    }
+
+    fn reset_reference_current_price_runtime_state(&mut self) {
+        self.reference_price_quotes.clear();
+        self.reference_price_source_health =
+            reference_price_source_health_from_config(&self.config);
+        self.reference_price_selector = reference_price_selector_from_config(&self.config);
+        self.pricing.clear_reference_current_price_state();
+        self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
     }
 
     fn mark_reference_price_source_status(

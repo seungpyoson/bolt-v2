@@ -109,6 +109,10 @@ Order-submission and pre-submit rejection events map compiled NT order-template 
 `trigger_instrument_id`, `trailing_offset`, and `trailing_offset_type`.
 """
 
+CURRENT_REFERENCE_CURRENT_PRICE_DOC = """
+Chainlink current-price and strike clients resolve feed ids from the root-owned `[chainlink_data_streams]` catalog by convention; clients do not declare a `feed_catalog` pointer.
+"""
+
 
 def test_extract_section_stops_at_next_matching_heading() -> None:
     section = VERIFIER.extract_section(
@@ -692,6 +696,37 @@ def test_validate_docs_rejects_reference_current_price_schema_drift() -> None:
     catalog_findings = VERIFIER.validate_docs(missing_catalog, CURRENT_STATUS_MAP)
     if not any("chainlink_data_streams" in finding for finding in catalog_findings):
         raise AssertionError(f"expected missing catalog finding, got {catalog_findings!r}")
+
+
+def test_validate_docs_rejects_reference_current_price_plan_spec_drift() -> None:
+    stale_doc = """
+[clients.chainlink_reference.data]
+feed_catalog = "chainlink_data_streams"
+"""
+
+    stale_findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        reference_current_price_plan=stale_doc,
+        reference_current_price_spec=stale_doc,
+    )
+    expected_fragments = [
+        "reference_current_price plan still contains stale phrase",
+        "reference_current_price design spec still contains stale phrase",
+        "missing current phrase",
+    ]
+    for fragment in expected_fragments:
+        if not any(fragment in finding for finding in stale_findings):
+            raise AssertionError(f"expected {fragment!r} in findings, got {stale_findings!r}")
+
+    current_findings = VERIFIER.validate_docs(
+        CURRENT_SCHEMA,
+        CURRENT_STATUS_MAP,
+        reference_current_price_plan=CURRENT_REFERENCE_CURRENT_PRICE_DOC,
+        reference_current_price_spec=CURRENT_REFERENCE_CURRENT_PRICE_DOC,
+    )
+    if current_findings:
+        raise AssertionError(f"expected current reference-current-price docs to pass, got {current_findings!r}")
 
 
 def test_validate_docs_rejects_stale_strategy_schema_version_examples() -> None:

@@ -72,12 +72,14 @@ stale_policy = "block"
 provider = "chainlink_ws"
 client_id = "chainlink_reference"
 instrument_id = "BTC-USD.CHAINLINK"
-required = true
+enabled = true
+required = false
 
 [reference_current_price.source.polyresearch_backup]
 provider = "polyresearch_ws"
 client_id = "polyresearch_reference"
 symbol = "BTC"
+enabled = true
 required = false
 ```
 
@@ -150,7 +152,6 @@ price_precision = 8
 rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
 http_timeout_secs = 10
-feed_catalog = "chainlink_data_streams"
 
 [clients.chainlink_reference.data]
 websocket_endpoint = "wss://ws.testnet-dataengine.chain.link"
@@ -163,8 +164,9 @@ reconnect_delay_max_ms = 5000
 reconnect_backoff_factor = 1.5
 reconnect_jitter_ms = 100
 idle_timeout_ms = 10000
-feed_catalog = "chainlink_data_streams"
 ```
+
+Chainlink current-price and strike clients resolve feed ids from the root-owned `[chainlink_data_streams]` catalog by convention; clients do not declare a `feed_catalog` pointer.
 
 - Both `chainlink_strike` and `chainlink_reference` must resolve `instrument_id -> feed_id` from `chainlink_data_streams.feed_bindings`.
 - Existing `resolution_data.instrument_id` and `reference_current_price.source.*.instrument_id` continue selecting the logical NT/provider instrument.

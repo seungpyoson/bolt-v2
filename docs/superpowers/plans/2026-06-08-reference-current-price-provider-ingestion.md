@@ -200,7 +200,6 @@ Keep client sections referencing that catalog without duplicating feed rows:
 rest_base_url = "https://api.testnet-dataengine.chain.link"
 report_endpoint_path = "/api/v1/reports"
 http_timeout_secs = 10
-feed_catalog = "chainlink_data_streams"
 
 [clients.chainlink_reference.data]
 websocket_endpoint = "wss://ws.testnet-dataengine.chain.link"
@@ -213,8 +212,9 @@ reconnect_delay_max_ms = 5000
 reconnect_backoff_factor = 1.5
 reconnect_jitter_ms = 100
 idle_timeout_ms = 10000
-feed_catalog = "chainlink_data_streams"
 ```
+
+Chainlink current-price and strike clients resolve feed ids from the root-owned `[chainlink_data_streams]` catalog by convention; clients do not declare a `feed_catalog` pointer.
 
 Required invariant:
 
@@ -606,7 +606,8 @@ stale_policy = "block"
 provider = "polyresearch_ws"
 client_id = "polyresearch_reference"
 symbol = "BTC"
-required = true
+enabled = true
+required = false
 ```
 
 Expected: validation passes for supported PRR assets.

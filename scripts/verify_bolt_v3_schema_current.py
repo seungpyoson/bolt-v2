@@ -24,6 +24,12 @@ MAKER_SCOPE_CONTRACT_DOC = (
     REPO_ROOT / "specs/022-nt-maker-order-scope/contracts/maker-order-config.md"
 )
 MAKER_SCOPE_DATA_MODEL_DOC = REPO_ROOT / "specs/022-nt-maker-order-scope/data-model.md"
+REFERENCE_CURRENT_PRICE_PLAN_DOC = (
+    REPO_ROOT / "docs/superpowers/plans/2026-06-08-reference-current-price-provider-ingestion.md"
+)
+REFERENCE_CURRENT_PRICE_SPEC_DOC = (
+    REPO_ROOT / "docs/superpowers/specs/2026-06-08-reference-current-price-provider-ingestion-design.md"
+)
 AGENTS_DOC = REPO_ROOT / "AGENTS.md"
 FEATURE_JSON = REPO_ROOT / ".specify/feature.json"
 VALIDATE_SOURCE = REPO_ROOT / "src/bolt_v3_validate.rs"
@@ -62,6 +68,12 @@ ROOT_CHAINLINK_CATALOG_FIELDS = (
     "`report_schema_version`",
     "`report_decimal_scale`",
     "`price_precision`",
+)
+REFERENCE_CURRENT_PRICE_STALE_DOC_PHRASES = (
+    'feed_catalog = "chainlink_data_streams"',
+)
+REFERENCE_CURRENT_PRICE_REQUIRED_DOC_PHRASES = (
+    "Chainlink current-price and strike clients resolve feed ids from the root-owned `[chainlink_data_streams]` catalog by convention; clients do not declare a `feed_catalog` pointer.",
 )
 
 ENABLED_ORDER_TYPES = (
@@ -388,6 +400,26 @@ def validate_reference_current_price_schema(schema: str) -> list[str]:
     return findings
 
 
+def validate_reference_current_price_design_docs(plan: str, design_spec: str) -> list[str]:
+    findings: list[str] = []
+    docs = (
+        ("reference_current_price plan", plan),
+        ("reference_current_price design spec", design_spec),
+    )
+
+    for label, text in docs:
+        if not text:
+            continue
+        for phrase in REFERENCE_CURRENT_PRICE_STALE_DOC_PHRASES:
+            if phrase in text:
+                findings.append(f"{label} still contains stale phrase: {phrase}")
+        for phrase in REFERENCE_CURRENT_PRICE_REQUIRED_DOC_PHRASES:
+            if phrase not in text:
+                findings.append(f"{label} missing current phrase: {phrase}")
+
+    return findings
+
+
 def validate_docs(
     schema: str,
     status_map: str,
@@ -399,6 +431,8 @@ def validate_docs(
     runtime_contracts: str = "",
     maker_scope_contract: str = "",
     maker_scope_data_model: str = "",
+    reference_current_price_plan: str = "",
+    reference_current_price_spec: str = "",
     agents_doc: str | None = None,
     feature_json: str | None = None,
     validate_source: str = "",
@@ -420,6 +454,12 @@ def validate_docs(
         findings.append("schema missing decision-evidence JSONL schema v6 contract")
 
     findings.extend(validate_reference_current_price_schema(schema))
+    findings.extend(
+        validate_reference_current_price_design_docs(
+            reference_current_price_plan,
+            reference_current_price_spec,
+        )
+    )
 
     if runtime_contracts:
         for field in ORDER_TEMPLATE_FIELDS:
@@ -572,6 +612,8 @@ def main() -> int:
         runtime_contracts=RUNTIME_CONTRACTS_DOC.read_text(encoding="utf-8"),
         maker_scope_contract=MAKER_SCOPE_CONTRACT_DOC.read_text(encoding="utf-8"),
         maker_scope_data_model=MAKER_SCOPE_DATA_MODEL_DOC.read_text(encoding="utf-8"),
+        reference_current_price_plan=REFERENCE_CURRENT_PRICE_PLAN_DOC.read_text(encoding="utf-8"),
+        reference_current_price_spec=REFERENCE_CURRENT_PRICE_SPEC_DOC.read_text(encoding="utf-8"),
         agents_doc=AGENTS_DOC.read_text(encoding="utf-8"),
         feature_json=FEATURE_JSON.read_text(encoding="utf-8"),
         validate_source=VALIDATE_SOURCE.read_text(encoding="utf-8"),

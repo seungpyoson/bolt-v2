@@ -105,6 +105,7 @@ pub enum BackfillExecutionReadinessBlocker {
     SourceSelectionReadinessNotReady,
     SourceSelectionReadinessHasBlockers,
     SourceSelectionReadinessNotProven,
+    SourceSelectionReadinessUsageScopeMismatch,
     SourceSelectionReadinessSourceProofMismatch,
     SourceSelectionReadinessSourceBindingMismatch,
     SourceSelectionReadinessTableFamilyMismatch,
@@ -468,6 +469,11 @@ pub fn evaluate_backfill_execution_readiness(
                 if !source_selection_readiness_proven(readiness) {
                     blockers
                         .push(BackfillExecutionReadinessBlocker::SourceSelectionReadinessNotProven);
+                }
+                if readiness.usage_scope != required_source_usage_scope {
+                    blockers.push(
+                        BackfillExecutionReadinessBlocker::SourceSelectionReadinessUsageScopeMismatch,
+                    );
                 }
                 if readiness.source_proof_id != tranche.source_proof_id
                     || readiness.source_proof_version != tranche.source_proof_version

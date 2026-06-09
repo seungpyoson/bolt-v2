@@ -2704,3 +2704,37 @@ Current conclusion:
   source-selection readiness.
 - It does not close `BACKTESTING_ENGINE-022` or authorize broad
   PMXT/Polymarket backfill.
+
+## 2026-06-09 execution-readiness source-selection usage-scope checkpoint
+
+Root cause addressed:
+
+- Execution readiness now checks source-selection proof booleans when a
+  source-selection readiness report is required.
+- It still did not independently compare the source-selection report's
+  `usage_scope` field to the configured execution scope.
+- A stale or hand-edited source-selection readiness report could therefore
+  retain proof booleans while carrying `one_off_backfill_data`.
+
+Change:
+
+- Execution readiness now blocks with
+  `source_selection_readiness_usage_scope_mismatch` when the required
+  source-selection readiness report's `usage_scope` differs from
+  `required_source_usage_scope`.
+
+Verification:
+
+- RED:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_execution_readiness execution_readiness_blocks_when_source_selection_readiness_usage_scope_mismatches -- --nocapture`
+  failed because the final execution-readiness blocker did not exist.
+- GREEN:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_execution_readiness execution_readiness_blocks_when_source_selection_readiness_usage_scope_mismatches -- --nocapture`
+  passed after adding the final source-selection usage-scope check.
+
+Current conclusion:
+
+- This closes another generic final-gate bypass for runs that require
+  source-selection readiness.
+- It does not close `BACKTESTING_ENGINE-022` or authorize broad
+  PMXT/Polymarket backfill.

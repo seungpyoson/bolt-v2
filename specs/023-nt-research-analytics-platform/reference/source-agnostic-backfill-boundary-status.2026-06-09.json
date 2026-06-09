@@ -65,7 +65,7 @@
     {
       "surface": "accepted-tranche execution readiness",
       "path": "repo://crates/backtesting-vertical-slice/src/backfill_execution_readiness.rs",
-      "evidence": "BackfillExecutionReadinessSpec is source-agnostic and requires required_source_usage_scope in TOML. It blocks source-catalog mapping readiness reports whose allowed or observed usage scope does not match the configured execution scope, whose nt_catalog_mapping_proven flag is false, or whose proof/binding/table/data-type fields do not match before payload fetch or operator execution. When source-selection readiness is required, it also rejects ready-looking reports whose explicit source-proof booleans, acceptance error, or unmet-check fields are inconsistent with proven source selection."
+      "evidence": "BackfillExecutionReadinessSpec is source-agnostic and requires required_source_usage_scope in TOML. It blocks source-catalog mapping readiness reports whose allowed or observed usage scope does not match the configured execution scope, whose nt_catalog_mapping_proven flag is false, or whose proof/binding/table/data-type fields do not match before payload fetch or operator execution. When source-selection readiness is required, it also rejects ready-looking reports whose explicit source-proof booleans, usage_scope, acceptance error, or unmet-check fields are inconsistent with proven source selection."
     }
   ],
   "source_specific_surfaces_found": [

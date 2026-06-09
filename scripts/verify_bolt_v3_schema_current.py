@@ -48,10 +48,20 @@ STRATEGY_SCHEMA_EXAMPLE_PATTERN = re.compile(
     r"schema_version = (?P<version>\d+)\nstrategy_instance_id = ",
     re.MULTILINE,
 )
+REFERENCE_CURRENT_PRICE_SOURCE_EXAMPLE_PATTERN = re.compile(
+    r"(?ms)^\[reference_current_price\.source\.chainlink_primary\]\n(?P<body>.*?)(?=^\[|\Z)"
+)
 POSITION_CONTRACT_HELPER_NAMES = (
     "expected_position_side_for_entry_order",
     "expected_exit_order_side_for_position",
     "is_observed_open_side",
+)
+ROOT_CHAINLINK_CATALOG_FIELDS = (
+    "`feed_id`",
+    "`instrument_id`",
+    "`report_schema_version`",
+    "`report_decimal_scale`",
+    "`price_precision`",
 )
 
 ENABLED_ORDER_TYPES = (
@@ -344,6 +354,40 @@ def validate_speckit_context(agents_doc: str | None, feature_json: str | None) -
     return findings
 
 
+def validate_reference_current_price_schema(schema: str) -> list[str]:
+    findings: list[str] = []
+
+    source_examples = list(REFERENCE_CURRENT_PRICE_SOURCE_EXAMPLE_PATTERN.finditer(schema))
+    if not source_examples:
+        findings.append("schema missing reference_current_price source example")
+    for index, match in enumerate(source_examples, start=1):
+        body = match.group("body")
+        if "enabled = true" not in body:
+            findings.append(
+                f"reference_current_price source example {index} missing `enabled = true`"
+            )
+        if "required = false" not in body:
+            findings.append(
+                f"reference_current_price source example {index} must use `required = false` to match shipped quorum policy"
+            )
+
+    catalog_section = extract_section(
+        schema,
+        "`[chainlink_data_streams]`",
+        next_heading_prefix="### ",
+    )
+    if not catalog_section:
+        findings.append("schema missing root-owned `[chainlink_data_streams]` catalog section")
+    else:
+        if "`[[chainlink_data_streams.feed_bindings]]`" not in catalog_section:
+            findings.append("schema chainlink_data_streams section missing feed_bindings array")
+        for field in ROOT_CHAINLINK_CATALOG_FIELDS:
+            if field not in catalog_section:
+                findings.append(f"schema chainlink_data_streams section missing {field}")
+
+    return findings
+
+
 def validate_docs(
     schema: str,
     status_map: str,
@@ -374,6 +418,8 @@ def validate_docs(
 
     if DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE not in schema:
         findings.append("schema missing decision-evidence JSONL schema v6 contract")
+
+    findings.extend(validate_reference_current_price_schema(schema))
 
     if runtime_contracts:
         for field in ORDER_TEMPLATE_FIELDS:

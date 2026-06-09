@@ -74,6 +74,26 @@ Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `
 The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.
 `strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
 
+### `[chainlink_data_streams]`
+
+#### `[[chainlink_data_streams.feed_bindings]]`
+
+- `feed_id`
+- `instrument_id`
+- `report_schema_version`
+- `report_decimal_scale`
+- `price_precision`
+
+schema_version = 2
+strategy_instance_id = "configured_updown_main"
+
+[reference_current_price.source.chainlink_primary]
+provider = "chainlink_ws"
+client_id = "chainlink_reference"
+instrument_id = "BTC-USD.CHAINLINK"
+enabled = true
+required = false
+
 ### `[parameters]`
 """
 
@@ -659,6 +679,21 @@ def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> 
             raise AssertionError(f"expected {fragment!r} in findings, got {findings!r}")
 
 
+def test_validate_docs_rejects_reference_current_price_schema_drift() -> None:
+    missing_enabled = CURRENT_SCHEMA.replace("enabled = true\nrequired = false", "required = true")
+    missing_catalog = CURRENT_SCHEMA.replace("### `[chainlink_data_streams]`", "### `[clients.foo]`")
+
+    enabled_findings = VERIFIER.validate_docs(missing_enabled, CURRENT_STATUS_MAP)
+    if not any("missing `enabled = true`" in finding for finding in enabled_findings):
+        raise AssertionError(f"expected missing enabled finding, got {enabled_findings!r}")
+    if not any("required = false" in finding for finding in enabled_findings):
+        raise AssertionError(f"expected required=false finding, got {enabled_findings!r}")
+
+    catalog_findings = VERIFIER.validate_docs(missing_catalog, CURRENT_STATUS_MAP)
+    if not any("chainlink_data_streams" in finding for finding in catalog_findings):
+        raise AssertionError(f"expected missing catalog finding, got {catalog_findings!r}")
+
+
 def test_validate_docs_rejects_stale_strategy_schema_version_examples() -> None:
     stale_schema = CURRENT_SCHEMA.replace("schema_version = 2", "schema_version = 1")
     findings = VERIFIER.validate_docs(
@@ -771,6 +806,7 @@ def main() -> int:
         test_validate_docs_allows_spec_architecture_risk_context,
         test_validate_docs_requires_all_enabled_and_factory_gap_order_types,
         test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift,
+        test_validate_docs_rejects_reference_current_price_schema_drift,
         test_validate_docs_rejects_stale_strategy_schema_version_examples,
         test_validate_docs_rejects_stale_decision_evidence_record_type_wording,
         test_validate_docs_rejects_retired_financial_envelope_schema_section,

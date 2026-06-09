@@ -923,6 +923,30 @@ A trade chunk-count probe is the combination `market_data_kind = "trade"` with `
 
 The same `instrument_id` must not appear under more than one client's `readiness_probe.quote_targets`, because NautilusTrader `QuoteTick` does not carry the producing data-client identifier and readiness quote evidence must stay source-disambiguated.
 
+### `[chainlink_data_streams]`
+
+This root-level section is required when any Chainlink Data Streams client is configured.
+It owns the single feed-binding catalog consumed by both the strike report client and the reference-current-price websocket client.
+Client-local `feed_bindings` arrays are rejected so feed-to-instrument mappings have one configured path.
+
+The runtime resolves this catalog by the root section name `chainlink_data_streams`; clients do not declare a second `feed_catalog` pointer.
+
+Fields:
+
+#### `[[chainlink_data_streams.feed_bindings]]`
+
+- type: array of tables
+- required when `[chainlink_data_streams]` is present
+- must contain one or more entries
+
+Each entry has:
+
+- `feed_id`: string; lowercase `0x`-prefixed Chainlink Data Streams feed id
+- `instrument_id`: string; literal NautilusTrader `InstrumentId`
+- `report_schema_version`: positive integer
+- `report_decimal_scale`: positive integer
+- `price_precision`: integer in `0..=255`
+
 ### `[gate_providers.<identifier>]`
 
 This root-level section is optional. It is a map keyed by provider identifier that declares the resolution/reference gate providers (such as the Chainlink Data Streams resolution anchor) the runtime may consume. Each provider key must be unique.
@@ -1004,7 +1028,8 @@ stale_policy = "block"
 provider = "chainlink_ws"
 client_id = "chainlink_reference"
 instrument_id = "BTC-USD.CHAINLINK"
-required = true
+enabled = true
+required = false
 
 [parameters.entry_order]
 side = "buy"
@@ -1802,7 +1827,8 @@ stale_policy = "block"
 provider = "chainlink_ws"
 client_id = "chainlink_reference"
 instrument_id = "BTC-USD.CHAINLINK"
-required = true
+enabled = true
+required = false
 
 [parameters.entry_order]
 side = "buy"

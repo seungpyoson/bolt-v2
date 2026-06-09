@@ -1253,7 +1253,7 @@ fn post_only_entry_submission_price_uses_passive_book_price() {
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
     strategy.config.entry_order.is_post_only = true;
     set_active_books_best_prices(&mut strategy, 0.40, 0.41);
-    let selected_side = selected_entry_side(&strategy);
+    let selected_side = OutcomeSide::Up;
 
     assert_eq!(strategy.submission_entry_price(selected_side), Some(0.40));
     assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.40));

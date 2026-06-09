@@ -864,9 +864,17 @@ fn position_probability_and_hold_ev_accept_ready_surfaced_zero_realized_volatili
             surface_id: "<surface_id>".to_string(),
             as_of_ms: 1_200,
             annualized_realized_vol_decimal: Some(0.0),
+            measured_annualized_realized_vol_decimal: Some(0.0),
+            noise_robust_annualized_realized_vol_decimal: Some(0.0),
+            continuous_annualized_realized_vol_decimal: Some(0.0),
+            jump_annualized_realized_vol_decimal: Some(0.0),
+            forecast_annualized_realized_vol_decimal: None,
+            pricing_component:
+                crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
             ready: true,
             sources_used: vec!["<SOURCE_ID_A>".to_string()],
             source_diagnostics: Vec::new(),
+            horizon_estimates: Vec::new(),
             unknown_source_rejections: std::collections::BTreeMap::new(),
             blocked_reasons: Vec::new(),
             aggregate_method:

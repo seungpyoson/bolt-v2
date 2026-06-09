@@ -27,10 +27,37 @@ seconds_per_annum = 31536000.0
 aggregation = "upper_quantile"
 upper_quantile = 1.0
 
+[realized_volatility_surfaces.okx_btc_usdt_midpoint_rv.estimator]
+noise_robust_method = "subsampled"
+subsamples = 2
+min_ready_subsamples = 2
+jump_policy = "separate"
+pricing_component = "noise_robust"
+
 [[realized_volatility_surfaces.okx_btc_usdt_midpoint_rv.sources]]
 source_id = "okx_btc_usdt_midpoint"
 data_client_id = "okx_data"
 instrument_id = "BTC-USDT.OKX"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[[realized_volatility_surfaces.okx_btc_usdt_midpoint_rv.sources]]
+source_id = "binance_btc_usdt_midpoint"
+data_client_id = "binance_spot_data"
+instrument_id = "BTC-USDT.BINANCE"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[[realized_volatility_surfaces.okx_btc_usdt_midpoint_rv.sources]]
+source_id = "bybit_btc_usdt_midpoint"
+data_client_id = "bybit_data"
+instrument_id = "BTC-USDT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
@@ -54,10 +81,37 @@ seconds_per_annum = 31536000.0
 aggregation = "upper_quantile"
 upper_quantile = 1.0
 
+[realized_volatility_surfaces.okx_eth_usdt_midpoint_rv.estimator]
+noise_robust_method = "subsampled"
+subsamples = 2
+min_ready_subsamples = 2
+jump_policy = "separate"
+pricing_component = "noise_robust"
+
 [[realized_volatility_surfaces.okx_eth_usdt_midpoint_rv.sources]]
 source_id = "okx_eth_usdt_midpoint"
 data_client_id = "okx_data"
 instrument_id = "ETH-USDT.OKX"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[[realized_volatility_surfaces.okx_eth_usdt_midpoint_rv.sources]]
+source_id = "binance_eth_usdt_midpoint"
+data_client_id = "binance_spot_data"
+instrument_id = "ETH-USDT.BINANCE"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[[realized_volatility_surfaces.okx_eth_usdt_midpoint_rv.sources]]
+source_id = "bybit_eth_usdt_midpoint"
+data_client_id = "bybit_data"
+instrument_id = "ETH-USDT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
@@ -81,10 +135,37 @@ seconds_per_annum = 31536000.0
 aggregation = "upper_quantile"
 upper_quantile = 1.0
 
+[realized_volatility_surfaces.okx_sol_usdt_midpoint_rv.estimator]
+noise_robust_method = "subsampled"
+subsamples = 2
+min_ready_subsamples = 2
+jump_policy = "separate"
+pricing_component = "noise_robust"
+
 [[realized_volatility_surfaces.okx_sol_usdt_midpoint_rv.sources]]
 source_id = "okx_sol_usdt_midpoint"
 data_client_id = "okx_data"
 instrument_id = "SOL-USDT.OKX"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[[realized_volatility_surfaces.okx_sol_usdt_midpoint_rv.sources]]
+source_id = "binance_sol_usdt_midpoint"
+data_client_id = "binance_spot_data"
+instrument_id = "SOL-USDT.BINANCE"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[[realized_volatility_surfaces.okx_sol_usdt_midpoint_rv.sources]]
+source_id = "bybit_sol_usdt_midpoint"
+data_client_id = "bybit_data"
+instrument_id = "SOL-USDT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
@@ -108,10 +189,37 @@ seconds_per_annum = 31536000.0
 aggregation = "upper_quantile"
 upper_quantile = 1.0
 
+[realized_volatility_surfaces.okx_bnb_usdt_midpoint_rv.estimator]
+noise_robust_method = "subsampled"
+subsamples = 2
+min_ready_subsamples = 2
+jump_policy = "separate"
+pricing_component = "noise_robust"
+
 [[realized_volatility_surfaces.okx_bnb_usdt_midpoint_rv.sources]]
 source_id = "okx_bnb_usdt_midpoint"
 data_client_id = "okx_data"
 instrument_id = "BNB-USDT.OKX"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[[realized_volatility_surfaces.okx_bnb_usdt_midpoint_rv.sources]]
+source_id = "binance_bnb_usdt_midpoint"
+data_client_id = "binance_spot_data"
+instrument_id = "BNB-USDT.BINANCE"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[[realized_volatility_surfaces.okx_bnb_usdt_midpoint_rv.sources]]
+source_id = "bybit_bnb_usdt_midpoint"
+data_client_id = "bybit_data"
+instrument_id = "BNB-USDT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
@@ -135,10 +243,37 @@ seconds_per_annum = 31536000.0
 aggregation = "upper_quantile"
 upper_quantile = 1.0
 
+[realized_volatility_surfaces.okx_xrp_usdt_midpoint_rv.estimator]
+noise_robust_method = "subsampled"
+subsamples = 2
+min_ready_subsamples = 2
+jump_policy = "separate"
+pricing_component = "noise_robust"
+
 [[realized_volatility_surfaces.okx_xrp_usdt_midpoint_rv.sources]]
 source_id = "okx_xrp_usdt_midpoint"
 data_client_id = "okx_data"
 instrument_id = "XRP-USDT.OKX"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[[realized_volatility_surfaces.okx_xrp_usdt_midpoint_rv.sources]]
+source_id = "binance_xrp_usdt_midpoint"
+data_client_id = "binance_spot_data"
+instrument_id = "XRP-USDT.BINANCE"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[[realized_volatility_surfaces.okx_xrp_usdt_midpoint_rv.sources]]
+source_id = "bybit_xrp_usdt_midpoint"
+data_client_id = "bybit_data"
+instrument_id = "XRP-USDT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
@@ -162,10 +297,37 @@ seconds_per_annum = 31536000.0
 aggregation = "upper_quantile"
 upper_quantile = 1.0
 
+[realized_volatility_surfaces.okx_doge_usdt_midpoint_rv.estimator]
+noise_robust_method = "subsampled"
+subsamples = 2
+min_ready_subsamples = 2
+jump_policy = "separate"
+pricing_component = "noise_robust"
+
 [[realized_volatility_surfaces.okx_doge_usdt_midpoint_rv.sources]]
 source_id = "okx_doge_usdt_midpoint"
 data_client_id = "okx_data"
 instrument_id = "DOGE-USDT.OKX"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[[realized_volatility_surfaces.okx_doge_usdt_midpoint_rv.sources]]
+source_id = "binance_doge_usdt_midpoint"
+data_client_id = "binance_spot_data"
+instrument_id = "DOGE-USDT.BINANCE"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[[realized_volatility_surfaces.okx_doge_usdt_midpoint_rv.sources]]
+source_id = "bybit_doge_usdt_midpoint"
+data_client_id = "bybit_data"
+instrument_id = "DOGE-USDT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true

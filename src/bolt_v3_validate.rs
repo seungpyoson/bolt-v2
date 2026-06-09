@@ -51,6 +51,8 @@ use crate::bolt_v3_config::{
     ClientBlock, DataClientReadinessProbeQuoteTargetSource, GATE_PROVIDER_CAPABILITIES,
     GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, KillSwitchConfigBlock,
     LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock,
+    RealizedVolatilityAggregationBlock, RealizedVolatilityJumpPolicyBlock,
+    RealizedVolatilityNoiseMethodBlock, RealizedVolatilityPricingComponentBlock,
     RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceClassBlock, RiskBlock,
     SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
@@ -114,6 +116,7 @@ const CHAINLINK_DATA_STREAMS_VALUE_KIND_FIELD: &str = "value_kind";
 const CHAINLINK_DATA_STREAMS_FEED_ID_FIELD: &str = "feed_id";
 const CHAINLINK_DATA_STREAMS_REPORT_SCHEMA_VERSION_FIELD: &str = "report_schema_version";
 const CHAINLINK_DATA_STREAMS_REPORT_DECIMAL_SCALE_FIELD: &str = "report_decimal_scale";
+const MISSING_REALIZED_VOLATILITY_SUBSAMPLE_COUNT: usize = usize::MIN;
 const CHAINLINK_DATA_STREAMS_OLD_PROVIDER_LEVEL_FEED_FIELDS: &[&str] = &[
     CHAINLINK_DATA_STREAMS_FEED_ID_FIELD,
     CHAINLINK_DATA_STREAMS_REPORT_SCHEMA_VERSION_FIELD,
@@ -267,6 +270,135 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
             errors.push(format!(
                 "{context}.policy.upper_quantile must be finite and in [0.5, 1.0]"
             ));
+        }
+        if matches!(
+            policy.aggregation,
+            RealizedVolatilityAggregationBlock::TrimmedMean
+        ) {
+            match policy.trim_fraction {
+                Some(trim_fraction)
+                    if trim_fraction.is_finite()
+                        && (ZERO_F64..HALF_F64).contains(&trim_fraction) => {}
+                _ => errors.push(format!(
+                    "{context}.policy.trim_fraction must be finite and in [0, 0.5) for trimmed_mean aggregation"
+                )),
+            }
+        }
+        if matches!(
+            policy.aggregation,
+            RealizedVolatilityAggregationBlock::MedianWithUpperQuantileGuard
+        ) {
+            match policy.guard_weight {
+                Some(guard_weight)
+                    if guard_weight.is_finite()
+                        && (ZERO_F64..=UNIT_F64).contains(&guard_weight) => {}
+                _ => errors.push(format!(
+                    "{context}.policy.guard_weight must be finite and in [0, 1] for median_with_upper_quantile_guard aggregation"
+                )),
+            }
+        }
+        if let Some(estimator) = surface.estimator.as_ref() {
+            if estimator.noise_robust_method.is_none() {
+                errors.push(format!(
+                    "{context}.estimator.noise_robust_method must be set when estimator is configured"
+                ));
+            }
+            if estimator.jump_policy.is_none() {
+                errors.push(format!(
+                    "{context}.estimator.jump_policy must be set when estimator is configured"
+                ));
+            }
+            if estimator.pricing_component.is_none() {
+                errors.push(format!(
+                    "{context}.estimator.pricing_component must be set when estimator is configured"
+                ));
+            }
+            if matches!(
+                estimator.noise_robust_method,
+                Some(RealizedVolatilityNoiseMethodBlock::Subsampled)
+            ) {
+                let subsamples = estimator
+                    .subsamples
+                    .unwrap_or(MISSING_REALIZED_VOLATILITY_SUBSAMPLE_COUNT);
+                let min_ready_subsamples = estimator
+                    .min_ready_subsamples
+                    .unwrap_or(MISSING_REALIZED_VOLATILITY_SUBSAMPLE_COUNT);
+                if subsamples == 0 || min_ready_subsamples == 0 {
+                    errors.push(format!(
+                        "{context}.estimator.subsamples and min_ready_subsamples must be positive for subsampled RV"
+                    ));
+                }
+                if min_ready_subsamples > subsamples {
+                    errors.push(format!(
+                        "{context}.estimator.min_ready_subsamples must be less than or equal to subsamples"
+                    ));
+                }
+                if subsamples as u64 > policy.sampling_interval_ms {
+                    errors.push(format!(
+                        "{context}.estimator.subsamples must not exceed policy.sampling_interval_ms unless collision semantics are explicitly supported"
+                    ));
+                }
+            }
+            if matches!(
+                estimator.noise_robust_method,
+                Some(RealizedVolatilityNoiseMethodBlock::CoarserGrid)
+            ) && estimator.coarse_sampling_interval_ms.is_none()
+            {
+                errors.push(format!(
+                    "{context}.estimator.coarse_sampling_interval_ms must be set for coarser_grid RV"
+                ));
+            }
+            if matches!(
+                estimator.noise_robust_method,
+                Some(RealizedVolatilityNoiseMethodBlock::CoarserGrid)
+            ) && estimator.coarser_grid_policy.is_none()
+            {
+                errors.push(format!(
+                    "{context}.estimator.coarser_grid_policy must be set for coarser_grid RV"
+                ));
+            }
+            if matches!(
+                estimator.noise_robust_method,
+                Some(RealizedVolatilityNoiseMethodBlock::CoarserGrid)
+            ) && estimator
+                .coarse_sampling_interval_ms
+                .is_some_and(|interval| interval <= policy.sampling_interval_ms)
+            {
+                errors.push(format!(
+                    "{context}.estimator.coarse_sampling_interval_ms must be greater than policy.sampling_interval_ms"
+                ));
+            }
+            if matches!(
+                estimator.pricing_component,
+                Some(RealizedVolatilityPricingComponentBlock::NoiseRobust)
+            ) && !matches!(
+                estimator.noise_robust_method,
+                Some(RealizedVolatilityNoiseMethodBlock::CoarserGrid)
+                    | Some(RealizedVolatilityNoiseMethodBlock::Subsampled)
+            ) {
+                errors.push(format!(
+                    "{context}.estimator.pricing_component noise_robust requires noise_robust_method other than none"
+                ));
+            }
+            if matches!(
+                estimator.pricing_component,
+                Some(RealizedVolatilityPricingComponentBlock::Forecast)
+            ) {
+                errors.push(format!(
+                    "{context}.estimator.pricing_component forecast is not enabled in this implementation slice"
+                ));
+            }
+            if matches!(
+                estimator.pricing_component,
+                Some(RealizedVolatilityPricingComponentBlock::Continuous)
+            ) && !matches!(
+                estimator.jump_policy,
+                Some(RealizedVolatilityJumpPolicyBlock::Separate)
+            ) {
+                errors.push(format!(
+                    "{context}.estimator.pricing_component continuous requires jump_policy separate"
+                ));
+            }
         }
 
         let mut seen_source_ids = BTreeSet::new();

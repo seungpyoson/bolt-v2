@@ -13,11 +13,12 @@ use serde::{Deserialize, Serialize};
 use crate::bolt_v3_config::LoadedBoltV3Config;
 use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
 use crate::bolt_v3_realized_volatility::{
-    RealizedVolAggregation, RealizedVolBlockReason, RealizedVolSampleKind, RealizedVolSourceClass,
-    RealizedVolSourceDiagnostic, RealizedVolSourceRejectReason, RealizedVolSourceStatus,
+    RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
+    RealizedVolSampleKind, RealizedVolSourceClass, RealizedVolSourceDiagnostic,
+    RealizedVolSourceRejectReason, RealizedVolSourceStatus,
 };
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 8;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 9;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
@@ -163,6 +164,10 @@ pub struct BoltV3RealizedVolatilitySourceDiagnosticEvidence {
     pub counts_toward_quorum: bool,
     pub status: String,
     pub annualized_realized_volatility_decimal: Option<String>,
+    pub measured_annualized_realized_volatility_decimal: Option<String>,
+    pub noise_robust_annualized_realized_volatility_decimal: Option<String>,
+    pub continuous_annualized_realized_volatility_decimal: Option<String>,
+    pub jump_annualized_realized_volatility_decimal: Option<String>,
     pub first_sample_ts_ms: Option<u64>,
     pub last_sample_ts_ms: Option<u64>,
     pub raw_sample_count: usize,
@@ -187,6 +192,18 @@ impl BoltV3RealizedVolatilitySourceDiagnosticEvidence {
             status: realized_volatility_source_status_evidence_label(diagnostic.status).to_string(),
             annualized_realized_volatility_decimal: diagnostic
                 .annualized_realized_vol_decimal
+                .map(number_evidence),
+            measured_annualized_realized_volatility_decimal: diagnostic
+                .measured_annualized_realized_vol_decimal
+                .map(number_evidence),
+            noise_robust_annualized_realized_volatility_decimal: diagnostic
+                .noise_robust_annualized_realized_vol_decimal
+                .map(number_evidence),
+            continuous_annualized_realized_volatility_decimal: diagnostic
+                .continuous_annualized_realized_vol_decimal
+                .map(number_evidence),
+            jump_annualized_realized_volatility_decimal: diagnostic
+                .jump_annualized_realized_vol_decimal
                 .map(number_evidence),
             first_sample_ts_ms: diagnostic.first_sample_ts_ms,
             last_sample_ts_ms: diagnostic.last_sample_ts_ms,
@@ -221,6 +238,11 @@ pub fn realized_volatility_aggregation_evidence_label(
 ) -> &'static str {
     match aggregation {
         RealizedVolAggregation::UpperQuantile { .. } => "upper_quantile",
+        RealizedVolAggregation::Median => "median",
+        RealizedVolAggregation::TrimmedMean { .. } => "trimmed_mean",
+        RealizedVolAggregation::MedianWithUpperQuantileGuard { .. } => {
+            "median_with_upper_quantile_guard"
+        }
     }
 }
 
@@ -238,6 +260,17 @@ pub fn realized_volatility_block_reason_evidence_label(
         RealizedVolBlockReason::CrossSourceDispersion => "cross_source_dispersion",
         RealizedVolBlockReason::AnnualizationBasisInvalid => "annualization_basis_invalid",
         RealizedVolBlockReason::NotWarm => "not_warm",
+    }
+}
+
+pub fn realized_volatility_pricing_component_evidence_label(
+    component: RealizedVolPricingComponent,
+) -> &'static str {
+    match component {
+        RealizedVolPricingComponent::Measured => "measured",
+        RealizedVolPricingComponent::NoiseRobust => "noise_robust",
+        RealizedVolPricingComponent::Continuous => "continuous",
+        RealizedVolPricingComponent::Forecast => "forecast",
     }
 }
 
@@ -319,6 +352,12 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub realized_volatility_surface_id: String,
     pub realized_volatility_as_of_ms: Option<u64>,
     pub realized_volatility_annualized_decimal: String,
+    pub realized_volatility_measured_annualized_decimal: String,
+    pub realized_volatility_noise_robust_annualized_decimal: String,
+    pub realized_volatility_continuous_annualized_decimal: String,
+    pub realized_volatility_jump_annualized_decimal: String,
+    pub realized_volatility_forecast_annualized_decimal: String,
+    pub realized_volatility_pricing_component: String,
     pub realized_volatility_seconds_per_annum: String,
     pub realized_volatility_aggregation: String,
     pub realized_volatility_sources_used: Vec<String>,
@@ -1100,6 +1139,12 @@ mod tests {
             realized_volatility_surface_id: String::new(),
             realized_volatility_as_of_ms: None,
             realized_volatility_annualized_decimal: "1.5".to_string(),
+            realized_volatility_measured_annualized_decimal: String::new(),
+            realized_volatility_noise_robust_annualized_decimal: String::new(),
+            realized_volatility_continuous_annualized_decimal: String::new(),
+            realized_volatility_jump_annualized_decimal: String::new(),
+            realized_volatility_forecast_annualized_decimal: String::new(),
+            realized_volatility_pricing_component: String::new(),
             realized_volatility_seconds_per_annum: String::new(),
             realized_volatility_aggregation: String::new(),
             realized_volatility_sources_used: Vec::new(),
@@ -1152,7 +1197,7 @@ mod tests {
                 .as_object()
                 .expect("snapshot should encode as an object")
                 .len(),
-            45
+            51
         );
         assert_eq!(snapshot_field["price_to_beat_source"], "source-one");
         assert_eq!(snapshot_field["reference_quote_ts_event"], 1200);

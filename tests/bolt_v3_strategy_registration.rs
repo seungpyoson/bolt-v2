@@ -66,7 +66,10 @@ fn valid_realized_volatility_surface() -> RealizedVolatilitySurfaceBlock {
             seconds_per_annum: 31_536_000.0,
             aggregation: RealizedVolatilityAggregationBlock::UpperQuantile,
             upper_quantile: 1.0,
+            trim_fraction: None,
+            guard_weight: None,
         },
+        estimator: None,
         sources: vec![RealizedVolatilitySourceBlock {
             source_id: "<SOURCE_ID_A>".to_string(),
             data_client_id: ClientId::from(RV_DATA_CLIENT_ID),

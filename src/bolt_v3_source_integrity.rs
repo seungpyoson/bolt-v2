@@ -245,8 +245,10 @@ mod tests {
     // regression assert asset-scoped subscription metadata.
     // Re-derived again after #606 fixed the remaining unsupported optional
     // source subscription assertion to use the configured asset.
+    // Re-derived again after merging global realized-volatility runtime and
+    // unifying reference-price source availability policy.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "9bfb0013051b6f4bd532809d3f54182a85b9461b93c5789a3109602ff1d97d15";
+        "1853a2fff33dac9badb6293703329fafb6d6dd0d3e722ff959287a24a5e2d921";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

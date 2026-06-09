@@ -22,8 +22,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     bolt_v3_realized_volatility::{
-        RealizedVolAggregation, RealizedVolEngineConfig, RealizedVolSampleKind,
-        RealizedVolSourceClass, RealizedVolSourceConfig,
+        RealizedVolAggregation, RealizedVolCoarserGridPolicy, RealizedVolEngineConfig,
+        RealizedVolEstimatorConfig, RealizedVolJumpConfig, RealizedVolJumpPolicy,
+        RealizedVolNoiseConfig, RealizedVolNoiseMethod, RealizedVolPricingComponent,
+        RealizedVolSampleKind, RealizedVolSourceClass, RealizedVolSourceConfig,
     },
     bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies},
 };
@@ -287,6 +289,7 @@ pub struct RealizedVolatilitySurfaceBlock {
     pub canonical_base_asset: String,
     pub canonical_quote_asset: String,
     pub policy: RealizedVolatilityPolicyBlock,
+    pub estimator: Option<RealizedVolatilityEstimatorBlock>,
     pub sources: Vec<RealizedVolatilitySourceBlock>,
 }
 
@@ -304,12 +307,60 @@ pub struct RealizedVolatilityPolicyBlock {
     pub seconds_per_annum: f64,
     pub aggregation: RealizedVolatilityAggregationBlock,
     pub upper_quantile: f64,
+    pub trim_fraction: Option<f64>,
+    pub guard_weight: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RealizedVolatilityAggregationBlock {
     UpperQuantile,
+    Median,
+    TrimmedMean,
+    MedianWithUpperQuantileGuard,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RealizedVolatilityEstimatorBlock {
+    pub noise_robust_method: Option<RealizedVolatilityNoiseMethodBlock>,
+    pub subsamples: Option<usize>,
+    pub min_ready_subsamples: Option<usize>,
+    pub coarse_sampling_interval_ms: Option<u64>,
+    pub coarser_grid_policy: Option<RealizedVolatilityCoarserGridPolicyBlock>,
+    pub jump_policy: Option<RealizedVolatilityJumpPolicyBlock>,
+    pub pricing_component: Option<RealizedVolatilityPricingComponentBlock>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RealizedVolatilityNoiseMethodBlock {
+    None,
+    CoarserGrid,
+    Subsampled,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RealizedVolatilityCoarserGridPolicyBlock {
+    CoarseOnly,
+    MinBaseCoarse,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RealizedVolatilityJumpPolicyBlock {
+    None,
+    Separate,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RealizedVolatilityPricingComponentBlock {
+    Measured,
+    NoiseRobust,
+    Continuous,
+    Forecast,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -617,13 +668,7 @@ pub fn realized_volatility_engine_config(
     surface_id: &str,
     surface: &RealizedVolatilitySurfaceBlock,
 ) -> Result<RealizedVolEngineConfig, String> {
-    let aggregation = match surface.policy.aggregation {
-        RealizedVolatilityAggregationBlock::UpperQuantile => {
-            RealizedVolAggregation::UpperQuantile {
-                quantile: surface.policy.upper_quantile,
-            }
-        }
-    };
+    let aggregation = realized_volatility_aggregation(surface)?;
     Ok(RealizedVolEngineConfig {
         surface_id: surface_id.to_string(),
         window_ms: surface.policy.window_ms,
@@ -636,6 +681,7 @@ pub fn realized_volatility_engine_config(
         max_cross_source_dispersion: surface.policy.max_cross_source_dispersion,
         seconds_per_annum: surface.policy.seconds_per_annum,
         aggregation,
+        estimator: realized_volatility_estimator_config(surface)?,
         sources: surface
             .sources
             .iter()
@@ -662,6 +708,104 @@ pub fn realized_volatility_engine_config(
                 canonical_quote_asset: source.canonical_quote_asset.clone(),
             })
             .collect(),
+    })
+}
+
+fn realized_volatility_aggregation(
+    surface: &RealizedVolatilitySurfaceBlock,
+) -> Result<RealizedVolAggregation, String> {
+    Ok(match surface.policy.aggregation {
+        RealizedVolatilityAggregationBlock::UpperQuantile => {
+            RealizedVolAggregation::UpperQuantile {
+                quantile: surface.policy.upper_quantile,
+            }
+        }
+        RealizedVolatilityAggregationBlock::Median => RealizedVolAggregation::Median,
+        RealizedVolatilityAggregationBlock::TrimmedMean => RealizedVolAggregation::TrimmedMean {
+            trim_fraction: surface
+                .policy
+                .trim_fraction
+                .ok_or_else(|| "trimmed_mean aggregation requires trim_fraction".to_string())?,
+        },
+        RealizedVolatilityAggregationBlock::MedianWithUpperQuantileGuard => {
+            RealizedVolAggregation::MedianWithUpperQuantileGuard {
+                upper_quantile: surface.policy.upper_quantile,
+                guard_weight: surface.policy.guard_weight.ok_or_else(|| {
+                    "median_with_upper_quantile_guard aggregation requires guard_weight".to_string()
+                })?,
+            }
+        }
+    })
+}
+
+fn realized_volatility_estimator_config(
+    surface: &RealizedVolatilitySurfaceBlock,
+) -> Result<RealizedVolEstimatorConfig, String> {
+    let Some(estimator) = surface.estimator.as_ref() else {
+        return Ok(RealizedVolEstimatorConfig::measured());
+    };
+    let noise_method = match estimator.noise_robust_method.ok_or_else(|| {
+        "estimator.noise_robust_method must be set when estimator is configured".to_string()
+    })? {
+        RealizedVolatilityNoiseMethodBlock::None => RealizedVolNoiseMethod::None,
+        RealizedVolatilityNoiseMethodBlock::CoarserGrid => RealizedVolNoiseMethod::CoarserGrid {
+            coarse_sampling_interval_ms: estimator.coarse_sampling_interval_ms.ok_or_else(
+                || {
+                    "estimator.coarse_sampling_interval_ms must be set for coarser_grid RV"
+                        .to_string()
+                },
+            )?,
+            policy: match estimator.coarser_grid_policy.ok_or_else(|| {
+                "estimator.coarser_grid_policy must be set for coarser_grid RV".to_string()
+            })? {
+                RealizedVolatilityCoarserGridPolicyBlock::CoarseOnly => {
+                    RealizedVolCoarserGridPolicy::CoarseOnly
+                }
+                RealizedVolatilityCoarserGridPolicyBlock::MinBaseCoarse => {
+                    RealizedVolCoarserGridPolicy::MinBaseCoarse
+                }
+            },
+        },
+        RealizedVolatilityNoiseMethodBlock::Subsampled => RealizedVolNoiseMethod::Subsampled {
+            subsamples: estimator
+                .subsamples
+                .ok_or_else(|| "estimator.subsamples must be set for subsampled RV".to_string())?,
+            min_ready_subsamples: estimator.min_ready_subsamples.ok_or_else(|| {
+                "estimator.min_ready_subsamples must be set for subsampled RV".to_string()
+            })?,
+        },
+    };
+    Ok(RealizedVolEstimatorConfig {
+        horizons: Vec::new(),
+        horizon_policy: crate::bolt_v3_realized_volatility::RealizedVolHorizonPolicy::Measured,
+        noise: RealizedVolNoiseConfig {
+            method: noise_method,
+        },
+        jump: RealizedVolJumpConfig {
+            policy: match estimator.jump_policy.ok_or_else(|| {
+                "estimator.jump_policy must be set when estimator is configured".to_string()
+            })? {
+                RealizedVolatilityJumpPolicyBlock::None => RealizedVolJumpPolicy::None,
+                RealizedVolatilityJumpPolicyBlock::Separate => RealizedVolJumpPolicy::Separate,
+            },
+        },
+        pricing_component: match estimator.pricing_component.ok_or_else(|| {
+            "estimator.pricing_component must be set when estimator is configured".to_string()
+        })? {
+            RealizedVolatilityPricingComponentBlock::Measured => {
+                RealizedVolPricingComponent::Measured
+            }
+            RealizedVolatilityPricingComponentBlock::NoiseRobust => {
+                RealizedVolPricingComponent::NoiseRobust
+            }
+            RealizedVolatilityPricingComponentBlock::Continuous => {
+                RealizedVolPricingComponent::Continuous
+            }
+            RealizedVolatilityPricingComponentBlock::Forecast => {
+                RealizedVolPricingComponent::Forecast
+            }
+        },
+        forecast: crate::bolt_v3_realized_volatility::RealizedVolForecastConfig::none(),
     })
 }
 

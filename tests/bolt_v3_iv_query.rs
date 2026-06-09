@@ -1568,6 +1568,7 @@ fn derived_iv_helper_output_rejection_updates_source_health() {
         .state_handle()
         .source_health_for("configured-profile", "configured-source")
         .unwrap();
+    assert_eq!(health.subscription_state, IvSourceHealthState::Active);
     assert_eq!(
         health.last_reject_reason,
         Some(IvRejectReason::InvalidIvValue)

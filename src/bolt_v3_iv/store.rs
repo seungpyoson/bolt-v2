@@ -359,7 +359,7 @@ impl IvStore {
             };
             for basis_value in &greeks.basis_values {
                 if !valid_iv(basis_value.iv) {
-                    return Err(IvStoreError::InvalidIvValue);
+                    continue;
                 }
                 points_by_basis
                     .entry(basis_value.basis)

@@ -1075,7 +1075,7 @@ impl IvQueryHandle {
             inputs.subscription_generation,
             inputs.as_of_ns,
             reject_reason,
-            true,
+            false,
         );
         self.enforce_retention_policy();
     }

@@ -158,16 +158,20 @@ pub(crate) fn price_exact_size_vwap(
     match order_side {
         OrderSide::Buy => {
             for (price, size) in &book.ask_levels {
+                let price = price.as_f64();
+                if price > allowed_vwap {
+                    break;
+                }
                 let previous_remaining_notional = remaining_notional;
                 consume_exact_notional_level(
-                    price.as_f64(),
+                    price,
                     *size,
                     &mut remaining_notional,
                     &mut filled_quantity,
                     &mut filled_notional,
                 );
                 if remaining_notional < previous_remaining_notional {
-                    limit_price = Some(price.as_f64());
+                    limit_price = Some(price);
                 }
                 if remaining_notional <= ZERO_F64 {
                     break;
@@ -176,16 +180,20 @@ pub(crate) fn price_exact_size_vwap(
         }
         OrderSide::Sell => {
             for (price, size) in book.bid_levels.iter().rev() {
+                let price = price.as_f64();
+                if price < allowed_vwap {
+                    break;
+                }
                 let previous_remaining_notional = remaining_notional;
                 consume_exact_notional_level(
-                    price.as_f64(),
+                    price,
                     *size,
                     &mut remaining_notional,
                     &mut filled_quantity,
                     &mut filled_notional,
                 );
                 if remaining_notional < previous_remaining_notional {
-                    limit_price = Some(price.as_f64());
+                    limit_price = Some(price);
                 }
                 if remaining_notional <= ZERO_F64 {
                     break;
@@ -205,12 +213,12 @@ pub(crate) fn price_exact_size_vwap(
     let limit_price = limit_price
         .filter(|value| is_positive_finite(*value))
         .ok_or(ExecutableEdgeBlockReason::InvalidCost)?;
-    let within_limit = if is_buy {
-        vwap_price <= allowed_vwap
+    let within_depth_limit = if is_buy {
+        vwap_price <= allowed_vwap && limit_price <= allowed_vwap
     } else {
-        vwap_price >= allowed_vwap
+        vwap_price >= allowed_vwap && limit_price >= allowed_vwap
     };
-    if !within_limit {
+    if !within_depth_limit {
         return Err(ExecutableEdgeBlockReason::InsufficientDepth);
     }
 

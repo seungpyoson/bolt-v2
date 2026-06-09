@@ -706,12 +706,38 @@ fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap
 #[test]
 fn executable_edge_selects_tradeable_side_when_opposite_side_is_blocked() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    strategy.config.order_notional_target = 5.0;
+    strategy.config.maximum_position_notional = 5.0;
+    strategy.config.vwap_depth_limit_bps = 0;
     strategy.config.edge_threshold_basis_points = 0;
     strategy.config.slippage_buffer_bps = 0;
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+    let up_instrument_id = strategy
+        .instrument_id_for_side(OutcomeSide::Up)
+        .expect("UP instrument should be configured");
+    let down_instrument_id = strategy
+        .instrument_id_for_side(OutcomeSide::Down)
+        .expect("DOWN instrument should be configured");
+    assert!(strategy.active.books.update_from_deltas(&book_deltas(
+        up_instrument_id,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 100.0),
+        ],
+    )));
+    assert!(strategy.active.books.update_from_deltas(&book_deltas(
+        down_instrument_id,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 2.0),
+            (BookAction::Add, OrderSide::Sell, 0.70, 100.0),
+        ],
+    )));
 
     let evaluation = strategy.entry_evaluation_at(1_200);
 
@@ -724,7 +750,10 @@ fn executable_edge_selects_tradeable_side_when_opposite_side_is_blocked() {
         .down_executable_edge
         .expect("DOWN executable edge should still be evaluated");
     assert!(!down_edge.trade_allowed);
-    assert!(down_edge.block_reason.is_some());
+    assert_eq!(
+        down_edge.block_reason,
+        Some(ExecutableEdgeBlockReason::InsufficientDepth)
+    );
 }
 
 #[test]
@@ -756,14 +785,14 @@ fn executable_edge_blocks_unsupported_post_only_entry_shape() {
 }
 
 #[test]
-fn entry_submission_uses_exact_vwap_limit_price_and_quantity() {
+fn entry_submission_caps_quantity_to_limit_price_liability() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.order_notional_target = 5.0;
     strategy.config.maximum_position_notional = 5.0;
     strategy.config.risk_lambda = 0.0;
     strategy.config.book_impact_cap_bps = 1_000;
-    strategy.config.vwap_depth_limit_bps = 1_000;
+    strategy.config.vwap_depth_limit_bps = 2_000;
     strategy.config.slippage_buffer_bps = 0;
     strategy.config.edge_threshold_basis_points = 0;
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
@@ -787,8 +816,14 @@ fn entry_submission_uses_exact_vwap_limit_price_and_quantity() {
     assert!(
         decision
             .quantity_value
-            .is_some_and(|quantity| (quantity - 9.16).abs() < 1e-9),
-        "submission should use normalized VWAP quantity, got {decision:#?}"
+            .is_some_and(|quantity| (quantity - 8.33).abs() < 1e-9),
+        "submission should cap normalized quantity by limit-price liability, got {decision:#?}"
+    );
+    assert!(
+        decision
+            .quantity_value
+            .is_some_and(|quantity| 0.60 * quantity <= 5.0),
+        "limit-price liability must not exceed sized notional, got {decision:#?}"
     );
 }
 

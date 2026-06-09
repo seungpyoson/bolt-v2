@@ -90,8 +90,8 @@ pub fn registry_module_source_text(key: &str, max_bytes: u64) -> io::Result<Stri
 }
 
 /// A bound large enough to admit either gated root: the submit_admission single
-/// file and the strategy source set (strategy directory plus shared book sizing
-/// source, whose framed canonical stream is the raw content plus per-file
+/// file and the strategy source set (strategy directory plus shared execution
+/// sources, whose framed canonical stream is the raw content plus per-file
 /// path/length frames). Used by the text accessors (whole module / production
 /// text), where there is no operator-supplied cap.
 ///
@@ -121,8 +121,8 @@ pub fn module_source_text(key: &str) -> String {
 /// byte-for-byte — strips ONLY at the FIRST top-level test-module marker, so the
 /// earlier inline `#[cfg(test)]` markers are retained (value-stability).
 ///
-/// SOURCE-SET case (e.g. the strategy directory plus shared book sizing after
-/// A4): the production half of EACH file — split independently at its own first
+/// SOURCE-SET case (e.g. the strategy directory plus shared execution helpers):
+/// the production half of EACH file — split independently at its own first
 /// top-level marker — concatenated in canonical order. This keeps every
 /// production file in scope rather than dropping every file sorted after the
 /// marker-owning file.
@@ -146,7 +146,7 @@ mod tests {
     // GOLDEN_STRATEGY_DIGEST is re-derived only when an accepted source move
     // changes the canonical strategy source set. A4 moves book state and
     // VWAP/slippage sizing out of the strategy wrapper, so the strategy source
-    // set is now the strategy directory plus `src/bolt_v3_book_sizing.rs`.
+    // set is now the strategy directory plus shared execution helper modules.
     //
     // Re-derived by A6 after moving the exposure state machine into
     // `src/strategies/binary_oracle_edge_taker/exposure.rs`; the dynamic source
@@ -218,10 +218,10 @@ mod tests {
     // Re-derived again after root-level surfaced RV readiness redesign moved
     // raw RV validation behind the shared ready snapshot accessor.
     // Re-derived again after removing the dead strategy evidence fallback RV
-    // parameter, then after adding executable-edge cost breakdown and aligning
-    // its strategy test coverage.
+    // parameter, then after adding executable-edge cost breakdown to the gated
+    // strategy source set and aligning its strategy test coverage.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "fe1e6525da6a280c161279052f16b8e2cf1d39154b038cb2ccbd876df4a70a00";
+        "8eb48397d45cef17c445590db0567a34ec1127762047dbf8f3bfc86117810234";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -336,12 +336,13 @@ mod tests {
     }
 
     #[test]
-    fn strategy_source_set_includes_wrapper_directory_and_shared_sizing_module() {
+    fn strategy_source_set_includes_wrapper_directory_and_shared_execution_modules() {
         assert_eq!(
             registry_relative_roots(STRATEGY_KEY),
             &[
                 "src/strategies/binary_oracle_edge_taker",
                 "src/bolt_v3_book_sizing.rs",
+                "src/bolt_v3_executable_edge.rs",
             ]
         );
     }
@@ -378,7 +379,7 @@ mod tests {
         let files = strategy_source_files_in_canonical_order();
         assert!(
             files.len() >= 4,
-            "expected current strategy directory plus shared sizing source files"
+            "expected current strategy directory plus shared execution source files"
         );
 
         // Build the framed stream and record each file's raw-byte span within it.

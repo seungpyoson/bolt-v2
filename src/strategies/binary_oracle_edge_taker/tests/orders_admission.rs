@@ -1274,7 +1274,7 @@ fn stop_market_entry_submission_price_uses_trigger_price_for_notional_sizing() {
 }
 
 #[test]
-fn quote_quantity_entry_submission_sizes_quantity_as_quote_notional() {
+fn quote_quantity_entry_submission_is_unsupported_executable_shape() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.entry_order.is_quote_quantity = true;
@@ -1283,18 +1283,25 @@ fn quote_quantity_entry_submission_sizes_quantity_as_quote_notional() {
     strategy.config.risk_lambda = 0.0001;
 
     let decision = strategy.entry_submission_decision_at(1_200);
-    let sized_notional = decision
-        .evaluation
-        .sized_notional
-        .expect("test setup should produce a positive sized notional");
 
-    assert_eq!(decision.blocked_reason, None);
-    assert!(
-        decision
-            .quantity_value
-            .is_some_and(|quantity| (quantity - sized_notional).abs() < 1e-9),
-        "quote-quantity entry should send quote notional as NT quantity, got {decision:#?}"
+    assert_eq!(
+        decision.blocked_reason,
+        Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED)
     );
+    assert_eq!(
+        decision.evaluation.pricing_blocked_by,
+        vec![
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Up,
+                ExecutableEdgeBlockReason::UnsupportedOrderShape
+            ),
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Down,
+                ExecutableEdgeBlockReason::UnsupportedOrderShape
+            ),
+        ]
+    );
+    assert_eq!(decision.quantity_value, None);
 }
 
 #[test]

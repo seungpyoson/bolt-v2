@@ -211,6 +211,12 @@ impl SubmitContext {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ExecutableEntryProbe {
+    edge_pricing_notional: f64,
+    fee_bps: f64,
+}
+
 impl BinaryOracleEdgeTakerOrderConfig {
     fn nt_order_template(
         &self,
@@ -2297,6 +2303,7 @@ impl BinaryOracleEdgeTaker {
             || entry_order.time_in_force != TimeInForce::Fok
             || entry_order.is_post_only
             || entry_order.is_reduce_only
+            || entry_order.is_quote_quantity
             || entry_order.trigger_price.is_some()
             || entry_order.activation_price.is_some()
             || entry_order.trigger_type.is_some()
@@ -2342,12 +2349,49 @@ impl BinaryOracleEdgeTaker {
         .ok()
     }
 
+    fn preliminary_edge_pricing_notional_for_side(&self, side: OutcomeSide) -> f64 {
+        let mut notional = self.config.order_notional_target;
+        if is_positive_finite(self.config.maximum_position_notional) {
+            notional = notional.min(self.config.maximum_position_notional);
+        }
+        if let Some(impact_cap_notional) = self
+            .visible_book_notional_cap(side)
+            .filter(|value| is_positive_finite(*value))
+        {
+            notional = notional.min(impact_cap_notional);
+        }
+        notional
+    }
+
+    fn executable_entry_probe_for_side(
+        &self,
+        side: OutcomeSide,
+        order_side: OrderSide,
+        edge_pricing_notional: f64,
+    ) -> Result<ExecutableEntryProbe, ExecutableEdgeBlockReason> {
+        let vwap = price_exact_size_vwap(
+            self.active_book_for_outcome(side),
+            order_side,
+            edge_pricing_notional,
+            self.config.vwap_depth_limit_bps,
+        )?;
+        let fee_bps = self
+            .entry_fee_bps_at_price(side, vwap.limit_price)
+            .filter(|value| is_non_negative_finite(*value))
+            .ok_or(ExecutableEdgeBlockReason::FeeUnavailable)?;
+        Ok(ExecutableEntryProbe {
+            edge_pricing_notional,
+            fee_bps,
+        })
+    }
+
     fn executable_edge_for_side(
         &self,
         side: OutcomeSide,
         fair_probability_up: f64,
         adjusted_probability_up: f64,
         minimum_edge_bps: f64,
+        edge_pricing_notional: f64,
     ) -> ExecutableEdgeResult {
         if let Some(reason) = self.executable_edge_order_shape_block_reason() {
             return ExecutableEdgeResult::blocked(side, reason);
@@ -2359,19 +2403,15 @@ impl BinaryOracleEdgeTaker {
             );
         };
         let book = self.active_book_for_outcome(side);
-        let fee_bps = price_exact_size_vwap(
-            book,
-            order_side,
-            self.config.order_notional_target,
-            self.config.vwap_depth_limit_bps,
-        )
-        .ok()
-        .and_then(|vwap| self.entry_fee_bps_at_price(side, vwap.vwap_price));
+        let fee_bps = self
+            .executable_entry_probe_for_side(side, order_side, edge_pricing_notional)
+            .ok()
+            .map(|probe| probe.fee_bps);
         evaluate_executable_edge(&ExecutableEdgeInputs {
             side,
             fair_probability_up: Some(fair_probability_up),
             adjusted_probability_up: Some(adjusted_probability_up),
-            edge_pricing_notional: self.config.order_notional_target,
+            edge_pricing_notional,
             order_side,
             book: Some(book),
             fee_bps,
@@ -4192,11 +4232,12 @@ impl BinaryOracleEdgeTaker {
             return decision;
         };
         let price = submission_vwap.limit_price;
-        let shares_value = if self.config.entry_order.is_quote_quantity {
-            sized_notional
-        } else {
-            submission_vwap.vwap_quantity
-        };
+        let max_quantity_at_limit = sized_notional / price;
+        if !is_positive_finite(max_quantity_at_limit) {
+            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING);
+            return decision;
+        }
+        let shares_value = submission_vwap.vwap_quantity.min(max_quantity_at_limit);
         let Ok(quantity) = instrument.try_make_qty(shares_value, Some(true)) else {
             decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
             return decision;
@@ -4210,6 +4251,11 @@ impl BinaryOracleEdgeTaker {
         let quantity_value = quantity.as_f64();
         if !is_positive_finite(quantity_value) {
             decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE);
+            return decision;
+        }
+        if price * quantity_value > sized_notional + f64::EPSILON {
+            decision.blocked_reason =
+                Some(ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL);
             return decision;
         }
 
@@ -4465,96 +4511,83 @@ impl BinaryOracleEdgeTaker {
             );
             return evaluation;
         };
-        let up_vwap_probe = price_exact_size_vwap(
-            self.active_book_for_outcome(OutcomeSide::Up),
+        let up_probe = self.executable_entry_probe_for_side(
+            OutcomeSide::Up,
             order_side,
-            self.config.order_notional_target,
-            self.config.vwap_depth_limit_bps,
+            self.preliminary_edge_pricing_notional_for_side(OutcomeSide::Up),
         );
-        let down_vwap_probe = price_exact_size_vwap(
-            self.active_book_for_outcome(OutcomeSide::Down),
+        let down_probe = self.executable_entry_probe_for_side(
+            OutcomeSide::Down,
             order_side,
-            self.config.order_notional_target,
-            self.config.vwap_depth_limit_bps,
+            self.preliminary_edge_pricing_notional_for_side(OutcomeSide::Down),
         );
-        if let Err(reason) = up_vwap_probe {
+        if let Err(reason) = up_probe {
             evaluation.up_executable_edge =
                 Some(ExecutableEdgeResult::blocked(OutcomeSide::Up, reason));
-            push_executable_edge_pricing_block(
-                &mut evaluation.pricing_blocked_by,
-                OutcomeSide::Up,
-                Some(reason),
-            );
         }
-        if let Err(reason) = down_vwap_probe {
+        if let Err(reason) = down_probe {
             evaluation.down_executable_edge =
                 Some(ExecutableEdgeResult::blocked(OutcomeSide::Down, reason));
+        }
+
+        let fee_uncertainty_bps = match (up_probe.as_ref().ok(), down_probe.as_ref().ok()) {
+            (Some(up), Some(down)) => Some(up.fee_bps.max(down.fee_bps)),
+            (Some(up), None) => Some(up.fee_bps),
+            (None, Some(down)) => Some(down.fee_bps),
+            (None, None) => None,
+        };
+        let Some(fee_uncertainty_bps) = fee_uncertainty_bps else {
+            push_executable_edge_pricing_block(
+                &mut evaluation.pricing_blocked_by,
+                OutcomeSide::Up,
+                up_probe.err(),
+            );
             push_executable_edge_pricing_block(
                 &mut evaluation.pricing_blocked_by,
                 OutcomeSide::Down,
-                Some(reason),
+                down_probe.err(),
             );
-        }
-        if !evaluation.pricing_blocked_by.is_empty() {
-            return evaluation;
-        }
-        let up_vwap = up_vwap_probe.expect("up VWAP probe checked above");
-        let down_vwap = down_vwap_probe.expect("down VWAP probe checked above");
-        let Some(up_fee_bps) = self.entry_fee_bps_at_price(OutcomeSide::Up, up_vwap.vwap_price)
-        else {
-            evaluation
-                .pricing_blocked_by
-                .push(EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Up));
-            evaluation.up_executable_edge = Some(self.executable_edge_for_side(
-                OutcomeSide::Up,
-                fair_probability_up,
-                fair_probability_up,
-                pricing_inputs.theta_scaled_min_edge_bps,
-            ));
             return evaluation;
         };
-        let Some(down_fee_bps) =
-            self.entry_fee_bps_at_price(OutcomeSide::Down, down_vwap.vwap_price)
-        else {
-            evaluation
-                .pricing_blocked_by
-                .push(EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Down));
-            evaluation.down_executable_edge = Some(self.executable_edge_for_side(
-                OutcomeSide::Down,
-                fair_probability_up,
-                fair_probability_up,
-                pricing_inputs.theta_scaled_min_edge_bps,
-            ));
-            return evaluation;
+        let uncertainty_band_probability = match self.current_uncertainty_band_probability_at(
+            now_ms,
+            fee_uncertainty_bps,
+            fee_uncertainty_bps,
+        ) {
+            Some(value) => value,
+            None => {
+                evaluation
+                    .pricing_blocked_by
+                    .push(EntryPricingBlockReason::UncertaintyBandUnavailable);
+                return evaluation;
+            }
         };
-        let uncertainty_band_probability =
-            match self.current_uncertainty_band_probability_at(now_ms, up_fee_bps, down_fee_bps) {
-                Some(value) => value,
-                None => {
-                    evaluation
-                        .pricing_blocked_by
-                        .push(EntryPricingBlockReason::UncertaintyBandUnavailable);
-                    return evaluation;
-                }
-            };
         evaluation.uncertainty_band_probability = Some(uncertainty_band_probability);
 
         let up_adjusted_probability_up =
             clamp_probability(fair_probability_up - uncertainty_band_probability);
         let down_adjusted_probability_up =
             clamp_probability(fair_probability_up + uncertainty_band_probability);
-        let up_executable_edge = self.executable_edge_for_side(
-            OutcomeSide::Up,
-            fair_probability_up,
-            up_adjusted_probability_up,
-            pricing_inputs.theta_scaled_min_edge_bps,
-        );
-        let down_executable_edge = self.executable_edge_for_side(
-            OutcomeSide::Down,
-            fair_probability_up,
-            down_adjusted_probability_up,
-            pricing_inputs.theta_scaled_min_edge_bps,
-        );
+        let up_executable_edge = match up_probe {
+            Ok(probe) => self.executable_edge_for_side(
+                OutcomeSide::Up,
+                fair_probability_up,
+                up_adjusted_probability_up,
+                pricing_inputs.theta_scaled_min_edge_bps,
+                probe.edge_pricing_notional,
+            ),
+            Err(reason) => ExecutableEdgeResult::blocked(OutcomeSide::Up, reason),
+        };
+        let down_executable_edge = match down_probe {
+            Ok(probe) => self.executable_edge_for_side(
+                OutcomeSide::Down,
+                fair_probability_up,
+                down_adjusted_probability_up,
+                pricing_inputs.theta_scaled_min_edge_bps,
+                probe.edge_pricing_notional,
+            ),
+            Err(reason) => ExecutableEdgeResult::blocked(OutcomeSide::Down, reason),
+        };
         evaluation.up_worst_case_ev_bps = Some(up_executable_edge.edge_bps);
         evaluation.down_worst_case_ev_bps = Some(down_executable_edge.edge_bps);
         evaluation.up_executable_edge = Some(up_executable_edge);
@@ -4598,6 +4631,45 @@ impl BinaryOracleEdgeTaker {
                     maximum_position_notional: self.config.maximum_position_notional,
                     impact_cap_notional: book_impact_cap_notional,
                 }));
+            }
+            if let Some(sized_notional) = evaluation
+                .sized_notional
+                .filter(|value| is_positive_finite(*value))
+            {
+                let selected_adjusted_probability_up = match selected_side {
+                    OutcomeSide::Up => up_adjusted_probability_up,
+                    OutcomeSide::Down => down_adjusted_probability_up,
+                };
+                let sized_executable_edge = self.executable_edge_for_side(
+                    selected_side,
+                    fair_probability_up,
+                    selected_adjusted_probability_up,
+                    pricing_inputs.theta_scaled_min_edge_bps,
+                    sized_notional,
+                );
+                match selected_side {
+                    OutcomeSide::Up => {
+                        evaluation.up_worst_case_ev_bps = Some(sized_executable_edge.edge_bps);
+                        evaluation.up_executable_edge = Some(sized_executable_edge);
+                    }
+                    OutcomeSide::Down => {
+                        evaluation.down_worst_case_ev_bps = Some(sized_executable_edge.edge_bps);
+                        evaluation.down_executable_edge = Some(sized_executable_edge);
+                    }
+                }
+                if sized_executable_edge.trade_allowed {
+                    evaluation.expected_ev_per_notional =
+                        Some(sized_executable_edge.edge_bps / BPS_DENOMINATOR);
+                } else {
+                    push_executable_edge_pricing_block(
+                        &mut evaluation.pricing_blocked_by,
+                        selected_side,
+                        sized_executable_edge.block_reason,
+                    );
+                    evaluation.selected_side = None;
+                    evaluation.sized_notional = None;
+                    evaluation.expected_ev_per_notional = None;
+                }
             }
         }
         evaluation
@@ -5343,6 +5415,8 @@ const ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING: &str = "instrument_id_missing";
 const ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE: &str = "instrument_missing_from_cache";
 const ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING: &str = "entry_price_missing";
 const ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED: &str = "quantity_rounding_failed";
+const ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL: &str =
+    "limit_notional_exceeds_sized_notional";
 const ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE: &str = "quantity_not_positive";
 const ENTRY_BLOCK_REASON_POSITION_CONTRACT_INVALID: &str = "position_contract_invalid";
 const ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED: &str =

@@ -166,3 +166,24 @@ fn foundational_structs_use_typed_time_bounds_audit_and_provenance() {
     assert_eq!(selector.product_kind(), IvProductKind::IvPoint);
     assert!(provenance.has_typed_policy_decision());
 }
+
+#[test]
+fn numeric_bounds_reject_nan_even_when_finite_values_are_not_required() {
+    let bounds = IvNumericBounds {
+        finite_required: false,
+        positive_required: true,
+        inclusive_min: Some(0.0),
+        inclusive_max: Some(5.0),
+        exclusive_min: None,
+        exclusive_max: None,
+        unit: IvBoundUnit::Unitless,
+        allowed_conventions: IvConventionBounds {
+            allowed_conventions: BTreeSet::new(),
+        },
+    };
+
+    assert!(!bounds.accepts(
+        f64::NAN,
+        &IvConvention::Named(bolt_v3_iv_support::convention_name())
+    ));
+}

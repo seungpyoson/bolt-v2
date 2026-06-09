@@ -33,6 +33,9 @@ pub struct IvNumericBounds {
 
 impl IvNumericBounds {
     pub fn accepts(&self, value: f64, convention: &IvConvention) -> bool {
+        if value.is_nan() {
+            return false;
+        }
         if self.finite_required && !value.is_finite() {
             return false;
         }

@@ -1509,12 +1509,8 @@ impl BinaryOracleEdgeTaker {
             .cloned()
             .collect::<Vec<_>>();
         let selection = selector.select(interval_start_ms, interval_end_ms, now_ms, &quotes);
+        self.refresh_reference_price_source_statuses(interval_start_ms, interval_end_ms, now_ms);
         if selection.is_none() {
-            self.mark_reference_price_selection_block_statuses(
-                interval_start_ms,
-                interval_end_ms,
-                now_ms,
-            );
             return;
         };
         let selection = selection.expect("reference price selection was checked for absence above");
@@ -1532,7 +1528,7 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn mark_reference_price_selection_block_statuses(
+    fn refresh_reference_price_source_statuses(
         &mut self,
         interval_start_ms: u64,
         interval_end_ms: u64,

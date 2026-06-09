@@ -49,13 +49,14 @@ fn materialized_run_spec_binds_accepted_tranche_before_payload_fetch() {
 
     let run_spec: RunSpec = toml::from_str(&materialized).expect("parse materialized run spec");
     let binding = BackfillExecutionRunBinding::from_run_spec(&run_spec);
-    let plan = backtesting_vertical_slice::backfill_execution_plan::evaluate_backfill_execution_plan(
-        "synthetic-plan",
-        "synthetic-tranche-hash",
-        &accepted_tranche(),
-        artifact.content_hash.clone(),
-        &binding,
-    );
+    let plan =
+        backtesting_vertical_slice::backfill_execution_plan::evaluate_backfill_execution_plan(
+            "synthetic-plan",
+            "synthetic-tranche-hash",
+            &accepted_tranche(),
+            artifact.content_hash.clone(),
+            &binding,
+        );
 
     assert_eq!(plan.status, BackfillExecutionPlanStatus::Ready);
     assert!(plan.blocking_issues.is_empty());

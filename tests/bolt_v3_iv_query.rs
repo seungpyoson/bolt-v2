@@ -1797,6 +1797,99 @@ fn derived_iv_query_resolves_profile_owned_input_policy_before_helper_call() {
 }
 
 #[test]
+fn derived_iv_query_rejects_stale_profile_owned_input_candidate() {
+    let mut request_inputs = complete_inputs();
+    request_inputs.underlying_price = None;
+    request_inputs.rate = None;
+    request_inputs.carry = None;
+
+    let mut profile_source_inputs = complete_inputs();
+    profile_source_inputs.source_id = "configured-underlying-source".to_string();
+    profile_source_inputs.source_kind = IvSourceKind::CustomImpliedVolatility;
+    profile_source_inputs.selector_fingerprint = "configured-underlying-selector".to_string();
+    profile_source_inputs.source_health_state = IvSourceHealthState::Stale;
+    profile_source_inputs.input_event_ids = vec!["configured-underlying-event".to_string()];
+    profile_source_inputs.underlying_price = Some(IvTimedInput {
+        value: 100.0,
+        ts_ns: UnixNanos::new(1_996),
+        source_kind: IvDerivedInputSourceKind::ProfileSourceRef,
+        expires_at_ns: None,
+    });
+
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_helper_policies(vec![helper_policy()])
+    .with_derived_input_policies(vec![profile_resolving_derived_input_policy()])
+    .with_derived_inputs(vec![request_inputs, profile_source_inputs]);
+
+    assert_eq!(
+        handle.query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::DerivedIv,
+            selector: IvSelector::DerivedIvQuery {
+                instrument_id: "configured-option-instrument".to_string(),
+                helper_policy_id: "configured-helper-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+                inputs: None,
+            },
+        })),
+        Err(IvQueryError::DerivationRejected)
+    );
+}
+
+#[test]
+fn derived_iv_query_rejects_old_generation_profile_owned_input_candidate() {
+    let mut request_inputs = complete_inputs();
+    request_inputs.underlying_price = None;
+    request_inputs.rate = None;
+    request_inputs.carry = None;
+
+    let mut profile_source_inputs = complete_inputs();
+    profile_source_inputs.source_id = "configured-underlying-source".to_string();
+    profile_source_inputs.source_kind = IvSourceKind::CustomImpliedVolatility;
+    profile_source_inputs.selector_fingerprint = "configured-underlying-selector".to_string();
+    profile_source_inputs.input_event_ids = vec!["configured-underlying-event".to_string()];
+    profile_source_inputs.underlying_price = Some(IvTimedInput {
+        value: 100.0,
+        ts_ns: UnixNanos::new(1_996),
+        source_kind: IvDerivedInputSourceKind::ProfileSourceRef,
+        expires_at_ns: None,
+    });
+
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        profile_wide_authorization(),
+        IvStore::empty(),
+    )
+    .with_current_subscription_generations(BTreeMap::from([
+        ("configured-source".to_string(), 1),
+        ("configured-underlying-source".to_string(), 2),
+    ]))
+    .with_helper_policies(vec![helper_policy()])
+    .with_derived_input_policies(vec![profile_resolving_derived_input_policy()])
+    .with_derived_inputs(vec![request_inputs, profile_source_inputs]);
+
+    assert_eq!(
+        handle.query(&IvQuery::Product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::DerivedIv,
+            selector: IvSelector::DerivedIvQuery {
+                instrument_id: "configured-option-instrument".to_string(),
+                helper_policy_id: "configured-helper-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+                inputs: None,
+            },
+        })),
+        Err(IvQueryError::DerivationRejected)
+    );
+}
+
+#[test]
 fn derived_iv_helper_output_rejection_updates_source_health() {
     let mut helper = helper_policy();
     helper.output_bounds.inclusive_max = Some(0.10);

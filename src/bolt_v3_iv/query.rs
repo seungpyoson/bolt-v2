@@ -1050,15 +1050,27 @@ impl IvQueryHandle {
             self.record_derived_rejection(&inputs, IvRejectReason::HelperNotConfigured);
             return Err(IvQueryError::DerivationRejected);
         };
-        let inputs =
-            match resolve_derived_input_policy(input_policy, inputs.clone(), &state.derived_inputs)
-            {
-                Ok(inputs) => inputs,
-                Err(error) => {
-                    self.record_derived_rejection(&inputs, derive_reject_reason(&error));
-                    return Err(IvQueryError::DerivationRejected);
-                }
-            };
+        if !derived_input_satisfies_current_state(&inputs, state) {
+            self.record_derived_rejection(&inputs, IvRejectReason::StaleData);
+            return Err(IvQueryError::DerivationRejected);
+        }
+        let current_derived_inputs = state
+            .derived_inputs
+            .iter()
+            .filter(|candidate| derived_input_satisfies_current_state(candidate, state))
+            .cloned()
+            .collect::<Vec<_>>();
+        let inputs = match resolve_derived_input_policy(
+            input_policy,
+            inputs.clone(),
+            &current_derived_inputs,
+        ) {
+            Ok(inputs) => inputs,
+            Err(error) => {
+                self.record_derived_rejection(&inputs, derive_reject_reason(&error));
+                return Err(IvQueryError::DerivationRejected);
+            }
+        };
         match derive_iv(policy, inputs.clone()) {
             Ok(output) => Ok(output),
             Err(error) => {
@@ -1403,6 +1415,29 @@ fn product_satisfies_current_state(product: &IvQueryProduct, state: &IvQueryStat
     {
         return current_health.can_satisfy_current_query()
             && current_health.subscription_generation == provenance.subscription_generation;
+    }
+    true
+}
+
+fn derived_input_satisfies_current_state(inputs: &IvDerivedInputSet, state: &IvQueryState) -> bool {
+    if !inputs.source_health_state.can_satisfy_current_query() {
+        return false;
+    }
+    if !state.current_subscription_generations.is_empty() {
+        let Some(current_generation) = state
+            .current_subscription_generations
+            .get(&inputs.source_id)
+        else {
+            return false;
+        };
+        if *current_generation != inputs.subscription_generation {
+            return false;
+        }
+    }
+    if let Some(current_health) = select_source_health(state, &inputs.profile_id, &inputs.source_id)
+    {
+        return current_health.can_satisfy_current_query()
+            && current_health.subscription_generation == inputs.subscription_generation;
     }
     true
 }

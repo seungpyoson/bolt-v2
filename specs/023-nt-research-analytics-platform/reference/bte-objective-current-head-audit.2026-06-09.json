@@ -1,6 +1,7 @@
 {
   "schema": "bolt-v2.bte.objective-current-head-audit.v1",
   "created_at_utc": "2026-06-09T02:32:25Z",
+  "updated_at_utc": "2026-06-09T03:22:58Z",
   "objective_prompt": {
     "declared_path": "/Users/spson/Downloads/prompts/backtesting.md",
     "declared_path_status": "missing_on_disk",
@@ -9,22 +10,22 @@
   },
   "current_state": {
     "branch": "codex/bte-clean-converter-nt-use-main-reconcile",
-    "audited_subject_head_sha": "0ece3cffa39ccc3f4520f291e33827e9e7b6dc16",
-    "audited_subject_commit": "Format backfill run spec materialization",
+    "audited_subject_head_sha": "e78c00d6f25dac3d9f05e0424119ca9ce9aacadd",
+    "audited_subject_commit": "Materialize Binance backfill gate run spec",
     "audit_record_note": "This JSON is committed after the audited subject head; use the containing Git commit or PR head for the record carrier identity, not as the audited subject itself.",
     "local_worktree": "clean_at_audit_time",
     "github_pr": "https://github.com/seungpyoson/bolt-v2/pull/610",
     "audited_subject_ci": {
       "actionlint": {
-        "run_id": 27179666409,
+        "run_id": 27181340505,
         "conclusion": "success"
       },
       "Backtester CI": {
-        "run_id": 27179666387,
+        "run_id": 27181340511,
         "conclusion": "success"
       },
       "CI": {
-        "run_id": 27179666398,
+        "run_id": 27181340518,
         "conclusion": "success"
       }
     }
@@ -64,7 +65,7 @@
         "repo://specs/023-nt-research-analytics-platform/reference/backfill-run-spec-materialization-current-head.2026-06-09.json",
         "repo://crates/backtesting-vertical-slice/src/backfill_run_spec_materialization.rs",
         "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_run_spec_materialization.rs",
-        "Backtester CI run 27179666387 passed on 0ece3cffa39ccc3f4520f291e33827e9e7b6dc16"
+        "Backtester CI run 27181340511 passed on e78c00d6f25dac3d9f05e0424119ca9ce9aacadd"
       ]
     },
     {
@@ -79,7 +80,7 @@
   "prompt_requirement_audit": [
     {
       "requirement": "Confirm repo state, branch, status, and relevant PRs.",
-      "current_evidence": "Local branch codex/bte-clean-converter-nt-use-main-reconcile was clean at audited subject head 0ece3cffa39ccc3f4520f291e33827e9e7b6dc16. PR #610 is the active BTE branch PR and its body has been updated with current-head evidence. Audited subject actionlint run 27179666409, Backtester CI run 27179666387, and CI run 27179666398 are green.",
+      "current_evidence": "Local branch codex/bte-clean-converter-nt-use-main-reconcile was clean at audited subject head e78c00d6f25dac3d9f05e0424119ca9ce9aacadd. PR #610 is the active BTE branch PR and its body is updated with current-head evidence. Audited subject actionlint run 27181340505, Backtester CI run 27181340511, and CI run 27181340518 are green.",
       "status": "proven_current_head"
     },
     {
@@ -94,7 +95,7 @@
     },
     {
       "requirement": "Investigate existing Bolt BTE implementation and unsafe converter/idempotency behavior.",
-      "current_evidence": "Existing tests cover dirty output rejection, mismatched conversion fingerprints, checkpoint resume/refusal, clean manifest/checkpoint/catalog metadata writes, NT catalog readback, BacktestNode consumption, result-contract provenance, and accepted-tranche-to-run-spec materialization. The newest idempotence gap was fixed at ef716813 and preserved in current head 0ece3cffa39ccc3f4520f291e33827e9e7b6dc16.",
+      "current_evidence": "Existing tests cover dirty output rejection, mismatched conversion fingerprints, checkpoint resume/refusal, clean manifest/checkpoint/catalog metadata writes, NT catalog readback, BacktestNode consumption, result-contract provenance, and accepted-tranche-to-run-spec materialization. The newest idempotence gap was fixed at ef716813 and preserved in current head e78c00d6f25dac3d9f05e0424119ca9ce9aacadd.",
       "status": "proven_for_current_slice"
     },
     {
@@ -126,12 +127,12 @@
     },
     {
       "prompt_test": "Same manifest/checkpoint rerun is idempotent.",
-      "evidence": "backtesting_vertical_slice_conversion_boundary::same_manifest_and_checkpoint_rerun_is_idempotent and operator::run_from_run_spec_reuses_completed_output_without_rebuilding_catalog, extended at ef716813 and verified on current head 0ece3cffa39ccc3f4520f291e33827e9e7b6dc16 to assert result-contract bytes are unchanged",
+      "evidence": "backtesting_vertical_slice_conversion_boundary::same_manifest_and_checkpoint_rerun_is_idempotent and operator::run_from_run_spec_reuses_completed_output_without_rebuilding_catalog, extended at ef716813 and verified on current head e78c00d6f25dac3d9f05e0424119ca9ce9aacadd to assert result-contract bytes are unchanged",
       "status": "covered_current_head"
     },
     {
       "prompt_test": "Accepted backfill tranche binds into a current operator run-spec before payload fetch.",
-      "evidence": "backtesting_vertical_slice_backfill_run_spec_materialization::materialized_run_spec_binds_accepted_tranche_before_payload_fetch plus Backtester CI run 27179666387",
+      "evidence": "backtesting_vertical_slice_backfill_run_spec_materialization::materialized_run_spec_binds_accepted_tranche_before_payload_fetch and backtesting_vertical_slice_backfill_gate_reference_artifacts::binance_backfill_gate_commits_materialized_run_spec_before_execution_plan plus Backtester CI run 27181340511",
       "status": "covered_current_head"
     },
     {

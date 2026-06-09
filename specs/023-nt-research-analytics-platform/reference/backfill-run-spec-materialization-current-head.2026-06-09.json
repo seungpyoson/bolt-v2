@@ -2,13 +2,14 @@
   "schema_version": "backfill-run-spec-materialization-current-head.v1",
   "evidence_id": "backfill-run-spec-materialization-current-head-2026-06-09",
   "created_at_utc": "2026-06-09T02:32:25Z",
+  "updated_at_utc": "2026-06-09T03:22:58Z",
   "branch": "codex/bte-clean-converter-nt-use-main-reconcile",
-  "head_sha": "0ece3cffa39ccc3f4520f291e33827e9e7b6dc16",
-  "head_commit": "Format backfill run spec materialization",
+  "head_sha": "e78c00d6f25dac3d9f05e0424119ca9ce9aacadd",
+  "head_commit": "Materialize Binance backfill gate run spec",
   "purpose": "Record the current-head deliverable that turns an accepted backfill tranche into a validated operator run-spec before payload fetch or conversion.",
   "claim": {
     "status": "bounded_go",
-    "statement": "A single accepted tranche can be materialized into a source-agnostic operator run-spec from a TOML template, parsed as the existing RunSpec, and evaluated by the existing backfill execution-plan gate before payload work starts.",
+    "statement": "A single accepted tranche can be materialized into a source-agnostic operator run-spec from a TOML template, parsed as the existing RunSpec, and evaluated by the existing backfill execution-plan gate before payload work starts. The committed Binance BNBUSDC accepted reference gate now uses the materialized run spec as its execution-plan input.",
     "scope": [
       "accepted object count must be exactly one",
       "accepted tranche status must be accepted",
@@ -20,17 +21,17 @@
   },
   "ci": {
     "verification_policy": "GitHub Actions only; no local cargo test was run for this evidence update.",
-    "head_sha": "0ece3cffa39ccc3f4520f291e33827e9e7b6dc16",
+    "head_sha": "e78c00d6f25dac3d9f05e0424119ca9ce9aacadd",
     "checks": [
       {
         "name": "actionlint",
-        "run_id": 27179666409,
+        "run_id": 27181340505,
         "status": "completed",
         "conclusion": "success"
       },
       {
         "name": "Backtester CI",
-        "run_id": 27179666387,
+        "run_id": 27181340511,
         "status": "completed",
         "conclusion": "success",
         "jobs": [
@@ -43,7 +44,7 @@
       },
       {
         "name": "CI",
-        "run_id": 27179666398,
+        "run_id": 27181340518,
         "status": "completed",
         "conclusion": "success"
       }
@@ -80,6 +81,34 @@
       "run_id": 27179666387,
       "conclusion": "success"
     }
+  },
+  "reference_gate_application": {
+    "status": "proven_on_current_head",
+    "red_commit": {
+      "sha": "fe513ccd1495cdb38081ac14204e3259eead9381",
+      "summary": "Format RED materialized backfill gate test"
+    },
+    "red_ci": {
+      "workflow": "Backtester CI",
+      "run_id": 27180827309,
+      "expected_failure": "bvs-test failed because the Binance reference gate did not commit a run-spec materialization spec before the execution plan"
+    },
+    "green_commit": {
+      "sha": "e78c00d6f25dac3d9f05e0424119ca9ce9aacadd",
+      "summary": "Materialize Binance backfill gate run spec"
+    },
+    "green_ci": {
+      "actionlint_run_id": 27181340505,
+      "ci_run_id": 27181340518,
+      "backtester_ci_run_id": 27181340511,
+      "conclusion": "success"
+    },
+    "committed_reference_gate_paths": [
+      "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/backfill-run-spec-materialization.toml",
+      "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/materialized-run-spec/backfill-run-spec.toml",
+      "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/backfill-execution-plan.toml"
+    ],
+    "semantic_stability": "The materialized reference gate preserves the existing accepted operator run_id and output_prefix; only the execution-plan run_spec_hash changes to the committed materialized run spec hash."
   },
   "implementation": {
     "production_paths": [

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use backtesting_vertical_slice::{
     artifact_index::ArtifactKind,
     artifact_index_commit_proof::{
@@ -558,6 +560,10 @@ fn source_catalog_mapping_readiness_report(
         observed_source_binding: Some(tranche.source_binding.clone()),
         observed_table_family: Some(tranche.table_family.clone()),
         observed_nt_data_types: vec!["TradeTick".to_string()],
+        observed_nt_data_type_evidence_refs: BTreeMap::from([(
+            "TradeTick".to_string(),
+            vec!["repo://synthetic/trade-tick-catalog-proof.json".to_string()],
+        )]),
         observed_current_bte_status: Some("accepted".to_string()),
         observed_parquet_catalog_status: Some("proven".to_string()),
         nt_catalog_mapping_proven: true,

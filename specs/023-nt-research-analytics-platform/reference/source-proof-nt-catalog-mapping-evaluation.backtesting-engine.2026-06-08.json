@@ -66,6 +66,13 @@
       "candidate_nt_data_classes": [
         "TradeTick"
       ],
+      "nt_data_class_evidence_refs": {
+        "TradeTick": [
+          "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.binance-bnbusdc-2026-03-01.json",
+          "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-catalog-metadata.bnbusdc-2026-03-01.json",
+          "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-result-contract.bnbusdc-2026-03-01.json"
+        ]
+      },
       "current_bte_status": "accepted",
       "parquet_catalog_status": "proven",
       "evidence_refs": [
@@ -86,6 +93,18 @@
         "OrderBookDelta",
         "TradeTick"
       ],
+      "nt_data_class_evidence_refs": {
+        "OrderBookDelta": [
+          "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json",
+          "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-row-to-nt-contract.2026-06-08.json",
+          "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook-instrument-join.2026-06-08.json"
+        ],
+        "TradeTick": [
+          "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json",
+          "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-trade-id-policy-status.2026-06-08.json",
+          "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-row-to-nt-contract.2026-06-08.json"
+        ]
+      },
       "current_bte_status": "one_off_current_artifact_proven_broad_backfill_blocked",
       "parquet_catalog_status": "one_off_current_artifact_proven_broad_backfill_blocked",
       "dependency_wiring_status": {

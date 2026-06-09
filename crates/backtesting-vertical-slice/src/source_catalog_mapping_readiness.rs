@@ -6,6 +6,7 @@
 //! path status for that exact source binding.
 
 use std::{
+    collections::BTreeMap,
     error::Error,
     fmt, fs,
     path::{Path, PathBuf},
@@ -55,6 +56,7 @@ pub enum SourceCatalogMappingReadinessBlocker {
     DuplicateMappingEntries,
     TableFamilyMismatch,
     RequiredNtDataTypeMissing,
+    RequiredNtDataTypeEvidenceMissing,
     SourceProofMismatch,
     CurrentBteStatusNotAllowed,
     ParquetCatalogStatusNotAllowed,
@@ -79,6 +81,7 @@ pub struct SourceCatalogMappingReadinessReport {
     pub observed_source_binding: Option<String>,
     pub observed_table_family: Option<String>,
     pub observed_nt_data_types: Vec<String>,
+    pub observed_nt_data_type_evidence_refs: BTreeMap<String, Vec<String>>,
     pub observed_current_bte_status: Option<String>,
     pub observed_parquet_catalog_status: Option<String>,
     pub nt_catalog_mapping_proven: bool,
@@ -94,6 +97,8 @@ pub struct SourceCatalogMappingStatusEntry {
     pub source_binding: String,
     pub table_family: String,
     pub candidate_nt_data_classes: Vec<String>,
+    #[serde(default)]
+    pub nt_data_class_evidence_refs: BTreeMap<String, Vec<String>>,
     pub current_bte_status: String,
     pub parquet_catalog_status: String,
 }
@@ -281,6 +286,23 @@ pub fn evaluate_source_catalog_mapping_readiness(
         }) {
             blockers.push(SourceCatalogMappingReadinessBlocker::RequiredNtDataTypeMissing);
         }
+        if required_nt_data_type_values.iter().any(|required| {
+            match entry
+                .nt_data_class_evidence_refs
+                .iter()
+                .find(|(data_type, _)| data_type.trim() == *required)
+            {
+                Some((_, refs)) => {
+                    refs.is_empty()
+                        || refs
+                            .iter()
+                            .any(|evidence_ref| evidence_ref.trim().is_empty())
+                }
+                None => true,
+            }
+        }) {
+            blockers.push(SourceCatalogMappingReadinessBlocker::RequiredNtDataTypeEvidenceMissing);
+        }
         if entry.source_proof_id.as_deref().map(str::trim) != Some(source_proof_id_trimmed)
             || entry.source_proof_version != Some(source_proof_version)
         {
@@ -325,6 +347,9 @@ pub fn evaluate_source_catalog_mapping_readiness(
         observed_table_family: observed_entry.map(|entry| entry.table_family.clone()),
         observed_nt_data_types: observed_entry
             .map(|entry| entry.candidate_nt_data_classes.clone())
+            .unwrap_or_default(),
+        observed_nt_data_type_evidence_refs: observed_entry
+            .map(|entry| entry.nt_data_class_evidence_refs.clone())
             .unwrap_or_default(),
         observed_current_bte_status: observed_entry.map(|entry| entry.current_bte_status.clone()),
         observed_parquet_catalog_status: observed_entry

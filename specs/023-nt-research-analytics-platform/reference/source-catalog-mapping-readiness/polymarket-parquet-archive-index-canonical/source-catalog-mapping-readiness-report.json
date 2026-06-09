@@ -2,7 +2,7 @@
   "schema_version": "source-catalog-mapping-readiness-report.v1",
   "readiness_id": "polymarket-parquet-archive-index-canonical-source-catalog-mapping-readiness",
   "status": "blocked",
-  "catalog_mapping_evaluation_hash": "18e86a04b5cad26d705083be38f0303523077859a17612f25e3766ad0f67419e",
+  "catalog_mapping_evaluation_hash": "af68803e6c87c124b75a8442bd9493b7fe60de42cac73304bf1d44dee92d1d56",
   "source_proof_id": "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
   "source_proof_version": 1,
   "source_binding": "polymarket-parquet-archive-index",
@@ -25,6 +25,18 @@
     "OrderBookDelta",
     "TradeTick"
   ],
+  "observed_nt_data_type_evidence_refs": {
+    "OrderBookDelta": [
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json",
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-row-to-nt-contract.2026-06-08.json",
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook-instrument-join.2026-06-08.json"
+    ],
+    "TradeTick": [
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json",
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-trade-id-policy-status.2026-06-08.json",
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-row-to-nt-contract.2026-06-08.json"
+    ]
+  },
   "observed_current_bte_status": "one_off_current_artifact_proven_broad_backfill_blocked",
   "observed_parquet_catalog_status": "one_off_current_artifact_proven_broad_backfill_blocked",
   "nt_catalog_mapping_proven": false,

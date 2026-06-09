@@ -3178,6 +3178,30 @@ mod tests {
     }
 
     #[test]
+    fn typed_supported_nt_catalog_query_surfaces_map_to_backtest_data_config() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].start_time = Some(1_772_323_200_000_000_000);
+        manifest.catalog_inputs[0].end_time = Some(1_772_409_600_000_000_000);
+        manifest.catalog_inputs[0].filter_expr = Some("price > 0".to_string());
+        manifest.catalog_inputs[0].optimize_file_loading = Some(true);
+
+        let data = manifest
+            .to_nt_data_config()
+            .expect("supported catalog query fields map to NT data config");
+
+        assert_eq!(
+            data.start_time(),
+            Some(UnixNanos::from(1_772_323_200_000_000_000))
+        );
+        assert_eq!(
+            data.end_time(),
+            Some(UnixNanos::from(1_772_409_600_000_000_000))
+        );
+        assert_eq!(data.filter_expr(), Some("price > 0"));
+        assert!(data.optimize_file_loading());
+    }
+
+    #[test]
     fn rejects_inline_strategy_code() {
         let mut manifest = valid_manifest();
         manifest.strategy.registry_key = "fn on_trade(&mut self) { submit(); }".to_string();

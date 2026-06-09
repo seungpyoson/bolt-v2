@@ -83,6 +83,16 @@ struct IvRuntimeSourceConfig {
     selector: IvSelector,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct IvRuntimeRejectionRecord<'a> {
+    profile_id: &'a str,
+    source_id: &'a str,
+    subscription_generation: u64,
+    ts_event_ns: UnixNanos,
+    reason: IvRejectReason,
+    mark_rejected: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IvRuntimeEngineError {
     DuplicateProfileId {
@@ -705,12 +715,14 @@ impl IvRuntimeEngine {
         if let Some(state) = self.state_for_profile(&event.profile_id) {
             self.record_source_rejection_with_retention(
                 &state,
-                &event.profile_id,
-                &event.source_id,
-                health_generation,
-                event.ts_event_ns,
-                reason,
-                mark_rejected,
+                IvRuntimeRejectionRecord {
+                    profile_id: &event.profile_id,
+                    source_id: &event.source_id,
+                    subscription_generation: health_generation,
+                    ts_event_ns: event.ts_event_ns,
+                    reason,
+                    mark_rejected,
+                },
             );
         }
         IvRuntimeEngineError::IngestRejected {
@@ -732,12 +744,14 @@ impl IvRuntimeEngine {
         if let Some(state) = self.state_for_profile(profile_id) {
             self.record_source_rejection_with_retention(
                 &state,
-                profile_id,
-                source_id,
-                source.subscription_generation,
-                ts_event_ns,
-                reason,
-                mark_rejected,
+                IvRuntimeRejectionRecord {
+                    profile_id,
+                    source_id,
+                    subscription_generation: source.subscription_generation,
+                    ts_event_ns,
+                    reason,
+                    mark_rejected,
+                },
             );
         }
         IvRuntimeEngineError::IngestRejected {
@@ -759,12 +773,14 @@ impl IvRuntimeEngine {
         if let Some(state) = self.state_for_profile(profile_id) {
             self.record_source_rejection_with_retention(
                 &state,
-                profile_id,
-                source_id,
-                subscription_generation,
-                ts_event_ns,
-                reason,
-                mark_rejected,
+                IvRuntimeRejectionRecord {
+                    profile_id,
+                    source_id,
+                    subscription_generation,
+                    ts_event_ns,
+                    reason,
+                    mark_rejected,
+                },
             );
         }
         IvRuntimeEngineError::IngestRejected {
@@ -777,22 +793,17 @@ impl IvRuntimeEngine {
     fn record_source_rejection_with_retention(
         &self,
         state: &IvQueryStateHandle,
-        profile_id: &str,
-        source_id: &str,
-        subscription_generation: u64,
-        ts_event_ns: UnixNanos,
-        reason: IvRejectReason,
-        mark_rejected: bool,
+        rejection: IvRuntimeRejectionRecord<'_>,
     ) {
         state.record_source_rejection(
-            profile_id.to_string(),
-            source_id.to_string(),
-            subscription_generation,
-            ts_event_ns,
-            reason,
-            mark_rejected,
+            rejection.profile_id.to_string(),
+            rejection.source_id.to_string(),
+            rejection.subscription_generation,
+            rejection.ts_event_ns,
+            rejection.reason,
+            rejection.mark_rejected,
         );
-        if let Some(policy) = self.retention_policy(profile_id) {
+        if let Some(policy) = self.retention_policy(rejection.profile_id) {
             state.enforce_retention(&policy);
         }
     }

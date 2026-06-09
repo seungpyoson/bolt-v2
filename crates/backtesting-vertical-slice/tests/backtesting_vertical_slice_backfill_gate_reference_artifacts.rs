@@ -24,6 +24,7 @@ use backtesting_vertical_slice::{
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::path::Path;
 
 const SOURCE_PROOF: &str = include_str!(
     "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.binance-bnbusdc-2026-03-01.json"
@@ -87,6 +88,10 @@ const ARTIFACT_INDEX_IAM_SCOPE_PROOF_REPORT_BYTES: &[u8] = include_bytes!(
 );
 const ARTIFACT_INDEX_REQUIRED_EXECUTION_READINESS_REPORT: &str = include_str!(
     "../../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-readiness-artifact-index-required/backfill-execution-readiness-report.json"
+);
+const BINANCE_GATE_ROOT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01"
 );
 
 #[test]
@@ -264,6 +269,24 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
     assert_eq!(
         artifact_index_required_readiness.blockers,
         vec![BackfillExecutionReadinessBlocker::ArtifactIndexProducerIamScopeUnproven]
+    );
+}
+
+#[test]
+fn binance_backfill_gate_commits_materialized_run_spec_before_execution_plan() {
+    let materialization_spec_path = Path::new(BINANCE_GATE_ROOT)
+        .join("backfill-run-spec-materialization.toml");
+    let materialized_run_spec_path = Path::new(BINANCE_GATE_ROOT)
+        .join("materialized-run-spec")
+        .join("backfill-run-spec.toml");
+
+    assert!(
+        materialization_spec_path.exists(),
+        "Binance reference gate must commit the run-spec materialization spec"
+    );
+    assert!(
+        materialized_run_spec_path.exists(),
+        "Binance reference gate must commit the materialized run spec used by the execution plan"
     );
 }
 

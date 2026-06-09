@@ -2037,6 +2037,67 @@ mod tests {
     }
 
     #[test]
+    fn canceled_only_pending_subscription_allows_next_subscribe_without_late_ack() {
+        let (mut client, _data_receiver) = fixture_client();
+        let (outbound_sender, mut outbound_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
+        client.outbound = Some(PolyResearchReferenceOutboundHandle::from_sender(
+            outbound_sender,
+        ));
+
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                "BTC",
+                "polyresearch_primary",
+                "BTC/USD",
+            ))
+            .expect("BTC PRR reference subscription should be accepted");
+        let PolyResearchReferenceOutboundCommand::SendText(btc_subscribe_frame) = outbound_receiver
+            .try_recv()
+            .expect("first PRR subscription should send provider subscribe")
+        else {
+            panic!("first PRR subscription should send text");
+        };
+        assert_eq!(
+            btc_subscribe_frame,
+            r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["BTC/USD"]}}"#
+        );
+
+        client
+            .unsubscribe(&reference_price_unsubscribe_cmd(
+                "BTC",
+                "polyresearch_primary",
+                "BTC/USD",
+            ))
+            .expect("pre-ack PRR reference unsubscription should be accepted");
+        let PolyResearchReferenceOutboundCommand::SendText(unsubscribe_frame) = outbound_receiver
+            .try_recv()
+            .expect("canceling the only pending PRR subscription should send provider unsubscribe")
+        else {
+            panic!("PRR unsubscription should send text");
+        };
+        assert_eq!(unsubscribe_frame, r#"{"action":"unsubscribe"}"#);
+
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                "ETH",
+                "polyresearch_secondary",
+                "ETH/USD",
+            ))
+            .expect("ETH PRR reference subscription should be accepted");
+        let PolyResearchReferenceOutboundCommand::SendText(eth_subscribe_frame) = outbound_receiver
+            .try_recv()
+            .expect("new PRR subscription should send without waiting for a canceled ack")
+        else {
+            panic!("new PRR subscription should send text");
+        };
+        assert_eq!(
+            eth_subscribe_frame,
+            r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["ETH/USD"]}}"#
+        );
+    }
+
+    #[test]
     fn price_feed_frame_maps_to_reference_price_update() {
         const ASSET: &str = "BTC";
         const SOURCE_ID: &str = "polyresearch_primary";

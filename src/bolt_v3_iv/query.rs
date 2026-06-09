@@ -836,16 +836,46 @@ impl IvQueryHandle {
         }
         let mut policy_decisions = Vec::new();
 
-        if let Some(interpolation_policy_ref) = &policy.interpolation_policy_ref
-            && let Some(interpolated) = interpolate_projected_inputs(
+        let mut interpolation_rejected = false;
+        if let Some(interpolation_policy_ref) = &policy.interpolation_policy_ref {
+            match interpolate_projected_inputs(
                 policy,
                 state,
                 interpolation_policy_ref,
                 &input_products,
-            )?
-        {
-            inputs = interpolated.inputs;
-            policy_decisions.extend(interpolated.policy_decisions);
+            )? {
+                ProjectedInputInterpolation::Interpolated(interpolated) => {
+                    inputs = interpolated.inputs;
+                    policy_decisions.extend(interpolated.policy_decisions);
+                }
+                ProjectedInputInterpolation::Rejected => {
+                    interpolation_rejected = true;
+                }
+                ProjectedInputInterpolation::NotApplicable => {}
+            }
+        }
+
+        if interpolation_rejected {
+            let output = fallback_only(policy, state, &inputs)?;
+            let mut provenance = input_products
+                .first()
+                .ok_or(IvQueryError::ProductNotFound)?
+                .provenance()
+                .cloned()
+                .ok_or(IvQueryError::UnsupportedProductKind)?;
+            provenance.policy_decisions.extend(policy_decisions);
+            provenance.policy_decisions.extend(output.policy_decisions);
+            provenance.ts_event_ns = as_of_ns;
+
+            return Ok(IvQueryProduct::ProjectedScalarIv(IvProjectedScalarIv {
+                profile_id: query.profile_id.clone(),
+                source_id: provenance.source_id.clone(),
+                selector_fingerprint: provenance.selector_fingerprint.clone(),
+                projection_policy_id: projection_policy_id.to_string(),
+                value: output.value,
+                as_of_ns,
+                provenance,
+            }));
         }
 
         if let Some(quorum_policy_ref) = &policy.quorum_policy_ref {
@@ -1520,28 +1550,39 @@ fn project_or_fallback(
 ) -> Result<IvPolicyOutput, IvQueryError> {
     match project_scalar(policy, inputs) {
         Ok(output) => Ok(output),
-        Err(_) => {
-            let Some(fallback_policy_ref) = &policy.fallback_policy_ref else {
-                return Err(IvQueryError::ProjectionRejected);
-            };
-            let fallback_policy = state
-                .fallback_policies
-                .iter()
-                .find(|fallback_policy| fallback_policy.policy_id == *fallback_policy_ref)
-                .ok_or(IvQueryError::ProjectionRejected)?;
-            let candidates = inputs
-                .iter()
-                .map(|input| IvFallbackCandidate {
-                    candidate_id: input.product_id.clone(),
-                    value: input.value,
-                    eligible: fallback_policy.eligible_sources.is_empty()
-                        || fallback_policy.eligible_sources.contains(&input.source_id),
-                })
-                .collect::<Vec<_>>();
-            resolve_fallback(fallback_policy, &candidates)
-                .map_err(|_| IvQueryError::ProjectionRejected)
-        }
+        Err(_) => fallback_only(policy, state, inputs),
     }
+}
+
+fn fallback_only(
+    policy: &IvProjectionPolicy,
+    state: &IvQueryState,
+    inputs: &[IvPolicyInput],
+) -> Result<IvPolicyOutput, IvQueryError> {
+    let Some(fallback_policy_ref) = &policy.fallback_policy_ref else {
+        return Err(IvQueryError::ProjectionRejected);
+    };
+    let fallback_policy = state
+        .fallback_policies
+        .iter()
+        .find(|fallback_policy| fallback_policy.policy_id == *fallback_policy_ref)
+        .ok_or(IvQueryError::ProjectionRejected)?;
+    let candidates = inputs
+        .iter()
+        .map(|input| IvFallbackCandidate {
+            candidate_id: input.product_id.clone(),
+            value: input.value,
+            eligible: fallback_policy.eligible_sources.is_empty()
+                || fallback_policy.eligible_sources.contains(&input.source_id),
+        })
+        .collect::<Vec<_>>();
+    resolve_fallback(fallback_policy, &candidates).map_err(|_| IvQueryError::ProjectionRejected)
+}
+
+enum ProjectedInputInterpolation {
+    NotApplicable,
+    Interpolated(InterpolatedProjectionInputs),
+    Rejected,
 }
 
 struct InterpolatedProjectionInputs {
@@ -1554,9 +1595,9 @@ fn interpolate_projected_inputs(
     state: &IvQueryState,
     interpolation_policy_id: &str,
     input_products: &[IvQueryProduct],
-) -> Result<Option<InterpolatedProjectionInputs>, IvQueryError> {
+) -> Result<ProjectedInputInterpolation, IvQueryError> {
     if projection_policy.strike_selection == IvStrikeSelection::AllConfiguredStrikes {
-        return Ok(None);
+        return Ok(ProjectedInputInterpolation::NotApplicable);
     }
 
     let policy = state
@@ -1567,9 +1608,11 @@ fn interpolate_projected_inputs(
 
     let mut inputs = Vec::new();
     let mut policy_decisions = Vec::new();
+    let mut saw_interpolatable_product = false;
     for product in input_products {
         match product {
             IvQueryProduct::Smile(smile) => {
+                saw_interpolatable_product = true;
                 interpolate_smile_input(
                     projection_policy,
                     policy,
@@ -1579,6 +1622,7 @@ fn interpolate_projected_inputs(
                 );
             }
             IvQueryProduct::Surface(surface) => {
+                saw_interpolatable_product = true;
                 for smile in &surface.smiles {
                     interpolate_smile_input(
                         projection_policy,
@@ -1589,17 +1633,23 @@ fn interpolate_projected_inputs(
                     );
                 }
             }
-            _ => return Ok(None),
+            _ => return Ok(ProjectedInputInterpolation::NotApplicable),
         }
     }
 
     if inputs.is_empty() {
-        Ok(None)
+        if saw_interpolatable_product {
+            Ok(ProjectedInputInterpolation::Rejected)
+        } else {
+            Ok(ProjectedInputInterpolation::NotApplicable)
+        }
     } else {
-        Ok(Some(InterpolatedProjectionInputs {
-            inputs,
-            policy_decisions,
-        }))
+        Ok(ProjectedInputInterpolation::Interpolated(
+            InterpolatedProjectionInputs {
+                inputs,
+                policy_decisions,
+            },
+        ))
     }
 }
 

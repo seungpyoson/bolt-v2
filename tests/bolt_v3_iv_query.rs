@@ -982,6 +982,45 @@ fn projected_scalar_query_applies_configured_interpolation_policy_for_smile_inpu
 }
 
 #[test]
+fn projected_scalar_query_rejects_when_single_strike_interpolation_has_no_eligible_source() {
+    let mut store = IvStore::empty();
+    store.ingest_event(option_chain_event(2_010)).unwrap();
+    let mut projection_policy =
+        projection_policy_with_refs(1, None, Some("configured-interpolation-policy"), None);
+    projection_policy.strike_selection = IvStrikeSelection::AtmStrike;
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy])
+        .with_interpolation_policies(vec![IvInterpolationPolicy {
+            policy_id: "configured-interpolation-policy".to_string(),
+            method: IvInterpolationMethod::Linear,
+            strike_axis: "configured-strike-axis".to_string(),
+            tenor_axis: "configured-tenor-axis".to_string(),
+            minimum_points: 2,
+            eligible_sources: vec!["configured-other-source".to_string()],
+            extrapolation: IvExtrapolationPolicy::Reject,
+        }]);
+
+    assert_eq!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(IvSelector::SmileQuery {
+                    series_id: "configured-series".to_string(),
+                    side: None,
+                    basis: IvBasis::Mark,
+                    as_of_ns: UnixNanos::new(2_010),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_010),
+            },
+        })),
+        Err(IvQueryError::ProjectionRejected)
+    );
+}
+
+#[test]
 fn projected_scalar_all_configured_strikes_uses_all_smile_points_when_interpolation_policy_exists()
 {
     let mut store = IvStore::empty();

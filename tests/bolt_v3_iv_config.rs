@@ -639,6 +639,28 @@ fn profile_ids_reject_surrounding_whitespace() {
 }
 
 #[test]
+fn profile_ids_reject_blank_values() {
+    for profile_id in ["", "   "] {
+        let invalid = valid_iv_toml().replacen(
+            "profile_id = \"configured-profile\"",
+            &format!("profile_id = \"{profile_id}\""),
+            1,
+        );
+
+        let error = load_iv_config_from_toml(&invalid).expect_err("blank profile_id must reject");
+
+        assert!(matches!(
+            error,
+            IvConfigError::Validation(errors)
+                if errors.iter().any(|message| {
+                    message.contains("iv.profiles.profile_id")
+                        && message.contains("must be non-empty")
+                })
+        ));
+    }
+}
+
+#[test]
 fn derived_input_policy_must_require_every_helper_input_field() {
     let invalid = valid_iv_toml().replacen(
         "required_fields = [\"option_price\", \"underlying_price\", \"strike\", \"option_side\", \"time_to_expiry_years\", \"rate\", \"carry\"]",

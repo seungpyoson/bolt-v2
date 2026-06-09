@@ -502,6 +502,32 @@ fn builder_accepts_integer_literals_for_f64_fields() {
 }
 
 #[test]
+fn builder_requires_executable_edge_cost_runtime_knobs() {
+    let mut raw = valid_raw_config();
+    let raw_table = raw.as_table_mut().expect("valid config must be a table");
+    raw_table.remove("vwap_depth_limit_bps");
+    raw_table.remove("slippage_buffer_bps");
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    assert!(
+        errors.iter().any(|error| {
+            error.field == "strategies[0].config.vwap_depth_limit_bps"
+                && error.code == "missing_vwap_depth_limit_bps"
+        }),
+        "missing vwap_depth_limit_bps must fail validation: {errors:#?}"
+    );
+    assert!(
+        errors.iter().any(|error| {
+            error.field == "strategies[0].config.slippage_buffer_bps"
+                && error.code == "missing_slippage_buffer_bps"
+        }),
+        "missing slippage_buffer_bps must fail validation: {errors:#?}"
+    );
+}
+
+#[test]
 fn builder_accepts_nested_order_shape_without_flat_order_projection() {
     let raw = valid_raw_config();
     let mut errors = Vec::new();

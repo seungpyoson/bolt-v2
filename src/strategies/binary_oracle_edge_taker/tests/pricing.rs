@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use crate::bolt_v3_executable_edge::ExecutableEdgeBlockReason;
 
 const TEST_PRICING_SNAPSHOT_REFERENCE_STEP_MS: u64 = 100;
 const TEST_PRICING_SNAPSHOT_REFERENCE_PRICE_STEP: f64 = 2.0;
@@ -635,6 +636,44 @@ fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
     );
     assert!(decision.sized_notional.is_some_and(|value| value > 0.0));
     assert_eq!(decision.selected_side, Some(OutcomeSide::Up));
+}
+
+#[test]
+fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap_limit() {
+    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    strategy.config.order_notional_target = 5.0;
+    strategy.config.vwap_depth_limit_bps = 0;
+    strategy.config.slippage_buffer_bps = 0;
+    strategy.config.edge_threshold_basis_points = 0;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+    set_configured_books_depth(
+        &mut strategy,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 2.0),
+            (BookAction::Add, OrderSide::Sell, 0.70, 100.0),
+        ],
+    );
+
+    let decision = strategy.entry_submission_decision_at(1_200);
+
+    assert_eq!(
+        decision.blocked_reason,
+        Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED)
+    );
+    assert_eq!(
+        decision
+            .evaluation
+            .up_executable_edge
+            .as_ref()
+            .and_then(|result| result.block_reason),
+        Some(ExecutableEdgeBlockReason::InsufficientDepth)
+    );
+    assert_eq!(decision.evaluation.selected_side, None);
 }
 
 #[test]

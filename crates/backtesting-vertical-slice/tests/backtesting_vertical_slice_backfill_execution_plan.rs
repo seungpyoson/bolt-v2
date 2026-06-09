@@ -8,6 +8,7 @@ use backtesting_vertical_slice::{
         BackfillExecutionRunBinding, BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
         write_backfill_execution_plan,
     },
+    source_proof::SourceProofUsageScope,
 };
 
 #[test]
@@ -35,6 +36,7 @@ fn execution_plan_is_ready_only_for_matching_accepted_tranche_and_run_spec_bindi
     assert_eq!(plan.source_proof_version, tranche.source_proof_version);
     assert_eq!(plan.source_binding, tranche.source_binding);
     assert_eq!(plan.table_family, tranche.table_family);
+    assert_eq!(plan.source_usage_scope, tranche.source_usage_scope);
     assert_eq!(plan.operator_run_id, binding.run_id);
     assert_eq!(plan.object_count, 1);
     assert_eq!(plan.accepted_bytes, 17);
@@ -89,6 +91,29 @@ fn execution_plan_blocks_required_object_selection_metadata_before_payload_fetch
     assert!(
         plan.blocking_issues
             .contains(&BackfillExecutionPlanIssue::ExecutionPlanObjectSelectionMetadataMissing)
+    );
+}
+
+#[test]
+fn execution_plan_blocks_run_spec_usage_scope_mismatch_before_payload_fetch() {
+    let tranche = accepted_tranche();
+    let mut binding = matching_run_binding();
+    binding.source_usage_scope = SourceProofUsageScope::OneOffBackfillData;
+
+    let plan = evaluate_backfill_execution_plan(
+        "synthetic-plan",
+        "synthetic-tranche-hash",
+        &tranche,
+        "synthetic-run-spec-hash",
+        &binding,
+        work_budget(),
+    );
+
+    assert_eq!(plan.status, BackfillExecutionPlanStatus::Blocked);
+    assert!(plan.objects.is_empty());
+    assert!(
+        plan.blocking_issues
+            .contains(&BackfillExecutionPlanIssue::RunSpecSourceUsageScopeMismatch)
     );
 }
 
@@ -207,6 +232,7 @@ fn accepted_tranche() -> BackfillAcceptedTrancheManifest {
         source_proof_version: 3,
         source_binding: "synthetic-native-trades".to_string(),
         table_family: "trades".to_string(),
+        source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
         parent_manifest_id: "synthetic-parent-manifest".to_string(),
         object_level_tranche_required: true,
         object_count: 1,
@@ -232,6 +258,7 @@ fn matching_run_binding() -> BackfillExecutionRunBinding {
         source_proof_version: 3,
         source_binding: "synthetic-native-trades".to_string(),
         table_family: "trades".to_string(),
+        source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
         raw_sample_uri: "s3://synthetic-artifacts/raw/object=synthetic-object-sha.csv.gz"
             .to_string(),
         raw_sample_hash: "synthetic-object-sha".to_string(),

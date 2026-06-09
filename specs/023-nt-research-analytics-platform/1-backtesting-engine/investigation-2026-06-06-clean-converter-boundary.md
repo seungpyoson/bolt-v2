@@ -3108,3 +3108,60 @@ Current conclusion:
   approved coordinator/table design is still required before producer IAM scope
   can be proven and before broad backfill can rely on Artifact Index producer
   commits.
+
+## 2026-06-09 source usage scope pre-payload binding checkpoint
+
+Scope:
+
+- Addressed only the generic pre-payload provenance path for
+  `source_usage_scope`.
+- No PMXT source proof was accepted, no PMXT payload was downloaded, and no
+  broad conversion/backtest was started.
+
+Root-cause check:
+
+- Source proof acceptance already rejects `one_off_backfill_data`, but the
+  downstream source-proof-scope report, accepted tranche, materialized run spec,
+  and execution plan did not all explicitly persist the usage scope.
+- Without that binding, a future run spec could rely on parser defaults or drift
+  from the accepted tranche before payload fetch.
+
+Change:
+
+- `BackfillSourceProofScopeReport`, `BackfillAcceptedTrancheManifest`,
+  `BackfillExecutionRunBinding`, and `BackfillExecutionPlan` now carry
+  `source_usage_scope`.
+- `BackfillExecutionPlanIssue` now includes
+  `RunSpecSourceUsageScopeMismatch`, so execution planning blocks when the
+  accepted tranche scope and materialized run-spec scope differ.
+- Backfill run-spec materialization now writes the accepted tranche scope into
+  `source_proof.usage_scope` in the materialized TOML.
+- Canonical JSON artifacts keep their existing wire shape through
+  default/skip serialization; the explicit non-canonical path remains visible
+  and blocked.
+
+Verification so far:
+
+- RED source-scope chain:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_source_proof_scope --test backtesting_vertical_slice_backfill_accepted_tranche --test backtesting_vertical_slice_backfill_execution_plan -- --nocapture`
+  failed because the usage-scope fields and
+  `RunSpecSourceUsageScopeMismatch` did not exist.
+- GREEN source-scope chain:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_source_proof_scope --test backtesting_vertical_slice_backfill_accepted_tranche --test backtesting_vertical_slice_backfill_execution_plan -- --nocapture`
+  passed 17 tests after usage-scope propagation and mismatch blocking.
+- RED materializer:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_run_spec_materialization -- --nocapture`
+  failed because the materialized TOML omitted `source_proof.usage_scope`.
+- GREEN materializer:
+  `python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_run_spec_materialization -- --nocapture`
+  passed 2 tests after materialization copied the accepted tranche scope.
+
+Current conclusion:
+
+- This narrows a BTE-022 overclaim path: source usage scope can now be carried
+  through the pre-payload artifact chain and run-spec drift is rejected before
+  payload fetch.
+- It does not close `BACKTESTING_ENGINE-022`. Broad PMXT still lacks accepted
+  durable canonical source proof, accepted manifest/index coverage and cost,
+  actual row-group or predicate metadata, and dynamic tick-size replay or a
+  bounded-exclusion proof.

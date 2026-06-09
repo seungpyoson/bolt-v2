@@ -19,6 +19,7 @@ use crate::{
         BackfillAcceptedTrancheStatus,
     },
     operator::RunSpec,
+    source_proof::SourceProofUsageScope,
 };
 
 pub const BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION: &str = "backfill-execution-plan.v1";
@@ -62,6 +63,7 @@ pub enum BackfillExecutionPlanIssue {
     AcceptedTrancheObjectCountNotOne,
     AcceptedTrancheBytesMismatch,
     RunSpecSourceProofMismatch,
+    RunSpecSourceUsageScopeMismatch,
     RunSpecSourceBindingMismatch,
     RunSpecTableFamilyMismatch,
     RunSpecRawSampleUriMismatch,
@@ -87,6 +89,7 @@ pub struct BackfillExecutionRunBinding {
     pub source_proof_version: u32,
     pub source_binding: String,
     pub table_family: String,
+    pub source_usage_scope: SourceProofUsageScope,
     pub raw_sample_uri: String,
     pub raw_sample_hash: String,
     pub accepted_object_s3_uri: String,
@@ -108,6 +111,7 @@ impl BackfillExecutionRunBinding {
             source_proof_version: spec.manifest.source_proof_version,
             source_binding: spec.manifest.venue_binding_key.clone(),
             table_family: spec.source_proof.table_family.clone(),
+            source_usage_scope: spec.source_proof.usage_scope,
             raw_sample_uri: spec.source_proof.raw_sample_uri.clone(),
             raw_sample_hash: spec.source_proof.raw_sample_hash.clone(),
             accepted_object_s3_uri: spec.accepted_object.s3_uri.clone(),
@@ -164,6 +168,11 @@ pub struct BackfillExecutionPlan {
     pub source_proof_version: u32,
     pub source_binding: String,
     pub table_family: String,
+    #[serde(
+        default = "default_source_usage_scope",
+        skip_serializing_if = "is_canonical_backfill_input"
+    )]
+    pub source_usage_scope: SourceProofUsageScope,
     pub object_count: u64,
     pub accepted_bytes: u64,
     pub max_object_bytes: u64,
@@ -294,6 +303,9 @@ pub fn evaluate_backfill_execution_plan(
     {
         blocking_issues.push(BackfillExecutionPlanIssue::RunSpecSourceProofMismatch);
     }
+    if tranche.source_usage_scope != run_binding.source_usage_scope {
+        blocking_issues.push(BackfillExecutionPlanIssue::RunSpecSourceUsageScopeMismatch);
+    }
     if tranche.source_binding != run_binding.source_binding {
         blocking_issues.push(BackfillExecutionPlanIssue::RunSpecSourceBindingMismatch);
     }
@@ -363,6 +375,7 @@ pub fn evaluate_backfill_execution_plan(
         source_proof_version: tranche.source_proof_version,
         source_binding: tranche.source_binding.clone(),
         table_family: tranche.table_family.clone(),
+        source_usage_scope: tranche.source_usage_scope,
         object_count: objects.len() as u64,
         accepted_bytes: objects.iter().map(|object| object.bytes).sum(),
         max_object_bytes: run_binding.max_object_bytes,
@@ -491,6 +504,14 @@ fn sha256_bytes(bytes: &[u8]) -> String {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+fn default_source_usage_scope() -> SourceProofUsageScope {
+    SourceProofUsageScope::CanonicalBackfillInput
+}
+
+fn is_canonical_backfill_input(value: &SourceProofUsageScope) -> bool {
+    *value == SourceProofUsageScope::CanonicalBackfillInput
 }
 
 fn content_hash(plan: &BackfillExecutionPlan) -> Result<String, BackfillExecutionPlanError> {

@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use crate::backfill_source_proof_scope::{
     BackfillSourceProofScopeReport, BackfillSourceProofScopeStatus,
 };
+use crate::source_proof::SourceProofUsageScope;
 
 pub const BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION: &str = "backfill-accepted-tranche-manifest.v1";
 pub const BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE: &str = "backfill-accepted-tranche-manifest.json";
@@ -72,6 +73,11 @@ pub struct BackfillAcceptedTrancheManifest {
     pub source_proof_version: u32,
     pub source_binding: String,
     pub table_family: String,
+    #[serde(
+        default = "default_source_usage_scope",
+        skip_serializing_if = "is_canonical_backfill_input"
+    )]
+    pub source_usage_scope: SourceProofUsageScope,
     pub parent_manifest_id: String,
     pub object_level_tranche_required: bool,
     pub object_count: u64,
@@ -289,6 +295,7 @@ fn evaluate_backfill_accepted_tranche_report(
         source_proof_version: source_proof_scope.source_proof_version,
         source_binding: source_proof_scope.source_binding.clone(),
         table_family: source_proof_scope.table_family.clone(),
+        source_usage_scope: source_proof_scope.source_usage_scope,
         parent_manifest_id: source_proof_scope.manifest_id.clone(),
         object_level_tranche_required: source_proof_scope.object_level_tranche_required,
         object_count: objects.len() as u64,
@@ -304,6 +311,14 @@ fn source_proof_scope_report_hash(
     let bytes = serde_json::to_vec(report)
         .map_err(|error| BackfillAcceptedTrancheError::Serialize(error.to_string()))?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn default_source_usage_scope() -> SourceProofUsageScope {
+    SourceProofUsageScope::CanonicalBackfillInput
+}
+
+fn is_canonical_backfill_input(value: &SourceProofUsageScope) -> bool {
+    *value == SourceProofUsageScope::CanonicalBackfillInput
 }
 
 fn content_hash(

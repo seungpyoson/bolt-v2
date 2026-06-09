@@ -264,6 +264,12 @@ fn materialize_run_spec_template(
         Value::String(tranche.table_family.clone()),
     );
     source_proof.insert(
+        "usage_scope".to_string(),
+        Value::try_from(tranche.source_usage_scope).map_err(|error| {
+            BackfillRunSpecMaterializationError::SerializeToml(error.to_string())
+        })?,
+    );
+    source_proof.insert(
         "raw_sample_uri".to_string(),
         Value::String(object.s3_uri.clone()),
     );

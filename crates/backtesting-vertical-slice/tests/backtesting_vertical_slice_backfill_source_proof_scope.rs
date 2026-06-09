@@ -3,6 +3,7 @@ use backtesting_vertical_slice::backfill_source_proof_scope::{
     BackfillSourceProofScopeStatus, evaluate_backfill_source_proof_scope,
     write_backfill_source_proof_scope_report_from_spec_file,
 };
+use backtesting_vertical_slice::source_proof::SourceProofUsageScope;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -44,6 +45,10 @@ fn source_proof_scope_selects_one_manifest_object_without_accepting_whole_run() 
     assert_eq!(selected.bytes, 11);
     assert_eq!(report.source_binding, binding.key);
     assert_eq!(report.table_family, "trades");
+    assert_eq!(
+        report.source_usage_scope,
+        SourceProofUsageScope::CanonicalBackfillInput
+    );
 }
 
 #[test]
@@ -81,6 +86,39 @@ fn source_proof_scope_preserves_object_selection_metadata() {
     assert_eq!(
         selected.predicate_ref.as_deref(),
         Some("source-proof://synthetic/row-groups")
+    );
+}
+
+#[test]
+fn source_proof_scope_exposes_and_blocks_one_off_usage_scope() {
+    let binding = first_trade_binding();
+    let selected_uri = raw_uri("selected-object");
+    let mut proof = proof_json(&binding, &selected_uri, "selected-object", 11);
+    proof["usage_scope"] = json!("one_off_backfill_data");
+    let manifest = manifest_json(
+        &selected_uri,
+        concrete_source_url(&binding.source_uri),
+        "selected-object",
+        11,
+        Vec::new(),
+    );
+
+    let report = evaluate_backfill_source_proof_scope(
+        "synthetic-source-proof-scope",
+        &proof.to_string(),
+        &manifest.to_string(),
+    )
+    .expect("report");
+
+    assert_eq!(report.status, BackfillSourceProofScopeStatus::Blocked);
+    assert_eq!(
+        report.source_usage_scope,
+        SourceProofUsageScope::OneOffBackfillData
+    );
+    assert!(
+        report
+            .blocking_issues
+            .contains(&BackfillSourceProofScopeIssue::SourceProofAcceptanceFailed)
     );
 }
 

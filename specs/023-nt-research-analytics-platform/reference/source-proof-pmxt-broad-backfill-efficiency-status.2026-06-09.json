@@ -1,7 +1,7 @@
 {
   "schema_version": "source-proof-pmxt-broad-backfill-efficiency-status.v1",
   "created_date": "2026-06-09",
-  "verified_at_utc": "2026-06-09T11:46:24Z",
+  "verified_at_utc": "2026-06-09T12:13:04Z",
   "source_binding": "polymarket-parquet-archive-index",
   "table_family": "order_book_snapshot_deltas",
   "status": "open_broad_backfill_efficiency_unproven_bounded_one_off_guardrails_present",
@@ -13,8 +13,8 @@
       "The accepted source proof is still pending; payload work before source acceptance can produce expensive artifacts that cannot become canonical.",
       "Standard pinned NT BacktestNode catalog replay does not currently expose timed InstrumentAny instrument-definition replay, so full L2 over tick-size-changing assets would overclaim correctness."
     ],
-    "current_bounded_improvement": "The current one-off selector path records source_row_groups in the event-count ledger and selector report, first_proof_event_count_ledger rejects sources above TOML-owned max_source_parquet_bytes before Parquet reader construction, selected_source_slice rejects sources above TOML-owned max_source_parquet_bytes before full-file hashing, selected_source_slice projects only the selector row groups with ParquetRecordBatchReaderBuilder.with_row_groups, and backfill_execution_plan now requires TOML-owned max_source_rows, max_projected_row_groups, and max_wall_seconds before it can emit a ready plan.",
-    "remaining_efficiency_gap": "The bounded first-proof event-count ledger still performs a two-column scan only when the configured source byte budget admits it. Broad planning still must not use this as a discovery mechanism across many PMXT objects; it needs accepted manifest/index-owned coverage and actual row-group/predicate metadata before payload work. Current code can carry and require that metadata once accepted source proof provides it."
+    "current_bounded_improvement": "The current one-off selector path records source_row_groups in the event-count ledger and selector report, first_proof_event_count_ledger rejects sources above TOML-owned max_source_parquet_bytes before Parquet reader construction, selected_source_slice rejects sources above TOML-owned max_source_parquet_bytes before full-file hashing, selected_source_slice projects only the selector row groups with ParquetRecordBatchReaderBuilder.with_row_groups, and backfill_execution_plan now requires TOML-owned max_source_rows, max_projected_row_groups, max_wall_seconds, and matching source_usage_scope before it can emit a ready plan.",
+    "remaining_efficiency_gap": "The bounded first-proof event-count ledger still performs a two-column scan only when the configured source byte budget admits it. Broad planning still must not use this as a discovery mechanism across many PMXT objects; it needs accepted manifest/index-owned coverage and actual row-group/predicate metadata before payload work. Current code can carry and require that metadata once accepted source proof provides it, and it can carry source_usage_scope through the pre-payload gate chain once PMXT has an accepted canonical source proof."
   },
   "external_source_evidence": {
     "polymarket_official_api": {
@@ -162,6 +162,36 @@
         "path": "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_gate_reference_artifacts.rs",
         "evidence": "The Binance reference-artifact parity test passes with require_object_selection_metadata defaulting false, preserving existing accepted native trade gates."
       }
+    ],
+    "source_usage_scope_pre_payload_gate": [
+      {
+        "path": "repo://crates/backtesting-vertical-slice/src/backfill_source_proof_scope.rs",
+        "evidence": "BackfillSourceProofScopeReport exposes the source proof usage_scope so canonical_backfill_input and one_off_backfill_data provenance are visible before payload fetch."
+      },
+      {
+        "path": "repo://crates/backtesting-vertical-slice/src/backfill_accepted_tranche.rs",
+        "evidence": "BackfillAcceptedTrancheManifest carries source_usage_scope from the selected source-proof-scope report into the accepted tranche artifact."
+      },
+      {
+        "path": "repo://crates/backtesting-vertical-slice/src/backfill_run_spec_materialization.rs",
+        "evidence": "Backfill run-spec materialization writes the accepted tranche source_usage_scope into source_proof.usage_scope in the materialized TOML run spec."
+      },
+      {
+        "path": "repo://crates/backtesting-vertical-slice/src/backfill_execution_plan.rs",
+        "evidence": "BackfillExecutionRunBinding and BackfillExecutionPlan carry source_usage_scope, and execution planning blocks tranche/run-spec mismatches with RunSpecSourceUsageScopeMismatch before payload fetch."
+      },
+      {
+        "path": "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_source_proof_scope.rs",
+        "evidence": "source_proof_scope_exposes_and_blocks_one_off_usage_scope proves one-off source proofs remain blocked while exposing their source_usage_scope in the scope report."
+      },
+      {
+        "path": "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_execution_plan.rs",
+        "evidence": "execution_plan_blocks_run_spec_usage_scope_mismatch_before_payload_fetch proves execution plans fail closed when materialized run-spec scope drifts from the accepted tranche."
+      },
+      {
+        "path": "repo://crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_backfill_run_spec_materialization.rs",
+        "evidence": "materialized_run_spec_carries_accepted_tranche_usage_scope_before_payload_fetch failed RED when TOML omitted usage_scope, then passed after materialization copied the accepted tranche scope."
+      }
     ]
   },
   "required_before_any_broad_backfill": [
@@ -169,6 +199,7 @@
     "Keep the first gate manifest/index-only: coverage, freshness, completeness, bytes, object count, and cost must be recorded before payload download.",
     "Replace broad full-object hashing in planning/projection with accepted object hashes from staging or Artifact Index records; full payload reads belong only inside bounded accepted tranches.",
     "Carry object-level row-group or predicate metadata from the accepted source proof into the execution plan so selected-source projection does not rediscover it by rescanning payloads; current code carries source_row_groups/predicate_ref and can require them, but accepted PMXT source-proof manifests with that metadata remain unproven.",
+    "Carry source_usage_scope from accepted source proof through source-proof scope, accepted tranche, materialized run-spec, and execution plan; current code does this and blocks run-spec mismatches, but PMXT still lacks accepted canonical source proof.",
     "Set explicit object byte, row count, projected row-group count, and wall-time budgets in the accepted tranche plan; backfill_execution_plan now carries row, projected-row-group, and wall-time budgets, while first_proof_event_count_ledger and selected_source_slice enforce source parquet byte budgets before payload-scale work.",
     "Prove dynamic tick-size replay through NT BacktestNode/catalog, or accept a source-proof-bound no-tick-size-change exclusion policy before full L2 replay claims; generic SourceProofReport L2Replay acceptance now requires l2_replay_evidence.no_tick_size_change_universe_ref or l2_replay_evidence.timed_instrument_epoch_replay_ref.",
     "Use GitHub CI as the broad verification gate for committed changes; avoid broad local cargo test runs as the default verification path."

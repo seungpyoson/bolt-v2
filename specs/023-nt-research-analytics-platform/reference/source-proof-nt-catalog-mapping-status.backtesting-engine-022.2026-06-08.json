@@ -344,6 +344,22 @@
       "This does not authorize broad PMXT backfill."
     ]
   },
+  "broad_backfill_source_usage_scope_status": {
+    "status": "code_guardrail_added_actual_pmxt_canonical_source_proof_unproven",
+    "evidence": [
+      "RED python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_source_proof_scope --test backtesting_vertical_slice_backfill_accepted_tranche --test backtesting_vertical_slice_backfill_execution_plan -- --nocapture failed because source-proof scope, accepted tranche, and execution plan did not expose source_usage_scope and execution planning had no RunSpecSourceUsageScopeMismatch blocker.",
+      "RED python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_run_spec_materialization -- --nocapture failed because materialized run-spec TOML omitted source_proof.usage_scope and relied on parser defaults.",
+      "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_source_proof_scope --test backtesting_vertical_slice_backfill_accepted_tranche --test backtesting_vertical_slice_backfill_execution_plan -- --nocapture passed after source_usage_scope propagation and pre-payload run-spec mismatch blocking.",
+      "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_backfill_run_spec_materialization -- --nocapture passed after materialization copied accepted-tranche source_usage_scope into source_proof.usage_scope.",
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-broad-backfill-efficiency-status.2026-06-09.json records source_usage_scope as code-supported while BTE-022 remains blocked on accepted PMXT canonical source proof."
+    ],
+    "claim_limits": [
+      "This proves the generic backfill gates can carry source_usage_scope through source-proof scope, accepted tranche, materialized run spec, and execution plan before payload fetch.",
+      "This proves run-spec scope drift is blocked by execution planning.",
+      "This does not prove that PMXT has an accepted canonical durable source proof.",
+      "This does not authorize broad PMXT backfill."
+    ]
+  },
   "non_hardcoding_decision": "Bybit, Binance, Polymarket, Kalshi, and Hyperliquid remain source-binding examples. The next mapping work must be data-family driven: source schema plus registry binding plus NT data class, with no runtime venue or instrument constants in production code.",
   "old_artifact_recommendation": {
     "recommendation": "keep_as_historical_reference_only",

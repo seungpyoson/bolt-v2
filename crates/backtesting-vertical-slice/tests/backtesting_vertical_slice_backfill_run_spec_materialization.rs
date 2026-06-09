@@ -11,6 +11,7 @@ use backtesting_vertical_slice::{
         write_backfill_run_spec_from_materialization_spec,
     },
     operator::RunSpec,
+    source_proof::SourceProofUsageScope,
 };
 
 #[test]
@@ -77,9 +78,50 @@ fn materialized_run_spec_binds_accepted_tranche_before_payload_fetch() {
     assert_eq!(plan.source_proof_version, 7);
     assert_eq!(plan.source_binding, "synthetic-source-binding");
     assert_eq!(plan.table_family, "trades");
+    assert_eq!(
+        plan.source_usage_scope,
+        SourceProofUsageScope::CanonicalBackfillInput
+    );
     assert_eq!(plan.objects.len(), 1);
     assert_eq!(plan.objects[0].sha256, "synthetic-object-sha");
     assert_eq!(plan.max_object_bytes, 17);
+}
+
+#[test]
+fn materialized_run_spec_carries_accepted_tranche_usage_scope_before_payload_fetch() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let tranche_path = dir.path().join("accepted-tranche.json");
+    let template_path = dir.path().join("run-spec-template.toml");
+    let mut tranche = accepted_tranche();
+    tranche.source_usage_scope = SourceProofUsageScope::OneOffBackfillData;
+    std::fs::write(
+        &tranche_path,
+        serde_json::to_vec_pretty(&tranche).expect("accepted tranche"),
+    )
+    .expect("write tranche");
+    std::fs::write(&template_path, run_spec_template()).expect("write template");
+
+    let artifact =
+        write_backfill_run_spec_from_materialization_spec(&BackfillRunSpecMaterializationSpec {
+            materialization_id: "synthetic-materialization".to_string(),
+            accepted_tranche_manifest_path: tranche_path,
+            run_spec_template_path: template_path,
+            output_dir: dir.path().join("materialized"),
+            run_id: "synthetic-materialized-run".to_string(),
+            output_prefix: "s3://synthetic-artifacts/backtests/synthetic-materialized-run"
+                .to_string(),
+        })
+        .expect("materialized run spec");
+
+    let materialized = std::fs::read_to_string(&artifact.path).expect("read materialized");
+    assert!(materialized.contains(r#"usage_scope = "one_off_backfill_data""#));
+    let run_spec: RunSpec = toml::from_str(&materialized).expect("parse materialized run spec");
+    assert_eq!(
+        run_spec.source_proof.usage_scope,
+        SourceProofUsageScope::OneOffBackfillData
+    );
+    let binding = BackfillExecutionRunBinding::from_run_spec(&run_spec);
+    assert_eq!(binding.source_usage_scope, tranche.source_usage_scope);
 }
 
 fn accepted_tranche() -> BackfillAcceptedTrancheManifest {
@@ -93,6 +135,7 @@ fn accepted_tranche() -> BackfillAcceptedTrancheManifest {
         source_proof_version: 7,
         source_binding: "synthetic-source-binding".to_string(),
         table_family: "trades".to_string(),
+        source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
         parent_manifest_id: "synthetic-parent-manifest".to_string(),
         object_level_tranche_required: true,
         object_count: 1,

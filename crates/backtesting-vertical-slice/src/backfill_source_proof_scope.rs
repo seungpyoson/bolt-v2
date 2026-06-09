@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 use crate::source_proof::{
     AcceptanceScope, SourceBindingRegistry, SourceProofReport, SourceProofStatus,
-    resolve_source_bindings_path,
+    SourceProofUsageScope, resolve_source_bindings_path,
 };
 
 pub const BACKFILL_SOURCE_PROOF_SCOPE_SCHEMA_VERSION: &str =
@@ -75,6 +75,11 @@ pub struct BackfillSourceProofScopeReport {
     pub source_proof_version: u32,
     pub source_binding: String,
     pub table_family: String,
+    #[serde(
+        default = "default_source_usage_scope",
+        skip_serializing_if = "is_canonical_backfill_input"
+    )]
+    pub source_usage_scope: SourceProofUsageScope,
     pub manifest_id: String,
     pub accepted_scope_completed_objects: u64,
     pub accepted_scope_accepted_bytes: u64,
@@ -374,6 +379,7 @@ fn evaluate_backfill_source_proof_scope_from_values(
         source_proof_version: proof.source_proof_version,
         source_binding: proof.source_binding,
         table_family: proof.table_family,
+        source_usage_scope: proof.usage_scope,
         manifest_id,
         accepted_scope_completed_objects: accepted_scope.completed_objects,
         accepted_scope_accepted_bytes: accepted_scope.accepted_bytes,
@@ -442,6 +448,14 @@ fn u64_array_at(value: &Value, path: &[&str]) -> Option<Vec<u64>> {
     }
     let values = current.as_array()?;
     values.iter().map(Value::as_u64).collect()
+}
+
+fn default_source_usage_scope() -> SourceProofUsageScope {
+    SourceProofUsageScope::CanonicalBackfillInput
+}
+
+fn is_canonical_backfill_input(value: &SourceProofUsageScope) -> bool {
+    *value == SourceProofUsageScope::CanonicalBackfillInput
 }
 
 fn content_hash(

@@ -2,6 +2,6 @@
 
 This directory holds generic NT-backed IV engine fixtures.
 
-Phase 1 establishes the fixture location only. Later tasks add TOML profiles,
-capability-ledger fixtures, raw-event fixtures, policy fixtures, and
-source-fence cases as their failing tests require them.
+The fixtures currently include the enforced NT capability ledger plus generic
+profile, raw-event, policy, query-authorization, and source-fence cases used by
+the IV test suite.

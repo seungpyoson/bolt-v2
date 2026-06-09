@@ -422,6 +422,16 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
         .iter()
         .map(|policy| policy.input_policy_id.as_str())
         .collect::<BTreeSet<_>>();
+    let derived_input_policy_by_id = profile
+        .derived_input_policies
+        .iter()
+        .map(|policy| (policy.input_policy_id.as_str(), policy))
+        .collect::<BTreeMap<_, _>>();
+    let helper_policy_by_id = profile
+        .helper_policies
+        .iter()
+        .map(|policy| (policy.helper_policy_id.as_str(), policy))
+        .collect::<BTreeMap<_, _>>();
     let source_ids = profile
         .sources
         .iter()
@@ -541,6 +551,14 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 "{context}.helper_policies.{}.input_policy_ref must reference a configured derived input policy",
                 policy.helper_policy_id
             ));
+        } else if let Some(input_policy) =
+            derived_input_policy_by_id.get(policy.input_policy_ref.as_str())
+            && input_policy.helper_policy_ref != policy.helper_policy_id
+        {
+            errors.push(format!(
+                "{context}.helper_policies.{}.input_policy_ref references {}, but its helper_policy_ref is {}",
+                policy.helper_policy_id, policy.input_policy_ref, input_policy.helper_policy_ref
+            ));
         }
         if policy.max_input_timestamp_skew_ns == 0 {
             errors.push(format!(
@@ -560,6 +578,14 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
             errors.push(format!(
                 "{context}.derived_input_policies.{}.helper_policy_ref must reference a configured helper policy",
                 policy.input_policy_id
+            ));
+        } else if let Some(helper_policy) =
+            helper_policy_by_id.get(policy.helper_policy_ref.as_str())
+            && helper_policy.input_policy_ref != policy.input_policy_id
+        {
+            errors.push(format!(
+                "{context}.derived_input_policies.{}.helper_policy_ref references {}, but its input_policy_ref is {}",
+                policy.input_policy_id, policy.helper_policy_ref, helper_policy.input_policy_ref
             ));
         }
         if policy.required_fields.is_empty() {
@@ -592,6 +618,19 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                     field_policy.field.as_str()
                 ));
             }
+            if field_policy.allowed_source_kinds.is_empty() {
+                errors.push(format!(
+                    "{context}.derived_input_policies.{}.field_sources.{}.allowed_source_kinds must be non-empty",
+                    policy.input_policy_id,
+                    field_policy.field.as_str()
+                ));
+            }
+            validate_derived_input_field_source_consistency(
+                context,
+                &policy.input_policy_id,
+                field_policy,
+                &mut errors,
+            );
             if let Some(source_ref) = &field_policy.profile_source_ref
                 && !source_selector_pairs.contains(&(
                     source_ref.source_id.as_str(),
@@ -638,6 +677,73 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
     }
 
     errors
+}
+
+fn validate_derived_input_field_source_consistency(
+    context: &str,
+    input_policy_id: &str,
+    field_policy: &super::derive::IvDerivedInputFieldPolicy,
+    errors: &mut Vec<String>,
+) {
+    use super::derive::{IvDerivedInputField, IvDerivedInputSourceKind};
+
+    let field_context = format!(
+        "{context}.derived_input_policies.{}.field_sources.{}",
+        input_policy_id,
+        field_policy.field.as_str()
+    );
+
+    if field_policy.profile_source_ref.is_some()
+        && !field_policy
+            .allowed_source_kinds
+            .contains(&IvDerivedInputSourceKind::ProfileSourceRef)
+    {
+        errors.push(format!(
+            "{field_context}.profile_source_ref requires allowed_source_kinds to include profile_source_ref"
+        ));
+    }
+
+    if let Some(operator_number) = field_policy.operator_number {
+        if field_policy.field == IvDerivedInputField::OptionSide {
+            errors.push(format!(
+                "{field_context}.operator_number is only valid for numeric derived input fields"
+            ));
+        }
+        if operator_number.source_kind != IvDerivedInputSourceKind::OperatorConfigured {
+            errors.push(format!(
+                "{field_context}.operator_number source_kind must be operator_configured"
+            ));
+        }
+        if !field_policy
+            .allowed_source_kinds
+            .contains(&IvDerivedInputSourceKind::OperatorConfigured)
+        {
+            errors.push(format!(
+                "{field_context}.operator_number requires allowed_source_kinds to include operator_configured"
+            ));
+        }
+    }
+
+    if let Some(operator_side) = field_policy.operator_side {
+        if field_policy.field != IvDerivedInputField::OptionSide {
+            errors.push(format!(
+                "{field_context}.operator_side is only valid for option_side"
+            ));
+        }
+        if operator_side.source_kind != IvDerivedInputSourceKind::OperatorConfigured {
+            errors.push(format!(
+                "{field_context}.operator_side source_kind must be operator_configured"
+            ));
+        }
+        if !field_policy
+            .allowed_source_kinds
+            .contains(&IvDerivedInputSourceKind::OperatorConfigured)
+        {
+            errors.push(format!(
+                "{field_context}.operator_side requires allowed_source_kinds to include operator_configured"
+            ));
+        }
+    }
 }
 
 fn validate_known_source_refs(

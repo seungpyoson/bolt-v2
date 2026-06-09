@@ -193,3 +193,25 @@ Current PR verification uses GitHub CI rather than local cargo reruns. Because a
 - `cargo fmt --check`: PASS.
 - `git diff --check`: PASS.
 - `just source-fence`: PASS.
+
+## 2026-06-10 Internal Adversarial Review After `a7074113`
+
+**Reviewed working tree**: branch `026-nt-backed-iv-engine`, local delta after head `a707411387c5cc88d76a39a4d356ef6823c61cf1`
+**Recommendation**: PASS for the locally reviewed fixes below; GitHub CI and external relay approvals must be refreshed after this delta is committed and pushed.
+
+| Issue | Evidence | Resolution |
+|---|---|---|
+| `IvHelperPolicy.input_policy_ref` and `IvDerivedInputPolicy.helper_policy_ref` could disagree while both IDs existed. Query-time derivation follows only `helper.input_policy_ref`, so TOML could claim one helper/input relationship while runtime used another. | RED: `cargo test --locked --test bolt_v3_iv_config helper_and_derived_input_policy_refs_must_be_reciprocal -- --nocapture` failed because validation accepted the mismatched reciprocal references. | Config validation now requires helper and derived-input policies to reference each other reciprocally. |
+| A derived-input field policy could set `allowed_source_kinds = []`, which query-time validation treated as unrestricted. | RED: `cargo test --locked --test bolt_v3_iv_config derived_input_policy_field_sources_must_allow_at_least_one_source_kind -- --nocapture` failed because validation accepted the empty allowlist. | Config validation now rejects empty `allowed_source_kinds` per derived-input field source. |
+| Derived-input field-source config could be contradictory, such as a `profile_source_ref` present without allowing `profile_source_ref`, or an operator value whose embedded `source_kind` was not `operator_configured`. | RED: `cargo test --locked --test bolt_v3_iv_config derived_input_profile_source_ref_requires_profile_source_ref_kind -- --nocapture` and `cargo test --locked --test bolt_v3_iv_config derived_input_operator_values_must_be_operator_configured_kind -- --nocapture` failed because validation accepted both contradictions. | Config validation now rejects inconsistent profile-source and operator-configured field-source declarations before runtime query resolution. |
+
+### 2026-06-10 Post-`a7074113` Verification
+
+- `cargo test --locked --test bolt_v3_iv_config helper_and_derived_input_policy_refs_must_be_reciprocal -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_config derived_input_policy_field_sources_must_allow_at_least_one_source_kind -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_config derived_input_profile_source_ref_requires_profile_source_ref_kind -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_config derived_input_operator_values_must_be_operator_configured_kind -- --nocapture`: RED before fix, GREEN after fix.
+- `cargo test --locked --test bolt_v3_iv_config`: PASS, 32 tests.
+- `cargo fmt --check`: PASS.
+- `git diff --check`: PASS.
+- `just source-fence`: PASS.

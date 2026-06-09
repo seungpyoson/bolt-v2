@@ -10632,3 +10632,43 @@ literal = '''"missing_realized_volatility_surface"'''
 context = '''"missing_realized_volatility_surface",'''
 classification = "strategy_runtime_diagnostic"
 reason = "Diagnostic code emitted when taker runtime config omits the required surfaced realized-volatility selector; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{context}.helper_policies.{}.input_policy_ref references {}, but its helper_policy_ref is {}"'''
+context = '''"{context}.helper_policies.{}.input_policy_ref references {}, but its helper_policy_ref is {}",'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic template for reciprocal helper and derived-input policy references; referenced IDs come from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{context}.derived_input_policies.{}.helper_policy_ref references {}, but its input_policy_ref is {}"'''
+context = '''"{context}.derived_input_policies.{}.helper_policy_ref references {}, but its input_policy_ref is {}",'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic template for reciprocal derived-input and helper policy references; referenced IDs come from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{context}.derived_input_policies.{}.field_sources.{}"'''
+context = '''"{context}.derived_input_policies.{}.field_sources.{}",'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic context for a derived-input field source; policy IDs and field names come from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{field_context}.operator_number is only valid for numeric derived input fields"'''
+context = '''"{field_context}.operator_number is only valid for numeric derived input fields"'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic template for impossible derived-input operator-number field configuration; the field context comes from TOML config."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
+literal = '''"{field_context}.operator_side is only valid for option_side"'''
+context = '''"{field_context}.operator_side is only valid for option_side"'''
+classification = "iv_config_schema_literal"
+reason = "IV profile validation diagnostic template for impossible derived-input operator-side field configuration; the field context comes from TOML config."

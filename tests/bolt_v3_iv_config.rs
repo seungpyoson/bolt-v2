@@ -721,6 +721,25 @@ fn helper_policy_allowed_outputs_must_include_engine_helper_output() {
 }
 
 #[test]
+fn helper_and_derived_input_policy_refs_must_be_reciprocal() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    let mut other_helper = config.profiles[0].helper_policies[0].clone();
+    other_helper.helper_policy_id = "configured-other-helper-policy".to_string();
+    other_helper.input_policy_ref = "configured-derived-input-policy".to_string();
+    config.profiles[0].helper_policies.push(other_helper);
+    config.profiles[0].derived_input_policies[0].helper_policy_ref =
+        "configured-other-helper-policy".to_string();
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("helper_policies.configured-helper-policy.input_policy_ref")
+            && message.contains("helper_policy_ref")
+            && message.contains("configured-other-helper-policy")
+    }));
+}
+
+#[test]
 fn policy_source_references_must_point_to_configured_sources() {
     let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
     config.profiles[0].interpolation_policies[0]
@@ -786,6 +805,74 @@ fn derived_input_policy_field_sources_must_not_duplicate_fields() {
     assert!(errors.iter().any(|message| {
         message.contains("derived_input_policies.configured-derived-input-policy.field_sources")
             && message.contains("duplicate option_price")
+    }));
+}
+
+#[test]
+fn derived_input_policy_field_sources_must_allow_at_least_one_source_kind() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    config.profiles[0].derived_input_policies[0].field_sources[0]
+        .allowed_source_kinds
+        .clear();
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("derived_input_policies.configured-derived-input-policy.field_sources")
+            && message.contains("option_price")
+            && message.contains("allowed_source_kinds must be non-empty")
+    }));
+}
+
+#[test]
+fn derived_input_profile_source_ref_requires_profile_source_ref_kind() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    let field_source = config.profiles[0].derived_input_policies[0]
+        .field_sources
+        .iter_mut()
+        .find(|field_source| field_source.field == IvDerivedInputField::UnderlyingPrice)
+        .unwrap();
+    field_source.allowed_source_kinds = [IvDerivedInputSourceKind::QuerySupplied]
+        .into_iter()
+        .collect();
+    field_source.profile_source_ref =
+        Some(bolt_v2::bolt_v3_iv::derive::IvDerivedProfileSourceRef {
+            source_id: "configured-greeks-source".to_string(),
+            selector_fingerprint: "configured-greeks-selector".to_string(),
+        });
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("derived_input_policies.configured-derived-input-policy.field_sources")
+            && message.contains("underlying_price")
+            && message.contains("profile_source_ref")
+            && message.contains("allowed_source_kinds")
+    }));
+}
+
+#[test]
+fn derived_input_operator_values_must_be_operator_configured_kind() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    let field_source = config.profiles[0].derived_input_policies[0]
+        .field_sources
+        .iter_mut()
+        .find(|field_source| field_source.field == IvDerivedInputField::Rate)
+        .unwrap();
+    field_source.operator_number = Some(IvTimedInput {
+        value: 0.01,
+        ts_ns: UnixNanos::new(994),
+        source_kind: IvDerivedInputSourceKind::QuerySupplied,
+        expires_at_ns: Some(UnixNanos::new(2_050)),
+    });
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("derived_input_policies.configured-derived-input-policy.field_sources")
+            && message.contains("rate")
+            && message.contains("operator_number")
+            && message.contains("operator_configured")
     }));
 }
 

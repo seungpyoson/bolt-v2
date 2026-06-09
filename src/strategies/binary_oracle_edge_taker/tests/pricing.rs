@@ -728,6 +728,8 @@ fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap
             .and_then(|result| result.block_reason),
         Some(ExecutableEdgeBlockReason::InsufficientDepth)
     );
+    assert_eq!(evaluation.up_worst_case_ev_bps, None);
+    assert_eq!(evaluation.down_worst_case_ev_bps, None);
     assert_eq!(evaluation.selected_side, None);
 }
 
@@ -782,6 +784,8 @@ fn executable_edge_selects_tradeable_side_when_opposite_side_is_blocked() {
         down_edge.block_reason,
         Some(ExecutableEdgeBlockReason::InsufficientDepth)
     );
+    assert!(evaluation.up_worst_case_ev_bps.is_some());
+    assert_eq!(evaluation.down_worst_case_ev_bps, None);
 }
 
 #[test]

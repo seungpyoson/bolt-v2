@@ -229,8 +229,10 @@ mod tests {
     // Re-derived after executable-edge review follow-ups tightened config
     // validation, reused exact-size VWAP probes, and surfaced edge-threshold
     // pricing blocks.
+    // Re-derived after exact-head review follow-ups made negative threshold
+    // checks authoritative and omitted unavailable executable-cost EV evidence.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "97d8bd37e94ff74673589eeb8458f9fdde02f0e238a9283325cb13ff7d1917ab";
+        "2097d98847bc01d5b2f443cebb924e3e18f1ac28e0606c5b0cdb2a0333a730f2";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

@@ -372,6 +372,14 @@ fn executable_edge_fee_bps(result: Option<ExecutableEdgeResult>) -> Option<f64> 
         .filter(|value| is_non_negative_finite(*value))
 }
 
+fn executable_edge_worst_case_ev_bps(result: Option<ExecutableEdgeResult>) -> Option<f64> {
+    let result = result?;
+    if !result.cost_breakdown.cost_available {
+        return None;
+    }
+    result.edge_bps.is_finite().then_some(result.edge_bps)
+}
+
 fn executable_edge_selectable_bps(result: Option<ExecutableEdgeResult>) -> Option<f64> {
     let result = result?;
     result.trade_allowed.then_some(result.edge_bps)
@@ -4615,8 +4623,10 @@ impl BinaryOracleEdgeTaker {
             ),
             Err(reason) => ExecutableEdgeResult::blocked(OutcomeSide::Down, reason),
         };
-        evaluation.up_worst_case_ev_bps = Some(up_executable_edge.edge_bps);
-        evaluation.down_worst_case_ev_bps = Some(down_executable_edge.edge_bps);
+        evaluation.up_worst_case_ev_bps =
+            executable_edge_worst_case_ev_bps(Some(up_executable_edge));
+        evaluation.down_worst_case_ev_bps =
+            executable_edge_worst_case_ev_bps(Some(down_executable_edge));
         evaluation.up_executable_edge = Some(up_executable_edge);
         evaluation.down_executable_edge = Some(down_executable_edge);
 
@@ -4694,12 +4704,12 @@ impl BinaryOracleEdgeTaker {
                         match selected_side {
                             OutcomeSide::Up => {
                                 evaluation.up_worst_case_ev_bps =
-                                    Some(sized_executable_edge.edge_bps);
+                                    executable_edge_worst_case_ev_bps(Some(sized_executable_edge));
                                 evaluation.up_executable_edge = Some(sized_executable_edge);
                             }
                             OutcomeSide::Down => {
                                 evaluation.down_worst_case_ev_bps =
-                                    Some(sized_executable_edge.edge_bps);
+                                    executable_edge_worst_case_ev_bps(Some(sized_executable_edge));
                                 evaluation.down_executable_edge = Some(sized_executable_edge);
                             }
                         }
@@ -4724,11 +4734,13 @@ impl BinaryOracleEdgeTaker {
                 );
                 match selected_side {
                     OutcomeSide::Up => {
-                        evaluation.up_worst_case_ev_bps = Some(sized_executable_edge.edge_bps);
+                        evaluation.up_worst_case_ev_bps =
+                            executable_edge_worst_case_ev_bps(Some(sized_executable_edge));
                         evaluation.up_executable_edge = Some(sized_executable_edge);
                     }
                     OutcomeSide::Down => {
-                        evaluation.down_worst_case_ev_bps = Some(sized_executable_edge.edge_bps);
+                        evaluation.down_worst_case_ev_bps =
+                            executable_edge_worst_case_ev_bps(Some(sized_executable_edge));
                         evaluation.down_executable_edge = Some(sized_executable_edge);
                     }
                 }

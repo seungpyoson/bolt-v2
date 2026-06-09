@@ -338,10 +338,14 @@ pub(crate) fn evaluate_executable_edge(inputs: &ExecutableEdgeInputs<'_>) -> Exe
     }
 
     let mut block_reason = None;
-    if gross_edge_cents_per_share > ZERO_F64 && edge_cents_per_share <= ZERO_F64 {
-        block_reason = Some(ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge);
-    } else if !inputs.minimum_edge_bps.is_finite() || edge_bps <= inputs.minimum_edge_bps {
-        block_reason = Some(ExecutableEdgeBlockReason::EdgeBelowThreshold);
+    if !inputs.minimum_edge_bps.is_finite() || edge_bps <= inputs.minimum_edge_bps {
+        block_reason = Some(
+            if gross_edge_cents_per_share > ZERO_F64 && edge_cents_per_share <= ZERO_F64 {
+                ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge
+            } else {
+                ExecutableEdgeBlockReason::EdgeBelowThreshold
+            },
+        );
     }
 
     let cost_breakdown = ExecutableCostBreakdown {
@@ -373,7 +377,10 @@ mod tests {
 
     use nautilus_model::{enums::OrderSide, identifiers::InstrumentId, types::Price};
 
-    use crate::{bolt_v3_book_sizing::OutcomeBookState, bolt_v3_market_families::OutcomeSide};
+    use crate::{
+        bolt_v3_book_sizing::OutcomeBookState, bolt_v3_market_families::OutcomeSide,
+        bolt_v3_numeric::HALF_F64,
+    };
 
     const EPSILON: f64 = 1e-9;
 
@@ -499,6 +506,26 @@ mod tests {
             - result.cost_breakdown.total_adjusted_cost_cents;
         assert!((result.cost_breakdown.fee_cost_cents - expected_fee_cost_cents).abs() < EPSILON);
         assert!((result.edge_cents_per_share - expected_edge_cents_per_share).abs() < EPSILON);
+    }
+
+    #[test]
+    fn negative_threshold_allows_fee_wiped_edge_that_still_clears_threshold() {
+        let ask_price = HALF_F64;
+        let ask_quantity = CENTS_PER_SHARE;
+        let fee_bps = BPS_DENOMINATOR / (CENTS_PER_SHARE * HALF_F64);
+        let gross_edge_cents_per_share = HALF_F64;
+        let adjusted_probability = ask_price + (gross_edge_cents_per_share / CENTS_PER_SHARE);
+        let book = priced_book(&[(ask_price, ask_quantity)]);
+        let mut inputs = inputs(OutcomeSide::Up, Some(&book));
+        inputs.adjusted_probability_up = Some(adjusted_probability);
+        inputs.fee_bps = Some(fee_bps);
+        inputs.minimum_edge_bps = -fee_bps;
+
+        let result = evaluate_executable_edge(&inputs);
+
+        assert!(result.edge_bps > inputs.minimum_edge_bps);
+        assert!(result.trade_allowed);
+        assert_eq!(result.block_reason, None);
     }
 
     #[test]

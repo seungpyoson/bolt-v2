@@ -337,6 +337,64 @@ fn expired_operator_rate_or_carry_inputs_reject_before_helper_invocation() {
 }
 
 #[test]
+fn expired_operator_option_side_rejects_before_helper_invocation() {
+    let mut inputs = complete_inputs();
+    inputs.option_side = Some(IvTimedInput {
+        value: IvOptionSide::Call,
+        ts_ns: UnixNanos::new(998),
+        source_kind: IvDerivedInputSourceKind::OperatorConfigured,
+        expires_at_ns: Some(UnixNanos::new(999)),
+    });
+
+    assert_eq!(
+        derive_iv(&helper_policy(), inputs),
+        Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::OperatorInputExpired,
+            field: IvDerivedInputField::OptionSide.as_str().to_string(),
+        })
+    );
+}
+
+#[test]
+fn derived_input_policy_rejects_expired_operator_option_side() {
+    let mut request_inputs = complete_inputs();
+    request_inputs.option_side = None;
+
+    let policy = IvDerivedInputPolicy {
+        input_policy_id: "configured-derived-input-policy".to_string(),
+        helper_policy_ref: "configured-helper-policy".to_string(),
+        required_fields: vec![IvDerivedInputField::OptionSide],
+        field_sources: vec![IvDerivedInputFieldPolicy {
+            field: IvDerivedInputField::OptionSide,
+            allowed_source_kinds: BTreeSet::from([IvDerivedInputSourceKind::OperatorConfigured]),
+            profile_source_ref: None,
+            operator_number: None,
+            operator_side: Some(IvTimedInput {
+                value: IvOptionSide::Call,
+                ts_ns: UnixNanos::new(998),
+                source_kind: IvDerivedInputSourceKind::OperatorConfigured,
+                expires_at_ns: Some(UnixNanos::new(999)),
+            }),
+        }],
+        freshness_ns: 100,
+        max_input_skew_ns: 20,
+        bounds: input_bounds(),
+        convention_policy: IvConventionBounds {
+            allowed_conventions: BTreeSet::from([convention()]),
+        },
+        operator_value_refresh_policy: IvOperatorValueRefreshPolicy::RejectExpiredOperatorValues,
+    };
+
+    assert_eq!(
+        resolve_derived_input_policy(&policy, request_inputs, &[]),
+        Err(IvDeriveError::Rejected {
+            reason: IvRejectReason::OperatorInputExpired,
+            field: IvDerivedInputField::OptionSide.as_str().to_string(),
+        })
+    );
+}
+
+#[test]
 fn operator_rate_or_carry_without_expiration_derives_when_within_age() {
     for field in [IvDerivedInputField::Rate, IvDerivedInputField::Carry] {
         let mut inputs = complete_inputs();

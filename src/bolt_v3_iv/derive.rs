@@ -492,16 +492,15 @@ fn validate_operator_refresh_policy(
     inputs: &IvDerivedInputSet,
     field: IvDerivedInputField,
 ) -> Result<(), IvDeriveError> {
-    let Some(input) = number_field(inputs, field) else {
+    let Some((source_kind, expires_at_ns)) = timed_input_refresh_metadata(inputs, field) else {
         return Ok(());
     };
-    if input.source_kind != IvDerivedInputSourceKind::OperatorConfigured {
+    if source_kind != IvDerivedInputSourceKind::OperatorConfigured {
         return Ok(());
     }
     match policy.operator_value_refresh_policy {
         IvOperatorValueRefreshPolicy::RejectExpiredOperatorValues
-            if input
-                .expires_at_ns
+            if expires_at_ns
                 .is_some_and(|expires_at_ns| expires_at_ns.get() < inputs.as_of_ns.get()) =>
         {
             Err(IvDeriveError::Rejected {
@@ -510,6 +509,25 @@ fn validate_operator_refresh_policy(
             })
         }
         _ => Ok(()),
+    }
+}
+
+fn timed_input_refresh_metadata(
+    inputs: &IvDerivedInputSet,
+    field: IvDerivedInputField,
+) -> Option<(IvDerivedInputSourceKind, Option<UnixNanos>)> {
+    match field {
+        IvDerivedInputField::OptionPrice
+        | IvDerivedInputField::UnderlyingPrice
+        | IvDerivedInputField::Strike
+        | IvDerivedInputField::TimeToExpiryYears
+        | IvDerivedInputField::Rate
+        | IvDerivedInputField::Carry => {
+            number_field(inputs, field).map(|input| (input.source_kind, input.expires_at_ns))
+        }
+        IvDerivedInputField::OptionSide => inputs
+            .option_side
+            .map(|input| (input.source_kind, input.expires_at_ns)),
     }
 }
 
@@ -743,8 +761,38 @@ impl ResolvedDerivedInputs {
         validate_numeric(rate.value, IvDerivedInputField::Rate, false)?;
         validate_numeric(carry.value, IvDerivedInputField::Carry, false)?;
         validate_timestamp_skew(policy, inputs.as_of_ns, &timed_values)?;
-        validate_operator_input(policy, inputs.as_of_ns, IvDerivedInputField::Rate, rate)?;
-        validate_operator_input(policy, inputs.as_of_ns, IvDerivedInputField::Carry, carry)?;
+        validate_operator_input(
+            policy,
+            inputs.as_of_ns,
+            IvDerivedInputField::OptionPrice,
+            &option_price,
+        )?;
+        validate_operator_input(
+            policy,
+            inputs.as_of_ns,
+            IvDerivedInputField::UnderlyingPrice,
+            &underlying_price,
+        )?;
+        validate_operator_input(
+            policy,
+            inputs.as_of_ns,
+            IvDerivedInputField::Strike,
+            &strike,
+        )?;
+        validate_operator_input(
+            policy,
+            inputs.as_of_ns,
+            IvDerivedInputField::OptionSide,
+            &option_side,
+        )?;
+        validate_operator_input(
+            policy,
+            inputs.as_of_ns,
+            IvDerivedInputField::TimeToExpiryYears,
+            &time_to_expiry_years,
+        )?;
+        validate_operator_input(policy, inputs.as_of_ns, IvDerivedInputField::Rate, &rate)?;
+        validate_operator_input(policy, inputs.as_of_ns, IvDerivedInputField::Carry, &carry)?;
 
         Ok(Self {
             option_price: option_price.value,
@@ -807,11 +855,11 @@ fn validate_timestamp_skew(
     Ok(())
 }
 
-fn validate_operator_input(
+fn validate_operator_input<T>(
     policy: &IvHelperPolicy,
     as_of_ns: UnixNanos,
     field: IvDerivedInputField,
-    input: IvTimedInput<f64>,
+    input: &IvTimedInput<T>,
 ) -> Result<(), IvDeriveError> {
     if input.source_kind != IvDerivedInputSourceKind::OperatorConfigured {
         return Ok(());

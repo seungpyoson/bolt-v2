@@ -4,7 +4,13 @@ use nautilus_core::{Params, UnixNanos};
 use nautilus_model::data::{CustomData, DataType};
 use nautilus_persistence_macros::custom_data;
 
-use crate::bolt_v3_config::{ReferencePriceDriftPolicy, ReferencePriceProvider};
+use crate::{
+    bolt_v3_config::{
+        ReferencePriceBlock, ReferencePriceDriftPolicy, ReferencePriceProvider,
+        ReferencePriceSourceBlock,
+    },
+    bolt_v3_providers::reference_price_provider_supports_asset,
+};
 
 const NANOS_PER_MILLI_U64: u64 = 1_000_000;
 const REFERENCE_PRICE_UPDATE_TYPE: &str = "BoltV3ReferencePriceUpdate";
@@ -17,6 +23,20 @@ pub const REFERENCE_PRICE_SOURCE_KEY_PARAM: &str = REFERENCE_PRICE_SOURCE_KEY_ME
 pub const REFERENCE_PRICE_PROVIDER_PARAM: &str = REFERENCE_PRICE_PROVIDER_METADATA_FIELD;
 pub const REFERENCE_PRICE_INSTRUMENT_ID_PARAM: &str = "instrument_id";
 pub const REFERENCE_PRICE_SYMBOL_PARAM: &str = "symbol";
+
+pub(crate) fn reference_price_source_is_runtime_available(
+    reference_price: &ReferencePriceBlock,
+    source: &ReferencePriceSourceBlock,
+) -> bool {
+    source.enabled && !reference_price_source_is_unsupported(reference_price, source)
+}
+
+pub(crate) fn reference_price_source_is_unsupported(
+    reference_price: &ReferencePriceBlock,
+    source: &ReferencePriceSourceBlock,
+) -> bool {
+    !reference_price_provider_supports_asset(source.provider.as_str(), &reference_price.asset)
+}
 
 #[custom_data]
 pub struct ReferencePriceUpdate {

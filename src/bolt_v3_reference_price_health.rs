@@ -21,14 +21,12 @@ use crate::{
     bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_config::ReferencePriceSourceBlock,
     bolt_v3_live_node::{BoltV3LiveNodeRuntime, build_bolt_v3_strategy_free_live_node},
-    bolt_v3_providers::{
-        ReferencePriceIdentifierKind, reference_price_provider_metadata,
-        reference_price_provider_supports_asset,
-    },
+    bolt_v3_providers::{ReferencePriceIdentifierKind, reference_price_provider_metadata},
     bolt_v3_reference_price::{
         REFERENCE_PRICE_ASSET_PARAM, REFERENCE_PRICE_INSTRUMENT_ID_PARAM,
         REFERENCE_PRICE_PROVIDER_PARAM, REFERENCE_PRICE_SOURCE_KEY_PARAM,
         REFERENCE_PRICE_SYMBOL_PARAM, ReferencePriceUpdate,
+        reference_price_source_is_runtime_available,
     },
 };
 
@@ -127,13 +125,7 @@ pub fn reference_current_price_health_plan(
                     strategy.config.strategy_instance_id
                 )
             })?;
-            if !source.enabled {
-                continue;
-            }
-            if !reference_price_provider_supports_asset(
-                source.provider.as_str(),
-                reference_current_price.asset.as_str(),
-            ) {
+            if !reference_price_source_is_runtime_available(reference_current_price, source) {
                 continue;
             }
             let client_key = source.client_id.to_string();

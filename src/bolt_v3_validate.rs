@@ -59,8 +59,8 @@ use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 use crate::bolt_v3_providers::{
     REFERENCE_CATALOG_VENUE_KEY, RESOLUTION_ORACLE_VENUE_KEY, ReferencePriceIdentifierKind,
     reference_price_provider_identifier_is_configured, reference_price_provider_metadata,
-    reference_price_provider_supports_asset,
 };
+use crate::bolt_v3_reference_price::reference_price_source_is_unsupported;
 
 #[derive(Debug)]
 pub struct BoltV3ValidationError {
@@ -2378,10 +2378,7 @@ fn validate_reference_current_price(
         }
 
         let unsupported_asset = source.enabled
-            && !reference_price_provider_supports_asset(
-                source.provider.as_str(),
-                reference_current_price.asset.as_str(),
-            );
+            && reference_price_source_is_unsupported(reference_current_price, source);
         if unsupported_asset {
             valid_enabled_sources = valid_enabled_sources.saturating_sub(1);
         }

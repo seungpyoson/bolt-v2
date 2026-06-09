@@ -98,6 +98,7 @@ use crate::{
         self, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
         ProviderRuntimeApprovals,
     },
+    bolt_v3_reference_price::reference_price_source_is_runtime_available,
     bolt_v3_secrets::{
         BoltV3SecretError, ForbiddenEnvVarError, ResolvedBoltV3Secrets,
         check_no_forbidden_credential_env_vars, check_no_forbidden_credential_env_vars_with,
@@ -1647,7 +1648,9 @@ fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> 
                 reference_current_price
                     .sources
                     .values()
-                    .filter(|source| source.enabled)
+                    .filter(|source| {
+                        reference_price_source_is_runtime_available(reference_current_price, source)
+                    })
                     .map(|source| source.client_id.to_string()),
             );
         }
@@ -3707,6 +3710,47 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         assert!(
             loaded.root.clients.contains_key("unrelated_data"),
             "helper must not mutate the caller's full client bundle"
+        );
+    }
+
+    #[test]
+    fn trade_transport_config_skips_unsupported_optional_reference_sources() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let strategy = loaded
+            .strategies
+            .first_mut()
+            .expect("fixture should include one strategy");
+        let reference_current_price = strategy
+            .config
+            .reference_current_price
+            .as_mut()
+            .expect("fixture strategy should include reference_current_price");
+        reference_current_price.asset = "BNB".to_string();
+        reference_current_price
+            .sources
+            .get_mut("chainlink_primary")
+            .expect("fixture should include chainlink reference source")
+            .instrument_id = Some("BNB-USD.CHAINLINK".to_string());
+        reference_current_price
+            .sources
+            .get_mut("polyresearch_backup")
+            .expect("fixture should include PRR reference source")
+            .symbol = Some("BNB/USD".to_string());
+
+        let scoped = trade_transport_loaded_config(&loaded)
+            .expect("strategy-bound transport scope should be derived from config");
+
+        assert!(scoped.root.clients.contains_key("polymarket_main"));
+        assert!(
+            scoped.root.clients.contains_key("chainlink_reference"),
+            "Chainlink supports the selected reference_current_price asset and remains transport-bound"
+        );
+        assert!(
+            !scoped.root.clients.contains_key("polyresearch_reference"),
+            "unsupported optional PRR source must not keep an unused transport client registered"
         );
     }
 

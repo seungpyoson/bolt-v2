@@ -56,7 +56,6 @@ use crate::{
     bolt_v3_providers::{
         STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
         normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
-        reference_price_provider_supports_asset,
     },
     bolt_v3_realized_volatility::{
         RealizedVolEngine, RealizedVolObservation, RealizedVolSampleKind, RealizedVolSourceClass,
@@ -67,6 +66,7 @@ use crate::{
         REFERENCE_PRICE_PROVIDER_PARAM, REFERENCE_PRICE_SOURCE_KEY_PARAM,
         REFERENCE_PRICE_SYMBOL_PARAM, ReferencePriceSelector, ReferencePriceSourceHealth,
         ReferencePriceSourceSpec, ReferencePriceSourceStatus, ReferencePriceUpdate, ReferenceQuote,
+        reference_price_source_is_runtime_available, reference_price_source_is_unsupported,
     },
     bolt_v3_submit_admission::{
         BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionRequest,
@@ -393,20 +393,6 @@ fn reference_price_source_health_from_config(
             )
         })
         .collect()
-}
-
-fn reference_price_source_is_runtime_available(
-    reference_price: &ReferencePriceBlock,
-    source: &crate::bolt_v3_config::ReferencePriceSourceBlock,
-) -> bool {
-    source.enabled && !reference_price_source_is_unsupported(reference_price, source)
-}
-
-fn reference_price_source_is_unsupported(
-    reference_price: &ReferencePriceBlock,
-    source: &crate::bolt_v3_config::ReferencePriceSourceBlock,
-) -> bool {
-    !reference_price_provider_supports_asset(source.provider.as_str(), &reference_price.asset)
 }
 
 fn reference_price_source_provider_identifier<'a>(

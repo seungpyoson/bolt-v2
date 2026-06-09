@@ -31,6 +31,7 @@ use nautilus_model::{
 };
 use nautilus_network::{
     http::USER_AGENT,
+    mode::ConnectionMode,
     transport::Message,
     websocket::{MessageHandler, TransportBackend, WebSocketClient, WebSocketConfig},
 };
@@ -280,11 +281,16 @@ impl DataClient for ChainlinkReferencePriceClient {
     }
 
     fn is_connected(&self) -> bool {
-        self.connected
+        chainlink_reference_transport_connected(
+            self.connected,
+            self.websocket
+                .as_ref()
+                .map(WebSocketClient::connection_mode),
+        )
     }
 
     fn is_disconnected(&self) -> bool {
-        !self.connected
+        !self.is_connected()
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {
@@ -384,6 +390,13 @@ impl ChainlinkReferencePriceClient {
             });
         }
     }
+}
+
+fn chainlink_reference_transport_connected(
+    started: bool,
+    transport_mode: Option<ConnectionMode>,
+) -> bool {
+    started && transport_mode.is_none_or(|mode| mode.is_active())
 }
 
 fn chainlink_reference_websocket_url(

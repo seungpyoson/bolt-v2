@@ -125,6 +125,36 @@ instrument_id = "BTC-USD.CHAINLINK"
 }
 
 #[test]
+fn reference_current_price_rejects_malformed_provider_key_at_parse() {
+    let err = try_parse_strategy(
+        r#"
+[reference_current_price]
+asset = "BTC"
+sources = ["chainlink_primary"]
+min_valid_sources = 1
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.chainlink_primary]
+provider = "chainlink_ws "
+enabled = true
+required = false
+client_id = "chainlink_reference"
+instrument_id = "BTC-USD.CHAINLINK"
+"#,
+    )
+    .expect_err("malformed reference_current_price provider key must fail schema parse");
+    assert!(
+        err.to_string()
+            .contains("reference_price provider is invalid"),
+        "malformed provider rejection should come from ReferencePriceProvider validation, got: {err}"
+    );
+}
+
+#[test]
 fn reference_current_price_requires_explicit_source_table() {
     let err = try_parse_strategy(
         r#"

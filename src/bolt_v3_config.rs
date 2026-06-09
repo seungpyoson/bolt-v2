@@ -612,8 +612,7 @@ impl<'de> Deserialize<'de> for ReferencePriceSourceBlock {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(transparent)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferencePriceProvider(String);
 
 impl ReferencePriceProvider {
@@ -634,6 +633,16 @@ impl ReferencePriceProvider {
 
     pub fn as_str(&self) -> &str {
         self.0.as_str()
+    }
+}
+
+impl<'de> Deserialize<'de> for ReferencePriceProvider {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
     }
 }
 

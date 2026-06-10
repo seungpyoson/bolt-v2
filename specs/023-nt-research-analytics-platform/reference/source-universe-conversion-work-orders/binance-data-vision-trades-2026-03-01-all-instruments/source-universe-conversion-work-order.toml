@@ -1,0 +1,3 @@
+work_order_id = "source-universe-conversion-work-order-binance-data-vision-trades-2026-03-01-all-instruments"
+source_universe_operator_inputs_path = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/binance-data-vision-trades-2026-03-01-all-instruments/operator-inputs/source-universe-operator-inputs.json"
+output_dir = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-work-orders/binance-data-vision-trades-2026-03-01-all-instruments/work-order"

@@ -161,14 +161,32 @@ for it are exactly what the live shadow test must measure before sizing.
   test territory.
 - Clock-skew and fillability caveats from the session-4 report carry over unchanged.
 
-## 4. Live shadow test status (question 3 of #626)
+## 4. Live shadow test status (question 3 of #626) — passive harvest done, armed run still required
 
-Blocked: production-host access was denied by the session permission layer twice (the
-classifier requires the operator to explicitly authorize the named production instance).
-What it should measure once authorized: per signal, the quoted ask + displayed size at
-signal time vs the fill actually achievable (the node's entry-evaluation log already
-records quoted entry costs per decision, so the passive variant may be nearly free to
-collect). This is the final gate before sizing capital on the btc GO.
+Operator authorized read-only SSM on the production box (2026-06-11). Findings from the
+node's own records (the node ran 2026-06-03→06 and is currently stopped; binary deployed,
+load idle; the catalog lives at `/srv/bolt-v2/var/bolt-v3-live/catalog/`, not the brief's
+`/var/lib/bolt/catalog`):
+
+- **Live fee reality (closes session-4 report §9 item 2).** All 137,157 entry-evaluation
+  lines carry live venue-fetched `up_fee_bps`/`down_fee_bps`. Every one of the twelve
+  most frequent (fee, entry-cost) combinations backs out to an effective taker rate of
+  **0.07 (700 bps)** via the production formula `rate × p × (1−p)` — to four digits —
+  versus the 1000 bps stamped on the April archive trades and on Gamma `takerBaseFee`.
+  Either the schedule changed between April and June or the schedule rate differs from
+  the base-fee field; both session-4 edge tables charged 1000 bps, so the btc net edge
+  is *understated* by the fee difference (~0.5–0.7 c/share at mid-range prices).
+- **Model calibration (session-4 §9 item 1) is provably not minable from logs:**
+  `fair_probability_up=Some` appears in **0 of 137,157** evaluations — the pricing
+  pipeline never produced a value (reference feed disconnected for the whole Jun 3–6
+  run; every line shows `ForcedFlat(StaleReference)` / no spot price). Closing this gap
+  requires a node run with the reference feed connected, not more log analysis.
+- **Quoted books at signal time:** up+down entry costs sum to ~1.01 across the frequent
+  combos — 1 c-wide books at quote time, consistent with the April spread measurements.
+- `order-intents.jsonl` is empty (node never armed) — **quoted-vs-achieved fill
+  comparison remains impossible without an armed (or at least order-submitting shadow)
+  run.** That armed shadow run is the one remaining gate before sizing capital on the
+  btc GO.
 
 ## 5. Reproduction
 

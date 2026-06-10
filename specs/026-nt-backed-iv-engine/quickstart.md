@@ -50,8 +50,16 @@ max_age_ns = operator_positive_integer
 [[iv.profiles.projection_policies]]
 policy_id = "operator_projection_policy"
 projection_kind = "mean"
+basis_selection = "preserve_input_basis"
+source_eligibility = ["operator_source_id"]
+strike_selection = "all_configured_strikes"
+tenor_selection = "all_configured_tenors"
+evidence_mapping = "preserve_evidence_kind"
 minimum_points = operator_positive_integer
 max_projection_input_skew_ns = operator_positive_integer
+fallback_policy_ref = "operator_fallback_policy"
+interpolation_policy_ref = "operator_interpolation_policy"
+quorum_policy_ref = "operator_quorum_policy"
 
 [[iv.profiles.strategy_authorizations]]
 strategy_id = "operator_strategy"

@@ -1,5 +1,6 @@
 use bolt_v2::bolt_v3_iv::{
     config::load_iv_config_from_toml,
+    derive::{IvDerivedInputSet, IvDerivedInputSourceKind, IvOptionSide, IvTimedInput},
     error::IvRejectReason,
     health::IvSourceHealthState,
     ingest::{IvBasisValue, IvGreekValues, IvIngestEvent, IvOptionGreeksPayload, IvRawPayload},
@@ -103,6 +104,50 @@ fn greeks_ingest_event(source_id: &str, subscription_generation: u64) -> IvInges
             underlying_price: Some(102.0),
             open_interest: Some(2200.0),
         }),
+    }
+}
+
+fn timed_input(value: f64, ts: u64) -> IvTimedInput<f64> {
+    IvTimedInput {
+        value,
+        ts_ns: UnixNanos::new(ts),
+        source_kind: IvDerivedInputSourceKind::OperatorConfigured,
+        expires_at_ns: None,
+    }
+}
+
+fn side_input(value: IvOptionSide, ts: u64) -> IvTimedInput<IvOptionSide> {
+    IvTimedInput {
+        value,
+        ts_ns: UnixNanos::new(ts),
+        source_kind: IvDerivedInputSourceKind::InstrumentMetadata,
+        expires_at_ns: None,
+    }
+}
+
+fn derived_input_set(nt_revision: &str) -> IvDerivedInputSet {
+    IvDerivedInputSet {
+        profile_id: profile_id(),
+        source_id: "greeks-source".to_string(),
+        source_kind: IvSourceKind::OptionGreeks,
+        selector_fingerprint: "greeks-selector".to_string(),
+        instrument_id: "BTC-20240101-50000-C.DERIBIT".to_string(),
+        basis: IvBasis::Mark,
+        convention: IvConvention::Named("BLACK_SCHOLES".to_string()),
+        as_of_ns: UnixNanos::new(2_000),
+        received_ts_ns: UnixNanos::new(2_005),
+        subscription_generation: 7,
+        source_health_state: IvSourceHealthState::Active,
+        nt_revision: nt_revision.to_string(),
+        nt_evidence_path: "configured/nt/evidence/path.rs".to_string(),
+        input_event_ids: vec!["configured-input-event".to_string()],
+        option_price: Some(timed_input(10.0, 1_995)),
+        underlying_price: Some(timed_input(100.0, 1_996)),
+        strike: Some(timed_input(100.0, 1_997)),
+        option_side: Some(side_input(IvOptionSide::Call, 1_998)),
+        time_to_expiry_years: Some(timed_input(0.5, 1_999)),
+        rate: Some(timed_input(0.01, 2_000)),
+        carry: Some(timed_input(0.0, 2_001)),
     }
 }
 
@@ -997,6 +1042,24 @@ fn runtime_engine_reload_updates_configured_source_generations() {
     engine
         .ingest_event(greeks_ingest_event("greeks-source", 8))
         .expect("new generation must ingest after IV root reload");
+}
+
+#[test]
+fn runtime_engine_reload_stamps_derived_inputs_with_cargo_pinned_nt_revision() {
+    let mut current = configured_runtime_config();
+    current.profiles[0].derived_inputs = vec![derived_input_set("configured-current-nt-revision")];
+    let mut next = current.clone();
+    next.profiles[0].derived_inputs = vec![derived_input_set("configured-reload-nt-revision")];
+    let mut engine = IvRuntimeEngine::from_iv_root(&current).unwrap();
+
+    engine.apply_iv_root_reload(&next).unwrap();
+
+    let state = engine
+        .state_for_profile("iv-profile")
+        .expect("reloaded profile state should exist");
+    let derived_inputs = state.derived_inputs();
+    assert_eq!(derived_inputs.len(), 1);
+    assert_eq!(derived_inputs[0].nt_revision, cargo_pinned_nt_revision());
 }
 
 #[test]

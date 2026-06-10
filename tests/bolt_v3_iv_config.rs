@@ -611,6 +611,53 @@ fn source_rename_is_a_single_profile_scoped_edit() {
 }
 
 #[test]
+fn source_rename_rejects_stale_profile_scoped_references() {
+    let stale_reference_toml = valid_iv_toml().replacen(
+        "source_id = \"configured-greeks-source\"",
+        "source_id = \"configured-renamed-greeks-source\"",
+        1,
+    );
+    let config: IvRootConfig = toml::from_str(&stale_reference_toml).unwrap();
+    let errors = validate_iv_root_config(&config);
+
+    assert!(
+        errors.iter().any(|message| {
+            message.contains("audit_policy.eligible_sources")
+                && message.contains("configured-greeks-source")
+        }),
+        "expected stale audit source reference rejection, got {errors:?}"
+    );
+    assert!(
+        errors.iter().any(|message| {
+            message.contains("projection_policies.configured-projection-policy.source_eligibility")
+        }),
+        "expected stale projection source reference rejection, got {errors:?}"
+    );
+    assert!(
+        errors.iter().any(|message| {
+            message
+                .contains("interpolation_policies.configured-interpolation-policy.eligible_sources")
+                && message.contains("configured-greeks-source")
+        }),
+        "expected stale interpolation source reference rejection, got {errors:?}"
+    );
+    assert!(
+        errors.iter().any(|message| {
+            message.contains("fallback_policies.configured-fallback-policy.eligible_sources")
+                && message.contains("configured-greeks-source")
+        }),
+        "expected stale fallback source reference rejection, got {errors:?}"
+    );
+    assert!(
+        errors.iter().any(|message| {
+            message.contains("quorum_policies.configured-quorum-policy.eligible_sources")
+                && message.contains("configured-greeks-source")
+        }),
+        "expected stale quorum source reference rejection, got {errors:?}"
+    );
+}
+
+#[test]
 fn duplicate_profile_ids_reject_at_config_validation() {
     let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
     config.profiles.push(config.profiles[0].clone());

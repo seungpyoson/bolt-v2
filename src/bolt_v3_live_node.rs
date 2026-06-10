@@ -4703,6 +4703,62 @@ configured_source_param = "configured-value"
         }
     }
 
+    #[test]
+    fn iv_custom_iv_start_plan_translates_to_runtime_custom_data_command() {
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-custom-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeCustomData,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::CustomData,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceCustomImpliedVolatility {
+                custom_iv_data_type: "ConfiguredCustomIvEvent".to_string(),
+                custom_iv_data_fields: vec!["configured_iv".to_string()],
+                nt_params: toml::toml! {
+                    configured_selector_param = "selector-value"
+                }
+                .into(),
+            },
+            params: toml::toml! {
+                configured_source_param = "source-value"
+            }
+            .into(),
+            subscription_generation: 7,
+        };
+
+        let commands = iv_runtime_data_commands_for_plan(&plan)
+            .expect("valid custom-IV plan should translate to an NT custom-data command");
+
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            nautilus_common::messages::data::DataCommand::Subscribe(SubscribeCommand::Data(
+                command,
+            )) => {
+                assert_eq!(command.client_id, Some(ClientId::from("configured-client")));
+                assert_eq!(command.data_type.type_name(), "ConfiguredCustomIvEvent");
+                assert_eq!(
+                    command.data_type.identifier(),
+                    Some("configured-custom-source")
+                );
+                let metadata = command
+                    .data_type
+                    .metadata()
+                    .expect("custom-IV data type should carry merged params");
+                assert_eq!(
+                    metadata.get("configured_source_param"),
+                    Some(&serde_json::Value::String("source-value".to_string()))
+                );
+                assert_eq!(
+                    metadata.get("configured_selector_param"),
+                    Some(&serde_json::Value::String("selector-value".to_string()))
+                );
+                assert_eq!(command.params.as_ref(), Some(metadata));
+            }
+            other => panic!("expected custom-IV data subscribe command, got {other:?}"),
+        }
+    }
+
     #[derive(Debug)]
     struct RecordingDataCommandSender {
         commands: std::sync::Arc<std::sync::Mutex<Vec<DataCommand>>>,

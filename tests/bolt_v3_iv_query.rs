@@ -646,6 +646,73 @@ fn selector_scoped_strategy_query_requires_matching_source_and_selector() {
 }
 
 #[test]
+fn selector_scoped_point_query_records_rejection_decision_for_unauthorized_source() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event(
+            "configured-denied-source",
+            "configured-denied-selector",
+            2_000,
+            test_implied_volatility(43),
+        ))
+        .unwrap();
+    let handle = IvQueryHandle::new("configured-profile", selector_scoped_authorization(), store);
+
+    assert_eq!(
+        handle.query(&point_query(Some("configured-denied-source"), 2_000)),
+        Err(IvQueryError::StrategyNotAuthorized)
+    );
+
+    assert_eq!(
+        handle.query_rejections(),
+        vec![IvPolicyDecision::RejectionDecision {
+            reject_reason: IvRejectReason::SelectorNotAuthorized,
+            failed_field: None,
+            policy_id: None,
+            source_health_state: IvSourceHealthState::Active,
+            subscription_generation: 1,
+        }]
+    );
+}
+
+#[test]
+fn selector_scoped_source_health_query_records_rejection_decision_for_unauthorized_source() {
+    let handle = IvQueryHandle::new(
+        "configured-profile",
+        selector_scoped_source_health_authorization(),
+        IvStore::empty(),
+    )
+    .with_source_health(vec![source_health(
+        "configured-denied-source",
+        IvSourceHealthState::Active,
+    )]);
+
+    assert_eq!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::SourceHealth,
+            selector: IvSelector::SourceHealthQuery {
+                source_filter: Some("configured-denied-source".to_string()),
+                state_filter: vec![],
+            },
+        })),
+        Err(IvQueryError::StrategyNotAuthorized)
+    );
+
+    assert_eq!(
+        handle.query_rejections(),
+        vec![IvPolicyDecision::RejectionDecision {
+            reject_reason: IvRejectReason::SelectorNotAuthorized,
+            failed_field: None,
+            policy_id: None,
+            source_health_state: IvSourceHealthState::Active,
+            subscription_generation: 1,
+        }]
+    );
+}
+
+#[test]
 fn selector_scoped_point_query_skips_unauthorized_matching_source() {
     let mut store = IvStore::empty();
     store
@@ -951,6 +1018,40 @@ fn strategy_query_records_stale_source_health_rejection_for_current_product() {
 }
 
 #[test]
+fn strategy_query_records_observable_rejection_decision_for_stale_product() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event(
+            "configured-source",
+            "configured-selector-fingerprint",
+            2_000,
+            test_implied_volatility(42),
+        ))
+        .unwrap();
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_source_health(vec![source_health(
+            "configured-source",
+            IvSourceHealthState::Stale,
+        )]);
+
+    assert_eq!(
+        handle.query(&point_query(None, 2_000)),
+        Err(IvQueryError::ProductNotFound)
+    );
+
+    assert_eq!(
+        handle.query_rejections(),
+        vec![IvPolicyDecision::RejectionDecision {
+            reject_reason: IvRejectReason::StaleData,
+            failed_field: None,
+            policy_id: None,
+            source_health_state: IvSourceHealthState::Stale,
+            subscription_generation: 1,
+        }]
+    );
+}
+
+#[test]
 fn strategy_query_returns_retention_miss_for_evicted_indexed_point() {
     let mut store = IvStore::empty();
     for ts in [2_000, 2_010, 2_020] {
@@ -974,7 +1075,7 @@ fn strategy_query_returns_retention_miss_for_evicted_indexed_point() {
         });
 
     assert_eq!(
-        handle.query(&point_query(None, 2_000)),
+        handle.query(&point_query(None, 2_010)),
         Err(IvQueryError::RetentionMiss)
     );
 
@@ -986,6 +1087,43 @@ fn strategy_query_returns_retention_miss_for_evicted_indexed_point() {
         Some(IvRejectReason::RetentionMiss)
     );
     assert!(health.retention_state);
+}
+
+#[test]
+fn retention_miss_tombstones_are_bounded_by_profile_retention() {
+    let mut store = IvStore::empty();
+    for ts in [2_000, 2_010, 2_020, 2_030, 2_040] {
+        store
+            .ingest_event(greeks_event(
+                "configured-source",
+                "configured-selector-fingerprint",
+                ts,
+                test_implied_volatility(42),
+            ))
+            .unwrap();
+    }
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_retention_policy(IvRetentionPolicy {
+            max_raw_events: 5,
+            max_indexed_points: 1,
+            max_smiles: 1,
+            max_surfaces: 1,
+            max_derived_points: 1,
+            max_source_health_events: 2,
+        });
+
+    assert_eq!(
+        handle.query(&point_query(None, 2_030)),
+        Err(IvQueryError::RetentionMiss)
+    );
+    assert_eq!(
+        handle.query(&point_query(None, 2_000)),
+        Err(IvQueryError::ProductNotFound)
+    );
+    assert!(matches!(
+        handle.query(&point_query(None, 2_040)),
+        Ok(IvQueryProduct::IvPoint(_))
+    ));
 }
 
 #[test]
@@ -1067,6 +1205,101 @@ fn projected_scalar_query_uses_configured_fallback_policy_when_primary_projectio
                 IvPolicyDecision::FallbackDecision { policy_id, .. }
                     if policy_id == "configured-fallback-policy"
             ))
+    );
+}
+
+#[test]
+fn projected_scalar_fallback_accepts_nearby_input_inside_configured_timestamp_skew() {
+    let mut store = IvStore::empty();
+    store
+        .ingest_event(greeks_event(
+            "configured-source",
+            "configured-selector-fingerprint",
+            1_995,
+            test_implied_volatility(42),
+        ))
+        .unwrap();
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy_with_refs(
+            2,
+            Some("configured-fallback-policy"),
+            None,
+            None,
+        )])
+        .with_fallback_policies(vec![IvFallbackPolicy {
+            policy_id: "configured-fallback-policy".to_string(),
+            candidate_order: vec!["configured-option-instrument".to_string()],
+            eligible_sources: vec!["configured-source".to_string()],
+            maximum_timestamp_skew_ns: 10,
+            required_provenance_fields: vec!["raw_event_id".to_string()],
+        }]);
+
+    let product = handle
+        .query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(match point_query(None, 2_000) {
+                    IvQuery::Product(query) => query.selector,
+                    IvQuery::RawPayload(_) => panic!("expected product query"),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        }))
+        .unwrap();
+
+    let IvQueryProduct::ProjectedScalarIv(projected) = product else {
+        panic!("expected projected scalar IV product");
+    };
+    assert_eq!(projected.value, test_implied_volatility(42));
+    assert_eq!(projected.as_of_ns, UnixNanos::new(2_000));
+}
+
+#[test]
+fn projected_scalar_fallback_rejects_production_inputs_exceeding_timestamp_skew() {
+    let mut store = IvStore::empty();
+    for ts in [1_990, 2_000] {
+        store
+            .ingest_event(greeks_event(
+                "configured-source",
+                "configured-selector-fingerprint",
+                ts,
+                test_implied_volatility(42),
+            ))
+            .unwrap();
+    }
+    let handle = IvQueryHandle::new("configured-profile", profile_wide_authorization(), store)
+        .with_projection_policies(vec![projection_policy_with_refs(
+            3,
+            Some("configured-fallback-policy"),
+            None,
+            None,
+        )])
+        .with_fallback_policies(vec![IvFallbackPolicy {
+            policy_id: "configured-fallback-policy".to_string(),
+            candidate_order: vec!["configured-option-instrument".to_string()],
+            eligible_sources: vec!["configured-source".to_string()],
+            maximum_timestamp_skew_ns: 5,
+            required_provenance_fields: vec!["raw_event_id".to_string()],
+        }]);
+
+    assert_eq!(
+        handle.query(&IvQuery::product(IvProductQuery {
+            strategy_id: "configured-strategy".to_string(),
+            profile_id: "configured-profile".to_string(),
+            product_kind: IvProductKind::ProjectedScalarIv,
+            selector: IvSelector::ProjectedScalarIvQuery {
+                input_selector: Box::new(match point_query(None, 2_000) {
+                    IvQuery::Product(query) => query.selector,
+                    IvQuery::RawPayload(_) => panic!("expected product query"),
+                }),
+                projection_policy_id: "configured-projection-policy".to_string(),
+                as_of_ns: UnixNanos::new(2_000),
+            },
+        })),
+        Err(IvQueryError::ProjectionRejected)
     );
 }
 

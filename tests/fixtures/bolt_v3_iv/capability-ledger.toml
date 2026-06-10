@@ -1614,6 +1614,318 @@ symbol = "OptionSpread"
 matched_terms = ["option", "options"]
 classification = "supported"
 
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.client.subscribe_option_summary"
+evidence_path = "crates/adapters/okx/src/websocket/client.rs"
+symbol = "subscribe_option_summary"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.client.unsubscribe_option_summary"
+evidence_path = "crates/adapters/okx/src/websocket/client.rs"
+symbol = "unsubscribe_option_summary"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.client.option_greeks_subs"
+evidence_path = "crates/adapters/okx/src/websocket/client.rs"
+symbol = "option_greeks_subs"
+matched_terms = ["option", "greeks"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.client.add_option_greeks_sub"
+evidence_path = "crates/adapters/okx/src/websocket/client.rs"
+symbol = "add_option_greeks_sub"
+matched_terms = ["option", "greeks"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.client.add_option_greeks_sub_with_conventions"
+evidence_path = "crates/adapters/okx/src/websocket/client.rs"
+symbol = "add_option_greeks_sub_with_conventions"
+matched_terms = ["option", "greeks"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.client.remove_option_greeks_sub"
+evidence_path = "crates/adapters/okx/src/websocket/client.rs"
+symbol = "remove_option_greeks_sub"
+matched_terms = ["option", "greeks"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.parse.parse_option_summary_greeks"
+evidence_path = "crates/adapters/okx/src/websocket/parse.rs"
+symbol = "parse_option_summary_greeks"
+matched_terms = ["option", "greeks"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.websocket.messages.o_k_x_option_summary_msg"
+evidence_path = "crates/adapters/okx/src/websocket/messages.rs"
+symbol = "OKXOptionSummaryMsg"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.common.consts.resolve_instrument_families"
+evidence_path = "crates/adapters/okx/src/common/consts.rs"
+symbol = "resolve_instrument_families"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_instrument" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.common.enums.o_k_x_greeks_type"
+evidence_path = "crates/adapters/okx/src/common/enums.rs"
+symbol = "OKXGreeksType"
+matched_terms = ["greeks"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.common.parse.okx_instrument_type_from_symbol"
+evidence_path = "crates/adapters/okx/src/common/parse.rs"
+symbol = "okx_instrument_type_from_symbol"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_instrument" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.common.parse.parse_option_instrument"
+evidence_path = "crates/adapters/okx/src/common/parse.rs"
+symbol = "parse_option_instrument"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_instrument" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.http.query.get_instruments_params"
+evidence_path = "crates/adapters/okx/src/http/query.rs"
+symbol = "GetInstrumentsParams"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "product_kind", target = "iv_option_instrument" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.http.client.get_option_summary"
+evidence_path = "crates/adapters/okx/src/http/client.rs"
+symbol = "get_option_summary"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.http.models.o_k_x_option_summary"
+evidence_path = "crates/adapters/okx/src/http/models.rs"
+symbol = "OKXOptionSummary"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.okx.src.http.query.get_option_summary_params"
+evidence_path = "crates/adapters/okx/src/http/query.rs"
+symbol = "GetOptionSummaryParams"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.providers.instruments.fetch_option_chain_by_range"
+evidence_path = "crates/adapters/interactive_brokers/src/providers/instruments.rs"
+symbol = "fetch_option_chain_by_range"
+matched_terms = ["chain", "expiry", "option", "options"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_chain_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.common.enums.misc.ib_volatility_type"
+evidence_path = "crates/adapters/interactive_brokers/src/common/enums/misc.rs"
+symbol = "IbVolatilityType"
+matched_terms = ["volatility"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.common.enums.misc.ibapi_volatility_type"
+evidence_path = "crates/adapters/interactive_brokers/src/common/enums/misc.rs"
+symbol = "ibapi_volatility_type"
+matched_terms = ["volatility"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.data.core.fetch_option_chain_by_range"
+evidence_path = "crates/adapters/interactive_brokers/src/data/core.rs"
+symbol = "fetch_option_chain_by_range"
+matched_terms = ["chain", "expiry", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_chain_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.data.cache.option_greeks_cache"
+evidence_path = "crates/adapters/interactive_brokers/src/data/cache.rs"
+symbol = "OptionGreeksCache"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.data.cache.new"
+evidence_path = "crates/adapters/interactive_brokers/src/data/cache.rs"
+symbol = "new"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.data.cache.clear"
+evidence_path = "crates/adapters/interactive_brokers/src/data/cache.rs"
+symbol = "clear"
+matched_terms = ["greeks"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.interactive_brokers.src.data.parse.parse_option_computation_to_option_greeks"
+evidence_path = "crates/adapters/interactive_brokers/src/data/parse.rs"
+symbol = "parse_option_computation_to_option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.data_types.deribit_volatility_index"
+evidence_path = "crates/adapters/deribit/src/data_types.rs"
+symbol = "DeribitVolatilityIndex"
+matched_terms = ["custom data", "volatility"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.client.set_option_greeks_subs"
+evidence_path = "crates/adapters/deribit/src/websocket/client.rs"
+symbol = "set_option_greeks_subs"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.client.add_option_greeks_sub"
+evidence_path = "crates/adapters/deribit/src/websocket/client.rs"
+symbol = "add_option_greeks_sub"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.client.remove_option_greeks_sub"
+evidence_path = "crates/adapters/deribit/src/websocket/client.rs"
+symbol = "remove_option_greeks_sub"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.client.subscribe_volatility_index"
+evidence_path = "crates/adapters/deribit/src/websocket/client.rs"
+symbol = "subscribe_volatility_index"
+matched_terms = ["volatility"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.client.unsubscribe_volatility_index"
+evidence_path = "crates/adapters/deribit/src/websocket/client.rs"
+symbol = "unsubscribe_volatility_index"
+matched_terms = ["volatility"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.parse.parse_ticker_to_option_greeks"
+evidence_path = "crates/adapters/deribit/src/websocket/parse.rs"
+symbol = "parse_ticker_to_option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.messages.deribit_greeks"
+evidence_path = "crates/adapters/deribit/src/websocket/messages.rs"
+symbol = "DeribitGreeks"
+matched_terms = ["greeks", "option", "options"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.messages.to_greek_values"
+evidence_path = "crates/adapters/deribit/src/websocket/messages.rs"
+symbol = "to_greek_values"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.websocket.messages.deribit_volatility_index_msg"
+evidence_path = "crates/adapters/deribit/src/websocket/messages.rs"
+symbol = "DeribitVolatilityIndexMsg"
+matched_terms = ["volatility"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.http.models.deribit_account_summary_extended"
+evidence_path = "crates/adapters/deribit/src/http/models.rs"
+symbol = "DeribitAccountSummaryExtended"
+matched_terms = ["greeks"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.bybit.src.websocket.client.add_option_greeks_sub"
+evidence_path = "crates/adapters/bybit/src/websocket/client.rs"
+symbol = "add_option_greeks_sub"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.bybit.src.websocket.client.remove_option_greeks_sub"
+evidence_path = "crates/adapters/bybit/src/websocket/client.rs"
+symbol = "remove_option_greeks_sub"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.bybit.src.websocket.client.option_greeks_subs"
+evidence_path = "crates/adapters/bybit/src/websocket/client.rs"
+symbol = "option_greeks_subs"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.bybit.src.websocket.parse.parse_ticker_option_greeks"
+evidence_path = "crates/adapters/bybit/src/websocket/parse.rs"
+symbol = "parse_ticker_option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.bybit.src.http.models.order_iv"
+evidence_path = "crates/adapters/bybit/src/http/models.rs"
+symbol = "order_iv"
+matched_terms = ["iv"]
+classification = "excluded"
+
 [[engine_mapping_rules]]
 surface_id_prefix = "nt.model.option_greeks"
 engine_mapping = { mapping_kind = "product_kind", target = "iv_option_greeks" }
@@ -1759,15 +2071,139 @@ surface_id_prefix = "nt.crates.adapters."
 classification = "excluded"
 
 [[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.websocket.client.subscribe_quotes"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.websocket.messages.ws_attach_algo_ord_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.websocket.messages.ws_post_order_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.websocket.messages.ws_cancel_order_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.websocket.messages.ws_mass_cancel_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.websocket.messages.ws_amend_order_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.websocket.messages.ws_"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.common.parse.determine_order_type"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.common.parse.deserialize_target_currency"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.common.parse.parse_event_contract_instrument"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.client.request_forward_prices"
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.set_position_mode_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_position"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_spreads_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_event_contract"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_trades_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_mark_price_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_index_ticker_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_order_book_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_order"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_algo_orders"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_transaction_details"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_trade_fee_params"
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.adapters.okx.src.http.query.get_funding_rate"
+classification = "not_iv_options"
+
+[[classification_rules]]
 surface_id_prefix = "nt.crates.analysis."
 classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.analysis.src.statistics.returns_volatility."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.analysis.src.statistics.mod."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.analysis.src.python.statistics.mod."
+classification = "not_iv_options"
 
 [[classification_rules]]
 surface_id_prefix = "nt.crates.backtest."
 classification = "not_iv_options"
 
 [[classification_rules]]
+surface_id_prefix = "nt.crates.backtest.src.exchange."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.backtest.src.config."
+classification = "not_iv_options"
+
+[[classification_rules]]
 surface_id_prefix = "nt.crates.cli."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.cli.src.opt."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.cli.src.lib."
 classification = "not_iv_options"
 
 [[classification_rules]]
@@ -1791,6 +2227,10 @@ surface_id_prefix = "nt.crates.core."
 classification = "not_iv_options"
 
 [[classification_rules]]
+surface_id_prefix = "nt.crates.core.src.serialization."
+classification = "not_iv_options"
+
+[[classification_rules]]
 surface_id_prefix = "nt.crates.data.src.defi."
 classification = "not_iv_options"
 
@@ -1809,6 +2249,26 @@ classification = "not_iv_options"
 [[classification_rules]]
 surface_id_prefix = "nt.crates.indicators."
 classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.indicators.src.volatility."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.indicators.src.lib."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.indicators.src.python.volatility."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.indicators.src.python.mod."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.indicators.src.python.average."
+classification = "not_iv_options"
 
 [[classification_rules]]
 surface_id_prefix = "nt.crates.infrastructure."
@@ -1839,6 +2299,14 @@ surface_id_prefix = "nt.crates.network."
 classification = "not_iv_options"
 
 [[classification_rules]]
+surface_id_prefix = "nt.crates.network.src.websocket.proxy."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.network.src.transport."
+classification = "not_iv_options"
+
+[[classification_rules]]
 surface_id_prefix = "nt.crates.persistence."
 classification = "not_iv_options"
 
@@ -1851,8 +2319,72 @@ surface_id_prefix = "nt.crates.plugin."
 classification = "excluded"
 
 [[classification_rules]]
+surface_id_prefix = "nt.crates.plugin.examples."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.plugin.src.panic."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.plugin.src.bridge."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.plugin.src.lib."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.plugin.src.manifest."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.plugin.src.surfaces."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.plugin.src.loader."
+classification = "excluded"
+
+[[classification_rules]]
 surface_id_prefix = "nt.crates.serialization."
 classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.generated.capnp."
+classification = "not_iv_options"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.arrow.instrument.crypto_option"
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.arrow.instrument.mod."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.arrow.instrument.option_spread."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.arrow.instrument.option_contract."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.arrow.instrument.binary_option."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.arrow.custom."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.arrow.display.instrument."
+classification = "excluded"
+
+[[classification_rules]]
+surface_id_prefix = "nt.crates.serialization.src.capnp.conversions."
+classification = "not_iv_options"
 
 [[classification_rules]]
 surface_id_prefix = "nt.crates.trading.src.examples."

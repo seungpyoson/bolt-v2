@@ -31,6 +31,8 @@ use super::{
 
 const INITIAL_REJECT_COUNT: u64 = 0;
 const REJECT_COUNT_INCREMENT: u64 = 1;
+const RETENTION_MISS_INDEXED_PRODUCT_KINDS: &[IvProductKind] =
+    &[IvProductKind::IvPoint, IvProductKind::IvGreeksPoint];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum IvQuery {
@@ -364,6 +366,25 @@ impl IvQueryStateHandle {
         record_query_rejection_locked(&mut state, provenance, reject_reason);
     }
 
+    fn record_product_query_rejection(
+        &self,
+        product: &IvQueryProduct,
+        reject_reason: IvRejectReason,
+    ) {
+        let mut state = self.write_state();
+        if let Some(provenance) = product.provenance() {
+            record_query_rejection_locked(&mut state, provenance, reject_reason);
+            return;
+        }
+        if let Some(subscription_generation) = product.subscription_generation() {
+            push_query_rejection_decision_locked(
+                &mut state,
+                reject_reason,
+                subscription_generation,
+            );
+        }
+    }
+
     fn record_retention_miss(&self, miss: &IvRetainedProductKey) {
         let mut state = self.write_state();
         if state.retention_misses.contains(miss) {
@@ -386,6 +407,7 @@ impl IvQueryStateHandle {
     pub fn enforce_retention(&self, policy: &IvRetentionPolicy) {
         let mut state = self.write_state();
         record_retention_misses(&mut state, policy);
+        retain_retention_misses(&mut state, policy);
         state.store.enforce_retention(policy);
         truncate_front(&mut state.derived_outputs, policy.max_derived_points);
         truncate_front(&mut state.query_rejections, policy.max_source_health_events);
@@ -399,6 +421,14 @@ impl IvQueryStateHandle {
 
     pub fn derived_outputs(&self) -> Vec<IvDerivedOutput> {
         self.read_state().derived_outputs.clone()
+    }
+
+    pub fn derived_inputs(&self) -> Vec<IvDerivedInputSet> {
+        self.read_state().derived_inputs.clone()
+    }
+
+    pub fn query_rejections(&self) -> Vec<IvPolicyDecision> {
+        self.read_state().query_rejections.clone()
     }
 
     pub fn record_derived_output(&self, output: IvDerivedOutput) {
@@ -577,6 +607,10 @@ impl IvQueryHandle {
         self.state.derived_outputs()
     }
 
+    pub fn query_rejections(&self) -> Vec<IvPolicyDecision> {
+        self.state.query_rejections()
+    }
+
     pub fn authorization(&self) -> &IvSelectorAuthorization {
         &self.authorization
     }
@@ -641,19 +675,21 @@ impl IvQueryHandle {
                 product.selector_fingerprint(),
             );
         if !product_is_authorized {
-            product = self
-                .find_authorized_current_product(query, state)?
-                .ok_or_else(|| {
-                    if product_is_current {
-                        IvQueryError::StrategyNotAuthorized
-                    } else {
-                        if let Some(provenance) = product.provenance() {
-                            self.state
-                                .record_query_rejection(provenance, IvRejectReason::StaleData);
-                        }
-                        IvQueryError::ProductNotFound
-                    }
-                })?;
+            if let Some(authorized_product) = self.find_authorized_current_product(query, state)? {
+                product = authorized_product;
+            } else if product_is_current {
+                self.state.record_product_query_rejection(
+                    &product,
+                    authorization_reject_reason(&self.authorization, query),
+                );
+                return Err(IvQueryError::StrategyNotAuthorized);
+            } else {
+                if let Some(provenance) = product.provenance() {
+                    self.state
+                        .record_query_rejection(provenance, IvRejectReason::StaleData);
+                }
+                return Err(IvQueryError::ProductNotFound);
+            }
         }
 
         if !self.authorization.authorizes(
@@ -662,6 +698,10 @@ impl IvQueryHandle {
             product.source_id(),
             product.selector_fingerprint(),
         ) {
+            self.state.record_product_query_rejection(
+                &product,
+                authorization_reject_reason(&self.authorization, query),
+            );
             return Err(IvQueryError::StrategyNotAuthorized);
         }
 
@@ -917,7 +957,11 @@ impl IvQueryHandle {
             product_kind: input_selector.product_kind(),
             selector: input_selector.clone(),
         };
-        let mut input_products = self.find_projection_products(&input_query, state)?;
+        let mut input_products = self.find_projection_input_products(
+            &input_query,
+            state,
+            projection_input_timestamp_tolerance(policy, state),
+        )?;
         input_products.retain(|product| product_satisfies_current_state(product, state));
         if input_products.is_empty() {
             return Err(IvQueryError::ProductNotFound);
@@ -1005,6 +1049,24 @@ impl IvQueryHandle {
         query: &IvProductQuery,
         state: &IvQueryState,
     ) -> Result<Vec<IvQueryProduct>, IvQueryError> {
+        self.find_projection_products_with_tolerance(query, state, None)
+    }
+
+    fn find_projection_input_products(
+        &self,
+        query: &IvProductQuery,
+        state: &IvQueryState,
+        tolerance_ns: u64,
+    ) -> Result<Vec<IvQueryProduct>, IvQueryError> {
+        self.find_projection_products_with_tolerance(query, state, Some(tolerance_ns))
+    }
+
+    fn find_projection_products_with_tolerance(
+        &self,
+        query: &IvProductQuery,
+        state: &IvQueryState,
+        tolerance_ns: Option<u64>,
+    ) -> Result<Vec<IvQueryProduct>, IvQueryError> {
         match (&query.product_kind, &query.selector) {
             (
                 IvProductKind::IvPoint,
@@ -1023,7 +1085,7 @@ impl IvQueryHandle {
                         point.profile_id == query.profile_id
                             && instrument_ids.contains(&point.instrument_id)
                             && point.basis == *basis
-                            && point.ts_event_ns == *as_of_ns
+                            && timestamp_matches(point.ts_event_ns, *as_of_ns, tolerance_ns)
                             && source_matches(&point.source_id, source_filter)
                     })
                     .cloned()
@@ -1052,7 +1114,7 @@ impl IvQueryHandle {
                         point.point.profile_id == query.profile_id
                             && instrument_ids.contains(&point.point.instrument_id)
                             && point.point.basis == *basis
-                            && point.point.ts_event_ns == *as_of_ns
+                            && timestamp_matches(point.point.ts_event_ns, *as_of_ns, tolerance_ns)
                             && source_matches(&point.point.source_id, source_filter)
                     })
                     .cloned()
@@ -1073,13 +1135,14 @@ impl IvQueryHandle {
                     as_of_ns,
                 },
             ) => {
-                let products = matching_smile_products(
+                let products = matching_smile_products_with_tolerance(
                     state,
                     &query.profile_id,
                     series_id,
                     side,
                     *basis,
                     *as_of_ns,
+                    tolerance_ns,
                 );
                 if products.is_empty() {
                     Err(IvQueryError::ProductNotFound)
@@ -1095,12 +1158,13 @@ impl IvQueryHandle {
                     as_of_ns,
                 },
             ) => {
-                let products = matching_surface_products(
+                let products = matching_surface_products_with_tolerance(
                     state,
                     &query.profile_id,
                     series_selectors,
                     *basis,
                     *as_of_ns,
+                    tolerance_ns,
                 );
                 if products.is_empty() {
                     Err(IvQueryError::ProductNotFound)
@@ -1123,7 +1187,7 @@ impl IvQueryHandle {
                     .filter(|evidence| {
                         evidence.profile_id == query.profile_id
                             && evidence.iv_evidence_kind == *iv_evidence_kind
-                            && evidence.ts_event_ns == *as_of_ns
+                            && timestamp_matches(evidence.ts_event_ns, *as_of_ns, tolerance_ns)
                             && source_matches(&evidence.source_id, source_filter)
                     })
                     .cloned()
@@ -1151,7 +1215,7 @@ impl IvQueryHandle {
                         aggregate.profile_id == query.profile_id
                             && aggregate.aggregate_key == *aggregate_key
                             && aggregate.underlying_selectors == *underlying_selectors
-                            && aggregate.ts_event_ns == *as_of_ns
+                            && timestamp_matches(aggregate.ts_event_ns, *as_of_ns, tolerance_ns)
                     })
                     .cloned()
                     .map(IvQueryProduct::AggregateGreeks)
@@ -1394,6 +1458,29 @@ impl IvQueryProduct {
             Self::SourceHealth(_) => None,
         }
     }
+
+    fn subscription_generation(&self) -> Option<u64> {
+        match self {
+            Self::SourceHealth(health) => Some(health.subscription_generation),
+            _ => self
+                .provenance()
+                .map(|provenance| provenance.subscription_generation),
+        }
+    }
+}
+
+fn authorization_reject_reason(
+    authorization: &IvSelectorAuthorization,
+    query: &IvProductQuery,
+) -> IvRejectReason {
+    if !authorization
+        .allowed_product_kinds
+        .contains(&query.product_kind)
+    {
+        IvRejectReason::UnauthorizedProduct
+    } else {
+        IvRejectReason::SelectorNotAuthorized
+    }
 }
 
 fn matching_smile_products(
@@ -1404,6 +1491,20 @@ fn matching_smile_products(
     basis: IvBasis,
     as_of_ns: UnixNanos,
 ) -> Vec<IvQueryProduct> {
+    matching_smile_products_with_tolerance(
+        state, profile_id, series_id, side, basis, as_of_ns, None,
+    )
+}
+
+fn matching_smile_products_with_tolerance(
+    state: &IvQueryState,
+    profile_id: &str,
+    series_id: &str,
+    side: &Option<String>,
+    basis: IvBasis,
+    as_of_ns: UnixNanos,
+    tolerance_ns: Option<u64>,
+) -> Vec<IvQueryProduct> {
     state
         .store
         .smiles()
@@ -1413,7 +1514,7 @@ fn matching_smile_products(
                 && smile.series_id == series_id
                 && side.as_ref().is_none_or(|side| smile.side == *side)
                 && smile.basis == basis
-                && smile.ts_event_ns == as_of_ns
+                && timestamp_matches(smile.ts_event_ns, as_of_ns, tolerance_ns)
         })
         .cloned()
         .map(IvQueryProduct::Smile)
@@ -1427,6 +1528,24 @@ fn matching_surface_products(
     basis: IvBasis,
     as_of_ns: UnixNanos,
 ) -> Vec<IvQueryProduct> {
+    matching_surface_products_with_tolerance(
+        state,
+        profile_id,
+        series_selectors,
+        basis,
+        as_of_ns,
+        None,
+    )
+}
+
+fn matching_surface_products_with_tolerance(
+    state: &IvQueryState,
+    profile_id: &str,
+    series_selectors: &[String],
+    basis: IvBasis,
+    as_of_ns: UnixNanos,
+    tolerance_ns: Option<u64>,
+) -> Vec<IvQueryProduct> {
     let mut seen = BTreeSet::new();
     state
         .store
@@ -1436,7 +1555,7 @@ fn matching_surface_products(
             smile.profile_id == profile_id
                 && series_selectors.contains(&smile.surface_selector)
                 && smile.basis == basis
-                && smile.ts_event_ns == as_of_ns
+                && timestamp_matches(smile.ts_event_ns, as_of_ns, tolerance_ns)
         })
         .filter_map(|smile| {
             let key = (smile.surface_selector.clone(), smile.source_id.clone());
@@ -1445,10 +1564,26 @@ fn matching_surface_products(
             }
             state
                 .store
-                .surface(&smile.surface_selector, &smile.source_id, basis, as_of_ns)
+                .surface(
+                    &smile.surface_selector,
+                    &smile.source_id,
+                    basis,
+                    smile.ts_event_ns,
+                )
                 .map(IvQueryProduct::Surface)
         })
         .collect()
+}
+
+fn timestamp_matches(
+    candidate_ts: UnixNanos,
+    query_ts: UnixNanos,
+    tolerance_ns: Option<u64>,
+) -> bool {
+    match tolerance_ns {
+        Some(tolerance_ns) => candidate_ts.get().abs_diff(query_ts.get()) <= tolerance_ns,
+        None => candidate_ts == query_ts,
+    }
 }
 
 fn matching_source_health_products(
@@ -1635,6 +1770,23 @@ fn derived_output_matches_input(
         && output.point.convention == inputs.convention
         && output.point.ts_event_ns == inputs.as_of_ns
         && output.helper_identity.helper_policy_id == helper_policy_id
+}
+
+fn projection_input_timestamp_tolerance(policy: &IvProjectionPolicy, state: &IvQueryState) -> u64 {
+    policy
+        .fallback_policy_ref
+        .as_ref()
+        .and_then(|fallback_policy_ref| {
+            state
+                .fallback_policies
+                .iter()
+                .find(|fallback_policy| fallback_policy.policy_id == *fallback_policy_ref)
+        })
+        .map_or(policy.max_projection_input_skew_ns, |fallback_policy| {
+            policy
+                .max_projection_input_skew_ns
+                .max(fallback_policy.maximum_timestamp_skew_ns)
+        })
 }
 
 fn project_or_fallback(
@@ -2044,6 +2196,36 @@ fn record_retention_misses(state: &mut IvQueryState, policy: &IvRetentionPolicy)
     }
 }
 
+fn retain_retention_misses(state: &mut IvQueryState, policy: &IvRetentionPolicy) {
+    let max_len = policy
+        .max_indexed_points
+        .saturating_mul(RETENTION_MISS_INDEXED_PRODUCT_KINDS.len());
+    if state.retention_misses.len() <= max_len {
+        return;
+    }
+    if max_len == 0 {
+        state.retention_misses.clear();
+        return;
+    }
+
+    let mut retained = state.retention_misses.iter().cloned().collect::<Vec<_>>();
+    retained.sort_by(|left, right| {
+        left.ts_event_ns
+            .cmp(&right.ts_event_ns)
+            .then_with(|| {
+                left.subscription_generation
+                    .cmp(&right.subscription_generation)
+            })
+            .then_with(|| left.profile_id.cmp(&right.profile_id))
+            .then_with(|| left.source_id.cmp(&right.source_id))
+            .then_with(|| left.instrument_id.cmp(&right.instrument_id))
+            .then_with(|| left.basis.cmp(&right.basis))
+            .then_with(|| left.product_kind.cmp(&right.product_kind))
+    });
+    let retained_start = retained.len() - max_len;
+    state.retention_misses = retained.split_off(retained_start).into_iter().collect();
+}
+
 fn retained_iv_point_key(point: &IvPoint, product_kind: IvProductKind) -> IvRetainedProductKey {
     IvRetainedProductKey {
         profile_id: point.profile_id.clone(),
@@ -2135,6 +2317,14 @@ fn record_source_rejection_locked(
             subscription_generation,
         });
     }
+    push_query_rejection_decision_locked(state, reject_reason, subscription_generation);
+}
+
+fn push_query_rejection_decision_locked(
+    state: &mut IvQueryState,
+    reject_reason: IvRejectReason,
+    subscription_generation: u64,
+) {
     state
         .query_rejections
         .push(IvPolicyDecision::RejectionDecision {

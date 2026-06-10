@@ -195,7 +195,7 @@ impl IvRuntimeEngine {
                 state.set_quorum_policies(profile.quorum_policies.clone());
                 state.set_helper_policies(profile.helper_policies.clone());
                 state.set_derived_input_policies(profile.derived_input_policies.clone());
-                state.set_derived_inputs(profile.derived_inputs.clone());
+                state.set_derived_inputs(runtime_derived_inputs_from_profile(profile));
                 state.set_current_subscription_generations(current_generations_from_profile(
                     profile,
                 ));

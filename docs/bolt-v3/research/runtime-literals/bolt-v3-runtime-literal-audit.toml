@@ -9009,6 +9009,126 @@ classification = "iv_capability_discovery_literal"
 reason = "IV capability inventory joins local public-symbol evidence for term scanning; this literal is scanner syntax, not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "number"
+literal = '''3'''
+context = '''<= 3'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory treats crate-root ledger prefixes as broad scan metadata; the threshold is scanner structure, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"nt.crates."'''
+context = '''rule.surface_id_prefix.starts_with("nt.crates.")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory identifies NT crate-root prefixes in the Cargo-pinned checkout; this literal is scanner syntax, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"greeks"'''
+context = '''"greeks" | "implied" | "iv" | "volatility" | "smile"'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for material IV/greeks terms hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"implied"'''
+context = '''"greeks" | "implied" | "iv" | "volatility" | "smile"'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for material implied-volatility terms hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"iv"'''
+context = '''"greeks" | "implied" | "iv" | "volatility" | "smile"'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for material IV terms hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"volatility"'''
+context = '''"greeks" | "implied" | "iv" | "volatility" | "smile"'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for material volatility terms hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"smile"'''
+context = '''"greeks" | "implied" | "iv" | "volatility" | "smile"'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for material smile terms hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"surface"'''
+context = '''}) || (candidate.matched_terms.contains("surface")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review when option surface terms are hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"option"'''
+context = '''&& (candidate.matched_terms.contains("option")'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory combines option and surface terms to distinguish material IV capability surfaces from generic public-surface wording; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"options"'''
+context = '''|| candidate.matched_terms.contains("options")))'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory combines options and surface terms to distinguish material IV capability surfaces from generic public-surface wording; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"option_chain"'''
+context = '''"option_chain",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for option-chain surfaces hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"option_greeks"'''
+context = '''"option_greeks",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for option-greeks surfaces hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"option_summary"'''
+context = '''"option_summary",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for option-summary surfaces hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"option_surface"'''
+context = '''"option_surface",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for option-surface candidates hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
+literal = '''"imply_vol"'''
+context = '''"imply_vol",'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory requires exact ledger review for implied-volatility helper surfaces hidden by broad crate-prefix rules; this literal is scanner taxonomy, not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_iv/config.rs"
 kind = "number"
 literal = '''1'''

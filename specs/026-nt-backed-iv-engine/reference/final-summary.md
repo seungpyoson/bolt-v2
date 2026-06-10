@@ -24,7 +24,7 @@ The exact final pushed SHA cannot be embedded in the commit that contains this f
 - Strategy query handle registration through `StrategyRegistrationContext::iv_query_handles`.
 - Live-node IV startup/stop lifecycle planning through `IvEngineLifecyclePlan` and `plan_iv_engine_lifecycle`, plus IV reload planning and runtime IV root reload state updates for existing query handles. This PR does not introduce a production config hot-reload trigger in the live-node runner.
 - IV source-fence checks wired through `just source-fence`.
-- Collateral CI installer hardening: raw GitHub release downloads for `just`/`cargo-zigbuild` were replaced with the commit-pinned `taiki-e/install-action` because those installer failures blocked exact-head IV CI verification on this branch.
+- Collateral CI installer refactor: raw GitHub release downloads for `just`/`cargo-zigbuild` were replaced with commit-pinned `taiki-e/install-action` because those installer failures blocked exact-head IV CI verification on this branch. This intentionally moves installer resolution from repo-owned checksum variables to a pinned third-party action manifest and is included here as declared CI unblocker scope, not IV runtime behavior.
 
 ## NT APIs Used
 

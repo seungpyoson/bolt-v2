@@ -127,9 +127,7 @@ impl IvCapabilityLedger {
 
     pub fn classification_for(&self, surface_id: &str) -> Option<CapabilityClassification> {
         self.classifications.get(surface_id).copied().or_else(|| {
-            self.classification_rules
-                .iter()
-                .find(|rule| surface_id.starts_with(&rule.surface_id_prefix))
+            matching_classification_rule(&self.classification_rules, surface_id)
                 .map(|rule| rule.classification)
         })
     }
@@ -140,9 +138,7 @@ impl IvCapabilityLedger {
             .find(|surface| surface.surface_id == surface_id)
             .and_then(|surface| surface.engine_mapping.as_ref())
             .or_else(|| {
-                self.engine_mapping_rules
-                    .iter()
-                    .find(|rule| surface_id.starts_with(&rule.surface_id_prefix))
+                matching_engine_mapping_rule(&self.engine_mapping_rules, surface_id)
                     .map(|rule| &rule.engine_mapping)
             })
     }
@@ -167,11 +163,9 @@ impl IvCapabilityLedger {
                 continue;
             }
 
-            let rule_classification = self
-                .classification_rules
-                .iter()
-                .find(|rule| candidate.surface_id.starts_with(&rule.surface_id_prefix))
-                .map(|rule| rule.classification);
+            let classification_rule =
+                matching_classification_rule(&self.classification_rules, &candidate.surface_id);
+            let rule_classification = classification_rule.map(|rule| rule.classification);
 
             if matches!(
                 rule_classification,
@@ -179,6 +173,13 @@ impl IvCapabilityLedger {
                     | Some(CapabilityClassification::NotIvOptions)
                     | Some(CapabilityClassification::Excluded)
             ) {
+                if classification_rule
+                    .is_some_and(|rule| broad_crate_rule_requires_exact_review(rule, candidate))
+                {
+                    return Err(IvCapabilityError::UnclassifiedCandidate {
+                        surface_id: candidate.surface_id.clone(),
+                    });
+                }
                 continue;
             }
 
@@ -189,6 +190,63 @@ impl IvCapabilityLedger {
 
         Ok(())
     }
+}
+
+fn is_broad_crate_classification_rule(rule: &IvCapabilityClassificationRule) -> bool {
+    rule.surface_id_prefix.starts_with("nt.crates.")
+        && rule
+            .surface_id_prefix
+            .split('.')
+            .filter(|segment| !segment.is_empty())
+            .count()
+            <= 3
+}
+
+fn broad_crate_rule_requires_exact_review(
+    rule: &IvCapabilityClassificationRule,
+    candidate: &IvCapabilityCandidate,
+) -> bool {
+    is_broad_crate_classification_rule(rule) && candidate_requires_exact_review(candidate)
+}
+
+fn candidate_requires_exact_review(candidate: &IvCapabilityCandidate) -> bool {
+    candidate.matched_terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "greeks" | "implied" | "iv" | "volatility" | "smile"
+        )
+    }) || (candidate.matched_terms.contains("surface")
+        && (candidate.matched_terms.contains("option")
+            || candidate.matched_terms.contains("options")))
+        || [
+            "option_chain",
+            "option_greeks",
+            "option_summary",
+            "option_surface",
+            "imply_vol",
+        ]
+        .iter()
+        .any(|needle| candidate.surface_id.contains(needle))
+}
+
+fn matching_classification_rule<'a>(
+    rules: &'a [IvCapabilityClassificationRule],
+    surface_id: &str,
+) -> Option<&'a IvCapabilityClassificationRule> {
+    rules
+        .iter()
+        .filter(|rule| surface_id.starts_with(&rule.surface_id_prefix))
+        .max_by_key(|rule| rule.surface_id_prefix.len())
+}
+
+fn matching_engine_mapping_rule<'a>(
+    rules: &'a [IvCapabilityEngineMappingRule],
+    surface_id: &str,
+) -> Option<&'a IvCapabilityEngineMappingRule> {
+    rules
+        .iter()
+        .filter(|rule| surface_id.starts_with(&rule.surface_id_prefix))
+        .max_by_key(|rule| rule.surface_id_prefix.len())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

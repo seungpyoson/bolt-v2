@@ -341,6 +341,52 @@ fn ledger_requires_exact_review_for_supported_candidates() {
 }
 
 #[test]
+fn ledger_rejects_new_candidates_matched_only_by_broad_crate_prefix() {
+    let candidate = IvCapabilityCandidate {
+        surface_id: "nt.crates.adapters.deribit.src.data.new_option_surface".to_string(),
+        evidence_path: "crates/adapters/deribit/src/data.rs".to_string(),
+        symbol: "NewOptionSurface".to_string(),
+        matched_terms: BTreeSet::from(["option".to_string(), "surface".to_string()]),
+        seed_family: None,
+        engine_mapping: None,
+    };
+    let mut ledger = IvCapabilityLedger::empty();
+    ledger.classification_rules.push(
+        bolt_v2::bolt_v3_iv::capability::IvCapabilityClassificationRule {
+            surface_id_prefix: "nt.crates.adapters.".to_string(),
+            classification: CapabilityClassification::Excluded,
+        },
+    );
+
+    assert!(matches!(
+        ledger.validate_candidates(std::slice::from_ref(&candidate)),
+        Err(IvCapabilityError::UnclassifiedCandidate { surface_id })
+            if surface_id == candidate.surface_id
+    ));
+}
+
+#[test]
+fn broad_adapter_exclusion_can_cover_non_iv_options_false_positives() {
+    let candidate = IvCapabilityCandidate {
+        surface_id: "nt.crates.adapters.example.src.websocket.client.with_options".to_string(),
+        evidence_path: "crates/adapters/example/src/websocket/client.rs".to_string(),
+        symbol: "with_options".to_string(),
+        matched_terms: BTreeSet::from(["options".to_string()]),
+        seed_family: Some(SeedFamily::Adapter),
+        engine_mapping: None,
+    };
+    let mut ledger = IvCapabilityLedger::empty();
+    ledger.classification_rules.push(
+        bolt_v2::bolt_v3_iv::capability::IvCapabilityClassificationRule {
+            surface_id_prefix: "nt.crates.adapters.".to_string(),
+            classification: CapabilityClassification::Excluded,
+        },
+    );
+
+    ledger.validate_candidates(&[candidate]).unwrap();
+}
+
+#[test]
 fn ledger_requires_engine_mapping_for_supported_candidates() {
     let candidate = IvCapabilityCandidate {
         surface_id: "nt.crates.model.src.data.greeks.imply_vol_and_greeks".to_string(),
@@ -389,5 +435,25 @@ fn capability_ledger_classifies_whole_cargo_resolved_nt_checkout() {
     ))
     .unwrap();
 
-    fixture.validate_candidates(&candidates).unwrap();
+    let validation_errors = candidates
+        .iter()
+        .filter_map(|candidate| {
+            fixture
+                .validate_candidates(std::slice::from_ref(candidate))
+                .err()
+                .map(|error| {
+                    (
+                        candidate.surface_id.clone(),
+                        candidate.matched_terms.clone(),
+                        candidate.seed_family,
+                        error,
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        validation_errors.is_empty(),
+        "whole-checkout capability ledger has unresolved candidates: {:#?}",
+        validation_errors.iter().take(100).collect::<Vec<_>>()
+    );
 }

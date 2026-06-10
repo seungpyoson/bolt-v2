@@ -1,0 +1,5 @@
+plan_id = "source-universe-conversion-run-plan-binance-data-vision-trades-2026-03-01-all-instruments"
+source_universe_object_gates_path = "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json"
+output_dir = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/binance-data-vision-trades-2026-03-01-all-instruments/run-plan"
+max_objects_per_run = 500
+max_source_bytes_per_run = 2000000000

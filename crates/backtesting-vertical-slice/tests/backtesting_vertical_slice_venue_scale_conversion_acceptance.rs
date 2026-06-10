@@ -171,6 +171,8 @@ scope_label = "Binance Data Vision daily trades all instruments 2026-03-01"
 status = "source_only"
 source_universe_manifest_path = "{binance_source_manifest}"
 source_universe_conversion_queue_path = "{binance_conversion_queue}"
+source_universe_object_gates_path = "{binance_object_gates}"
+source_universe_conversion_run_plan_path = "{binance_conversion_run_plan}"
 
 [[venue.universe]]
 universe_id = "binance-public-archive-full-current-data"
@@ -244,6 +246,12 @@ blocking_issues = [
             binance_conversion_queue = reference_root
                 .join("source-universe-conversion-queues/binance-data-vision-trades-2026-03-01-all-instruments/queue/source-universe-conversion-queue.json")
                 .display(),
+            binance_object_gates = reference_root
+                .join("source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json")
+                .display(),
+            binance_conversion_run_plan = reference_root
+                .join("source-universe-conversion-run-plans/binance-data-vision-trades-2026-03-01-all-instruments/run-plan/source-universe-conversion-run-plan.json")
+                .display(),
             bybit_completion_ledger = reference_root
                 .join("backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01/ledger/backfill-conversion-completion-ledger.json")
                 .display(),
@@ -285,7 +293,7 @@ blocking_issues = [
     assert_eq!(ledger.total_converted_canonical_rows, 4_602_457);
     assert_eq!(ledger.total_converted_nt_catalog_rows, 4_602_458);
     assert_eq!(ledger.total_source_only_objects, 7_908);
-    assert_eq!(ledger.total_source_only_object_gates, 5_857);
+    assert_eq!(ledger.total_source_only_object_gates, 7_908);
     assert_eq!(ledger.total_source_only_accepted_bytes, 22_057_801_068);
 
     let binance = ledger
@@ -302,6 +310,7 @@ blocking_issues = [
     assert_eq!(binance.blocked_universes, 1);
     assert_eq!(binance.total_converted_canonical_rows, 4_470_719);
     assert_eq!(binance.total_source_only_objects, 2_051);
+    assert_eq!(binance.total_source_only_object_gates, 2_051);
     assert_eq!(binance.total_source_only_accepted_bytes, 1_748_721_970);
     let binance_source_only = binance
         .universes
@@ -340,6 +349,30 @@ blocking_issues = [
         binance_source_only.source_conversion_queue_total_bytes,
         1_748_721_970
     );
+    assert_eq!(
+        binance_source_only.source_object_gate_id.as_deref(),
+        Some("source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments")
+    );
+    assert_eq!(binance_source_only.source_object_gate_count, 2_051);
+    assert_eq!(
+        binance_source_only.source_object_gate_source_binding_count,
+        5
+    );
+    assert_eq!(
+        binance_source_only.source_conversion_run_plan_id.as_deref(),
+        Some(
+            "source-universe-conversion-run-plan-binance-data-vision-trades-2026-03-01-all-instruments"
+        )
+    );
+    assert_eq!(binance_source_only.source_conversion_run_count, 8);
+    assert_eq!(
+        binance_source_only.source_conversion_run_object_count,
+        2_051
+    );
+    assert_eq!(
+        binance_source_only.source_conversion_run_planned_bytes,
+        1_748_721_970
+    );
     assert!(
         binance_source_only
             .artifact_refs
@@ -351,6 +384,18 @@ blocking_issues = [
             .artifact_refs
             .iter()
             .any(|artifact| artifact.role == "source_universe_conversion_queue")
+    );
+    assert!(
+        binance_source_only
+            .artifact_refs
+            .iter()
+            .any(|artifact| artifact.role == "source_universe_object_gates")
+    );
+    assert!(
+        binance_source_only
+            .artifact_refs
+            .iter()
+            .any(|artifact| artifact.role == "source_universe_conversion_run_plan")
     );
     let binance_full = binance
         .universes

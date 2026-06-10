@@ -64,4 +64,5 @@ pub mod source_selection_readiness;
 pub mod source_universe_conversion_queue;
 pub mod source_universe_conversion_run_plan;
 pub mod source_universe_object_gates;
+pub mod source_universe_source_proofs;
 pub mod venue_scale_conversion_acceptance;

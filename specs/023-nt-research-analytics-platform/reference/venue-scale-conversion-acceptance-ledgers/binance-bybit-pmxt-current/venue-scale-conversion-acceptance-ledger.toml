@@ -17,6 +17,8 @@ scope_label = "Binance Data Vision daily trades all instruments 2026-03-01"
 status = "source_only"
 source_universe_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/binance-data-vision-trades-object-manifest.json"
 source_universe_conversion_queue_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/binance-data-vision-trades-2026-03-01-all-instruments/queue/source-universe-conversion-queue.json"
+source_universe_object_gates_path = "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json"
+source_universe_conversion_run_plan_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/binance-data-vision-trades-2026-03-01-all-instruments/run-plan/source-universe-conversion-run-plan.json"
 
 [[venue.universe]]
 universe_id = "binance-public-archive-full-current-data"

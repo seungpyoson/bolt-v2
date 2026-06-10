@@ -1,0 +1,154 @@
+use std::{fs, path::Path};
+
+use backtesting_vertical_slice::{
+    source_proof::{SourceProofReport, SourceProofStatus},
+    source_universe_source_proofs::{
+        SourceUniverseSourceProofSet, write_source_universe_source_proof_set_from_spec_file,
+    },
+};
+
+#[test]
+fn binance_all_instrument_category_source_proofs_are_materialized_from_manifests() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let output_dir = temp_dir.path().join("source-proofs");
+    let spec_path = temp_dir.path().join("source-universe-source-proofs.toml");
+    let manifest_root = reference_root
+        .join("backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/category-manifests");
+
+    fs::write(
+        &spec_path,
+        format!(
+            r#"
+proof_set_id = "source-universe-source-proofs-binance-data-vision-trades-2026-03-01-all-instruments"
+output_dir = "{output_dir}"
+venue = "binance"
+table_family = "trades"
+manifest_table_family = "native_trades"
+source_candidate_class = "official_free"
+source_selection_status = "ACCEPTED_LOWER_FIDELITY"
+usage_scope = "canonical_backfill_input"
+fidelity_class = "TRADE_REPLAY"
+acceptance_mode = "manual"
+accepted_by = "backtesting-vertical-slice-operator"
+accepted_at_utc = "2026-06-10T00:00:00Z"
+requested_start_utc = "2026-03-01T00:00:00Z"
+requested_end_utc = "2026-03-02T00:00:00Z"
+coverage_start_utc = "2026-03-01T00:00:00Z"
+coverage_end_utc = "2026-03-02T00:00:00Z"
+license_ref = "https://github.com/binance/binance-public-data README: Licence MIT; observed 2026-06-07"
+license_scope = "public"
+retention_ref = "https://github.com/binance/binance-public-data README: daily/monthly public archive and checksum sidecars; observed 2026-06-07"
+cost_ref = "cost://free-public-archive"
+gap_policy_id = ""
+raw_sample_selection = "first_manifest_record"
+schema_sample_policy = "raw_sample"
+
+[required_checks]
+source_access = "Binance Data Vision source URLs are enumerated in category manifest {{manifest_id}}"
+license = "Binance public data README license review permits BTE canonical/backtest input"
+schema = "Schema columns are committed in category manifest {{manifest_id}}"
+time_semantics = "Binance native trade time column maps to Unix milliseconds"
+instrument_universe = "{{instrument_universe_id}} category={{category}} instrument_count={{instrument_count}}"
+coverage = "category={{category}} object_count={{object_count}} archive_date_range=[{{first_archive_date}},{{last_archive_date}}]"
+retention_freshness = "Binance public data archive retention reviewed 2026-06-07"
+granularity = "Binance Data Vision daily trades files are native trade prints"
+completeness = "object_count={{object_count}} compressed_bytes={{accepted_bytes}} from committed category manifest"
+nt_mapping = "nautilus_model::data::TradeTick; converter mappings are committed for Binance native trade CSV contracts"
+cost = "cost://free-public-archive"
+storage = "raw objects are staged under category manifest {{manifest_id}}"
+
+[[claim_limit]]
+id = "source-proof-claim-limit-001"
+severity = "blocking"
+claim = "No execution-quality, queue-position, or order-book-liquidity claims."
+reason = "TRADE_REPLAY source proof is native trade-print replay, not order-book replay."
+evidence_ref = "source-proof://{{source_proof_id}}/fidelity"
+
+[[claim_limit]]
+id = "source-proof-claim-limit-002"
+severity = "blocking"
+claim = "No L2/L3 order-book replay claims from trade prints."
+reason = "The accepted category manifest contains trade prints and no L2/L3 order-book deltas or depth snapshots."
+evidence_ref = "source-proof://{{source_proof_id}}/schema"
+
+[[claim_limit]]
+id = "source-proof-claim-limit-003"
+severity = "blocking"
+claim = "No historical venue-rule, fillability, rounding, sizing, or execution-quality claims."
+reason = "The category proof establishes native trade-print replay input only; dated venue-rule and execution-admissibility evidence remains outside this proof."
+evidence_ref = "source-proof://{{source_proof_id}}/claim-limits"
+
+[[source_binding]]
+source_binding = "binance-spot-native-trades"
+source_proof_id = "source-proof-binance-spot-native-trades-2026-03-01-all-instruments"
+product_category = "spot"
+instrument_universe_id = "binance-spot-instruments-2026-03-01-all-instruments"
+category_manifest_path = "{manifest_root}/binance-data-vision-trades-object-manifest-spot.json"
+
+[[source_binding]]
+source_binding = "binance-usd-m-perpetual-native-trades"
+source_proof_id = "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments"
+product_category = "usd_m_perpetual"
+instrument_universe_id = "binance-usd-m-perpetual-instruments-2026-03-01-all-instruments"
+category_manifest_path = "{manifest_root}/binance-data-vision-trades-object-manifest-usd_m_perpetual.json"
+
+[[source_binding]]
+source_binding = "binance-usd-m-delivery-native-trades"
+source_proof_id = "source-proof-binance-usd-m-delivery-native-trades-2026-03-01-all-instruments"
+product_category = "usd_m_delivery"
+instrument_universe_id = "binance-usd-m-delivery-instruments-2026-03-01-all-instruments"
+category_manifest_path = "{manifest_root}/binance-data-vision-trades-object-manifest-usd_m_delivery.json"
+
+[[source_binding]]
+source_binding = "binance-coin-m-perpetual-native-trades"
+source_proof_id = "source-proof-binance-coin-m-perpetual-native-trades-2026-03-01-all-instruments"
+product_category = "coin_m_perpetual"
+instrument_universe_id = "binance-coin-m-perpetual-instruments-2026-03-01-all-instruments"
+category_manifest_path = "{manifest_root}/binance-data-vision-trades-object-manifest-coin_m_perpetual.json"
+
+[[source_binding]]
+source_binding = "binance-coin-m-delivery-native-trades"
+source_proof_id = "source-proof-binance-coin-m-delivery-native-trades-2026-03-01-all-instruments"
+product_category = "coin_m_delivery"
+instrument_universe_id = "binance-coin-m-delivery-instruments-2026-03-01-all-instruments"
+category_manifest_path = "{manifest_root}/binance-data-vision-trades-object-manifest-coin_m_delivery.json"
+"#,
+            output_dir = output_dir.display(),
+            manifest_root = manifest_root.display(),
+        ),
+    )
+    .expect("write spec");
+
+    let artifact = write_source_universe_source_proof_set_from_spec_file(&spec_path)
+        .expect("source proof set writes");
+    let proof_set: SourceUniverseSourceProofSet =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read proof set"))
+            .expect("parse proof set");
+
+    assert_eq!(proof_set.proof_count, 5);
+    assert_eq!(proof_set.total_completed_objects, 2_051);
+    assert_eq!(proof_set.total_accepted_bytes, 1_748_721_970);
+    assert_eq!(proof_set.accepted_proof_count, 5);
+
+    let spot_path =
+        output_dir.join("source-proof-binance-spot-native-trades-2026-03-01-all-instruments.json");
+    let spot: SourceProofReport =
+        serde_json::from_slice(&fs::read(spot_path).expect("read spot proof"))
+            .expect("parse spot proof");
+    assert_eq!(spot.status, SourceProofStatus::Accepted);
+    assert_eq!(spot.source_binding, "binance-spot-native-trades");
+    assert_eq!(spot.product_family, "spot");
+    assert_eq!(spot.product_category, "spot");
+    assert_eq!(
+        spot.acceptance_scope.as_ref().unwrap().completed_objects,
+        1_416
+    );
+    assert_eq!(
+        spot.raw_sample_hash,
+        "054fa3d832a2e262855e93f46f636e66b1bac17b29caf4cd6e4a597b494422e4"
+    );
+    spot.evaluate_acceptance()
+        .expect("generated spot proof is accepted by source-proof gate");
+}

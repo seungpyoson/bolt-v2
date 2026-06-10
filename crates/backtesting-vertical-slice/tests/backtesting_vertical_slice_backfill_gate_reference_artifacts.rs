@@ -2242,7 +2242,18 @@ fn bybit_public_archive_tick_trade_source_universe_covers_all_staged_categories_
         vec!["inverse", "linear", "spot"]
     );
 
-    for (category, source_binding, instruments, objects, bytes, sample_symbol) in [
+    for (
+        category,
+        source_binding,
+        instruments,
+        objects,
+        bytes,
+        sample_symbol,
+        timestamp_unit,
+        trade_id_column,
+        size_column,
+        schema_column_count,
+    ) in [
         (
             "spot",
             "bybit-spot-tick-trades",
@@ -2250,6 +2261,10 @@ fn bybit_public_archive_tick_trade_source_universe_covers_all_staged_categories_
             3_304,
             1_264_254_131,
             "BNBUSDC",
+            "milliseconds",
+            "id",
+            "volume",
+            6,
         ),
         (
             "linear",
@@ -2258,6 +2273,10 @@ fn bybit_public_archive_tick_trade_source_universe_covers_all_staged_categories_
             1_851,
             18_419_832_484,
             "BTCUSDT",
+            "decimal_seconds",
+            "trdMatchID",
+            "size",
+            11,
         ),
         (
             "inverse",
@@ -2266,6 +2285,10 @@ fn bybit_public_archive_tick_trade_source_universe_covers_all_staged_categories_
             702,
             624_992_483,
             "BTCUSD",
+            "decimal_seconds",
+            "trdMatchID",
+            "size",
+            11,
         ),
     ] {
         let category_entry = categories_by_name
@@ -2287,6 +2310,25 @@ fn bybit_public_archive_tick_trade_source_universe_covers_all_staged_categories_
         );
         assert_eq!(category_entry["object_count"].as_u64(), Some(objects));
         assert_eq!(category_entry["compressed_bytes"].as_u64(), Some(bytes));
+        assert_eq!(
+            category_entry["schema_columns"]
+                .as_array()
+                .expect("schema columns array")
+                .len(),
+            schema_column_count
+        );
+        assert_eq!(
+            category_entry["converter_csv"]["timestamp_unit"].as_str(),
+            Some(timestamp_unit)
+        );
+        assert_eq!(
+            category_entry["converter_csv"]["trade_id_column"].as_str(),
+            Some(trade_id_column)
+        );
+        assert_eq!(
+            category_entry["converter_csv"]["size_column"].as_str(),
+            Some(size_column)
+        );
         let instrument_entries = category_entry["instruments"]
             .as_array()
             .expect("category instruments array");

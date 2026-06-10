@@ -704,7 +704,31 @@
           "compressed_bytes": 63771331,
           "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=XRPUSDT/object=af00dd9bb8358f0f23f6a5991a82af3d844e42325a01407cac0282387d29cf1d.csv.gz"
         }
-      ]
+      ],
+      "schema_columns": [
+        "id",
+        "timestamp",
+        "price",
+        "volume",
+        "side",
+        "rpi"
+      ],
+      "converter_csv": {
+        "has_headers": true,
+        "trade_id_column": "id",
+        "timestamp_column": "timestamp",
+        "timestamp_unit": "milliseconds",
+        "price_column": "price",
+        "size_column": "volume",
+        "side_column": "side",
+        "buyer_side_values": [
+          "buy"
+        ],
+        "seller_side_values": [
+          "sell"
+        ]
+      },
+      "sample_public_url": "https://public.bybit.com/spot/1INCHUSDT/1INCHUSDT_2025-06-01.csv.gz"
     },
     {
       "category": "linear",
@@ -1136,7 +1160,36 @@
           "compressed_bytes": 183456,
           "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-08/symbol=XRPUSDT-26JUN26/object=95ea3f0aad7d2aaba81b4b79e47331ce680d0f577e100e667ee9f50e856006c5.csv.gz"
         }
-      ]
+      ],
+      "schema_columns": [
+        "timestamp",
+        "symbol",
+        "side",
+        "size",
+        "price",
+        "tickDirection",
+        "trdMatchID",
+        "grossValue",
+        "homeNotional",
+        "foreignNotional",
+        "RPI"
+      ],
+      "converter_csv": {
+        "has_headers": true,
+        "trade_id_column": "trdMatchID",
+        "timestamp_column": "timestamp",
+        "timestamp_unit": "decimal_seconds",
+        "price_column": "price",
+        "size_column": "size",
+        "side_column": "side",
+        "buyer_side_values": [
+          "Buy"
+        ],
+        "seller_side_values": [
+          "Sell"
+        ]
+      },
+      "sample_public_url": "https://public.bybit.com/trading/1000000BABYDOGEUSDT/1000000BABYDOGEUSDT2025-06-01.csv.gz"
     },
     {
       "category": "inverse",
@@ -1260,7 +1313,36 @@
           "compressed_bytes": 71822716,
           "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2026-03-01/symbol=XRPUSD/object=b3596c9956e5156a7efe30b21d4ba41684ca2d413705a0553999db06673af434.csv.gz"
         }
-      ]
+      ],
+      "schema_columns": [
+        "timestamp",
+        "symbol",
+        "side",
+        "size",
+        "price",
+        "tickDirection",
+        "trdMatchID",
+        "grossValue",
+        "homeNotional",
+        "foreignNotional",
+        "RPI"
+      ],
+      "converter_csv": {
+        "has_headers": true,
+        "trade_id_column": "trdMatchID",
+        "timestamp_column": "timestamp",
+        "timestamp_unit": "decimal_seconds",
+        "price_column": "price",
+        "size_column": "size",
+        "side_column": "side",
+        "buyer_side_values": [
+          "Buy"
+        ],
+        "seller_side_values": [
+          "Sell"
+        ]
+      },
+      "sample_public_url": "https://public.bybit.com/trading/AAVEUSD/AAVEUSD2025-06-01.csv.gz"
     }
   ],
   "unstaged_categories": [

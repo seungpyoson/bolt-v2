@@ -43,6 +43,8 @@ pub const TRADE_TABLE_FAMILY: &str = "trades";
 /// Native trade prints only; aggregated prints must never satisfy this table.
 pub const TRADE_SOURCE_TYPE_NATIVE: &str = "native";
 
+const NANOS_PER_SECOND: i64 = 1_000_000_000;
+
 /// Expected sample raw header, in order.
 #[cfg(test)]
 pub const SAMPLE_SPOT_TICK_TRADES_HEADER: [&str; 6] =
@@ -138,6 +140,7 @@ pub struct CsvTradeMappingConfig {
 #[serde(rename_all = "snake_case")]
 pub enum CsvTimestampUnit {
     Seconds,
+    DecimalSeconds,
     Milliseconds,
     Microseconds,
     Nanoseconds,
@@ -299,9 +302,14 @@ impl TradeAggressorSide {
 }
 
 impl CsvTimestampUnit {
-    fn to_nanos(self, value: i64) -> Result<i64> {
+    fn parse_to_nanos(self, raw: &str) -> Result<i64> {
+        if self == Self::DecimalSeconds {
+            return decimal_seconds_to_nanos(raw);
+        }
+        let value: i64 = raw.parse().context("timestamp is not an integer")?;
         let multiplier = match self {
-            Self::Seconds => 1_000_000_000,
+            Self::Seconds => NANOS_PER_SECOND,
+            Self::DecimalSeconds => unreachable!("decimal seconds handled before integer parsing"),
             Self::Milliseconds => 1_000_000,
             Self::Microseconds => 1_000,
             Self::Nanoseconds => 1,
@@ -310,6 +318,58 @@ impl CsvTimestampUnit {
             .checked_mul(multiplier)
             .context("timestamp overflows nanoseconds")
     }
+}
+
+fn decimal_seconds_to_nanos(raw: &str) -> Result<i64> {
+    let raw = raw.trim();
+    ensure!(!raw.is_empty(), "timestamp must not be empty");
+    ensure!(!raw.starts_with('-'), "timestamp must not be negative");
+    let (whole_seconds, fractional_seconds) = raw.split_once('.').unwrap_or((raw, ""));
+    ensure!(
+        !whole_seconds.is_empty(),
+        "timestamp seconds must not be empty"
+    );
+    ensure!(
+        whole_seconds.chars().all(|value| value.is_ascii_digit()),
+        "timestamp seconds must be decimal digits"
+    );
+    ensure!(
+        fractional_seconds
+            .chars()
+            .all(|value| value.is_ascii_digit()),
+        "timestamp fractional seconds must be decimal digits"
+    );
+
+    let whole_seconds: i64 = whole_seconds
+        .parse()
+        .context("timestamp seconds overflow i64")?;
+    let whole_nanos = whole_seconds
+        .checked_mul(NANOS_PER_SECOND)
+        .context("timestamp seconds overflow nanoseconds")?;
+    let nanos_digits = if fractional_seconds.len() > 9 {
+        let (nanos_digits, sub_nanos_digits) = fractional_seconds.split_at(9);
+        ensure!(
+            sub_nanos_digits.chars().all(|value| value == '0'),
+            "timestamp has sub-nanosecond precision"
+        );
+        nanos_digits
+    } else {
+        fractional_seconds
+    };
+    let mut padded_nanos = nanos_digits.to_string();
+    while padded_nanos.len() < 9 {
+        padded_nanos.push('0');
+    }
+    let fractional_nanos = if padded_nanos.is_empty() {
+        0
+    } else {
+        padded_nanos
+            .parse::<i64>()
+            .context("timestamp fractional seconds overflow i64")?
+    };
+    whole_nanos
+        .checked_add(fractional_nanos)
+        .context("timestamp overflows nanoseconds")
 }
 
 /// Venue-native instrument identity for the normalized rows.
@@ -632,10 +692,10 @@ pub fn normalize_csv_native_trades(
 
         let trade_id = fields.get(trade_id_index).context("missing trade id")?;
         let timestamp_raw = fields.get(timestamp_index).context("missing timestamp")?;
-        let timestamp: i64 = timestamp_raw
-            .parse()
+        let event_time = mapping
+            .timestamp_unit
+            .parse_to_nanos(timestamp_raw)
             .with_context(|| format!("row {index}: invalid timestamp {timestamp_raw:?}"))?;
-        let event_time = mapping.timestamp_unit.to_nanos(timestamp)?;
         let price_raw = fields.get(price_index).context("missing price")?;
         let size_raw = fields.get(size_index).context("missing size")?;
         let side = TradeAggressorSide::parse_from_mapping(
@@ -1404,6 +1464,93 @@ mod tests {
         assert_eq!(table.rows[0].price, "617.34000000");
         assert_eq!(table.rows[0].size, "1.61900000");
         assert_eq!(table.rows[1].aggressor_side, "BUYER");
+    }
+
+    #[test]
+    fn normalizes_bybit_derivative_trades_with_decimal_second_timestamps() {
+        let mut accepted = accepted_dataset();
+        accepted.source_binding = "bybit-linear-tick-trades".to_string();
+        accepted.product_family = "linear".to_string();
+        accepted.product_category = "linear".to_string();
+        accepted.object.source_url = "https://public.bybit.com/trading/1000000BABYDOGEUSDT/1000000BABYDOGEUSDT2025-06-01.csv.gz".to_string();
+        accepted.object.archive_date = "2025-06-01".to_string();
+        accepted.object.schema_columns = [
+            "timestamp",
+            "symbol",
+            "side",
+            "size",
+            "price",
+            "tickDirection",
+            "trdMatchID",
+            "grossValue",
+            "homeNotional",
+            "foreignNotional",
+            "RPI",
+        ]
+        .into_iter()
+        .map(ToString::to_string)
+        .collect();
+        let identity = CanonicalInstrumentIdentity {
+            instrument_id: "1000000BABYDOGEUSDT".to_string(),
+            venue_symbol: "1000000BABYDOGEUSDT".to_string(),
+            nt_instrument_id: "1000000BABYDOGEUSDT.BYBIT".to_string(),
+        };
+        let mapping = CsvTradeMappingConfig {
+            has_headers: true,
+            trade_id_column: "trdMatchID".to_string(),
+            timestamp_column: "timestamp".to_string(),
+            timestamp_unit: CsvTimestampUnit::DecimalSeconds,
+            price_column: "price".to_string(),
+            size_column: "size".to_string(),
+            side_column: "side".to_string(),
+            buyer_side_values: vec!["Buy".to_string()],
+            seller_side_values: vec!["Sell".to_string()],
+        };
+        let csv = "timestamp,symbol,side,size,price,tickDirection,trdMatchID,grossValue,homeNotional,foreignNotional,RPI\n\
+            1748736005.0613,1000000BABYDOGEUSDT,Sell,1000,0.0013924,MinusTick,b765b98b-cd17-575a-85ed-69204ad090f2,1.3924e+08,1000,1.3924,0\n\
+            1748736005.061300001,1000000BABYDOGEUSDT,Buy,4100,0.0013919,MinusTick,3bd2f40d-3490-5cae-93c0-cb7aba96b834,5.70679e+08,4100,5.70679,0\n";
+
+        let table =
+            normalize_csv_native_trades(&accepted, &identity, &mapping, csv, 42, "ingest-run-test")
+                .expect("normalize Bybit derivative csv");
+
+        assert_eq!(table.partition.product_family, "linear");
+        assert_eq!(table.partition.dt, "2025-06-01");
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(
+            table.rows[0].trade_id,
+            "b765b98b-cd17-575a-85ed-69204ad090f2"
+        );
+        assert_eq!(table.rows[0].event_time, 1_748_736_005_061_300_000);
+        assert_eq!(table.rows[0].aggressor_side, "SELLER");
+        assert_eq!(table.rows[0].size, "1000");
+        assert_eq!(table.rows[0].notional, "1.3924");
+        assert_eq!(table.rows[1].event_time, 1_748_736_005_061_300_001);
+        assert_eq!(table.rows[1].aggressor_side, "BUYER");
+        assert_eq!(
+            table.rows[0].canonical_instrument_key,
+            "bybit/linear/1000000BABYDOGEUSDT"
+        );
+    }
+
+    #[test]
+    fn decimal_second_timestamp_unit_is_config_owned() {
+        let mapping: CsvTradeMappingConfig = toml::from_str(
+            r#"
+has_headers = true
+trade_id_column = "trdMatchID"
+timestamp_column = "timestamp"
+timestamp_unit = "decimal_seconds"
+price_column = "price"
+size_column = "size"
+side_column = "side"
+buyer_side_values = ["Buy"]
+seller_side_values = ["Sell"]
+"#,
+        )
+        .expect("mapping parses from TOML");
+
+        assert_eq!(mapping.timestamp_unit, CsvTimestampUnit::DecimalSeconds);
     }
 
     #[test]

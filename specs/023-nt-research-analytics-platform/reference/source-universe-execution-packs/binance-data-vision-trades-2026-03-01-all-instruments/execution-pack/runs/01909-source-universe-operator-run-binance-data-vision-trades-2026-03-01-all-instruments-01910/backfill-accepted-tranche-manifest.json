@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:TAIKOUSDT:2026-03-01:b9b71619c2b3d52bb1974d451c3e374ebddce5e82c1a56c6a3ce902756f6bc0a:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:TAIKOUSDT:2026-03-01:b9b71619c2b3d52bb1974d451c3e374ebddce5e82c1a56c6a3ce902756f6bc0a:source-proof-scope",
+  "source_proof_scope_report_hash": "a3d2187fca4473f4c9816385ca13a0943bbae40008d1f60952447f29125b45cb",
+  "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-usd-m-perpetual-native-trades",
+  "table_family": "native_trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-usd_m_perpetual",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 140217,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=usd_m_perpetual/dt=2026-03-01/symbol=TAIKOUSDT/object=b9b71619c2b3d52bb1974d451c3e374ebddce5e82c1a56c6a3ce902756f6bc0a.zip",
+      "source_url": "https://data.binance.vision/data/futures/um/daily/trades/TAIKOUSDT/TAIKOUSDT-trades-2026-03-01.zip",
+      "sha256": "b9b71619c2b3d52bb1974d451c3e374ebddce5e82c1a56c6a3ce902756f6bc0a",
+      "bytes": 140217,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

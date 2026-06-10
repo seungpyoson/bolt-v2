@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01434:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:1MBABYDOGEUSDT:2026-03-01:d7acea893b3ec34dc02a0a83c17569a75a3f38c64aa250bdb1b3921bbfb57ca9:accepted-tranche",
+  "accepted_tranche_manifest_hash": "3706cc5034e287f3c36bbd949cc47a41ed151f21518e0e70732e4a5ebac7925a",
+  "run_spec_hash": "6a4f5bd839b0299e5bc5a0d9dec0c7763932a5e8f0983f0297c108df279db5e1",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01434",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=1MBABYDOGEUSDT/dt=2026-03-01/object=d7acea893b3ec34dc02a0a83c17569a75a3f38c64aa250bdb1b3921bbfb57ca9",
+  "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-usd-m-perpetual-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 643923,
+  "max_object_bytes": 643923,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=usd_m_perpetual/dt=2026-03-01/symbol=1MBABYDOGEUSDT/object=d7acea893b3ec34dc02a0a83c17569a75a3f38c64aa250bdb1b3921bbfb57ca9.zip",
+      "source_url": "https://data.binance.vision/data/futures/um/daily/trades/1MBABYDOGEUSDT/1MBABYDOGEUSDT-trades-2026-03-01.zip",
+      "sha256": "d7acea893b3ec34dc02a0a83c17569a75a3f38c64aa250bdb1b3921bbfb57ca9",
+      "bytes": 643923,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

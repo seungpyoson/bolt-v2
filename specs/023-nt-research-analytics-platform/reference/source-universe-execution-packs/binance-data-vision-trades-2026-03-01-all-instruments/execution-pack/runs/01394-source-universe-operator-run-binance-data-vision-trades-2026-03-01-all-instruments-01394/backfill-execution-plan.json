@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01394:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ZENBTC:2026-03-01:01067b0421f6cfd273f1579c8e7cb49df7473ecc101ea88e1e5fccad53e7cd43:accepted-tranche",
+  "accepted_tranche_manifest_hash": "8aa97e28e96c0a16a4f82c09a14334c74ede9f495829b3c328497ccd32b2ef40",
+  "run_spec_hash": "1481c479c40c1be2b545fc2ce847175468f83eaf67f1e26c0ac64572ad1902d5",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01394",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ZENBTC/dt=2026-03-01/object=01067b0421f6cfd273f1579c8e7cb49df7473ecc101ea88e1e5fccad53e7cd43",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 11051,
+  "max_object_bytes": 11051,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=ZENBTC/object=01067b0421f6cfd273f1579c8e7cb49df7473ecc101ea88e1e5fccad53e7cd43.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/ZENBTC/ZENBTC-trades-2026-03-01.zip",
+      "sha256": "01067b0421f6cfd273f1579c8e7cb49df7473ecc101ea88e1e5fccad53e7cd43",
+      "bytes": 11051,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

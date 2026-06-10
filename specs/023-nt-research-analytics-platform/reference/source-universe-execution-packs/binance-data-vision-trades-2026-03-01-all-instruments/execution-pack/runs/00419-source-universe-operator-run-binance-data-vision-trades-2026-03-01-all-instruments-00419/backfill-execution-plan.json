@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00419:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ENAFDUSD:2026-03-01:9aced21b32ff878330f9d7263f3b1fa4c1a62dffdb18ec7d62663cb9c68b7f7a:accepted-tranche",
+  "accepted_tranche_manifest_hash": "c1353367310d397bc26659e01dac6808ba711411bca35a524d3736488a9bb36e",
+  "run_spec_hash": "711de224ba07c48231bc2179866dc2679615ea2e266d98580696278f843e53c6",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00419",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ENAFDUSD/dt=2026-03-01/object=9aced21b32ff878330f9d7263f3b1fa4c1a62dffdb18ec7d62663cb9c68b7f7a",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 41122,
+  "max_object_bytes": 41122,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=ENAFDUSD/object=9aced21b32ff878330f9d7263f3b1fa4c1a62dffdb18ec7d62663cb9c68b7f7a.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/ENAFDUSD/ENAFDUSD-trades-2026-03-01.zip",
+      "sha256": "9aced21b32ff878330f9d7263f3b1fa4c1a62dffdb18ec7d62663cb9c68b7f7a",
+      "bytes": 41122,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-perpetual-native-trades:TRXUSD_PERP:2026-03-01:56b6aa3a254a65453a1e9b5b0173b797ecded713403134ff1b1826959fbfbe99:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-perpetual-native-trades:TRXUSD_PERP:2026-03-01:56b6aa3a254a65453a1e9b5b0173b797ecded713403134ff1b1826959fbfbe99:source-proof-scope",
+  "source_proof_scope_report_hash": "7cbb60f8f44e8268663a2d1850133aa8267ed68e34b476e0ae00d362a99f1c41",
+  "source_proof_id": "source-proof-binance-coin-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-coin-m-perpetual-native-trades",
+  "table_family": "native_trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-coin_m_perpetual",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 50294,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=TRXUSD_PERP/object=56b6aa3a254a65453a1e9b5b0173b797ecded713403134ff1b1826959fbfbe99.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/TRXUSD_PERP/TRXUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "56b6aa3a254a65453a1e9b5b0173b797ecded713403134ff1b1826959fbfbe99",
+      "bytes": 50294,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

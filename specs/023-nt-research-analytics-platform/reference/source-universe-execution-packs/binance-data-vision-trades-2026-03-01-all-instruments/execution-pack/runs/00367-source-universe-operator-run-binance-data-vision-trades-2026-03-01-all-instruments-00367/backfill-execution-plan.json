@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00367:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:DOGEBTC:2026-03-01:faa5b3ed9b4475bf59f18874362ef0db5c1d0c1a5e5e832f5b4a4960747a60d3:accepted-tranche",
+  "accepted_tranche_manifest_hash": "e80b0d61359b568cbf6d406e7a540c8fb1139bbe3bbe2a8f74dc3d2f289acb91",
+  "run_spec_hash": "2c34cd07895b861b5581d05af3f5923401e814232d9e1dce6b308a59822c284b",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00367",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=DOGEBTC/dt=2026-03-01/object=faa5b3ed9b4475bf59f18874362ef0db5c1d0c1a5e5e832f5b4a4960747a60d3",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 48983,
+  "max_object_bytes": 48983,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=DOGEBTC/object=faa5b3ed9b4475bf59f18874362ef0db5c1d0c1a5e5e832f5b4a4960747a60d3.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/DOGEBTC/DOGEBTC-trades-2026-03-01.zip",
+      "sha256": "faa5b3ed9b4475bf59f18874362ef0db5c1d0c1a5e5e832f5b4a4960747a60d3",
+      "bytes": 48983,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

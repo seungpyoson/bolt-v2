@@ -343,6 +343,7 @@ blocking_reasons = [
     assert_eq!(ledger.total_planned_conversion_objects, 4);
     assert_eq!(ledger.total_required_single_object_operator_runs, 4);
     assert_eq!(ledger.total_executable_single_object_operator_runs, 1);
+    assert_eq!(ledger.total_materialized_single_object_operator_runs, 0);
     assert_eq!(ledger.total_withheld_conversion_objects, 3);
 
     let binance = record(&ledger, "backfill-source-universe-binance-test");
@@ -355,6 +356,7 @@ blocking_reasons = [
     assert_eq!(binance.ready_operator_input_count, 1);
     assert_eq!(binance.blocked_operator_input_count, 1);
     assert_eq!(binance.executable_single_object_operator_runs, 1);
+    assert_eq!(binance.materialized_single_object_operator_runs, 0);
     assert_eq!(binance.withheld_conversion_objects, 1);
     assert_eq!(binance.remaining_conversion_objects, 2);
     assert!(
@@ -373,6 +375,7 @@ blocking_reasons = [
     assert_eq!(pmxt.planned_source_bytes, 300);
     assert_eq!(pmxt.required_single_object_operator_runs, 2);
     assert_eq!(pmxt.executable_single_object_operator_runs, 0);
+    assert_eq!(pmxt.materialized_single_object_operator_runs, 0);
     assert_eq!(pmxt.withheld_conversion_objects, 2);
     assert!(
         pmxt.blocking_reasons
@@ -407,6 +410,7 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
     assert_eq!(ledger.total_planned_conversion_objects, 9_259);
     assert_eq!(ledger.total_required_single_object_operator_runs, 9_259);
     assert_eq!(ledger.total_executable_single_object_operator_runs, 7_892);
+    assert_eq!(ledger.total_materialized_single_object_operator_runs, 7_892);
     assert_eq!(ledger.total_withheld_conversion_objects, 1_367);
     assert_eq!(ledger.total_remaining_conversion_objects, 9_259);
 
@@ -425,6 +429,7 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
     assert_eq!(binance.blocked_operator_input_count, 16);
     assert_eq!(binance.required_single_object_operator_runs, 2_051);
     assert_eq!(binance.executable_single_object_operator_runs, 2_035);
+    assert_eq!(binance.materialized_single_object_operator_runs, 2_035);
     assert_eq!(binance.withheld_conversion_objects, 16);
     assert!(
         binance
@@ -448,6 +453,7 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
     assert_eq!(bybit.blocked_operator_input_count, 0);
     assert_eq!(bybit.required_single_object_operator_runs, 5_857);
     assert_eq!(bybit.executable_single_object_operator_runs, 5_857);
+    assert_eq!(bybit.materialized_single_object_operator_runs, 5_857);
     assert_eq!(bybit.withheld_conversion_objects, 0);
     assert!(bybit.blocking_reasons.is_empty());
 
@@ -463,6 +469,7 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
     assert_eq!(pmxt.planned_source_bytes, 557_815_904_970);
     assert_eq!(pmxt.required_single_object_operator_runs, 1_351);
     assert_eq!(pmxt.executable_single_object_operator_runs, 0);
+    assert_eq!(pmxt.materialized_single_object_operator_runs, 0);
     assert_eq!(pmxt.withheld_conversion_objects, 1_351);
     assert!(
         pmxt.blocking_reasons

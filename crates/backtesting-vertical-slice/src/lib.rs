@@ -65,6 +65,7 @@ pub mod source_universe_conversion_queue;
 pub mod source_universe_conversion_run_plan;
 pub mod source_universe_conversion_work_order;
 pub mod source_universe_execution_acceptance;
+pub mod source_universe_execution_pack;
 pub mod source_universe_object_gates;
 pub mod source_universe_operator_inputs;
 pub mod source_universe_source_proofs;

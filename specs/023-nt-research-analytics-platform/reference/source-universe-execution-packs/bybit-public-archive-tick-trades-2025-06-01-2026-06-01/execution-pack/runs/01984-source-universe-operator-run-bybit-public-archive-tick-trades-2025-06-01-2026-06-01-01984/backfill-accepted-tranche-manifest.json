@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:BTCUSDT:2026-05-05:8893d6c391d27f8aa35c57093f36692fc890deba351f1759b74873db9a0b44a1:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:BTCUSDT:2026-05-05:8893d6c391d27f8aa35c57093f36692fc890deba351f1759b74873db9a0b44a1:source-proof-scope",
+  "source_proof_scope_report_hash": "1172be2859baef046af0bc5b3a4e76a80dee94f48158b88d8084736422076c6e",
+  "source_proof_id": "source-proof-bybit-linear-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-linear-tick-trades",
+  "table_family": "trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-category-linear",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 60302471,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-05/symbol=BTCUSDT/object=8893d6c391d27f8aa35c57093f36692fc890deba351f1759b74873db9a0b44a1.csv.gz",
+      "source_url": "https://public.bybit.com/trading/BTCUSDT/BTCUSDT2026-05-05.csv.gz",
+      "sha256": "8893d6c391d27f8aa35c57093f36692fc890deba351f1759b74873db9a0b44a1",
+      "bytes": 60302471,
+      "archive_date": "2026-05-05"
+    }
+  ],
+  "blocking_issues": []
+}

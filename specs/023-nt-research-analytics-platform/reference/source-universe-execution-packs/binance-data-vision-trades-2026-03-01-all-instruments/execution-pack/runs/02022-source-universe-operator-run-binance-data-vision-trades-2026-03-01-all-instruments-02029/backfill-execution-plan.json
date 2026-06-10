@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-02029:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-perpetual-native-trades:LTCUSD_PERP:2026-03-01:5607c68e4f71a284cd8228404af9a369976a434a45c7dfb09b865ee2335f483b:accepted-tranche",
+  "accepted_tranche_manifest_hash": "0843b37bfadc0437638d3640c61fd271628f2eb63c70f7a8ecbae18a312d8b43",
+  "run_spec_hash": "80da0832bd975f6a484860759e791ddc12ed4ef045c2698956945c26518a280e",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-02029",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=coin_m_perpetual/symbol=LTCUSD_PERP/dt=2026-03-01/object=5607c68e4f71a284cd8228404af9a369976a434a45c7dfb09b865ee2335f483b",
+  "source_proof_id": "source-proof-binance-coin-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-coin-m-perpetual-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 286295,
+  "max_object_bytes": 286295,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=LTCUSD_PERP/object=5607c68e4f71a284cd8228404af9a369976a434a45c7dfb09b865ee2335f483b.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/LTCUSD_PERP/LTCUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "5607c68e4f71a284cd8228404af9a369976a434a45c7dfb09b865ee2335f483b",
+      "bytes": 286295,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

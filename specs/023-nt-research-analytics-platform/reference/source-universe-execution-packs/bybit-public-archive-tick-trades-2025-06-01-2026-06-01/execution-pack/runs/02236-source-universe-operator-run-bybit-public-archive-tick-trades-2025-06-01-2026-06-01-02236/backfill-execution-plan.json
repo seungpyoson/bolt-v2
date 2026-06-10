@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-02236:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:BTCUSDT-25DEC26:2026-05-15:62f1f0233cf11fda4de2819b63f1c72dcccd91c0feaa79af960c07882a6f48f5:accepted-tranche",
+  "accepted_tranche_manifest_hash": "f158fb147e461280def7b527c4100765338599867ad18913a539670769623c25",
+  "run_spec_hash": "bbb0300d43af3feff2a08a5d123fa297868d824e027712d6366fa583766fc377",
+  "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-02236",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=linear/symbol=BTCUSDT-25DEC26/dt=2026-05-15/object=62f1f0233cf11fda4de2819b63f1c72dcccd91c0feaa79af960c07882a6f48f5",
+  "source_proof_id": "source-proof-bybit-linear-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-linear-tick-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 3810,
+  "max_object_bytes": 3810,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-15/symbol=BTCUSDT-25DEC26/object=62f1f0233cf11fda4de2819b63f1c72dcccd91c0feaa79af960c07882a6f48f5.csv.gz",
+      "source_url": "https://public.bybit.com/trading/BTCUSDT-25DEC26/BTCUSDT-25DEC262026-05-15.csv.gz",
+      "sha256": "62f1f0233cf11fda4de2819b63f1c72dcccd91c0feaa79af960c07882a6f48f5",
+      "bytes": 3810,
+      "archive_date": "2026-05-15"
+    }
+  ],
+  "blocking_issues": []
+}

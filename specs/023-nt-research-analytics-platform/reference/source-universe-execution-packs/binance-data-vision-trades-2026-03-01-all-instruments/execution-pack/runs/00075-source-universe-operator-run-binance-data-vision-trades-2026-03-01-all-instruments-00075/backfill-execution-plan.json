@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00075:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ALPINETRY:2026-03-01:218f4cfcec1a27ef3fa18734433a479905987d1273dd1ba16164fc44456a5ccd:accepted-tranche",
+  "accepted_tranche_manifest_hash": "7a0cbf70455e7891d0d4dd253fe5270eb6ad0d125c3803a951e4ebf1c5623cc7",
+  "run_spec_hash": "ce4c24c8118fcb7ba3634ede3dc5d803bb976d7af5c454756c3cf79042054498",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00075",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ALPINETRY/dt=2026-03-01/object=218f4cfcec1a27ef3fa18734433a479905987d1273dd1ba16164fc44456a5ccd",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 47084,
+  "max_object_bytes": 47084,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=ALPINETRY/object=218f4cfcec1a27ef3fa18734433a479905987d1273dd1ba16164fc44456a5ccd.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/ALPINETRY/ALPINETRY-trades-2026-03-01.zip",
+      "sha256": "218f4cfcec1a27ef3fa18734433a479905987d1273dd1ba16164fc44456a5ccd",
+      "bytes": 47084,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

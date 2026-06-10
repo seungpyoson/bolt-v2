@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01291:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:WALFDUSD:2026-03-01:d4ba464821fcb84f1b096cb9d53f5f56bfa84e3df9da8a6239257f0604316650:accepted-tranche",
+  "accepted_tranche_manifest_hash": "72375494f13ae3a6c95c85e4244625bd78962f7f6ae65efb682d445e2001566c",
+  "run_spec_hash": "49ce85c7ec412171366c64574270607fc3253e6423687f4d913f0af3eba78c9d",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01291",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=WALFDUSD/dt=2026-03-01/object=d4ba464821fcb84f1b096cb9d53f5f56bfa84e3df9da8a6239257f0604316650",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 52605,
+  "max_object_bytes": 52605,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=WALFDUSD/object=d4ba464821fcb84f1b096cb9d53f5f56bfa84e3df9da8a6239257f0604316650.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/WALFDUSD/WALFDUSD-trades-2026-03-01.zip",
+      "sha256": "d4ba464821fcb84f1b096cb9d53f5f56bfa84e3df9da8a6239257f0604316650",
+      "bytes": 52605,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

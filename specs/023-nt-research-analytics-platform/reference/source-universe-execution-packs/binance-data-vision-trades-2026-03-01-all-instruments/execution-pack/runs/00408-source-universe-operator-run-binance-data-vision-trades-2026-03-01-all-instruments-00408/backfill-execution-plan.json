@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00408:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:EGLDETH:2026-03-01:348bcbc4882b3c7d245d80c2215029d5b844fe5d87a430c2f6d336c05f15b5ba:accepted-tranche",
+  "accepted_tranche_manifest_hash": "267fcafccb6961794198ce9fa1bc7221a1372f1fea4b85978f7bce8c46d431b1",
+  "run_spec_hash": "7a74b03a0db6776340aebe602de58674ebdadcacd33bfe02dc57a879d5de2be6",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00408",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=EGLDETH/dt=2026-03-01/object=348bcbc4882b3c7d245d80c2215029d5b844fe5d87a430c2f6d336c05f15b5ba",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 3601,
+  "max_object_bytes": 3601,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=EGLDETH/object=348bcbc4882b3c7d245d80c2215029d5b844fe5d87a430c2f6d336c05f15b5ba.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/EGLDETH/EGLDETH-trades-2026-03-01.zip",
+      "sha256": "348bcbc4882b3c7d245d80c2215029d5b844fe5d87a430c2f6d336c05f15b5ba",
+      "bytes": 3601,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

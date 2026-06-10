@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:PUMPBTCUSDT:2026-03-01:1b70447f9740437c5c24d3f425a1faf06ba635f4488ee60b17e664e7243449ea:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:PUMPBTCUSDT:2026-03-01:1b70447f9740437c5c24d3f425a1faf06ba635f4488ee60b17e664e7243449ea:source-proof-scope",
+  "source_proof_scope_report_hash": "a3d2187fca4473f4c9816385ca13a0943bbae40008d1f60952447f29125b45cb",
+  "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-usd-m-perpetual-native-trades",
+  "table_family": "native_trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-usd_m_perpetual",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 292936,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=usd_m_perpetual/dt=2026-03-01/symbol=PUMPBTCUSDT/object=1b70447f9740437c5c24d3f425a1faf06ba635f4488ee60b17e664e7243449ea.zip",
+      "source_url": "https://data.binance.vision/data/futures/um/daily/trades/PUMPBTCUSDT/PUMPBTCUSDT-trades-2026-03-01.zip",
+      "sha256": "1b70447f9740437c5c24d3f425a1faf06ba635f4488ee60b17e664e7243449ea",
+      "bytes": 292936,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

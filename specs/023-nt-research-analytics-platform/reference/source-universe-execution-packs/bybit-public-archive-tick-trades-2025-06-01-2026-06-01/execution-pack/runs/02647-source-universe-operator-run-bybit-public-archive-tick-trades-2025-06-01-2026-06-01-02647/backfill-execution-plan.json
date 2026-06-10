@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-02647:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-spot-tick-trades:ETHEUR:2026-03-03:b8033079406bba67eb2dfdd49865f893040ba4f573dac016231d74a54adb823e:accepted-tranche",
+  "accepted_tranche_manifest_hash": "6f6dc04be72092aa8885b95f6a8db3f389703f73c02c0c56d6f63d77438728b2",
+  "run_spec_hash": "5780270cc3586fe2d6e9f62a6871864cdf6ee8c6742661e0a52b74ec24b34ea4",
+  "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-02647",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=spot/symbol=ETHEUR/dt=2026-03-03/object=b8033079406bba67eb2dfdd49865f893040ba4f573dac016231d74a54adb823e",
+  "source_proof_id": "source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-spot-tick-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 7537,
+  "max_object_bytes": 7537,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-03/symbol=ETHEUR/object=b8033079406bba67eb2dfdd49865f893040ba4f573dac016231d74a54adb823e.csv.gz",
+      "source_url": "https://public.bybit.com/spot/ETHEUR/ETHEUR_2026-03-03.csv.gz",
+      "sha256": "b8033079406bba67eb2dfdd49865f893040ba4f573dac016231d74a54adb823e",
+      "bytes": 7537,
+      "archive_date": "2026-03-03"
+    }
+  ],
+  "blocking_issues": []
+}

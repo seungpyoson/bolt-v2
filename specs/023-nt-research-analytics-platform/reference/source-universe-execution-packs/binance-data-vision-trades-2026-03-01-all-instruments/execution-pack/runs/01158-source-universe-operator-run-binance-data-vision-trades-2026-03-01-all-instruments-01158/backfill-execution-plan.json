@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01158:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:THETATRY:2026-03-01:81b44ff79fe97eabd6be912abf58554b4f02729afbcc886a92161dd685408948:accepted-tranche",
+  "accepted_tranche_manifest_hash": "ed31f35bd8b65a8c860a5c098f003f84cc8de79fdffddade92ebdb7daf9a741f",
+  "run_spec_hash": "f2e2056f602ee313a66ec4e975349e1a6b7f2548438d5fecb0237102f3124df6",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01158",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=THETATRY/dt=2026-03-01/object=81b44ff79fe97eabd6be912abf58554b4f02729afbcc886a92161dd685408948",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 6657,
+  "max_object_bytes": 6657,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=THETATRY/object=81b44ff79fe97eabd6be912abf58554b4f02729afbcc886a92161dd685408948.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/THETATRY/THETATRY-trades-2026-03-01.zip",
+      "sha256": "81b44ff79fe97eabd6be912abf58554b4f02729afbcc886a92161dd685408948",
+      "bytes": 6657,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-perpetual-native-trades:UNIUSD_PERP:2026-03-01:6695e21fdbc28a4fb11742ac37760012dbaf38b257284c51b136008402ae6b37:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-perpetual-native-trades:UNIUSD_PERP:2026-03-01:6695e21fdbc28a4fb11742ac37760012dbaf38b257284c51b136008402ae6b37:source-proof-scope",
+  "source_proof_scope_report_hash": "7cbb60f8f44e8268663a2d1850133aa8267ed68e34b476e0ae00d362a99f1c41",
+  "source_proof_id": "source-proof-binance-coin-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-coin-m-perpetual-native-trades",
+  "table_family": "native_trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-coin_m_perpetual",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 280374,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=coin_m_perpetual/dt=2026-03-01/symbol=UNIUSD_PERP/object=6695e21fdbc28a4fb11742ac37760012dbaf38b257284c51b136008402ae6b37.zip",
+      "source_url": "https://data.binance.vision/data/futures/cm/daily/trades/UNIUSD_PERP/UNIUSD_PERP-trades-2026-03-01.zip",
+      "sha256": "6695e21fdbc28a4fb11742ac37760012dbaf38b257284c51b136008402ae6b37",
+      "bytes": 280374,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

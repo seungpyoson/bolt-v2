@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00059:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-inverse-tick-trades:DOGEUSD:2026-03-09:98527ff68631827b84b1c9e2dc5b4be708fd6e12a0646ea55653f08fd7f56f82:accepted-tranche",
+  "accepted_tranche_manifest_hash": "d6016d1052e49e1fddc71649d3bdab4cc19ce2ff23fc49e2c0556218fa476d5c",
+  "run_spec_hash": "0dacfde77c62343ce72054f77a88e9622ff3765662d1d716501ee45cfa4b855f",
+  "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00059",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=inverse/symbol=DOGEUSD/dt=2026-03-09/object=98527ff68631827b84b1c9e2dc5b4be708fd6e12a0646ea55653f08fd7f56f82",
+  "source_proof_id": "source-proof-bybit-inverse-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-inverse-tick-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 242050,
+  "max_object_bytes": 242050,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2026-03-09/symbol=DOGEUSD/object=98527ff68631827b84b1c9e2dc5b4be708fd6e12a0646ea55653f08fd7f56f82.csv.gz",
+      "source_url": "https://public.bybit.com/trading/DOGEUSD/DOGEUSD2026-03-09.csv.gz",
+      "sha256": "98527ff68631827b84b1c9e2dc5b4be708fd6e12a0646ea55653f08fd7f56f82",
+      "bytes": 242050,
+      "archive_date": "2026-03-09"
+    }
+  ],
+  "blocking_issues": []
+}

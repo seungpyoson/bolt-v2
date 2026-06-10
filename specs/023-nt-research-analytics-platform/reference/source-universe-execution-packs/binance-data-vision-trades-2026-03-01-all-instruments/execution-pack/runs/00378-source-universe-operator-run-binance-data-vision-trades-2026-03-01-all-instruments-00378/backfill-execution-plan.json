@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00378:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:DOGSTRY:2026-03-01:d29701d02987e5f79150ad7df8ccfa94e48a90c4f6245f282f54f04e34831ac6:accepted-tranche",
+  "accepted_tranche_manifest_hash": "ce6a2ee16982ee26cc938dbb38e30c0c33a055f91da9a7088783e6474082c323",
+  "run_spec_hash": "fe1b06c0872fe574457717311f8b673593450cda5d8852a040a5f0316dfe51b0",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00378",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=DOGSTRY/dt=2026-03-01/object=d29701d02987e5f79150ad7df8ccfa94e48a90c4f6245f282f54f04e34831ac6",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 9746,
+  "max_object_bytes": 9746,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=DOGSTRY/object=d29701d02987e5f79150ad7df8ccfa94e48a90c4f6245f282f54f04e34831ac6.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/DOGSTRY/DOGSTRY-trades-2026-03-01.zip",
+      "sha256": "d29701d02987e5f79150ad7df8ccfa94e48a90c4f6245f282f54f04e34831ac6",
+      "bytes": 9746,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

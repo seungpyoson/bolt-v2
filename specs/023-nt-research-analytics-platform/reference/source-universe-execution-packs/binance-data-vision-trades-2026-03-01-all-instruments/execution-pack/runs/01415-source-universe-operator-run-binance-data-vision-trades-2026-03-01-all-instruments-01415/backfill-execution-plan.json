@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01415:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:币安人生USDT:2026-03-01:da0bd41622ac229a442b37b09f6d27e326d823eed8bc4c18471eaa16c860d879:accepted-tranche",
+  "accepted_tranche_manifest_hash": "bd8e42d4732f5dd43a5ec5b05ed75b9443c5cb7b3c831a3df5b5d62eb34c4645",
+  "run_spec_hash": "d349e4599b5a259fab382b84eab9c0dce4fc90229a24f4ffc932ad5613510f8a",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01415",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=币安人生USDT/dt=2026-03-01/object=da0bd41622ac229a442b37b09f6d27e326d823eed8bc4c18471eaa16c860d879",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 441772,
+  "max_object_bytes": 441772,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=币安人生USDT/object=da0bd41622ac229a442b37b09f6d27e326d823eed8bc4c18471eaa16c860d879.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/币安人生USDT/币安人生USDT-trades-2026-03-01.zip",
+      "sha256": "da0bd41622ac229a442b37b09f6d27e326d823eed8bc4c18471eaa16c860d879",
+      "bytes": 441772,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

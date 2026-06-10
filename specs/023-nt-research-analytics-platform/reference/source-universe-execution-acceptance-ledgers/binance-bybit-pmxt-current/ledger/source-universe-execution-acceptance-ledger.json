@@ -11,6 +11,7 @@
   "total_planned_source_bytes": 579873706038,
   "total_required_single_object_operator_runs": 9259,
   "total_executable_single_object_operator_runs": 7892,
+  "total_materialized_single_object_operator_runs": 7892,
   "total_withheld_conversion_objects": 1367,
   "total_completed_conversion_records": 0,
   "total_completed_canonical_rows": 0,
@@ -33,6 +34,7 @@
       "planned_source_bytes": 1748721970,
       "required_single_object_operator_runs": 2051,
       "executable_single_object_operator_runs": 2035,
+      "materialized_single_object_operator_runs": 2035,
       "withheld_conversion_objects": 16,
       "completed_conversion_records": 0,
       "completed_canonical_rows": 0,
@@ -53,6 +55,11 @@
           "role": "source_universe_operator_inputs",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/binance-data-vision-trades-2026-03-01-all-instruments/operator-inputs/source-universe-operator-inputs.json",
           "sha256": "9c3ac79793f49c7a50a0d2c6b34857486ac79f925ef893fb1559147c09c28264"
+        },
+        {
+          "role": "source_universe_execution_pack",
+          "path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/execution-pack/source-universe-execution-pack.json",
+          "sha256": "595985b51eb031b7d3773cfe312590062d5e4cd1340a60a516e4cc6fa6f7238a"
         }
       ],
       "blocking_reasons": [
@@ -76,6 +83,7 @@
       "planned_source_bytes": 20309079098,
       "required_single_object_operator_runs": 5857,
       "executable_single_object_operator_runs": 5857,
+      "materialized_single_object_operator_runs": 5857,
       "withheld_conversion_objects": 0,
       "completed_conversion_records": 0,
       "completed_canonical_rows": 0,
@@ -96,6 +104,11 @@
           "role": "source_universe_operator_inputs",
           "path": "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/operator-inputs/source-universe-operator-inputs.json",
           "sha256": "c9af95047f9721693df3cbc18c916ddb3f25bb6cc72c50b607a85e5694fe586b"
+        },
+        {
+          "role": "source_universe_execution_pack",
+          "path": "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/execution-pack/source-universe-execution-pack.json",
+          "sha256": "917ac6ce7cb7b95c1901d8588cce68013823832ca8b43875b3716656bd541a10"
         }
       ],
       "blocking_reasons": []
@@ -116,6 +129,7 @@
       "planned_source_bytes": 557815904970,
       "required_single_object_operator_runs": 1351,
       "executable_single_object_operator_runs": 0,
+      "materialized_single_object_operator_runs": 0,
       "withheld_conversion_objects": 1351,
       "completed_conversion_records": 0,
       "completed_canonical_rows": 0,

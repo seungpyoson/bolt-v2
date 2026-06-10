@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-01478:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:BTCUSDT-25SEP26:2026-04-08:1a3cb759cfd27f889fb8dd6ce233942918e8de0fcc91ec758e50265156ea97f0:accepted-tranche",
+  "accepted_tranche_manifest_hash": "6528fd74a5b72ae3a045dc38f857cbf1a436f11188dd2ec8650ca1da05683a08",
+  "run_spec_hash": "ba23eefe68ffc58ac22e4c900ca7b0717b050bdda3517f4d7229f77529cb7dbb",
+  "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-01478",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=linear/symbol=BTCUSDT-25SEP26/dt=2026-04-08/object=1a3cb759cfd27f889fb8dd6ce233942918e8de0fcc91ec758e50265156ea97f0",
+  "source_proof_id": "source-proof-bybit-linear-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-linear-tick-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 20705,
+  "max_object_bytes": 20705,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-04-08/symbol=BTCUSDT-25SEP26/object=1a3cb759cfd27f889fb8dd6ce233942918e8de0fcc91ec758e50265156ea97f0.csv.gz",
+      "source_url": "https://public.bybit.com/trading/BTCUSDT-25SEP26/BTCUSDT-25SEP262026-04-08.csv.gz",
+      "sha256": "1a3cb759cfd27f889fb8dd6ce233942918e8de0fcc91ec758e50265156ea97f0",
+      "bytes": 20705,
+      "archive_date": "2026-04-08"
+    }
+  ],
+  "blocking_issues": []
+}

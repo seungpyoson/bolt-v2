@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01157:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:THETABTC:2026-03-01:ad288c30ea94f6433838f75567f4667d9d23fc4595f953a98c8daeb862e25fe3:accepted-tranche",
+  "accepted_tranche_manifest_hash": "8c6c91630b4f56e7b19ee95afb0fdd8902fad03d08e3ce65e4b998e3e0a63f63",
+  "run_spec_hash": "96d59050ee22541c971640a79032bd3dfc79cdfc871581df2f961b9fa158fb25",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01157",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=THETABTC/dt=2026-03-01/object=ad288c30ea94f6433838f75567f4667d9d23fc4595f953a98c8daeb862e25fe3",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 17248,
+  "max_object_bytes": 17248,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=THETABTC/object=ad288c30ea94f6433838f75567f4667d9d23fc4595f953a98c8daeb862e25fe3.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/THETABTC/THETABTC-trades-2026-03-01.zip",
+      "sha256": "ad288c30ea94f6433838f75567f4667d9d23fc4595f953a98c8daeb862e25fe3",
+      "bytes": 17248,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

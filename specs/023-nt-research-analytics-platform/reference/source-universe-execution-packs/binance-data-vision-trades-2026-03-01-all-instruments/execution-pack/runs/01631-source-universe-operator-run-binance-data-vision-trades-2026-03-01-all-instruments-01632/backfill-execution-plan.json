@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01632:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:FIOUSDT:2026-03-01:d22bae83a55dc7a5876b54c082f9c41514e225b30840d1774cf79bae0cd82b90:accepted-tranche",
+  "accepted_tranche_manifest_hash": "48b59fefca4a797628a9c7b3ad4cb0f671f4ac9f58cda90f4d3739d69bfb693b",
+  "run_spec_hash": "1d60edc8c0c203036273fadbdcb9133e267344d98a154b11b20b579b788b92e7",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01632",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=FIOUSDT/dt=2026-03-01/object=d22bae83a55dc7a5876b54c082f9c41514e225b30840d1774cf79bae0cd82b90",
+  "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-usd-m-perpetual-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 18342220,
+  "max_object_bytes": 18342220,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=usd_m_perpetual/dt=2026-03-01/symbol=FIOUSDT/object=d22bae83a55dc7a5876b54c082f9c41514e225b30840d1774cf79bae0cd82b90.zip",
+      "source_url": "https://data.binance.vision/data/futures/um/daily/trades/FIOUSDT/FIOUSDT-trades-2026-03-01.zip",
+      "sha256": "d22bae83a55dc7a5876b54c082f9c41514e225b30840d1774cf79bae0cd82b90",
+      "bytes": 18342220,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

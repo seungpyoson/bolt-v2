@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-04090:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-spot-tick-trades:XRPBTC:2026-04-09:a1652ddd2854b45f622ebc8c42346cb1eefb7f6ebc6d74f399bc09b77ad06e88:accepted-tranche",
+  "accepted_tranche_manifest_hash": "bb719e79098dbdc746789d1ce65278396c2072c778c5c8e16e38dc66aa50e031",
+  "run_spec_hash": "6c5996fa9591cb1f2bd1ca843aa2f9ac9b94f847bbf0ea7ed04db6ffdcb8673b",
+  "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-04090",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=spot/symbol=XRPBTC/dt=2026-04-09/object=a1652ddd2854b45f622ebc8c42346cb1eefb7f6ebc6d74f399bc09b77ad06e88",
+  "source_proof_id": "source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-spot-tick-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 5754,
+  "max_object_bytes": 5754,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-04-09/symbol=XRPBTC/object=a1652ddd2854b45f622ebc8c42346cb1eefb7f6ebc6d74f399bc09b77ad06e88.csv.gz",
+      "source_url": "https://public.bybit.com/spot/XRPBTC/XRPBTC_2026-04-09.csv.gz",
+      "sha256": "a1652ddd2854b45f622ebc8c42346cb1eefb7f6ebc6d74f399bc09b77ad06e88",
+      "bytes": 5754,
+      "archive_date": "2026-04-09"
+    }
+  ],
+  "blocking_issues": []
+}

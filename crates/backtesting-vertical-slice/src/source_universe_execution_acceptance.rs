@@ -23,6 +23,9 @@ use crate::{
     source_universe_conversion_run_plan::{
         SourceUniverseConversionRunPlan, SourceUniverseConversionRunPlanStatus,
     },
+    source_universe_execution_pack::{
+        SourceUniverseExecutionPack, SourceUniverseExecutionPackStatus,
+    },
     source_universe_object_gates::{
         SourceUniverseObjectGateMaterialization, SourceUniverseObjectGateStatus,
     },
@@ -63,6 +66,8 @@ pub struct SourceUniverseExecutionAcceptanceUniverseSpec {
     pub source_universe_conversion_run_plan_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_universe_operator_inputs_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_universe_execution_pack_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversion_completion_ledger_path: Option<PathBuf>,
     #[serde(default)]
@@ -111,6 +116,7 @@ pub struct SourceUniverseExecutionAcceptanceRecord {
     pub planned_source_bytes: u64,
     pub required_single_object_operator_runs: u64,
     pub executable_single_object_operator_runs: u64,
+    pub materialized_single_object_operator_runs: u64,
     pub withheld_conversion_objects: u64,
     pub completed_conversion_records: u64,
     pub completed_canonical_rows: u64,
@@ -135,6 +141,7 @@ pub struct SourceUniverseExecutionAcceptanceLedger {
     pub total_planned_source_bytes: u64,
     pub total_required_single_object_operator_runs: u64,
     pub total_executable_single_object_operator_runs: u64,
+    pub total_materialized_single_object_operator_runs: u64,
     pub total_withheld_conversion_objects: u64,
     pub total_completed_conversion_records: u64,
     pub total_completed_canonical_rows: u64,
@@ -279,6 +286,10 @@ pub fn evaluate_source_universe_execution_acceptance_ledger(
         .iter()
         .map(|record| record.executable_single_object_operator_runs)
         .sum();
+    let total_materialized_single_object_operator_runs = records
+        .iter()
+        .map(|record| record.materialized_single_object_operator_runs)
+        .sum();
     let total_withheld_conversion_objects = records
         .iter()
         .map(|record| record.withheld_conversion_objects)
@@ -318,6 +329,7 @@ pub fn evaluate_source_universe_execution_acceptance_ledger(
         total_planned_source_bytes,
         total_required_single_object_operator_runs,
         total_executable_single_object_operator_runs,
+        total_materialized_single_object_operator_runs,
         total_withheld_conversion_objects,
         total_completed_conversion_records,
         total_completed_canonical_rows,
@@ -378,6 +390,12 @@ fn evaluate_universe(
         spec.source_universe_operator_inputs_path.as_ref(),
         &mut artifact_refs,
     )?;
+    let execution_pack = read_optional_artifact::<SourceUniverseExecutionPack>(
+        base_dir,
+        "source_universe_execution_pack",
+        spec.source_universe_execution_pack_path.as_ref(),
+        &mut artifact_refs,
+    )?;
     let completion_ledger = read_optional_artifact::<BackfillConversionCompletionLedger>(
         base_dir,
         "conversion_completion_ledger",
@@ -393,6 +411,7 @@ fn evaluate_universe(
     let mut blocked_operator_input_count = 0;
     let mut planned_conversion_objects = 0;
     let mut planned_source_bytes = 0;
+    let mut materialized_single_object_operator_runs = 0;
     let mut completed_conversion_records = 0;
     let mut completed_canonical_rows = 0;
     let mut completed_nt_catalog_rows = 0;
@@ -504,6 +523,22 @@ fn evaluate_universe(
         None => {}
     }
 
+    if let Some(execution_pack) = execution_pack.as_ref() {
+        table_family.get_or_insert_with(|| execution_pack.table_family.clone());
+        materialized_single_object_operator_runs = execution_pack.materialized_record_count;
+        validate_execution_pack(
+            execution_pack,
+            ExecutionPackValidationContext {
+                operator_inputs: operator_inputs.as_ref(),
+                planned_conversion_objects,
+                planned_source_bytes,
+                ready_operator_input_count,
+            },
+            &mut blocking_reasons,
+            &mut has_non_operator_blocking_reasons,
+        );
+    }
+
     if let Some(completion_ledger) = completion_ledger.as_ref() {
         completed_conversion_records = completion_ledger.record_count;
         completed_canonical_rows = completion_ledger.total_canonical_rows;
@@ -574,6 +609,7 @@ fn evaluate_universe(
         planned_source_bytes,
         required_single_object_operator_runs,
         executable_single_object_operator_runs,
+        materialized_single_object_operator_runs,
         withheld_conversion_objects,
         completed_conversion_records,
         completed_canonical_rows,
@@ -681,6 +717,76 @@ fn validate_operator_inputs(
     {
         blocking_reasons
             .push("source_universe_operator_inputs_run_plan_identity_mismatch".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
+}
+
+struct ExecutionPackValidationContext<'a> {
+    operator_inputs: Option<&'a SourceUniverseOperatorInputs>,
+    planned_conversion_objects: u64,
+    planned_source_bytes: u64,
+    ready_operator_input_count: u64,
+}
+
+fn validate_execution_pack(
+    execution_pack: &SourceUniverseExecutionPack,
+    context: ExecutionPackValidationContext<'_>,
+    blocking_reasons: &mut Vec<String>,
+    has_non_operator_blocking_reasons: &mut bool,
+) {
+    if execution_pack.status == SourceUniverseExecutionPackStatus::Blocked {
+        blocking_reasons.push("source_universe_execution_pack_blocked".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
+    if execution_pack.skipped_executable_record_count > 0 {
+        blocking_reasons
+            .push("source_universe_execution_pack_skipped_executable_records".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
+    if execution_pack.materialized_record_count > execution_pack.executable_record_count {
+        blocking_reasons.push(
+            "source_universe_execution_pack_materialized_count_exceeds_executable".to_string(),
+        );
+        *has_non_operator_blocking_reasons = true;
+    }
+    if execution_pack.materialized_record_count < execution_pack.executable_record_count
+        && execution_pack.skipped_executable_record_count == 0
+    {
+        blocking_reasons
+            .push("source_universe_execution_pack_materialized_count_mismatch".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
+    if context.planned_conversion_objects > 0
+        && execution_pack.planned_object_count != context.planned_conversion_objects
+    {
+        blocking_reasons.push("source_universe_execution_pack_planned_count_mismatch".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
+    if context.planned_source_bytes > 0
+        && execution_pack.executable_source_bytes + execution_pack.materialized_source_bytes == 0
+    {
+        blocking_reasons.push("source_universe_execution_pack_source_bytes_missing".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
+    if context.ready_operator_input_count > 0
+        && execution_pack.executable_record_count != context.ready_operator_input_count
+    {
+        blocking_reasons
+            .push("source_universe_execution_pack_executable_count_mismatch".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
+
+    if let Some(operator_inputs) = context.operator_inputs
+        && (execution_pack.universe_id != operator_inputs.universe_id
+            || execution_pack.gate_id != operator_inputs.gate_id
+            || execution_pack.input_id != operator_inputs.input_id
+            || execution_pack.venue != operator_inputs.venue
+            || execution_pack.source != operator_inputs.source
+            || execution_pack.family != operator_inputs.family
+            || execution_pack.table_family != operator_inputs.table_family)
+    {
+        blocking_reasons
+            .push("source_universe_execution_pack_operator_inputs_identity_mismatch".to_string());
         *has_non_operator_blocking_reasons = true;
     }
 }

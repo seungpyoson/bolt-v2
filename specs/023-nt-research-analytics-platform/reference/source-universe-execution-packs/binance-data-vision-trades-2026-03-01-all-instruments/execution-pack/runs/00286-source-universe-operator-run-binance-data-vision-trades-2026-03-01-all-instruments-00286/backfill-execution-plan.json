@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00286:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:CAKEUSDC:2026-03-01:6bfa807540607cf687e78ae4e1ec9752d4b73ccc81c4b5608371a18a6134c390:accepted-tranche",
+  "accepted_tranche_manifest_hash": "5500ae663ba68ac60b5e77234b05a82aee832995ba2007436f3b344dbd314d85",
+  "run_spec_hash": "eea07fe24fdbb0e22b0ec1d6299d488209f4a0049d1aa3746cfca72591eb88a3",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00286",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=CAKEUSDC/dt=2026-03-01/object=6bfa807540607cf687e78ae4e1ec9752d4b73ccc81c4b5608371a18a6134c390",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 55282,
+  "max_object_bytes": 55282,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=CAKEUSDC/object=6bfa807540607cf687e78ae4e1ec9752d4b73ccc81c4b5608371a18a6134c390.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/CAKEUSDC/CAKEUSDC-trades-2026-03-01.zip",
+      "sha256": "6bfa807540607cf687e78ae4e1ec9752d4b73ccc81c4b5608371a18a6134c390",
+      "bytes": 55282,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

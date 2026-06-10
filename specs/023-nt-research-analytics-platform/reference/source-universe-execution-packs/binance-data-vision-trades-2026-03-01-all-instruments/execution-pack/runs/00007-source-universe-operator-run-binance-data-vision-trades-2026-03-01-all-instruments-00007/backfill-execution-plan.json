@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00007:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:1000CHEEMSUSDT:2026-03-01:56711b263a9200786e9ff7671bd167c0703fc908dbfa959c6353862823b05229:accepted-tranche",
+  "accepted_tranche_manifest_hash": "50d14ab3d554049c5426c75d2c6889ab9ac9f1af6b5aa327b858871ad00478eb",
+  "run_spec_hash": "ddd3efa037a1652e7affe397acaa3541b66b9786ebfa774cf66d00e8f0f0577d",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00007",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=1000CHEEMSUSDT/dt=2026-03-01/object=56711b263a9200786e9ff7671bd167c0703fc908dbfa959c6353862823b05229",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 541749,
+  "max_object_bytes": 541749,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=1000CHEEMSUSDT/object=56711b263a9200786e9ff7671bd167c0703fc908dbfa959c6353862823b05229.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/1000CHEEMSUSDT/1000CHEEMSUSDT-trades-2026-03-01.zip",
+      "sha256": "56711b263a9200786e9ff7671bd167c0703fc908dbfa959c6353862823b05229",
+      "bytes": 541749,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

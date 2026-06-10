@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SXTUSDC:2026-03-01:2f68fa1cd6eecfea191672f3bece354d2453acc6d94f32ba35d81437054092eb:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SXTUSDC:2026-03-01:2f68fa1cd6eecfea191672f3bece354d2453acc6d94f32ba35d81437054092eb:source-proof-scope",
+  "source_proof_scope_report_hash": "f3743f31c7c66e72f9d4956dcb4d92f9de07f1cc962f3b282d99a3b1b4e7bc77",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-spot",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 7011,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=SXTUSDC/object=2f68fa1cd6eecfea191672f3bece354d2453acc6d94f32ba35d81437054092eb.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/SXTUSDC/SXTUSDC-trades-2026-03-01.zip",
+      "sha256": "2f68fa1cd6eecfea191672f3bece354d2453acc6d94f32ba35d81437054092eb",
+      "bytes": 7011,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

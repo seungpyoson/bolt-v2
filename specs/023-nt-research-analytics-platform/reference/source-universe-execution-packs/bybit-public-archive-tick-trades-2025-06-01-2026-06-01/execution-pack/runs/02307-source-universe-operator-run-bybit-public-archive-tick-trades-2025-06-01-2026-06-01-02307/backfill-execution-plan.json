@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-02307:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:DOGEUSDT-05JUN26:2026-05-17:029fdd48b67d112f8b266816565d92e6c8d66f28cf4e33bcf72cb3338ede169b:accepted-tranche",
+  "accepted_tranche_manifest_hash": "e80d901319a8b86e1344d3ca863b1c5545c16e4a7b109926861203457959e755",
+  "run_spec_hash": "4b21736cb32ff03b0429889d5471ca8fd87f5dcd9c5447bcc74c267a54a36692",
+  "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-02307",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=linear/symbol=DOGEUSDT-05JUN26/dt=2026-05-17/object=029fdd48b67d112f8b266816565d92e6c8d66f28cf4e33bcf72cb3338ede169b",
+  "source_proof_id": "source-proof-bybit-linear-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-linear-tick-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 24878,
+  "max_object_bytes": 24878,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-17/symbol=DOGEUSDT-05JUN26/object=029fdd48b67d112f8b266816565d92e6c8d66f28cf4e33bcf72cb3338ede169b.csv.gz",
+      "source_url": "https://public.bybit.com/trading/DOGEUSDT-05JUN26/DOGEUSDT-05JUN262026-05-17.csv.gz",
+      "sha256": "029fdd48b67d112f8b266816565d92e6c8d66f28cf4e33bcf72cb3338ede169b",
+      "bytes": 24878,
+      "archive_date": "2026-05-17"
+    }
+  ],
+  "blocking_issues": []
+}

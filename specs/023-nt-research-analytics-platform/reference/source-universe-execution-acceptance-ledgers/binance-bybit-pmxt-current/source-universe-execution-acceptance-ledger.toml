@@ -9,6 +9,7 @@ family = "trades"
 source_universe_object_gates_path = "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates/source-universe-object-gates.json"
 source_universe_conversion_run_plan_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/binance-data-vision-trades-2026-03-01-all-instruments/run-plan/source-universe-conversion-run-plan.json"
 source_universe_operator_inputs_path = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/binance-data-vision-trades-2026-03-01-all-instruments/operator-inputs/source-universe-operator-inputs.json"
+source_universe_execution_pack_path = "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/binance-data-vision-trades-2026-03-01-all-instruments/execution-pack/source-universe-execution-pack.json"
 
 [[universe]]
 universe_id = "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
@@ -18,6 +19,7 @@ family = "tick_trades"
 source_universe_object_gates_path = "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/gates/source-universe-object-gates.json"
 source_universe_conversion_run_plan_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.json"
 source_universe_operator_inputs_path = "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/operator-inputs/source-universe-operator-inputs.json"
+source_universe_execution_pack_path = "specs/023-nt-research-analytics-platform/reference/source-universe-execution-packs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/execution-pack/source-universe-execution-pack.json"
 
 [[universe]]
 universe_id = "backfill-source-universe-pmxt-polymarket-v2-current"

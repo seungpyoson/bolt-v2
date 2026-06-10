@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-05046:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-spot-tick-trades:SOLMNT:2026-05-06:595664f27dfded8d208eb27da3015394e619f7173f809a74584667880a7843e3:accepted-tranche",
+  "accepted_tranche_manifest_hash": "f23ce3f2633b990b5ff4ea87ef473582003035ce9cd20cb5a768515f9bf688a5",
+  "run_spec_hash": "d3607d0dce841dfe0a9f3b30d3f78e1be901b8e03e9afc3c5c57b7837bd00823",
+  "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-05046",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=spot/symbol=SOLMNT/dt=2026-05-06/object=595664f27dfded8d208eb27da3015394e619f7173f809a74584667880a7843e3",
+  "source_proof_id": "source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-spot-tick-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 8775,
+  "max_object_bytes": 8775,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-05-06/symbol=SOLMNT/object=595664f27dfded8d208eb27da3015394e619f7173f809a74584667880a7843e3.csv.gz",
+      "source_url": "https://public.bybit.com/spot/SOLMNT/SOLMNT_2026-05-06.csv.gz",
+      "sha256": "595664f27dfded8d208eb27da3015394e619f7173f809a74584667880a7843e3",
+      "bytes": 8775,
+      "archive_date": "2026-05-06"
+    }
+  ],
+  "blocking_issues": []
+}

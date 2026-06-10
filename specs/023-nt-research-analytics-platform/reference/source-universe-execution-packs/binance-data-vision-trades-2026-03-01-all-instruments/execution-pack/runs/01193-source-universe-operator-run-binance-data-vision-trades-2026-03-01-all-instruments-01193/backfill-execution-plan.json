@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01193:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:TRUMPFDUSD:2026-03-01:7159108163b722f5f93669c4fc558ce99403a5e200a6ce8957f29df2fc8607c4:accepted-tranche",
+  "accepted_tranche_manifest_hash": "cc37c4a57be540c7c03cafae0053e742e3e7370ac85c1fd87c58be527abaeaf0",
+  "run_spec_hash": "5e693d673f4f6d4769b827b977641113fda90acc6be9612a4d6f209be7a8ce7c",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01193",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=TRUMPFDUSD/dt=2026-03-01/object=7159108163b722f5f93669c4fc558ce99403a5e200a6ce8957f29df2fc8607c4",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 6127,
+  "max_object_bytes": 6127,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=TRUMPFDUSD/object=7159108163b722f5f93669c4fc558ce99403a5e200a6ce8957f29df2fc8607c4.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/TRUMPFDUSD/TRUMPFDUSD-trades-2026-03-01.zip",
+      "sha256": "7159108163b722f5f93669c4fc558ce99403a5e200a6ce8957f29df2fc8607c4",
+      "bytes": 6127,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

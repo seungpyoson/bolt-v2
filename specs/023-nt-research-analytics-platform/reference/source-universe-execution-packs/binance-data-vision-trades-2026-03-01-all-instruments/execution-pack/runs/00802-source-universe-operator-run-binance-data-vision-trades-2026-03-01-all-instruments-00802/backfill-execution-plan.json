@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00802:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:NEXOBTC:2026-03-01:f7cdfeebacfffe80031afc707a1fb905649cd7fc39ba477435cb68eae1e5e220:accepted-tranche",
+  "accepted_tranche_manifest_hash": "4fae2d9e465e7e53429bc25df685145a763d34a13690dc178c016c38f26c9d49",
+  "run_spec_hash": "644ddf8c65f75608a5f20f94acb07487732a25f15ceacafbcd84f26de24dbc77",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00802",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=NEXOBTC/dt=2026-03-01/object=f7cdfeebacfffe80031afc707a1fb905649cd7fc39ba477435cb68eae1e5e220",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 54329,
+  "max_object_bytes": 54329,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=NEXOBTC/object=f7cdfeebacfffe80031afc707a1fb905649cd7fc39ba477435cb68eae1e5e220.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/NEXOBTC/NEXOBTC-trades-2026-03-01.zip",
+      "sha256": "f7cdfeebacfffe80031afc707a1fb905649cd7fc39ba477435cb68eae1e5e220",
+      "bytes": 54329,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

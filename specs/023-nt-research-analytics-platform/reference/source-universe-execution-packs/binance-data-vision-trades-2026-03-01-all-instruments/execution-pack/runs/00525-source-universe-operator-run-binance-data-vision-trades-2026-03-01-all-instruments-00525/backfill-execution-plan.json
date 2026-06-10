@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00525:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:GASTRY:2026-03-01:5cafdb45011d9180d270c982718e4b4449fa8258ee5e2a2ee6d9578bf491ca07:accepted-tranche",
+  "accepted_tranche_manifest_hash": "0712e3ec62c4a770ca30acf07128b23f4f3a5baaa855b0badcb45d23fc80a93b",
+  "run_spec_hash": "a328cb639c356abd0dda894ffd2595e86ced8d1c1711f9e2d7b7c6ee5117762e",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00525",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=GASTRY/dt=2026-03-01/object=5cafdb45011d9180d270c982718e4b4449fa8258ee5e2a2ee6d9578bf491ca07",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 2255,
+  "max_object_bytes": 2255,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=GASTRY/object=5cafdb45011d9180d270c982718e4b4449fa8258ee5e2a2ee6d9578bf491ca07.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/GASTRY/GASTRY-trades-2026-03-01.zip",
+      "sha256": "5cafdb45011d9180d270c982718e4b4449fa8258ee5e2a2ee6d9578bf491ca07",
+      "bytes": 2255,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

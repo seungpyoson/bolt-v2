@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00273:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-inverse-tick-trades:SOLUSD:2026-04-02:424c1a3e7721ca28baa490b67eede966f0a93bc8ce5e1e389a97d97c3bda163f:accepted-tranche",
+  "accepted_tranche_manifest_hash": "29d716af77b62a0b7b3cc16469d8bd59a925e2a8c79542c298acd59a8768664c",
+  "run_spec_hash": "6f880e1ae902a4753cb7b1058272709b3d6cdc2991a0cc9f698ca1cf5a9ed008",
+  "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00273",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=inverse/symbol=SOLUSD/dt=2026-04-02/object=424c1a3e7721ca28baa490b67eede966f0a93bc8ce5e1e389a97d97c3bda163f",
+  "source_proof_id": "source-proof-bybit-inverse-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-inverse-tick-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 657435,
+  "max_object_bytes": 657435,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2026-04-02/symbol=SOLUSD/object=424c1a3e7721ca28baa490b67eede966f0a93bc8ce5e1e389a97d97c3bda163f.csv.gz",
+      "source_url": "https://public.bybit.com/trading/SOLUSD/SOLUSD2026-04-02.csv.gz",
+      "sha256": "424c1a3e7721ca28baa490b67eede966f0a93bc8ce5e1e389a97d97c3bda163f",
+      "bytes": 657435,
+      "archive_date": "2026-04-02"
+    }
+  ],
+  "blocking_issues": []
+}

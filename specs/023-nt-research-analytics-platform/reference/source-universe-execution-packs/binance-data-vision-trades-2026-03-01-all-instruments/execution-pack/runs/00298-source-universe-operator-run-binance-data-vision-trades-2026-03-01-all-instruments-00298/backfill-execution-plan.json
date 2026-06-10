@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00298:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:CFXBTC:2026-03-01:c65d2d4eb1cca6697cc0926eb23f53ec070e134a5dd7b042fafec43432712081:accepted-tranche",
+  "accepted_tranche_manifest_hash": "36e1e8bcef293a37bc7316f04def731904e29c432db9a7ed231c9998e0e43443",
+  "run_spec_hash": "4e5ddeb0dbf2d8f97ff768bb2d2ed3eb407870c0c11e6157ffa01cdf01cb928e",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00298",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=CFXBTC/dt=2026-03-01/object=c65d2d4eb1cca6697cc0926eb23f53ec070e134a5dd7b042fafec43432712081",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 3291,
+  "max_object_bytes": 3291,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=CFXBTC/object=c65d2d4eb1cca6697cc0926eb23f53ec070e134a5dd7b042fafec43432712081.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/CFXBTC/CFXBTC-trades-2026-03-01.zip",
+      "sha256": "c65d2d4eb1cca6697cc0926eb23f53ec070e134a5dd7b042fafec43432712081",
+      "bytes": 3291,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

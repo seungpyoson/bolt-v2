@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00247:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-inverse-tick-trades:AAVEUSD:2026-03-31:52a5267e17c5570df131a17e58c0df74ddaaf70b93de6647805d6e1ee4f6e864:accepted-tranche",
+  "accepted_tranche_manifest_hash": "de13926b3009a27298b55dca498bccd39f80351c023413dd8b6d7f3756f4b6f0",
+  "run_spec_hash": "026f8d125f676a885d85dd92a25ac35832f9849ac8aa0fedffb610da4593e012",
+  "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00247",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=inverse/symbol=AAVEUSD/dt=2026-03-31/object=52a5267e17c5570df131a17e58c0df74ddaaf70b93de6647805d6e1ee4f6e864",
+  "source_proof_id": "source-proof-bybit-inverse-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-inverse-tick-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 16390,
+  "max_object_bytes": 16390,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2026-03-31/symbol=AAVEUSD/object=52a5267e17c5570df131a17e58c0df74ddaaf70b93de6647805d6e1ee4f6e864.csv.gz",
+      "source_url": "https://public.bybit.com/trading/AAVEUSD/AAVEUSD2026-03-31.csv.gz",
+      "sha256": "52a5267e17c5570df131a17e58c0df74ddaaf70b93de6647805d6e1ee4f6e864",
+      "bytes": 16390,
+      "archive_date": "2026-03-31"
+    }
+  ],
+  "blocking_issues": []
+}

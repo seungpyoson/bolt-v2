@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00923:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:BNBPERP:2026-03-12:8c02a4b5060d384461398142d0e595ccac8816fbc4c26b4eceba3e0f5a6614ab:accepted-tranche",
+  "accepted_tranche_manifest_hash": "53165f5a03a49d1dc5271beef8a0f593e2b3a6053533bbb73dcdd83d30426495",
+  "run_spec_hash": "b934c7141efc1d7be6e664fb232f2fe175483ce872198badc684b476f23198de",
+  "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00923",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=linear/symbol=BNBPERP/dt=2026-03-12/object=8c02a4b5060d384461398142d0e595ccac8816fbc4c26b4eceba3e0f5a6614ab",
+  "source_proof_id": "source-proof-bybit-linear-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-linear-tick-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 20874,
+  "max_object_bytes": 20874,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-12/symbol=BNBPERP/object=8c02a4b5060d384461398142d0e595ccac8816fbc4c26b4eceba3e0f5a6614ab.csv.gz",
+      "source_url": "https://public.bybit.com/trading/BNBPERP/BNBPERP2026-03-12.csv.gz",
+      "sha256": "8c02a4b5060d384461398142d0e595ccac8816fbc4c26b4eceba3e0f5a6614ab",
+      "bytes": 20874,
+      "archive_date": "2026-03-12"
+    }
+  ],
+  "blocking_issues": []
+}

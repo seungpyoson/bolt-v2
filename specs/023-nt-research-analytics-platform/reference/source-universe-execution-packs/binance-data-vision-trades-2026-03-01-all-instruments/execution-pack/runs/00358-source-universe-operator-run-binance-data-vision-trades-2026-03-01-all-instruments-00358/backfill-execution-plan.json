@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00358:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:DENTTRY:2026-03-01:352c2e08c014254ee04757a0acd73aa33ef247e41c6b72ba707707eb451e13e9:accepted-tranche",
+  "accepted_tranche_manifest_hash": "cb7e9fb493d9d5645b466269b1b8c4e10163d9faa0b28221af69863a2c650ba6",
+  "run_spec_hash": "9c8c531de11bb0548628cc46566d70153d63bda53951f7dbccaa4ac224addd61",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00358",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=DENTTRY/dt=2026-03-01/object=352c2e08c014254ee04757a0acd73aa33ef247e41c6b72ba707707eb451e13e9",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 846520,
+  "max_object_bytes": 846520,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=DENTTRY/object=352c2e08c014254ee04757a0acd73aa33ef247e41c6b72ba707707eb451e13e9.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/DENTTRY/DENTTRY-trades-2026-03-01.zip",
+      "sha256": "352c2e08c014254ee04757a0acd73aa33ef247e41c6b72ba707707eb451e13e9",
+      "bytes": 846520,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

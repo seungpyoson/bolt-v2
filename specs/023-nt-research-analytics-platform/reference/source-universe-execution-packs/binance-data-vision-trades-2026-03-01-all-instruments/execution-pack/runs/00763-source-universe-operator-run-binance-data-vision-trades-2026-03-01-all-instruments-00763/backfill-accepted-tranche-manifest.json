@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:MIRAUSDT:2026-03-01:e45ee4c1dd56dfc659db9753916ba2d80732714a94ca662f8a17f3b04faff7b0:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:MIRAUSDT:2026-03-01:e45ee4c1dd56dfc659db9753916ba2d80732714a94ca662f8a17f3b04faff7b0:source-proof-scope",
+  "source_proof_scope_report_hash": "f3743f31c7c66e72f9d4956dcb4d92f9de07f1cc962f3b282d99a3b1b4e7bc77",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-spot",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 675254,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=MIRAUSDT/object=e45ee4c1dd56dfc659db9753916ba2d80732714a94ca662f8a17f3b04faff7b0.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/MIRAUSDT/MIRAUSDT-trades-2026-03-01.zip",
+      "sha256": "e45ee4c1dd56dfc659db9753916ba2d80732714a94ca662f8a17f3b04faff7b0",
+      "bytes": 675254,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

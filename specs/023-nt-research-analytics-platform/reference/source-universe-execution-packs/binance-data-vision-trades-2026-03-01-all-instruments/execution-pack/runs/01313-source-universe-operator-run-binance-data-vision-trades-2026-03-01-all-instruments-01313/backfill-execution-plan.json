@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01313:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:WINEUR:2026-03-01:90d49f93896e793c0511d95c59ae2310828e5c8bf67d0f28893f10ec653c027c:accepted-tranche",
+  "accepted_tranche_manifest_hash": "e1b4d3070ff116e98232d122efbe0ccebfd3a7833497ed6ce63b01d8642beaa2",
+  "run_spec_hash": "678e6fce01a83f88d9e0811817d66bf88b046fa4c64541af8fc7f4a25f38f257",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01313",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=WINEUR/dt=2026-03-01/object=90d49f93896e793c0511d95c59ae2310828e5c8bf67d0f28893f10ec653c027c",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 4727,
+  "max_object_bytes": 4727,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=WINEUR/object=90d49f93896e793c0511d95c59ae2310828e5c8bf67d0f28893f10ec653c027c.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/WINEUR/WINEUR-trades-2026-03-01.zip",
+      "sha256": "90d49f93896e793c0511d95c59ae2310828e5c8bf67d0f28893f10ec653c027c",
+      "bytes": 4727,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

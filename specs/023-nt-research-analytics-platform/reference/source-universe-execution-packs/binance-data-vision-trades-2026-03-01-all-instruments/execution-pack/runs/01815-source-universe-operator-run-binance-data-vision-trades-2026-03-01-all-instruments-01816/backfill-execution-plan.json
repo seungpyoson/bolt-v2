@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01816:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:PNUTUSDT:2026-03-01:9df71e85c58401deaa1b9fe84c2770673af0cec5b222e9f4e8fea6a734113788:accepted-tranche",
+  "accepted_tranche_manifest_hash": "a7cfa85271f45d7eb102b62a020e51f9bd5c65526a26af510d5780b29f2ac184",
+  "run_spec_hash": "f5a40a4ae84d454c6e67483e4f786ea0bbe2512d26116ffe2c5ddf4adae9b8dd",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01816",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=PNUTUSDT/dt=2026-03-01/object=9df71e85c58401deaa1b9fe84c2770673af0cec5b222e9f4e8fea6a734113788",
+  "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-usd-m-perpetual-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 1449529,
+  "max_object_bytes": 1449529,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=usd_m_perpetual/dt=2026-03-01/symbol=PNUTUSDT/object=9df71e85c58401deaa1b9fe84c2770673af0cec5b222e9f4e8fea6a734113788.zip",
+      "source_url": "https://data.binance.vision/data/futures/um/daily/trades/PNUTUSDT/PNUTUSDT-trades-2026-03-01.zip",
+      "sha256": "9df71e85c58401deaa1b9fe84c2770673af0cec5b222e9f4e8fea6a734113788",
+      "bytes": 1449529,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

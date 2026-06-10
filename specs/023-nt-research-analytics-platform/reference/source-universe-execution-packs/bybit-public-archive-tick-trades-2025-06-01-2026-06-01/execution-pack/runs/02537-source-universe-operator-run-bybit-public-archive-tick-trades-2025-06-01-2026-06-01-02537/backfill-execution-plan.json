@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-02537:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:1000000BABYDOGEUSDT:2026-05-31:2f0ea69ea293704a4edc4d3197a7f3aa44c8754d13ab53aee56f98af7c2b5252:accepted-tranche",
+  "accepted_tranche_manifest_hash": "c4af01a762df346440e68046439ec01511951451b05b7c625ac2d06d06dce960",
+  "run_spec_hash": "701fb457b05c788d38ddd34845b911d463cc6649383dfe844fbaeafe396c6dcf",
+  "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-02537",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=linear/symbol=1000000BABYDOGEUSDT/dt=2026-05-31/object=2f0ea69ea293704a4edc4d3197a7f3aa44c8754d13ab53aee56f98af7c2b5252",
+  "source_proof_id": "source-proof-bybit-linear-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-linear-tick-trades",
+  "table_family": "trades",
+  "object_count": 1,
+  "accepted_bytes": 519782,
+  "max_object_bytes": 519782,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-31/symbol=1000000BABYDOGEUSDT/object=2f0ea69ea293704a4edc4d3197a7f3aa44c8754d13ab53aee56f98af7c2b5252.csv.gz",
+      "source_url": "https://public.bybit.com/trading/1000000BABYDOGEUSDT/1000000BABYDOGEUSDT2026-05-31.csv.gz",
+      "sha256": "2f0ea69ea293704a4edc4d3197a7f3aa44c8754d13ab53aee56f98af7c2b5252",
+      "bytes": 519782,
+      "archive_date": "2026-05-31"
+    }
+  ],
+  "blocking_issues": []
+}

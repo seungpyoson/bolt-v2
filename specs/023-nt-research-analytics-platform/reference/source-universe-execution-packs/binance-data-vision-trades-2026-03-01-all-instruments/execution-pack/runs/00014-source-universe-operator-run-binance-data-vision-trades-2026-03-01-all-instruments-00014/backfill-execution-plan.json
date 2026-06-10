@@ -1,0 +1,31 @@
+{
+  "schema_version": "backfill-execution-plan.v1",
+  "plan_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00014:execution-plan",
+  "status": "ready",
+  "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:1MBABYDOGETRY:2026-03-01:70bad35f1640fda38d9188247d8bda19a3d5f59b439d94bfa67cd5df304ea3b7:accepted-tranche",
+  "accepted_tranche_manifest_hash": "94bae8a98531982efcfda9f78e30b1b46894b04e72db7d704750e62489b64824",
+  "run_spec_hash": "f10dc9a6bd0b4d5c3134595e017c43e903c5d6afadde4dca3c6421a0892c0450",
+  "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00014",
+  "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=1MBABYDOGETRY/dt=2026-03-01/object=70bad35f1640fda38d9188247d8bda19a3d5f59b439d94bfa67cd5df304ea3b7",
+  "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
+  "source_proof_version": 1,
+  "source_binding": "binance-spot-native-trades",
+  "table_family": "native_trades",
+  "object_count": 1,
+  "accepted_bytes": 10584,
+  "max_object_bytes": 10584,
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=spot/dt=2026-03-01/symbol=1MBABYDOGETRY/object=70bad35f1640fda38d9188247d8bda19a3d5f59b439d94bfa67cd5df304ea3b7.zip",
+      "source_url": "https://data.binance.vision/data/spot/daily/trades/1MBABYDOGETRY/1MBABYDOGETRY-trades-2026-03-01.zip",
+      "sha256": "70bad35f1640fda38d9188247d8bda19a3d5f59b439d94bfa67cd5df304ea3b7",
+      "bytes": 10584,
+      "archive_date": "2026-03-01"
+    }
+  ],
+  "blocking_issues": []
+}

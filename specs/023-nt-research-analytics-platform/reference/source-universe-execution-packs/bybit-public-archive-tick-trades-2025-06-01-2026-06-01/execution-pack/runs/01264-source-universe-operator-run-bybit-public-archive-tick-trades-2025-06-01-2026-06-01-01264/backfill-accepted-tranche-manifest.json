@@ -1,0 +1,25 @@
+{
+  "schema_version": "backfill-accepted-tranche-manifest.v1",
+  "tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:BNBUSDT:2026-03-29:f898b06cea2136d7ae2744a7aa19c7b285b1d9c0af99fcda10cb8ce6b59ccf77:accepted-tranche",
+  "status": "accepted",
+  "source_proof_scope_report_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:BNBUSDT:2026-03-29:f898b06cea2136d7ae2744a7aa19c7b285b1d9c0af99fcda10cb8ce6b59ccf77:source-proof-scope",
+  "source_proof_scope_report_hash": "1172be2859baef046af0bc5b3a4e76a80dee94f48158b88d8084736422076c6e",
+  "source_proof_id": "source-proof-bybit-linear-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "source_proof_version": 1,
+  "source_binding": "bybit-linear-tick-trades",
+  "table_family": "trades",
+  "parent_manifest_id": "backfill-source-universe-object-manifest-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-category-linear",
+  "object_level_tranche_required": true,
+  "object_count": 1,
+  "accepted_bytes": 1611778,
+  "objects": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-29/symbol=BNBUSDT/object=f898b06cea2136d7ae2744a7aa19c7b285b1d9c0af99fcda10cb8ce6b59ccf77.csv.gz",
+      "source_url": "https://public.bybit.com/trading/BNBUSDT/BNBUSDT2026-03-29.csv.gz",
+      "sha256": "f898b06cea2136d7ae2744a7aa19c7b285b1d9c0af99fcda10cb8ce6b59ccf77",
+      "bytes": 1611778,
+      "archive_date": "2026-03-29"
+    }
+  ],
+  "blocking_issues": []
+}

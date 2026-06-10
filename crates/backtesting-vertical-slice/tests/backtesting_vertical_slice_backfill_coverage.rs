@@ -947,6 +947,70 @@ source_proof_status = "accepted"
 }
 
 #[test]
+fn coverage_ledger_accepts_accepted_tranche_manifest_with_spec_owned_write_mode() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let manifest_path = dir.path().join("accepted-tranche.json");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": "backfill-accepted-tranche-manifest.v1",
+            "tranche_id": "backfill-accepted-tranche-synthetic-native-trades-2026-05-31",
+            "status": "accepted",
+            "source_proof_id": "source-proof-synthetic-native-trades-2026-05-31",
+            "source_proof_version": 1,
+            "source_binding": "synthetic-native-trades",
+            "table_family": "trades",
+            "object_count": 1,
+            "accepted_bytes": 1_809_563,
+            "blocking_issues": []
+        }))
+        .expect("serialize manifest"),
+    )
+    .expect("write manifest");
+    let spec_path = dir.path().join("coverage-ledger.toml");
+    let output_dir = dir.path().join("coverage-ledger");
+    fs::write(
+        &spec_path,
+        format!(
+            r#"
+ledger_id = "ledger-synthetic-accepted-tranche"
+output_dir = "{}"
+
+[[manifest]]
+manifest_uri = "repo://synthetic/accepted-tranche.json"
+path = "{}"
+coverage_axis = "archive_date"
+source_proof_status = "accepted"
+write_mode = "s3_staging"
+canonical_s3_write = false
+"#,
+            output_dir.display(),
+            manifest_path.display()
+        ),
+    )
+    .expect("write coverage ledger spec");
+
+    let artifact =
+        write_coverage_ledger_artifact_from_spec_file(&spec_path).expect("write coverage ledger");
+    let ledger: BackfillCoverageLedger =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read ledger"))
+            .expect("parse ledger");
+
+    assert_eq!(ledger.summary.accepted_records, 1);
+    assert_eq!(ledger.summary.accepted_objects, 1);
+    assert_eq!(ledger.summary.accepted_bytes, 1_809_563);
+    assert_eq!(
+        ledger.records[0].record_id,
+        "backfill-accepted-tranche-synthetic-native-trades-2026-05-31"
+    );
+    assert_eq!(
+        ledger.records[0].coverage_axis.as_deref(),
+        Some("archive_date")
+    );
+    assert!(!ledger.records[0].canonical_ready);
+}
+
+#[test]
 fn coverage_ledger_writer_reports_manifest_uri_for_invalid_json_file() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let manifest_path = dir.path().join("bad.json");
@@ -1105,5 +1169,7 @@ fn manifest_file(manifest_uri: &str, path: PathBuf) -> BackfillCoverageManifestF
         source_proof_id: None,
         source_proof_version: None,
         source_proof_status: Some(SourceProofStatus::Accepted),
+        write_mode: None,
+        canonical_s3_write: None,
     }
 }

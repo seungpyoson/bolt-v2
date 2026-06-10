@@ -332,6 +332,8 @@ pub struct BackfillCoverageManifestFile {
     pub source_proof_id: Option<String>,
     pub source_proof_version: Option<u32>,
     pub source_proof_status: Option<SourceProofStatus>,
+    pub write_mode: Option<BackfillWriteMode>,
+    pub canonical_s3_write: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -350,8 +352,11 @@ impl BackfillCoverageManifestEvidence {
         summary: &Value,
         source_proof_status: Option<SourceProofStatus>,
     ) -> Result<Self, BackfillCoverageParseError> {
-        let manifest_id =
-            required_string(summary, "manifest_id", &[&["manifest_id"], &["run_id"]])?;
+        let manifest_id = required_string(
+            summary,
+            "manifest_id",
+            &[&["manifest_id"], &["run_id"], &["tranche_id"], &["plan_id"]],
+        )?;
         let source_binding = optional_string(summary, &[&["source_binding"]]).unwrap_or_default();
         let table_family = optional_string(summary, &[&["table_family"]])
             .or_else(|| optional_single_string_array(summary, &[&["table_families"]]));
@@ -370,6 +375,8 @@ impl BackfillCoverageManifestEvidence {
             summary,
             "completed_objects",
             &[
+                &["object_count"],
+                &["accepted_objects"],
                 &["completed_objects"],
                 &["completed_payload_object_count"],
                 &["completed_object_count"],
@@ -682,6 +689,8 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
                 source_proof_id,
                 source_proof_version,
                 source_proof_status,
+                write_mode,
+                canonical_s3_write,
             } = input;
             let path_display = path.display().to_string();
             let bytes = fs::read(&path).map_err(|error| {
@@ -746,6 +755,8 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
                 coverage_axis,
                 source_proof_id,
                 source_proof_version,
+                write_mode,
+                canonical_s3_write,
             );
             Ok(BackfillCoverageManifestJson {
                 manifest_uri,
@@ -884,6 +895,8 @@ fn bind_manifest_file_metadata(
     coverage_axis: Option<String>,
     source_proof_id: Option<String>,
     source_proof_version: Option<u32>,
+    write_mode: Option<BackfillWriteMode>,
+    canonical_s3_write: Option<bool>,
 ) {
     let Some(object) = summary.as_object_mut() else {
         return;
@@ -905,6 +918,15 @@ fn bind_manifest_file_metadata(
             "source_proof_version".to_string(),
             Value::Number(value.into()),
         );
+    }
+    if let Some(value) = write_mode {
+        object.insert(
+            "write_mode".to_string(),
+            serde_json::to_value(value).expect("serialize backfill write mode"),
+        );
+    }
+    if let Some(value) = canonical_s3_write {
+        object.insert("canonical_s3_write".to_string(), Value::Bool(value));
     }
 }
 

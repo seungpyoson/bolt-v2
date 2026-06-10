@@ -72,7 +72,10 @@ use nautilus_model::{
     identifiers::{ClientId, StrategyId},
 };
 #[cfg(test)]
-use nautilus_model::{data::OrderBookDeltas, identifiers::InstrumentId};
+use nautilus_model::{
+    data::{OrderBookDeltas, QuoteTick},
+    identifiers::InstrumentId,
+};
 use ustr::Ustr;
 use zeroize::Zeroizing;
 
@@ -458,6 +461,38 @@ mod strategy_free_probe {
         pub(super) fn book_evidence(&self) -> BoltV3StrategyFreeBookDeltasEvidence {
             BoltV3StrategyFreeBookDeltasEvidence {
                 deltas: self.book_deltas.borrow().clone(),
+            }
+        }
+
+        pub(super) fn record_quote(&self, quote: &QuoteTick, captured_at_unix_nanos: u64) {
+            let quote_instrument_id = quote.instrument_id.to_string();
+            if self
+                .ambiguous_instrument_ids
+                .borrow()
+                .contains(&quote_instrument_id)
+            {
+                return;
+            }
+            let required = self.required.borrow().clone();
+            let mut matched_required = false;
+            let mut quotes = self.quotes.borrow_mut();
+            for required in &required {
+                if quote.instrument_id == required.instrument_id {
+                    matched_required = true;
+                    quotes.push(BoltV3StrategyFreeDataClientReadinessQuote {
+                        data_client_id: required.data_client_id.to_string(),
+                        instrument_id: required.instrument_id.to_string(),
+                        bid_price: quote.bid_price.as_f64(),
+                        ask_price: quote.ask_price.as_f64(),
+                        ts_event_unix_nanos: quote.ts_event.as_u64(),
+                        ts_init_unix_nanos: quote.ts_init.as_u64(),
+                        captured_at_unix_nanos,
+                    });
+                }
+            }
+            drop(quotes);
+            if matched_required && self.has_all_required_market_data() {
+                self.quote_notify.notify_one();
             }
         }
 
@@ -2252,7 +2287,7 @@ mod tests {
         HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
         HyperliquidProductSubmitProofBinding, write_hyperliquid_live_submit_approval_artifact,
     };
-    use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas};
+    use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas, QuoteTick};
     use nautilus_model::enums::{BookAction, OrderSide};
     use nautilus_model::identifiers::TraderId;
     use nautilus_model::types::{Price, Quantity};
@@ -3130,6 +3165,23 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         }
     }
 
+    fn record_readiness_quote(
+        handle: &BoltV3StrategyFreeDataClientReadinessProbeHandle,
+        subscription: &StrategyFreeDataClientReadinessQuoteSubscription,
+        captured_at_unix_nanos: u64,
+    ) {
+        let quote = QuoteTick::new(
+            subscription.instrument_id,
+            Price::from("1.0"),
+            Price::from("2.0"),
+            Quantity::from("1.0"),
+            Quantity::from("1.0"),
+            1_000.into(),
+            1_100.into(),
+        );
+        handle.record_quote(&quote, captured_at_unix_nanos);
+    }
+
     #[test]
     fn data_client_readiness_quote_plan_uses_client_owned_probe_targets() {
         let mut loaded = fixture_loaded_config();
@@ -3209,19 +3261,8 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             !handle.has_all_required_quotes(),
             "installing targets should not pass the quote probe until quotes arrive"
         );
-        for subscription in installed {
-            handle
-                .quotes
-                .borrow_mut()
-                .push(BoltV3StrategyFreeDataClientReadinessQuote {
-                    data_client_id: subscription.data_client_id.to_string(),
-                    instrument_id: subscription.instrument_id.to_string(),
-                    bid_price: 1.0,
-                    ask_price: 2.0,
-                    ts_event_unix_nanos: 1_000,
-                    ts_init_unix_nanos: 1_100,
-                    captured_at_unix_nanos: 1_200,
-                });
+        for subscription in &installed {
+            record_readiness_quote(&handle, subscription, 1_200);
         }
 
         assert!(
@@ -3349,18 +3390,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         ]);
 
         for subscription in installed.iter().take(1) {
-            handle
-                .quotes
-                .borrow_mut()
-                .push(BoltV3StrategyFreeDataClientReadinessQuote {
-                    data_client_id: subscription.data_client_id.to_string(),
-                    instrument_id: subscription.instrument_id.to_string(),
-                    bid_price: 1.0,
-                    ask_price: 2.0,
-                    ts_event_unix_nanos: 1_000,
-                    ts_init_unix_nanos: 1_100,
-                    captured_at_unix_nanos: 1_200,
-                });
+            record_readiness_quote(&handle, subscription, 1_200);
         }
         assert!(
             !handle.has_all_required_quotes(),
@@ -3370,18 +3400,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         let subscription = installed
             .get(1)
             .expect("second source-owned target should be installed");
-        handle
-            .quotes
-            .borrow_mut()
-            .push(BoltV3StrategyFreeDataClientReadinessQuote {
-                data_client_id: subscription.data_client_id.to_string(),
-                instrument_id: subscription.instrument_id.to_string(),
-                bid_price: 1.0,
-                ask_price: 2.0,
-                ts_event_unix_nanos: 1_000,
-                ts_init_unix_nanos: 1_100,
-                captured_at_unix_nanos: 1_200,
-            });
+        record_readiness_quote(&handle, subscription, 1_200);
 
         assert!(
             !handle.has_all_required_quotes(),
@@ -3391,18 +3410,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         let subscription = installed
             .get(2)
             .expect("third source-owned target should be installed");
-        handle
-            .quotes
-            .borrow_mut()
-            .push(BoltV3StrategyFreeDataClientReadinessQuote {
-                data_client_id: subscription.data_client_id.to_string(),
-                instrument_id: subscription.instrument_id.to_string(),
-                bid_price: 1.0,
-                ask_price: 2.0,
-                ts_event_unix_nanos: 1_000,
-                ts_init_unix_nanos: 1_100,
-                captured_at_unix_nanos: 1_200,
-            });
+        record_readiness_quote(&handle, subscription, 1_200);
 
         assert!(
             handle.has_all_required_quotes(),

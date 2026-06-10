@@ -457,6 +457,7 @@ impl DataClient for PolyResearchReferencePriceClient {
             Arc::clone(&self.pending_provider_subscriptions),
             Arc::clone(&self.provider_subscription_ids),
             Some(outbound.clone()),
+            self.config.subscribe_ack_timeout_ms,
             self.data_sender.clone(),
         );
         let post_reconnection = polyresearch_reference_post_reconnection_handler(
@@ -1045,6 +1046,7 @@ fn polyresearch_reference_record_subscription_ack(
     pending_provider_subscriptions: &Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
     provider_subscription_ids: &Arc<Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, String>>>,
     outbound: Option<&PolyResearchReferenceOutboundHandle>,
+    subscribe_ack_timeout_ms: u64,
     frame: &str,
 ) -> Result<bool, String> {
     let parsed = serde_json::from_str::<PolyResearchPriceFrame>(frame)
@@ -1054,6 +1056,7 @@ fn polyresearch_reference_record_subscription_ack(
         pending_provider_subscriptions,
         provider_subscription_ids,
         outbound,
+        subscribe_ack_timeout_ms,
         &parsed,
     )
 }
@@ -1065,6 +1068,7 @@ fn polyresearch_reference_record_subscription_ack_from_parsed(
     pending_provider_subscriptions: &Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
     provider_subscription_ids: &Arc<Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, String>>>,
     outbound: Option<&PolyResearchReferenceOutboundHandle>,
+    subscribe_ack_timeout_ms: u64,
     parsed: &PolyResearchPriceFrame,
 ) -> Result<bool, String> {
     if parsed.r#type.as_deref() != Some(POLYRESEARCH_SUBSCRIBED_FRAME_TYPE) {
@@ -1097,6 +1101,7 @@ fn polyresearch_reference_record_subscription_ack_from_parsed(
             subscriptions,
             pending_provider_subscriptions,
             outbound,
+            subscribe_ack_timeout_ms,
         )?;
         unsubscribe_result?;
         return Ok(true);
@@ -1109,6 +1114,7 @@ fn polyresearch_reference_record_subscription_ack_from_parsed(
         subscriptions,
         pending_provider_subscriptions,
         outbound,
+        subscribe_ack_timeout_ms,
     )?;
     Ok(true)
 }
@@ -1119,6 +1125,7 @@ fn send_next_polyresearch_pending_subscription(
     >,
     pending_provider_subscriptions: &Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
     outbound: Option<&PolyResearchReferenceOutboundHandle>,
+    subscribe_ack_timeout_ms: u64,
 ) -> Result<(), String> {
     let Some(outbound) = outbound else {
         return Ok(());
@@ -1144,6 +1151,12 @@ fn send_next_polyresearch_pending_subscription(
             outbound
                 .send_text(frame)
                 .map_err(|error| format!("PolyResearch subscribe frame send failed: {error}"))?;
+            spawn_polyresearch_reference_subscribe_ack_timeout(
+                Arc::clone(pending_provider_subscriptions),
+                (*outbound).clone(),
+                subscription_key,
+                subscribe_ack_timeout_ms,
+            );
             return Ok(());
         }
         let mut pending = pending_provider_subscriptions
@@ -1162,6 +1175,7 @@ fn polyresearch_reference_message_handler(
     pending_provider_subscriptions: Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
     provider_subscription_ids: Arc<Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, String>>>,
     outbound: Option<PolyResearchReferenceOutboundHandle>,
+    subscribe_ack_timeout_ms: u64,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
 ) -> MessageHandler {
     Arc::new(move |message: Message| {
@@ -1187,6 +1201,7 @@ fn polyresearch_reference_message_handler(
             &pending_provider_subscriptions,
             &provider_subscription_ids,
             outbound.as_ref(),
+            subscribe_ack_timeout_ms,
             &parsed,
         ) {
             Ok(true) => return,
@@ -1661,6 +1676,7 @@ mod tests {
             Arc::new(Mutex::new(VecDeque::new())),
             Arc::new(Mutex::new(BTreeMap::new())),
             None,
+            2_000,
             data_sender,
         );
 
@@ -1697,6 +1713,7 @@ mod tests {
             Arc::new(Mutex::new(VecDeque::new())),
             Arc::new(Mutex::new(BTreeMap::new())),
             None,
+            2_000,
             data_sender,
         );
 
@@ -1892,6 +1909,7 @@ mod tests {
             &client.pending_provider_subscriptions,
             &client.provider_subscription_ids,
             Some(&outbound),
+            client.config.subscribe_ack_timeout_ms,
             r#"{"type":"subscribed","subscription_id":"chainlink:btc"}"#,
         )
         .expect("first PRR subscribed ack should be handled");
@@ -1907,6 +1925,68 @@ mod tests {
             second_frame,
             r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["ETH/USD"]}}"#
         );
+    }
+
+    #[test]
+    fn prr_provider_second_subscribe_ack_timeout_disconnects_after_first_ack() {
+        let (mut client, _data_receiver) = fixture_client();
+        client.config.subscribe_ack_timeout_ms = 10;
+        let (outbound_sender, mut outbound_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
+        let outbound = PolyResearchReferenceOutboundHandle::from_sender(outbound_sender);
+        client.outbound = Some(outbound.clone());
+
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                "BTC",
+                "polyresearch_primary",
+                "BTC/USD",
+            ))
+            .expect("first PRR reference subscription should be accepted");
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                "ETH",
+                "polyresearch_secondary",
+                "ETH/USD",
+            ))
+            .expect("second PRR reference subscription should be accepted");
+
+        let PolyResearchReferenceOutboundCommand::SendText(_) = outbound_receiver
+            .try_recv()
+            .expect("first PRR subscription should send provider subscribe")
+        else {
+            panic!("first PRR subscription should send text");
+        };
+        assert!(
+            outbound_receiver.try_recv().is_err(),
+            "second PRR provider subscribe must wait until the first subscription is acked"
+        );
+
+        polyresearch_reference_record_subscription_ack(
+            &client.subscriptions,
+            &client.pending_provider_subscriptions,
+            &client.provider_subscription_ids,
+            Some(&outbound),
+            client.config.subscribe_ack_timeout_ms,
+            r#"{"type":"subscribed","subscription_id":"chainlink:btc"}"#,
+        )
+        .expect("first PRR subscribed ack should be handled");
+
+        let PolyResearchReferenceOutboundCommand::SendText(_) = outbound_receiver
+            .try_recv()
+            .expect("second PRR subscription should send after first ack")
+        else {
+            panic!("second PRR subscription should send text after first ack");
+        };
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let PolyResearchReferenceOutboundCommand::Disconnect(None) = outbound_receiver
+            .try_recv()
+            .expect("second in-flight PRR subscribe should disconnect on missing ack")
+        else {
+            panic!("second in-flight PRR subscribe should send a disconnect command");
+        };
     }
 
     #[test]
@@ -1989,6 +2069,7 @@ mod tests {
             &client.pending_provider_subscriptions,
             &client.provider_subscription_ids,
             Some(&outbound),
+            client.config.subscribe_ack_timeout_ms,
             r#"{"type":"subscribed","subscription_id":"chainlink:btc"}"#,
         )
         .expect("first PRR subscribed ack should be handled");
@@ -2168,6 +2249,7 @@ mod tests {
             &client.pending_provider_subscriptions,
             &client.provider_subscription_ids,
             client.outbound.as_ref(),
+            client.config.subscribe_ack_timeout_ms,
             r#"{"type":"subscribed","subscription_id":"chainlink:1"}"#,
         )
         .expect("subscribed ack should record provider subscription id");
@@ -2205,6 +2287,7 @@ mod tests {
             Arc::clone(&client.pending_provider_subscriptions),
             Arc::clone(&client.provider_subscription_ids),
             Some(outbound),
+            client.config.subscribe_ack_timeout_ms,
             data_sender,
         );
 
@@ -2316,6 +2399,7 @@ mod tests {
             &pending_provider_subscriptions,
             &provider_subscription_ids,
             Some(&outbound),
+            2_000,
             r#"{"type":"subscribed","subscription_id":"chainlink:btc"}"#,
         )
         .expect_err("failed late-cancel provider unsubscribe should be surfaced");
@@ -2403,6 +2487,7 @@ mod tests {
             &client.pending_provider_subscriptions,
             &client.provider_subscription_ids,
             Some(&outbound),
+            client.config.subscribe_ack_timeout_ms,
             r#"{"type":"subscribed","subscription_id":"chainlink:btc"}"#,
         )
         .expect("late ack for canceled PRR subscription should drain provider subscribe");
@@ -2434,6 +2519,7 @@ mod tests {
             &client.pending_provider_subscriptions,
             &client.provider_subscription_ids,
             Some(&outbound),
+            client.config.subscribe_ack_timeout_ms,
             r#"{"type":"subscribed","subscription_id":"chainlink:eth"}"#,
         )
         .expect("ETH ack should record active provider subscription id");
@@ -2528,6 +2614,7 @@ mod tests {
             &client.pending_provider_subscriptions,
             &client.provider_subscription_ids,
             Some(&outbound),
+            client.config.subscribe_ack_timeout_ms,
             r#"{"type":"subscribed","subscription_id":"chainlink:btc"}"#,
         )
         .expect("late ack for failed bare unsubscribe should drain canceled provider subscribe");

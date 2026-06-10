@@ -18,7 +18,7 @@ use crate::bolt_v3_realized_volatility::{
     RealizedVolSourceRejectReason, RealizedVolSourceStatus,
 };
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 9;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 10;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
@@ -951,6 +951,33 @@ mod tests {
         assert!(line.ends_with(b"\n"), "line must end with newline");
         let json = std::str::from_utf8(&line[..line.len() - 1]).expect("line is utf8");
         serde_json::from_str(json).expect("line is json")
+    }
+
+    #[test]
+    fn old_strategy_input_snapshot_schema_with_reference_fair_value_is_rejected() {
+        let line = br#"{
+            "schema_version":9,
+            "recorded_at_utc_ns":1,
+            "gate_id":"bolt_v3.strategy_input_snapshot",
+            "gate_version":"0.1.0",
+            "kind":"strategy_input_snapshot",
+            "snapshot":{"reference_fair_value":"100.0"}
+        }"#;
+        let header: DecisionEvidenceEnvelopeHeader =
+            serde_json::from_slice(line).expect("old envelope header should parse");
+
+        let err = header
+            .validate(
+                BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
+                BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+                0,
+            )
+            .expect_err("old v9 strategy-input snapshots must fail the schema gate");
+
+        assert!(
+            err.to_string().contains("schema_version mismatch"),
+            "old evidence should fail on schema version, got: {err:#}"
+        );
     }
 
     #[test]

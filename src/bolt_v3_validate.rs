@@ -1947,6 +1947,7 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
         errors.extend(validate_reference_current_price(&context, root, strategy));
         errors.extend(crate::bolt_v3_archetypes::validate_strategy_archetype(
             &context,
+            root,
             strategy,
             default_max_notional_decimal.as_ref(),
         ));

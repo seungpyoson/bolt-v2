@@ -436,6 +436,10 @@ fn taker_pricing_config(config: &BinaryOracleEdgeTakerConfig) -> TakerPricingCon
         edge_threshold_basis_points: config.edge_threshold_basis_points,
         pricing_kurtosis: config.pricing_kurtosis,
         rotating_market_family: config.rotating_market_family.as_str(),
+        max_reference_current_price_age_ms: config
+            .reference_current_price
+            .as_ref()
+            .map(|reference_price| reference_price.max_source_age_ms),
     }
 }
 
@@ -841,6 +845,10 @@ impl ActiveMarketState {
         self.reference_current_price = None;
         self.reference_current_price_source_id = None;
         self.reference_current_price_ts_ms = None;
+    }
+
+    fn reset_reference_price_quote(&mut self) {
+        self.clear_reference_price_quote();
         self.last_reference_ts_ms = None;
     }
 
@@ -1582,6 +1590,17 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
+    fn refresh_current_reference_price_selection_at(&mut self, now_ms: u64) {
+        self.ensure_reference_price_runtime_state();
+        let (Some(interval_start_ms), Some(interval_end_ms)) =
+            (self.active.interval_start_ms, self.active.interval_end_ms)
+        else {
+            return;
+        };
+        self.observe_current_reference_price_selection(interval_start_ms, interval_end_ms, now_ms);
+        self.sync_exposure_context_from_active();
+    }
+
     fn refresh_reference_price_source_statuses(
         &mut self,
         interval_start_ms: u64,
@@ -1697,12 +1716,18 @@ impl BinaryOracleEdgeTaker {
         self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
     }
 
+    fn reset_reference_current_price_selection_state(&mut self) {
+        self.active.reset_reference_price_quote();
+        self.pricing.clear_reference_current_price_state();
+        self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
+    }
+
     fn reset_reference_current_price_runtime_state(&mut self) {
         self.reference_price_quotes.clear();
         self.reference_price_source_health =
             reference_price_source_health_from_config(&self.config);
         self.reference_price_selector = reference_price_selector_from_config(&self.config);
-        self.clear_reference_current_price_selection_state();
+        self.reset_reference_current_price_selection_state();
     }
 
     fn mark_reference_price_source_status(
@@ -4369,6 +4394,7 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn try_submit_exit_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
+        self.refresh_current_reference_price_selection_at(now_ms);
         self.refresh_realized_volatility_snapshot_at(now_ms);
         let mut decision = self.exit_submission_decision_at(now_ms);
 
@@ -5828,6 +5854,7 @@ struct EntryPricingInputs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum EntryPricingBlockReason {
     SpotPriceMissing,
+    ReferenceCurrentPriceStale,
     StrikePriceMissing,
     SecondsToExpiryMissing,
     RealizedVolNotReady,
@@ -5864,6 +5891,9 @@ fn entry_pricing_block_reason_from_taker(
 ) -> EntryPricingBlockReason {
     match reason {
         TakerPricingBlockReason::SpotPriceMissing => EntryPricingBlockReason::SpotPriceMissing,
+        TakerPricingBlockReason::ReferenceCurrentPriceStale => {
+            EntryPricingBlockReason::ReferenceCurrentPriceStale
+        }
         TakerPricingBlockReason::StrikePriceMissing => EntryPricingBlockReason::StrikePriceMissing,
         TakerPricingBlockReason::SecondsToExpiryMissing => {
             EntryPricingBlockReason::SecondsToExpiryMissing

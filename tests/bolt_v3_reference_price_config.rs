@@ -63,6 +63,56 @@ fn validate_reference_current_price(reference_current_price: &str) -> Vec<String
 }
 
 #[test]
+fn binary_oracle_edge_taker_requires_reference_current_price_block() {
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&strategy_without_reference_current_price())
+            .expect("strategy without reference_current_price should still parse");
+    let messages = validate_strategies(&root_fixture(), &loaded_strategy(strategy));
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("binary_oracle_edge_taker")
+                && message.contains("reference_current_price")
+                && message.contains("requires")
+        }),
+        "missing reference_current_price block should fail validation, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn reference_current_price_source_age_must_fit_inside_forced_flat_grace() {
+    let messages = validate_reference_current_price(
+        r#"
+[reference_current_price]
+asset = "BTC"
+sources = ["chainlink_primary"]
+min_valid_sources = 1
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 295001
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.chainlink_primary]
+provider = "chainlink_ws"
+enabled = true
+required = false
+client_id = "chainlink_reference"
+instrument_id = "BTC-USD.CHAINLINK"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("reference_current_price.max_source_age_ms")
+                && message.contains("forced_flat_stale_reference_ms")
+                && message.contains("retry_interval")
+        }),
+        "stale-reference grace relation should fail validation, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn reference_current_price_requires_explicit_min_valid_sources() {
     let err = try_parse_strategy(
         r#"

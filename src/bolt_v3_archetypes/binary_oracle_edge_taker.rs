@@ -49,8 +49,10 @@ use crate::{
         ArchetypeGateRequirement, ArchetypeValidationBinding, GateRole, GateValueKind,
     },
     bolt_v3_config::{
-        BoltV3StrategyConfig, DECISION_REFERENCE_GATE_ROLE, LoadedStrategy, RESOLUTION_GATE_ROLE,
+        BoltV3RootConfig, BoltV3StrategyConfig, DECISION_REFERENCE_GATE_ROLE, LoadedStrategy,
+        RESOLUTION_GATE_ROLE,
     },
+    bolt_v3_numeric::MILLIS_PER_SECOND_U64,
     bolt_v3_order_intent::{NtOrderTemplateConfig, check_nt_order_template_config},
     bolt_v3_position_contract::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
@@ -242,10 +244,14 @@ impl OrderParams {
 
 pub fn validate_strategy(
     context: &str,
+    root: &BoltV3RootConfig,
     strategy: &BoltV3StrategyConfig,
     default_max_notional: Option<&Decimal>,
 ) -> Vec<String> {
     let mut errors = validate_required_market_data(context, strategy);
+    errors.extend(validate_reference_current_price_forced_flat_grace(
+        context, root, strategy,
+    ));
 
     let parameters = match strategy.parameters.clone().try_into::<ParametersBlock>() {
         Ok(value) => value,
@@ -463,6 +469,14 @@ pub fn raw_taker_config(
             message: "config.realized_volatility_surface_id is required".to_string(),
         })?;
     let signal_data = configured_signal_data(strategy)?;
+    let reference_current_price = strategy
+        .config
+        .reference_current_price
+        .as_ref()
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: "reference_current_price is required".to_string(),
+        })?;
     validate_configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
     loaded
         .root
@@ -644,13 +658,11 @@ pub fn raw_taker_config(
             resolution_data.instrument_id.to_string(),
         );
     }
-    if let Some(reference_current_price) = &strategy.config.reference_current_price {
-        insert_reference_current_price_config(
-            &mut table,
-            strategy_instance_id,
-            reference_current_price,
-        )?;
-    }
+    insert_reference_current_price_config(
+        &mut table,
+        strategy_instance_id,
+        reference_current_price,
+    )?;
     insert_order_config(
         &mut table,
         strategy_instance_id,
@@ -1411,7 +1423,58 @@ fn validate_required_market_data(context: &str, strategy: &BoltV3StrategyConfig)
             "{context}: strategy_archetype `binary_oracle_edge_taker` requires exactly one [signal_data.<role>] block"
         ));
     }
+    if strategy.reference_current_price.is_none() {
+        errors.push(format!(
+            "{context}: strategy_archetype `binary_oracle_edge_taker` requires [reference_current_price] block"
+        ));
+    }
     errors
+}
+
+fn validate_reference_current_price_forced_flat_grace(
+    context: &str,
+    root: &BoltV3RootConfig,
+    strategy: &BoltV3StrategyConfig,
+) -> Vec<String> {
+    let Some(reference_current_price) = &strategy.reference_current_price else {
+        return Vec::new();
+    };
+    let Ok(target) =
+        crate::bolt_v3_market_families::target_runtime_fields_from_target(&strategy.target)
+    else {
+        return Vec::new();
+    };
+    let Ok(provider_id) = resolution_gate_provider_id_from_target(
+        strategy.strategy_instance_id.as_str(),
+        &strategy.target,
+    ) else {
+        return Vec::new();
+    };
+    let Some(forced_flat_stale_reference_ms) = root
+        .gate_providers
+        .as_ref()
+        .and_then(|providers| providers.get(provider_id.as_str()))
+        .and_then(|provider| provider.freshness.as_ref())
+        .and_then(|freshness| freshness.max_age_ms)
+        .filter(|value| *value != 0)
+    else {
+        return Vec::new();
+    };
+
+    let retry_interval_ms = target
+        .retry_interval_seconds
+        .saturating_mul(MILLIS_PER_SECOND_U64);
+    let required_minimum = reference_current_price
+        .max_source_age_ms
+        .saturating_add(retry_interval_ms);
+    if forced_flat_stale_reference_ms <= required_minimum {
+        return vec![format!(
+            "{context}: forced_flat_stale_reference_ms `{forced_flat_stale_reference_ms}` from gate_providers.{provider_id}.freshness.max_age_ms must be greater than reference_current_price.max_source_age_ms `{}` plus target retry_interval `{retry_interval_ms}` ms",
+            reference_current_price.max_source_age_ms,
+        )];
+    }
+
+    Vec::new()
 }
 
 fn validate_order_parameters(

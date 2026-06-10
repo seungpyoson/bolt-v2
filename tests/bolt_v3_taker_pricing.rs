@@ -21,6 +21,7 @@ fn pricing_config_with_family(rotating_market_family: &'static str) -> TakerPric
         edge_threshold_basis_points: 10,
         pricing_kurtosis: 0.0,
         rotating_market_family,
+        max_reference_current_price_age_ms: None,
     }
 }
 

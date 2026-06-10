@@ -43,6 +43,7 @@ pub struct TakerPricingConfig<'a> {
     pub edge_threshold_basis_points: i64,
     pub pricing_kurtosis: f64,
     pub rotating_market_family: &'a str,
+    pub max_reference_current_price_age_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -78,6 +79,7 @@ pub struct TakerPricingInputs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TakerPricingBlockReason {
     SpotPriceMissing,
+    ReferenceCurrentPriceStale,
     StrikePriceMissing,
     SecondsToExpiryMissing,
     RealizedVolNotReady,
@@ -161,7 +163,9 @@ impl TakerPricingState {
         self.last_reference_current_price_source_id = Some(quote.venue.clone());
         self.last_reference_current_price_ts_ms = Some(quote.observed_ts_ms);
         self.last_reference_current_price = Some(quote.price);
-        self.fast_spot = Some(quote.clone());
+        if !self.fast_venue_incoherent {
+            self.fast_spot = Some(quote.clone());
+        }
     }
 
     pub(crate) fn clear_reference_current_price_state(&mut self) {
@@ -369,6 +373,17 @@ impl TakerPricingState {
             blocked_by.push(TakerPricingBlockReason::SpotPriceMissing);
         }
 
+        if config
+            .max_reference_current_price_age_ms
+            .is_some_and(|max_age_ms| {
+                self.last_reference_current_price_ts_ms.is_none_or(|ts_ms| {
+                    ts_ms > request.now_ms || request.now_ms - ts_ms > max_age_ms
+                })
+            })
+        {
+            blocked_by.push(TakerPricingBlockReason::ReferenceCurrentPriceStale);
+        }
+
         let strike_price = request
             .strike_price
             .filter(|value| is_positive_finite(*value));
@@ -540,6 +555,7 @@ mod tests {
             edge_threshold_basis_points: TEST_EDGE_THRESHOLD_BASIS_POINTS,
             pricing_kurtosis: TEST_PRICING_KURTOSIS,
             rotating_market_family: bolt_v3_market_families::updown::KEY,
+            max_reference_current_price_age_ms: Some(2_000),
         }
     }
 
@@ -588,6 +604,61 @@ mod tests {
         assert_eq!(pricing.last_lead_agreement_corr, None);
         assert_eq!(pricing.last_fast_venue_age_ms, Some(INITIAL_COUNTER_U64));
         assert_eq!(pricing.last_fast_venue_jitter_ms, Some(INITIAL_COUNTER_U64));
+    }
+
+    #[test]
+    fn reference_tick_does_not_clear_fast_venue_incoherence() {
+        let mut config = config(1, 30, 10);
+        config.lead_agreement_min_corr = 0.99;
+        let mut pricing = TakerPricingState::from_config(&config);
+
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            100.0,
+            1_000,
+        ));
+        pricing.observe_signal_quote(&quote(signal_venue(), 120.0, 1_050), &config);
+        assert!(pricing.fast_venue_incoherent);
+        assert_eq!(pricing.fast_spot, None);
+
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            101.0,
+            1_100,
+        ));
+
+        assert!(pricing.fast_venue_incoherent);
+        assert_eq!(pricing.fast_spot, None);
+        assert_eq!(pricing.last_reference_current_price, Some(101.0));
+        assert_eq!(pricing.last_reference_current_price_ts_ms, Some(1_100));
+    }
+
+    #[test]
+    fn stale_reference_current_price_blocks_entry_inputs_at_decision_time() {
+        let config = config(1, 30, 10);
+        let mut pricing = TakerPricingState::from_config(&config);
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            100.0,
+            1_000,
+        ));
+        pricing.seed_ready_realized_vol(Some("rv".to_string()), 1.5, 1_000);
+
+        let blocked_by = pricing
+            .entry_pricing_inputs_at(
+                &config,
+                TakerPricingRequest {
+                    now_ms: 3_001,
+                    strike_price: Some(100.0),
+                    seconds_to_market_end: Some(300),
+                },
+            )
+            .expect_err("stale reference current price must block entry pricing inputs");
+
+        assert_eq!(
+            blocked_by,
+            vec![TakerPricingBlockReason::ReferenceCurrentPriceStale]
+        );
     }
 
     #[test]

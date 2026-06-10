@@ -490,6 +490,109 @@ fn selection_retry_refreshes_reference_failover_before_forced_flat_check() {
 }
 
 #[test]
+fn exit_submit_refreshes_reference_failover_before_forced_flat_check() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price
+        .sources
+        .get_mut(CHAINLINK_PRIMARY_SOURCE_ID)
+        .expect("chainlink source should exist")
+        .required = false;
+    reference_price.max_source_age_ms = 100;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.config.forced_flat_stale_reference_ms = 100;
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let (_cache, clock) = register_test_strategy_with_clock(&mut strategy);
+
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_120_u64 * NANOS_PER_MILLI_U64));
+    let primary = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.0,
+        1_100,
+        1_105,
+    );
+    DataActor::on_data(&mut strategy, &primary).expect("primary quote should be handled");
+
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_140_u64 * NANOS_PER_MILLI_U64));
+    let backup = reference_price_update(
+        POLYRESEARCH_BACKUP_SOURCE_ID,
+        POLYRESEARCH_REFERENCE_PROVIDER,
+        POLYRESEARCH_REFERENCE_SYMBOL,
+        101.0,
+        1_130,
+        1_135,
+    );
+    DataActor::on_data(&mut strategy, &backup)
+        .expect("backup quote should be held while primary is still valid");
+    assert_eq!(
+        strategy.active.reference_current_price_source_id.as_deref(),
+        Some(CHAINLINK_PRIMARY_SOURCE_ID)
+    );
+
+    strategy
+        .try_submit_exit_order(1_220)
+        .expect("exit submit evaluation should not fail");
+
+    assert_eq!(
+        strategy.active.reference_current_price_source_id.as_deref(),
+        Some(POLYRESEARCH_BACKUP_SOURCE_ID)
+    );
+    assert_eq!(strategy.active.reference_current_price, Some(101.0));
+    assert!(
+        !strategy
+            .active_forced_flat_reasons_at(1_220)
+            .contains(&ForcedFlatReason::StaleReference),
+        "exit submit path should refresh reference state before stale-reference evaluation"
+    );
+}
+
+#[test]
+fn cleared_reference_selection_preserves_last_reference_ts_for_forced_flat_grace() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price.max_source_age_ms = 100;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.config.forced_flat_stale_reference_ms = 300_000;
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let (_cache, clock) = register_test_strategy_with_clock(&mut strategy);
+
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_110_u64 * NANOS_PER_MILLI_U64));
+    let update = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        TEST_REFERENCE_CURRENT_PRICE,
+        1_100,
+        1_110,
+    );
+    DataActor::on_data(&mut strategy, &update).expect("reference quote should be handled");
+    assert_eq!(strategy.active.last_reference_ts_ms, Some(1_100));
+
+    strategy.observe_current_reference_price_selection(1_000, 1_300, 1_250);
+
+    assert_eq!(strategy.active.reference_current_price, None);
+    assert_eq!(strategy.active.reference_current_price_source_id, None);
+    assert_eq!(strategy.active.reference_current_price_ts_ms, None);
+    assert_eq!(strategy.active.last_reference_ts_ms, Some(1_100));
+    assert!(
+        !strategy
+            .active_forced_flat_reasons_at(1_250)
+            .contains(&ForcedFlatReason::StaleReference),
+        "clearing the selected quote must not erase the last observed reference timestamp"
+    );
+}
+
+#[test]
 fn reference_price_interval_transition_clears_stale_quotes_and_health() {
     let mut strategy = test_strategy();
     let mut reference_price = reference_price_config();
@@ -1018,7 +1121,7 @@ fn selector_block_clears_accepted_reference_price_state() {
     assert_eq!(strategy.active.reference_current_price, None);
     assert_eq!(strategy.active.reference_current_price_source_id, None);
     assert_eq!(strategy.active.reference_current_price_ts_ms, None);
-    assert_eq!(strategy.active.last_reference_ts_ms, None);
+    assert_eq!(strategy.active.last_reference_ts_ms, Some(1_100));
     assert_eq!(strategy.pricing.last_reference_current_price, None);
     assert_eq!(strategy.pricing.last_reference_current_price_ts_ms, None);
     assert_eq!(strategy.pricing.fast_spot, None);
@@ -1198,7 +1301,7 @@ fn stale_selected_source_update_clears_accepted_reference_price_state() {
     assert_eq!(strategy.active.reference_current_price, None);
     assert_eq!(strategy.active.reference_current_price_source_id, None);
     assert_eq!(strategy.active.reference_current_price_ts_ms, None);
-    assert_eq!(strategy.active.last_reference_ts_ms, None);
+    assert_eq!(strategy.active.last_reference_ts_ms, Some(1_140));
     assert_eq!(strategy.pricing.last_reference_current_price, None);
     assert_eq!(strategy.pricing.last_reference_current_price_ts_ms, None);
     assert_eq!(strategy.pricing.fast_spot, None);

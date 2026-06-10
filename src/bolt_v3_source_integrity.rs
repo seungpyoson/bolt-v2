@@ -268,8 +268,10 @@ mod tests {
     // against out-of-order stale updates.
     // Re-derived again after refreshing reference-current-price failover during
     // selection retries before forced-flat stale-reference checks.
+    // Re-derived again after enforcing reference-current-price freshness and
+    // incoherence contracts at taker entry/exit decision time.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "32be23d93b41a0bf339bd1f89b1688cf8dbb7a9db53803d3edc2b5456d8593ed";
+        "426981d2e4267156189c463c285c63853a5d41df7c0586217c1b9dd94e4c85bb";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

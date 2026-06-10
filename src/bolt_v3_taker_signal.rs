@@ -428,6 +428,26 @@ mod tests {
     }
 
     #[test]
+    fn robust_sizing_fails_closed_on_non_finite_risk_lambda() {
+        // PR #623 review reproduction: a NaN/non-finite risk_lambda must size to
+        // zero, never fall through the zero-lambda arm to the cap. The
+        // is_non_negative_finite guard runs before the zero-lambda escape hatch.
+        for risk_lambda in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                choose_robust_size(&RobustSizingInputs {
+                    expected_ev_per_notional: 0.015,
+                    ev_reference_per_notional: 0.05,
+                    risk_lambda,
+                    order_notional_target: 5.0,
+                    maximum_position_notional: 10.0,
+                    impact_cap_notional: 100.0,
+                }),
+                0.0
+            );
+        }
+    }
+
+    #[test]
     fn robust_sizing_fails_closed_on_invalid_ev_reference() {
         for ev_reference_per_notional in [0.0, -0.05, f64::NAN, f64::INFINITY] {
             assert_eq!(

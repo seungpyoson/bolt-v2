@@ -47,6 +47,7 @@ universe_id = "bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
 scope_label = "Bybit public archive tick trades all staged categories"
 status = "source_only"
 source_universe_manifest_path = "{bybit_source_manifest}"
+source_universe_object_gates_path = "{bybit_object_gates}"
 
 [[venue]]
 venue_id = "pmxt-current-reference"
@@ -80,6 +81,9 @@ blocking_issues = [
             bybit_source_manifest = reference_root
                 .join("backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json")
                 .display(),
+            bybit_object_gates = reference_root
+                .join("source-universe-object-gates/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/gates/source-universe-object-gates.json")
+                .display(),
             pmxt_conversion_manifest = reference_root
                 .join("pmxt-polymarket-selected-source-conversion/backtests/pmxt-run/conversion-manifest.json")
                 .display(),
@@ -109,6 +113,7 @@ blocking_issues = [
     assert_eq!(ledger.total_converted_canonical_rows, 4_602_457);
     assert_eq!(ledger.total_converted_nt_catalog_rows, 4_602_458);
     assert_eq!(ledger.total_source_only_objects, 5_857);
+    assert_eq!(ledger.total_source_only_object_gates, 5_857);
     assert_eq!(ledger.total_source_only_accepted_bytes, 20_309_079_098);
 
     let binance = ledger
@@ -133,6 +138,26 @@ blocking_issues = [
     );
     assert_eq!(bybit.source_only_universes, 1);
     assert_eq!(bybit.total_source_only_objects, 5_857);
+    assert_eq!(bybit.total_source_only_object_gates, 5_857);
+    let bybit_source_only = bybit
+        .universes
+        .iter()
+        .find(|universe| {
+            universe.universe_id == "bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
+        })
+        .expect("bybit source-only universe");
+    assert_eq!(
+        bybit_source_only.source_object_gate_id.as_deref(),
+        Some("source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01")
+    );
+    assert_eq!(bybit_source_only.source_object_gate_count, 5_857);
+    assert_eq!(bybit_source_only.source_object_gate_source_binding_count, 3);
+    assert!(
+        bybit_source_only
+            .artifact_refs
+            .iter()
+            .any(|artifact| artifact.role == "source_universe_object_gates")
+    );
 
     let pmxt = ledger
         .venues

@@ -26,6 +26,7 @@ universe_id = "bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
 scope_label = "Bybit public archive tick trades all staged categories"
 status = "source_only"
 source_universe_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json"
+source_universe_object_gates_path = "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/gates/source-universe-object-gates.json"
 
 [[venue]]
 venue_id = "pmxt-current-reference"

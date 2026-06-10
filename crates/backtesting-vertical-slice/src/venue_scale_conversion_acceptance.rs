@@ -44,6 +44,7 @@ pub struct VenueScaleConversionAcceptanceUniverseSpec {
     pub status: VenueScaleConversionAcceptanceStatus,
     pub completion_ledger_path: Option<PathBuf>,
     pub source_universe_manifest_path: Option<PathBuf>,
+    pub source_universe_object_gates_path: Option<PathBuf>,
     pub selected_conversion_manifest_path: Option<PathBuf>,
     pub selected_source_report_path: Option<PathBuf>,
     #[serde(default)]
@@ -85,10 +86,14 @@ pub struct VenueScaleConversionAcceptanceUniverse {
     pub status: VenueScaleConversionAcceptanceStatus,
     pub completion_ledger_id: Option<String>,
     pub source_manifest_id: Option<String>,
+    pub source_object_gate_id: Option<String>,
+    pub source_object_gate_queue_id: Option<String>,
     pub converted_record_count: u64,
     pub converted_canonical_rows: u64,
     pub converted_nt_catalog_rows: u64,
     pub source_object_count: u64,
+    pub source_object_gate_count: u64,
+    pub source_object_gate_source_binding_count: u64,
     pub source_accepted_bytes: u64,
     pub catalog_rows_by_nt_data_type: BTreeMap<String, u64>,
     pub catalog_hash: Option<String>,
@@ -117,6 +122,7 @@ pub struct VenueScaleConversionAcceptanceVenue {
     pub total_converted_canonical_rows: u64,
     pub total_converted_nt_catalog_rows: u64,
     pub total_source_only_objects: u64,
+    pub total_source_only_object_gates: u64,
     pub total_source_only_accepted_bytes: u64,
     pub universes: Vec<VenueScaleConversionAcceptanceUniverse>,
 }
@@ -136,6 +142,7 @@ pub struct VenueScaleConversionAcceptanceLedger {
     pub total_converted_canonical_rows: u64,
     pub total_converted_nt_catalog_rows: u64,
     pub total_source_only_objects: u64,
+    pub total_source_only_object_gates: u64,
     pub total_source_only_accepted_bytes: u64,
     pub venues: Vec<VenueScaleConversionAcceptanceVenue>,
 }
@@ -161,10 +168,24 @@ struct CompletionLedgerSummary {
 #[derive(Debug, Deserialize)]
 struct SourceUniverseManifestSummary {
     manifest_id: String,
+    universe_id: String,
     object_count: u64,
     accepted_bytes: u64,
     #[serde(default)]
     category_summaries: Vec<SourceUniverseCategorySummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceUniverseObjectGateSummary {
+    gate_id: String,
+    status: String,
+    queue_id: String,
+    manifest_id: String,
+    universe_id: String,
+    work_item_count: u64,
+    accepted_gate_count: u64,
+    source_binding_count: u64,
+    total_accepted_bytes: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -295,6 +316,10 @@ pub fn evaluate_venue_scale_conversion_acceptance_ledger(
         .iter()
         .map(|venue| venue.total_source_only_objects)
         .sum();
+    let total_source_only_object_gates = venues
+        .iter()
+        .map(|venue| venue.total_source_only_object_gates)
+        .sum();
     let total_source_only_accepted_bytes = venues
         .iter()
         .map(|venue| venue.total_source_only_accepted_bytes)
@@ -313,6 +338,7 @@ pub fn evaluate_venue_scale_conversion_acceptance_ledger(
         total_converted_canonical_rows,
         total_converted_nt_catalog_rows,
         total_source_only_objects,
+        total_source_only_object_gates,
         total_source_only_accepted_bytes,
         venues,
     })
@@ -361,6 +387,11 @@ fn evaluate_venue(
         .filter(|universe| universe.status == VenueScaleConversionAcceptanceStatus::SourceOnly)
         .map(|universe| universe.source_object_count)
         .sum();
+    let total_source_only_object_gates = universes
+        .iter()
+        .filter(|universe| universe.status == VenueScaleConversionAcceptanceStatus::SourceOnly)
+        .map(|universe| universe.source_object_gate_count)
+        .sum();
     let total_source_only_accepted_bytes = universes
         .iter()
         .filter(|universe| universe.status == VenueScaleConversionAcceptanceStatus::SourceOnly)
@@ -379,6 +410,7 @@ fn evaluate_venue(
         total_converted_canonical_rows,
         total_converted_nt_catalog_rows,
         total_source_only_objects,
+        total_source_only_object_gates,
         total_source_only_accepted_bytes,
         universes,
     })
@@ -401,10 +433,15 @@ fn evaluate_universe(
     let mut artifact_refs = Vec::new();
     let mut completion_ledger_id = None;
     let mut source_manifest_id = None;
+    let mut source_manifest_universe_id = None;
+    let mut source_object_gate_id = None;
+    let mut source_object_gate_queue_id = None;
     let mut converted_record_count = 0;
     let mut converted_canonical_rows = 0;
     let mut converted_nt_catalog_rows = 0;
     let mut source_object_count = 0;
+    let mut source_object_gate_count = 0;
+    let mut source_object_gate_source_binding_count = 0;
     let mut source_accepted_bytes = 0;
     let mut catalog_rows_by_nt_data_type = BTreeMap::new();
     let mut catalog_hash = None;
@@ -436,6 +473,7 @@ fn evaluate_universe(
         artifact_refs.push(artifact_ref("source_universe_manifest", &path)?);
         let manifest: SourceUniverseManifestSummary = read_json(&path)?;
         source_manifest_id = Some(manifest.manifest_id);
+        source_manifest_universe_id = Some(manifest.universe_id);
         source_object_count += manifest.object_count;
         source_accepted_bytes += manifest.accepted_bytes;
         category_summaries.extend(manifest.category_summaries.into_iter().map(|summary| {
@@ -447,6 +485,62 @@ fn evaluate_universe(
                 compressed_bytes: summary.compressed_bytes,
             }
         }));
+    }
+
+    if let Some(path) = &spec.source_universe_object_gates_path {
+        let path = resolve_existing_path(base_dir, path);
+        artifact_refs.push(artifact_ref("source_universe_object_gates", &path)?);
+        let gates: SourceUniverseObjectGateSummary = read_json(&path)?;
+        ensure!(
+            gates.status == "ready",
+            "source-universe object gates {} are not ready",
+            path.display()
+        );
+        ensure!(
+            gates.work_item_count == gates.accepted_gate_count,
+            "source-universe object gates {} accepted count does not cover every work item",
+            path.display()
+        );
+
+        if let Some(manifest_id) = &source_manifest_id {
+            ensure!(
+                manifest_id == &gates.manifest_id,
+                "source-universe object gates {} manifest_id does not match source manifest",
+                path.display()
+            );
+        } else {
+            source_manifest_id = Some(gates.manifest_id.clone());
+        }
+        if let Some(universe_id) = &source_manifest_universe_id {
+            ensure!(
+                universe_id == &gates.universe_id,
+                "source-universe object gates {} universe_id does not match source manifest",
+                path.display()
+            );
+        }
+        if source_object_count == 0 {
+            source_object_count = gates.accepted_gate_count;
+        } else {
+            ensure!(
+                source_object_count == gates.accepted_gate_count,
+                "source-universe object gates {} object count does not match source manifest",
+                path.display()
+            );
+        }
+        if source_accepted_bytes == 0 {
+            source_accepted_bytes = gates.total_accepted_bytes;
+        } else {
+            ensure!(
+                source_accepted_bytes == gates.total_accepted_bytes,
+                "source-universe object gates {} accepted bytes do not match source manifest",
+                path.display()
+            );
+        }
+
+        source_object_gate_id = Some(gates.gate_id);
+        source_object_gate_queue_id = Some(gates.queue_id);
+        source_object_gate_count = gates.accepted_gate_count;
+        source_object_gate_source_binding_count = gates.source_binding_count;
     }
 
     if let Some(path) = &spec.selected_conversion_manifest_path {
@@ -486,10 +580,14 @@ fn evaluate_universe(
         status: spec.status,
         completion_ledger_id,
         source_manifest_id,
+        source_object_gate_id,
+        source_object_gate_queue_id,
         converted_record_count,
         converted_canonical_rows,
         converted_nt_catalog_rows,
         source_object_count,
+        source_object_gate_count,
+        source_object_gate_source_binding_count,
         source_accepted_bytes,
         catalog_rows_by_nt_data_type,
         catalog_hash,

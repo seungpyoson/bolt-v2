@@ -11,6 +11,7 @@
   "total_converted_canonical_rows": 4602457,
   "total_converted_nt_catalog_rows": 4602458,
   "total_source_only_objects": 5857,
+  "total_source_only_object_gates": 5857,
   "total_source_only_accepted_bytes": 20309079098,
   "venues": [
     {
@@ -25,6 +26,7 @@
       "total_converted_canonical_rows": 4470719,
       "total_converted_nt_catalog_rows": 4470719,
       "total_source_only_objects": 0,
+      "total_source_only_object_gates": 0,
       "total_source_only_accepted_bytes": 0,
       "universes": [
         {
@@ -33,10 +35,14 @@
           "status": "converted",
           "completion_ledger_id": "backfill-conversion-completion-ledger-binance-bnbusdc-2026-03-01-2026-05-31",
           "source_manifest_id": null,
+          "source_object_gate_id": null,
+          "source_object_gate_queue_id": null,
           "converted_record_count": 92,
           "converted_canonical_rows": 4470719,
           "converted_nt_catalog_rows": 4470719,
           "source_object_count": 0,
+          "source_object_gate_count": 0,
+          "source_object_gate_source_binding_count": 0,
           "source_accepted_bytes": 0,
           "catalog_rows_by_nt_data_type": {},
           "catalog_hash": null,
@@ -70,6 +76,7 @@
       "total_converted_canonical_rows": 131635,
       "total_converted_nt_catalog_rows": 131635,
       "total_source_only_objects": 5857,
+      "total_source_only_object_gates": 5857,
       "total_source_only_accepted_bytes": 20309079098,
       "universes": [
         {
@@ -78,10 +85,14 @@
           "status": "converted",
           "completion_ledger_id": "backfill-conversion-completion-ledger-bybit-bnbusdc-2026-03-01-2026-06-01",
           "source_manifest_id": null,
+          "source_object_gate_id": null,
+          "source_object_gate_queue_id": null,
           "converted_record_count": 93,
           "converted_canonical_rows": 131635,
           "converted_nt_catalog_rows": 131635,
           "source_object_count": 0,
+          "source_object_gate_count": 0,
+          "source_object_gate_source_binding_count": 0,
           "source_accepted_bytes": 0,
           "catalog_rows_by_nt_data_type": {},
           "catalog_hash": null,
@@ -107,10 +118,14 @@
           "status": "source_only",
           "completion_ledger_id": null,
           "source_manifest_id": "backfill-source-universe-object-manifest-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+          "source_object_gate_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+          "source_object_gate_queue_id": "source-universe-conversion-queue-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
           "converted_record_count": 0,
           "converted_canonical_rows": 0,
           "converted_nt_catalog_rows": 0,
           "source_object_count": 5857,
+          "source_object_gate_count": 5857,
+          "source_object_gate_source_binding_count": 3,
           "source_accepted_bytes": 20309079098,
           "catalog_rows_by_nt_data_type": {},
           "catalog_hash": null,
@@ -148,6 +163,11 @@
               "role": "source_universe_manifest",
               "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json",
               "sha256": "11cad048895acc6349452f9b92a30efe0f00090434abc82f8c23521addd29803"
+            },
+            {
+              "role": "source_universe_object_gates",
+              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/gates/source-universe-object-gates.json",
+              "sha256": "ceb8521f4f9ca2fbdcf0ec1f5aa1eccf8766be46cd8058612659abba9cbcb50b"
             }
           ],
           "blocking_issues": []
@@ -166,6 +186,7 @@
       "total_converted_canonical_rows": 103,
       "total_converted_nt_catalog_rows": 104,
       "total_source_only_objects": 0,
+      "total_source_only_object_gates": 0,
       "total_source_only_accepted_bytes": 0,
       "universes": [
         {
@@ -174,10 +195,14 @@
           "status": "converted",
           "completion_ledger_id": null,
           "source_manifest_id": null,
+          "source_object_gate_id": null,
+          "source_object_gate_queue_id": null,
           "converted_record_count": 1,
           "converted_canonical_rows": 103,
           "converted_nt_catalog_rows": 104,
           "source_object_count": 0,
+          "source_object_gate_count": 0,
+          "source_object_gate_source_binding_count": 0,
           "source_accepted_bytes": 0,
           "catalog_rows_by_nt_data_type": {
             "OrderBookDelta": 103,
@@ -211,10 +236,14 @@
           "status": "blocked",
           "completion_ledger_id": null,
           "source_manifest_id": null,
+          "source_object_gate_id": null,
+          "source_object_gate_queue_id": null,
           "converted_record_count": 0,
           "converted_canonical_rows": 0,
           "converted_nt_catalog_rows": 0,
           "source_object_count": 0,
+          "source_object_gate_count": 0,
+          "source_object_gate_source_binding_count": 0,
           "source_accepted_bytes": 0,
           "catalog_rows_by_nt_data_type": {},
           "catalog_hash": null,

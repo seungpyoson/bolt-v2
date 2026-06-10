@@ -4,6 +4,7 @@ use std::{fs, path::Path};
 
 use backtesting_vertical_slice::{
     backfill_execution_plan::{BackfillExecutionPlan, BackfillExecutionPlanStatus},
+    catalog_projection::CatalogInstrumentSpec,
     operator::RunSpec,
     source_universe_execution_pack::{
         SourceUniverseExecutionPack, SourceUniverseExecutionPackStatus,
@@ -28,9 +29,12 @@ fn source_universe_execution_pack_materializes_operator_ready_record_inputs() {
     let template = run_spec_template();
     fs::write(&template_path, template).expect("write template");
     let template_spec: RunSpec = toml::from_str(template).expect("template parses");
+    let mut source_proof = template_spec.source_proof.clone();
+    source_proof.accepted_by = Some("source-proof-operator".to_string());
+    source_proof.accepted_at = Some("2026-06-10T00:00:00Z".to_string());
     fs::write(
         &source_proof_path,
-        serde_json::to_vec_pretty(&template_spec.source_proof).expect("serialize proof"),
+        serde_json::to_vec_pretty(&source_proof).expect("serialize proof"),
     )
     .expect("write source proof");
 
@@ -112,7 +116,7 @@ fn source_universe_execution_pack_materializes_operator_ready_record_inputs() {
                     "symbol": "BTCUSDT",
                     "nt_instrument_id": "BTCUSDT.BINANCE",
                     "metadata_source_uri": "s3://example/metadata/binance-spot.json",
-                    "instrument_spec": template_spec.instrument_spec
+                    "instrument_spec": crypto_perpetual_instrument_spec_json()
                 }
             ],
             "records": [
@@ -225,6 +229,11 @@ source_universe_conversion_work_order_path = "{}"
 run_spec_template_path = "{}"
 output_dir = "{}"
 record_limit = 1
+
+[venue_account_types]
+spot = "CASH"
+crypto_perpetual = "MARGIN"
+crypto_future = "MARGIN"
 "#,
             work_order_path.display(),
             template_path.display(),
@@ -257,8 +266,23 @@ record_limit = 1
         "s3://example/raw/object-sha.csv.gz"
     );
     assert_eq!(run_spec.source_proof.raw_sample_hash, "object-sha");
+    assert_eq!(run_spec.accepted_by, "source-proof-operator");
+    assert_eq!(run_spec.accepted_at_utc, "2026-06-10T00:00:00Z");
+    assert_eq!(
+        run_spec.source_proof.accepted_by.as_deref(),
+        Some(run_spec.accepted_by.as_str())
+    );
+    assert_eq!(
+        run_spec.source_proof.accepted_at.as_deref(),
+        Some(run_spec.accepted_at_utc.as_str())
+    );
     assert_eq!(run_spec.converter.raw_payload.max_object_bytes, 100);
     assert_eq!(run_spec.identity.instrument_id, "BTCUSDT");
+    assert!(matches!(
+        run_spec.instrument_spec,
+        CatalogInstrumentSpec::CryptoPerpetual(_)
+    ));
+    assert_eq!(run_spec.manifest.venue.account_type, "MARGIN");
 
     let execution_plan: BackfillExecutionPlan =
         serde_json::from_slice(&fs::read(&record.execution_plan_path).expect("read plan"))
@@ -357,6 +381,32 @@ fn sha256_file(path: &Path) -> String {
         "{:x}",
         Sha256::digest(fs::read(path).expect("read file for hash"))
     )
+}
+
+fn crypto_perpetual_instrument_spec_json() -> serde_json::Value {
+    json!({
+        "instrument_kind": "crypto_perpetual",
+        "nt_instrument_id": "BTCUSDT.BINANCE",
+        "raw_symbol": "BTCUSDT",
+        "base_currency": "BTC",
+        "quote_currency": "USDT",
+        "settlement_currency": "USDT",
+        "is_inverse": false,
+        "price_increment": "0.1",
+        "size_increment": "0.0001",
+        "min_quantity": "0.0001",
+        "max_quantity": "100",
+        "min_notional": "5",
+        "max_notional": "100000",
+        "multiplier": "1",
+        "lot_size": "0.0001",
+        "max_price": "1000000",
+        "min_price": "0.1",
+        "margin_init": "0.01",
+        "margin_maint": "0.005",
+        "maker_fee": "0",
+        "taker_fee": "0"
+    })
 }
 
 fn run_spec_template() -> &'static str {

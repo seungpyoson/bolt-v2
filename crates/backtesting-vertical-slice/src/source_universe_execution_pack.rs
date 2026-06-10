@@ -26,6 +26,7 @@ use crate::{
         BackfillExecutionPlanStatus, BackfillExecutionRunBinding, BackfillExecutionWorkBudget,
         evaluate_backfill_execution_plan, write_backfill_execution_plan,
     },
+    catalog_projection::CatalogInstrumentSpec,
     canonical_trades::{CanonicalInstrumentIdentity, ConverterConfig, RawPayloadConfig},
     operator::RunSpec,
     source_proof::{AcceptanceScope, SourceProofReport, SourceProofStatus},
@@ -52,8 +53,32 @@ pub struct SourceUniverseExecutionPackSpec {
     pub source_universe_conversion_work_order_path: PathBuf,
     pub run_spec_template_path: PathBuf,
     pub output_dir: PathBuf,
+    pub venue_account_types: SourceUniverseExecutionPackVenueAccountTypes,
     #[serde(default)]
     pub record_limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceUniverseExecutionPackVenueAccountTypes {
+    pub spot: String,
+    pub crypto_perpetual: String,
+    pub crypto_future: String,
+}
+
+impl SourceUniverseExecutionPackVenueAccountTypes {
+    fn account_type_for(&self, instrument_spec: &CatalogInstrumentSpec) -> Result<&str> {
+        let value = match instrument_spec {
+            CatalogInstrumentSpec::Spot(_) => &self.spot,
+            CatalogInstrumentSpec::CryptoPerpetual(_) => &self.crypto_perpetual,
+            CatalogInstrumentSpec::CryptoFuture(_) => &self.crypto_future,
+        };
+        ensure!(
+            !value.trim().is_empty(),
+            "source-universe execution-pack venue account type must not be empty"
+        );
+        Ok(value)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,6 +314,7 @@ pub fn write_source_universe_execution_pack(
             instrument,
             proof,
             &operator_inputs,
+            &spec.venue_account_types,
         )?;
         let run_spec_bytes = run_spec_text.as_bytes();
         let run_spec_hash = sha256_bytes(run_spec_bytes);
@@ -477,6 +503,7 @@ fn materialize_run_spec(
     instrument: &SourceUniverseOperatorInstrumentSpecRecord,
     proof: &SourceProofReport,
     operator_inputs: &SourceUniverseOperatorInputs,
+    venue_account_types: &SourceUniverseExecutionPackVenueAccountTypes,
 ) -> Result<String> {
     let mut value = template.clone();
     set_table_value(
@@ -500,11 +527,31 @@ fn materialize_run_spec(
         accepted_bytes: record.selected_object_bytes,
         selector_scope_violations: 0,
     });
+    let accepted_by = source_proof
+        .accepted_by
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .with_context(|| format!("source proof {} missing accepted_by", proof.source_proof_id))?
+        .clone();
+    let accepted_at_utc = source_proof
+        .accepted_at
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .with_context(|| format!("source proof {} missing accepted_at", proof.source_proof_id))?
+        .clone();
     set_table_value(
         &mut value,
         "source_proof",
         Value::try_from(&source_proof).context("serialize source proof to TOML")?,
     )?;
+    let root = value
+        .as_table_mut()
+        .with_context(|| "run-spec template root must be a TOML table")?;
+    root.insert("accepted_by".to_string(), Value::String(accepted_by));
+    root.insert(
+        "accepted_at_utc".to_string(),
+        Value::String(accepted_at_utc),
+    );
 
     set_table_value(
         &mut value,
@@ -568,6 +615,7 @@ fn materialize_run_spec(
             Value::String(operator_inputs.nt_venue.clone()),
         );
     }
+    patch_venue_account_type(manifest, &instrument.instrument_spec, venue_account_types)?;
     patch_catalog_inputs(manifest, &instrument.nt_instrument_id)?;
     patch_strategy_bar_type(manifest, &instrument.nt_instrument_id)?;
 
@@ -637,6 +685,23 @@ fn patch_strategy_bar_type(manifest: &mut toml::Table, nt_instrument_id: &str) -
     parameters.insert(
         "bar_type".to_string(),
         Value::String(format!("{nt_instrument_id}-{suffix}")),
+    );
+    Ok(())
+}
+
+fn patch_venue_account_type(
+    manifest: &mut toml::Table,
+    instrument_spec: &CatalogInstrumentSpec,
+    venue_account_types: &SourceUniverseExecutionPackVenueAccountTypes,
+) -> Result<()> {
+    let account_type = venue_account_types.account_type_for(instrument_spec)?;
+    let venue = manifest
+        .get_mut("venue")
+        .and_then(Value::as_table_mut)
+        .with_context(|| "run-spec template manifest.venue table is required")?;
+    venue.insert(
+        "account_type".to_string(),
+        Value::String(account_type.to_owned()),
     );
     Ok(())
 }

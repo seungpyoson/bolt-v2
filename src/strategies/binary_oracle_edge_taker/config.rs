@@ -53,6 +53,7 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             manage_contingent_orders: bool => Boolean;
             manage_gtd_expiry: bool => Boolean;
             manage_stop: bool => Boolean;
+            submit_orders: bool => Boolean;
             market_exit_interval_ms: u64 => Integer;
             market_exit_max_attempts: u64 => Integer;
             log_events: bool => Boolean;

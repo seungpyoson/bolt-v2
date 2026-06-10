@@ -242,8 +242,14 @@ mod tests {
     // Re-derived after follow-up cleanup separated sized executable-edge
     // evidence, probed executable fees at VWAP, coupled slippage/depth config,
     // labeled executable-edge Debug output, and named notional tolerance.
+    // Re-derived after adding the TOML-owned shadow-mode submit switch and
+    // preserving decision evidence before skipped NT submits.
+    // Re-derived after the shadow-submit test started seeding admission
+    // instruments before asserting no NT submit command is emitted.
+    // Re-derived after shadow skipped submits stopped retaining pending
+    // strategy exposure without an NT order.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "aa6f2cdf9780bd3308d52853bf639b3c49b33834ef5a0f037247f09d1cbaab19";
+        "cf71070836f6b1de3919d3d10b88bae6529a2feeb9c78d8694f449608cae4d7f";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

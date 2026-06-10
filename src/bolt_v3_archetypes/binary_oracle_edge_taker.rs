@@ -105,6 +105,7 @@ pub struct ParametersBlock {
     pub edge_threshold_basis_points: i64,
     pub order_notional_target: String,
     pub maximum_position_notional: String,
+    pub submit_orders: bool,
     pub runtime: RuntimeParametersBlock,
     pub entry_order: OrderParams,
     pub exit_order: OrderParams,
@@ -720,6 +721,7 @@ pub fn raw_taker_config(
         "maximum_position_notional",
         maximum_position_notional,
     );
+    insert_bool(&mut table, "submit_orders", parameters.submit_orders);
     insert_u64(
         &mut table,
         strategy_instance_id,

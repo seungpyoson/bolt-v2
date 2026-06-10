@@ -348,6 +348,19 @@ fn runtime_config_parse_normalizes_order_fields_to_nt_enums() {
 }
 
 #[test]
+fn runtime_config_parse_accepts_submit_orders_switch() {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .insert("submit_orders".to_string(), Value::Boolean(false));
+
+    let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+        .expect("submit_orders should parse through runtime config");
+
+    assert!(!config.submit_orders);
+}
+
+#[test]
 fn strategy_core_uses_explicit_configured_nt_strategy_fields() {
     let raw = valid_raw_config();
     let mut errors = Vec::new();

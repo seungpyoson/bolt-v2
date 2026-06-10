@@ -1,0 +1,279 @@
+use std::process::Command;
+
+use bolt_v2::bolt_v3_decision_evidence::{
+    BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+    BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+};
+
+#[test]
+fn shadow_pnl_report_joins_fixture_evidence_to_settlements() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("order-intents.jsonl");
+    let settlements_path = temp.path().join("shadow-settlements.jsonl");
+    std::fs::write(&evidence_path, fixture_evidence_jsonl())
+        .expect("fixture evidence should write");
+    std::fs::write(&settlements_path, fixture_settlements_jsonl())
+        .expect("fixture settlements should write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .args([
+            "--evidence-jsonl",
+            evidence_path.to_str().expect("utf-8 path"),
+            "--settlements-jsonl",
+            settlements_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("shadow_pnl_report should run");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+    assert_eq!(
+        stdout,
+        "day,asset,would_be_trades,win_rate,gross_pnl,fees,net_pnl,avg_edge_claimed_bps,avg_edge_realized_bps\n2026-06-10,BTC,2,0.5,3,0.055,2.945,175,2500\n"
+    );
+}
+
+#[test]
+fn shadow_pnl_report_matches_settlement_by_market_and_instrument() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("order-intents.jsonl");
+    let settlements_path = temp.path().join("shadow-settlements.jsonl");
+    let mut lines = Vec::new();
+    push_trade_lines(
+        &mut lines,
+        TradeFixture {
+            recorded_at_utc_ns: 1,
+            client_order_id: "client-order-down",
+            market_id: "market-btc",
+            instrument_id: "BTC-DOWN.POLYMARKET",
+            selected_side: "down",
+            expected_edge_basis_points: "200",
+            fee_rate_basis_points: "50",
+            price: "0.60",
+            quantity: "5",
+        },
+    );
+    std::fs::write(&evidence_path, lines.join("\n") + "\n").expect("fixture evidence should write");
+    std::fs::write(
+        &settlements_path,
+        [
+            serde_json::json!({
+                "settlement_date": "2026-06-10",
+                "asset": "BTC",
+                "market_id": "market-btc",
+                "instrument_id": "BTC-UP.POLYMARKET",
+                "winning_side": "up",
+                "settlement_price": "1.00"
+            }),
+            serde_json::json!({
+                "settlement_date": "2026-06-10",
+                "asset": "BTC",
+                "market_id": "market-btc",
+                "instrument_id": "BTC-DOWN.POLYMARKET",
+                "winning_side": "up",
+                "settlement_price": "0.00"
+            }),
+        ]
+        .into_iter()
+        .map(|value| serde_json::to_string(&value).expect("settlement fixture should serialize"))
+        .collect::<Vec<_>>()
+        .join("\n")
+            + "\n",
+    )
+    .expect("fixture settlements should write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .args([
+            "--evidence-jsonl",
+            evidence_path.to_str().expect("utf-8 path"),
+            "--settlements-jsonl",
+            settlements_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("shadow_pnl_report should run");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+    assert_eq!(
+        stdout,
+        "day,asset,would_be_trades,win_rate,gross_pnl,fees,net_pnl,avg_edge_claimed_bps,avg_edge_realized_bps\n2026-06-10,BTC,1,0,-3,0.015,-3.015,200,-10000\n"
+    );
+}
+
+#[test]
+fn shadow_pnl_report_escapes_csv_asset_fields() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("order-intents.jsonl");
+    let settlements_path = temp.path().join("shadow-settlements.jsonl");
+    let mut lines = Vec::new();
+    push_trade_lines(
+        &mut lines,
+        TradeFixture {
+            recorded_at_utc_ns: 1,
+            client_order_id: "client-order-one",
+            market_id: "market-btc",
+            instrument_id: "BTC-UP.POLYMARKET",
+            selected_side: "up",
+            expected_edge_basis_points: "150",
+            fee_rate_basis_points: "100",
+            price: "0.40",
+            quantity: "10",
+        },
+    );
+    std::fs::write(&evidence_path, lines.join("\n") + "\n").expect("fixture evidence should write");
+    std::fs::write(
+        &settlements_path,
+        serde_json::to_string(&serde_json::json!({
+            "settlement_date": "2026-06-10",
+            "asset": "BTC,PERP",
+            "market_id": "market-btc",
+            "instrument_id": "BTC-UP.POLYMARKET",
+            "winning_side": "up",
+            "settlement_price": "1.00"
+        }))
+        .expect("settlement fixture should serialize")
+            + "\n",
+    )
+    .expect("fixture settlements should write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .args([
+            "--evidence-jsonl",
+            evidence_path.to_str().expect("utf-8 path"),
+            "--settlements-jsonl",
+            settlements_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("shadow_pnl_report should run");
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+    assert_eq!(
+        stdout,
+        "day,asset,would_be_trades,win_rate,gross_pnl,fees,net_pnl,avg_edge_claimed_bps,avg_edge_realized_bps\n2026-06-10,\"BTC,PERP\",1,1,6,0.04,5.96,150,15000\n"
+    );
+}
+
+fn fixture_evidence_jsonl() -> String {
+    let mut lines = Vec::new();
+    push_trade_lines(
+        &mut lines,
+        TradeFixture {
+            recorded_at_utc_ns: 1,
+            client_order_id: "client-order-one",
+            market_id: "market-btc",
+            instrument_id: "BTC-UP.POLYMARKET",
+            selected_side: "up",
+            expected_edge_basis_points: "150",
+            fee_rate_basis_points: "100",
+            price: "0.40",
+            quantity: "10",
+        },
+    );
+    push_trade_lines(
+        &mut lines,
+        TradeFixture {
+            recorded_at_utc_ns: 4,
+            client_order_id: "client-order-two",
+            market_id: "market-btc-next",
+            instrument_id: "BTC-DOWN.POLYMARKET",
+            selected_side: "down",
+            expected_edge_basis_points: "200",
+            fee_rate_basis_points: "50",
+            price: "0.60",
+            quantity: "5",
+        },
+    );
+    lines.join("\n") + "\n"
+}
+
+fn fixture_settlements_jsonl() -> String {
+    [
+        serde_json::json!({
+            "settlement_date": "2026-06-10",
+            "asset": "BTC",
+            "market_id": "market-btc",
+            "instrument_id": "BTC-UP.POLYMARKET",
+            "winning_side": "up",
+            "settlement_price": "1.00"
+        }),
+        serde_json::json!({
+            "settlement_date": "2026-06-10",
+            "asset": "BTC",
+            "market_id": "market-btc-next",
+            "instrument_id": "BTC-DOWN.POLYMARKET",
+            "winning_side": "up",
+            "settlement_price": "0.00"
+        }),
+    ]
+    .into_iter()
+    .map(|value| serde_json::to_string(&value).expect("settlement fixture should serialize"))
+    .collect::<Vec<_>>()
+    .join("\n")
+        + "\n"
+}
+
+struct TradeFixture {
+    recorded_at_utc_ns: i64,
+    client_order_id: &'static str,
+    market_id: &'static str,
+    instrument_id: &'static str,
+    selected_side: &'static str,
+    expected_edge_basis_points: &'static str,
+    fee_rate_basis_points: &'static str,
+    price: &'static str,
+    quantity: &'static str,
+}
+
+fn push_trade_lines(lines: &mut Vec<String>, trade: TradeFixture) {
+    lines.push(
+        serde_json::to_string(&serde_json::json!({
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "recorded_at_utc_ns": trade.recorded_at_utc_ns,
+            "gate_id": BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+            "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+            "kind": "strategy_input_snapshot",
+            "snapshot": {
+                "market_id": trade.market_id,
+                "selected_side": trade.selected_side,
+                "expected_edge_basis_points": trade.expected_edge_basis_points,
+                "fee_rate_basis_points": trade.fee_rate_basis_points,
+                "client_order_id": trade.client_order_id
+            }
+        }))
+        .expect("snapshot fixture should serialize"),
+    );
+    lines.push(
+        serde_json::to_string(&serde_json::json!({
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "recorded_at_utc_ns": trade.recorded_at_utc_ns + 1,
+            "gate_id": BOLT_V3_ORDER_INTENT_GATE_ID,
+            "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+            "kind": "order_intent",
+            "intent": {
+                "intent_kind": "entry",
+                "instrument_id": trade.instrument_id,
+                "client_order_id": trade.client_order_id,
+                "price": trade.price,
+                "quantity": trade.quantity
+            }
+        }))
+        .expect("intent fixture should serialize"),
+    );
+    lines.push(
+        serde_json::to_string(&serde_json::json!({
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "recorded_at_utc_ns": trade.recorded_at_utc_ns + 2,
+            "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+            "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+            "kind": "admission_decision",
+            "decision": {
+                "client_order_id": trade.client_order_id,
+                "intent_kind": "entry",
+                "outcome": "admitted"
+            }
+        }))
+        .expect("admission fixture should serialize"),
+    );
+}

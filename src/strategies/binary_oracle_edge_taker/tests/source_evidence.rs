@@ -768,6 +768,46 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
 }
 
 #[test]
+fn submit_orders_false_does_not_leave_pending_entry_between_would_be_entries() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission.clone(),
+    );
+    strategy.config.submit_orders = false;
+    register_test_strategy_with_active_instruments(&mut strategy);
+
+    let first_client_order_id = strategy
+        .try_submit_entry_order(1_200)
+        .expect("first shadow entry should pass evidence and admission")
+        .expect("first shadow entry should produce a would-be client order id");
+    assert_eq!(
+        strategy.exposure_occupancy(),
+        None,
+        "shadow entry must not leave a pending exposure without an NT order"
+    );
+
+    let second_client_order_id = strategy
+        .try_submit_entry_order(1_201)
+        .expect("second shadow entry should not be blocked by stale pending exposure")
+        .expect("second shadow entry should produce a would-be client order id");
+    assert_ne!(first_client_order_id, second_client_order_id);
+    assert_eq!(submit_admission.admitted_order_count(), 2);
+    assert_eq!(
+        evidence
+            .events()
+            .iter()
+            .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::OrderIntent(_)))
+            .count(),
+        2,
+        "each shadow entry should still record order-intent evidence"
+    );
+}
+
+#[test]
 fn strategy_input_evidence_records_realized_volatility_unknown_source_rejections() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());

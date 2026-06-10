@@ -211,6 +211,12 @@ impl SubmitContext {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubmitOrderOutcome {
+    Submitted,
+    SkippedByConfig,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ExecutableEntryProbe {
     edge_pricing_notional: f64,
@@ -3414,7 +3420,7 @@ impl BinaryOracleEdgeTaker {
         intent: BoltV3OrderIntentEvidence,
         order: nautilus_model::orders::OrderAny,
         submit_context: SubmitContext,
-    ) -> Result<()> {
+    ) -> Result<SubmitOrderOutcome> {
         // A15: build the (fallible) admission request BEFORE recording the
         // order-intent evidence line. The request build can fail (e.g. a
         // market-style order whose instrument declares no structural price
@@ -3429,12 +3435,21 @@ impl BinaryOracleEdgeTaker {
             .decision_evidence()
             .record_order_intent(&intent)?;
         let _permit = self.context.submit_admission().admit(&request)?;
+        if !self.config.submit_orders {
+            log::info!(
+                "binary_oracle_edge_taker submit skipped by config: strategy_id={} client_order_id={}",
+                self.config.strategy_id,
+                order.client_order_id(),
+            );
+            return Ok(SubmitOrderOutcome::SkippedByConfig);
+        }
         self.submit_order(
             order,
             submit_context.position_id,
             submit_context.client_id,
             submit_context.params,
-        )
+        )?;
+        Ok(SubmitOrderOutcome::Submitted)
     }
 
     fn submit_admission_request_from_order(
@@ -4190,7 +4205,7 @@ impl BinaryOracleEdgeTaker {
             &order,
         );
 
-        if let Err(error) = self.submit_order_with_decision_evidence(
+        match self.submit_order_with_decision_evidence(
             intent,
             order,
             SubmitContext::with_client_id_and_position_id(
@@ -4198,8 +4213,14 @@ impl BinaryOracleEdgeTaker {
                 managed_position.position.position_id,
             ),
         ) {
-            self.exposure = ExposureState::Managed(managed_position);
-            return Err(error);
+            Ok(SubmitOrderOutcome::Submitted) => {}
+            Ok(SubmitOrderOutcome::SkippedByConfig) => {
+                self.exposure = ExposureState::Managed(managed_position);
+            }
+            Err(error) => {
+                self.exposure = ExposureState::Managed(managed_position);
+                return Err(error);
+            }
         }
 
         Ok(Some(client_order_id))
@@ -4455,7 +4476,7 @@ impl BinaryOracleEdgeTaker {
             &order,
         );
 
-        if let Err(error) = self
+        match self
             .context
             .decision_evidence()
             .record_strategy_input_snapshot(&strategy_input_snapshot)
@@ -4465,10 +4486,15 @@ impl BinaryOracleEdgeTaker {
                     order,
                     SubmitContext::with_client_id(client_id),
                 )
-            })
-        {
-            self.clear_pending_entry_state();
-            return Err(error);
+            }) {
+            Ok(SubmitOrderOutcome::Submitted) => {}
+            Ok(SubmitOrderOutcome::SkippedByConfig) => {
+                self.clear_pending_entry_state();
+            }
+            Err(error) => {
+                self.clear_pending_entry_state();
+                return Err(error);
+            }
         }
 
         Ok(Some(client_order_id))

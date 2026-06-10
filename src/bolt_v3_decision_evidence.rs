@@ -525,6 +525,7 @@ pub fn read_latest_entry_decision_evidence_chain(
     let mut intents = BTreeMap::<String, BoltV3OrderIntentEvidence>::new();
     let mut admissions = BTreeMap::<String, BoltV3AdmissionDecisionEvidence>::new();
     let mut latest = None;
+    let mut first_older_schema_index = None;
     for (index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
         if line.is_empty() {
             continue;
@@ -534,6 +535,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                 format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
             })?;
         if header.schema_version < BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION {
+            first_older_schema_index.get_or_insert(index);
             continue;
         }
         match header.kind.as_str() {
@@ -609,7 +611,20 @@ pub fn read_latest_entry_decision_evidence_chain(
             }
         }
     }
-    latest.ok_or_else(|| anyhow!("bolt-v3 decision evidence has no complete entry decision chain"))
+    match latest {
+        Some(chain) => Ok(chain),
+        None => {
+            if let Some(index) = first_older_schema_index {
+                Err(anyhow!(
+                    "bolt-v3 decision evidence schema_version mismatch at line index {index}"
+                ))
+            } else {
+                Err(anyhow!(
+                    "bolt-v3 decision evidence has no complete entry decision chain"
+                ))
+            }
+        }
+    }
 }
 
 fn open_regular_decision_evidence_file(path: &Path) -> std::io::Result<fs::File> {

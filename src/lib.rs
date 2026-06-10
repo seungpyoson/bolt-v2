@@ -27,6 +27,7 @@ pub mod bolt_v3_realized_volatility;
 pub mod bolt_v3_realized_volatility_runtime;
 pub mod bolt_v3_requote_budget;
 pub mod bolt_v3_secrets;
+pub mod bolt_v3_sizing;
 pub mod bolt_v3_source_integrity;
 pub mod bolt_v3_strategy_registration;
 pub mod bolt_v3_submit_admission;

@@ -245,9 +245,11 @@ mod tests {
     // Re-derived by #618 after robust sizing started scaling the operator's
     // dollar target by the EV fraction against the configured EV reference
     // instead of reinterpreting the EV fraction as dollars, then once more
-    // after merging main's #619 executable-edge follow-up cleanup.
+    // after merging main's #619 executable-edge follow-up cleanup, then once
+    // more after the strategy-agnostic sizing primitive moved out of the
+    // taker-only signal module into `src/bolt_v3_sizing.rs`.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "a16a54c1bdbbab372fe6d4edf68a3f28c4ce551b9d4a9009092039b15fa4b123";
+        "4f4ed2c55b566af8acd8e361c64a03533d7c199753093ca5d4929993a18d29cb";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

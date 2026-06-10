@@ -61,6 +61,7 @@ use crate::{
         STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
         normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
     },
+    bolt_v3_sizing::{RobustSizingInputs, choose_robust_size},
     bolt_v3_submit_admission::{
         BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionRequest,
         BoltV3SubmitAdmissionRequestInput, BoltV3SubmitLifecyclePolicy,
@@ -71,9 +72,8 @@ use crate::{
         TakerPricingState as PricingState,
     },
     bolt_v3_taker_signal::{
-        RobustSizingInputs, SideSelectionInputs, UncertaintyBandInputs, WorstCaseEvInputs,
-        choose_entry_side, choose_robust_size, compute_worst_case_ev_bps,
-        outcome_side_evidence_label, uncertainty_band_probability,
+        SideSelectionInputs, UncertaintyBandInputs, WorstCaseEvInputs, choose_entry_side,
+        compute_worst_case_ev_bps, outcome_side_evidence_label, uncertainty_band_probability,
     },
     bolt_v3_trade_flow::{SignedTradeFlow, SignedTradeFlowConfig},
     strategies::registry::{

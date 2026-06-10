@@ -2535,6 +2535,147 @@ fn bybit_public_archive_tick_trade_conversion_plan_covers_all_instruments_and_ca
 }
 
 #[test]
+fn bybit_public_archive_tick_trade_object_manifest_covers_all_staged_objects() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let universe_path = reference_root.join(
+        "backfill-source-universes/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-source-universe.json",
+    );
+    let manifest_path = reference_root.join(
+        "backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json",
+    );
+    let universe: serde_json::Value = serde_json::from_str(&read_required_string(&universe_path))
+        .expect("Bybit source universe parses");
+    let manifest: serde_json::Value = serde_json::from_str(&read_required_string(&manifest_path))
+        .expect("Bybit source universe object manifest parses");
+
+    assert_eq!(
+        manifest["schema_version"].as_str(),
+        Some("backfill-source-universe-object-manifest.v1")
+    );
+    assert_eq!(
+        manifest["universe_id"].as_str(),
+        universe["universe_id"].as_str()
+    );
+    assert_eq!(
+        manifest["object_count"].as_u64(),
+        universe["summary"]["object_count"].as_u64()
+    );
+    assert_eq!(
+        manifest["accepted_bytes"].as_u64(),
+        universe["summary"]["compressed_bytes"].as_u64()
+    );
+
+    let payload_records = manifest["payload_records"]
+        .as_array()
+        .expect("object manifest payload records");
+    assert_eq!(
+        payload_records.len() as u64,
+        universe["summary"]["object_count"]
+            .as_u64()
+            .expect("object count")
+    );
+
+    let universe_categories = universe["categories"]
+        .as_array()
+        .expect("source universe categories");
+    let universe_categories_by_name: std::collections::BTreeMap<&str, &serde_json::Value> =
+        universe_categories
+            .iter()
+            .map(|category| {
+                (
+                    category["category"].as_str().expect("category name"),
+                    category,
+                )
+            })
+            .collect();
+
+    let mut object_counts_by_category = std::collections::BTreeMap::<String, u64>::new();
+    let mut bytes_by_category = std::collections::BTreeMap::<String, u64>::new();
+    let mut symbols_by_category =
+        std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+    let mut total_bytes = 0_u64;
+    for record in payload_records {
+        let category = record["category"]
+            .as_str()
+            .expect("payload record category");
+        let symbol = record["symbol"].as_str().expect("payload record symbol");
+        let archive_date = record["archive_date"]
+            .as_str()
+            .expect("payload record archive date");
+        let sha256 = record["sha256"].as_str().expect("payload record sha256");
+        let s3_uri = record["s3_uri"].as_str().expect("payload record s3 uri");
+        let source_url = record["source_url"]
+            .as_str()
+            .expect("payload record source url");
+        let bytes = record["bytes"].as_u64().expect("payload record bytes");
+        let universe_category = universe_categories_by_name
+            .get(category)
+            .unwrap_or_else(|| panic!("missing source universe category {category}"));
+
+        assert_eq!(
+            record["source_binding"].as_str(),
+            universe_category["source_binding"].as_str()
+        );
+        assert_eq!(
+            record["schema_columns"],
+            universe_category["schema_columns"]
+        );
+        assert_eq!(sha256.len(), 64);
+        assert!(
+            sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        );
+        assert!(s3_uri.starts_with("s3://bolt-parquet/backfill-staging/"));
+        assert!(s3_uri.contains(&format!("/category={category}/")));
+        assert!(s3_uri.contains(&format!("/dt={archive_date}/")));
+        assert!(s3_uri.contains(&format!("/symbol={symbol}/")));
+        assert!(s3_uri.ends_with(&format!("/object={sha256}.csv.gz")));
+        if category == "spot" {
+            assert!(source_url.ends_with(&format!("/{symbol}_{archive_date}.csv.gz")));
+        } else {
+            assert!(source_url.ends_with(&format!("/{symbol}{archive_date}.csv.gz")));
+        }
+
+        *object_counts_by_category
+            .entry(category.to_string())
+            .or_default() += 1;
+        *bytes_by_category.entry(category.to_string()).or_default() += bytes;
+        symbols_by_category
+            .entry(category.to_string())
+            .or_default()
+            .insert(symbol.to_string());
+        total_bytes += bytes;
+    }
+    assert_eq!(
+        total_bytes,
+        universe["summary"]["compressed_bytes"]
+            .as_u64()
+            .expect("universe compressed bytes")
+    );
+
+    for (category, universe_category) in universe_categories_by_name {
+        assert_eq!(
+            object_counts_by_category.get(category).copied(),
+            universe_category["object_count"].as_u64()
+        );
+        assert_eq!(
+            bytes_by_category.get(category).copied(),
+            universe_category["compressed_bytes"].as_u64()
+        );
+        assert_eq!(
+            symbols_by_category
+                .get(category)
+                .map(std::collections::BTreeSet::len),
+            universe_category["instrument_count"]
+                .as_u64()
+                .map(|count| count as usize)
+        );
+    }
+}
+
+#[test]
 fn bybit_bnbusdc_venue_publication_and_mapping_evidence_cover_all_accepted_tranches() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");

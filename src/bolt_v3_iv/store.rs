@@ -148,13 +148,14 @@ impl IvStore {
     /// Preserves the raw event before indexing. An `Err` means indexed products were rolled
     /// back, but the raw event remains available for audit and replay.
     pub fn ingest_event(&mut self, event: IvIngestEvent) -> Result<IvRawEvent, IvStoreError> {
-        if !event.payload.matches_source_kind(event.source_kind) {
-            return Err(IvStoreError::PayloadKindMismatch);
-        }
-
+        let matches_source_kind = event.payload.matches_source_kind(event.source_kind);
         self.next_ingest_sequence += 1;
         let raw_event = preserve_raw_event(event, self.next_ingest_sequence);
         self.raw_events.push(raw_event.clone());
+        if !matches_source_kind {
+            return Err(IvStoreError::PayloadKindMismatch);
+        }
+
         let checkpoint = self.index_checkpoint();
         if let Err(error) = self.index_raw_event(&raw_event) {
             self.rollback_indexes(checkpoint);

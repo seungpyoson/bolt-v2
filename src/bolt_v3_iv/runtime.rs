@@ -1089,7 +1089,7 @@ fn success_state(operation: IvRuntimeOperation) -> IvSourceHealthState {
         IvRuntimeOperation::SubscribeOptionGreeks
         | IvRuntimeOperation::SubscribeOptionChain
         | IvRuntimeOperation::SubscribeAggregateGreeks
-        | IvRuntimeOperation::SubscribeCustomData => IvSourceHealthState::Active,
+        | IvRuntimeOperation::SubscribeCustomData => IvSourceHealthState::Subscribing,
         IvRuntimeOperation::UnsubscribeOptionGreeks
         | IvRuntimeOperation::UnsubscribeOptionChain
         | IvRuntimeOperation::UnsubscribeAggregateGreeks

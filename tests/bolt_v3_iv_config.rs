@@ -722,6 +722,25 @@ fn helper_policy_allowed_outputs_must_include_engine_helper_output() {
 }
 
 #[test]
+fn helper_policy_output_bounds_must_require_finite_positive_iv() {
+    let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
+    config.profiles[0].helper_policies[0]
+        .output_bounds
+        .finite_required = false;
+    config.profiles[0].helper_policies[0]
+        .output_bounds
+        .positive_required = false;
+
+    let errors = validate_iv_root_config(&config);
+
+    assert!(errors.iter().any(|message| {
+        message.contains("helper_policies.configured-helper-policy.output_bounds")
+            && message.contains("finite")
+            && message.contains("positive")
+    }));
+}
+
+#[test]
 fn helper_and_derived_input_policy_refs_must_be_reciprocal() {
     let mut config: IvRootConfig = toml::from_str(valid_iv_toml()).unwrap();
     let mut other_helper = config.profiles[0].helper_policies[0].clone();

@@ -577,6 +577,12 @@ fn validate_policy_surface(context: &str, profile: &IvProfile) -> Vec<String> {
                 policy.helper_policy_id
             ));
         }
+        if !policy.output_bounds.finite_required || !policy.output_bounds.positive_required {
+            errors.push(format!(
+                "{context}.helper_policies.{}.output_bounds must require finite and positive IV outputs",
+                policy.helper_policy_id
+            ));
+        }
     }
     for policy in &profile.derived_input_policies {
         if !helper_policy_ids.contains(policy.helper_policy_ref.as_str()) {

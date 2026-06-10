@@ -161,7 +161,7 @@ Runtime binding:
 - maps custom-implied-volatility sources to ledger-classified NT custom-data subscription operations
 - routes incoming NT events into raw preservation before indexing or projection
 - records subscription failures, unsupported mappings, stale generations, unsupported conventions, missing IV basis, and malformed custom data in `IvSourceHealth`
-- applies IV root reloads to the existing runtime query state so new subscription generations can satisfy current queries, old generations and removed profiles/sources cannot, and already-issued strategy handles for profiles present before reload do not need to be recreated
+- exposes IV root reload planning and runtime-state application so new subscription generations can satisfy current queries, old generations and removed profiles/sources cannot, and already-issued strategy handles for profiles present before reload do not need to be recreated. The production live-node runner does not add a config hot-reload trigger in this feature.
 
 ## Capability Ledger Contract
 

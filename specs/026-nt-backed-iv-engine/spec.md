@@ -39,9 +39,9 @@ As a strategy operator, I need the IV engine to subscribe through NT to every co
 2. **Given** a TOML config with option-chain sources, **When** the IV engine starts, **Then** it issues NT option-chain subscriptions for every configured option series and configured strike range.
 3. **Given** a TOML config with aggregate greeks sources, **When** the IV engine starts, **Then** it subscribes to NT greeks topics for the configured underlying selectors.
 4. **Given** a TOML config with custom implied-volatility data sources exposed by NT adapters, **When** the IV engine starts, **Then** it subscribes through NT custom-data plumbing and records those events as separate IV evidence, not as option-chain IV.
-5. **Given** a source removed from TOML, **When** the engine reloads or stops, **Then** it unsubscribes from the matching NT source and prevents stale data from appearing fresh.
+5. **Given** a source removed from TOML, **When** the engine applies a reload plan or stops, **Then** it unsubscribes from the matching NT source and prevents stale data from appearing fresh.
 6. **Given** an operator swaps, removes, or renames an IV source inside a profile, **When** TOML is updated, **Then** the source lifecycle, strategy authorization, and query policies are changed in that single profile boundary without editing a separate allow-list section.
-7. **Given** a configured source cannot be mapped to an NT runtime subscription operation or its subscription fails, **When** the engine starts or reloads, **Then** source health records the failure and current queries for that source reject.
+7. **Given** a configured source cannot be mapped to an NT runtime subscription operation or its subscription fails, **When** the engine starts or applies a reload plan, **Then** source health records the failure and current queries for that source reject.
 
 ---
 
@@ -157,7 +157,7 @@ As a strategy author, I need a strategy-agnostic IV API that exposes all strateg
 - **FR-021**: System MUST reject unknown TOML policies, unknown source kinds, empty source selectors, duplicate source IDs, invalid numeric bounds, unit-ambiguous fields, and unknown or unsupported IV TOML schema versions at startup.
 - **FR-022**: System MUST preserve NT timestamps in nanoseconds internally or convert through a named type with tests proving the conversion.
 - **FR-023**: System MUST mark stale data stale and prevent stale data from satisfying current queries unless the strategy explicitly requests historical data.
-- **FR-024**: System MUST implement subscription lifecycle handling for start, stop, reload, unsubscribe, and source removal.
+- **FR-024**: System MUST implement subscription lifecycle planning and runtime-state handling for start, stop, reload, unsubscribe, and source removal. This feature does not add a production config hot-reload trigger to the live-node runner.
 - **FR-025**: System MUST enforce retention bounds for raw payloads, indexed points, smiles, surfaces, derived products, and source-health events.
 - **FR-026**: System MUST expose typed reject reasons for missing IV basis, invalid IV value, unsupported convention, stale data, clock skew, incomplete derived inputs, helper failure, source not configured, selector not authorized, retention miss, interpolation rejection, extrapolation rejection, fallback rejection, and quorum not met.
 - **FR-027**: System MUST avoid any hardcoded strategy name, venue name, market family, asset identifier, cadence, instrument ID, source ID, quantity, timeout, or policy value in runtime logic.

@@ -22,7 +22,7 @@ The exact final pushed SHA cannot be embedded in the commit that contains this f
 - Per-strategy TOML authorization entries so two registered strategy instances in the same IV profile can receive different selector/source scopes through the runtime-backed registry.
 - NT helper-backed derived IV through `nautilus_model::data::imply_vol_and_greeks`.
 - Strategy query handle registration through `StrategyRegistrationContext::iv_query_handles`.
-- Live-node IV lifecycle planning through `IvEngineLifecyclePlan` and `plan_iv_engine_lifecycle`, plus runtime IV root reload state updates and removed-source invalidation for existing query handles.
+- Live-node IV startup/stop lifecycle planning through `IvEngineLifecyclePlan` and `plan_iv_engine_lifecycle`, plus IV reload planning and runtime IV root reload state updates for existing query handles. This PR does not introduce a production config hot-reload trigger in the live-node runner.
 - IV source-fence checks wired through `just source-fence`.
 
 ## NT APIs Used

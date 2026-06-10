@@ -220,6 +220,21 @@ fn invalid_iv_payload_preserves_raw_event_without_indexing_products() {
 }
 
 #[test]
+fn payload_kind_mismatch_preserves_raw_event_without_indexing_products() {
+    let mut event = greeks_event();
+    event.source_kind = IvSourceKind::CustomImpliedVolatility;
+
+    let mut store = IvStore::empty();
+    let result = store.ingest_event(event);
+
+    assert_eq!(result, Err(IvStoreError::PayloadKindMismatch));
+    assert_eq!(store.raw_events().len(), 1);
+    assert!(store.iv_points().is_empty());
+    assert!(store.greeks_points().is_empty());
+    assert!(store.iv_evidence().is_empty());
+}
+
+#[test]
 fn zero_iv_payload_preserves_raw_event_without_indexing_products() {
     let mut event = greeks_event();
     let IvRawPayload::OptionGreeks(payload) = &mut event.payload else {

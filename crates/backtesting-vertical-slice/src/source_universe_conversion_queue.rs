@@ -1,0 +1,448 @@
+//! Conversion work queue for accepted source-universe object manifests.
+//!
+//! This artifact bridges source acceptance and payload conversion by turning
+//! every source-universe object into a deterministic, resumable work item.
+
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Component, Path, PathBuf},
+};
+
+use anyhow::{Context, Result, ensure};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+pub const SOURCE_UNIVERSE_CONVERSION_QUEUE_SCHEMA_VERSION: &str =
+    "source-universe-conversion-queue.v1";
+pub const SOURCE_UNIVERSE_CONVERSION_QUEUE_FILE: &str = "source-universe-conversion-queue.json";
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceUniverseConversionQueueSpec {
+    pub queue_id: String,
+    pub source_universe_manifest_path: PathBuf,
+    pub output_dir: PathBuf,
+    pub output_prefix_template: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceUniverseConversionQueueStatus {
+    Ready,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceUniverseConversionWorkState {
+    PendingConversion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceUniverseConversionQueueArtifactRef {
+    pub role: String,
+    pub path: PathBuf,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceUniverseConversionCategorySummary {
+    pub category: String,
+    pub source_binding: String,
+    pub instrument_count: u64,
+    pub work_item_count: u64,
+    pub source_bytes: u64,
+    pub first_archive_date: String,
+    pub last_archive_date: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceUniverseConversionWorkItem {
+    pub work_item_id: String,
+    pub work_state: SourceUniverseConversionWorkState,
+    pub source_binding: String,
+    pub table_family: String,
+    pub category: String,
+    pub symbol: String,
+    pub archive_date: String,
+    pub source_uri: String,
+    pub source_url: String,
+    pub source_sha256: String,
+    pub source_bytes: u64,
+    pub schema_columns: Vec<String>,
+    pub output_prefix: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceUniverseConversionQueue {
+    pub schema_version: String,
+    pub queue_id: String,
+    pub status: SourceUniverseConversionQueueStatus,
+    pub manifest_id: String,
+    pub universe_id: String,
+    pub venue: String,
+    pub source: String,
+    pub family: String,
+    pub table_family: String,
+    pub source_manifest_path: PathBuf,
+    pub source_manifest_hash: String,
+    pub output_prefix_template: String,
+    pub work_item_count: u64,
+    pub pending_conversion_items: u64,
+    pub total_source_bytes: u64,
+    pub category_summaries: Vec<SourceUniverseConversionCategorySummary>,
+    pub artifact_refs: Vec<SourceUniverseConversionQueueArtifactRef>,
+    pub work_items: Vec<SourceUniverseConversionWorkItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceUniverseConversionQueueArtifact {
+    pub path: PathBuf,
+    pub content_hash: String,
+    pub bytes: u64,
+    pub work_item_count: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceUniverseManifest {
+    manifest_id: String,
+    universe_id: String,
+    venue: String,
+    source: String,
+    family: String,
+    table_family: String,
+    object_count: u64,
+    accepted_bytes: u64,
+    #[serde(default)]
+    category_summaries: Vec<SourceUniverseManifestCategorySummary>,
+    #[serde(default)]
+    payload_records: Vec<SourceUniverseManifestPayloadRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceUniverseManifestCategorySummary {
+    category: String,
+    source_binding: String,
+    instrument_count: u64,
+    object_count: u64,
+    compressed_bytes: u64,
+    first_archive_date: String,
+    last_archive_date: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceUniverseManifestPayloadRecord {
+    s3_uri: String,
+    source_url: String,
+    sha256: String,
+    bytes: u64,
+    archive_date: String,
+    category: String,
+    symbol: String,
+    source_binding: String,
+    schema_columns: Vec<String>,
+}
+
+pub fn write_source_universe_conversion_queue_from_spec_file(
+    spec_path: &Path,
+) -> Result<SourceUniverseConversionQueueArtifact> {
+    let spec_bytes = fs::read(spec_path).with_context(|| {
+        format!(
+            "read source-universe conversion queue spec {}",
+            spec_path.display()
+        )
+    })?;
+    let spec: SourceUniverseConversionQueueSpec =
+        toml::from_slice(&spec_bytes).with_context(|| {
+            format!(
+                "parse source-universe conversion queue spec TOML {}",
+                spec_path.display()
+            )
+        })?;
+    let base_dir = spec_path.parent().unwrap_or_else(|| Path::new("."));
+    write_source_universe_conversion_queue(&spec, base_dir)
+}
+
+pub fn write_source_universe_conversion_queue(
+    spec: &SourceUniverseConversionQueueSpec,
+    base_dir: &Path,
+) -> Result<SourceUniverseConversionQueueArtifact> {
+    let queue = evaluate_source_universe_conversion_queue(spec, base_dir)?;
+    let output_dir = resolve_output_dir(base_dir, &spec.output_dir);
+    fs::create_dir_all(&output_dir).with_context(|| {
+        format!(
+            "create source-universe conversion queue output directory {}",
+            output_dir.display()
+        )
+    })?;
+    let path = output_dir.join(SOURCE_UNIVERSE_CONVERSION_QUEUE_FILE);
+    let bytes =
+        serde_json::to_vec_pretty(&queue).context("serialize source-universe conversion queue")?;
+    if path.exists() {
+        let existing = fs::read(&path)
+            .with_context(|| format!("read existing conversion queue {}", path.display()))?;
+        ensure!(
+            existing == bytes,
+            "dirty source-universe conversion queue {}: existing file content differs",
+            path.display()
+        );
+    } else {
+        fs::write(&path, &bytes).with_context(|| {
+            format!("write source-universe conversion queue {}", path.display())
+        })?;
+    }
+
+    Ok(SourceUniverseConversionQueueArtifact {
+        path,
+        content_hash: sha256_bytes(&bytes),
+        bytes: bytes.len() as u64,
+        work_item_count: queue.work_item_count,
+    })
+}
+
+pub fn evaluate_source_universe_conversion_queue(
+    spec: &SourceUniverseConversionQueueSpec,
+    base_dir: &Path,
+) -> Result<SourceUniverseConversionQueue> {
+    ensure!(
+        !spec.queue_id.trim().is_empty(),
+        "queue_id must not be empty"
+    );
+    ensure!(
+        !spec.output_prefix_template.trim().is_empty(),
+        "output_prefix_template must not be empty"
+    );
+
+    let source_manifest_path = resolve_existing_path(base_dir, &spec.source_universe_manifest_path);
+    let source_manifest_hash = sha256_file(&source_manifest_path)?;
+    let manifest: SourceUniverseManifest = read_json(&source_manifest_path)?;
+    ensure!(
+        manifest.object_count as usize == manifest.payload_records.len(),
+        "source-universe manifest object_count does not match payload_records length"
+    );
+    ensure!(
+        !manifest.payload_records.is_empty(),
+        "source-universe manifest must contain payload records"
+    );
+
+    let mut work_items = Vec::with_capacity(manifest.payload_records.len());
+    for record in &manifest.payload_records {
+        work_items.push(work_item(&manifest, record, &spec.output_prefix_template)?);
+    }
+
+    let total_source_bytes = work_items.iter().map(|item| item.source_bytes).sum::<u64>();
+    ensure!(
+        total_source_bytes == manifest.accepted_bytes,
+        "source-universe manifest accepted_bytes does not match payload record bytes"
+    );
+
+    let category_summaries = category_summaries(&manifest, &work_items)?;
+
+    Ok(SourceUniverseConversionQueue {
+        schema_version: SOURCE_UNIVERSE_CONVERSION_QUEUE_SCHEMA_VERSION.to_string(),
+        queue_id: spec.queue_id.clone(),
+        status: SourceUniverseConversionQueueStatus::Ready,
+        manifest_id: manifest.manifest_id,
+        universe_id: manifest.universe_id,
+        venue: manifest.venue,
+        source: manifest.source,
+        family: manifest.family,
+        table_family: manifest.table_family,
+        source_manifest_path: source_manifest_path.clone(),
+        source_manifest_hash,
+        output_prefix_template: spec.output_prefix_template.clone(),
+        work_item_count: work_items.len() as u64,
+        pending_conversion_items: work_items.len() as u64,
+        total_source_bytes,
+        category_summaries,
+        artifact_refs: vec![SourceUniverseConversionQueueArtifactRef {
+            role: "source_universe_manifest".to_string(),
+            path: source_manifest_path,
+            sha256: sha256_file(&resolve_existing_path(
+                base_dir,
+                &spec.source_universe_manifest_path,
+            ))?,
+        }],
+        work_items,
+    })
+}
+
+fn work_item(
+    manifest: &SourceUniverseManifest,
+    record: &SourceUniverseManifestPayloadRecord,
+    output_prefix_template: &str,
+) -> Result<SourceUniverseConversionWorkItem> {
+    let output_prefix = render_output_prefix(manifest, record, output_prefix_template)?;
+    Ok(SourceUniverseConversionWorkItem {
+        work_item_id: work_item_id(record),
+        work_state: SourceUniverseConversionWorkState::PendingConversion,
+        source_binding: record.source_binding.clone(),
+        table_family: manifest.table_family.clone(),
+        category: record.category.clone(),
+        symbol: record.symbol.clone(),
+        archive_date: record.archive_date.clone(),
+        source_uri: record.s3_uri.clone(),
+        source_url: record.source_url.clone(),
+        source_sha256: record.sha256.clone(),
+        source_bytes: record.bytes,
+        schema_columns: record.schema_columns.clone(),
+        output_prefix,
+    })
+}
+
+fn work_item_id(record: &SourceUniverseManifestPayloadRecord) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        record.source_binding, record.symbol, record.archive_date, record.sha256
+    )
+}
+
+fn render_output_prefix(
+    manifest: &SourceUniverseManifest,
+    record: &SourceUniverseManifestPayloadRecord,
+    template: &str,
+) -> Result<String> {
+    let mut output = template.to_string();
+    for (token, value) in [
+        ("{manifest_id}", manifest.manifest_id.as_str()),
+        ("{universe_id}", manifest.universe_id.as_str()),
+        ("{venue}", manifest.venue.as_str()),
+        ("{source}", manifest.source.as_str()),
+        ("{family}", manifest.family.as_str()),
+        ("{table_family}", manifest.table_family.as_str()),
+        ("{category}", record.category.as_str()),
+        ("{symbol}", record.symbol.as_str()),
+        ("{archive_date}", record.archive_date.as_str()),
+        ("{sha256}", record.sha256.as_str()),
+        ("{source_binding}", record.source_binding.as_str()),
+    ] {
+        output = output.replace(token, value);
+    }
+    ensure!(
+        !output.contains('{') && !output.contains('}'),
+        "output_prefix_template contains an unsupported placeholder"
+    );
+    Ok(output)
+}
+
+fn category_summaries(
+    manifest: &SourceUniverseManifest,
+    work_items: &[SourceUniverseConversionWorkItem],
+) -> Result<Vec<SourceUniverseConversionCategorySummary>> {
+    let mut counts_by_category: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
+    for item in work_items {
+        let entry = counts_by_category
+            .entry(item.category.as_str())
+            .or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 = entry.1.saturating_add(item.source_bytes);
+    }
+
+    let mut summaries = Vec::with_capacity(manifest.category_summaries.len());
+    for summary in &manifest.category_summaries {
+        let (work_item_count, source_bytes) = counts_by_category
+            .get(summary.category.as_str())
+            .copied()
+            .unwrap_or((0, 0));
+        ensure!(
+            work_item_count == summary.object_count,
+            "category summary object_count does not match work item count"
+        );
+        ensure!(
+            source_bytes == summary.compressed_bytes,
+            "category summary compressed_bytes does not match work item bytes"
+        );
+        summaries.push(SourceUniverseConversionCategorySummary {
+            category: summary.category.clone(),
+            source_binding: summary.source_binding.clone(),
+            instrument_count: summary.instrument_count,
+            work_item_count,
+            source_bytes,
+            first_archive_date: summary.first_archive_date.clone(),
+            last_archive_date: summary.last_archive_date.clone(),
+        });
+    }
+    Ok(summaries)
+}
+
+fn read_json<T>(path: &Path) -> Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let bytes = fs::read(path).with_context(|| format!("read JSON artifact {}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse JSON artifact {}", path.display()))
+}
+
+fn resolve_output_dir(base_dir: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    if looks_repo_relative(path)
+        && let Some(candidate) = resolve_from_known_anchors(path)
+    {
+        return candidate;
+    }
+    let base_candidate = base_dir.join(path);
+    if base_candidate
+        .parent()
+        .is_some_and(|parent| parent.exists())
+    {
+        return base_candidate;
+    }
+    resolve_from_known_anchors(path).unwrap_or(base_candidate)
+}
+
+fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() || path.exists() {
+        return path.to_path_buf();
+    }
+    let base_candidate = base_dir.join(path);
+    if base_candidate.exists() {
+        return base_candidate;
+    }
+    resolve_from_known_anchors(path).unwrap_or_else(|| path.to_path_buf())
+}
+
+fn resolve_from_known_anchors(path: &Path) -> Option<PathBuf> {
+    let mut anchors = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        anchors.push(current_dir);
+    }
+    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+
+    for anchor in anchors {
+        for ancestor in anchor.ancestors() {
+            let candidate = ancestor.join(path);
+            if candidate.parent().is_some_and(|parent| parent.exists()) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn looks_repo_relative(path: &Path) -> bool {
+    matches!(
+        path.components().next(),
+        Some(Component::Normal(component))
+            if component == "specs" || component == "crates" || component == "docs" || component == "scripts"
+    )
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let bytes = fs::read(path).with_context(|| format!("read artifact {}", path.display()))?;
+    Ok(sha256_bytes(&bytes))
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}

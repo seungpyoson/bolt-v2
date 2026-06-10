@@ -58,4 +58,5 @@ pub mod source_proof_legacy_derivability;
 pub mod source_proof_migration_preflight;
 pub mod source_proof_shortlist;
 pub mod source_selection_readiness;
+pub mod source_universe_conversion_queue;
 pub mod venue_scale_conversion_acceptance;

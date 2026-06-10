@@ -27,7 +27,7 @@ Expected:
 ```bash
 rg --files specs/032-world-cup-production-profit-gate | sort
 rg -n "NEEDS[ ]CLARIFICATION|T[O]DO|fix[ -]later" specs/032-world-cup-production-profit-gate
-rg -n "capital authorized by this spec|skip no-submit allowed|skip canary allowed|direct venue submit path allowed|process env secret source allowed" specs/032-world-cup-production-profit-gate --glob '!quickstart.md'
+rg -n "capital authorized by this spec|skip controlled-connect allowed|skip capital-probe allowed|direct venue submit path allowed|process env secret source allowed" specs/032-world-cup-production-profit-gate --glob '!quickstart.md'
 git diff --check
 cargo fmt --check
 just source-fence
@@ -45,7 +45,7 @@ Expected:
 cargo test --locked --lib
 ```
 
-Expected: all library tests pass. This is supporting evidence only; it does not replace real source proof, no-submit, or canary evidence.
+Expected: all library tests pass. This is supporting evidence only; it does not replace real source proof, controlled-connect, or capital-probe evidence.
 
 ## Future implementation checks
 
@@ -59,5 +59,5 @@ After code is added, each slice must add failing-then-passing tests for:
 - lost reference quorum
 - positive edge without fill/markout/settlement evidence
 - disabled promotion package generation
-- stale no-submit report
-- canary eligibility scoped to exact venue/account/product/config hash
+- stale controlled-connect report
+- capital-probe eligibility scoped to exact venue/account/product/config hash

@@ -9,8 +9,8 @@
 - `evidence_rejected`
 - `promotion_ready`
 - `disabled_config_generated`
-- `no_submit_ready`
-- `tiny_canary_ready`
+- `controlled_connect_ready`
+- `capital_probe_ready`
 - `live_enabled`
 
 ## Transitions
@@ -39,15 +39,15 @@ Occurs when evidence class, fillability, markout, settlement, latency, fee, or q
 
 Requires disabled generated TOML bound to source proof, provider proof, profit evidence, commit SHA, and config checksum.
 
-### `disabled_config_generated` -> `no_submit_ready`
+### `disabled_config_generated` -> `controlled_connect_ready`
 
-Requires exact-head no-submit readiness and matching source/promotion hashes.
+Requires exact-head controlled-connect readiness and matching source/promotion hashes.
 
-### `no_submit_ready` -> `tiny_canary_ready`
+### `controlled_connect_ready` -> `capital_probe_ready`
 
-Requires explicit operator approval, current geography/account/product availability proof, source-fence pass, exact-head CI, and tiny-canary proof.
+Requires explicit operator approval, current geography/account/product availability proof, source-fence pass, exact-head CI, and bounded-capital probe proof.
 
-### `tiny_canary_ready` -> `live_enabled`
+### `capital_probe_ready` -> `live_enabled`
 
 Requires a separate operator decision for the exact venue/account/product/market-family/config hash. This package does not grant that decision.
 

@@ -2,13 +2,13 @@
 
 ## Decision 1: Build a gate before building a capital strategy
 
-**Decision**: Implement the next production-grade slice as a source-proof and profit-evidence gate. It can make a market eligible for capture, promotion review, no-submit readiness, and tiny canary readiness; it does not authorize live capital.
+**Decision**: Implement the next production-grade slice as a source-proof and profit-evidence gate. It can make a market eligible for capture, promotion review, controlled-connect readiness, and capital-probe readiness; it does not authorize live capital.
 
-**Rationale**: Current repo rules and production-readiness specs already require no-submit and canary gates before real money. A World Cup strategy at scale adds event-rule, settlement-rule, provider-fidelity, and jurisdiction risk that must be proven first.
+**Rationale**: Current repo rules and production-readiness specs already require controlled-connect and capital-probe gates before real money. A World Cup strategy at scale adds event-rule, settlement-rule, provider-fidelity, and jurisdiction risk that must be proven first.
 
 **Alternatives considered**:
 
-- Direct live market-making bot: rejected because source proof and no-submit/canary proof are absent.
+- Direct live market-making bot: rejected because source proof and controlled-connect/capital-probe proof are absent.
 - Spreadsheet/manual playbook: rejected because it would create a dual path outside NT and shared admission.
 
 ## Decision 2: Treat World Cup rules as source proof, not constants
@@ -46,13 +46,13 @@
 
 ## Decision 5: Use NT-backed replay and live gates
 
-**Decision**: Profit claims must route through existing NautilusTrader-backed data, order-book, executable-edge, no-submit, and canary paths. Lower-fidelity backtests can inform research but cannot justify capital scale.
+**Decision**: Profit claims must route through existing NautilusTrader-backed data, order-book, executable-edge, controlled-connect, and capital-probe paths. Lower-fidelity backtests can inform research but cannot justify capital scale.
 
-**Rationale**: The repo already has shared modules for exact-size VWAP, fee-adjusted executable edge, order-book deltas, quote lifecycle, submit admission, no-submit readiness, and canary gates. A second path would violate repo rules and produce weaker evidence.
+**Rationale**: The repo already has shared modules for exact-size VWAP, fee-adjusted executable edge, order-book deltas, quote lifecycle, submit admission, readiness, and controlled-connect gates. A second path would violate repo rules and produce weaker evidence.
 
 **Evidence**:
 
-- Main has shared `src/bolt_v3_executable_edge.rs`, `src/bolt_v3_book_sizing.rs`, `src/bolt_v3_quote_lifecycle.rs`, `src/bolt_v3_submit_admission.rs`, `src/bolt_v3_no_submit_readiness.rs`, and `src/bolt_v3_live_canary_gate.rs`.
+- Main has shared `src/bolt_v3_executable_edge.rs`, `src/bolt_v3_book_sizing.rs`, `src/bolt_v3_quote_lifecycle.rs`, `src/bolt_v3_submit_admission.rs`, `src/bolt_v3_readiness.rs`, and `tests/bolt_v3_controlled_connect.rs`.
 - `contracts/polymarket.toml` declares venue capabilities such as `supports_modify = false` and `book_depth_source = "order_book_deltas"`.
 - The research analytics specs require NT backtest/replay/catalog proof for execution-quality claims.
 
@@ -81,8 +81,8 @@
 | Fill probability and adverse selection | Maker quotes may be filled only when stale | Shadow quote outcomes, markouts, cancel outcomes, and quote-lifecycle evidence |
 | Venue modify/cancel semantics | Quote replacement risk differs by venue | Consume venue contract capability facts through shared quote lifecycle |
 | Fee and minimum-size rules | Thin edge can be wiped by fees or sizing | Shared fee/executable-edge/submit-admission modules own these checks |
-| Jurisdiction/account availability | Live orders may be blocked or unlawful | Geography/account/product proof required before no-submit/canary |
-| Recovery and reconciliation | Production scale needs restart/open-order hygiene | Use existing no-submit/canary/reconciliation gates before capital increases |
+| Jurisdiction/account availability | Live orders may be blocked or unlawful | Geography/account/product proof required before controlled-connect/capital-probe |
+| Recovery and reconciliation | Production scale needs restart/open-order hygiene | Use existing controlled-connect/capital-probe/reconciliation gates before capital increases |
 
 ## Source Index
 

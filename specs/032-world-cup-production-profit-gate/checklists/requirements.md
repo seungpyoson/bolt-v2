@@ -18,7 +18,7 @@
 - [x] Provider capability requirements distinguish transport, fidelity, plan entitlement, and source classification.
 - [x] Profit-evidence requirements cover candidates, no-trades, fills, markouts, settlement, fees, latency, and book depth.
 - [x] Promotion requirements produce disabled config only.
-- [x] No-submit and tiny-canary gates are required before live progression.
+- [x] Controlled-connect and capital-probe gates are required before live progression.
 - [x] Secret-source requirements remain SSM-only.
 - [x] Strategy/execution responsibility boundaries follow repo rules.
 

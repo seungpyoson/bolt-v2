@@ -12,8 +12,8 @@ pub struct LiveEnablementGatePacket {
     pub scope: LiveGateScope,
     pub ci_status: LiveGateArtifactProof,
     pub source_fence_status: LiveGateArtifactProof,
-    pub no_submit_report: LiveGateArtifactProof,
-    pub tiny_canary_proof: LiveGateArtifactProof,
+    pub controlled_connect_report: LiveGateArtifactProof,
+    pub capital_probe_proof: LiveGateArtifactProof,
     pub operator_approval: OperatorApprovalProof,
     pub legal_geography_proof: LiveGateArtifactProof,
 }
@@ -64,7 +64,7 @@ pub struct LiveEnablementGateEvaluation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LiveEnablementGateState {
-    TinyCanaryReady,
+    CapitalProbeReady,
     Rejected,
 }
 
@@ -89,10 +89,10 @@ pub enum LiveEnablementGateRejectionReason {
     CiStatusStale,
     SourceFenceStatusMissing,
     SourceFenceStatusStale,
-    NoSubmitReportMissing,
-    NoSubmitReportStale,
-    TinyCanaryProofMissing,
-    TinyCanaryProofStale,
+    ControlledConnectReportMissing,
+    ControlledConnectReportStale,
+    CapitalProbeProofMissing,
+    CapitalProbeProofStale,
     OperatorApprovalMissing,
     OperatorApprovalStale,
     OperatorApprovalNotApproved,
@@ -115,8 +115,8 @@ pub enum LiveEnablementGateField {
     ConfigChecksum,
     CiStatus,
     SourceFenceStatus,
-    NoSubmitReport,
-    TinyCanaryProof,
+    ControlledConnectReport,
+    CapitalProbeProof,
     OperatorApproval,
     LegalGeographyProof,
 }
@@ -148,19 +148,19 @@ pub fn evaluate_live_enablement_gate(
     );
     validate_artifact(
         packet,
-        &packet.no_submit_report,
-        LiveEnablementGateField::NoSubmitReport,
-        LiveEnablementGateRejectionReason::NoSubmitReportMissing,
-        LiveEnablementGateRejectionReason::NoSubmitReportStale,
+        &packet.controlled_connect_report,
+        LiveEnablementGateField::ControlledConnectReport,
+        LiveEnablementGateRejectionReason::ControlledConnectReportMissing,
+        LiveEnablementGateRejectionReason::ControlledConnectReportStale,
         as_of_unix_seconds,
         &mut rejections,
     );
     validate_artifact(
         packet,
-        &packet.tiny_canary_proof,
-        LiveEnablementGateField::TinyCanaryProof,
-        LiveEnablementGateRejectionReason::TinyCanaryProofMissing,
-        LiveEnablementGateRejectionReason::TinyCanaryProofStale,
+        &packet.capital_probe_proof,
+        LiveEnablementGateField::CapitalProbeProof,
+        LiveEnablementGateRejectionReason::CapitalProbeProofMissing,
+        LiveEnablementGateRejectionReason::CapitalProbeProofStale,
         as_of_unix_seconds,
         &mut rejections,
     );
@@ -176,7 +176,7 @@ pub fn evaluate_live_enablement_gate(
     );
 
     let state = if rejections.is_empty() {
-        LiveEnablementGateState::TinyCanaryReady
+        LiveEnablementGateState::CapitalProbeReady
     } else {
         LiveEnablementGateState::Rejected
     };
@@ -357,8 +357,8 @@ mod tests {
             scope: valid_scope(),
             ci_status: valid_artifact("sha256:ci"),
             source_fence_status: valid_artifact("sha256:source-fence"),
-            no_submit_report: valid_artifact("sha256:no-submit"),
-            tiny_canary_proof: valid_artifact("sha256:canary"),
+            controlled_connect_report: valid_artifact("sha256:controlled-connect"),
+            capital_probe_proof: valid_artifact("sha256:capital-probe"),
             operator_approval: OperatorApprovalProof {
                 artifact: valid_artifact("sha256:operator"),
                 decision: OperatorApprovalDecision::Approved,
@@ -368,20 +368,20 @@ mod tests {
     }
 
     #[test]
-    fn complete_exact_head_gate_is_canary_ready_for_scope() {
+    fn complete_exact_head_gate_is_capital_probe_ready_for_scope() {
         let evaluation = evaluate_live_enablement_gate(&valid_packet(), AS_OF_UNIX_SECONDS);
 
-        assert_eq!(evaluation.state, LiveEnablementGateState::TinyCanaryReady);
+        assert_eq!(evaluation.state, LiveEnablementGateState::CapitalProbeReady);
         assert!(evaluation.rejections.is_empty());
     }
 
     #[test]
-    fn missing_exact_head_ci_source_fence_or_no_submit_rejects() {
+    fn missing_exact_head_ci_source_fence_or_controlled_connect_rejects() {
         let mut packet = valid_packet();
         packet.exact_head_commit_sha.clear();
         packet.ci_status.artifact_hash.clear();
         packet.source_fence_status.artifact_hash.clear();
-        packet.no_submit_report.artifact_hash.clear();
+        packet.controlled_connect_report.artifact_hash.clear();
 
         let evaluation = evaluate_live_enablement_gate(&packet, AS_OF_UNIX_SECONDS);
 
@@ -413,19 +413,19 @@ mod tests {
             evaluation
                 .rejections
                 .contains(&LiveEnablementGateRejection {
-                    reason: LiveEnablementGateRejectionReason::NoSubmitReportMissing,
-                    field: LiveEnablementGateField::NoSubmitReport,
+                    reason: LiveEnablementGateRejectionReason::ControlledConnectReportMissing,
+                    field: LiveEnablementGateField::ControlledConnectReport,
                 })
         );
     }
 
     #[test]
-    fn stale_ci_source_fence_no_submit_canary_operator_or_legal_rejects() {
+    fn stale_ci_source_fence_controlled_connect_capital_probe_operator_or_legal_rejects() {
         let mut packet = valid_packet();
         packet.ci_status.expires_at_unix_seconds = AS_OF_UNIX_SECONDS;
         packet.source_fence_status.expires_at_unix_seconds = AS_OF_UNIX_SECONDS;
-        packet.no_submit_report.expires_at_unix_seconds = AS_OF_UNIX_SECONDS;
-        packet.tiny_canary_proof.expires_at_unix_seconds = AS_OF_UNIX_SECONDS;
+        packet.controlled_connect_report.expires_at_unix_seconds = AS_OF_UNIX_SECONDS;
+        packet.capital_probe_proof.expires_at_unix_seconds = AS_OF_UNIX_SECONDS;
         packet.operator_approval.artifact.expires_at_unix_seconds = AS_OF_UNIX_SECONDS;
         packet.legal_geography_proof.expires_at_unix_seconds = AS_OF_UNIX_SECONDS;
 
@@ -451,16 +451,16 @@ mod tests {
             evaluation
                 .rejections
                 .contains(&LiveEnablementGateRejection {
-                    reason: LiveEnablementGateRejectionReason::NoSubmitReportStale,
-                    field: LiveEnablementGateField::NoSubmitReport,
+                    reason: LiveEnablementGateRejectionReason::ControlledConnectReportStale,
+                    field: LiveEnablementGateField::ControlledConnectReport,
                 })
         );
         assert!(
             evaluation
                 .rejections
                 .contains(&LiveEnablementGateRejection {
-                    reason: LiveEnablementGateRejectionReason::TinyCanaryProofStale,
-                    field: LiveEnablementGateField::TinyCanaryProof,
+                    reason: LiveEnablementGateRejectionReason::CapitalProbeProofStale,
+                    field: LiveEnablementGateField::CapitalProbeProof,
                 })
         );
         assert!(
@@ -484,9 +484,9 @@ mod tests {
     #[test]
     fn artifact_package_commit_or_scope_mismatch_rejects() {
         let mut packet = valid_packet();
-        packet.no_submit_report.package_hash = "sha256:other-package".to_string();
+        packet.controlled_connect_report.package_hash = "sha256:other-package".to_string();
         packet.source_fence_status.commit_sha = "def456".to_string();
-        packet.tiny_canary_proof.market_family_hash = "sha256:other-market-family".to_string();
+        packet.capital_probe_proof.market_family_hash = "sha256:other-market-family".to_string();
         packet.legal_geography_proof.config_checksum = "sha256:other-config".to_string();
 
         let evaluation = evaluate_live_enablement_gate(&packet, AS_OF_UNIX_SECONDS);
@@ -496,7 +496,7 @@ mod tests {
                 .rejections
                 .contains(&LiveEnablementGateRejection {
                     reason: LiveEnablementGateRejectionReason::ArtifactPackageMismatch,
-                    field: LiveEnablementGateField::NoSubmitReport,
+                    field: LiveEnablementGateField::ControlledConnectReport,
                 })
         );
         assert!(
@@ -512,7 +512,7 @@ mod tests {
                 .rejections
                 .contains(&LiveEnablementGateRejection {
                     reason: LiveEnablementGateRejectionReason::ArtifactScopeMismatch,
-                    field: LiveEnablementGateField::TinyCanaryProof,
+                    field: LiveEnablementGateField::CapitalProbeProof,
                 })
         );
         assert!(
@@ -623,9 +623,9 @@ mod tests {
     }
 
     #[test]
-    fn missing_tiny_canary_proof_rejects_canary_ready() {
+    fn missing_capital_probe_proof_rejects_progression() {
         let mut packet = valid_packet();
-        packet.tiny_canary_proof.artifact_hash.clear();
+        packet.capital_probe_proof.artifact_hash.clear();
 
         let evaluation = evaluate_live_enablement_gate(&packet, AS_OF_UNIX_SECONDS);
 
@@ -633,8 +633,8 @@ mod tests {
             evaluation
                 .rejections
                 .contains(&LiveEnablementGateRejection {
-                    reason: LiveEnablementGateRejectionReason::TinyCanaryProofMissing,
-                    field: LiveEnablementGateField::TinyCanaryProof,
+                    reason: LiveEnablementGateRejectionReason::CapitalProbeProofMissing,
+                    field: LiveEnablementGateField::CapitalProbeProof,
                 })
         );
     }
@@ -643,12 +643,12 @@ mod tests {
     fn rejection_reason_serializes_to_snake_case() {
         let rejection = LiveEnablementGateRejection {
             reason: LiveEnablementGateRejectionReason::ArtifactScopeMismatch,
-            field: LiveEnablementGateField::TinyCanaryProof,
+            field: LiveEnablementGateField::CapitalProbeProof,
         };
 
         let encoded = serde_json::to_value(rejection).expect("live gate rejection serializes");
 
         assert_eq!(encoded["reason"], "artifact_scope_mismatch");
-        assert_eq!(encoded["field"], "tiny_canary_proof");
+        assert_eq!(encoded["field"], "capital_probe_proof");
     }
 }

@@ -9,7 +9,7 @@
 
 ### Session 2026-06-10
 
-- Q: Are we building a live World Cup trading strategy now? -> A: No. Build a production-profit gate and specification package that prevents live capital until source proof, NT-backed profit evidence, no-submit readiness, tiny canary, and operator/legal approvals all pass.
+- Q: Are we building a live World Cup trading strategy now? -> A: No. Build a production-profit gate and specification package that prevents live capital until source proof, NT-backed profit evidence, controlled-connect rehearsal, capital-probe evidence, and operator/legal approvals all pass.
 - Q: Should provider differences create provider-specific strategy code? -> A: No. Provider differences are represented as TOML-owned capability/evidence records consumed by shared modules.
 - Q: Can a copied chat API key, local password-manager item, or environment value be used? -> A: No. Runtime secrets resolve only from AWS SSM through the Rust resolver.
 - Q: Can direct Pinnacle access be assumed? -> A: No. Direct Pinnacle is unavailable unless direct license/API/rate-limit proof is captured. Aggregator-sourced Pinnacle must be labeled as aggregator-sourced reference data.
@@ -50,17 +50,17 @@ As the operator, I need real-money scale to be blocked until historical/replay/s
 
 ### User Story 3 - NT-First Promotion And Canary Gates (Priority: P1)
 
-As the operator, I need the production path to use existing NautilusTrader-backed market data, order books, order construction, shared admission, no-submit readiness, and live-canary gates without a parallel strategy or execution path.
+As the operator, I need the production path to use existing NautilusTrader-backed market data, order books, order construction, shared admission, controlled-connect rehearsal, and capital-probe gates without a parallel strategy or execution path.
 
-**Why this priority**: The repo rules reject dual paths. Production-grade means the same path must be used from evidence collection through canary.
+**Why this priority**: The repo rules reject dual paths. Production-grade means the same path must be used from evidence collection through capital probing.
 
-**Independent Test**: Try to promote a package that bypasses shared submit admission or writes live-enabled config. The gate rejects it. A package that binds source proof, evidence session hash, disabled config, no-submit report, and canary proof can advance.
+**Independent Test**: Try to promote a package that bypasses shared submit admission or writes live-enabled config. The gate rejects it. A package that binds source proof, evidence session hash, disabled config, controlled-connect report, and capital-probe proof can advance.
 
 **Acceptance Scenarios**:
 
 1. **Given** an accepted profit-evidence session, **When** promotion generates TOML, **Then** the generated config is disabled by default and binds the exact evidence hashes.
-2. **Given** a disabled promotion package, **When** exact-head no-submit readiness is missing or stale, **Then** no canary eligibility is emitted.
-3. **Given** no-submit and tiny-canary evidence at exact head, **When** all operator approvals and jurisdiction gates pass, **Then** the package may be marked canary-ready for that exact venue/account/market family/config hash.
+2. **Given** a disabled promotion package, **When** exact-head controlled-connect rehearsal is missing or stale, **Then** no capital-probe eligibility is emitted.
+3. **Given** controlled-connect and capital-probe evidence at exact head, **When** all operator approvals and jurisdiction gates pass, **Then** the package may be marked capital-probe-ready for that exact venue/account/market family/config hash.
 
 ---
 
@@ -93,10 +93,10 @@ As the operator, I need to compare OpticOdds, SportsGameOdds, direct venue WebSo
 - **FR-009**: Backtest profit claims MUST specify fidelity class. Only accepted L2/order-book replay through the NT catalog/replay path can support execution-quality claims.
 - **FR-010**: Promotion MUST generate disabled typed TOML only. It MUST NOT live-enable a strategy, mutate SSM, place orders, cancel orders, or transfer funds.
 - **FR-011**: Runtime secrets MUST resolve only from AWS SSM through the Rust secret resolver. Chat, local password-manager CLI, files, and process environment values are not runtime secret sources.
-- **FR-012**: The implementation plan MUST reuse existing NT-backed data ingestion, order-book state, executable-edge, maker quote lifecycle, submit admission, no-submit readiness, and canary gate modules.
+- **FR-012**: The implementation plan MUST reuse existing NT-backed data ingestion, order-book state, executable-edge, maker quote lifecycle, submit admission, controlled-connect rehearsal, and capital-probe gate modules.
 - **FR-013**: Strategy code MAY produce signal state and order intent only. Fillability, fees, rounding, venue rules, minimum size, and submit gating MUST remain in shared execution/admission modules.
-- **FR-014**: Legal/geographic availability MUST be a hard gate for each venue/account/product surface before any live or canary submit path can arm.
-- **FR-015**: Live-capital progression MUST require exact-head CI, source-fence pass, operator approval packet, current no-submit report, tiny-capital canary proof, and unresolved finding review.
+- **FR-014**: Legal/geographic availability MUST be a hard gate for each venue/account/product surface before any live or capital-probe submit path can arm.
+- **FR-015**: Live-capital progression MUST require exact-head CI, source-fence pass, operator approval packet, current controlled-connect report, bounded-capital probe proof, and unresolved finding review.
 - **FR-016**: The gate MUST emit machine-readable rejection reasons for missing proof, stale proof, conflicting rules, insufficient feed class, insufficient profit evidence, lost quorum, unavailable geography, and missing operator approvals.
 - **FR-017**: All generated artifacts MUST include exact commit SHA, config checksum, source URLs, retrieval timestamps, source hashes, evidence hashes, venue/account/product identifiers, and redacted secret provenance.
 - **FR-018**: `AGENTS.md` and `.specify/feature.json` MUST remain pinned to `specs/023-nt-order-intent-layer/plan.md`; this package is addressed by explicit path to avoid source-fence drift.
@@ -108,7 +108,7 @@ As the operator, I need to compare OpticOdds, SportsGameOdds, direct venue WebSo
 - **ReferenceQuorumPolicy**: TOML-owned policy that maps provider roles to primary, backup, veto, and fail-closed rules.
 - **ProfitEvidenceSession**: NT-backed capture/replay/shadow session binding candidates, no-trades, executable-edge decisions, fills, markouts, settlement outcomes, and evidence thresholds.
 - **ProductionPromotionPackage**: Disabled config package binding source proof and profit evidence for review.
-- **LiveEnablementGate**: Exact-head gate that consumes promotion, no-submit, canary, legal/geographic proof, and operator approval before any live-capital state can be marked ready.
+- **LiveEnablementGate**: Exact-head gate that consumes promotion, controlled-connect, capital-probe, legal/geographic proof, and operator approval before any live-capital state can be marked ready.
 
 ## Success Criteria
 
@@ -116,7 +116,7 @@ As the operator, I need to compare OpticOdds, SportsGameOdds, direct venue WebSo
 - **SC-002**: A candidate with aggregator-sourced Pinnacle data cannot be classified as direct Pinnacle.
 - **SC-003**: A positive model edge without execution-quality evidence cannot produce a capital-increase recommendation.
 - **SC-004**: Promotion output is disabled TOML bound to hashes and cannot arm live execution by itself.
-- **SC-005**: No-submit and canary progression is blocked unless exact-head artifacts and operator approvals are present.
+- **SC-005**: Controlled-connect and capital-probe progression is blocked unless exact-head artifacts and operator approvals are present.
 - **SC-006**: Provider comparison reports distinguish SSE, WebSocket, notification-plus-refresh, REST polling, historical tick, order-book depth, and plan entitlement.
 - **SC-007**: Static validation confirms `AGENTS.md` and `.specify/feature.json` still point to the guarded 023 source-fence plan.
 - **SC-008**: Baseline `cargo test --locked --lib` remains green after adding the package.
@@ -124,7 +124,7 @@ As the operator, I need to compare OpticOdds, SportsGameOdds, direct venue WebSo
 ## Assumptions
 
 - The first production-grade build is a gate and evidence pipeline, not a capital deployment.
-- Venue/product availability can change; source proof must be refreshed before each no-submit/canary decision.
+- Venue/product availability can change; source proof must be refreshed before each controlled-connect/capital-probe decision.
 - Provider pricing alone is not a technical reason to select or reject a provider; capability and evidence class decide.
 - Current Polymarket main CLOB geographic availability is venue-policy dependent and must be checked as part of every live enablement gate.
 

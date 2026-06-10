@@ -10,7 +10,7 @@ Approve as a production-profit gate package. Reject as capital authorization.
 
 **Risk**: Source proof says a market is eligible, not profitable.
 
-**Disposition**: Addressed. The state machine separates `capture_eligible`, `promotion_ready`, `no_submit_ready`, and `tiny_canary_ready`. Source proof alone cannot promote capital.
+**Disposition**: Addressed. The state machine separates `capture_eligible`, `promotion_ready`, `controlled_connect_ready`, and `capital_probe_ready`. Source proof alone cannot promote capital.
 
 ### Finding 2: Provider names could leak into strategy logic
 
@@ -46,7 +46,7 @@ Approve as a production-profit gate package. Reject as capital authorization.
 
 **Risk**: A disabled config package could be treated as approval.
 
-**Disposition**: Addressed. Promotion creates disabled TOML only. No-submit, canary, operator approval, and legal/geography gates remain separate.
+**Disposition**: Addressed. Promotion creates disabled TOML only. Controlled-connect, capital-probe, operator approval, and legal/geography gates remain separate.
 
 ### Finding 8: Spec Kit pointer drift could break source-fence
 
@@ -58,9 +58,9 @@ Approve as a production-profit gate package. Reject as capital authorization.
 
 - Provider commercial terms and plan entitlements must be refreshed before purchase or production use.
 - Legal/geographic venue availability requires operator/legal confirmation, not model inference.
-- Profit thresholds and capital caps must be defined in TOML during implementation and reviewed before canary.
+- Profit thresholds and capital caps must be defined in TOML during implementation and reviewed before capital probing.
 - World Cup official regulation artifacts must be captured from authoritative sources at run time.
 
 ## Approval Boundary
 
-Approved for implementation planning and future non-live gate implementation. Not approved for live trading, production capital, provider purchase, or bypassing no-submit/canary gates.
+Approved for implementation planning and future non-live gate implementation. Not approved for live trading, production capital, provider purchase, or bypassing controlled-connect/capital-probe gates.

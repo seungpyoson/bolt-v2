@@ -50,10 +50,10 @@
 ## Phase 6: Live Enablement Gate Integration
 
 - [x] T030 Add `LiveEnablementGate` verifier in `src/bolt_v3_live_enablement_gate.rs`.
-- [x] T031 Consume exact-head CI/source-fence/no-submit evidence hashes.
-- [x] T032 Consume tiny-canary proof and operator approval hashes.
+- [x] T031 Consume exact-head CI/source-fence/controlled-connect evidence hashes.
+- [x] T032 Consume capital-probe proof and operator approval hashes.
 - [x] T033 Scope gate acceptance to exact venue/account/product/market-family/config hash.
-- [x] T034 Reject missing/stale/mismatched no-submit and canary artifacts.
+- [x] T034 Reject missing/stale/mismatched controlled-connect and capital-probe artifacts.
 - [x] T035 Add tests for each state transition and rejection reason.
 
 ## Phase 7: Verification And Review

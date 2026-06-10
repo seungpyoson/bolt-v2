@@ -33,8 +33,8 @@ pub struct ProfitEvidenceSession {
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceFidelityClass {
     NtL2Replay,
-    ShadowNoSubmit,
-    NoSubmit,
+    ShadowControlledConnect,
+    ControlledConnect,
     RestSnapshotBacktest,
     Fixture,
 }

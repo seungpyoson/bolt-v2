@@ -186,7 +186,7 @@ Disabled package emitted after evidence passes.
 
 ## LiveEnablementGate
 
-Exact-head gate before no-submit/canary/live-capital progression.
+Exact-head gate before controlled-connect/capital-probe/live-capital progression.
 
 **Fields**
 
@@ -195,8 +195,8 @@ Exact-head gate before no-submit/canary/live-capital progression.
 - `exact_head_commit_sha`
 - `ci_status_hash`
 - `source_fence_status_hash`
-- `no_submit_report_hash`
-- `tiny_canary_proof_hash`
+- `controlled_connect_report_hash`
+- `capital_probe_proof_hash`
 - `operator_approval_hash`
 - `legal_geography_proof_hash`
 - `venue_account_product_hash`
@@ -206,6 +206,6 @@ Exact-head gate before no-submit/canary/live-capital progression.
 **Validation Rules**
 
 - Missing exact-head CI rejects the gate.
-- Missing or stale no-submit rejects canary readiness.
+- Missing or stale controlled-connect evidence rejects capital-probe readiness.
 - Canary proof is scoped to one venue/account/product/market-family/config hash.
 - Operator approval must be current, explicit, and bound to the same package.

@@ -6,7 +6,7 @@
 
 ## Summary
 
-Build a production-profit gate for World Cup event markets. The gate is provider-neutral, source-proofed, and NT-first. It turns verified event/venue/provider/source evidence plus NT-backed profit evidence into disabled promotion config and later no-submit/canary eligibility. It does not authorize live capital.
+Build a production-profit gate for World Cup event markets. The gate is provider-neutral, source-proofed, and NT-first. It turns verified event/venue/provider/source evidence plus NT-backed profit evidence into disabled promotion config and later controlled-connect/capital-probe eligibility. It does not authorize live capital.
 
 ## Technical Context
 
@@ -22,8 +22,8 @@ Build a production-profit gate for World Cup event markets. The gate is provider
   - `src/bolt_v3_maker_inventory.rs`
   - `src/bolt_v3_maker_reservation.rs`
   - `src/bolt_v3_submit_admission.rs`
-  - `src/bolt_v3_no_submit_readiness.rs`
-  - `src/bolt_v3_live_canary_gate.rs`
+  - `src/bolt_v3_readiness.rs`
+  - `tests/bolt_v3_controlled_connect.rs`
   - `src/venue_contract.rs`
 - **Existing contracts/specs to respect**:
   - `contracts/polymarket.toml`
@@ -93,7 +93,7 @@ Bind existing NT-backed evidence into one session artifact:
 - fills where available
 - markouts
 - settlement outcomes
-- replay/shadow/no-submit fidelity class
+- replay/shadow/controlled-connect fidelity class
 
 Output: promotion-ready only when thresholds pass with accepted evidence class.
 
@@ -110,18 +110,18 @@ Generate disabled typed TOML and a promotion report:
 
 Output: operator-reviewable package only; no live enablement.
 
-### Slice 5 - No-Submit And Tiny Canary Eligibility
+### Slice 5 - Controlled-Connect And Capital-Probe Eligibility
 
 Integrate promotion package with existing production readiness gates:
 
 - exact-head CI and source-fence
-- current no-submit report
+- current controlled-connect report
 - operator approval packet
 - geography/account/product availability
-- tiny-capital canary proof
+- bounded-capital probe proof
 - unresolved finding review
 
-Output: canary-ready state only for exact venue/account/market family/config hash.
+Output: capital-probe-ready state only for exact venue/account/market family/config hash.
 
 ## Acceptance Gate
 
@@ -132,7 +132,7 @@ Before implementation is considered ready for review:
 - `git diff --check`
 - `just source-fence`
 - targeted tests for every rejection reason
-- exact-head CI before external review or any no-submit/canary operation
+- exact-head CI before external review or any controlled-connect/capital-probe operation
 
 ## Out of Scope
 

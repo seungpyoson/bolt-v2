@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:VELODROMEUSDC:2026-03-01:cdf7b9fce60835d066231f54ea97aa5f23d77c4e18cf88321c671b64b043ab2c:accepted-tranche",
   "accepted_tranche_manifest_hash": "a37b9da8a4b1fb2bdb00a71983c2a8754b8cbbae30bfb3a0060f7796aaeedbee",
-  "run_spec_hash": "a25c2a3de6dc6217932a2847b71a969380d4c35517c24d6906b0b7af0c7fb875",
+  "run_spec_hash": "34c8e44453675f2e4309057a6dc8735495d2d5db668f8a498f9910c3df4db7db",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01276",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=VELODROMEUSDC/dt=2026-03-01/object=cdf7b9fce60835d066231f54ea97aa5f23d77c4e18cf88321c671b64b043ab2c",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use backtesting_vertical_slice::source_universe_batch_execution::{
     HttpSourceUniverseObjectFetcher, LocalSourceUniverseOperatorRunner,
-    execute_source_universe_batch, write_source_universe_batch_execution_report,
+    SourceUniverseBatchExecutionConfig,
+    execute_source_universe_batch_with_config, write_source_universe_batch_execution_report,
 };
 use clap::Parser;
 
@@ -17,18 +18,26 @@ struct Cli {
     #[arg(long)]
     output_dir: PathBuf,
     #[arg(long)]
+    start_sequence: Option<u64>,
+    #[arg(long)]
     record_limit: Option<u64>,
+    #[arg(long)]
+    continue_on_error: bool,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut fetcher = HttpSourceUniverseObjectFetcher::new()?;
     let mut runner = LocalSourceUniverseOperatorRunner;
-    let report = execute_source_universe_batch(
+    let report = execute_source_universe_batch_with_config(
         &cli.batch_id,
         &cli.execution_pack,
         &cli.output_dir,
-        cli.record_limit,
+        SourceUniverseBatchExecutionConfig {
+            start_sequence: cli.start_sequence,
+            record_limit: cli.record_limit,
+            continue_on_error: cli.continue_on_error,
+        },
         &mut fetcher,
         &mut runner,
     )?;

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:COSUSDT:2026-03-01:d4516b44b8959e062c12c8722c50d4ea3cf57bcd7a3b8e3f400a5e7c6dfe2d15:accepted-tranche",
   "accepted_tranche_manifest_hash": "8bec292ebc0a89ed81262cc6ebd4733bc06a8c3068d0385f38e05da67e760492",
-  "run_spec_hash": "1d0fba649bfccee2ed2b851d120d6e2180acdb0f3de098f32b6800a83695b35e",
+  "run_spec_hash": "17e21dc6cd76f8babf82ac1dde46b6002e2d94f006e94569158a791b5e1be3b4",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01567",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=COSUSDT/dt=2026-03-01/object=d4516b44b8959e062c12c8722c50d4ea3cf57bcd7a3b8e3f400a5e7c6dfe2d15",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

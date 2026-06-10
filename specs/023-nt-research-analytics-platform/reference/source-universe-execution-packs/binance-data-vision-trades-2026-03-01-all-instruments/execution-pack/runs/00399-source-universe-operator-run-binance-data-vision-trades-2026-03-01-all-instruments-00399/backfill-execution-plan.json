@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:DYMTRY:2026-03-01:4f8dceca1cd0761f4763bd0b0f520fce317aef4ed3c5f11d5572753508b08a2a:accepted-tranche",
   "accepted_tranche_manifest_hash": "019a4bc496deade2910789acb8edc172e3592c39c6109a654f32a411799b0cf8",
-  "run_spec_hash": "188f9655294fc3f64df161288ebc0512ebee8ba72c7ce6c0b835520adddc74da",
+  "run_spec_hash": "529722593b09671568e1add61e5cf264c79a9932d76080185e0e414afdcfde93",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00399",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=DYMTRY/dt=2026-03-01/object=4f8dceca1cd0761f4763bd0b0f520fce317aef4ed3c5f11d5572753508b08a2a",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

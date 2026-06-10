@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SAGATRY:2026-03-01:aefb5e8549597356a8145515e300ba99c07aea322dabafe7b47f2d0994f43983:accepted-tranche",
   "accepted_tranche_manifest_hash": "4a5ca179f2116aad67f6c4ffc140497dd7531ba1c7ebdb8db2a9870942dcb8d2",
-  "run_spec_hash": "55af0f2deb442bb8a98fe4f65377071d20a517b6d8dce5c4c03d0a08a7510299",
+  "run_spec_hash": "94ac14e3378b4a77701afb829819530a45800066f01501a390b02fe1c925f7d4",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01001",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SAGATRY/dt=2026-03-01/object=aefb5e8549597356a8145515e300ba99c07aea322dabafe7b47f2d0994f43983",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

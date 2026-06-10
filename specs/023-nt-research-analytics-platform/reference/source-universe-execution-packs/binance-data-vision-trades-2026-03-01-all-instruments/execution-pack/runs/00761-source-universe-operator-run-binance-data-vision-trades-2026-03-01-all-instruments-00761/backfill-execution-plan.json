@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:MIRATRY:2026-03-01:d3c899a5b674e7e8af6abb4ed0f392e3b4aa45c5b41bbb8d7958dc295cda00b5:accepted-tranche",
   "accepted_tranche_manifest_hash": "7776d0e168aeda63f6f13561a9567afbf1755bb42aa50426582a30b0eda1fa68",
-  "run_spec_hash": "c5f4a853be3a49d036d3141739e1c7b7dcfed65d7f9a806f475a771edc3cc98a",
+  "run_spec_hash": "bef163360de9a7f44361b0fd5684d18353302c0a788b2b72f3d69c4b9429cde4",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00761",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=MIRATRY/dt=2026-03-01/object=d3c899a5b674e7e8af6abb4ed0f392e3b4aa45c5b41bbb8d7958dc295cda00b5",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

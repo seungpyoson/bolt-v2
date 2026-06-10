@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:KAVAUSDT:2026-03-01:599e8104a6956b141ecd77c36a73ce70c08be19cf9ae05ad30e44b07ce04d679:accepted-tranche",
   "accepted_tranche_manifest_hash": "c3363f3e27048fb6cf867dd93b31059c2817b935f7976cabe8b8fa25e7ca7497",
-  "run_spec_hash": "8dfc5a633939915b25873f14f7a5a21fa2889d85a44a1e33dbb1c450e2be1c31",
+  "run_spec_hash": "87ef05c7c7d4794048246998fedee9b649f7b56c9cf31741f077c67f58445eaa",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00651",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=KAVAUSDT/dt=2026-03-01/object=599e8104a6956b141ecd77c36a73ce70c08be19cf9ae05ad30e44b07ce04d679",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

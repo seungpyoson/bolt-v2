@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:OPBTC:2026-03-01:1a17585d3f875d3bf61f9b50c5828602c33bcb8b05c141cf84d761e0c4210df7:accepted-tranche",
   "accepted_tranche_manifest_hash": "5ffbd9d7ca18739cfddd95dc5c692ac0a061f369996da3b724ecdb31a7b15676",
-  "run_spec_hash": "0d9dae7164fe0ecf936ab4941c5960517ec7206e1b6f19058d867bd739c20c82",
+  "run_spec_hash": "75e8a41538fbc9bb8a94d717712092d2f39d82085ff83d10da9adedeb108d57c",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00843",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=OPBTC/dt=2026-03-01/object=1a17585d3f875d3bf61f9b50c5828602c33bcb8b05c141cf84d761e0c4210df7",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

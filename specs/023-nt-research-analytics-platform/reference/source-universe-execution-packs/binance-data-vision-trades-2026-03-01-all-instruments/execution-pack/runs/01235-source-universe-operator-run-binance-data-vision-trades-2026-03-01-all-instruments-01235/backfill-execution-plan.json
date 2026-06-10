@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:UNIUSDC:2026-03-01:5fd85679c761bfe5a9997895edff9cf79834c9501e73877cf552aefa20441d5a:accepted-tranche",
   "accepted_tranche_manifest_hash": "9cec4fffd9730519d439fb52cce8e07894f3d855ba5213516dca346eaa83fec0",
-  "run_spec_hash": "696cbd30b1af5ce83556384be9536cc02f8ae52bcde9816f69a8a73279c6b6bf",
+  "run_spec_hash": "0f093cfc9c4afed200d146d7ecdb98a3a0ea9a78154291e6de756044020a1428",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01235",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=UNIUSDC/dt=2026-03-01/object=5fd85679c761bfe5a9997895edff9cf79834c9501e73877cf552aefa20441d5a",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:METISTRY:2026-03-01:c2ded8624049fcc46605c1ee420550b5c112a07855bbc69237d34013c7c1f8d4:accepted-tranche",
   "accepted_tranche_manifest_hash": "9340582f7c344f754c67d79d43044b2cb8e336a8d52698ffab1734b8e940c281",
-  "run_spec_hash": "8255fe2f058423a53818ffd89cd53923fa86eb7ed2c546b1379151d8dd8bb998",
+  "run_spec_hash": "e0ffc4f2b0b8d4a4ac756f0e994ad5068ff58fae96ed16879bc8565d276483f6",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00750",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=METISTRY/dt=2026-03-01/object=c2ded8624049fcc46605c1ee420550b5c112a07855bbc69237d34013c7c1f8d4",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:LINEATRY:2026-03-01:ac4a3462ac94e800b301286013a052059ec4f5124f4eab74b26fdaa64d6a1e17:accepted-tranche",
   "accepted_tranche_manifest_hash": "06b4dd0799f48e1db4cd03df6f4ddc67574cb0c765e4623e48626c9df59c7cbc",
-  "run_spec_hash": "25ebea4a34aca056905a19a22f9bf1d1c32ac2b8c3a1f1778ebf2fd1f00ab8e5",
+  "run_spec_hash": "44c094aca4158daee96cc19314317437abbfeaf094cd605d94509340dc3f6c16",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00679",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=LINEATRY/dt=2026-03-01/object=ac4a3462ac94e800b301286013a052059ec4f5124f4eab74b26fdaa64d6a1e17",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

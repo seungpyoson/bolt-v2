@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-delivery-native-trades:XRPUSD_260626:2026-03-01:e8f7e92bdd8d44d3cf426e09b0fe3205f64c7088b9a072c87edb3569adc35cec:accepted-tranche",
   "accepted_tranche_manifest_hash": "a9be53458005b9ff7ae68f4c693a6c3a40cbfaca67763cc12577d11aeb8a403a",
-  "run_spec_hash": "20ed42fa22cc4da5c8de5178afc834d9a168ca146d12dc49ac24f9ae46048a4f",
+  "run_spec_hash": "c864a291c61f4ede6ec4e5070749052b51fc30cbb4e0f169b02e213b22d32c94",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-02050",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=coin_m_delivery/symbol=XRPUSD_260626/dt=2026-03-01/object=e8f7e92bdd8d44d3cf426e09b0fe3205f64c7088b9a072c87edb3569adc35cec",
   "source_proof_id": "source-proof-binance-coin-m-delivery-native-trades-2026-03-01-all-instruments",

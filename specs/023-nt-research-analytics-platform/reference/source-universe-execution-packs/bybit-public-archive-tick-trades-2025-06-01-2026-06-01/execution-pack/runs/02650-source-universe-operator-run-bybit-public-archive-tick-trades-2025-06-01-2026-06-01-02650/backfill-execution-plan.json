@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-spot-tick-trades:ETHTRY:2026-03-03:3dbc42d8eae1ec8888a9cf03be83a605c71cc785f6d808fc78e090abacd578f2:accepted-tranche",
   "accepted_tranche_manifest_hash": "7b9c1e42ddf1993b4f3b6090fc7d27c7adda164bfc57ce30964e6d46661dc6ab",
-  "run_spec_hash": "134db46ba29753ede1a9a0c27d8a54fdf6189e718ffcc239466e6d3dee9f6e98",
+  "run_spec_hash": "8446760c85af7aeb8d2baf8e61d84817100f93ee6fb9bf045daea9d213f91ae9",
   "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-02650",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=spot/symbol=ETHTRY/dt=2026-03-03/object=3dbc42d8eae1ec8888a9cf03be83a605c71cc785f6d808fc78e090abacd578f2",
   "source_proof_id": "source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ARBETH:2026-03-01:3561541bcd0f9f6a2ae6d9ec6b96121f4e7ac145a6f9e70dc9b70b3ee72217ef:accepted-tranche",
   "accepted_tranche_manifest_hash": "c42a0bcdb7728658a612e94c38a519cc38a32ace2862e0daccbc1850b290af7b",
-  "run_spec_hash": "8e29115ec7146e628623c09a6517adea7a019fdec9eef528d7fbd5aa0530d81d",
+  "run_spec_hash": "dbaad36626d8b5b332179926b6f03ccf61d3114c09faf16d30ba97716cace933",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00104",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ARBETH/dt=2026-03-01/object=3561541bcd0f9f6a2ae6d9ec6b96121f4e7ac145a6f9e70dc9b70b3ee72217ef",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

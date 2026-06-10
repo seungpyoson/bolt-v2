@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ALGOBTC:2026-03-01:4e85e905901aedafecdee9de993bda96d13d9f046b84ce289fe3ef0aa7392239:accepted-tranche",
   "accepted_tranche_manifest_hash": "aa854391ee5066d2ca72ad44f271db5646c5cdb1774d6a1eb7318256becb1194",
-  "run_spec_hash": "c89c3bbd167692aca426c4f1b422e0d7b1e9df256b31a197c476efe2f7f0c9cb",
+  "run_spec_hash": "302a6b25a6ac647a72cfe1cba7308d37b0e6ef50ae83fe84fb171a161e994520",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00066",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ALGOBTC/dt=2026-03-01/object=4e85e905901aedafecdee9de993bda96d13d9f046b84ce289fe3ef0aa7392239",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

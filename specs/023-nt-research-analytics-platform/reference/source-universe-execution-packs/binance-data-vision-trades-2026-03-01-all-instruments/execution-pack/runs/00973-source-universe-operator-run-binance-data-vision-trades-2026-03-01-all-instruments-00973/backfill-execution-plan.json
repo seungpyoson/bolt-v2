@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:REZTRY:2026-03-01:3e7104825dafc35c0f245533c87600eff21366aa93b7d43d82d4f0f4bfbbe4dc:accepted-tranche",
   "accepted_tranche_manifest_hash": "fbf296365dfb564e03518b75c4a196bd810bc4ae7c42632fb3d609d542d34298",
-  "run_spec_hash": "8361562dbcb5ea2491c4b824463a60dffa58bf1683cc237d0675af5407c15042",
+  "run_spec_hash": "649151293e1b43b25c24b62f4cfef983319ab1065b57c74c8946dc352d39e1a4",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00973",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=REZTRY/dt=2026-03-01/object=3e7104825dafc35c0f245533c87600eff21366aa93b7d43d82d4f0f4bfbbe4dc",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

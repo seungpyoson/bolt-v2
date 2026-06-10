@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:GUNTRY:2026-03-01:8c10e0c29f29b0f76b933eec7e884087cb4fdd40e9d2538d86cc9d01f89fad54:accepted-tranche",
   "accepted_tranche_manifest_hash": "539066743577b0d1e9740a8dc32b45a09d94c22bfd76e425c1bcc2cddc6d368a",
-  "run_spec_hash": "daaead707f548f0c9e4b2f618c9de224fbb69e7720aa6894aca9099be60a2c5d",
+  "run_spec_hash": "5a703f3f87d2a4c832d37f60fc7e6e28aadf979288012abf5ced443848eb0518",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00551",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=GUNTRY/dt=2026-03-01/object=8c10e0c29f29b0f76b933eec7e884087cb4fdd40e9d2538d86cc9d01f89fad54",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

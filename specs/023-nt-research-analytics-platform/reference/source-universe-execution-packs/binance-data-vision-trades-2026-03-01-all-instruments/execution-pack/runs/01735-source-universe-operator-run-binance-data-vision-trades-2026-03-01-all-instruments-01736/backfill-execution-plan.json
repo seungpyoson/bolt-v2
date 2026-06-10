@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:LUNA2USDT:2026-03-01:c85a1a5e7ef264c67dbae956b884df10d2d27c9076898274a1d7f7ae2b1cdbb0:accepted-tranche",
   "accepted_tranche_manifest_hash": "c509beafddfd978539f0904e1b3111213ce779798829e703c67c903ef3c7c5dd",
-  "run_spec_hash": "9558d5099df141d3a95a5f519d1d46f4aeb8d4213da7dc86ba5ab4f0213c1319",
+  "run_spec_hash": "6ed5632f06d280298eb07afb17a9b51a4c28de0ab358e65e81007efa4872132b",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01736",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=LUNA2USDT/dt=2026-03-01/object=c85a1a5e7ef264c67dbae956b884df10d2d27c9076898274a1d7f7ae2b1cdbb0",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:PORTOUSDT:2026-03-01:d6ed6130e306d265da827036f896436bfdb2fb6d14c9f28fc232e85e5d479eac:accepted-tranche",
   "accepted_tranche_manifest_hash": "4906acd67b36dde631e0f7f48532df9a9db4039697aa2449dbc8fd4d28ddc677",
-  "run_spec_hash": "b5f106456782885edfe04be85d82d8834080a760c2fcd83a2a037e88e76988e4",
+  "run_spec_hash": "d0ff13c3632fd7b87be6224bffe605fe785885926e897295e2313821eaf15118",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00922",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=PORTOUSDT/dt=2026-03-01/object=d6ed6130e306d265da827036f896436bfdb2fb6d14c9f28fc232e85e5d479eac",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

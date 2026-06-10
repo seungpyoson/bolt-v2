@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:JUVTRY:2026-03-01:37ab74d0603fb940a6532096c2e22502ec6d2717d1b43bd746914e204295807f:accepted-tranche",
   "accepted_tranche_manifest_hash": "b18b0fd7d22d0ace17733682c73feed3f651afb8f6bf9a9a30ee1a691ee19305",
-  "run_spec_hash": "276046ff9a756b263c4fdfb72a7f1a085696cb866b0e9aa97585817b319da5a1",
+  "run_spec_hash": "3dc755110b0a86341ce83aff8b17e8969bb26c3e4784c524e033a25720e795dc",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00642",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=JUVTRY/dt=2026-03-01/object=37ab74d0603fb940a6532096c2e22502ec6d2717d1b43bd746914e204295807f",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

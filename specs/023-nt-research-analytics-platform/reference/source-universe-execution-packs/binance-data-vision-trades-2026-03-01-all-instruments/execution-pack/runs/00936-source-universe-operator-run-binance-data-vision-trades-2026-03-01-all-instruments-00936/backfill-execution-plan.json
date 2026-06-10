@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:PYTHBTC:2026-03-01:779f3b3390eda4270fa544265e1fb5c859e77faaf88e0ac973ad55efe4c75e80:accepted-tranche",
   "accepted_tranche_manifest_hash": "8fea1f871536700efef046d93f231d777cb2087ea78c2c96dc26262dac0e8531",
-  "run_spec_hash": "e743da2e32783b081f8dac23e88557e3593a407ccf0a02db31cb59cdac2542a6",
+  "run_spec_hash": "3a6c024d729df50249a7f3c219a322ec6817636396952c7b50fd053055e63820",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00936",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=PYTHBTC/dt=2026-03-01/object=779f3b3390eda4270fa544265e1fb5c859e77faaf88e0ac973ad55efe4c75e80",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

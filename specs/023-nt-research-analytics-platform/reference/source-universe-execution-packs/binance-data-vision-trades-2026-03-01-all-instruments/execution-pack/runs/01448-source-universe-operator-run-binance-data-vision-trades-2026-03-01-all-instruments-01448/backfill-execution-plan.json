@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:AEROUSDT:2026-03-01:3e231cc2bf6c3645e210c9c442f2c453df38de8342e8fafa6a89eb91bd60bb2f:accepted-tranche",
   "accepted_tranche_manifest_hash": "a705476f637a6aa295edae2e0ce35059d8d23561df06efdb8f27b87c8d316b33",
-  "run_spec_hash": "96b120f8a8936f6903d18ba039b6f00b1466807c233df8be165168f55e425f92",
+  "run_spec_hash": "2151e9c6433e3a483e5cc6e2623d6ae27ccc6dced6d368909bf5997399aee697",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01448",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=AEROUSDT/dt=2026-03-01/object=3e231cc2bf6c3645e210c9c442f2c453df38de8342e8fafa6a89eb91bd60bb2f",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

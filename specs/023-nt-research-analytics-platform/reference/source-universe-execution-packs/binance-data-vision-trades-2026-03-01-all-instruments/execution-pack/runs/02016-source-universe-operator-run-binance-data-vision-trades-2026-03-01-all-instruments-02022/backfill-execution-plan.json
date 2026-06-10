@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-perpetual-native-trades:DOGEUSD_PERP:2026-03-01:8af274b01f813a586861b56c8ad05378edb724d90aa8b921287ea8d63999b736:accepted-tranche",
   "accepted_tranche_manifest_hash": "70c05b2df0e71d6d9a5be016a2fc9e163effdd1310ca6fa43b1fb1402a943c5d",
-  "run_spec_hash": "df6d4a7466c876647294c42af49dde3b5b208ea34e171d678f27837552ad7198",
+  "run_spec_hash": "0ed01aa2d307f829ac37c338a727dda110ba7d84178a5c91d9e1a54d11c9f492",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-02022",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=coin_m_perpetual/symbol=DOGEUSD_PERP/dt=2026-03-01/object=8af274b01f813a586861b56c8ad05378edb724d90aa8b921287ea8d63999b736",
   "source_proof_id": "source-proof-binance-coin-m-perpetual-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ETHJPY:2026-03-01:35b6449e7bb4fddf774929f0b5ba33ee7ef6817f1dfc0607b52d84300cdb69fa:accepted-tranche",
   "accepted_tranche_manifest_hash": "4619bef917b9e4920b27ccb8018dac579ff67b0ec6cf23c2b518c53be9b1182a",
-  "run_spec_hash": "9345549e37f7946b6ecafdcbfd576d77642db77cc1dc5dfdcc740dc218201f90",
+  "run_spec_hash": "c684c61c26b66385514f5b33ea49e63cbf606923096f7121e1d65f8ed548eaba",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00459",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ETHJPY/dt=2026-03-01/object=35b6449e7bb4fddf774929f0b5ba33ee7ef6817f1dfc0607b52d84300cdb69fa",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ETHEURI:2026-03-01:02670803fbf7f57cb8b220894223d40fe1693c7a8fc7acadb50fedae0e4081c8:accepted-tranche",
   "accepted_tranche_manifest_hash": "91657aa5114ee9173e032a34de233b0f1a4b89d88a596a8800a97ffb045d4ec1",
-  "run_spec_hash": "26919efc106e4b64af7dd40b37b06641b9a622a8257e4d73a852161fb0520201",
+  "run_spec_hash": "3aa762092c88a3cd1cfa6e13cb6269c60bb3ad75014df9cab963f4d4fe57a313",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00453",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ETHEURI/dt=2026-03-01/object=02670803fbf7f57cb8b220894223d40fe1693c7a8fc7acadb50fedae0e4081c8",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

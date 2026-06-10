@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:VANAUSDC:2026-03-01:c1048c6e9e7b6168b9535827963ab31b95a39011ebaa425e80e7fd1c4ccacfe6:accepted-tranche",
   "accepted_tranche_manifest_hash": "9f06c0205f3c45e6488c53c3744ded09cfdc5892b11ad2a199c5b893537687cc",
-  "run_spec_hash": "8a238e834daf2ff7b4fa74f358bc2989794882a518882471eba3d24bca91b49e",
+  "run_spec_hash": "ff2b2864f2627ab3a12ecf4efe86129a2cc41e9c1878752c2392c8c4d1d573d8",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01271",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=VANAUSDC/dt=2026-03-01/object=c1048c6e9e7b6168b9535827963ab31b95a39011ebaa425e80e7fd1c4ccacfe6",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:IOTAUSDT:2026-03-01:88c061eb1211c0b979a766bb5b8f91675359bad80dfc83437a708365f190594d:accepted-tranche",
   "accepted_tranche_manifest_hash": "1c6cb2a9e64b97687338bf217f95a804435a6192e0b4dd6aaea5d41a596efd8f",
-  "run_spec_hash": "97412f0dbea05b9a12cfae94b4649916c92f30b39bcb8eaeb87ea7157a0a6ab4",
+  "run_spec_hash": "c066dde50e572f1e72bf0a554313274f24b5b8362bb59096632bb4337d722b2c",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01693",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=IOTAUSDT/dt=2026-03-01/object=88c061eb1211c0b979a766bb5b8f91675359bad80dfc83437a708365f190594d",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

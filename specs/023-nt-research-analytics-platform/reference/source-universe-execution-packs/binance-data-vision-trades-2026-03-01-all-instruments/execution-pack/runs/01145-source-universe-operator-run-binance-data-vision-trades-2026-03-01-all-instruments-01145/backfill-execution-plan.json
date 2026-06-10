@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SYRUPUSDT:2026-03-01:6f6b2245747d91453f7c5a0b4ff2ad37af4330b1402f084428864979907c27c5:accepted-tranche",
   "accepted_tranche_manifest_hash": "bf516c3d8e8358d8bb284ee054df6db0ba34aff0073e0441fbbcd3fa227b7075",
-  "run_spec_hash": "352da690493b9c58d892f7d46df08f8edc848e845f2c90d2223162e76b59b7e8",
+  "run_spec_hash": "28c8863b518ec62f914e71a407b28f75966a79dc1e3c1fcd3d55863d0fd2d189",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01145",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SYRUPUSDT/dt=2026-03-01/object=6f6b2245747d91453f7c5a0b4ff2ad37af4330b1402f084428864979907c27c5",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

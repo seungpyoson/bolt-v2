@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SSVUSDT:2026-03-01:ad3320020528dacbca03afb11b1c8f4bb3746a236046dfb5b4a783b5b56f56b4:accepted-tranche",
   "accepted_tranche_manifest_hash": "f171ec840238952ba8012830a6a8ee49158b332cd4915d6497f19fb85fb5b707",
-  "run_spec_hash": "f243a5ae87926266eb916a2ac749c5fd48c455312eef3be9c92928da2fc08b7d",
+  "run_spec_hash": "b0654dac426c59122a1daa1ed26d228976d08f25d887cf590d9a0f0abbde25be",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01093",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SSVUSDT/dt=2026-03-01/object=ad3320020528dacbca03afb11b1c8f4bb3746a236046dfb5b4a783b5b56f56b4",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

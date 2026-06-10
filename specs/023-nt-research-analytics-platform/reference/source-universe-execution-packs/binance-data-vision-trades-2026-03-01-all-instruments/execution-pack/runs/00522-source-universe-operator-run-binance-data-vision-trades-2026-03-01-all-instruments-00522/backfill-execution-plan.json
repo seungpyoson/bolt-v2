@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:GALAUSDC:2026-03-01:4c193c5a32a7e80cff4df2e1ad61485d6f2a015e9b218a3810ac60f716695e1f:accepted-tranche",
   "accepted_tranche_manifest_hash": "12763764e2e9bda0bfb884289f2bdd6e8ced02bf7f6f9463221e44f3f178ce3d",
-  "run_spec_hash": "64ff8a247dd71eec556adc8f4371b9a9ecafdbdabc0193db115c3021931086dc",
+  "run_spec_hash": "210616db3d8b8438c102a90cd7ead21a49208c3b926445e34e55cff42370fa32",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00522",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=GALAUSDC/dt=2026-03-01/object=4c193c5a32a7e80cff4df2e1ad61485d6f2a015e9b218a3810ac60f716695e1f",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

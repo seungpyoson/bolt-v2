@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:TRUMPBRL:2026-03-01:ebb1f1ce0c9fc29104d4113a88b486cf5d90f58bc782be14b4868df4c3c8a9e9:accepted-tranche",
   "accepted_tranche_manifest_hash": "09862762147fdfc110047fec1f1cda1a8f3240cfb881199938af1d56e59b2753",
-  "run_spec_hash": "e697d1616db48050ee528d3329bd291dedf45dcb2a5e97bc31be30bdab178e38",
+  "run_spec_hash": "790dd6ec775951a2a5323142682cfca99fbd9c13f98f7a14318d815115e6c86d",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01191",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=TRUMPBRL/dt=2026-03-01/object=ebb1f1ce0c9fc29104d4113a88b486cf5d90f58bc782be14b4868df4c3c8a9e9",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

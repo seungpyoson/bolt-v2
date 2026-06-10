@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:TOSHIUSDT:2026-03-01:4dd2fa8dacd4d54ad5c24c2316bf171d373e9be9bb50ccebfbba368f2173824c:accepted-tranche",
   "accepted_tranche_manifest_hash": "b99fd9db8ed9a38421015e83b7001ed375bd29a53dff247c523e9365b10ad69f",
-  "run_spec_hash": "f3d4a641597e7d49ea0fdabaeb6b8c61bed32f62b38574c3d42d200d4d9ee5ef",
+  "run_spec_hash": "21507dbb50512579a5185a7b2ccc4bd928c03e65f0f19a92e7d2809168c0c9a7",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01921",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=TOSHIUSDT/dt=2026-03-01/object=4dd2fa8dacd4d54ad5c24c2316bf171d373e9be9bb50ccebfbba368f2173824c",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

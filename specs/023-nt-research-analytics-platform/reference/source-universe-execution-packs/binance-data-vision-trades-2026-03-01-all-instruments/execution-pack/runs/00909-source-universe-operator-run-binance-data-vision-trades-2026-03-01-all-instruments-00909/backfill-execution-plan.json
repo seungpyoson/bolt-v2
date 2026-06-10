@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:POLEUR:2026-03-01:e8ca5dd19fa9cee888839702ed2f50d1d33290bf1bf48eba1ffd8114407f9f8e:accepted-tranche",
   "accepted_tranche_manifest_hash": "758c118bb05a3c325a4e88fa887395f4ade6f5bcda6e1df9dea4995eed2d0464",
-  "run_spec_hash": "20700e7426cbe5f7ffba8aa22887830ff2f10c55769bd6f613a4580feebd6723",
+  "run_spec_hash": "cbdc20b047cbe1a5edbb51513074fdce4884ddb70b364756f540bce0506f91d0",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00909",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=POLEUR/dt=2026-03-01/object=e8ca5dd19fa9cee888839702ed2f50d1d33290bf1bf48eba1ffd8114407f9f8e",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

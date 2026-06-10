@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ALICETRY:2026-03-01:9fd71d76eb3f7a39ac0c5a9493e40a75389e89f123e011e6d57375c4b1484063:accepted-tranche",
   "accepted_tranche_manifest_hash": "a87bc10be91822ce76e9333154c0569c68151717e156d30296181e7fa740ebe7",
-  "run_spec_hash": "b5de483ec15254c13baa576dfd13add8999d1978cdf71d457b65e1e0a0078182",
+  "run_spec_hash": "55ee43cc64e582af835395db2c27d8e2c27ebfeccea326b2be3f78e924497f28",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00070",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ALICETRY/dt=2026-03-01/object=9fd71d76eb3f7a39ac0c5a9493e40a75389e89f123e011e6d57375c4b1484063",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

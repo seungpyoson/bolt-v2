@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SAHARATRY:2026-03-01:948e3518bd1af3183f285c408cc5a1d60c79f8c682b2904f2b686b64d1f36174:accepted-tranche",
   "accepted_tranche_manifest_hash": "959f2189777a5c04743fb708a9c137013bd479ff97ec96008be7b3fd7fb25e7d",
-  "run_spec_hash": "a2d6904b16659e8ac6ad3131f169f0acee2ed8df32492b0314ac0e081e40174c",
+  "run_spec_hash": "ebd93cda126ba80f1446999f7dcaf37d754a763d81e0a97a2af9b237544de8fa",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01004",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SAHARATRY/dt=2026-03-01/object=948e3518bd1af3183f285c408cc5a1d60c79f8c682b2904f2b686b64d1f36174",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

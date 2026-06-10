@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:AVAXUSDC:2026-03-01:d0f6da36ff542f33d029ef93692527c594902c6e95f45f0c3bc8f9c5ee8c171e:accepted-tranche",
   "accepted_tranche_manifest_hash": "fa3afe9b7a454d28bf440fc7761da59afbe83f7dcf77bcf748572842215d6f64",
-  "run_spec_hash": "686d0a4e678e9fc795f320bde7dd0f72514e7833dd365915ab57863fe54cdd3b",
+  "run_spec_hash": "5e472dedcc5468aa408a956ea1ba4007199eb3446500e6cda9e1f11329f87d74",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01493",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=AVAXUSDC/dt=2026-03-01/object=d0f6da36ff542f33d029ef93692527c594902c6e95f45f0c3bc8f9c5ee8c171e",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

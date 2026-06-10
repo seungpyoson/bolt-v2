@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:BNBUSDT:2026-04-11:a5bcdecd859477a74c7bbba39d9b0bb224626bb96656f95715c021a9082062a0:accepted-tranche",
   "accepted_tranche_manifest_hash": "41fca5bfe9e616dd4abb9a962909bcdd173683a9a35542184beee4e3dcdb3be8",
-  "run_spec_hash": "5364cb0177ae25b946fce35a5f4ebd8466bf602bd9abb02954da91e71ec36ae4",
+  "run_spec_hash": "b3cf08addc25190238ca48d2de01ac954ac66539174e7f3cb46a768da6581329",
   "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-01541",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=linear/symbol=BNBUSDT/dt=2026-04-11/object=a5bcdecd859477a74c7bbba39d9b0bb224626bb96656f95715c021a9082062a0",
   "source_proof_id": "source-proof-bybit-linear-public-archive-tick-trades-2025-06-01-2026-06-01",

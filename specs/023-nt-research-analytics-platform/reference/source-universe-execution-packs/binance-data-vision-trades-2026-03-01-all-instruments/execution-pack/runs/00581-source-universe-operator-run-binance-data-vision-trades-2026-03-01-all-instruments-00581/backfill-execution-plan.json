@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:HOLOUSDC:2026-03-01:07c74e9b26d71d7dde827b9041892102419c158f25812387da12da988eb2945a:accepted-tranche",
   "accepted_tranche_manifest_hash": "2b7b78b5dd2cc3542e74860714f9c1bd6574ba61d8a99fed309ff56de3a62001",
-  "run_spec_hash": "979e9163505a6c772499af048f1312b34212d0afc952311e753b635248a8db15",
+  "run_spec_hash": "4b5263f785b6ddc67ffb8ef37a0be3a4dc27dc8377570b2e01ea1f294e683800",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00581",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=HOLOUSDC/dt=2026-03-01/object=07c74e9b26d71d7dde827b9041892102419c158f25812387da12da988eb2945a",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

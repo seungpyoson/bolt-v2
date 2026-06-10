@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ARBIDR:2026-03-01:c86cce5cf655e5456ec17278e4dcf7e2ca9c5385aed2f4b7b66ef5d80413c3b8:accepted-tranche",
   "accepted_tranche_manifest_hash": "a2a3cd454b55426032fd47345407c1166d68abab007b6386993d4952138dbb56",
-  "run_spec_hash": "af96e3f94e88b57671660f1b78068b368f94177aef8a2f1ea2be625ab2fc877a",
+  "run_spec_hash": "9f7da9f74aed888b061e8f402f2881515f3045a7de3290f26bba0a878bb3b982",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00106",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ARBIDR/dt=2026-03-01/object=c86cce5cf655e5456ec17278e4dcf7e2ca9c5385aed2f4b7b66ef5d80413c3b8",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

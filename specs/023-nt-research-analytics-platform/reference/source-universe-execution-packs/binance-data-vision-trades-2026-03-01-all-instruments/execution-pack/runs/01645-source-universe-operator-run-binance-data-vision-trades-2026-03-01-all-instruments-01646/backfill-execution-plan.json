@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:GIGGLEUSDT:2026-03-01:de7559fa777b9129416b16f2a11f509ba09501d6d419ba7f8822912a7dc05b48:accepted-tranche",
   "accepted_tranche_manifest_hash": "e4401ebf0813018d48c4d887e22bc224a0d617e962def032e0cc80ef1fd1be2e",
-  "run_spec_hash": "b8e984b1b3bc0cb7cdd06d0d0936f6b1fbf34c82df84d4f669a30bdb5223cb2a",
+  "run_spec_hash": "fddd1a470ea34eefab96640c8b67bf0f9599bc353f55fd4913ee2219476e709a",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01646",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=GIGGLEUSDT/dt=2026-03-01/object=de7559fa777b9129416b16f2a11f509ba09501d6d419ba7f8822912a7dc05b48",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:TRUMPUSDC:2026-03-01:cede4a8e4c2c3749bec42155c9a03a1f383be511925f0a525a093c9ee38a13ef:accepted-tranche",
   "accepted_tranche_manifest_hash": "0c71304ef658aff16053379f199fe875d11fccf2a65fbd30b787d5a8f2405dad",
-  "run_spec_hash": "9128ecf8d772e81b0d667a2cfcce80073584d1180173991afd84ed9e4681e179",
+  "run_spec_hash": "7502a04badcf9f14570965cafc0c14dd8c2ac6b0cb1c57104619e17e7f4e5b7f",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01196",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=TRUMPUSDC/dt=2026-03-01/object=cede4a8e4c2c3749bec42155c9a03a1f383be511925f0a525a093c9ee38a13ef",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

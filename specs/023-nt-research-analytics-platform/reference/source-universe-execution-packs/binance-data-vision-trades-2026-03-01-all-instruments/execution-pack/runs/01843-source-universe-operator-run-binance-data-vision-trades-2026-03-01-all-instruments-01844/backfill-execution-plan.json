@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:RIFUSDT:2026-03-01:06af418b0115c9ab45b0c24934bf467045d0c28131703b68a1451321589d8837:accepted-tranche",
   "accepted_tranche_manifest_hash": "f33a17599cd716afa2746fcc309066aae2e1fe9572c992a0bb21a98ac7411023",
-  "run_spec_hash": "fd3b30bd073728c91b94e0e65be0966f6ab7c54fc7a7a9c7f19ce46b8f969a35",
+  "run_spec_hash": "a060383aa34ee4c9fcc370fc849eb5babf42316518fa66877468c5400f50340d",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01844",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=RIFUSDT/dt=2026-03-01/object=06af418b0115c9ab45b0c24934bf467045d0c28131703b68a1451321589d8837",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

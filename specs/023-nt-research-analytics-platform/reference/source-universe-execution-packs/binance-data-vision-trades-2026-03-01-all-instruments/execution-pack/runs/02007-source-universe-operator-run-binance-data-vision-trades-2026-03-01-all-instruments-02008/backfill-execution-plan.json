@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:我踏马来了USDT:2026-03-01:79c8292723247993e733bc6c1aaf51b767500c6394668e16cd7aca2a97472eb9:accepted-tranche",
   "accepted_tranche_manifest_hash": "f772ba455675faf64ba92ad2a8881e30b742a754c11b0db3aa21d02a8a465ccf",
-  "run_spec_hash": "3c160d6984145bafc9f5fe93cb9184b6ff57f1624d92be6a5ec1e9960925df83",
+  "run_spec_hash": "17ed516b8caca62a8baa38288c0e226e868bb1e5834c9d870387a5db195cb131",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-02008",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=我踏马来了USDT/dt=2026-03-01/object=79c8292723247993e733bc6c1aaf51b767500c6394668e16cd7aca2a97472eb9",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

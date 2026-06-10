@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SOMITRY:2026-03-01:d67775a915b02f709a930e5c3a2814b598e3b6f4041a1655df180c84d53a0599:accepted-tranche",
   "accepted_tranche_manifest_hash": "bf6c4ecb2b112550c78f156c9e9846514897ab6f9e416397bea1a86b0d7eb54d",
-  "run_spec_hash": "a3290c5cfafe82157def7d8bd00e4cda718277dc1684e5caca88386f6022c8e4",
+  "run_spec_hash": "ecdf9fb4ccdd7440940fb96cf50fd1aed7510680a3f6b4f9159045264389eb28",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01080",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SOMITRY/dt=2026-03-01/object=d67775a915b02f709a930e5c3a2814b598e3b6f4041a1655df180c84d53a0599",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

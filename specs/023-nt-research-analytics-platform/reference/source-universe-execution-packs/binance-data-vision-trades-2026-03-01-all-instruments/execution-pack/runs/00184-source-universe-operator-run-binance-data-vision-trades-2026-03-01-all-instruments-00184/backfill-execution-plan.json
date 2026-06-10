@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:BANDBTC:2026-03-01:92348547036c8f18f922ecb82c4b375294e2dcefea122c6828c18a5e7555ed08:accepted-tranche",
   "accepted_tranche_manifest_hash": "8167e8f5ae4b16916e1256a2dde7e345174d8c6a78ef5c8e0e101c7f16a29223",
-  "run_spec_hash": "e8a95c55cf9630d80587581e1d4fbe8f95aa9f5273badb04280032bc95a6551b",
+  "run_spec_hash": "4c078b375facea2284bc294640d75679bbf22ed3b1e9b8db10cc997ecb216f17",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00184",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=BANDBTC/dt=2026-03-01/object=92348547036c8f18f922ecb82c4b375294e2dcefea122c6828c18a5e7555ed08",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

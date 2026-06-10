@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ESPUSDC:2026-03-01:ecf76f8a981131f6697ef87463ed27963185d83ebbe24242d3f89f1395630709:accepted-tranche",
   "accepted_tranche_manifest_hash": "82af1b969c3d35454affa41bf0b5c35a4be7ce79b9d049733701081810c648ec",
-  "run_spec_hash": "7d7bf3bf8b3b3a2a74d78f5dbcf55164266af20efa272744d6f8722d99704310",
+  "run_spec_hash": "b63f204b488c0772f5b65d69e929707a1c78aa356817b515ba568da9b8991293",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00441",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ESPUSDC/dt=2026-03-01/object=ecf76f8a981131f6697ef87463ed27963185d83ebbe24242d3f89f1395630709",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

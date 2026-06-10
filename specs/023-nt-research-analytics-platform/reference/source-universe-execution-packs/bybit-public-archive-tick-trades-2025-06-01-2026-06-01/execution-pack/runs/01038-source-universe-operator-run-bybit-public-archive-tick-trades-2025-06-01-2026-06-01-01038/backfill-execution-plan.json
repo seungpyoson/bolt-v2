@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-linear-tick-trades:HYPEUSDT:2026-03-17:96e5cfceb0c9ecdf1cc5536b7cbd18b2b2d881a47290c76277c79515aa17c84d:accepted-tranche",
   "accepted_tranche_manifest_hash": "6a5b35638d5532d1b52324e2c0f7bf40a45938d513b77594c6693e4dcbdc12e9",
-  "run_spec_hash": "0581efb64732943d8a001e7be3273b95459f9db4db69cc28578395cc5b932614",
+  "run_spec_hash": "6ddbe7013357d21db43016d4402ba6270a39a3c5379ae73e837158390c065264",
   "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-01038",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=linear/symbol=HYPEUSDT/dt=2026-03-17/object=96e5cfceb0c9ecdf1cc5536b7cbd18b2b2d881a47290c76277c79515aa17c84d",
   "source_proof_id": "source-proof-bybit-linear-public-archive-tick-trades-2025-06-01-2026-06-01",

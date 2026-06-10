@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ETHFDUSD:2026-03-01:3895a710b0a5881e335119779c43d7b5aa270bdaa63b500aa0d7d7aacea8add5:accepted-tranche",
   "accepted_tranche_manifest_hash": "87dcdf3711cbf68bb328f3b2e811c5830831e842754ad8aeb265ec2cd5198cb0",
-  "run_spec_hash": "6de389f3d92cd9a4f614fa71b75887ca72211392129154fccb463fb25a224338",
+  "run_spec_hash": "f59d6b6452670a442407b5231730c9b86eb5e2b8856e1c29e2ec847effca4fae",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00454",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ETHFDUSD/dt=2026-03-01/object=3895a710b0a5881e335119779c43d7b5aa270bdaa63b500aa0d7d7aacea8add5",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

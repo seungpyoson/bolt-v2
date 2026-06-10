@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:DASHUSDT:2026-03-01:9575023576de870451282e47de89bc5fc737e3bbc87418356f2f692adec1fc2e:accepted-tranche",
   "accepted_tranche_manifest_hash": "dc436160d966125d3b920c37107a819fffe15b5fb5ae5d16cbb1e8390e68aa28",
-  "run_spec_hash": "b120591e88a1e4a7644fc7120153b0683a68b6d1b3895cf0e0815ee21ffc01c7",
+  "run_spec_hash": "f79b562eb87f880d3edefd031a28f0c42554265235dda172f84c37eb44177444",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00355",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=DASHUSDT/dt=2026-03-01/object=9575023576de870451282e47de89bc5fc737e3bbc87418356f2f692adec1fc2e",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

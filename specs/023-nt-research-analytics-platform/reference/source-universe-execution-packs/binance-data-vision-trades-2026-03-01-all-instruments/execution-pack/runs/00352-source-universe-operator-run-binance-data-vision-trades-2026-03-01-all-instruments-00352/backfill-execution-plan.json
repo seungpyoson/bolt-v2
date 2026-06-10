@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:DASHBTC:2026-03-01:df8735723119d5dbe3f7829559642e97e72899055773d41700262c2291919508:accepted-tranche",
   "accepted_tranche_manifest_hash": "7f03ff3b3cf7b2a2ed9357c596f2215f835c66d1687261dcb0b3f3220a3f1851",
-  "run_spec_hash": "cb47995df85010f776ee8bdaffbc5daf36dd395ff6bddc50c9f9e3df363d8892",
+  "run_spec_hash": "c9e242a0b968ff242716703eb83c2b53d6eefaa5a8007e21ffc291563ff0b97b",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00352",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=DASHBTC/dt=2026-03-01/object=df8735723119d5dbe3f7829559642e97e72899055773d41700262c2291919508",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

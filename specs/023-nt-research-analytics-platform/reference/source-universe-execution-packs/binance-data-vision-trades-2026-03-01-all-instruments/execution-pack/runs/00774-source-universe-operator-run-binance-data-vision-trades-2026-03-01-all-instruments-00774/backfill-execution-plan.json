@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:MOVETRY:2026-03-01:054f75c80c87f38291199ba003cf23abe83d80ea4502af973468c952e35852c9:accepted-tranche",
   "accepted_tranche_manifest_hash": "b04181fc915140bce02510424b410700559219f6310462e54a846805b721689e",
-  "run_spec_hash": "ceb7f393ad4c77d4bb51a994d7c4a4c042ff81b7ffa474b4acad3822c15b6ab0",
+  "run_spec_hash": "9402d3e0e011c1b54f3cb467a27d128fa41fa1f55ef845b740af2eea3025e7df",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00774",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=MOVETRY/dt=2026-03-01/object=054f75c80c87f38291199ba003cf23abe83d80ea4502af973468c952e35852c9",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

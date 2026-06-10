@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:XRPFDUSD:2026-03-01:c9f1c1c66d406f8159078f0aef398bd66493d41126ff03035af3f832a8add0c1:accepted-tranche",
   "accepted_tranche_manifest_hash": "ab81db2ccac70a13451b2f883834cf20468fea564a9bd0e9bf43144cb56b4000",
-  "run_spec_hash": "3515a623a5221017947f39e05d33ae61aa8e92842e3a5c77c4e90b4b584ae962",
+  "run_spec_hash": "519838bb0eb9489d819df2e919d42c241829de582b23568613ee9e4fc4ffeb8e",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01355",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=XRPFDUSD/dt=2026-03-01/object=c9f1c1c66d406f8159078f0aef398bd66493d41126ff03035af3f832a8add0c1",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

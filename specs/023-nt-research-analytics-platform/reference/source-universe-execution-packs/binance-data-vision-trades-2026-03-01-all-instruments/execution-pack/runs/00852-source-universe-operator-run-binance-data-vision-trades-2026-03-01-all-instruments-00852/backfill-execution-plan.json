@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ORCATRY:2026-03-01:886b9d1570f9efb6c50b887827ea419c43e2844a241a27c93e73a281b48c0e52:accepted-tranche",
   "accepted_tranche_manifest_hash": "d6197334f34d51f7ebaa971288332109afab9754532355e24aa69f19bd4ed4cf",
-  "run_spec_hash": "6fb93342154a79befba18aca5f3c2d9a196ea93e6d5b27cc78d4bfac3145340e",
+  "run_spec_hash": "8863cb0696f9bbcb49a5e62e1b664074cb2a33cab9f389e2b1fd22a56661bad3",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00852",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ORCATRY/dt=2026-03-01/object=886b9d1570f9efb6c50b887827ea419c43e2844a241a27c93e73a281b48c0e52",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

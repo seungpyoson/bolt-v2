@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:RIFUSDT:2026-03-01:6269f75e50c81c2b3496dc39cb8822a1490d4f4d2bce5e65c39fe0ff15fb6cb3:accepted-tranche",
   "accepted_tranche_manifest_hash": "b99bfd58b7dffe29a2fa0f02083af439bab10acff0b669033f9d0999e03846e9",
-  "run_spec_hash": "c1aa4f75c7665ba17d2e0f0a7cef85378660d21b8a76eecda7ad63e0abe190ca",
+  "run_spec_hash": "f021e3485850e2fd9517d47c7eb7db8423843f56e56180cb74b1b436a2db1c0f",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00976",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=RIFUSDT/dt=2026-03-01/object=6269f75e50c81c2b3496dc39cb8822a1490d4f4d2bce5e65c39fe0ff15fb6cb3",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ERABNB:2026-03-01:9f2a77eb760723106ed42f84de922259dbe85dfee31c5fdd54dd36a2e75441a3:accepted-tranche",
   "accepted_tranche_manifest_hash": "cf09be8ce01cfa41417defa050caa213ec3cbce6988d47f7a74c0f0162cca9da",
-  "run_spec_hash": "b9a87b34a26e656938141c58e71ddc6285114815436b4614d11a6a1c13ef0608",
+  "run_spec_hash": "ed4a788993a57e090e157b1ed3099eef10b7d4f880725f196f82181ee28f644f",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00435",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ERABNB/dt=2026-03-01/object=9f2a77eb760723106ed42f84de922259dbe85dfee31c5fdd54dd36a2e75441a3",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

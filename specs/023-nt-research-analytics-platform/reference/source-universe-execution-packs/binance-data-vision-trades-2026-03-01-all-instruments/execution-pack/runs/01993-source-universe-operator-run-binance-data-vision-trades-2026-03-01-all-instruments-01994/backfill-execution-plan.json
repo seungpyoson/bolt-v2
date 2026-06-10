@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:ZECUSDC:2026-03-01:b80fbdf7f0bf754b8909309a45fcc6c4ef410655a1823debe431d610462e09e4:accepted-tranche",
   "accepted_tranche_manifest_hash": "5ebcbf6d0bb37753745098ba02c4740237421d008391b62d9c1721d56ce59d12",
-  "run_spec_hash": "d0d0efccb99cab38cddda1cc282656a9825b01163cc932f3c9e4f9a939e9ecdd",
+  "run_spec_hash": "9fb83d967d315639a97d07042a288d3d742bb51c99fb0ffda60d9f265222312e",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01994",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=ZECUSDC/dt=2026-03-01/object=b80fbdf7f0bf754b8909309a45fcc6c4ef410655a1823debe431d610462e09e4",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

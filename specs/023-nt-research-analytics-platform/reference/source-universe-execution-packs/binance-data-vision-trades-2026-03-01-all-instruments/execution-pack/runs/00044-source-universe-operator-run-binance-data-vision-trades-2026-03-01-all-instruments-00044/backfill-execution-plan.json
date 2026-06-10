@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ADAEUR:2026-03-01:2c4cd4c3492d9a77bd319bc5648ff52e7d9de7b17ad5c5a7634cca1fea45dffe:accepted-tranche",
   "accepted_tranche_manifest_hash": "b5095b9b6b6a38889523fcb74f520fc76a5c6578c072c4678b114e5fe9167428",
-  "run_spec_hash": "65650399a8d89f22f247720549af7e1ac43c733564e121f816819475a9c10f59",
+  "run_spec_hash": "a4d40dd8bc7e57ccd6b25fe75774699a3b78268e171d09d9834a2d5d1079eece",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00044",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ADAEUR/dt=2026-03-01/object=2c4cd4c3492d9a77bd319bc5648ff52e7d9de7b17ad5c5a7634cca1fea45dffe",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

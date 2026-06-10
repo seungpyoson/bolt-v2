@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:VETEUR:2026-03-01:96e37f65a394a9a80a499c3438ab35a1a0b1c5199b2312f70fcd73bd237f0ee2:accepted-tranche",
   "accepted_tranche_manifest_hash": "7afb10b79ef2869406e15beb5a05a239f5c4baf6efdc63330b4e3d2d339befb0",
-  "run_spec_hash": "02ef0ce9fb03fedaf152e7ff751609f6e64ddf1ed1900da0d85eb33e23e56020",
+  "run_spec_hash": "59d04426a413d186a6646b1cb4641b67ba073ce3f1c3838270dace0e27c44b92",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01279",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=VETEUR/dt=2026-03-01/object=96e37f65a394a9a80a499c3438ab35a1a0b1c5199b2312f70fcd73bd237f0ee2",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

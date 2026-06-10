@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:TAIKOUSDT:2026-03-01:b9b71619c2b3d52bb1974d451c3e374ebddce5e82c1a56c6a3ce902756f6bc0a:accepted-tranche",
   "accepted_tranche_manifest_hash": "dbeaf327b5c3243ae26e51a56f25aeb958a3e035bd4695684328a4ec49212de4",
-  "run_spec_hash": "ad30109bb3a93669b44062e170cda6f11ff35b3c577795cc8271851a15eaa60b",
+  "run_spec_hash": "62112ebbab0d0a1efc677359b71314a775b4c94c4c9992cd53ad4f67fe204589",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01910",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=TAIKOUSDT/dt=2026-03-01/object=b9b71619c2b3d52bb1974d451c3e374ebddce5e82c1a56c6a3ce902756f6bc0a",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

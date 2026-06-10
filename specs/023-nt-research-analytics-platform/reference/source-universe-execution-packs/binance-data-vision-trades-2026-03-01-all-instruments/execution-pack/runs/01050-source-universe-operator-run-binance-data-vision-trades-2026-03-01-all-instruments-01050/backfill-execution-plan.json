@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SKLUSDC:2026-03-01:7a92f1d40596a104328f523d2e1a9cd239ef85b8039efcd8fade192d3177d529:accepted-tranche",
   "accepted_tranche_manifest_hash": "c05bd01b4079147a7cbadea5d72cf45223e621a64d686e9e71322613d8a64009",
-  "run_spec_hash": "c59be4dfad15f6a5ba66483d75ce8515f6b8a066ab4a5ddd767f2dca6aa3e48e",
+  "run_spec_hash": "0e7c45e36fca2dbb935c009c1d75725d8ef25eda5c9dd99dac05321ded473f47",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01050",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SKLUSDC/dt=2026-03-01/object=7a92f1d40596a104328f523d2e1a9cd239ef85b8039efcd8fade192d3177d529",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ICPFDUSD:2026-03-01:61e7915d596386cd932165a7d34032bc027d1dc3ca4134b8e69dac5d7cb65dba:accepted-tranche",
   "accepted_tranche_manifest_hash": "a2ac7dd05db586a5d95f2e044d6551a527045d3eac6e030094619563262ef257",
-  "run_spec_hash": "efdac511c868884a8087a54cf15505277101d50a3f8bbe9152266ed722319bbc",
+  "run_spec_hash": "cbc90c443084895ee9667ba43499892efe31688e16c5c844c6ad55559575ae32",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00597",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ICPFDUSD/dt=2026-03-01/object=61e7915d596386cd932165a7d34032bc027d1dc3ca4134b8e69dac5d7cb65dba",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:POLYXUSDT:2026-03-01:a46866d61d3a5ad0110a567cf73cc09809ecba6f3786da433087d159ae18de3b:accepted-tranche",
   "accepted_tranche_manifest_hash": "cc53d20c303b7096c52e44a773938c5b3c1fb447b2b78e17ac50071efb0ccaca",
-  "run_spec_hash": "df8a78b26752fd328ab68bc7bf5cd08976ccef97c3912cf318fa29489fdcc192",
+  "run_spec_hash": "a7371a9b138a90132df89e9aa19c586ff3d1f398cd9684cf027cde43e2dbb2db",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00917",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=POLYXUSDT/dt=2026-03-01/object=a46866d61d3a5ad0110a567cf73cc09809ecba6f3786da433087d159ae18de3b",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

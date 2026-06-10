@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:UMATRY:2026-03-01:91c2d36572943614953b30c756accc678a72a633750742d4180605795d358887:accepted-tranche",
   "accepted_tranche_manifest_hash": "081def49d14305564db810dfaae8051d3331349574a53a121c538c7179ffb67c",
-  "run_spec_hash": "188f61bc38ac10d01e9aabb2e093699f82e79c03ca4586a71a92733997c0f012",
+  "run_spec_hash": "aca14816f2f205f0768b9c9599745da52684b64f1b304320ace8d0eb76f4873b",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01227",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=UMATRY/dt=2026-03-01/object=91c2d36572943614953b30c756accc678a72a633750742d4180605795d358887",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

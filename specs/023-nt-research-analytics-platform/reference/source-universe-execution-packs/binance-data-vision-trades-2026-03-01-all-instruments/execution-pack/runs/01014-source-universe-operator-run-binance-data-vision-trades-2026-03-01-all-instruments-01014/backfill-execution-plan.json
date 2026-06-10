@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SAPIENTRY:2026-03-01:989604ba9780cedf61a5d63968258ce8da13a3ae2701a650c6b19c59c20a81e0:accepted-tranche",
   "accepted_tranche_manifest_hash": "afb132646a143e1146c3554ef95472456b3ce57b1ce9136139e46c32f6501a03",
-  "run_spec_hash": "c675614d9de2e566b64d0f6e8a0483ab0671a4557ec3d440d7ae8c74df214be4",
+  "run_spec_hash": "be7e0f85a17e794b4f3ec471dee0abdc37c42a8c7a1925eed70743bf12680277",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01014",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SAPIENTRY/dt=2026-03-01/object=989604ba9780cedf61a5d63968258ce8da13a3ae2701a650c6b19c59c20a81e0",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:BROCCOLIF3BUSDT:2026-03-01:14594e4a5979dc6ca693312854f8c42d5d98da45360fc78702d5169ec4453b7e:accepted-tranche",
   "accepted_tranche_manifest_hash": "982d6342d99974eb1f845b499261353836613ed9b01bc8584f88da2b91cccb9d",
-  "run_spec_hash": "21cc19daf945d8ac1a75e0a7cfd2605fb2eee68aac4a023c1ad62eee0528b63b",
+  "run_spec_hash": "85d7b609ef0e2ce4591a54f192ad9a52533fa61d195baf34e589f9da6b3c30c3",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01537",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=BROCCOLIF3BUSDT/dt=2026-03-01/object=14594e4a5979dc6ca693312854f8c42d5d98da45360fc78702d5169ec4453b7e",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

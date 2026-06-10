@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:BABYUSDC:2026-03-01:d889b4c537231631416b083beaff983a3c5c8314702a8a8fd76cc89e574213c6:accepted-tranche",
   "accepted_tranche_manifest_hash": "705b18835bf725a7fea5f328796b5b04d82efd8dd7564d45c1ee61f21c8dc3fe",
-  "run_spec_hash": "75173a1a12a273aac0b0f3d47c9d9ae62d92b1e3e31c9c19e371028df6c25320",
+  "run_spec_hash": "9c5cab37790e53955f1e4b3e7e4411f1f0e0f8e5cde49a4423843cb26270432f",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00176",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=BABYUSDC/dt=2026-03-01/object=d889b4c537231631416b083beaff983a3c5c8314702a8a8fd76cc89e574213c6",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

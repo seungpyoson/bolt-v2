@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ZROFDUSD:2026-03-01:36209df383639af44fe7b35bdca55295482e558dfd7f5692519639bd8ab1d0c1:accepted-tranche",
   "accepted_tranche_manifest_hash": "9a617b406e4d865fade32a21274a8ddfae3fed088010add0b2e149e8f1941a71",
-  "run_spec_hash": "a5cee53dc677afe60add38fef5132f5bd1377e26a3f8549b563af4d7cd5e9f38",
+  "run_spec_hash": "4e5d28341daebb066a06b4a4effef9fa81f8fa31234906a01834b6f6cc7fdfe4",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01409",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ZROFDUSD/dt=2026-03-01/object=36209df383639af44fe7b35bdca55295482e558dfd7f5692519639bd8ab1d0c1",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

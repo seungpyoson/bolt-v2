@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SHIBFDUSD:2026-03-01:cd60a143e7b0d116e1220ab95210f6dca33166da838a2d0b7acc06301f479162:accepted-tranche",
   "accepted_tranche_manifest_hash": "060ab76e69a9b3f38d6c22315e7b51adf9c18284f15217c1ca7bfb76287e449e",
-  "run_spec_hash": "4115cb5d2f607a1bcadec6d80b5b1328defdf831c493950933d6ebed5ddf2be3",
+  "run_spec_hash": "30056cb8089c65e482e62978cb3581c565611192abf86abdeda12ed1d0f4117c",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01039",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SHIBFDUSD/dt=2026-03-01/object=cd60a143e7b0d116e1220ab95210f6dca33166da838a2d0b7acc06301f479162",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

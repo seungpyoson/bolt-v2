@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:GUNUSDC:2026-03-01:fa9e32d0c5c9752df6eed53fa46cad165a5234a4a2f9a914a341dbe1cc97a2e6:accepted-tranche",
   "accepted_tranche_manifest_hash": "b48d44518ec529bf71b8b2c0f8b9ad39088e91c671443813eb204ba2f49806e6",
-  "run_spec_hash": "73c399c7e4359ae24927dcab9cee98dda95e1947af067f8793f2c7277496370f",
+  "run_spec_hash": "c3f88f743c743f6d15240a4a5cbe882c3cd6b2bd38bf3082a91b8eda86f4f889",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00552",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=GUNUSDC/dt=2026-03-01/object=fa9e32d0c5c9752df6eed53fa46cad165a5234a4a2f9a914a341dbe1cc97a2e6",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ALLOTRY:2026-03-01:540d1a69665a4036f68f2d3d0e43dbf41dac649bde5f38dec9520f7ed4536399:accepted-tranche",
   "accepted_tranche_manifest_hash": "528024913dd72a4989ae432e2eb6a731bfd517030bc46bb9494ed446b7b4020a",
-  "run_spec_hash": "da1661abfa4fd7b37f0231d48f467ebff529bfe043af4611848a6dc1d59b34e8",
+  "run_spec_hash": "c58254566e20d8429fd60c489282a212119eebd415bc5abcb763b12882fdb668",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00072",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ALLOTRY/dt=2026-03-01/object=540d1a69665a4036f68f2d3d0e43dbf41dac649bde5f38dec9520f7ed4536399",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

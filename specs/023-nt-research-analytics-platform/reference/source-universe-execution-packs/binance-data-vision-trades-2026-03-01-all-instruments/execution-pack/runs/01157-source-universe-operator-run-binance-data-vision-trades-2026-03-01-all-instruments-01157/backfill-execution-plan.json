@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:THETABTC:2026-03-01:ad288c30ea94f6433838f75567f4667d9d23fc4595f953a98c8daeb862e25fe3:accepted-tranche",
   "accepted_tranche_manifest_hash": "8c6c91630b4f56e7b19ee95afb0fdd8902fad03d08e3ce65e4b998e3e0a63f63",
-  "run_spec_hash": "96d59050ee22541c971640a79032bd3dfc79cdfc871581df2f961b9fa158fb25",
+  "run_spec_hash": "b060c021e8d4a45dc99b7c3ffa0a83293961611d1157f6f2e475a773d9b9edca",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01157",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=THETABTC/dt=2026-03-01/object=ad288c30ea94f6433838f75567f4667d9d23fc4595f953a98c8daeb862e25fe3",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

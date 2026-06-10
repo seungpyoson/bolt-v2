@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:DUSKUSDT:2026-03-01:ba58fc9132761a67b51071729db8b51f4d724596cd052e0b13926ff841b9fa61:accepted-tranche",
   "accepted_tranche_manifest_hash": "fafcac5e6337fd35f681206995b0ce5f678cbef5e3bbbfcb801de451f62c070b",
-  "run_spec_hash": "a3f090bfb442f1053340feb174fc519341c380fdb5abbd303eef106f5cf451f9",
+  "run_spec_hash": "d213b9cf9c2539fc09fd2359a573e4a2ea0e56394541b3e088a26f4816aabfd1",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00395",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=DUSKUSDT/dt=2026-03-01/object=ba58fc9132761a67b51071729db8b51f4d724596cd052e0b13926ff841b9fa61",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

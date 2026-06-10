@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:NTRNTRY:2026-03-01:b874ed7a9a07319fbeab47a2c5a4abebcefe4ad1eac61f455c5fcaee0bb1eb77:accepted-tranche",
   "accepted_tranche_manifest_hash": "bb5410719ea46cae3f3f0971d0e34b15f2a429502ff57dca3927a25ddd942db7",
-  "run_spec_hash": "f71a83e64f10316cef71fa75cace287717dd8b60946d7cb13802f49e635b2c3f",
+  "run_spec_hash": "e4c1c867f08f32398d03d56d3db7b7a1404b89988ee24d43baffcef3721e196a",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00819",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=NTRNTRY/dt=2026-03-01/object=b874ed7a9a07319fbeab47a2c5a4abebcefe4ad1eac61f455c5fcaee0bb1eb77",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

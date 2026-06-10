@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:MUBARAKUSDT:2026-03-01:9fa8c2fcb1647582b6fa26180b0f305d67dd6378357db1774d81444ee00dce4e:accepted-tranche",
   "accepted_tranche_manifest_hash": "c38f4d2970e6e3b9dca0f8c2ccd5baad7b42574bc50910830c5d0f76035b1e93",
-  "run_spec_hash": "a7ee2918208ef5e4fd04bd10a36edb209c75e7b312662addd15ee8e069b251a8",
+  "run_spec_hash": "ea3f7457e8b5cba36c1de97be9659fd03fc86327a207966fa730ed38237c28e7",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01767",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=MUBARAKUSDT/dt=2026-03-01/object=9fa8c2fcb1647582b6fa26180b0f305d67dd6378357db1774d81444ee00dce4e",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-spot-tick-trades:BTCEUR:2026-03-16:eb43c1f3947104f6555f225fb6f66e0d14f01022c2e13ce93a02b5de24d8c94e:accepted-tranche",
   "accepted_tranche_manifest_hash": "a3d619edeff812b7a8214b0f5b31d2f1b8d6d2dfae9fa3e3a87a38a70623dc3d",
-  "run_spec_hash": "89552b4107e38fac11080420f6284856b41d70669b2356b6b90995f184c420ec",
+  "run_spec_hash": "6b6a5c394298cb00f2dfdbf58964dab84067fe9b6bbaf0ac968d539be8e0f985",
   "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-03133",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=spot/symbol=BTCEUR/dt=2026-03-16/object=eb43c1f3947104f6555f225fb6f66e0d14f01022c2e13ce93a02b5de24d8c94e",
   "source_proof_id": "source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01",

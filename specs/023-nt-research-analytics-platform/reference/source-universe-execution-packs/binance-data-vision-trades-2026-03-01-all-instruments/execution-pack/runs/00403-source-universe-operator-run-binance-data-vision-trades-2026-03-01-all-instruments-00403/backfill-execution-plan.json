@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:EDENUSDC:2026-03-01:67de0ef0a6c440510f18697fec528b46fdde18f740ce2fb08b4f3928a82f1f0a:accepted-tranche",
   "accepted_tranche_manifest_hash": "373f800d53971d7d82f3563415ae02ba8a97b1ae62ba47144e70186cc39efd52",
-  "run_spec_hash": "fa5ae8f36462adcd2dac2b37e8ec8fbfc9b1b427d861188263801e80c7e76e7b",
+  "run_spec_hash": "a11c5c6b85cb3bdad7b93574e28c4683391dea9097e5ff7c4c399739be4b564b",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00403",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=EDENUSDC/dt=2026-03-01/object=67de0ef0a6c440510f18697fec528b46fdde18f740ce2fb08b4f3928a82f1f0a",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

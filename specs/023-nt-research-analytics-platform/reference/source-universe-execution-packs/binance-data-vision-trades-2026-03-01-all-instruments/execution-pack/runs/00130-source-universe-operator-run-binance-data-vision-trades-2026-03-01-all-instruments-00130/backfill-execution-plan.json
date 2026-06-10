@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ASTERUSDT:2026-03-01:f9202f229a720df757778845e565df10f1b15811f2dfb33a585699534870a146:accepted-tranche",
   "accepted_tranche_manifest_hash": "89767229eebf867ba08318c0d4fcd1562587253aec25606ebfe4499d5643961d",
-  "run_spec_hash": "b4f17f323f5a29e81da55260a964b5c89263c1bb62d0fbe58ce6a2e76611d882",
+  "run_spec_hash": "9122dfe8c16d7e8662cd2a24804fed8c59d3dbf97bc3cc28190e24421218db09",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00130",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ASTERUSDT/dt=2026-03-01/object=f9202f229a720df757778845e565df10f1b15811f2dfb33a585699534870a146",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

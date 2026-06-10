@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SEITRY:2026-03-01:c72c800172f93d09792fe5577a61bec01da1f0ee67c21aba4d91f95c4cd36516:accepted-tranche",
   "accepted_tranche_manifest_hash": "42596552c8c5f1fd4c0ef7be2d2fa61972b11579db9ac97eb0966a59af19aad3",
-  "run_spec_hash": "e5078d1c78db2954e0a0ff686499d810861468e5eba3676317eb5c5196181297",
+  "run_spec_hash": "ab734266176ef4bf7f5d5b5fd94d92bf86152eb77b603ba48b9f3c828a5a8dfa",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01026",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SEITRY/dt=2026-03-01/object=c72c800172f93d09792fe5577a61bec01da1f0ee67c21aba4d91f95c4cd36516",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

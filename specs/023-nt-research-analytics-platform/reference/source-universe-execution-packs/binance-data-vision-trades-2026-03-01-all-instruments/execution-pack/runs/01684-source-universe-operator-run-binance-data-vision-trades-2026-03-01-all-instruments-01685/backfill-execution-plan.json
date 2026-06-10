@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:ILVUSDT:2026-03-01:a9ff4d35ad025d8f2ff637800c68acf425c8dd2be7faf388e98fbc84b3c60929:accepted-tranche",
   "accepted_tranche_manifest_hash": "5792358370c40726f8b86e5d41abc9f355dc5098bd40f99c28affc27d78c8684",
-  "run_spec_hash": "846d0da22d035400b4980006b4f69cce7954aeb120a5a859cee1923847aac2e2",
+  "run_spec_hash": "b51646e6650e6dd8ff5bf57e726b308f8fec9a052ac82e725375d84ffe881e1e",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01685",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=ILVUSDT/dt=2026-03-01/object=a9ff4d35ad025d8f2ff637800c68acf425c8dd2be7faf388e98fbc84b3c60929",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

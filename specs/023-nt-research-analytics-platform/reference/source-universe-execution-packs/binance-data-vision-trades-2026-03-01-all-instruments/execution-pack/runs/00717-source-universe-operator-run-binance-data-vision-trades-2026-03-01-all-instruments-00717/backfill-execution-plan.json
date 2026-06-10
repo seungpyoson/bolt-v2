@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:LUMIATRY:2026-03-01:1f00c32ebc53c38ca945e2c931f20ad6e56e64576bc767ed38735800974e6449:accepted-tranche",
   "accepted_tranche_manifest_hash": "0cc69164a3149a521d7af7579107c5f8816007899c6ecdf8aa34bbc8ff04c99c",
-  "run_spec_hash": "954c1e2f2edbb26de5aa75fce4a9ac77e719dac2d38077cd68efcf44e718eea3",
+  "run_spec_hash": "033195f03983f3b546e99eec4f7a010ed37aecf585c50036bf1ba1f28c02e65e",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00717",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=LUMIATRY/dt=2026-03-01/object=1f00c32ebc53c38ca945e2c931f20ad6e56e64576bc767ed38735800974e6449",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

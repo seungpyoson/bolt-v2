@@ -1,5 +1,5 @@
-accepted_at_utc = "2026-06-07T00:00:00Z"
-accepted_by = "codex-bte-source-proof-operator"
+accepted_at_utc = "2026-06-10T00:00:00Z"
+accepted_by = "backtesting-vertical-slice-operator"
 capture_time_utc = "2026-06-07T00:00:00Z"
 created_at_utc = "2026-06-07T00:00:00Z"
 source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
@@ -114,7 +114,7 @@ bar_type = "DUSKUSDT.BINANCE-1-MINUTE-LAST-INTERNAL"
 trade_size = "0.01"
 
 [manifest.venue]
-account_type = "CASH"
+account_type = "MARGIN"
 allow_cash_borrowing = false
 bar_adaptive_high_low_ordering = false
 bar_execution = true

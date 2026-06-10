@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:GRIFFAINUSDT:2026-03-01:b57fbc25cb10c0d1a4b2d7be2f22c5d06e642020141a81fa2f937c65d471956e:accepted-tranche",
   "accepted_tranche_manifest_hash": "35b453be4336498f01069e3fb3d147c4e88cb3ce4d8264c7266825c61d9ab58c",
-  "run_spec_hash": "90bff1a866825ea9cba030968cf6dc5693aacad5dd01024ffdb06d324ca49ec6",
+  "run_spec_hash": "88cfd5aef948047206b7c587ca5f06de25a670145e4813fd3f07726527cd9fbe",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01653",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=GRIFFAINUSDT/dt=2026-03-01/object=b57fbc25cb10c0d1a4b2d7be2f22c5d06e642020141a81fa2f937c65d471956e",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

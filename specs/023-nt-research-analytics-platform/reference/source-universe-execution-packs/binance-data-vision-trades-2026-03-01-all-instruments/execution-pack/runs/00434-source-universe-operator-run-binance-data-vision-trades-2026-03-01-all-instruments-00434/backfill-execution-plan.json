@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:EPICUSDT:2026-03-01:0b9185ba6120e44ed2724f37a846de4a9cfc9c8a958dd628dbb8da392b3f5bf6:accepted-tranche",
   "accepted_tranche_manifest_hash": "8d5ac567cdb9e28c001d97b87a7e856e6ea8862bfe4dcfa87fc62feaa1357585",
-  "run_spec_hash": "9b74a1adf591365ff417e936a009ffa7680775d58ccaba91fd5dfe3c225821d9",
+  "run_spec_hash": "7445715c8c1c7faeab40fb5025893ddd32290e87b806c9171c2a78df250b6b69",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00434",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=EPICUSDT/dt=2026-03-01/object=0b9185ba6120e44ed2724f37a846de4a9cfc9c8a958dd628dbb8da392b3f5bf6",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

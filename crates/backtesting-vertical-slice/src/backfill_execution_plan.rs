@@ -427,6 +427,14 @@ pub fn write_backfill_execution_plan(
     output_dir: &Path,
     plan: &BackfillExecutionPlan,
 ) -> Result<BackfillExecutionPlanArtifact, BackfillExecutionPlanError> {
+    write_backfill_execution_plan_with_overwrite(output_dir, plan, false)
+}
+
+pub fn write_backfill_execution_plan_with_overwrite(
+    output_dir: &Path,
+    plan: &BackfillExecutionPlan,
+    overwrite_existing: bool,
+) -> Result<BackfillExecutionPlanArtifact, BackfillExecutionPlanError> {
     fs::create_dir_all(output_dir).map_err(|error| BackfillExecutionPlanError::CreateDir {
         path: output_dir.display().to_string(),
         error: error.to_string(),
@@ -441,9 +449,16 @@ pub fn write_backfill_execution_plan(
                 error: error.to_string(),
             })?;
         if existing != bytes {
-            return Err(BackfillExecutionPlanError::ExistingArtifactMismatch {
-                path: path.display().to_string(),
-            });
+            if overwrite_existing {
+                fs::write(&path, &bytes).map_err(|error| BackfillExecutionPlanError::Write {
+                    path: path.display().to_string(),
+                    error: error.to_string(),
+                })?;
+            } else {
+                return Err(BackfillExecutionPlanError::ExistingArtifactMismatch {
+                    path: path.display().to_string(),
+                });
+            }
         }
     } else {
         fs::write(&path, &bytes).map_err(|error| BackfillExecutionPlanError::Write {

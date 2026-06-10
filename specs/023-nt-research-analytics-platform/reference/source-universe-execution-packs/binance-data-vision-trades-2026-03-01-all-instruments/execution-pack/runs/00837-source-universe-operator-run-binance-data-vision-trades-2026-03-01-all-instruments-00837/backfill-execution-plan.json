@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ONGBTC:2026-03-01:e413fa5e951a7b5e0ade3c8c30afd4cd60b6b48192d9795ef9746e096abf954d:accepted-tranche",
   "accepted_tranche_manifest_hash": "0cc25e03b6a68e8032be9a924abf6a6ee9115dcfac25403f99a17e12c77f8268",
-  "run_spec_hash": "5618041a324ed0167e86062ef007b1cde5240565766d467c7ec03f8ede4156ed",
+  "run_spec_hash": "6cb6c9366941b50217c0f29ff7810da90d5693de6df8c0d64b53d5b0c56336ac",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00837",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ONGBTC/dt=2026-03-01/object=e413fa5e951a7b5e0ade3c8c30afd4cd60b6b48192d9795ef9746e096abf954d",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

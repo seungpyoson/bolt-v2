@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ATRY:2026-03-01:291bd733d21fe02e456375476bd593c9a600fc76489dd0277fc5d8c179ba6c94:accepted-tranche",
   "accepted_tranche_manifest_hash": "845cebb03063349cd758302e8367db70c11678c76a73f76badaee63145068962",
-  "run_spec_hash": "997c9eeacfff71cd2e9db480bbd70bf49a71966ba6739c5d46dc64ae9d6c20b5",
+  "run_spec_hash": "dc76d904f2dcf1fc3d192324d5c2fd5307fd263dc002033a3ab1c981c70f9509",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00141",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ATRY/dt=2026-03-01/object=291bd733d21fe02e456375476bd593c9a600fc76489dd0277fc5d8c179ba6c94",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

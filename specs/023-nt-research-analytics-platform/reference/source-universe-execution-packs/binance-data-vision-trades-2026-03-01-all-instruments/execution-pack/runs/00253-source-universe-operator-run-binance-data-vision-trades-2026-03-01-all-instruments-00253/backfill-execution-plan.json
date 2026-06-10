@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:BONKFDUSD:2026-03-01:1e39ede0d49a867dc32aee93ef90940d14522223efa1121bd9816878af9f01c3:accepted-tranche",
   "accepted_tranche_manifest_hash": "c012da588d613851f3616df8c32ae9ae43943ff41e5665b41ead759be383b9a5",
-  "run_spec_hash": "f09c25939bbbce57a0a28f44d24cc7b64199f697c794c2a5cd6d53f0a1597b27",
+  "run_spec_hash": "804878360fec412a1d703625590015e1001713dd6bab53aead070dc92f930d6a",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00253",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=BONKFDUSD/dt=2026-03-01/object=1e39ede0d49a867dc32aee93ef90940d14522223efa1121bd9816878af9f01c3",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

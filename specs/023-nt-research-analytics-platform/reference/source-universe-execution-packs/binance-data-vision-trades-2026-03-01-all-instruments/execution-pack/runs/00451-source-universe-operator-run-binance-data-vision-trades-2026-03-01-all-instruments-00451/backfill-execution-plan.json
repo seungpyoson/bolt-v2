@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ETHDAI:2026-03-01:a6cb031d74771bfa5dc62ea3aac83e6ab032285bb83391d81895ce0325cad600:accepted-tranche",
   "accepted_tranche_manifest_hash": "a32ef0cbc200eab9a57cb8d461350acedff385ca17cbc9a58907d8da08262f65",
-  "run_spec_hash": "6e69725f727f7f6a40a96b96ff1efa0e4261c7ff30e5a50cdce7c4cd3e6ec1af",
+  "run_spec_hash": "3451ea5f689696fc4e51c9931aad01087d24de62fd1bcb372bc42080969aea9d",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00451",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ETHDAI/dt=2026-03-01/object=a6cb031d74771bfa5dc62ea3aac83e6ab032285bb83391d81895ce0325cad600",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

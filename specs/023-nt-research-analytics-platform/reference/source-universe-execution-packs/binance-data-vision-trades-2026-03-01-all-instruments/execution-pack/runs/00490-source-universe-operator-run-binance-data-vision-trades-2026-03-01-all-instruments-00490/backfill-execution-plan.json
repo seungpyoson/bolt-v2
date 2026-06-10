@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:FIDATRY:2026-03-01:db988191d55c65782df92f4f7275a2f04107888b4bb5f02cfc8426e5c2086f8d:accepted-tranche",
   "accepted_tranche_manifest_hash": "9a6ffaad8a030a45d7f6a99adffd31e04c4b5100ef1098f074271da2b3671094",
-  "run_spec_hash": "cc31a217bd1dd339868018e659229402400fb055fa49614514dd2a25e8fc17c5",
+  "run_spec_hash": "2e64153c4203f71d21b53867ad0c93aa2106fed06d3fc9a894e638fa55f2ac80",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00490",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=FIDATRY/dt=2026-03-01/object=db988191d55c65782df92f4f7275a2f04107888b4bb5f02cfc8426e5c2086f8d",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

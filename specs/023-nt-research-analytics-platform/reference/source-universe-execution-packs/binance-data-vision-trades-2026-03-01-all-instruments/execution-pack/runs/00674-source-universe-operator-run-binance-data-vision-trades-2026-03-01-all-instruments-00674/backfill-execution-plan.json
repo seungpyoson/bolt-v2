@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:LAZIOUSDT:2026-03-01:9935d2c0bb29ce22f3329fb9a71c66d5da0b132837ba1b48d0b109773ca68926:accepted-tranche",
   "accepted_tranche_manifest_hash": "4aa70d53efdb2ee0840d79ebf0a3ea851dff4fd9d9a38591f8b623600ca662b6",
-  "run_spec_hash": "83aecf9ef9dd6cc1223613d1913382fb05aa8bf5bb99454c877bf80059bf29c8",
+  "run_spec_hash": "b4f2428e708290034b78eb69c5e7ed85ed7660f7155b84685faa6117f2059514",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00674",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=LAZIOUSDT/dt=2026-03-01/object=9935d2c0bb29ce22f3329fb9a71c66d5da0b132837ba1b48d0b109773ca68926",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ERAUSDT:2026-03-01:7ed20b0beda32e0ca45a878b3b4498779c7d564577e5c9edc31176ce79b79004:accepted-tranche",
   "accepted_tranche_manifest_hash": "b4423a1547d91a49a1d639ca83c0c91ab1b646c122840d9593976adbc1d84027",
-  "run_spec_hash": "187d97560a3e3a7971857bad1dc2d8936481859cd0c3767599f3ce0e6e6e7e0d",
+  "run_spec_hash": "f0a55331d46c2a339b47f8511b58355f173a24897edce2b20645d166450e7b62",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00439",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ERAUSDT/dt=2026-03-01/object=7ed20b0beda32e0ca45a878b3b4498779c7d564577e5c9edc31176ce79b79004",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

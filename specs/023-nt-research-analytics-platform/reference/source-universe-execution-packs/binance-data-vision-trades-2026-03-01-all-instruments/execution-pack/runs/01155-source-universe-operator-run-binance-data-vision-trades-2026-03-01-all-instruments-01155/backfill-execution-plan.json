@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:TFUELBTC:2026-03-01:3ec3a8d34eb1b2b40d962aef7a8a14cdf1c909dbe4d199408b30c03f37b354d3:accepted-tranche",
   "accepted_tranche_manifest_hash": "a2de9b16802502c5a6155e02df66908db6b711b57547fb93a1e19318aa828884",
-  "run_spec_hash": "e41234bee13df0ba102898c99878f8f12ce40757394e73d8dfbcaf92def2219a",
+  "run_spec_hash": "753696ccab14e6c399451ceed918af3b0698acab367204b9987f5a6fd25628a0",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01155",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=TFUELBTC/dt=2026-03-01/object=3ec3a8d34eb1b2b40d962aef7a8a14cdf1c909dbe4d199408b30c03f37b354d3",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

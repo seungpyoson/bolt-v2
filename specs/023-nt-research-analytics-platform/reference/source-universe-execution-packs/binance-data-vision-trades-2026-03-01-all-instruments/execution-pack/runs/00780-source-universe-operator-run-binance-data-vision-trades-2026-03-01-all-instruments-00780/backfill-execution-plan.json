@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:MUBARAKTRY:2026-03-01:be716cda46b164723d2c0bea4ba98bc0fd969a29fc868ca1a21f7b685d82e5c5:accepted-tranche",
   "accepted_tranche_manifest_hash": "e30ab7484983bcd46e09c400c5cbb84bfd6a840b525d01b2377953d2383d2125",
-  "run_spec_hash": "c30b673ba5ae5904932d676c11548a6f02fab9ec4e40e829fe2d6fdf4abbe05a",
+  "run_spec_hash": "82ac16cf32b2db77fec0be3bd2b345d079b8685ac10dac602e982836e91ae69d",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00780",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=MUBARAKTRY/dt=2026-03-01/object=be716cda46b164723d2c0bea4ba98bc0fd969a29fc868ca1a21f7b685d82e5c5",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

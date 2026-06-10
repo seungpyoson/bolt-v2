@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:KAIAUSDT:2026-03-01:f646029b2557959e2531372896e4fc8fabcc4c1736ab8e23591619f4eedf6f2b:accepted-tranche",
   "accepted_tranche_manifest_hash": "4547a87c2585f4c05c807aa0115fa21c76dd3aea42f92d63ed3419cb4b397190",
-  "run_spec_hash": "c9b0fe96a04225cff0dd9945b684926e9183976bb320d9319c68c712b45b7f14",
+  "run_spec_hash": "2a7ee36231bdd523202f10092f7c6672a22048842b3205edcaa5ffd94775fe6a",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00646",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=KAIAUSDT/dt=2026-03-01/object=f646029b2557959e2531372896e4fc8fabcc4c1736ab8e23591619f4eedf6f2b",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

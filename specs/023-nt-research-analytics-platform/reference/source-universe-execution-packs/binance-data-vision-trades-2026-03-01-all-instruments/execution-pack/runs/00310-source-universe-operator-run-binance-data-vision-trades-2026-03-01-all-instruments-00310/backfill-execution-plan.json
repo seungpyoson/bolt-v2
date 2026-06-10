@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:CITYTRY:2026-03-01:6899927d23f3446d8e5bc65f481f8a2668beabce4f7ad5c63c9b708603103b3e:accepted-tranche",
   "accepted_tranche_manifest_hash": "c477833fe0ae122d46d48d1eb5d3068829d47bf66695868fb7853000e9b7037d",
-  "run_spec_hash": "699b9c9f5aeaacb0ab427d6cd2694aa2795a034baa05105e3f619c365d68edf9",
+  "run_spec_hash": "6cde6cb5e9ac659b83aeba2b31fabbe80f4a03bb2df5fda4cc42d16333f83547",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00310",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=CITYTRY/dt=2026-03-01/object=6899927d23f3446d8e5bc65f481f8a2668beabce4f7ad5c63c9b708603103b3e",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

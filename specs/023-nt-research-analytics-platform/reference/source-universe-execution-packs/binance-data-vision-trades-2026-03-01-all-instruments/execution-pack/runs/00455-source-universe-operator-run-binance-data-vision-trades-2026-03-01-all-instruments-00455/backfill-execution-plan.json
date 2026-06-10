@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ETHFITRY:2026-03-01:4113143882325f82749541e2cbee0df947be75ecab1280ed233e548bfc054891:accepted-tranche",
   "accepted_tranche_manifest_hash": "96d18353a9047a66d2ad58d98b13fd6d19ded715d2ca944f60eb4450c3897764",
-  "run_spec_hash": "49b4252feaf24d600db06951304e9f07666274f060f8168d3dd7850eaedbc51f",
+  "run_spec_hash": "46a53ba37ee5455864c2e70477c4976aa8f352c9b1e8267dd2a0f619a2bdbb76",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00455",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ETHFITRY/dt=2026-03-01/object=4113143882325f82749541e2cbee0df947be75ecab1280ed233e548bfc054891",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

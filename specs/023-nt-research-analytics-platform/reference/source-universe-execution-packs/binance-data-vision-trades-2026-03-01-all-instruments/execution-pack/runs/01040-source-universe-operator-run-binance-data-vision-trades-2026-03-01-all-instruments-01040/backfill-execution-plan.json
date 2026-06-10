@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SHIBJPY:2026-03-01:619de38fd396030cfeec10fcbf5a9938549177976f2a437dcc83ff5895d44aca:accepted-tranche",
   "accepted_tranche_manifest_hash": "2c5093f481bef269d9b6edbb32997d22b914a11ff579c616c35d92f2f73098d5",
-  "run_spec_hash": "a27b5c2632b69013da26d62d3b31c232960affbe7b09542cf7d9528661c4ff84",
+  "run_spec_hash": "4f7d2b7e7c6f91a4ae3ce0954ef470b902e2fd317d1ad9fc8af11d91aab565e7",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01040",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SHIBJPY/dt=2026-03-01/object=619de38fd396030cfeec10fcbf5a9938549177976f2a437dcc83ff5895d44aca",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

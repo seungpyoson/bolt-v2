@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:NEXOUSDT:2026-03-01:f5099a97f8a8a2646e0b5badbdb76aa52bf489a452bf5f815de52536e5fb8783:accepted-tranche",
   "accepted_tranche_manifest_hash": "e7101ec3748e0ff084bbe6e381bd635d607142fc0caf75a1310c59bb92a1c4f4",
-  "run_spec_hash": "ae856be10b0447a077eec538f0ecf230856c777d082bea04f7a3ba5012e2cae0",
+  "run_spec_hash": "130b2066fc211ed8e581f3a9e51dbd5b72f7a6c4b9d1064954d2c555179aa086",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00803",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=NEXOUSDT/dt=2026-03-01/object=f5099a97f8a8a2646e0b5badbdb76aa52bf489a452bf5f815de52536e5fb8783",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

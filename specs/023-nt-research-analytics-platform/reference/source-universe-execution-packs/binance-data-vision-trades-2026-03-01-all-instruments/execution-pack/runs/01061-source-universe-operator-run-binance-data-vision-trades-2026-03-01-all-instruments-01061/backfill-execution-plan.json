@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SOLBRL:2026-03-01:f72a1d602e603f8d1358511ce7bce4766403f7c2cde12718c6a902848db70b56:accepted-tranche",
   "accepted_tranche_manifest_hash": "d89417ddd938732450d963af61699bb320289e923c3ecf09462a900d25ee72d2",
-  "run_spec_hash": "fb0bdccf27fc98d363ff1a60f0adca811d48f5e76ddb8d0e7b3f577812580dfd",
+  "run_spec_hash": "6b4cdd8ddd928fb1dd604c4b6cf38cabf555b87162d9d029447b6e6c631588d2",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01061",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SOLBRL/dt=2026-03-01/object=f72a1d602e603f8d1358511ce7bce4766403f7c2cde12718c6a902848db70b56",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

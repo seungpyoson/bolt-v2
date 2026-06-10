@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:PUMPTRY:2026-03-01:62f65ec59f490d19c41254a96759f248d55968d5b662d4933188dcfd86e38774:accepted-tranche",
   "accepted_tranche_manifest_hash": "729b4594ec9d85c2deaf27fe87e85e6d82d196289c2549181d02e2b33400b7c8",
-  "run_spec_hash": "414d7be58991538c6bd1297384db11862d60f857342a2b3b5e299b3e04b0e712",
+  "run_spec_hash": "71e072d9c1d5ae346e1a1ae2a01d7aa3b554618c29d63485b7f5fd835b84b5bf",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00930",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=PUMPTRY/dt=2026-03-01/object=62f65ec59f490d19c41254a96759f248d55968d5b662d4933188dcfd86e38774",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

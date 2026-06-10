@@ -50,10 +50,19 @@ pub struct SourceUniverseBatchExecutionRunOutput {
     pub catalog_hash: String,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SourceUniverseBatchExecutionConfig {
+    pub start_sequence: Option<u64>,
+    pub record_limit: Option<u64>,
+    pub continue_on_error: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceUniverseBatchExecutionReportStatus {
     Completed,
+    CompletedWithFailures,
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +84,21 @@ pub struct SourceUniverseBatchExecutionRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct SourceUniverseBatchExecutionFailureRecord {
+    pub sequence: u64,
+    pub operator_run_id: String,
+    pub source_binding: String,
+    pub category: String,
+    pub symbol: String,
+    pub archive_date: String,
+    pub selected_object_sha256: String,
+    pub selected_object_bytes: u64,
+    pub failure_stage: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceUniverseBatchExecutionReport {
     pub schema_version: String,
     pub batch_id: String,
@@ -88,6 +112,7 @@ pub struct SourceUniverseBatchExecutionReport {
     pub total_canonical_rows: u64,
     pub total_nt_catalog_rows: u64,
     pub records: Vec<SourceUniverseBatchExecutionRecord>,
+    pub failures: Vec<SourceUniverseBatchExecutionFailureRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,8 +197,33 @@ where
     F: SourceUniverseObjectFetcher,
     R: SourceUniverseOperatorRunner,
 {
+    execute_source_universe_batch_with_config(
+        batch_id,
+        execution_pack_path,
+        output_dir,
+        SourceUniverseBatchExecutionConfig {
+            record_limit,
+            ..SourceUniverseBatchExecutionConfig::default()
+        },
+        fetcher,
+        runner,
+    )
+}
+
+pub fn execute_source_universe_batch_with_config<F, R>(
+    batch_id: &str,
+    execution_pack_path: &Path,
+    output_dir: &Path,
+    config: SourceUniverseBatchExecutionConfig,
+    fetcher: &mut F,
+    runner: &mut R,
+) -> Result<SourceUniverseBatchExecutionReport>
+where
+    F: SourceUniverseObjectFetcher,
+    R: SourceUniverseOperatorRunner,
+{
     ensure!(!batch_id.trim().is_empty(), "batch_id must not be empty");
-    if let Some(limit) = record_limit {
+    if let Some(limit) = config.record_limit {
         ensure!(limit > 0, "record_limit must be positive when set");
     }
 
@@ -195,25 +245,53 @@ where
     fs::create_dir_all(output_dir)
         .with_context(|| format!("create batch output dir {}", output_dir.display()))?;
 
+    let record_limit = config
+        .record_limit
+        .and_then(|limit| usize::try_from(limit).ok())
+        .unwrap_or(usize::MAX);
     let selected_records = pack
         .records
         .iter()
-        .take(record_limit.unwrap_or(u64::MAX) as usize)
+        .filter(|record| {
+            config
+                .start_sequence
+                .is_none_or(|start_sequence| record.sequence >= start_sequence)
+        })
+        .take(record_limit)
         .collect::<Vec<_>>();
     let mut records = Vec::with_capacity(selected_records.len());
+    let mut failures = Vec::new();
     let mut total_canonical_rows = 0_u64;
     let mut total_nt_catalog_rows = 0_u64;
 
     for record in selected_records {
-        let object_bytes = fetcher
+        let object_bytes = match fetcher
             .fetch(record)
-            .with_context(|| format!("fetch source object for {}", record.operator_run_id))?;
-        verify_object(record, &object_bytes)?;
+            .with_context(|| format!("fetch source object for {}", record.operator_run_id))
+        {
+            Ok(object_bytes) => object_bytes,
+            Err(error) if config.continue_on_error => {
+                failures.push(failure_record(record, "fetch", &error));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = verify_object(record, &object_bytes) {
+            let error = error.context(format!(
+                "verify source object for {}",
+                record.operator_run_id
+            ));
+            if config.continue_on_error {
+                failures.push(failure_record(record, "verify_object", &error));
+                continue;
+            }
+            return Err(error);
+        }
 
         let run_spec_path = resolve_existing_path(pack_base_dir, &record.run_spec_path);
         let execution_plan_path = resolve_existing_path(pack_base_dir, &record.execution_plan_path);
         let record_output_dir = output_dir.join(&record.operator_run_id);
-        let run_output = runner
+        let run_output = match runner
             .run(
                 record,
                 &object_bytes,
@@ -221,7 +299,15 @@ where
                 &execution_plan_path,
                 &record_output_dir,
             )
-            .with_context(|| format!("run operator {}", record.operator_run_id))?;
+            .with_context(|| format!("run operator {}", record.operator_run_id))
+        {
+            Ok(run_output) => run_output,
+            Err(error) if config.continue_on_error => {
+                failures.push(failure_record(record, "run_operator", &error));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
 
         total_canonical_rows = total_canonical_rows.saturating_add(run_output.canonical_rows);
         total_nt_catalog_rows = total_nt_catalog_rows.saturating_add(run_output.nt_catalog_rows);
@@ -240,20 +326,28 @@ where
             output_dir: record_output_dir,
         });
     }
+    let status = if failures.is_empty() {
+        SourceUniverseBatchExecutionReportStatus::Completed
+    } else if records.is_empty() {
+        SourceUniverseBatchExecutionReportStatus::Failed
+    } else {
+        SourceUniverseBatchExecutionReportStatus::CompletedWithFailures
+    };
 
     Ok(SourceUniverseBatchExecutionReport {
         schema_version: SOURCE_UNIVERSE_BATCH_EXECUTION_REPORT_SCHEMA_VERSION.to_string(),
         batch_id: batch_id.to_string(),
-        status: SourceUniverseBatchExecutionReportStatus::Completed,
+        status,
         pack_id: pack.pack_id,
         universe_id: pack.universe_id,
         venue: pack.venue,
-        selected_record_count: records.len() as u64,
+        selected_record_count: records.len().saturating_add(failures.len()) as u64,
         completed_record_count: records.len() as u64,
-        failed_record_count: 0,
+        failed_record_count: failures.len() as u64,
         total_canonical_rows,
         total_nt_catalog_rows,
         records,
+        failures,
     })
 }
 
@@ -302,6 +396,25 @@ fn verify_object(record: &SourceUniverseExecutionPackRecord, object_bytes: &[u8]
         actual_sha256
     );
     Ok(())
+}
+
+fn failure_record(
+    record: &SourceUniverseExecutionPackRecord,
+    failure_stage: &str,
+    error: &anyhow::Error,
+) -> SourceUniverseBatchExecutionFailureRecord {
+    SourceUniverseBatchExecutionFailureRecord {
+        sequence: record.sequence,
+        operator_run_id: record.operator_run_id.clone(),
+        source_binding: record.source_binding.clone(),
+        category: record.category.clone(),
+        symbol: record.symbol.clone(),
+        archive_date: record.archive_date.clone(),
+        selected_object_sha256: record.selected_object_sha256.clone(),
+        selected_object_bytes: record.selected_object_bytes,
+        failure_stage: failure_stage.to_string(),
+        error: format!("{error:#}"),
+    }
 }
 
 fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {

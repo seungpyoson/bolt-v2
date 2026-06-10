@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:MBOXUSDT:2026-03-01:37c9aeddbe6f67aaf2be4920e433c9429bc3563ce02b231d0c58ce7cac7f64fa:accepted-tranche",
   "accepted_tranche_manifest_hash": "e77f010ead4321bc25d6545ca9ad9504189ae55724dd0d358fc6d53c66824922",
-  "run_spec_hash": "521a4720c5e9bc11ec607b9ca7d4cf65a869f722d142ebed52b3048d9c398e7d",
+  "run_spec_hash": "fbce9aa2e0428436496a457f09f7875483d9570c27009a0afb9f234b0a280da8",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00744",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=MBOXUSDT/dt=2026-03-01/object=37c9aeddbe6f67aaf2be4920e433c9429bc3563ce02b231d0c58ce7cac7f64fa",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:MAVUSDT:2026-03-01:c41875a5f1c4550010e5173b976469ef3117fe9b65fb225597f60d368155c668:accepted-tranche",
   "accepted_tranche_manifest_hash": "ff9b0ff42a2a9fc35b13670a58b05866e68141d4789d10905161ba670a406e49",
-  "run_spec_hash": "432ce7f5c7427172d30be8462f83ffc156f223e5dd6b5b881f9f7d6490984493",
+  "run_spec_hash": "ef14cf16ad734630040e239c4637582a218ea688077ae95ee32e0c755bd6f1ea",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00741",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=MAVUSDT/dt=2026-03-01/object=c41875a5f1c4550010e5173b976469ef3117fe9b65fb225597f60d368155c668",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

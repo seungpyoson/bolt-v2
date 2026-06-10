@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:HUMATRY:2026-03-01:b1f1983cf6fc57eb1bf9c314aca31999edf972199cbf041c2f6578d3e311809c:accepted-tranche",
   "accepted_tranche_manifest_hash": "27573de9aecc46776186b3fef69cd413ae524293a4e88c0cdbcaeabc4414d3da",
-  "run_spec_hash": "58c7964a189e72ebb8a9501669023ef0aaf9b1dd2f321a197a90e52a7cdf716c",
+  "run_spec_hash": "ed0ab36af45004f917379192f8ca7c63d83e2b5baccfffae8dc5b4c6fa7538bf",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00589",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=HUMATRY/dt=2026-03-01/object=b1f1983cf6fc57eb1bf9c314aca31999edf972199cbf041c2f6578d3e311809c",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

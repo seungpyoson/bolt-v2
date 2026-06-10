@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ZROUSDT:2026-03-01:65edc3862021e9377253e23790dad9b27dd32333b0fda59a0f9cf2b46e688428:accepted-tranche",
   "accepted_tranche_manifest_hash": "23052a8303cc5a7c5a58db1c78f6c43370d587c7342089e73b4959c35d55ad87",
-  "run_spec_hash": "f9d08d95fb054e746c10b31f2d95475c7c9ed84047a8edfabdcb9c4d21f2de96",
+  "run_spec_hash": "4f1174d2695f97076afb4871cd3e139736beb868adae5bf8c2166efa5a99caad",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01412",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ZROUSDT/dt=2026-03-01/object=65edc3862021e9377253e23790dad9b27dd32333b0fda59a0f9cf2b46e688428",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:CHILLGUYUSDT:2026-03-01:5c381a3468f0ad1f15a186a94304ba399e9360f09c9d28b957a10316f2ec9f3e:accepted-tranche",
   "accepted_tranche_manifest_hash": "53a1826863a0cf9f502d29f13bb9a8edd46ea62332e39539da56d80c14dd54ab",
-  "run_spec_hash": "e6fb4a401dc45279383a4dea1ddf70280aaae94d2af58c37c70223dae11c739c",
+  "run_spec_hash": "105e15e7da7d52d8fd8fc150e2244c9e59962bf36924b26652a5a53d94d501da",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01556",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=CHILLGUYUSDT/dt=2026-03-01/object=5c381a3468f0ad1f15a186a94304ba399e9360f09c9d28b957a10316f2ec9f3e",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:FOGOTRY:2026-03-01:f03e2eeb57e3151af4ae5e42e810ca04f8aec6b3ad91b32e999ad13f7b2bd49b:accepted-tranche",
   "accepted_tranche_manifest_hash": "c7292dccfe63c2c2e2b3ac7cf7929978bf5ebc6d932653a75438709fc0aa5336",
-  "run_spec_hash": "c4b345a0cb947b2831f4507ff89635bd297699cc097b96bcfb38250b53aef39c",
+  "run_spec_hash": "e776fe45c5fae706bb2f669d99f1feb877c6a6cb7e52db640a684fde1781820c",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00506",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=FOGOTRY/dt=2026-03-01/object=f03e2eeb57e3151af4ae5e42e810ca04f8aec6b3ad91b32e999ad13f7b2bd49b",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

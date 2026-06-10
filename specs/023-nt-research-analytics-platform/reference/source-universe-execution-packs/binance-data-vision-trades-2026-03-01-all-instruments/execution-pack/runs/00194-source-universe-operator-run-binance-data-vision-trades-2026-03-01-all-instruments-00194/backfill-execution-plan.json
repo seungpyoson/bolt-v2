@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:BATBTC:2026-03-01:d12b2bce63ecdb85d3454315f3e2ac44d8cafc42abff0ffedaec80d072fc83ab:accepted-tranche",
   "accepted_tranche_manifest_hash": "0d199961eb33f2abcd5cdf64ed7b079944849e1fae82b73f005d14b0f6b67cf1",
-  "run_spec_hash": "17ccbfcf7f568501f449ac7f518d1b72fea6b7b116c22e2ec8510f72cf965e5a",
+  "run_spec_hash": "4418795df9ea1acbb1bf02d56545868b3cb690636e4f221b7526c854c0f53536",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00194",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=BATBTC/dt=2026-03-01/object=d12b2bce63ecdb85d3454315f3e2ac44d8cafc42abff0ffedaec80d072fc83ab",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

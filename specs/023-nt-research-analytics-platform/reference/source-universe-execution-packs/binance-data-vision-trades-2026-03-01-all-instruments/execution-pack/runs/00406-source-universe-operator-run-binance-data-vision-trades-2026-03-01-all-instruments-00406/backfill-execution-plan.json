@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:EDUUSDT:2026-03-01:a51423e9ea9e4e3277b1917c4ba1cbb601e0bc27e195d29cc67d9435492bcbae:accepted-tranche",
   "accepted_tranche_manifest_hash": "d94243ebc0e433375e969f8a7dedf8b160768a337dfd88e320bd62789d3d2fab",
-  "run_spec_hash": "aa32fa0eb78caa672af6c72176bfbdd3c214ae4cd4478a5d8b9192f50a597406",
+  "run_spec_hash": "4df590fb351c959e5eab1adfa211cad9bab8bb996d6d3d928b65bdbba35a7c62",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00406",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=EDUUSDT/dt=2026-03-01/object=a51423e9ea9e4e3277b1917c4ba1cbb601e0bc27e195d29cc67d9435492bcbae",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-inverse-tick-trades:ETHUSD:2026-05-02:1175d449c8155e8a15863b5911bee0541f2acc046516351f370391cf7a374fcf:accepted-tranche",
   "accepted_tranche_manifest_hash": "fb43547dffea06486635c85dc4674d170e7bb0c501d56b58dce6e49b0b8eaca7",
-  "run_spec_hash": "6a28c7b2b1648d776584dc0f07c36c3cae084cf66687acf05b9b2214557282e3",
+  "run_spec_hash": "644c1b01601d27e472b2123c2ba90a492ecb2a6a0dda15d64b2f14e14c8fcd02",
   "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00499",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=inverse/symbol=ETHUSD/dt=2026-05-02/object=1175d449c8155e8a15863b5911bee0541f2acc046516351f370391cf7a374fcf",
   "source_proof_id": "source-proof-bybit-inverse-public-archive-tick-trades-2025-06-01-2026-06-01",

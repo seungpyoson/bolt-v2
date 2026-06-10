@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:TOWNSUSDT:2026-03-01:44425e71f86386fc424d92e6a6028e9822306a50deb22f59cd250214df1db50d:accepted-tranche",
   "accepted_tranche_manifest_hash": "41eb1f06b72e46c6baec30dba997529e3a5178c303c9b97180f2916b41b209dc",
-  "run_spec_hash": "1c761ad03be0703d826aab5277400f5830806ab2eaa1f70f47d150d3ec487257",
+  "run_spec_hash": "83a33bda50f8eb50691a7d01e81ef383c079de4b764210750c685091c3beef05",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01184",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=TOWNSUSDT/dt=2026-03-01/object=44425e71f86386fc424d92e6a6028e9822306a50deb22f59cd250214df1db50d",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

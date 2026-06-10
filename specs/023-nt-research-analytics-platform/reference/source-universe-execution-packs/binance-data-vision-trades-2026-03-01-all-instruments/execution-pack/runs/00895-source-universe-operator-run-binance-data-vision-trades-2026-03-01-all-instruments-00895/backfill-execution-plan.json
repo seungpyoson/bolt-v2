@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:PIVXUSDT:2026-03-01:b25323bc6eb20219bbefa8e6411f9793239d6dea785b40939d68870c5c49f632:accepted-tranche",
   "accepted_tranche_manifest_hash": "84496277cd741c2a009fd8463b95adeed9392154a75a0ab3ed9d75456250b9d7",
-  "run_spec_hash": "221a6a2ae93c182fc2ad4e77b8fd63bfc9d65ddeea7988ddcb9a540d8ed51c7d",
+  "run_spec_hash": "f01bad8c69f52ce536db399fc8d581a4e086d3358318d6069948635885d545b2",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00895",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=PIVXUSDT/dt=2026-03-01/object=b25323bc6eb20219bbefa8e6411f9793239d6dea785b40939d68870c5c49f632",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

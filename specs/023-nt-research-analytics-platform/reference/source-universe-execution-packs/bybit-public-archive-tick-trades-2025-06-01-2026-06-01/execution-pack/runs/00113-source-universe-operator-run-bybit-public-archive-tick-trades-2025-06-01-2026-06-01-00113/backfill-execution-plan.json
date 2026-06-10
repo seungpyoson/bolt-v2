@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-inverse-tick-trades:BTCUSDM26:2026-03-16:cc7b6cbdd8cb4247ce2201eeddccb65e71b46532fbd2ab1a060578b93c4d15ec:accepted-tranche",
   "accepted_tranche_manifest_hash": "ab7de7e295d5fc8ec33731ab09d5e805a9def035a6c104e5670bd9d163ddb75f",
-  "run_spec_hash": "453be157ca096e7fc04c69c384e17703473f2bf48550ef48ddfe233fbb72ccd3",
+  "run_spec_hash": "b3fde2c30da1af59ce24f81cc71751fc3348404593546b7f9a47d4d65d9b1d10",
   "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00113",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=inverse/symbol=BTCUSDM26/dt=2026-03-16/object=cc7b6cbdd8cb4247ce2201eeddccb65e71b46532fbd2ab1a060578b93c4d15ec",
   "source_proof_id": "source-proof-bybit-inverse-public-archive-tick-trades-2025-06-01-2026-06-01",

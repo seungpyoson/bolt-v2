@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:DEGOUSDT:2026-03-01:67d6fdadff7d4b5e380e901ce03ec23be80affcbb969802d486cac3ce266c66b:accepted-tranche",
   "accepted_tranche_manifest_hash": "33c7dae7746188a42096d6cbe3610b366bc40cdab55ff1bb2b60e4373b9e237e",
-  "run_spec_hash": "c8d2d85ff04d87129fb680d4ac16dda00d7027cf465d0b7ea2868bb940c8a9e2",
+  "run_spec_hash": "0bf1b37069d966bfa9ed925b7055a219598257d2fde06084614d657488e9a16b",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00357",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=DEGOUSDT/dt=2026-03-01/object=67d6fdadff7d4b5e380e901ce03ec23be80affcbb969802d486cac3ce266c66b",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

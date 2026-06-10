@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:TRUMPFDUSD:2026-03-01:7159108163b722f5f93669c4fc558ce99403a5e200a6ce8957f29df2fc8607c4:accepted-tranche",
   "accepted_tranche_manifest_hash": "cc37c4a57be540c7c03cafae0053e742e3e7370ac85c1fd87c58be527abaeaf0",
-  "run_spec_hash": "5e693d673f4f6d4769b827b977641113fda90acc6be9612a4d6f209be7a8ce7c",
+  "run_spec_hash": "b049e95a4039385c60eb1fd505b1da9aa560a9499f2de6cbff9b94c2477ec7a2",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01193",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=TRUMPFDUSD/dt=2026-03-01/object=7159108163b722f5f93669c4fc558ce99403a5e200a6ce8957f29df2fc8607c4",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

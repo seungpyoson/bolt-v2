@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:MAVUSDT:2026-03-01:d4883e8f769955ef42f38873bc84e2416e4c49423b21efd2b10a30ce35b351e4:accepted-tranche",
   "accepted_tranche_manifest_hash": "98ab125b81ab7319784e360efcf31911bde9b1af08a714048a58e964c8153c11",
-  "run_spec_hash": "2048a493c633369c006beb59b9c2426b6aa545652b7a993605b51cd197cfec36",
+  "run_spec_hash": "76b75bf4f8425eb27805a36be0b125bdc799110686351a2a2fab3a145fae44da",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01744",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=MAVUSDT/dt=2026-03-01/object=d4883e8f769955ef42f38873bc84e2416e4c49423b21efd2b10a30ce35b351e4",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ORCAUSDC:2026-03-01:9663ef7176e981cd00d3af269280deddbb9757df10a917e82502ecdb3dab62cc:accepted-tranche",
   "accepted_tranche_manifest_hash": "4df06b5a8a88a08803fb17cbf1f219e8fc501f5c65defcc09698425eb4f6ec9b",
-  "run_spec_hash": "9373bd74aca4d0d1746f076afe14e675727234968ed60e5c437bc499e1b60fef",
+  "run_spec_hash": "ec6d776dc8db9f7410dde107207bd48d5b74e0c77109193b861d68c7f6a5fa9d",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00853",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ORCAUSDC/dt=2026-03-01/object=9663ef7176e981cd00d3af269280deddbb9757df10a917e82502ecdb3dab62cc",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

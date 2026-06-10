@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:NEIROUSDT:2026-03-01:361e85e816cb09d5cd413a01c8f2e4878577bf2eaee165c99fd0484a541ae2b2:accepted-tranche",
   "accepted_tranche_manifest_hash": "5bebc7c90fea69e1ec499afdddd8fed406b267b0d4d3645434c2cc44dcf0ca8b",
-  "run_spec_hash": "461a8f32d4596299a07122670a68442d863fe3a975e675e3deaca80ae31e01ce",
+  "run_spec_hash": "3c83de333911de7385977c9b9f904dbedfd2e9ab2f7bf563b0b1f0aef44bef91",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01773",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=NEIROUSDT/dt=2026-03-01/object=361e85e816cb09d5cd413a01c8f2e4878577bf2eaee165c99fd0484a541ae2b2",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

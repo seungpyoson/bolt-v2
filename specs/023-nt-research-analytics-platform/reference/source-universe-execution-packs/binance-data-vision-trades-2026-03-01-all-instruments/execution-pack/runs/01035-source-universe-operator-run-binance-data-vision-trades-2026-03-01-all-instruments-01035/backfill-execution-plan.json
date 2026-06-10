@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SHELLUSDC:2026-03-01:de8244dadfd928ea9afb5d09d9ef7c4cd198ae4667741504eefc0439282696dc:accepted-tranche",
   "accepted_tranche_manifest_hash": "db3687784a8a05d8b4ba24aaa1175de0aa7ad23ce961db5ecabbace27dcb533a",
-  "run_spec_hash": "bdddaa25f727168d4f1c953263a9e4685ef83bfb2811bd9b2a12cf1a77d5b9d8",
+  "run_spec_hash": "16f527b003c54584eea7c022efbf22d0cbaedc19506394c741aa7e7dd86740e3",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01035",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SHELLUSDC/dt=2026-03-01/object=de8244dadfd928ea9afb5d09d9ef7c4cd198ae4667741504eefc0439282696dc",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

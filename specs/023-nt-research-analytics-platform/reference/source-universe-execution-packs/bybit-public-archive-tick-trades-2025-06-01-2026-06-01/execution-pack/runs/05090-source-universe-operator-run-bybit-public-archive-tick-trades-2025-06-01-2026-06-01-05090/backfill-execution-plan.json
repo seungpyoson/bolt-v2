@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-spot-tick-trades:SOLBTC:2026-05-07:01147d6c7f01593ed3e9635e71e1316bbdcf53a5742ab7038f01e89d9e9c5ccd:accepted-tranche",
   "accepted_tranche_manifest_hash": "0210803136c9d0cf4b33d696f7060ad01b442f688c0f63f9d760b7309a58e941",
-  "run_spec_hash": "b228150d0663038092761179880ef33149a5145660fe29465d0c9ff0e05b198f",
+  "run_spec_hash": "da0a7123cf9f8d404a9f4a20223b6b5e14d82809e7c8a768443cc259acbd5770",
   "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-05090",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=spot/symbol=SOLBTC/dt=2026-05-07/object=01147d6c7f01593ed3e9635e71e1316bbdcf53a5742ab7038f01e89d9e9c5ccd",
   "source_proof_id": "source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01",

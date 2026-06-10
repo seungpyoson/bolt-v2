@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SUSHITRY:2026-03-01:3508758ad28d860c079c8e110e405dc62b104388180734ed257dcbf17946ed7d:accepted-tranche",
   "accepted_tranche_manifest_hash": "edfe5500d4214f0c3d0ffffd411d8b77e67b48c0066d46b00e96e17280df9d0c",
-  "run_spec_hash": "fdd31640aef8c1a11c4984eb67ed2e6d3a16555b4ba4f6179b1ff42c80623b00",
+  "run_spec_hash": "35971293bbe0f0c4366137b3cdf19b3f3bfb808657a97063de93fc69e02e9b13",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01133",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SUSHITRY/dt=2026-03-01/object=3508758ad28d860c079c8e110e405dc62b104388180734ed257dcbf17946ed7d",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

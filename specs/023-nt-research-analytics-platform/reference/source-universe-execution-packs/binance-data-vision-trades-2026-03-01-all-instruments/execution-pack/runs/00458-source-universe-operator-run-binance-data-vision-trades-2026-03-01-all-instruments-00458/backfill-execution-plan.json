@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ETHIDR:2026-03-01:72f0cd5ac8a58dce6e2f8c810931f35892eee7c68541eab7b563ddf33507f610:accepted-tranche",
   "accepted_tranche_manifest_hash": "66f1859c1d6b16772027084d6956385948c3619c0fb4b19373cc8ce24ea07752",
-  "run_spec_hash": "79009966eb2f356f121e0ee76afebfd026d70ed2ead6c9580226df8eab80bc25",
+  "run_spec_hash": "05acc1cfc08dd082392a019a5bc6c470ab25b6700fc4ec8ab0289f34677d2490",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00458",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ETHIDR/dt=2026-03-01/object=72f0cd5ac8a58dce6e2f8c810931f35892eee7c68541eab7b563ddf33507f610",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

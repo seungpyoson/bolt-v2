@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:RARETRY:2026-03-01:3fd338175444a477d5a091c622f8f5e4210538cb853e20b70fcd4ee17a164698:accepted-tranche",
   "accepted_tranche_manifest_hash": "3f7deaa23d4c04b8db270d0d28f5bedc77a2fb0461d54a95e14f3b0f2f76a08b",
-  "run_spec_hash": "10c46e5798af6956d1620a20e017197e389909c7677cbeead6e5de11df028a50",
+  "run_spec_hash": "19c130e1b6428403df58024a4563c353a66032e2c1ce7b577915825619f3da5e",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00951",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=RARETRY/dt=2026-03-01/object=3fd338175444a477d5a091c622f8f5e4210538cb853e20b70fcd4ee17a164698",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

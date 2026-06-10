@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:HAEDALUSDC:2026-03-01:c0cde1c46143dc298ff362caa8333ce3ed1eec6129cc56395a6cf5c8d61532e3:accepted-tranche",
   "accepted_tranche_manifest_hash": "8b2018bd85127bfd917a1de5f91566722539bebdc92eac4bd9fd14e1568e8b31",
-  "run_spec_hash": "c9e09e3386616207c2c5d33e04ee5accbac0f2d2f489cca98d6c8de1c293ea8c",
+  "run_spec_hash": "f7474d79c774ddc7e713d643324f1c1603407e33eacd518191dc9f363f5efa1f",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00556",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=HAEDALUSDC/dt=2026-03-01/object=c0cde1c46143dc298ff362caa8333ce3ed1eec6129cc56395a6cf5c8d61532e3",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

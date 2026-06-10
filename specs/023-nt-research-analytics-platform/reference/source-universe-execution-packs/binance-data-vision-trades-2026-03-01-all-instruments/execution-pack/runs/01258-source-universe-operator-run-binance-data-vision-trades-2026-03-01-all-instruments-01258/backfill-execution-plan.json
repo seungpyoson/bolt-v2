@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:USDTUAH:2026-03-01:dcd2dab0aa64bd47e50015869329cf5c620ee92847801a7821db6df9385cd255:accepted-tranche",
   "accepted_tranche_manifest_hash": "7063ee1f4caf53aa883efdd49e30961d9c0db13c3dfaa43e52060e6ac5d424ae",
-  "run_spec_hash": "fab7843094713e1bf3e28cc051a8ab8cd3fb2f3021228028152d969554b0930c",
+  "run_spec_hash": "796740c63282e75272687bf10ee44ae1e4e60d0a8b9c07ba8a75a477ca213cde",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01258",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=USDTUAH/dt=2026-03-01/object=dcd2dab0aa64bd47e50015869329cf5c620ee92847801a7821db6df9385cd255",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

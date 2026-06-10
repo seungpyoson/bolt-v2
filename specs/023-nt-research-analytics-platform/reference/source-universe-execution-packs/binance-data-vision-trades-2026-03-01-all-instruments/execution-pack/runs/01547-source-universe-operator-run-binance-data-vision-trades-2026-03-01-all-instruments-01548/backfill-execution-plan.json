@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:CARVUSDT:2026-03-01:f2f709f6a6bfe6928200bd0421af9e62b116c2e41ff7398da1e7167294880cca:accepted-tranche",
   "accepted_tranche_manifest_hash": "82304737ce38adace4e5de40fc786743b5f22be913a6485fd990bcd0438e5236",
-  "run_spec_hash": "52726c5795d540ec8c77b72d41db654eece567586565582514589a790c5f7717",
+  "run_spec_hash": "14c52a9d13c0e0032fdf10246a32b2d23e8629488d07fc5be1b63e50eb2c8bfb",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01548",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=CARVUSDT/dt=2026-03-01/object=f2f709f6a6bfe6928200bd0421af9e62b116c2e41ff7398da1e7167294880cca",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

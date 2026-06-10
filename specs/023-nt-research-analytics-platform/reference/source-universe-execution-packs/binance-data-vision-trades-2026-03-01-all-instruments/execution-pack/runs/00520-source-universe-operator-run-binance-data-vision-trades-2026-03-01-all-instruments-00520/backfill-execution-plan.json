@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:GALAETH:2026-03-01:453e66c0821a67c5f2c89039d6372f15a35284b67548777d43052996a9330834:accepted-tranche",
   "accepted_tranche_manifest_hash": "a4d7cadd8c53ed4b431eb17557790e0f7798694830517d687dffd2478e76d9c7",
-  "run_spec_hash": "f1ee020dd83ea753ed1f87b11ff5cb0167cb7f4589bc3a77c2747c4569e853b9",
+  "run_spec_hash": "c55aca78da475030a499275bea0e046e5d298d29e6880ebd2a61afe69312d2f0",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00520",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=GALAETH/dt=2026-03-01/object=453e66c0821a67c5f2c89039d6372f15a35284b67548777d43052996a9330834",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:BCHBTC:2026-03-01:c871bbf8556be5cede622e5212816e42299c04028bc4eaefbe0fe28eab1f5429:accepted-tranche",
   "accepted_tranche_manifest_hash": "09ba7e160d82bcab423380632812e55fd0ca19bb1a2673c473cefcea1e46ad5e",
-  "run_spec_hash": "5de5cafab41aed64f6ea421ef0a25d67ba178c518ff39c95755efb4a0567eb78",
+  "run_spec_hash": "096feb0ef71ebb14f3d965bd18ef6fa56581fb230744ac9c4fcd46129f3f5aa0",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00200",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=BCHBTC/dt=2026-03-01/object=c871bbf8556be5cede622e5212816e42299c04028bc4eaefbe0fe28eab1f5429",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

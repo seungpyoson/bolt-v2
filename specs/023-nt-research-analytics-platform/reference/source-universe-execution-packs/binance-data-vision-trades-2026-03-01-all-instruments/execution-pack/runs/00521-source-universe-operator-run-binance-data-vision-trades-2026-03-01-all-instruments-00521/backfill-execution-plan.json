@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:GALATRY:2026-03-01:e343aba49af0db9b630b35cf743d4df3023f3004502b939ae925795ca48ed142:accepted-tranche",
   "accepted_tranche_manifest_hash": "417dcb34b0afa7cf491ce389e091de2e69ca0257da4bfca6d93044adb832a3d5",
-  "run_spec_hash": "0ed6c2958f25ea933f59f0c52d792eac79626adfa605e12878a854bbb553348c",
+  "run_spec_hash": "b53e1a74186c62aae07655489b9260fd0c2a80d64a318589052f2b87c3908d44",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00521",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=GALATRY/dt=2026-03-01/object=e343aba49af0db9b630b35cf743d4df3023f3004502b939ae925795ca48ed142",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

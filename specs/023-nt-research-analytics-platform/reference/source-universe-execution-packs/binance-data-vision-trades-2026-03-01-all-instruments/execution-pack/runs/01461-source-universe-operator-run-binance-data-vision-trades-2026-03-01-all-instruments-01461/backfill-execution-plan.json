@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:ALGOUSDT:2026-03-01:6ad6734d4885c6efc628a51c53dffe9df50f7218ad035a84f1a406bf21278e9f:accepted-tranche",
   "accepted_tranche_manifest_hash": "b2c5c8bcbe4aebcffcae1afa66a0d83b5c1a4a37f80733adb9c30e2098af081e",
-  "run_spec_hash": "e626798d99b03da8926146d176ef889f4dc428855d2dc909f22c642175eb5874",
+  "run_spec_hash": "772a0fbcb24fe67cbffb1e48b2b8ab6160356d9f45382d22a469d9d8b2b6b0f5",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01461",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=ALGOUSDT/dt=2026-03-01/object=6ad6734d4885c6efc628a51c53dffe9df50f7218ad035a84f1a406bf21278e9f",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

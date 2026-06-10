@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:FOGOUSDT:2026-03-01:a5dbab540935b7f9bbc8ceccc480e9e1a7d0f3dcbc170e1615c73d0974ff781c:accepted-tranche",
   "accepted_tranche_manifest_hash": "dc8dd2281302aed74d23e8e10d8e0996aad964d4a1205ba6d6c949ca6a1d2436",
-  "run_spec_hash": "89047e063827f6b012835bbd48734d73d7f70ce26219efb41433d221fb73101b",
+  "run_spec_hash": "853d933efd7d2ef9c551ced1303a375a3f3f4387ffb10cfd12f0aff6cca6aa77",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01637",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=FOGOUSDT/dt=2026-03-01/object=a5dbab540935b7f9bbc8ceccc480e9e1a7d0f3dcbc170e1615c73d0974ff781c",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

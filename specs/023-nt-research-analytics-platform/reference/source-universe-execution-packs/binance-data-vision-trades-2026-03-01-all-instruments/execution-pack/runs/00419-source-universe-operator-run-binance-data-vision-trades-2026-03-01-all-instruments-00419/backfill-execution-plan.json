@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ENAFDUSD:2026-03-01:9aced21b32ff878330f9d7263f3b1fa4c1a62dffdb18ec7d62663cb9c68b7f7a:accepted-tranche",
   "accepted_tranche_manifest_hash": "c1353367310d397bc26659e01dac6808ba711411bca35a524d3736488a9bb36e",
-  "run_spec_hash": "711de224ba07c48231bc2179866dc2679615ea2e266d98580696278f843e53c6",
+  "run_spec_hash": "f8f32f0071e17301acd65be074cd69c305a25ff38381a5a6d063ef0fdf57b079",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00419",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ENAFDUSD/dt=2026-03-01/object=9aced21b32ff878330f9d7263f3b1fa4c1a62dffdb18ec7d62663cb9c68b7f7a",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

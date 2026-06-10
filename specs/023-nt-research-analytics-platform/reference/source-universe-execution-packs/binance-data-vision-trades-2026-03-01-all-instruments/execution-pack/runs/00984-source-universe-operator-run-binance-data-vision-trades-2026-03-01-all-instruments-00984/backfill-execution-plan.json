@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ROSEBTC:2026-03-01:fe4e31ae8a0071a2e802831c9747dd19774c24d21e3f92db06d4a65c8e669460:accepted-tranche",
   "accepted_tranche_manifest_hash": "723aeadec2c76a6397ca01239ac35a201b76ffdda9c2bcd3f9abd8d4f6f5f294",
-  "run_spec_hash": "3030bacc0733e95e7c5f47385139c4272fff5116cb7dd5070f49ac4e9240aeeb",
+  "run_spec_hash": "75755786a120ec5d327b9dacad87051234ceacf03766b4240411a337608b87c5",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00984",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ROSEBTC/dt=2026-03-01/object=fe4e31ae8a0071a2e802831c9747dd19774c24d21e3f92db06d4a65c8e669460",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

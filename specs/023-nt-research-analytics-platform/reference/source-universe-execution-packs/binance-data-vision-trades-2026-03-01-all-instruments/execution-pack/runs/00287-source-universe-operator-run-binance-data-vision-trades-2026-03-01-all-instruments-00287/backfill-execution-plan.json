@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:CAKEUSDT:2026-03-01:6596b9bc3e3636a18dd63eaf847eb1235b4ae6ac9baf5299cd285a74606cb33f:accepted-tranche",
   "accepted_tranche_manifest_hash": "2621bbd9bbc489e0ea7b25adaccee48a491e805361d79dba9ec52b06520ebe8d",
-  "run_spec_hash": "769b198070d5e2faf95874e372b2cb1fcaec300aaf110e57244053c5be28d620",
+  "run_spec_hash": "9f19bc0518c6bc1ee2bb9c7689a597e9e3e9212a4a005c6c0d267599eb9bf73f",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00287",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=CAKEUSDT/dt=2026-03-01/object=6596b9bc3e3636a18dd63eaf847eb1235b4ae6ac9baf5299cd285a74606cb33f",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

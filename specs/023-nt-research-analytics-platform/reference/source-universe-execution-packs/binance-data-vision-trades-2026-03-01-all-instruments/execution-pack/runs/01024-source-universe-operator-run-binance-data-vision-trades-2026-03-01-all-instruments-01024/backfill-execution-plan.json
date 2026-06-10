@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SEIBTC:2026-03-01:3d90cec11e32a59abfa9f2ee3bed067d2e2efac040e8b92606e828ac7669d013:accepted-tranche",
   "accepted_tranche_manifest_hash": "efa07801fc64c52bb3be1c17f2d9bb25b459d0d726257c0aa6d0c82b330c8564",
-  "run_spec_hash": "e0a19ded65eb7d14d903fa50523d17111f206349eb11104d444ef0cb344fb4d6",
+  "run_spec_hash": "69ddf4d2e3e1d7ec25819fae57f180b16c4e250214cd542956057bb9b6277197",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01024",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SEIBTC/dt=2026-03-01/object=3d90cec11e32a59abfa9f2ee3bed067d2e2efac040e8b92606e828ac7669d013",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:NEARBTC:2026-03-01:b24b88ef1979ec8efdf46f1b2ea173abeada227820471f1aed1f272f1858ac84:accepted-tranche",
   "accepted_tranche_manifest_hash": "42e90ef8102c4630852764c8b87b02fc38152b8d6ece1f4caeacf66525611f08",
-  "run_spec_hash": "c85ec5483a45936b622190273c6db0dc3cc5f2d42406c2282635f8980e69e1ac",
+  "run_spec_hash": "8a2ba6e3f804af21e282803b204f6f360d394a1699baf24927cfc74589fd01b8",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00784",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=NEARBTC/dt=2026-03-01/object=b24b88ef1979ec8efdf46f1b2ea173abeada227820471f1aed1f272f1858ac84",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

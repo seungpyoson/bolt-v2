@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ADAETH:2026-03-01:8c46c8c4e1f8a22cd4b5de864e8d9df6e24d614ee20bf421aa3fea9844480582:accepted-tranche",
   "accepted_tranche_manifest_hash": "a1f82ece21c234ff739f8e5b9a2a6ea82479e22e4987af013207d21b27217c8f",
-  "run_spec_hash": "f8798406247a463adb32e8fb32b2519e0dfb20ae15f9bab5b73b6f5ec132110b",
+  "run_spec_hash": "1f189e627cc2e41308a7390aca8f1531cc80a95fb1a15839df2a64d03cd5a873",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00043",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ADAETH/dt=2026-03-01/object=8c46c8c4e1f8a22cd4b5de864e8d9df6e24d614ee20bf421aa3fea9844480582",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:TONIDR:2026-03-01:c13298b97d8ea170b8530bf703fa791b40423fa5ccdc938a75848f963eb0502a:accepted-tranche",
   "accepted_tranche_manifest_hash": "190f6c247deb2e8ce8c7350e0b8c2909763165392f3eba33587b2efe30f6e371",
-  "run_spec_hash": "08fd755c6a98bbf8237d6808c4e0a780afc0579ab92b1e64afa632a04b6039f6",
+  "run_spec_hash": "f722cd86357bd28a6027e54a53ed8b11a26114f0d47a0491509299ad12d745df",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01178",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=TONIDR/dt=2026-03-01/object=c13298b97d8ea170b8530bf703fa791b40423fa5ccdc938a75848f963eb0502a",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:币安人生USDT:2026-03-01:da0bd41622ac229a442b37b09f6d27e326d823eed8bc4c18471eaa16c860d879:accepted-tranche",
   "accepted_tranche_manifest_hash": "bd8e42d4732f5dd43a5ec5b05ed75b9443c5cb7b3c831a3df5b5d62eb34c4645",
-  "run_spec_hash": "d349e4599b5a259fab382b84eab9c0dce4fc90229a24f4ffc932ad5613510f8a",
+  "run_spec_hash": "50b96c2e9bd5683c80f2703ed65e2bb27dc91490968f138db9e15525ee6185c0",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01415",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=币安人生USDT/dt=2026-03-01/object=da0bd41622ac229a442b37b09f6d27e326d823eed8bc4c18471eaa16c860d879",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

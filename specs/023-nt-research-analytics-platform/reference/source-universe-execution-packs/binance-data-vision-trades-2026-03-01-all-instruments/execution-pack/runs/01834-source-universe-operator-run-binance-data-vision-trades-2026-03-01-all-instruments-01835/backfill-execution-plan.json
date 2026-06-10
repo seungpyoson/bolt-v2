@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:RAREUSDT:2026-03-01:7111dbaa7d53458ad9400caf3b4a28f2ea0923879123185fb34a107f31c33707:accepted-tranche",
   "accepted_tranche_manifest_hash": "6a753a4ef5e5abaff6228db96481d32496ed4be2a25cd5c32309cd022f152142",
-  "run_spec_hash": "ec9575e91a19b5786671c38568c1d99d6b1dfdc1516accdda74712d99bb73816",
+  "run_spec_hash": "28dc7a1dfbac66beef586574d4ac0a9a85fed5c25b9e7a3620f878a77e745253",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01835",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=RAREUSDT/dt=2026-03-01/object=7111dbaa7d53458ad9400caf3b4a28f2ea0923879123185fb34a107f31c33707",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

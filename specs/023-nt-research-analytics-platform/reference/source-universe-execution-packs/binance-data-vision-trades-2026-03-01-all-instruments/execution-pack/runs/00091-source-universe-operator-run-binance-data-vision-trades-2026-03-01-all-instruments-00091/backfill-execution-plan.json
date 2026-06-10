@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:APEUSDT:2026-03-01:012159b2c64f36989d366e7f4c8802e9d6be4314213f592037feb1469a95f2c6:accepted-tranche",
   "accepted_tranche_manifest_hash": "27cfe44f3ccb93f8e1aa6905af59bd90a9d50becb00e821863c1f5e643357d7b",
-  "run_spec_hash": "78c7c76d6b206b4710ff54fda9662a08d806a883d6d22f7ba1e55d571e8167a8",
+  "run_spec_hash": "b88f90ca3c433619a6bcaf87f22aaeefb9803a7c23f16e7a75d40ab1cc174131",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00091",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=APEUSDT/dt=2026-03-01/object=012159b2c64f36989d366e7f4c8802e9d6be4314213f592037feb1469a95f2c6",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

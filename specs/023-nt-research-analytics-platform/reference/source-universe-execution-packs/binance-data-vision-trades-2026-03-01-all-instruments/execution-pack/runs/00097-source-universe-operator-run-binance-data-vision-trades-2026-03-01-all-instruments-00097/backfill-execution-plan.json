@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:APTEUR:2026-03-01:b7334f7d78bcd233d258d25f03cfd059b47701ef0013fe71d0beec3c25cb956a:accepted-tranche",
   "accepted_tranche_manifest_hash": "31a9802cf6a11f2b32e2105494fb0e8ddbfdb295dfddc01b078e2aab11a7510e",
-  "run_spec_hash": "d2f046558cfeb62abdd79dafce1dd2893d7a310469a2937d1113be4b447332d9",
+  "run_spec_hash": "8a415d6cbb80e5318347064449276f5f01b3705b50f255b0abca76150ab338a7",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00097",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=APTEUR/dt=2026-03-01/object=b7334f7d78bcd233d258d25f03cfd059b47701ef0013fe71d0beec3c25cb956a",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

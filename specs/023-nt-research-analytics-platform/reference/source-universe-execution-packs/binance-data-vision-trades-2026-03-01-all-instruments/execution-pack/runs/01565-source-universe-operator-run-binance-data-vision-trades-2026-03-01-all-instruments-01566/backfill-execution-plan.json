@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:COOKIEUSDT:2026-03-01:5e17d3f9b8e181bc9b78989a89161c8cad0dee90286415995b92aaaff1233245:accepted-tranche",
   "accepted_tranche_manifest_hash": "2ff92d77bad6b3926b91067bf534fc07703d794755ae7a5b46dd5f8d06df3beb",
-  "run_spec_hash": "ff55c74bfd3d0a55b750ad02c3982b04e104b5683ae1bccf873c976eadfd8f0f",
+  "run_spec_hash": "97f559ec8763806d4fd33b7dad48261a1aaf6d57b17117b72c5d12da7cd70302",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01566",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=COOKIEUSDT/dt=2026-03-01/object=5e17d3f9b8e181bc9b78989a89161c8cad0dee90286415995b92aaaff1233245",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

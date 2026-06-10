@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ALICEUSDT:2026-03-01:ccdc18456ca9aa5512b2348aa2177746b47026e93b2fe597545567f201b06c8c:accepted-tranche",
   "accepted_tranche_manifest_hash": "25e0bee2dc1c88e45e461051d661d8a2b57735e64109c2de54add8e23fc21108",
-  "run_spec_hash": "5e6d568e52605d949890de148e7cc055224e19eb3a452ab68941e984c9f7c59d",
+  "run_spec_hash": "163693f09857b970e73840ac5a37163843bb74c6548d5e96f848e1e190f88c2a",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00071",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ALICEUSDT/dt=2026-03-01/object=ccdc18456ca9aa5512b2348aa2177746b47026e93b2fe597545567f201b06c8c",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

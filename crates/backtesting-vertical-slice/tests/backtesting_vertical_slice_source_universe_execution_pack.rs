@@ -232,7 +232,7 @@ record_limit = 1
 
 [venue_account_types]
 spot = "CASH"
-crypto_perpetual = "MARGIN"
+crypto_perpetual = "CASH"
 crypto_future = "MARGIN"
 "#,
             work_order_path.display(),
@@ -244,9 +244,47 @@ crypto_future = "MARGIN"
 
     let artifact = write_source_universe_execution_pack_from_spec_file(&spec_path)
         .expect("execution pack write succeeds");
-    let pack: SourceUniverseExecutionPack =
+    let initial_pack: SourceUniverseExecutionPack =
         serde_json::from_slice(&fs::read(&artifact.path).expect("read execution pack"))
             .expect("execution pack parses");
+    let initial_record = &initial_pack.records[0];
+    let initial_run_spec_text =
+        fs::read_to_string(&initial_record.run_spec_path).expect("read initial run spec");
+    let initial_run_spec: RunSpec =
+        toml::from_str(&initial_run_spec_text).expect("initial run spec parses");
+    assert_eq!(initial_run_spec.manifest.venue.account_type, "CASH");
+    let initial_execution_plan: BackfillExecutionPlan = serde_json::from_slice(
+        &fs::read(&initial_record.execution_plan_path).expect("read initial plan"),
+    )
+    .expect("initial execution plan parses");
+
+    fs::write(
+        &spec_path,
+        format!(
+            r#"pack_id = "source-universe-execution-pack-binance-test"
+source_universe_conversion_work_order_path = "{}"
+run_spec_template_path = "{}"
+output_dir = "{}"
+record_limit = 1
+overwrite_existing_artifacts = true
+
+[venue_account_types]
+spot = "CASH"
+crypto_perpetual = "MARGIN"
+crypto_future = "MARGIN"
+"#,
+            work_order_path.display(),
+            template_path.display(),
+            output_dir.display(),
+        ),
+    )
+    .expect("write overwrite spec");
+
+    let artifact = write_source_universe_execution_pack_from_spec_file(&spec_path)
+        .expect("execution pack overwrite succeeds");
+    let pack: SourceUniverseExecutionPack =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read refreshed execution pack"))
+            .expect("refreshed execution pack parses");
 
     assert_eq!(pack.status, SourceUniverseExecutionPackStatus::Ready);
     assert_eq!(pack.materialized_record_count, 1);
@@ -287,6 +325,7 @@ crypto_future = "MARGIN"
     let execution_plan: BackfillExecutionPlan =
         serde_json::from_slice(&fs::read(&record.execution_plan_path).expect("read plan"))
             .expect("execution plan parses");
+    assert_ne!(execution_plan.run_spec_hash, initial_execution_plan.run_spec_hash);
     assert_eq!(execution_plan.status, BackfillExecutionPlanStatus::Ready);
     assert_eq!(execution_plan.operator_run_id, record.operator_run_id);
     assert_eq!(execution_plan.objects.len(), 1);

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:IDEXUSDC:2026-03-01:37eec9810b0f6a6632af33de72436939c5df54501998da40e4921df9af5cf343:accepted-tranche",
   "accepted_tranche_manifest_hash": "e22b380bb02015c607588bcff64eef778c57612a25d658af04648cf6d49543ab",
-  "run_spec_hash": "3b8d405e13bb200ed5f140b568a5950a934b77bc0cc3a96a42bfc82a1b39c0b4",
+  "run_spec_hash": "d45bc677246850ddead8462d8f219cc847d5061f369c6571e6d64a34929df48f",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00602",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=IDEXUSDC/dt=2026-03-01/object=37eec9810b0f6a6632af33de72436939c5df54501998da40e4921df9af5cf343",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

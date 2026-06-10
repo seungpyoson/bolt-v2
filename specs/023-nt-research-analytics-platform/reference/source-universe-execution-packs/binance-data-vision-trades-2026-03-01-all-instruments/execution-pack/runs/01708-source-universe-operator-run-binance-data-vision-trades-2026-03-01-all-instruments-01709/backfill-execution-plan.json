@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:KAITOUSDT:2026-03-01:1c306d196bf731258e08c450b767c3682ec5ba1f62391dc2dfb291058decb6a4:accepted-tranche",
   "accepted_tranche_manifest_hash": "116340cbd5664bdee347671b014941032486d1c9891d23f9e49ba42bd9b8dbb1",
-  "run_spec_hash": "d644a33bacdc7f17973ace6eea3fdfc3f4db62dc4a30ff9f03db1d661ab932db",
+  "run_spec_hash": "085d35cd472636527b7d0d52ea3933facad94218dde6fe43e5df35e07bb0711d",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01709",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=KAITOUSDT/dt=2026-03-01/object=1c306d196bf731258e08c450b767c3682ec5ba1f62391dc2dfb291058decb6a4",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

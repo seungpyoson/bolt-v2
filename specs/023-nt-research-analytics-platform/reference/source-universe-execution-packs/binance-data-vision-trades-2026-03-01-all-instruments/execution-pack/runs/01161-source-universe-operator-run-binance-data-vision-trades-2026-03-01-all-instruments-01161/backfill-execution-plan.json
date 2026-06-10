@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:THETRY:2026-03-01:aa0ca7026b0ca8c64546160837c0d3fad37f58e10aaab5b3c0b7f26064b233a1:accepted-tranche",
   "accepted_tranche_manifest_hash": "cca9b4a319757cc4b370483d75d84de18217c439d7e02b0763b515fd52d25ba4",
-  "run_spec_hash": "b88814ec4da55476d632b28f0966020f04c45479313349a3d1f630d9de20ebc5",
+  "run_spec_hash": "281562563491e59f2e4894445c09a7805ed2ac30287e9f23b01b8339126d365a",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01161",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=THETRY/dt=2026-03-01/object=aa0ca7026b0ca8c64546160837c0d3fad37f58e10aaab5b3c0b7f26064b233a1",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

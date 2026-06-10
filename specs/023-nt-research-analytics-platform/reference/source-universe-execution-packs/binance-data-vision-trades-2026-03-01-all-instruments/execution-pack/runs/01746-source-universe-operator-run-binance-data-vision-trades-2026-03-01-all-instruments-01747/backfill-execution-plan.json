@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:MELANIAUSDT:2026-03-01:59411c768a5302d8bbf51646f9e6016dc282fd2af2ddf0300650ce72e8c95f5c:accepted-tranche",
   "accepted_tranche_manifest_hash": "b27d6255a52dd75b1e4d20fd13830dbd607e06316bdbee23227a6022e6a0b995",
-  "run_spec_hash": "e88508c635aab3a851e82c8310ce75c4e2067f6d2270d5ac412f8d0de99b02d3",
+  "run_spec_hash": "a1d721ad5d21403d9285985514e3ffe4e78f9a6864dd86ef7aebcd7b1f519282",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01747",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=MELANIAUSDT/dt=2026-03-01/object=59411c768a5302d8bbf51646f9e6016dc282fd2af2ddf0300650ce72e8c95f5c",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

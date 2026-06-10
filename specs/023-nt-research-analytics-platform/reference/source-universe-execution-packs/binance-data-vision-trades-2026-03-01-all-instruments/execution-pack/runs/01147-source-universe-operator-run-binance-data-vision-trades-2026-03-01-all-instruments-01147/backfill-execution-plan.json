@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:TAOBTC:2026-03-01:8d1e3e59ac613b652fbb38f40dc2b47a31d7e96b2fa19ecd914857f22d8444b9:accepted-tranche",
   "accepted_tranche_manifest_hash": "f4adc8e685fb44b5bdf6afd0113217c3a608cc41a9528a4b4f42dbe3dab417d3",
-  "run_spec_hash": "d23f174c7a03084d3ccf8279d057024691966448382f8faf7d1b0bbc33ab872e",
+  "run_spec_hash": "171a095c908a336ab4f43ef13d4cafcd7af278f22502bf5cec4f882e7547434c",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01147",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=TAOBTC/dt=2026-03-01/object=8d1e3e59ac613b652fbb38f40dc2b47a31d7e96b2fa19ecd914857f22d8444b9",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

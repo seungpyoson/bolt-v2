@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:DOTEUR:2026-03-01:3c277492ead8be03391708ad1d16db5d4ae69901a0929a8f24473d5ad6cd3357:accepted-tranche",
   "accepted_tranche_manifest_hash": "c5ad0c44f83b3533754de6ea155690736691220bd36521a748d7d1dc92554b52",
-  "run_spec_hash": "a580b3ee4eea85bde32b5370e9b82f2550d6c439a0aa90fddd315458d10778eb",
+  "run_spec_hash": "3a561c6b45870dfba18aaf1378990a41a618c88db4682866545bf29871330d5a",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00387",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=DOTEUR/dt=2026-03-01/object=3c277492ead8be03391708ad1d16db5d4ae69901a0929a8f24473d5ad6cd3357",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

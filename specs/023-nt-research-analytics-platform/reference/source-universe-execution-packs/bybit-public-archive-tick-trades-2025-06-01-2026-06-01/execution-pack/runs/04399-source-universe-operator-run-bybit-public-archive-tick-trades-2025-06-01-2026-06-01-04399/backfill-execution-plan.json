@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-spot-tick-trades:XRPBTC:2026-04-17:1fa43ad696b90e5a0312998f550117b019fb1916d48dc754031f8085616ece2a:accepted-tranche",
   "accepted_tranche_manifest_hash": "13405acde02c94359724c70269e49a220ceb51e037aca1e2a64c7afe8265a583",
-  "run_spec_hash": "ba0fb57a04f547da2c5f413109e756ee204d6655f94e1d7fee38ced2a7e43495",
+  "run_spec_hash": "3248914f78fbb5b3f876e5a14cd6ac0a208f00e7eab24f232cb7ba7a80b0059d",
   "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-04399",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=spot/symbol=XRPBTC/dt=2026-04-17/object=1fa43ad696b90e5a0312998f550117b019fb1916d48dc754031f8085616ece2a",
   "source_proof_id": "source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01",

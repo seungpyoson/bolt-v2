@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:ETHFIUSDC:2026-03-01:67e0027780c08c885875e5b58a127f121703e2d0848f8ac745209475f7a074b1:accepted-tranche",
   "accepted_tranche_manifest_hash": "4b684b9a9e85100f294987eb9d50ec3f03c145597d3bdaf16c37b9ed2ed46ee0",
-  "run_spec_hash": "7ec7fc420c4ea35529d67dd393d9cb0e70acda710c44099ae713d3dec862b6c5",
+  "run_spec_hash": "19499a823e99e4b20797da09a2087cbc6bac6bb0346770c5f667b271eb211282",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01617",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=ETHFIUSDC/dt=2026-03-01/object=67e0027780c08c885875e5b58a127f121703e2d0848f8ac745209475f7a074b1",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

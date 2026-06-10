@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:DENTUSDT:2026-03-01:280fcce8dd7dc6b2dc8c6266d654623b9fc7808f23ee69816fa46cbd56d0c705:accepted-tranche",
   "accepted_tranche_manifest_hash": "e5e217173481dbbddc346c205d198444b5f9e1285e363288de2beb2618d95857",
-  "run_spec_hash": "992f128da4643ed8ac8d9bfeb7afbcd0bf9c018a8326e86c01de65800cd66cce",
+  "run_spec_hash": "b4b245facdcef15b75e6fec6e9a9e6eb404259b0f345d22f8ffb3ad9a0e55460",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00359",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=DENTUSDT/dt=2026-03-01/object=280fcce8dd7dc6b2dc8c6266d654623b9fc7808f23ee69816fa46cbd56d0c705",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

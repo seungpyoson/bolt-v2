@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:MANTATRY:2026-03-01:35b219a6ba9123f89f6ac7d2c2ac41050408af652187d463527fc859f2e2fe07:accepted-tranche",
   "accepted_tranche_manifest_hash": "15e66c07888fe92b21e079fb417ff05ad7ea602ad3236d0aca2d1ec6bd45cdd4",
-  "run_spec_hash": "80c33cfbb9128f0b7b8ffdd76887065fa00bd8360c02c0157a1e177bbd8d2512",
+  "run_spec_hash": "9b682fe02975a075071025acaaf3b2200a9d493ac0138be5733e96471e1a6424",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00733",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=MANTATRY/dt=2026-03-01/object=35b219a6ba9123f89f6ac7d2c2ac41050408af652187d463527fc859f2e2fe07",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:LPTBTC:2026-03-01:8ae8b51efab2ec5afbfce63a6cd7962295ddf48c0b81b8d3f9f60a2eb579ddb7:accepted-tranche",
   "accepted_tranche_manifest_hash": "dc07e652bc3d16a463b9319a0b1e8dda17bbfe0c18fccf3d44791420c52b48ed",
-  "run_spec_hash": "2423f61d1e1915117dc64ffea964c1f24415f0e3fe767206ef4b1277742abd03",
+  "run_spec_hash": "13ec4174acbd1e3fc3fe73c9beac4e46c3bc85c5fa22eb8cadf8a63423dcdfdd",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00695",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=LPTBTC/dt=2026-03-01/object=8ae8b51efab2ec5afbfce63a6cd7962295ddf48c0b81b8d3f9f60a2eb579ddb7",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

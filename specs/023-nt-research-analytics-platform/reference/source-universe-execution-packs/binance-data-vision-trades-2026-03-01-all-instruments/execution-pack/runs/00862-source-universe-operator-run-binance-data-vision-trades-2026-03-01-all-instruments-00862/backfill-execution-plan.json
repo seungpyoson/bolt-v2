@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:PARTIFDUSD:2026-03-01:6bdf4d0d6dcc126d1e1c6a4aac75e8b30e0fccfe0ed01f37f088638438ac35b4:accepted-tranche",
   "accepted_tranche_manifest_hash": "cebfb857f37abd720ca6e437dc7ae1904f2f54cefa1ec1882a8b188ff17fea05",
-  "run_spec_hash": "a4ab84bc6939cdc6ac2260d7bdd77663d3a436597e1530eea9b9d7b86ce97eff",
+  "run_spec_hash": "dd5768a0d81ac956b23597f20bf5eff7260a860773b2a90b634c9995fc1f3a80",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00862",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=PARTIFDUSD/dt=2026-03-01/object=6bdf4d0d6dcc126d1e1c6a4aac75e8b30e0fccfe0ed01f37f088638438ac35b4",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

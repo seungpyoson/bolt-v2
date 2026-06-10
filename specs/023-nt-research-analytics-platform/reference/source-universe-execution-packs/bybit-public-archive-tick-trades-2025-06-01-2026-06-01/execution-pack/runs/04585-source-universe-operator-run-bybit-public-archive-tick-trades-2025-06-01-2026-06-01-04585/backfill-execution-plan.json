@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-spot-tick-trades:DOGEUSDT:2026-04-22:0d0a52fd335a6e9841808749ef87c9c4ade7ebf0671183d33abd05460fc4bec4:accepted-tranche",
   "accepted_tranche_manifest_hash": "56dee0b8a6d936e8335bba8745f6557c132ef4d5326582f10abac2d70caa20b0",
-  "run_spec_hash": "be0b75eb0f363b25d23af747bf2ff4da4ed4510fa90bd3671d908f9e166e5474",
+  "run_spec_hash": "e2c6e2a0ffa3c9241fbac20c595334b39b90c3a4cf24dbd4bb0df94645deca3b",
   "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-04585",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=spot/symbol=DOGEUSDT/dt=2026-04-22/object=0d0a52fd335a6e9841808749ef87c9c4ade7ebf0671183d33abd05460fc4bec4",
   "source_proof_id": "source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01",

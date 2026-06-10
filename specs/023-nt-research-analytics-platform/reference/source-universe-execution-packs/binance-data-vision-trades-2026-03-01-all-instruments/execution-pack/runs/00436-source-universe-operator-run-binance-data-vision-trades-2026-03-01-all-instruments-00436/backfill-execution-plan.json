@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ERAFDUSD:2026-03-01:146941119a648d4d26b37fc306f9d9f03bfd3bbe369661bbc5904fcb2a9e27c5:accepted-tranche",
   "accepted_tranche_manifest_hash": "e29861da0a606205fe33de18dc5bb6f2a57c096ff51b6d4e5be7ff1664be43c6",
-  "run_spec_hash": "a8ccb771a1b04fc71d814e342b47d3905f812f55337c75d0bfbad148a28874d5",
+  "run_spec_hash": "ce28e64508b4ef0f0b5f2f000cdd5d7ac365f313dca3443285d194f8b3e932f4",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00436",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ERAFDUSD/dt=2026-03-01/object=146941119a648d4d26b37fc306f9d9f03bfd3bbe369661bbc5904fcb2a9e27c5",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

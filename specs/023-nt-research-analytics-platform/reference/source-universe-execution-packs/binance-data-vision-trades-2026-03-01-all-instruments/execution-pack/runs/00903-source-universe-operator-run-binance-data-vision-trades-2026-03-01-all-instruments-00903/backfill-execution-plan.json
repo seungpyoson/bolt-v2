@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:PNUTUSDC:2026-03-01:03340396d9abd436b72c46230b25e78d270b7ea7b932e341c580c8fab26e34a7:accepted-tranche",
   "accepted_tranche_manifest_hash": "17fae018550dcdf9f39e2af661aacfc768ee6a30e456a0ec75a5cac64f8688b1",
-  "run_spec_hash": "84f51ff102a01e9c885f684aabccb06f6389fe5e76cb90b799d8a28c3ba6bce3",
+  "run_spec_hash": "0b8b9cbf40006933ab537a6287c0965529d177d464873452bb37781f0df91bc7",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00903",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=PNUTUSDC/dt=2026-03-01/object=03340396d9abd436b72c46230b25e78d270b7ea7b932e341c580c8fab26e34a7",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

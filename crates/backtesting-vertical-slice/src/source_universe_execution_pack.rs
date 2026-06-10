@@ -24,7 +24,7 @@ use crate::{
     },
     backfill_execution_plan::{
         BackfillExecutionPlanStatus, BackfillExecutionRunBinding, BackfillExecutionWorkBudget,
-        evaluate_backfill_execution_plan, write_backfill_execution_plan,
+        evaluate_backfill_execution_plan, write_backfill_execution_plan_with_overwrite,
     },
     catalog_projection::CatalogInstrumentSpec,
     canonical_trades::{CanonicalInstrumentIdentity, ConverterConfig, RawPayloadConfig},
@@ -54,6 +54,8 @@ pub struct SourceUniverseExecutionPackSpec {
     pub run_spec_template_path: PathBuf,
     pub output_dir: PathBuf,
     pub venue_account_types: SourceUniverseExecutionPackVenueAccountTypes,
+    #[serde(default)]
+    pub overwrite_existing_artifacts: bool,
     #[serde(default)]
     pub record_limit: Option<u64>,
 }
@@ -319,7 +321,7 @@ pub fn write_source_universe_execution_pack(
         let run_spec_bytes = run_spec_text.as_bytes();
         let run_spec_hash = sha256_bytes(run_spec_bytes);
         let run_spec_path = run_dir.join(SOURCE_UNIVERSE_EXECUTION_PACK_RUN_SPEC_FILE);
-        write_bytes_if_clean(&run_spec_path, run_spec_bytes)?;
+        write_bytes_if_clean(&run_spec_path, run_spec_bytes, spec.overwrite_existing_artifacts)?;
         let run_spec: RunSpec = toml::from_str(&run_spec_text).with_context(|| {
             format!(
                 "materialized run spec does not deserialize {}",
@@ -334,7 +336,11 @@ pub fn write_source_universe_execution_pack(
             .context("serialize source-universe accepted tranche")?;
         let accepted_tranche_hash = sha256_bytes(&accepted_tranche_bytes);
         let accepted_tranche_path = run_dir.join(BACKFILL_ACCEPTED_TRANCHE_MANIFEST_FILE);
-        write_bytes_if_clean(&accepted_tranche_path, &accepted_tranche_bytes)?;
+        write_bytes_if_clean(
+            &accepted_tranche_path,
+            &accepted_tranche_bytes,
+            spec.overwrite_existing_artifacts,
+        )?;
 
         let execution_plan = evaluate_backfill_execution_plan(
             format!("{}:execution-plan", record.operator_run_id),
@@ -355,8 +361,12 @@ pub fn write_source_universe_execution_pack(
             record.work_item_id,
             execution_plan.blocking_issues
         );
-        let execution_plan_artifact = write_backfill_execution_plan(&run_dir, &execution_plan)
-            .with_context(|| format!("write execution plan for {}", record.work_item_id))?;
+        let execution_plan_artifact = write_backfill_execution_plan_with_overwrite(
+            &run_dir,
+            &execution_plan,
+            spec.overwrite_existing_artifacts,
+        )
+        .with_context(|| format!("write execution plan for {}", record.work_item_id))?;
 
         materialized_source_bytes += record.selected_object_bytes;
         materialized_records.push(SourceUniverseExecutionPackRecord {
@@ -477,7 +487,7 @@ pub fn write_source_universe_execution_pack(
     let pack_path = output_dir.join(SOURCE_UNIVERSE_EXECUTION_PACK_FILE);
     let pack_bytes =
         serde_json::to_vec_pretty(&pack).context("serialize source-universe execution pack")?;
-    write_bytes_if_clean(&pack_path, &pack_bytes)?;
+    write_bytes_if_clean(&pack_path, &pack_bytes, spec.overwrite_existing_artifacts)?;
     Ok(SourceUniverseExecutionPackArtifact {
         path: pack_path,
         content_hash: sha256_bytes(&pack_bytes),
@@ -960,7 +970,7 @@ fn required_table_mut<'a>(
     })
 }
 
-fn write_bytes_if_clean(path: &Path, bytes: &[u8]) -> Result<()> {
+fn write_bytes_if_clean(path: &Path, bytes: &[u8], overwrite_existing: bool) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("create artifact directory {}", parent.display()))?;
@@ -968,11 +978,14 @@ fn write_bytes_if_clean(path: &Path, bytes: &[u8]) -> Result<()> {
     if path.exists() {
         let existing =
             fs::read(path).with_context(|| format!("read existing artifact {}", path.display()))?;
-        ensure!(
-            existing == bytes,
-            "dirty artifact {}: existing file content differs",
-            path.display()
-        );
+        if existing != bytes {
+            ensure!(
+                overwrite_existing,
+                "dirty artifact {}: existing file content differs",
+                path.display()
+            );
+            fs::write(path, bytes).with_context(|| format!("write artifact {}", path.display()))?;
+        }
     } else {
         fs::write(path, bytes).with_context(|| format!("write artifact {}", path.display()))?;
     }

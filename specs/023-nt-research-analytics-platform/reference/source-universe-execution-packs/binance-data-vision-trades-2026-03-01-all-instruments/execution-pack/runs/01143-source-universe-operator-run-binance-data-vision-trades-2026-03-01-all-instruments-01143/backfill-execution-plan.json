@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SYRUPTRY:2026-03-01:6cac77ddbdc0e8bc1572e1ea041f858b1acbd875f41bff0b28e292f5e43273a9:accepted-tranche",
   "accepted_tranche_manifest_hash": "93835fd5cd3ad06fae18e0c3a1edd4f5ab2403d07130bea388df7ff447bb2860",
-  "run_spec_hash": "d63de5141dcfa8e9dacdefdd4b2f90a31631c804af3817348ef74d0b86fd6cf5",
+  "run_spec_hash": "ca025d7f1e1779604422d25ed543b95773886aa7c22a271ddea2bc20e392313f",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01143",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SYRUPTRY/dt=2026-03-01/object=6cac77ddbdc0e8bc1572e1ea041f858b1acbd875f41bff0b28e292f5e43273a9",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

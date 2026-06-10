@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:IOTABTC:2026-03-01:39deb88c8efce9a086d05122ea9a32ca97ffc9db470158bcf96eb0d9cfb3c0b4:accepted-tranche",
   "accepted_tranche_manifest_hash": "329f51ea304d6eb6feb64fc74e0d89a30eae46b58018bb7e92842b515ed24be8",
-  "run_spec_hash": "0955c582df91f44d10d039aa98e829046609a238e32c8d849016c043a57aa82e",
+  "run_spec_hash": "9d8a8b04a995fbc26cc411850cd32b3d4342710a40e30d41dfe1a545cec66769",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00620",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=IOTABTC/dt=2026-03-01/object=39deb88c8efce9a086d05122ea9a32ca97ffc9db470158bcf96eb0d9cfb3c0b4",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

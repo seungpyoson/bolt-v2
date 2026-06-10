@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-spot-tick-trades:XRPEUR:2026-03-18:50e59274328bf83132b1df28c7390ffe189dee55b4ee92ab7115a5c22d01a68c:accepted-tranche",
   "accepted_tranche_manifest_hash": "f668d7f96a609728698e67d02253483c50f4c6eac27376ebf47d576b944055bd",
-  "run_spec_hash": "96e21693169b87bda15406b7c9fad04e59aa1e74840c6b0c5d82065f597e25b2",
+  "run_spec_hash": "fd735338173b3e78145f1dd2116ffa605f5b0f9add565a8415fbc7df7a30affa",
   "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-03239",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=spot/symbol=XRPEUR/dt=2026-03-18/object=50e59274328bf83132b1df28c7390ffe189dee55b4ee92ab7115a5c22d01a68c",
   "source_proof_id": "source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01",

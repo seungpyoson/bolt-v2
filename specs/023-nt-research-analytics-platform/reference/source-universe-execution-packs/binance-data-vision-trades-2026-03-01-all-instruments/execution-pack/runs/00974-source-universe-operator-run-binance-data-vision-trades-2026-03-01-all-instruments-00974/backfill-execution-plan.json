@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:REZUSDC:2026-03-01:472492cb8c2af01c77e0cdb43c0f45b922dcfb819538d9be4b93d28971f54482:accepted-tranche",
   "accepted_tranche_manifest_hash": "5940090202c7abdd1965a4ed7f5574b635e94fdfef3b78482a2e127d5fc24130",
-  "run_spec_hash": "587ab154fe4d506372854933b602ab7a3c69e0fed3cfe526083b5c5e3784da61",
+  "run_spec_hash": "22c191994a85ecb703ea410a9edf29ceb003504d0f033a6c8a2d6d488a5f46f8",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00974",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=REZUSDC/dt=2026-03-01/object=472492cb8c2af01c77e0cdb43c0f45b922dcfb819538d9be4b93d28971f54482",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

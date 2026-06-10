@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:USDTZAR:2026-03-01:891a24e7f69c319d8e62ac525deb943fe9543329992caa058747dbf8889d26c4:accepted-tranche",
   "accepted_tranche_manifest_hash": "ad90a09f7ab30a5cd24a09f49a42e27176a9d0b01b5bd44d6333b4a197f921a9",
-  "run_spec_hash": "a585ff25b932534455fdcc8dcc4d282b431a37cc13a8f80d8a8851ee2418e62e",
+  "run_spec_hash": "03db80b9c6333429fc18662144d5a733c7ec1d34d2c1d2881410a8b7c50b3b42",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01260",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=USDTZAR/dt=2026-03-01/object=891a24e7f69c319d8e62ac525deb943fe9543329992caa058747dbf8889d26c4",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ZAMATRY:2026-03-01:20c482273ad58268d27e99ac71efe72b268b24e8dc061d02e87648c2e0f8e63b:accepted-tranche",
   "accepted_tranche_manifest_hash": "ed96aa509022b782608e5594d7a47fdcc7378095cd659f1f162d0ceac50be7c3",
-  "run_spec_hash": "522004593140bbb5312a7cedad9600637d7da3fc74e1bad89e53ed9ac1d2a151",
+  "run_spec_hash": "f5456cee1a2279edca745a0f84925f821636fe9e5300b72a89b6076a7d86f6df",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01383",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ZAMATRY/dt=2026-03-01/object=20c482273ad58268d27e99ac71efe72b268b24e8dc061d02e87648c2e0f8e63b",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

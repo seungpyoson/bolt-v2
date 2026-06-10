@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:POLETH:2026-03-01:d4d04132a3b3b9f379faa258ac9be9d027c49df583058da39b6be088b6c87a40:accepted-tranche",
   "accepted_tranche_manifest_hash": "fffe942f989b6c2d5058b1c6c6b8ab3c69067c42de98ce1aacb51c3c701c4cb6",
-  "run_spec_hash": "28d9c481d0438d3f3222ac925f99ede35d83293916542e84736677b37cb7627d",
+  "run_spec_hash": "e9d2fb6c3c7e3004834b421e85356b66ef51a3aa86b2e57307b9c7aec66f9a42",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00908",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=POLETH/dt=2026-03-01/object=d4d04132a3b3b9f379faa258ac9be9d027c49df583058da39b6be088b6c87a40",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

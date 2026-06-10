@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:DOTTRY:2026-03-01:01f1735b7c718f2de0661d75ec3aa6affdfa2ab80f138b8978cdc8e99168af41:accepted-tranche",
   "accepted_tranche_manifest_hash": "35c75a61ce9ac53193d3261cbac1d6e21444a6a0430241d9913518ad46e6194c",
-  "run_spec_hash": "b94bd64935589f13a53688412ba72399d2cf8ccafbb5204c82fd151ce00a2663",
+  "run_spec_hash": "787026aef246ebcb6f530b0825e0a48dbf16d113f6a575eb6fdc028916604dcd",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00389",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=DOTTRY/dt=2026-03-01/object=01f1735b7c718f2de0661d75ec3aa6affdfa2ab80f138b8978cdc8e99168af41",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

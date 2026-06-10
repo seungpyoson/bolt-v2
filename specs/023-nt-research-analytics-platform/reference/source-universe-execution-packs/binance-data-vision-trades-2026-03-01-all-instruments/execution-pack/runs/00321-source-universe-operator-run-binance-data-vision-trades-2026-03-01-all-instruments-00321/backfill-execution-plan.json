@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:COSUSDT:2026-03-01:16454c5f6ea1ab7cdabd607374e6cbb114fd36c546095ab01ada679de67ea9a1:accepted-tranche",
   "accepted_tranche_manifest_hash": "343ddcfb7b0fc7f068fa9879ee3d0c71103e3d5ac44bd1775a2bdf22121aca4a",
-  "run_spec_hash": "2888489bf443a16012eaf30c29fa4fd9052509f2b2545afd64dc81c83712b3d0",
+  "run_spec_hash": "29fa0c078303cf6aa18cb314173b17c3918020da44aadc8d04ed36c6ec6379de",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00321",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=COSUSDT/dt=2026-03-01/object=16454c5f6ea1ab7cdabd607374e6cbb114fd36c546095ab01ada679de67ea9a1",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

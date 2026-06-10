@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:CAKETRY:2026-03-01:eeea4e09049a2bc4271864f662dfc7fb1ab3648bfdfd999e2d99e60ce0a2015c:accepted-tranche",
   "accepted_tranche_manifest_hash": "e9ffccd2f384d7ed7ba4917ec60bd59e461eacd3edbbf048a47e90dc998dce21",
-  "run_spec_hash": "38a093a2faf82f3d6243b2b8c76124503d8f3d53f7863cc28e2248b20507d94f",
+  "run_spec_hash": "955fa628548f5a89b0471012d5ae3dc3c8a8db2e729b183039ae09ad6159fe21",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00285",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=CAKETRY/dt=2026-03-01/object=eeea4e09049a2bc4271864f662dfc7fb1ab3648bfdfd999e2d99e60ce0a2015c",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:PAXGTRY:2026-03-01:a029a5b0015e21f62609dddd050d2787b060f403eb3848fecdb683f6ce0798c9:accepted-tranche",
   "accepted_tranche_manifest_hash": "4198affd48434b58cd4adec3b1afffb9442d89fbe731a5468980439f7cfc044d",
-  "run_spec_hash": "16f8adb6667d5b427134f59e2ec3d88a8e7deee52d744c4c469d3fb330bf986d",
+  "run_spec_hash": "09ef5d355b75bb7d1e067a31b56bc6fb0092f07b02be306e8846defe543e3444",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00867",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=PAXGTRY/dt=2026-03-01/object=a029a5b0015e21f62609dddd050d2787b060f403eb3848fecdb683f6ce0798c9",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

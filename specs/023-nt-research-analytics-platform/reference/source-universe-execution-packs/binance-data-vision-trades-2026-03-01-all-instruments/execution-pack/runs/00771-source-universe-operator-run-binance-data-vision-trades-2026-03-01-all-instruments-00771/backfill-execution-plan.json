@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:MORPHOTRY:2026-03-01:79858bf8856f593ca866ed4b289d48ff39bd97aedf2e250f1229b5614c68d629:accepted-tranche",
   "accepted_tranche_manifest_hash": "180b0a6d26c943b65995f30cc0a3032e9af7107648fea6e659a489f5ec9be381",
-  "run_spec_hash": "b9c3f64ed7bbf5a065a2370cb58cb369257ca892554b4350e455016fa503be05",
+  "run_spec_hash": "d79a7fec96333fafb058c8cc989655b83368ef8ec668be9a9b8cff092523125e",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00771",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=MORPHOTRY/dt=2026-03-01/object=79858bf8856f593ca866ed4b289d48ff39bd97aedf2e250f1229b5614c68d629",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

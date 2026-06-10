@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:HEMITRY:2026-03-01:c17b0b7899eb649c3310e5863417b941b39b31613b384cd41ff61a1e02567320:accepted-tranche",
   "accepted_tranche_manifest_hash": "3c2acff94c96e9a8b7ecbdcc6f668db08a79bfc95934a5775ccfb58f0cd39b2c",
-  "run_spec_hash": "80c3e14cb1b8b412ada16ed09ba2bb15a1bc44a93f9a6ee37ccfa0db8d63fdb7",
+  "run_spec_hash": "7ad1ebda688c12fedb8105bdc3e652d29cc9cedd2feb7c8b58c117b1204a44bd",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00568",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=HEMITRY/dt=2026-03-01/object=c17b0b7899eb649c3310e5863417b941b39b31613b384cd41ff61a1e02567320",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

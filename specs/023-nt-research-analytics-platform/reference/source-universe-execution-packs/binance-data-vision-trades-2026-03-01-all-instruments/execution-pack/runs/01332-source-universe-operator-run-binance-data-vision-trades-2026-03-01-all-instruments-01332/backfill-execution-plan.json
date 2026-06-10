@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:XAITRY:2026-03-01:8dd19275686e24281ea1d043e65cf761598483e977ccb383b86b9242f9ff0469:accepted-tranche",
   "accepted_tranche_manifest_hash": "eab1d41e641a57bcc2ce99e224d0aff16489593bedfe40b99aca971b927a5377",
-  "run_spec_hash": "077f1130b7421ed526f534e9fab8c6699bf026106dbe4b5a0824962aff49718c",
+  "run_spec_hash": "842dbdd2c84a19428e57ad1bb4058e0ca7a19c3c05b7b2ceb98a27520313d78c",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01332",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=XAITRY/dt=2026-03-01/object=8dd19275686e24281ea1d043e65cf761598483e977ccb383b86b9242f9ff0469",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

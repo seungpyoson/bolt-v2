@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:ALPINEUSDT:2026-03-01:ca3e6f66b8ed2544731641efa40387afa74cb91c17d2e69b9ebd99e1c0dfb263:accepted-tranche",
   "accepted_tranche_manifest_hash": "2e917ec80ad048ba2c6b84e4126220f3035ea9d691ab27199b64f82a23a358f6",
-  "run_spec_hash": "a8af5d353b12c6d52e2033a9b9bead961f889147219d58fed54af541980a2970",
+  "run_spec_hash": "61a15c9f012538d86db20eaa12ec6b666725b51c600d9356689938429af46a73",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01465",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=ALPINEUSDT/dt=2026-03-01/object=ca3e6f66b8ed2544731641efa40387afa74cb91c17d2e69b9ebd99e1c0dfb263",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

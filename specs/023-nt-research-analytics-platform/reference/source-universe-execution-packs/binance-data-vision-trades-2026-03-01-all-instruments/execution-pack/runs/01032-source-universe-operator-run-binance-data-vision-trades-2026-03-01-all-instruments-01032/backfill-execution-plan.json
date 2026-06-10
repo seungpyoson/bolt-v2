@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SEUR:2026-03-01:4d737a4be956a8268a4d7f484f3fdf92f10a5454a7ac17e63a27ccd4311f236e:accepted-tranche",
   "accepted_tranche_manifest_hash": "182510abbc36d29688cd59b591dd5d771bc11f9d673113d5f9a1abee582d3ccf",
-  "run_spec_hash": "18436b3a1648ddb7594ef4640912ffff6fd9dd61c4caf889136502defe37d89d",
+  "run_spec_hash": "3be2085cdbbdfdd6490b4352d989d2dd05a954da3d38242206067b800489d39f",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01032",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SEUR/dt=2026-03-01/object=4d737a4be956a8268a4d7f484f3fdf92f10a5454a7ac17e63a27ccd4311f236e",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

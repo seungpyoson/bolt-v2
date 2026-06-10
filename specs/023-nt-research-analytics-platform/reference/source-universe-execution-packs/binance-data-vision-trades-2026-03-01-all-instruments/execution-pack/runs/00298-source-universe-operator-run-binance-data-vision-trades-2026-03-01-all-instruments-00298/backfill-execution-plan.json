@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:CFXBTC:2026-03-01:c65d2d4eb1cca6697cc0926eb23f53ec070e134a5dd7b042fafec43432712081:accepted-tranche",
   "accepted_tranche_manifest_hash": "36e1e8bcef293a37bc7316f04def731904e29c432db9a7ed231c9998e0e43443",
-  "run_spec_hash": "4e5ddeb0dbf2d8f97ff768bb2d2ed3eb407870c0c11e6157ffa01cdf01cb928e",
+  "run_spec_hash": "3e0626e34a195d4d45f7ea36f78764d4319b81fc6cde068dcc452bc1ac40e4ef",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00298",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=CFXBTC/dt=2026-03-01/object=c65d2d4eb1cca6697cc0926eb23f53ec070e134a5dd7b042fafec43432712081",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

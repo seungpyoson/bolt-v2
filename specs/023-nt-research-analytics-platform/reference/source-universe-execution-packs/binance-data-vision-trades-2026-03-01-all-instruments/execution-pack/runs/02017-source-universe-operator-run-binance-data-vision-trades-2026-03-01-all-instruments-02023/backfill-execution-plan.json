@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-perpetual-native-trades:DOTUSD_PERP:2026-03-01:c47e6b68b6f4602b4884df15ba73fb48f755df8501eb033c9deae5844d4bdcbf:accepted-tranche",
   "accepted_tranche_manifest_hash": "21311ae472373f8d0f9eacce6ccdfc3f5218e254c7adadc2fe8f9cba47b81520",
-  "run_spec_hash": "04cec69297810c8846bc707d3de6126aa5047aed628268908e2280db4f517951",
+  "run_spec_hash": "65d725178cc502e376dc978dffe12b91d798b3524788bec9b5ace2ff267bc651",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-02023",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=coin_m_perpetual/symbol=DOTUSD_PERP/dt=2026-03-01/object=c47e6b68b6f4602b4884df15ba73fb48f755df8501eb033c9deae5844d4bdcbf",
   "source_proof_id": "source-proof-binance-coin-m-perpetual-native-trades-2026-03-01-all-instruments",

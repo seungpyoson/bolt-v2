@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:CATIUSDT:2026-03-01:be7a608bb3d8bef88b349cc5b7f3ef1e3f724a4f68d9f17d800f04500eae3595:accepted-tranche",
   "accepted_tranche_manifest_hash": "d5bc0789eae5f13b2287d28e1baf73d25c822381a1bbcdb7fd3197624d2dfdac",
-  "run_spec_hash": "8207602a06dea2cb1dc9ee8ca4979fba0e677724a69917d00abd20f756a93b8d",
+  "run_spec_hash": "f9c2f8a8fc5af6e56d674aa8378ce8baed6473eb3f11b8eec8dfba7d080c5990",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00290",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=CATIUSDT/dt=2026-03-01/object=be7a608bb3d8bef88b349cc5b7f3ef1e3f724a4f68d9f17d800f04500eae3595",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

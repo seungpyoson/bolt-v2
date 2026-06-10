@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:VANRYUSDC:2026-03-01:761e46fac9d5d0c01f30d5da561b0216e504d5724fab4360b837415b2a3216ad:accepted-tranche",
   "accepted_tranche_manifest_hash": "89394bf674a2f636f6432ed99928ff3ce472a02fa07ea1cb842f87e0005181db",
-  "run_spec_hash": "a71a319b0fdaa5dcdd5feeb706e4b2aaf2a798d567e2f6305a19def123135895",
+  "run_spec_hash": "2d8c5cffe80050d4b00fb9e13f9d12b8b2d0e04b72300c309ed61a9232ebbf7b",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01274",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=VANRYUSDC/dt=2026-03-01/object=761e46fac9d5d0c01f30d5da561b0216e504d5724fab4360b837415b2a3216ad",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

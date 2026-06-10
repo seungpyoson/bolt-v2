@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:HYPERUSDT:2026-03-01:38cb9a0085a2cb8578dd2977d8361bc0c5c1ff1780cb48a2a21da742437f44fa:accepted-tranche",
   "accepted_tranche_manifest_hash": "134e13fc746641de00abb7604d226dcbbc9f028a145d4040817ef92ecde563d3",
-  "run_spec_hash": "01f5c9e5b6ba993a938f5152d396cd5631d192b52d93198a00ac2ca6beb0e9cf",
+  "run_spec_hash": "70bc63c1eb37b058aace88e4856dced467db603ebd1411b28ac42dccd5629534",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00594",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=HYPERUSDT/dt=2026-03-01/object=38cb9a0085a2cb8578dd2977d8361bc0c5c1ff1780cb48a2a21da742437f44fa",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

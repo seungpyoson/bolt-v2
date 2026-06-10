@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:TRUTRY:2026-03-01:ff9fea76225d339dcdd8b3bb89b234aa633ace779957c328d9b78800b71b41e1:accepted-tranche",
   "accepted_tranche_manifest_hash": "e0d7a9961e69208a3a034ab4290479e2e3d61cdc663e31f7eedaf3bbcb2584ee",
-  "run_spec_hash": "5f64c0fe7e68555e7415a9514c8eaa9d610644566b2cba6f488b1662192042cb",
+  "run_spec_hash": "1bd411cd74c44739f17622f10bf6619d099dda827815de196d3d749bd7eafc2c",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01198",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=TRUTRY/dt=2026-03-01/object=ff9fea76225d339dcdd8b3bb89b234aa633ace779957c328d9b78800b71b41e1",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

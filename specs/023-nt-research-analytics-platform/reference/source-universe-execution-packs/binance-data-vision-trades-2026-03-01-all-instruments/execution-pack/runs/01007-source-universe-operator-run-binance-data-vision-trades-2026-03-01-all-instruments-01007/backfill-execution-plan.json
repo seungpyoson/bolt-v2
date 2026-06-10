@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SANDBTC:2026-03-01:8320ad9a4efaa29cca866da83e9eee0afc867ff5e73dc0e2f2ba52631a9f4a28:accepted-tranche",
   "accepted_tranche_manifest_hash": "a5831294129a26ab633bd3db4e455e4c371d1e022e478eac1b3357fbb9b230a9",
-  "run_spec_hash": "c2f4ee0d38703fee8c7a0de1be324024ad213be2e6c8c4d4e888e40ee3365b87",
+  "run_spec_hash": "ec16f31c25872749e5e52de71a7c59bc973da890a7605adcc32ec49321701ba9",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01007",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SANDBTC/dt=2026-03-01/object=8320ad9a4efaa29cca866da83e9eee0afc867ff5e73dc0e2f2ba52631a9f4a28",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

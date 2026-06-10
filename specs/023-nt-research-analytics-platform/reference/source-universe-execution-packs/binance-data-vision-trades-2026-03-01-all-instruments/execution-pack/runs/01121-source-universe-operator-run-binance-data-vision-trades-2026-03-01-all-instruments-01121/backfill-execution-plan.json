@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SUITRY:2026-03-01:4f334448dacdcdcdcbb327ec006f2b5f55ab28f9e7621eddb7d0e0add5ce7f48:accepted-tranche",
   "accepted_tranche_manifest_hash": "d4007b6d1b61bcb9c39e8fa0af984ed2626e0d3c044dde4e283b44efcbf96bc4",
-  "run_spec_hash": "b4f4b2a4a6e4c81f4661dae262dc36bbec0d175c21f7a410dc56627930ff83c9",
+  "run_spec_hash": "1b42f14a98d4313e3fe041c28471fa2eef549ae21dd71f53cbb1447389a38da0",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01121",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SUITRY/dt=2026-03-01/object=4f334448dacdcdcdcbb327ec006f2b5f55ab28f9e7621eddb7d0e0add5ce7f48",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

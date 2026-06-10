@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SOPHUSDT:2026-03-01:c0d6e12bf305f69a6ac237a4b948117d902afef8eadcb57c58108fa32041f4dc:accepted-tranche",
   "accepted_tranche_manifest_hash": "1811b870a8273ab34b120844d026d490c49598a5bea28c33a08d1c3a6e282a10",
-  "run_spec_hash": "1c58ff2e35be667d0e80c28be165c13aee6ac0cf99caee97a9d3cf1c6a2a2a6d",
+  "run_spec_hash": "8a64ddb6bb247456d37a1a32022124bba4347d88d6173c6fabb1c9a572884da5",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01086",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SOPHUSDT/dt=2026-03-01/object=c0d6e12bf305f69a6ac237a4b948117d902afef8eadcb57c58108fa32041f4dc",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

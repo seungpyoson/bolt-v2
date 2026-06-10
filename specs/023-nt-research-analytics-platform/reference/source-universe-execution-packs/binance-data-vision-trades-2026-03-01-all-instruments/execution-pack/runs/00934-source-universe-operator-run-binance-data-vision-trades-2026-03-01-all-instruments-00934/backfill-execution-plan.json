@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:PUNDIXUSDT:2026-03-01:4c60fa98b6ac5cedc9568c672c89246b648bb9c171b0f72cbf8aa683b244df35:accepted-tranche",
   "accepted_tranche_manifest_hash": "3d9b1c61737d8e625d12983c7d50a63e933c14d4858e7dd2d1b0d213771dcddd",
-  "run_spec_hash": "99caf5d7bf96565065f9ac3ae544456f3521756b94b82a0f19bb2ce8c64d6e53",
+  "run_spec_hash": "f6883b97cac91bcb69d428bc744edf43786d3745b070f3c793fec054b73aa7ae",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00934",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=PUNDIXUSDT/dt=2026-03-01/object=4c60fa98b6ac5cedc9568c672c89246b648bb9c171b0f72cbf8aa683b244df35",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

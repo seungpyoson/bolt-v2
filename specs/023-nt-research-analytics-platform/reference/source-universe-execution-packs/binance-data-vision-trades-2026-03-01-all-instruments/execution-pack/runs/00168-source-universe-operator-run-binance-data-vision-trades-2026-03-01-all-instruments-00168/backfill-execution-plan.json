@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:AXLBTC:2026-03-01:e4917b293447da5190e19f93645ba815029028ada2ad20addaead15e66779d3c:accepted-tranche",
   "accepted_tranche_manifest_hash": "50a8ad33a09cfc658ecfefc35e333f9806a96f72c8346ce09b6e046dcbd5e042",
-  "run_spec_hash": "f936d7f8d110cd742c3d741d9e43c65d558f2594be9802b30d25f32f17a3750a",
+  "run_spec_hash": "4fd597a6b06e4b6f5669d343b7c831581b47075975658af5cbc29f8b7917c331",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00168",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=AXLBTC/dt=2026-03-01/object=e4917b293447da5190e19f93645ba815029028ada2ad20addaead15e66779d3c",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

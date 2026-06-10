@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:POLBTC:2026-03-01:d7ae325880d552acbc3ad47fd61fe84a2c3826b380066e763b0e6c9862308ea5:accepted-tranche",
   "accepted_tranche_manifest_hash": "01fa75b3a9bab879e75e75ca9c7320da573c243a239cd9c9f61cdeeef1377037",
-  "run_spec_hash": "734bec2312dc11fa0e978b7425e2929dc62f8b95f01c23d1a5b08eab311d16c2",
+  "run_spec_hash": "c1efa39ed0264408914ce3a3202aafbbf87bb9ba78381a203ce3bdc403cddbc2",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00907",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=POLBTC/dt=2026-03-01/object=d7ae325880d552acbc3ad47fd61fe84a2c3826b380066e763b0e6c9862308ea5",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

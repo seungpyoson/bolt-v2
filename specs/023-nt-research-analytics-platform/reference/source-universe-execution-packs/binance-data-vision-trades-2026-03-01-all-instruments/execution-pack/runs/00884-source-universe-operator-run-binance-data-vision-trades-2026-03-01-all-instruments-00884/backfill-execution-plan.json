@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:PEPEJPY:2026-03-01:0c5b4ebb79f99660045d9c3b3865db1a2612b997bee25fb9f376145a39932499:accepted-tranche",
   "accepted_tranche_manifest_hash": "b9db7d74278cbdebd836547e75fab3850e4289d3cf7c7685f2fdb0529f0d22f5",
-  "run_spec_hash": "34216df70e2f691c0354bbdf39d121cacddd572e84c924a5883a15698b19f9aa",
+  "run_spec_hash": "55ba008135b4769e79adec5fe9d6ff3883351c64ecff2fd0aac6ede39e93164b",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00884",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=PEPEJPY/dt=2026-03-01/object=0c5b4ebb79f99660045d9c3b3865db1a2612b997bee25fb9f376145a39932499",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

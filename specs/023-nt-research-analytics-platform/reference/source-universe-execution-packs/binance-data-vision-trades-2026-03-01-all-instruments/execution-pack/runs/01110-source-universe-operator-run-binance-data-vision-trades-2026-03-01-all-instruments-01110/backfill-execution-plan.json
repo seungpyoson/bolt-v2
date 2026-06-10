@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:STXBTC:2026-03-01:aa23621c71d4dbc39e2e31275a953d07e3a39b9efa023932ebe0d9e1d1e26192:accepted-tranche",
   "accepted_tranche_manifest_hash": "b283434dbae3d2de03e29fe278410598b6309ecb539fab2844792518b972b88d",
-  "run_spec_hash": "d8c7b9009c8b7122320a8f141aaa6cc34f346c3987bf83cffa55cbed285d4692",
+  "run_spec_hash": "fdc28d67f3104746ed907522d39ad09e36d3e5235d4603d76aad9fc672c8fd1e",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01110",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=STXBTC/dt=2026-03-01/object=aa23621c71d4dbc39e2e31275a953d07e3a39b9efa023932ebe0d9e1d1e26192",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

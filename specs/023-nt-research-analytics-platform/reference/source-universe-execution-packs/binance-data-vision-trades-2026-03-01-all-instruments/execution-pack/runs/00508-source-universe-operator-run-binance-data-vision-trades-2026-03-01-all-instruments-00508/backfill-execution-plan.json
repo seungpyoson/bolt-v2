@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:FOGOUSDT:2026-03-01:dc42c73ef67a4209b3850eb25a872dacb17898e3dde7018f93540b3d6690b5a9:accepted-tranche",
   "accepted_tranche_manifest_hash": "0134afe4c91b83dae3ad9861e9978e32dd22db4be4babab0f8b77630e976960c",
-  "run_spec_hash": "8ed2ea56bc509dab1f2751df61c27479847138cdeee16073b2b2d49c1e72d18a",
+  "run_spec_hash": "b604e0cedf277286d67f69f6ec198d3c408f69b327c769f06c27aeefee68f168",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00508",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=FOGOUSDT/dt=2026-03-01/object=dc42c73ef67a4209b3850eb25a872dacb17898e3dde7018f93540b3d6690b5a9",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

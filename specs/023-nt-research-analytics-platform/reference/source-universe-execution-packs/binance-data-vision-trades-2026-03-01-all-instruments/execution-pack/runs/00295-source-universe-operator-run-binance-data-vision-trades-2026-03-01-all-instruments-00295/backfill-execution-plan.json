@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:CETUSTRY:2026-03-01:dacb0bd199b574c52245d7393bfde624ce741244aeaa6349930448a34990fa95:accepted-tranche",
   "accepted_tranche_manifest_hash": "055fc5ae805aef715813b530f9fe39407c756a78bcabbc8d8a82d05b58932384",
-  "run_spec_hash": "677b90530f2d66d5596210794d2905b90fbcc515b90ba17f4a98db105c3abb4c",
+  "run_spec_hash": "06a0ff1dc21c2d8c11e8dcc7a82b55ab886bcda2435011072cda1655c52c2c84",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00295",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=CETUSTRY/dt=2026-03-01/object=dacb0bd199b574c52245d7393bfde624ce741244aeaa6349930448a34990fa95",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

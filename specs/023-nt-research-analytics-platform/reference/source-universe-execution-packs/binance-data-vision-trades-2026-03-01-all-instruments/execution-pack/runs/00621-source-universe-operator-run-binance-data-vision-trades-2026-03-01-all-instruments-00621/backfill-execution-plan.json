@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:IOTATRY:2026-03-01:6279a80467e9bcefdd0d8a848404dcd4dcf646378ac9990a020b473a6993b578:accepted-tranche",
   "accepted_tranche_manifest_hash": "51bb028154d177cac51f253da9ce066ae4bca45d60bfd97ad169a85b1a8f86be",
-  "run_spec_hash": "687cb263c7c088987ce424a2c05a6c8facfdb99fa3de18688ead87f2e3b54c4f",
+  "run_spec_hash": "2dbf83435bee6fe5f419925ad10454fdc3c5151c3509cef98a58a77bd729fd1b",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00621",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=IOTATRY/dt=2026-03-01/object=6279a80467e9bcefdd0d8a848404dcd4dcf646378ac9990a020b473a6993b578",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

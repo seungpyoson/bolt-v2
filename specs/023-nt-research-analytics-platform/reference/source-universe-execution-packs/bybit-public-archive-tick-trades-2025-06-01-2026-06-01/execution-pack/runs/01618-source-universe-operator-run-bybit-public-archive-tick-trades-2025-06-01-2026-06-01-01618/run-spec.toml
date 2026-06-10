@@ -1,4 +1,4 @@
-accepted_at_utc = "2026-06-02T00:00:00Z"
+accepted_at_utc = "2026-06-10T00:00:00Z"
 accepted_by = "backtesting-vertical-slice-operator"
 capture_time_utc = "2026-06-02T04:27:02Z"
 created_at_utc = "2026-06-02T00:00:00Z"
@@ -120,7 +120,7 @@ bar_type = "ETHUSDT-25SEP26.BYBIT-1-MINUTE-LAST-INTERNAL"
 trade_size = "0.01"
 
 [manifest.venue]
-account_type = "CASH"
+account_type = "MARGIN"
 allow_cash_borrowing = false
 bar_adaptive_high_low_ordering = false
 bar_execution = true

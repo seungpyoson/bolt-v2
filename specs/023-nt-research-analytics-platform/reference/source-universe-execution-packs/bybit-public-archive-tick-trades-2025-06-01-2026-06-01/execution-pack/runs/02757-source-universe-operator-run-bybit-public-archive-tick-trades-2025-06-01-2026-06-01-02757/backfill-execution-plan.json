@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-spot-tick-trades:BTCXUSD:2026-03-06:85ab8a68d15e35e51016557bd9aedd883507f3d3e1e87d678283c1c1231f49a9:accepted-tranche",
   "accepted_tranche_manifest_hash": "f6d3f3f7d87f24059dac356226cbc2ca68ea719f0e7bccf1ccd91f5f2316e949",
-  "run_spec_hash": "e56b72c1a8f65b52ce4df4cf7ea60e18d0006fa5983b99262be6c9de99c60604",
+  "run_spec_hash": "4b3ae172d1cc6a4c03b763d51ed7fe1713960cb7cdda2e9518d3872e73f2a3b8",
   "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-02757",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=spot/symbol=BTCXUSD/dt=2026-03-06/object=85ab8a68d15e35e51016557bd9aedd883507f3d3e1e87d678283c1c1231f49a9",
   "source_proof_id": "source-proof-bybit-spot-public-archive-tick-trades-2025-06-01-2026-06-01",

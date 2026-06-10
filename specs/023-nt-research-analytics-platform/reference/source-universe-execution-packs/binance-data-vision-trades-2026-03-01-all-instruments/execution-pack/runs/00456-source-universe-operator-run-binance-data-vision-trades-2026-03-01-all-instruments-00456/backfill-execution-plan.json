@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ETHFIUSDC:2026-03-01:776b193d8c9846f0a61b1a97e8a8c0fd2c0b74e8b023d3ac7df88b52c3862fbf:accepted-tranche",
   "accepted_tranche_manifest_hash": "9eea756f8cab3dd299d1ecd1237fba8ea9f6e748eaaedaabf235ed106d68a86f",
-  "run_spec_hash": "689df1c8b288f2dc93910a926ef0071febc2e846528114ac1299e7e0c5a07732",
+  "run_spec_hash": "c5de3a3114a3ae6bfe606c9a1fd86a2409473f7641daf2b6cecbd39e34fecebd",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00456",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ETHFIUSDC/dt=2026-03-01/object=776b193d8c9846f0a61b1a97e8a8c0fd2c0b74e8b023d3ac7df88b52c3862fbf",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

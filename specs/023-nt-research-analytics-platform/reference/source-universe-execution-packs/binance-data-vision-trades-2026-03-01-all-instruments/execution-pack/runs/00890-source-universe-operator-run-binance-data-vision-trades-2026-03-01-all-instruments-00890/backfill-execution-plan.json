@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:PHATRY:2026-03-01:05d6af7a8d505e2bcd3ab31f5459a4d7a58a0a58189f9c4ee1ea0636f28b6c78:accepted-tranche",
   "accepted_tranche_manifest_hash": "e835aa070886a9ea79694808ab9c5b34f74d3c10c9d49266f03bb6a5c28ab60c",
-  "run_spec_hash": "d61caa2a56f075f12657b89cad178ffd66c68dc35a58f771d33b9a78fd82cb73",
+  "run_spec_hash": "1981ebf00e5d6aa97f2159f09d63a3047a0910d2202c9f6c7a0f2deae18b12e6",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00890",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=PHATRY/dt=2026-03-01/object=05d6af7a8d505e2bcd3ab31f5459a4d7a58a0a58189f9c4ee1ea0636f28b6c78",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

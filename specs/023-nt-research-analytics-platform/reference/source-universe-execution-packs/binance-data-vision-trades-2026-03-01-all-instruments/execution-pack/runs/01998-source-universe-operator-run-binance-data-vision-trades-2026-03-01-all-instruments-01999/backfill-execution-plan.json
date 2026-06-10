@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:ZILUSDT:2026-03-01:9f76eba6201b9a264df528a931b0054a91dd3867e976a17c8abf37ad5a282164:accepted-tranche",
   "accepted_tranche_manifest_hash": "b08def5df55d9cd6e66ac9a5d6412a93e62a886bc1b1294a5585a6a16939f511",
-  "run_spec_hash": "b5af5db027f71130b6772e02c4573d895f3cfd8f4de467fe418ebcd5887c9cba",
+  "run_spec_hash": "34f167e39160eb07db098c2713883b9977b870fb25f536c352c5fabad936b07c",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01999",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=ZILUSDT/dt=2026-03-01/object=9f76eba6201b9a264df528a931b0054a91dd3867e976a17c8abf37ad5a282164",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:HEMIUSDT:2026-03-01:2930e34d50c1e0391ef67193615afb69761639f48b4d481fe99dd846b6e1ea62:accepted-tranche",
   "accepted_tranche_manifest_hash": "a9868f8ea80cca5e2d9974ca736bda4d3fe84e86e92e0b70b466720e6ef30a6a",
-  "run_spec_hash": "2fe0e83eb4288c3be32e1a5306169d9bef73089902c25c02ba0f4372696928ee",
+  "run_spec_hash": "8f647f27b043dbf043817bc9c4ecf335865469b4be7c0652d0ae9ed6d0c42409",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01665",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=HEMIUSDT/dt=2026-03-01/object=2930e34d50c1e0391ef67193615afb69761639f48b4d481fe99dd846b6e1ea62",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

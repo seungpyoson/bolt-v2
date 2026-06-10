@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:CLANKERUSDT:2026-03-01:898cf226b9423ec73297ef373915e2d67d6e35f0d124b11afb59bee4e44bd22d:accepted-tranche",
   "accepted_tranche_manifest_hash": "26faa25f09902d90e5ae63612f4985e97b988aaa41be7c6c0f6553bc0a9cc2e2",
-  "run_spec_hash": "69ed71fece7ab512fb4660086f76ae80e904b13797aa7635b229d74d36f8e22e",
+  "run_spec_hash": "f0ce203e2f67cd4597239e4ff1da10172695c32bd5224a4f3c94fe8fdfcd97ff",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01560",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=CLANKERUSDT/dt=2026-03-01/object=898cf226b9423ec73297ef373915e2d67d6e35f0d124b11afb59bee4e44bd22d",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

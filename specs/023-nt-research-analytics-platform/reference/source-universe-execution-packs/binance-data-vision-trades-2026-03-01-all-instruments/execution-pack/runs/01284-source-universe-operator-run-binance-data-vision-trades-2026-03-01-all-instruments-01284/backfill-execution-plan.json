@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:VICUSDT:2026-03-01:2794ec40bd7acca36bae181697cd9bfb573a61dedfbe5509f245df560a3f51dc:accepted-tranche",
   "accepted_tranche_manifest_hash": "04489c7dc3a88c25e460d097174274ea9f8f8614d39665c937e35ac3510806ec",
-  "run_spec_hash": "f4a40118fd1716e839e21ccb4e15e1a4a94f29a38c59f9e41cbd8ff2b50ffec1",
+  "run_spec_hash": "2a3f63c0e793e59c7ca6ac6c2babb4be1b81dd6ab4577ac74be1f0e2457d1cd4",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01284",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=VICUSDT/dt=2026-03-01/object=2794ec40bd7acca36bae181697cd9bfb573a61dedfbe5509f245df560a3f51dc",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

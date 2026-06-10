@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:CYBERBTC:2026-03-01:78cdcfd68d0b8a1bc85c08a3d7f5c6f504502c2abca4f71b3a7dd8be4314b583:accepted-tranche",
   "accepted_tranche_manifest_hash": "45cd8c43cdcb50e869e8a672564eb517df84fcb241fb12aa5bd2c5f1df5fd4d8",
-  "run_spec_hash": "8278987922aecd78e15afd67137a490e2339bfbc097a1def102d04ae3d9ad110",
+  "run_spec_hash": "f96c1c6bbc04d65e0d27a6587ee0f2bd003c78d0ab93cc9d2ed0c991e87ffc7d",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00345",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=CYBERBTC/dt=2026-03-01/object=78cdcfd68d0b8a1bc85c08a3d7f5c6f504502c2abca4f71b3a7dd8be4314b583",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

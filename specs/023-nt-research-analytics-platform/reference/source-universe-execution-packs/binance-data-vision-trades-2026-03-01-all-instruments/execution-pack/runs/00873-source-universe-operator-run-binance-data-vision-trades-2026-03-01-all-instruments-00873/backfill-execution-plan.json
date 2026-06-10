@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:PENDLEUSDC:2026-03-01:4d3b90ece151532bcf65ee7aa42374987ceee0f5d1a23d1f0b7f6b7a09cebad1:accepted-tranche",
   "accepted_tranche_manifest_hash": "822dedf77e2a4fef2e2b8b73b9633c80da8ad79131466058312559f70653b4f1",
-  "run_spec_hash": "dbe9ed0b89cf8dbf3e30e05e5d7ee6e487951691a01799cf2e0d19475ce67d63",
+  "run_spec_hash": "6edb7a4dafbf35f1b35aab1e228e4f5a6d39d37fbe1caafb97494e6270b2a6da",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00873",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=PENDLEUSDC/dt=2026-03-01/object=4d3b90ece151532bcf65ee7aa42374987ceee0f5d1a23d1f0b7f6b7a09cebad1",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

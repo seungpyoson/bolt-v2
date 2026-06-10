@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:SPORTFUNUSDT:2026-03-01:b97aee6a3929428f8f515949593e92c163217ba0e3caa26c4f347266056cc878:accepted-tranche",
   "accepted_tranche_manifest_hash": "a03826c40f43de93b78eee459d67fcfb49dc12c2742938d201912bcc4fa9cf01",
-  "run_spec_hash": "5ec69380ec6df26578312fb72b29b4d1727ce8740c092dd75cea0cd922381d9d",
+  "run_spec_hash": "d8db68955dff4536a39e39ef615382a19e5eec07f1d2274c8ea62a7ad1295962",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01885",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=SPORTFUNUSDT/dt=2026-03-01/object=b97aee6a3929428f8f515949593e92c163217ba0e3caa26c4f347266056cc878",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:WALFDUSD:2026-03-01:d4ba464821fcb84f1b096cb9d53f5f56bfa84e3df9da8a6239257f0604316650:accepted-tranche",
   "accepted_tranche_manifest_hash": "72375494f13ae3a6c95c85e4244625bd78962f7f6ae65efb682d445e2001566c",
-  "run_spec_hash": "49ce85c7ec412171366c64574270607fc3253e6423687f4d913f0af3eba78c9d",
+  "run_spec_hash": "aa45c07c340aef37298cdbe0ecdd82b38da629d88ba12cb477a85ce3447f233c",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01291",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=WALFDUSD/dt=2026-03-01/object=d4ba464821fcb84f1b096cb9d53f5f56bfa84e3df9da8a6239257f0604316650",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

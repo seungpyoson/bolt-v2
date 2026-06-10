@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:NEARUSDC:2026-03-01:0a585fdf05924da87866604db4a9881a5b5ede155c474185d6c58b4408773d8a:accepted-tranche",
   "accepted_tranche_manifest_hash": "9c77560d181e291ea1d9d9a1fd938843b2ee8d23f0cc343b91a943ec5b9015ca",
-  "run_spec_hash": "6cc0e4895055564c2ebba3bb842692aaa0b66d88caf94c04798e9b28ebd3688d",
+  "run_spec_hash": "73b4a0369572abf13620a83236faec6918868ea78ac54a8d4d2cbde3004baa59",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00788",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=NEARUSDC/dt=2026-03-01/object=0a585fdf05924da87866604db4a9881a5b5ede155c474185d6c58b4408773d8a",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

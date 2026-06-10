@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:DOGEEUR:2026-03-01:ecfad2304dd1705b878800273a3fe3170c3742bd32c2407282b8bd04476624e5:accepted-tranche",
   "accepted_tranche_manifest_hash": "97022c2ad5638e7b3b98b0aa495b43d8f49457d6535fe08e677057711b042029",
-  "run_spec_hash": "b8e930d83b4c63c1aa22cd39bc2789a18fb6ea3e7421f533ada8c2fccc587f79",
+  "run_spec_hash": "56793106a6f405b9197bb2eaeb71043c581c76220901ad35cb7fddb4bb20e209",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00368",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=DOGEEUR/dt=2026-03-01/object=ecfad2304dd1705b878800273a3fe3170c3742bd32c2407282b8bd04476624e5",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

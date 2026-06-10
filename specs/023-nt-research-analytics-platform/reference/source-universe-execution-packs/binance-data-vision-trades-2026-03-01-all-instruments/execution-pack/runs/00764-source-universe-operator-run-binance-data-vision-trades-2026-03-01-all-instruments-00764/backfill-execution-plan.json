@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:MITOTRY:2026-03-01:6e538e2cc6787ea6b98fdfb6a4dd62f328c5f503b1384e2094fe3d59b7bc5621:accepted-tranche",
   "accepted_tranche_manifest_hash": "92507d67e93ff0fd237279e192c6ee6b3ca47ec0e3abf26e1bd047a03d3a60c9",
-  "run_spec_hash": "216828b9d60edeaa5f94cf15f2fe96c71fa373b7dee2accc575ecb33f277855b",
+  "run_spec_hash": "e839039e09095ce2d307af696413876c68506a8eb40fbd0b4da2ec8769a91c6d",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00764",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=MITOTRY/dt=2026-03-01/object=6e538e2cc6787ea6b98fdfb6a4dd62f328c5f503b1384e2094fe3d59b7bc5621",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

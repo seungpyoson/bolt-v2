@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:TIATRY:2026-03-01:3815a8f7227c44415b4e2e14e7359cf294d148e045229b3a78b59f90f5ea7823:accepted-tranche",
   "accepted_tranche_manifest_hash": "fde5ba236fc4cdbf1c12536b371aa3b0ab8f4ebc48ada03fee282d70858c53ff",
-  "run_spec_hash": "45c81c47201ebd6e9db8c10d4fab8139a126c17d94c19145444722365a845d3f",
+  "run_spec_hash": "c1c16869b2007ae7873919a78ca875e6917ae815f6b076c29820c9a2226be30b",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01166",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=TIATRY/dt=2026-03-01/object=3815a8f7227c44415b4e2e14e7359cf294d148e045229b3a78b59f90f5ea7823",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:VETTRY:2026-03-01:f2c29a1123c1c087f24ff165e367c91bb717f39ec4cd00c676ac21dbc7b35a1e:accepted-tranche",
   "accepted_tranche_manifest_hash": "c4cd4b69418d2bfb2522f8f7203e8946d8f10b58e89393168f958dcdec03fa2b",
-  "run_spec_hash": "2e82d1515a6317f15fe55637c8a174e8dca606c2b1368a8140096274642af379",
+  "run_spec_hash": "ba1f1d7f9de74d63a37a723bfa6adbeca1fe3da29d45a698e70e6a59c2d9e07d",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01280",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=VETTRY/dt=2026-03-01/object=f2c29a1123c1c087f24ff165e367c91bb717f39ec4cd00c676ac21dbc7b35a1e",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

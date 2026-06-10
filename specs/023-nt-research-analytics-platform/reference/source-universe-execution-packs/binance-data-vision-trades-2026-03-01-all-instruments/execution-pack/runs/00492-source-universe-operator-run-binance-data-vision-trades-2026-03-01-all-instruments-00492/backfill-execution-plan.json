@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:FILBTC:2026-03-01:7ee6a5ecb18027280f14de2ea9b56e956dacdf2c326d25755206118f9f26c96f:accepted-tranche",
   "accepted_tranche_manifest_hash": "30538703569122829c814f62c9e675e67de46a39bb6fbe0f30be228213bde251",
-  "run_spec_hash": "2bf796129b9d5ca0bc53ffea8d77d7eff93fd4b56bbc6aac437df6cae2b153a6",
+  "run_spec_hash": "a51b8cab061941e222b39a4c630e0d2c3d492f700be7d07eceb77a8c8a3d8f01",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00492",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=FILBTC/dt=2026-03-01/object=7ee6a5ecb18027280f14de2ea9b56e956dacdf2c326d25755206118f9f26c96f",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

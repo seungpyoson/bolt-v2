@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:LTCBNB:2026-03-01:c4a414cbad3d4a22ac71a26031069361af03774dd7f4f8ad4be67c47e1a56f09:accepted-tranche",
   "accepted_tranche_manifest_hash": "fba8e8b5ac468ed36b7984dee40bbe432ea7c32cb5c5ced6fa09141579c8d1cf",
-  "run_spec_hash": "fa58818a17d65b4e76158daf1e00380e101b54f2bfe76e933c29d90a999fd1de",
+  "run_spec_hash": "9ce1e37b2a28eccdadb7ade0edcb11c084635aad236a078805bdb4752cba2111",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00706",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=LTCBNB/dt=2026-03-01/object=c4a414cbad3d4a22ac71a26031069361af03774dd7f4f8ad4be67c47e1a56f09",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:RONINUSDT:2026-03-01:8a6b68926bd4c04e50c2b64f9c1a97423bf8d66cc6e7e14c1d3a38a73c2b693b:accepted-tranche",
   "accepted_tranche_manifest_hash": "1b4c3526857937270c448acd577cd7b19ab00230b0a616a14bcffe7bab7714c0",
-  "run_spec_hash": "4a512214824ce7f16a522f17701f90554695925401a7cc126bf8430c6ec00e65",
+  "run_spec_hash": "74e397b4dc7ab0a6c36854a62cd8f305caeeca7fe03c64476de082a549b5b13e",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00983",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=RONINUSDT/dt=2026-03-01/object=8a6b68926bd4c04e50c2b64f9c1a97423bf8d66cc6e7e14c1d3a38a73c2b693b",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-perpetual-native-trades:ETCUSD_PERP:2026-03-01:e3b7a529bb8cf653a37ae8e590ce303c4a321087d41de47733ed897ea0bcc268:accepted-tranche",
   "accepted_tranche_manifest_hash": "e9658262bfb20aebe68d0066accedb9b797749165dba95f33dd968fe115cb44a",
-  "run_spec_hash": "bec91fde834c40f3ab3f8016228ae47c4d4f6d87a08df5445c025d01057d8305",
+  "run_spec_hash": "bf025d45f6117fd69732f47661a775f9d68a3c1412e47093153af0d897f01f85",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-02025",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=coin_m_perpetual/symbol=ETCUSD_PERP/dt=2026-03-01/object=e3b7a529bb8cf653a37ae8e590ce303c4a321087d41de47733ed897ea0bcc268",
   "source_proof_id": "source-proof-binance-coin-m-perpetual-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01:bybit-inverse-tick-trades:AAVEUSD:2026-04-30:329938b91992ce562595e0267d45c8c5277df56e516b98d7ba065966cf315f58:accepted-tranche",
   "accepted_tranche_manifest_hash": "bcf95c72ded89b25a97f08f6af6c197b8931fafda0745f60de0293301cc14d89",
-  "run_spec_hash": "f0a6f91a211092a62a70a73529c6c1de18e4238978c86add6f1dadbf4c556c51",
+  "run_spec_hash": "cd359b09715661c7896720ae2a027b62b1baa7a1650a8d596c8a11c0ec8bd0e7",
   "operator_run_id": "source-universe-operator-run-bybit-public-archive-tick-trades-2025-06-01-2026-06-01-00480",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category=inverse/symbol=AAVEUSD/dt=2026-04-30/object=329938b91992ce562595e0267d45c8c5277df56e516b98d7ba065966cf315f58",
   "source_proof_id": "source-proof-bybit-inverse-public-archive-tick-trades-2025-06-01-2026-06-01",

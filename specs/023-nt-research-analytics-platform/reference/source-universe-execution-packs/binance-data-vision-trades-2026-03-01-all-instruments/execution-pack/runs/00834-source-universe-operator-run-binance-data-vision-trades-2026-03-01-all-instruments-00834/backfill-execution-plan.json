@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ONDOUSDT:2026-03-01:9d40439b5cbf105d281c31c5daf17743dd3e0c616c4e5896856f91636ba956a0:accepted-tranche",
   "accepted_tranche_manifest_hash": "48bd32f176698b21609b83bc6e7749f26788cbfbe91810cd542eb053dccfb653",
-  "run_spec_hash": "aa052fe18138e8da8f6f74a5bc1c79fba0fd75e2f2d746fec0e21d51aadb1e05",
+  "run_spec_hash": "b3492ee7304c67ac58d0cb6b168f2adcaa7e2665548dfe47294723483164a990",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00834",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ONDOUSDT/dt=2026-03-01/object=9d40439b5cbf105d281c31c5daf17743dd3e0c616c4e5896856f91636ba956a0",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:WIFUSDC:2026-03-01:0fe0645342d783b26a5d30fc6c94d3123d84df9093f97eaa7f3c9a801f1c7137:accepted-tranche",
   "accepted_tranche_manifest_hash": "1c9661449d9264eb95bbc5453362b26bbe3db569d24f6825120271d70ce88c7e",
-  "run_spec_hash": "59c7928b55db9ef98bc2bf325b82e51ba07a6678211a7b248907c58868bab92d",
+  "run_spec_hash": "5f9727de7ef4c26136ae3da74eada8e3bf603d890f665a094c6219807aaf1bd6",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01311",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=WIFUSDC/dt=2026-03-01/object=0fe0645342d783b26a5d30fc6c94d3123d84df9093f97eaa7f3c9a801f1c7137",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

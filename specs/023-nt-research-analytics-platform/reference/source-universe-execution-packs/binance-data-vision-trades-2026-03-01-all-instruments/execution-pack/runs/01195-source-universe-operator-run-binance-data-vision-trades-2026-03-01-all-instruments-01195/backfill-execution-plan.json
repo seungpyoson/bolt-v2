@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:TRUMPTRY:2026-03-01:cdd25fa05a52cfde434842a2bef979717ea52a3b546e71743a6c534baa11e294:accepted-tranche",
   "accepted_tranche_manifest_hash": "41d8ab7d8080e2e748d2b8e78ecf23bc7bc447c45926b404c87cc6fe2c0443b9",
-  "run_spec_hash": "7a6c8fe5a82757cf11a9e0fac0810bfc7b544b6383df954484ec0eced8b6245e",
+  "run_spec_hash": "de0369d702a199b466e169fbaae9eaaf5b94f23f37bada081f0c39a9b8216607",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01195",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=TRUMPTRY/dt=2026-03-01/object=cdd25fa05a52cfde434842a2bef979717ea52a3b546e71743a6c534baa11e294",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

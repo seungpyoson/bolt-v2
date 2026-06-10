@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:BARDTRY:2026-03-01:af7f461d7338b67c630a146c30b7ef81e15f8dd357eed7e5e8a3578262042922:accepted-tranche",
   "accepted_tranche_manifest_hash": "caa769d747d99b230de349a17bbac8cf720d51a45fbb3918e8df3cde97d4785c",
-  "run_spec_hash": "9ada92bc64f46181fded75b3031527c3deaa72c890fdacc7f10565dce6b5addc",
+  "run_spec_hash": "7374c9e00432e7ad18d534979abfa88a732874ab2a6c136368a279d586fcd035",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00189",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=BARDTRY/dt=2026-03-01/object=af7f461d7338b67c630a146c30b7ef81e15f8dd357eed7e5e8a3578262042922",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:HIVETRY:2026-03-01:12ff105fb3613b332d25ab5091b9c1aac64afc00bb61c753acb593e40a6bafdc:accepted-tranche",
   "accepted_tranche_manifest_hash": "2497245b03fa664be12eee74743d26813ca3f2d8f3ea4cb2b1be924503556446",
-  "run_spec_hash": "8431b9b46ff07a4639936c82540eef55048d6607a825a04ac5c461dc4118bf5b",
+  "run_spec_hash": "3a0e1e0d9ed11310b2a4a72e93ba4de494d63fa5a3122c285e571e22a36ffd0b",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00574",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=HIVETRY/dt=2026-03-01/object=12ff105fb3613b332d25ab5091b9c1aac64afc00bb61c753acb593e40a6bafdc",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ARBTUSD:2026-03-01:7da58ab5210037de10c57802103676c9780382d19fb3202b344096c8f8801ece:accepted-tranche",
   "accepted_tranche_manifest_hash": "5711604fde0c0a2d2bfcb4c91e45d5b18b4dd3af990d4852aa4b71c46b350e78",
-  "run_spec_hash": "47d294a1d28b5de470529bdb3f7ebde3bee2e5241b18ec0cc423593607353734",
+  "run_spec_hash": "e5015f31b234b55d8eccfd7938533c22c2f11f4a4c054b696be9698a71531eef",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00109",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ARBTUSD/dt=2026-03-01/object=7da58ab5210037de10c57802103676c9780382d19fb3202b344096c8f8801ece",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

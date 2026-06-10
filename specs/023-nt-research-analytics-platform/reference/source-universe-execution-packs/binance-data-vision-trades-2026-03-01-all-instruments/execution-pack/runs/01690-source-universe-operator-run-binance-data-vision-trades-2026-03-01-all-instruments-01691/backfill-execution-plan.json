@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:INXUSDT:2026-03-01:134e3ba9e13938aba7011cae627a5563235288e3db20653a15a5dc74dfd1e2fa:accepted-tranche",
   "accepted_tranche_manifest_hash": "593d8824bd07a4186f6db5313e8947c0240ac6ea9a1b647909bf638befdf4612",
-  "run_spec_hash": "74e1e845078d9aadb24c63a0ade088b6775386382ea8f4d10c61506464d0d603",
+  "run_spec_hash": "2b3247f703da1ddbc7cad793fbb3156a3e870cbb3bdce72bf2ca03d731763452",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01691",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=INXUSDT/dt=2026-03-01/object=134e3ba9e13938aba7011cae627a5563235288e3db20653a15a5dc74dfd1e2fa",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

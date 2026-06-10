@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ZAMAUSDT:2026-03-01:b6c9cb687602bea3753aad93428b95004074f267cc099f45280709a9847376be:accepted-tranche",
   "accepted_tranche_manifest_hash": "a8fab7099a43375f22a0ae8075e4ba3ff362af64ab73ac0db35bb3a630bd3a37",
-  "run_spec_hash": "1d2ead51a79fcac15dedaac7aa3e0b341f49e588958f8e19e0c3023c915920d1",
+  "run_spec_hash": "4d0bb453ed80b57b5ca87a2a73f9dfbff5ed42cbd7b7bd34d3c502b78772aa79",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01385",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ZAMAUSDT/dt=2026-03-01/object=b6c9cb687602bea3753aad93428b95004074f267cc099f45280709a9847376be",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

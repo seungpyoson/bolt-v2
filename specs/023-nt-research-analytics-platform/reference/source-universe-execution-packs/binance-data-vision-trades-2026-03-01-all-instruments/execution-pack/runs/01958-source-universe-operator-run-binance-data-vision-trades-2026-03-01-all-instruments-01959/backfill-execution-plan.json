@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:VTHOUSDT:2026-03-01:8fbd3fb2c0bc1ad3143e4fe7a84e3aeba77be47d5cc859b1114b9bf411f2933f:accepted-tranche",
   "accepted_tranche_manifest_hash": "2ca4f92db65fe5b8dcecbc1d02b6d9bf02714b840e027eeff52189c8012477d6",
-  "run_spec_hash": "2dd28f658e376af7214853fc6237310a667ccf89e75b221a0c055359fa51f5f5",
+  "run_spec_hash": "8850a4925c633f313298343e4edb0796e64a045d286f65067a0b82df8454a34f",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01959",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=VTHOUSDT/dt=2026-03-01/object=8fbd3fb2c0bc1ad3143e4fe7a84e3aeba77be47d5cc859b1114b9bf411f2933f",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:CYBERFDUSD:2026-03-01:44a96b46787029307eef128af7a40a1693c096a2ab61b87b0811809a5d69ed34:accepted-tranche",
   "accepted_tranche_manifest_hash": "aa8b00ac608b32b797f77016865b104b43b81fdbaa4608fae3b0761e36fa2c26",
-  "run_spec_hash": "3e123f3fc9f4a2b8079f1283c6d2eed7a603f860fa67830f1656436e64930353",
+  "run_spec_hash": "cac2b0aedd1c25c840f7e6a4b89c011c8112f1359c37e1ef6ca981a0bb0f2a81",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00347",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=CYBERFDUSD/dt=2026-03-01/object=44a96b46787029307eef128af7a40a1693c096a2ab61b87b0811809a5d69ed34",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

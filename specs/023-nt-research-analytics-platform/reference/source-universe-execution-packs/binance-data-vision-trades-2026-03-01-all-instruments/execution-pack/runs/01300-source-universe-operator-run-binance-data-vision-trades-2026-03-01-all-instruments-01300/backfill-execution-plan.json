@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:WBTCBTC:2026-03-01:e6226bac4bd7212755880d1e4bcbba0125ecae06e353f2d661233160236cb761:accepted-tranche",
   "accepted_tranche_manifest_hash": "424567ad4f36a09456b7856e64390cfb7fef37b116f7c640008af140206f4dd5",
-  "run_spec_hash": "ed8f81fe5f24b331e04ff25ffbeb032a04e4432a3e63cf1ff85ff734fbc823c5",
+  "run_spec_hash": "ffc7d83a63f11afac7c066187e72643f231f84e218bb0948e5af044040232b9c",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01300",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=WBTCBTC/dt=2026-03-01/object=e6226bac4bd7212755880d1e4bcbba0125ecae06e353f2d661233160236cb761",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

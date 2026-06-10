@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SOLMXN:2026-03-01:24dfab5942b14e0a303f71d24a2cb242d5db3eb112fdf50e7428236e3e33b3d8:accepted-tranche",
   "accepted_tranche_manifest_hash": "58031887686298d42ecfcbf120e05bdc01d11ea43147a38d5a01822d2aa57eef",
-  "run_spec_hash": "6eac294879bdb3f82ae0c76179ddc3726654adb483db0845ca3b1ff2aa3800cc",
+  "run_spec_hash": "25eac48bbd422b19cac3c6c1b413488f82c0190900c23c5b6f96aeedafc523ab",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01068",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SOLMXN/dt=2026-03-01/object=24dfab5942b14e0a303f71d24a2cb242d5db3eb112fdf50e7428236e3e33b3d8",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

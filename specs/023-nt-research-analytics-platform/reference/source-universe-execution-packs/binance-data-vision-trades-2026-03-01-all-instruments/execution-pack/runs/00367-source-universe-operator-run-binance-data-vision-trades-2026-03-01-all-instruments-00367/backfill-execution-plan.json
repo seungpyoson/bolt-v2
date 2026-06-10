@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:DOGEBTC:2026-03-01:faa5b3ed9b4475bf59f18874362ef0db5c1d0c1a5e5e832f5b4a4960747a60d3:accepted-tranche",
   "accepted_tranche_manifest_hash": "e80b0d61359b568cbf6d406e7a540c8fb1139bbe3bbe2a8f74dc3d2f289acb91",
-  "run_spec_hash": "2c34cd07895b861b5581d05af3f5923401e814232d9e1dce6b308a59822c284b",
+  "run_spec_hash": "888bc50e6a8f3b769e38aa7c1165a6138f56d443ccbacecc6f7a2016f5fa83e3",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00367",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=DOGEBTC/dt=2026-03-01/object=faa5b3ed9b4475bf59f18874362ef0db5c1d0c1a5e5e832f5b4a4960747a60d3",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

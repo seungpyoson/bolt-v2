@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:KERNELUSDT:2026-03-01:675851d508a711b0896c81e56dc9ceb09e3c7ca72d13038b1cfc3b700fd51080:accepted-tranche",
   "accepted_tranche_manifest_hash": "2fd7eaecbe487bbe5a540e68b187a25c07b3ac189ff7868813a1e5ec19704a91",
-  "run_spec_hash": "9ca361112e30c67cf29b7402694fdfaa2483564bd84b08cf1b08f4558b3495f7",
+  "run_spec_hash": "f282de430961eac7981ae56f96589acaaa95fbc463951095d69374cbfe3325fb",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00654",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=KERNELUSDT/dt=2026-03-01/object=675851d508a711b0896c81e56dc9ceb09e3c7ca72d13038b1cfc3b700fd51080",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

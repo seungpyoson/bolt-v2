@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ALGOTRY:2026-03-01:6ccaf4c57038d4f6996d74b9cdb7b66234645318dd7480650c9a0ae3e3e666b7:accepted-tranche",
   "accepted_tranche_manifest_hash": "89c8f3385babfebfcaa91e69962522b90679f80eab2f82820ca57977ef684033",
-  "run_spec_hash": "7a1461b674960012769908a8322aa3c0847934555d53a555fa56f2f0b1ff1b31",
+  "run_spec_hash": "3d3b395a8d3de85b6cbec3cb57a577d07591a466a6d72a1e511b3fae115a6d43",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00067",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ALGOTRY/dt=2026-03-01/object=6ccaf4c57038d4f6996d74b9cdb7b66234645318dd7480650c9a0ae3e3e666b7",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:MASKUSDT:2026-03-01:c24ca4735fb79ece78580c3b5bd34ddbe0cf3212f8b4ac8d2a63a09009e0eaef:accepted-tranche",
   "accepted_tranche_manifest_hash": "321e706915b335c72e75a9b85ca5cce33ed2ae3f4f207610d12306d3705de3bc",
-  "run_spec_hash": "0b220ed4aa0da042b4d0cb0d98d7768dc6d4116c0da2e998dca262915eb2d6ac",
+  "run_spec_hash": "b5c37278463d31f8b5a8e0ebc20ad7322b0b85aadb784778ad5bd5fe96400552",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00738",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=MASKUSDT/dt=2026-03-01/object=c24ca4735fb79ece78580c3b5bd34ddbe0cf3212f8b4ac8d2a63a09009e0eaef",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

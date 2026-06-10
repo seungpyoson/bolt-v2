@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ICPEUR:2026-03-01:c8ef1c87b43bf60a607508beccae608e7caae1b6757ada0e7a67b5f3bac3037b:accepted-tranche",
   "accepted_tranche_manifest_hash": "cb9e6a91eb6744a373ca061c9a1dafed1dbb545fee3b4f59ecea736077202577",
-  "run_spec_hash": "8853a3ddd59036052d3c515db9656eeae1c021b6b222c155813d03e1d8119e85",
+  "run_spec_hash": "c7684ee4c378aba9b80920ad0ee69265ed07aa11180bf6f39847addebe5bac23",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00596",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ICPEUR/dt=2026-03-01/object=c8ef1c87b43bf60a607508beccae608e7caae1b6757ada0e7a67b5f3bac3037b",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

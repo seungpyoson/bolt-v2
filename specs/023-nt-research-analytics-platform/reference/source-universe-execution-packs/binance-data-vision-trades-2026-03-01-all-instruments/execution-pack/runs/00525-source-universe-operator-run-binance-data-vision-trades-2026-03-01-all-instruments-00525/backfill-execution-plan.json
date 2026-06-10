@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:GASTRY:2026-03-01:5cafdb45011d9180d270c982718e4b4449fa8258ee5e2a2ee6d9578bf491ca07:accepted-tranche",
   "accepted_tranche_manifest_hash": "0712e3ec62c4a770ca30acf07128b23f4f3a5baaa855b0badcb45d23fc80a93b",
-  "run_spec_hash": "a328cb639c356abd0dda894ffd2595e86ced8d1c1711f9e2d7b7c6ee5117762e",
+  "run_spec_hash": "839bed4a905e67ebe0e80ca07d72540ff1fad6114e2f067f898dfa602cd20929",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00525",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=GASTRY/dt=2026-03-01/object=5cafdb45011d9180d270c982718e4b4449fa8258ee5e2a2ee6d9578bf491ca07",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

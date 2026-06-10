@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:WALTRY:2026-03-01:331d45e71d306fbe5315e0713ef83ddb9696f6a3d701ffc322b2452953f2fccc:accepted-tranche",
   "accepted_tranche_manifest_hash": "e08ed485820c9c56ed79b6db5269245d96855cebbcbca844195a86024c8d1d1f",
-  "run_spec_hash": "ac6eda4b23c6452df354889b0461a26005d89e8754c49010028c2f5ef631769e",
+  "run_spec_hash": "e968e5e74f75a50cbd1483400b92c0051abf61837bc7dda3f90605302d0c9d19",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01292",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=WALTRY/dt=2026-03-01/object=331d45e71d306fbe5315e0713ef83ddb9696f6a3d701ffc322b2452953f2fccc",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

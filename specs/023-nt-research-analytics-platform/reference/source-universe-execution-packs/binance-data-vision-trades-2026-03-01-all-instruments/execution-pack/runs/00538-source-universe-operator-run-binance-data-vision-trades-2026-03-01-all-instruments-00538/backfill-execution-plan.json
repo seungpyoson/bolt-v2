@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:GMXUSDT:2026-03-01:e1be3bc0077b70ec705abaaee2ea81ca7b714092e3680ce6934e8758e8c04679:accepted-tranche",
   "accepted_tranche_manifest_hash": "74c1c17712a78cd962735d3e0f8600a4b30d4231f530eb42a56de20fb75666a9",
-  "run_spec_hash": "047c6fb3ff694155c0a8b5a101e7486b1d87ddb5d032cafcee5afe0dd5760473",
+  "run_spec_hash": "52b46189a8d4ef649fc1f821482172507df2a054337f08534d74cbd4e0e38205",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00538",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=GMXUSDT/dt=2026-03-01/object=e1be3bc0077b70ec705abaaee2ea81ca7b714092e3680ce6934e8758e8c04679",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

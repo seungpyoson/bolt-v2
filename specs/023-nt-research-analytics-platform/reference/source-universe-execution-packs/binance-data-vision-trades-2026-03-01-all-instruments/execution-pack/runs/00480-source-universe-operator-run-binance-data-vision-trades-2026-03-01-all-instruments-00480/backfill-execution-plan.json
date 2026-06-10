@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:FETBNB:2026-03-01:df79e93e59013b01144e665e8ae27f0968450ea84dcc3db94f11d4107a7cfc76:accepted-tranche",
   "accepted_tranche_manifest_hash": "97d683ef29ae2df42e9b5ac4a7c031f392278b6488d5bc9555ae1a812f590d6c",
-  "run_spec_hash": "467a30dde86b3adbff4235f6b32f74d3dd735da3d42e68af10078b679c62a6d3",
+  "run_spec_hash": "20ddb41e2eac0a2dea68ada0f2c9ac9f7d9150a4992f3d3008cf3d78b6760723",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00480",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=FETBNB/dt=2026-03-01/object=df79e93e59013b01144e665e8ae27f0968450ea84dcc3db94f11d4107a7cfc76",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

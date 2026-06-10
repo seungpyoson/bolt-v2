@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:ARBEUR:2026-03-01:f2c9c6d45fec72969df2a4c27f598aa33158352d514af1461dd8e8b7b08ca425:accepted-tranche",
   "accepted_tranche_manifest_hash": "2140f165deee4006079763126bde25c24d6fc787d98df2da40c39519660fe2a6",
-  "run_spec_hash": "fd40eb9d9653d16ea46486a8020ebfde3fbfaa347be89d89493758034a3bda03",
+  "run_spec_hash": "d5b6f9cc0f22da9e9ac6e6fb1d001615227d3bca6390231a73808a73007fe8e8",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00105",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=ARBEUR/dt=2026-03-01/object=f2c9c6d45fec72969df2a4c27f598aa33158352d514af1461dd8e8b7b08ca425",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:RLUSDUSDT:2026-03-01:3b4c366c9213d17e5bfea138611d580fcf2f8e84d38b7b1a74e4e49ed61c0866:accepted-tranche",
   "accepted_tranche_manifest_hash": "53dcbb82a5451a2be538a8760ef25c5e8ae3c06d09b7562cce5aa962728127bc",
-  "run_spec_hash": "815a0d7c3985b39ca4e82d36b68aefaf1e547be85a83ac4c936835201ee93a0a",
+  "run_spec_hash": "a33f3f6e466766ea3bbe47bbcd9f94ff2e251dde8f6a7e4b20ed92182ace3cf1",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00981",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=RLUSDUSDT/dt=2026-03-01/object=3b4c366c9213d17e5bfea138611d580fcf2f8e84d38b7b1a74e4e49ed61c0866",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

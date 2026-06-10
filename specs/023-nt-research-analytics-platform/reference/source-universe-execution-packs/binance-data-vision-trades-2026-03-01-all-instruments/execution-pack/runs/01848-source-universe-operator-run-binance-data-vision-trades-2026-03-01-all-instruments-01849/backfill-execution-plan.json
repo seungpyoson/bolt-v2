@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:RONINUSDT:2026-03-01:269f3ef52a0e7897b88134acd81d63a99520aa5031657cb53c8a5d901d47c443:accepted-tranche",
   "accepted_tranche_manifest_hash": "c6b25628115c8d3a41c9641008e5d81426948cd856ed1ee30f910303487acb7d",
-  "run_spec_hash": "2697fe4c9c5b475f32e142eb497abd68860bc1a268136dd1824e96df4b03236f",
+  "run_spec_hash": "fb16bd1a5f40e5f3ddb8fd0a13497b3d2b6a85bbb6f807650012aa7c363984ee",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01849",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=RONINUSDT/dt=2026-03-01/object=269f3ef52a0e7897b88134acd81d63a99520aa5031657cb53c8a5d901d47c443",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

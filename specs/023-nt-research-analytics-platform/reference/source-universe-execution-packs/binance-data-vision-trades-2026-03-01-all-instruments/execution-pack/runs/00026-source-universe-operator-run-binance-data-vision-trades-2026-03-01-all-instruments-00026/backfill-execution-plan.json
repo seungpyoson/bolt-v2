@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:AAVEUSDT:2026-03-01:bd8a079a023537cc854724002c05838c07c6189272ce60569a4df844bee39693:accepted-tranche",
   "accepted_tranche_manifest_hash": "13e3d82c7980d47bf7c2b7cc47c381ffe45724981a6e142628f9997b6e79acc5",
-  "run_spec_hash": "0065fbb6ad457d767b7ef9bd9b1845ea3c16fdc37dc58d5c645e424aaabccd28",
+  "run_spec_hash": "c601ad3139172e04a56a9437a337219f7da5461afcf7fe96d5355ee6ca22a111",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00026",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=AAVEUSDT/dt=2026-03-01/object=bd8a079a023537cc854724002c05838c07c6189272ce60569a4df844bee39693",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

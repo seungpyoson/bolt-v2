@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:FRAXUSDT:2026-03-01:787f24fc9335d484b39ab489905e9e2a79b47d92adb2bbb06e9e22327ab3f095:accepted-tranche",
   "accepted_tranche_manifest_hash": "2ae23cee24fd533a42dc920e7afc2c079957e2aaaabb235fce70d8155a7f64d3",
-  "run_spec_hash": "6d694a7e5568e0f78c50591b9982479fd2ea152ef219eb0490bf2daf9adebaaa",
+  "run_spec_hash": "a1bb808de671e68531085dde9713c2a380eeeb0b64de050cc200812c00a2c119",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00513",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=FRAXUSDT/dt=2026-03-01/object=787f24fc9335d484b39ab489905e9e2a79b47d92adb2bbb06e9e22327ab3f095",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

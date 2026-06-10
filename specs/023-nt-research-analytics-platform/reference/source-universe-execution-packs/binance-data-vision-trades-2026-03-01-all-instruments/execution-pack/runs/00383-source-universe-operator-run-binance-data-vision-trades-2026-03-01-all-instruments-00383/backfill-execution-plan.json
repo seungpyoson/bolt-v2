@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:DOLOUSDT:2026-03-01:c487e2faf350737ada7d03c2c35e6b9b572658180818f19e9d79b73b3003ce96:accepted-tranche",
   "accepted_tranche_manifest_hash": "db42df0769cdfd355fec6f50fe35aadec7b68d5c85c8c67b3915fff5b462623b",
-  "run_spec_hash": "fbe34d70c22e1835fb71160f2142b1418cf3f5858559057528c2156b38d67e43",
+  "run_spec_hash": "bc28c3c22d54193b4db465e324f0e79f9670b4b87f27dc65453f39dfd2f31a39",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00383",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=DOLOUSDT/dt=2026-03-01/object=c487e2faf350737ada7d03c2c35e6b9b572658180818f19e9d79b73b3003ce96",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

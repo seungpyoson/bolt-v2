@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SKYUSDC:2026-03-01:fd7e7b0f27374d800c38c88f63c42a0b5c7c9f45cdb28040e9a868b487f99832:accepted-tranche",
   "accepted_tranche_manifest_hash": "1aac44698195921c0a201b255a11d40b064a9971ce7c9fa7bea08b3d710428ff",
-  "run_spec_hash": "1818ecac587e95f2d1e014ff44107cd70fea51282f0dca8bdde02a94d42b7830",
+  "run_spec_hash": "76d7691facf43ab14189e3129fccf541c2dd7698773e9606a69cb42af6540b24",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01053",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SKYUSDC/dt=2026-03-01/object=fd7e7b0f27374d800c38c88f63c42a0b5c7c9f45cdb28040e9a868b487f99832",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

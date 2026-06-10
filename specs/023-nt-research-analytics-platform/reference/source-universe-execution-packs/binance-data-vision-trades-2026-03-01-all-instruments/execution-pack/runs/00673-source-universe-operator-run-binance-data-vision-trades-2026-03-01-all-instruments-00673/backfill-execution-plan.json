@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:LAZIOTRY:2026-03-01:6a65e6aaa7516a551d979dfad335bcd3fc07d5a071f28495ebf9219d02156572:accepted-tranche",
   "accepted_tranche_manifest_hash": "2c752069d09ea58ab81f327d3b53f8dac260e5585d1ca4d8c517a674c4cd148a",
-  "run_spec_hash": "4e45c4e0be4a833691c08b3ae63ae9b4a1fb377d15675b2b763b30b14a2bbb20",
+  "run_spec_hash": "9f58ca413b64d357f83cde4379dd0896aca26e93256a75aa3c40684380eb889b",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00673",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=LAZIOTRY/dt=2026-03-01/object=6a65e6aaa7516a551d979dfad335bcd3fc07d5a071f28495ebf9219d02156572",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

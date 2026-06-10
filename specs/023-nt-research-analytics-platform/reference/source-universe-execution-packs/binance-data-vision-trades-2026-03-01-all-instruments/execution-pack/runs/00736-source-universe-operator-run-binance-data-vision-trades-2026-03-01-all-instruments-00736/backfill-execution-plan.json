@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:MASKTRY:2026-03-01:6fd158c4c1bd6ac3732aa7673bb9e5b0012917c2802dbc93b5da3e3287514cc7:accepted-tranche",
   "accepted_tranche_manifest_hash": "e9487a20dc7acf7cc0f317de03df9561afcc050cc42b34b4f88ef0813de647c7",
-  "run_spec_hash": "a76ead49d24112e3a574a21c5a4f0f4f3c95470bd26d5d4bac23485aef8610da",
+  "run_spec_hash": "6c04e0639c24a261dbb213eac7d8dfa1b27b570ec3c4771f0c54212e148e1300",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00736",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=MASKTRY/dt=2026-03-01/object=6fd158c4c1bd6ac3732aa7673bb9e5b0012917c2802dbc93b5da3e3287514cc7",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

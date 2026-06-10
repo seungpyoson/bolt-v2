@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:POLJPY:2026-03-01:f669f5a2ed6fe893743d9fc352c02feac127ea019b63e547db0013d474324a24:accepted-tranche",
   "accepted_tranche_manifest_hash": "4028b37aaf59590d9d508e55bf2bf96b672483a59daee1461a3fc324675fbc0c",
-  "run_spec_hash": "271ddf00ef15956eece56b205041ab462ace58a9ebbe1cbf345eebfa466327b7",
+  "run_spec_hash": "5192f31424e128f83e997c508dfbc329d22a964727b19610ada5ad29c99bc4f3",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00912",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=POLJPY/dt=2026-03-01/object=f669f5a2ed6fe893743d9fc352c02feac127ea019b63e547db0013d474324a24",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

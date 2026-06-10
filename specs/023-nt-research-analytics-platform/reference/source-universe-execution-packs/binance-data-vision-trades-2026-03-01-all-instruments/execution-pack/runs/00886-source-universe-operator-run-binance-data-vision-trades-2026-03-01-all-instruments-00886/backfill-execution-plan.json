@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:PEPEU:2026-03-01:0246cc59c76376e3fb954c6ba56e50eaf32addda8be89b477a182f87439a1132:accepted-tranche",
   "accepted_tranche_manifest_hash": "712bace69ab817dfd7220273679a7476080f103d858c92f495f47b89ed6049a0",
-  "run_spec_hash": "2c1f9be78932d0117b9662f013f0089a230bf55f8889f254fd5c842c04b63ab5",
+  "run_spec_hash": "27bbd5d2e329a57e81bba49645feacbb1fd52c9b947a2ea2d61fdad3fe9a941b",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00886",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=PEPEU/dt=2026-03-01/object=0246cc59c76376e3fb954c6ba56e50eaf32addda8be89b477a182f87439a1132",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

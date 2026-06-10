@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:PEPEEUR:2026-03-01:5f78a0dc401e22aaa2fed1acae77208c490bdd9457c572839adb4e1c20688132:accepted-tranche",
   "accepted_tranche_manifest_hash": "fb94044a9dd37d07d95aa7ee1f5fe5e774127b08e7d82f16272ff3364274ebaf",
-  "run_spec_hash": "5eeb4217c5aacdfe26dd0f0031d003c6363db0ff967353e4668827aacb69e003",
+  "run_spec_hash": "a25732c81bbd1522292f4a0b8b32c56c0d6edad79be3094196a8bbfbf922538b",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-00882",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=PEPEEUR/dt=2026-03-01/object=5f78a0dc401e22aaa2fed1acae77208c490bdd9457c572839adb4e1c20688132",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:STRY:2026-03-01:82a97386478fccf5571bae314a2b31eb3530a584438b87d9e8986854029dc77c:accepted-tranche",
   "accepted_tranche_manifest_hash": "b8ef4bfefc1016e4fc79c0126edfd9944730193d5bae1c77699dc8ded9672b57",
-  "run_spec_hash": "41713e0532d92d305b73405f9d09f264c3a564623dac8ba1db8b3701c24dc343",
+  "run_spec_hash": "9031104bc68a7a4bb27e954318a6bdc3957322f3c842dcda6e40304b61e8cbb0",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01109",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=STRY/dt=2026-03-01/object=82a97386478fccf5571bae314a2b31eb3530a584438b87d9e8986854029dc77c",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

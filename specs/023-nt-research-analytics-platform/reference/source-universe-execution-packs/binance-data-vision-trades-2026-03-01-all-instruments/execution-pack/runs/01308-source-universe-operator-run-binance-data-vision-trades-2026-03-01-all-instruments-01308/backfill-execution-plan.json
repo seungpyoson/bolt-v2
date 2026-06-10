@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:WIFFDUSD:2026-03-01:2990696db75a63a04ec5025a29e7281e8ae71cc49317dee8a28e28ccb2a823f5:accepted-tranche",
   "accepted_tranche_manifest_hash": "88b8eff0ebccb94814507896e8aba4188e32b05082cdcffa9c3ec305ca0a5293",
-  "run_spec_hash": "12b23e8330ede41e50d0e8a2233517a12873e5d6bda732f9a297e3c3f932e356",
+  "run_spec_hash": "f0ce102779025fb0cbd39149a36b8e3eb1eefeda8ba6b948a93b921a56b12984",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01308",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=WIFFDUSD/dt=2026-03-01/object=2990696db75a63a04ec5025a29e7281e8ae71cc49317dee8a28e28ccb2a823f5",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

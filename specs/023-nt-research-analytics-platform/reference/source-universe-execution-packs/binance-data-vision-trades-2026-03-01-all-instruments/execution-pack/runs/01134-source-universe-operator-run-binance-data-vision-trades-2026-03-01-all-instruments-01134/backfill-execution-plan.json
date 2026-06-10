@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-spot-native-trades:SUSHIUSDC:2026-03-01:112468b42c4e3ed2625d9ffa904c601f4189f50d22b39f3ee3bc083a87a77ddb:accepted-tranche",
   "accepted_tranche_manifest_hash": "4e210c94f439203b107be56d8464ed17768060da95ec99a016b86a9fb497e000",
-  "run_spec_hash": "17033db65744049495742b6e2fe9df6b2ff5b69a825478a8dc95651dd20b3b15",
+  "run_spec_hash": "5b6c93d5aeadf09f45b42dd3d42520910f841aa1f9b9826dfe9560afe2dbda95",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01134",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=spot/symbol=SUSHIUSDC/dt=2026-03-01/object=112468b42c4e3ed2625d9ffa904c601f4189f50d22b39f3ee3bc083a87a77ddb",
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",

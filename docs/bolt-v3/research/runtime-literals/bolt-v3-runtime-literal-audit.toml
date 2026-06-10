@@ -10391,3 +10391,27 @@ literal = '''"spread_or_slippage_wiped_edge"'''
 context = '''Self::SpreadOrSlippageWipedEdge => "spread_or_slippage_wiped_edge",'''
 classification = "executable_edge_block_reason_label"
 reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt-v3 decision evidence has no complete entry decision chain"'''
+context = '''"bolt-v3 decision evidence has no complete entry decision chain"'''
+classification = "decision_evidence_diagnostic_template"
+reason = "Fail-closed decision-evidence reader diagnostic for files that contain no complete current-schema entry chain; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"reference_venue"'''
+context = '''Self::validate_optional_string_field(table, field_prefix, "reference_venue", errors);'''
+classification = "strategy_runtime_schema_field"
+reason = "Legacy taker strategy config schema field name used only for validation diagnostics while rejecting unsupported runtime fields; runtime values remain supplied by bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"reference_instrument_id"'''
+context = '''"reference_instrument_id",'''
+classification = "strategy_runtime_schema_field"
+reason = "Legacy taker strategy config schema field name used only for validation diagnostics while rejecting unsupported runtime fields; runtime values remain supplied by bolt-v3 TOML."

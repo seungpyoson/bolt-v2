@@ -2745,6 +2745,27 @@ required_cross_market_component_roles = [{roles}]
             assert!(bybit_trade.table_families.contains(&"trades".to_string()));
         }
 
+        for (source_binding, product_family) in [
+            ("binance-usd-m-perpetual-native-trades", "usd_m_perpetual"),
+            ("binance-usd-m-delivery-native-trades", "usd_m_delivery"),
+            ("binance-coin-m-perpetual-native-trades", "coin_m_perpetual"),
+            ("binance-coin-m-delivery-native-trades", "coin_m_delivery"),
+        ] {
+            let binance_trade = registry
+                .source_binding_metadata(source_binding, "binance")
+                .expect("Binance Data Vision futures native-trades binding");
+            assert_eq!(binance_trade.product_family, product_family);
+            assert_eq!(
+                binance_trade.market_structure_fixture,
+                Some(FixtureType::PerpsSpot)
+            );
+            assert_eq!(
+                binance_trade.evidence_state,
+                EvidenceState::DirectlyBackfillable
+            );
+            assert!(binance_trade.table_families.contains(&"trades".to_string()));
+        }
+
         let binary_option = registry
             .source_binding_metadata("hyperliquid-hip4-outcome-meta", "hyperliquid")
             .expect("binary-option sample binding");

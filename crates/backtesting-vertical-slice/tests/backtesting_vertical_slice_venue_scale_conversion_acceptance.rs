@@ -38,7 +38,7 @@ scope_label = "Binance public archive full current data"
 status = "blocked"
 blocking_issues = [
   "missing_accepted_binance_source_universe",
-  "missing_binance_non_spot_trade_source_bindings",
+  "missing_binance_full_scope_source_proofs",
   "bnbusdc_slice_only_not_full_binance",
 ]
 
@@ -151,7 +151,7 @@ blocking_issues = [
         binance_full.blocking_issues,
         vec![
             "missing_accepted_binance_source_universe",
-            "missing_binance_non_spot_trade_source_bindings",
+            "missing_binance_full_scope_source_proofs",
             "bnbusdc_slice_only_not_full_binance",
         ]
     );

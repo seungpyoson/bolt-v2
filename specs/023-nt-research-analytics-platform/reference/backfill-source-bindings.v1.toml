@@ -34,6 +34,66 @@ warning = "Registry binding only; no Binance trade object is accepted for BTE un
 table_families = ["trades"]
 
 [[source_binding]]
+key = "binance-usd-m-perpetual-native-trades"
+venue = "binance"
+product_family = "usd_m_perpetual"
+market_structure_fixture = "perps-spot"
+fixture = "native-trades"
+family = "market_data"
+method = "GET"
+source_uri = "https://data.binance.vision/data/futures/um/daily/trades/{symbol}/{symbol}-trades-{dt}.zip"
+payload_extension = "zip"
+extractor = "binance_data_vision_futures_trades"
+evidence_state = "directly_backfillable"
+warning = "Registry binding only; no Binance USD-M perpetual trade object is accepted for BTE until source proof, sample schema, checksum/hash, license, and NT mapping checks pass."
+table_families = ["trades"]
+
+[[source_binding]]
+key = "binance-usd-m-delivery-native-trades"
+venue = "binance"
+product_family = "usd_m_delivery"
+market_structure_fixture = "perps-spot"
+fixture = "native-trades"
+family = "market_data"
+method = "GET"
+source_uri = "https://data.binance.vision/data/futures/um/daily/trades/{symbol}/{symbol}-trades-{dt}.zip"
+payload_extension = "zip"
+extractor = "binance_data_vision_futures_trades"
+evidence_state = "directly_backfillable"
+warning = "Registry binding only; no Binance USD-M delivery trade object is accepted for BTE until source proof, sample schema, checksum/hash, license, and NT mapping checks pass."
+table_families = ["trades"]
+
+[[source_binding]]
+key = "binance-coin-m-perpetual-native-trades"
+venue = "binance"
+product_family = "coin_m_perpetual"
+market_structure_fixture = "perps-spot"
+fixture = "native-trades"
+family = "market_data"
+method = "GET"
+source_uri = "https://data.binance.vision/data/futures/cm/daily/trades/{symbol}/{symbol}-trades-{dt}.zip"
+payload_extension = "zip"
+extractor = "binance_data_vision_futures_trades"
+evidence_state = "directly_backfillable"
+warning = "Registry binding only; no Binance COIN-M perpetual trade object is accepted for BTE until source proof, sample schema, checksum/hash, license, and NT mapping checks pass."
+table_families = ["trades"]
+
+[[source_binding]]
+key = "binance-coin-m-delivery-native-trades"
+venue = "binance"
+product_family = "coin_m_delivery"
+market_structure_fixture = "perps-spot"
+fixture = "native-trades"
+family = "market_data"
+method = "GET"
+source_uri = "https://data.binance.vision/data/futures/cm/daily/trades/{symbol}/{symbol}-trades-{dt}.zip"
+payload_extension = "zip"
+extractor = "binance_data_vision_futures_trades"
+evidence_state = "directly_backfillable"
+warning = "Registry binding only; no Binance COIN-M delivery trade object is accepted for BTE until source proof, sample schema, checksum/hash, license, and NT mapping checks pass."
+table_families = ["trades"]
+
+[[source_binding]]
 key = "binance-usd-m-perpetual-instruments"
 venue = "binance"
 product_family = "usd_m_perpetual"

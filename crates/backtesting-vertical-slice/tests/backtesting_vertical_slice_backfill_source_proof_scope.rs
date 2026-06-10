@@ -1,6 +1,7 @@
 use backtesting_vertical_slice::backfill_source_proof_scope::{
     BACKFILL_SOURCE_PROOF_SCOPE_REPORT_FILE, BackfillSourceProofScopeIssue,
     BackfillSourceProofScopeStatus, evaluate_backfill_source_proof_scope,
+    evaluate_backfill_source_proof_scope_for_selected_object,
     write_backfill_source_proof_scope_report_from_spec_file,
 };
 use backtesting_vertical_slice::source_proof::SourceProofUsageScope;
@@ -48,6 +49,77 @@ fn source_proof_scope_selects_one_manifest_object_without_accepting_whole_run() 
     assert_eq!(
         report.source_usage_scope,
         SourceProofUsageScope::CanonicalBackfillInput
+    );
+}
+
+#[test]
+fn source_proof_scope_selects_configured_object_from_multi_object_manifest_proof() {
+    let binding = first_trade_binding();
+    let raw_sample_uri = raw_uri("representative-object");
+    let selected_uri = raw_uri("selected-object");
+    let mut proof = proof_json(&binding, &raw_sample_uri, "representative-object", 28);
+    proof["acceptance_scope"]["planned_objects"] = json!(2);
+    proof["acceptance_scope"]["completed_objects"] = json!(2);
+
+    let manifest = manifest_json(
+        &selected_uri,
+        concrete_source_url(&binding.source_uri),
+        "selected-object",
+        17,
+        vec![object_json(&raw_sample_uri, "representative-object", 11)],
+    );
+
+    let report = evaluate_backfill_source_proof_scope_for_selected_object(
+        "synthetic-source-proof-scope",
+        &proof.to_string(),
+        &manifest.to_string(),
+        &selected_uri,
+    )
+    .expect("report");
+
+    assert_eq!(
+        report.status,
+        BackfillSourceProofScopeStatus::CandidateFound
+    );
+    assert_eq!(report.accepted_scope_completed_objects, 2);
+    assert_eq!(report.accepted_scope_accepted_bytes, 28);
+    assert_eq!(report.manifest_payload_object_count, 2);
+    assert_eq!(report.matching_object_count, 1);
+    assert!(report.object_level_tranche_required);
+    assert!(report.blocking_issues.is_empty());
+    let selected = report.selected_object.expect("selected object");
+    assert_eq!(selected.s3_uri, selected_uri);
+    assert_eq!(selected.sha256, "selected-object");
+    assert_eq!(selected.bytes, 17);
+}
+
+#[test]
+fn source_proof_scope_blocks_configured_selection_when_scope_does_not_cover_manifest() {
+    let binding = first_trade_binding();
+    let raw_sample_uri = raw_uri("representative-object");
+    let selected_uri = raw_uri("selected-object");
+    let proof = proof_json(&binding, &raw_sample_uri, "representative-object", 11);
+    let manifest = manifest_json(
+        &selected_uri,
+        concrete_source_url(&binding.source_uri),
+        "selected-object",
+        17,
+        vec![object_json(&raw_sample_uri, "representative-object", 11)],
+    );
+
+    let report = evaluate_backfill_source_proof_scope_for_selected_object(
+        "synthetic-source-proof-scope",
+        &proof.to_string(),
+        &manifest.to_string(),
+        &selected_uri,
+    )
+    .expect("report");
+
+    assert_eq!(report.status, BackfillSourceProofScopeStatus::Blocked);
+    assert!(
+        report
+            .blocking_issues
+            .contains(&BackfillSourceProofScopeIssue::AcceptanceScopeDoesNotCoverManifest)
     );
 }
 
@@ -205,6 +277,66 @@ output_dir = "{}"
     assert_eq!(
         first.path,
         output_dir.join(BACKFILL_SOURCE_PROOF_SCOPE_REPORT_FILE)
+    );
+}
+
+#[test]
+fn source_proof_scope_spec_selects_configured_object_uri() {
+    let binding = first_trade_binding();
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let proof_path = dir.path().join("source-proof.json");
+    let manifest_path = dir.path().join("manifest.json");
+    let output_dir = dir.path().join("out");
+    let spec_path = dir.path().join("source-proof-scope.toml");
+    let raw_sample_uri = raw_uri("representative-object");
+    let selected_uri = raw_uri("selected-object");
+    let mut proof = proof_json(&binding, &raw_sample_uri, "representative-object", 28);
+    proof["acceptance_scope"]["planned_objects"] = json!(2);
+    proof["acceptance_scope"]["completed_objects"] = json!(2);
+    std::fs::write(&proof_path, proof.to_string()).expect("write proof");
+    std::fs::write(
+        &manifest_path,
+        manifest_json(
+            &selected_uri,
+            concrete_source_url(&binding.source_uri),
+            "selected-object",
+            17,
+            vec![object_json(&raw_sample_uri, "representative-object", 11)],
+        )
+        .to_string(),
+    )
+    .expect("write manifest");
+    std::fs::write(
+        &spec_path,
+        format!(
+            r#"report_id = "synthetic-source-proof-scope"
+source_bindings_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
+source_proof_path = "{}"
+manifest_path = "{}"
+selected_object_uri = "{}"
+output_dir = "{}"
+"#,
+            proof_path.display(),
+            manifest_path.display(),
+            selected_uri,
+            output_dir.display()
+        ),
+    )
+    .expect("write spec");
+
+    let artifact =
+        write_backfill_source_proof_scope_report_from_spec_file(&spec_path).expect("artifact");
+    let report: backtesting_vertical_slice::backfill_source_proof_scope::BackfillSourceProofScopeReport =
+        serde_json::from_slice(&std::fs::read(artifact.path).expect("read report"))
+            .expect("report json");
+
+    assert_eq!(
+        report.status,
+        BackfillSourceProofScopeStatus::CandidateFound
+    );
+    assert_eq!(
+        report.selected_object.expect("selected object").s3_uri,
+        selected_uri
     );
 }
 

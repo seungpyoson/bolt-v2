@@ -29,6 +29,8 @@ pub struct BackfillSourceProofScopeSpec {
     pub source_bindings_path: PathBuf,
     pub source_proof_path: PathBuf,
     pub manifest_path: PathBuf,
+    #[serde(default)]
+    pub selected_object_uri: Option<String>,
     pub output_dir: PathBuf,
 }
 
@@ -49,6 +51,7 @@ pub enum BackfillSourceProofScopeIssue {
     NoManifestPayloadObjects,
     NoMatchingManifestObject,
     MultipleMatchingManifestObjects,
+    AcceptanceScopeDoesNotCoverManifest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,6 +195,34 @@ pub fn evaluate_backfill_source_proof_scope(
         proof,
         manifest,
         &crate::source_proof::committed_source_binding_registry(),
+        None,
+    ))
+}
+
+pub fn evaluate_backfill_source_proof_scope_for_selected_object(
+    report_id: impl Into<String>,
+    source_proof_json: &str,
+    manifest_json: &str,
+    selected_object_uri: &str,
+) -> Result<BackfillSourceProofScopeReport, BackfillSourceProofScopeError> {
+    let proof: SourceProofReport = serde_json::from_str(source_proof_json).map_err(|error| {
+        BackfillSourceProofScopeError::ParseSourceProofJson {
+            path: "inline".to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    let manifest: Value = serde_json::from_str(manifest_json).map_err(|error| {
+        BackfillSourceProofScopeError::ParseManifestJson {
+            path: "inline".to_string(),
+            error: error.to_string(),
+        }
+    })?;
+    Ok(evaluate_backfill_source_proof_scope_from_values(
+        report_id.into(),
+        proof,
+        manifest,
+        &crate::source_proof::committed_source_binding_registry(),
+        selected_object_uri_from_config(Some(selected_object_uri.to_string())),
     ))
 }
 
@@ -257,6 +288,7 @@ pub fn write_backfill_source_proof_scope_report_from_spec_file(
         proof,
         manifest,
         &source_bindings_registry,
+        selected_object_uri_from_config(spec.selected_object_uri),
     );
     write_backfill_source_proof_scope_report(&spec.output_dir, &report)
 }
@@ -301,6 +333,7 @@ fn evaluate_backfill_source_proof_scope_from_values(
     proof: SourceProofReport,
     manifest: Value,
     source_bindings_registry: &SourceBindingRegistry,
+    selected_object_uri: Option<String>,
 ) -> BackfillSourceProofScopeReport {
     let manifest_id = manifest_id(&manifest);
     let acceptance_error = if proof.status == SourceProofStatus::Accepted {
@@ -320,12 +353,29 @@ fn evaluate_backfill_source_proof_scope_from_values(
         selector_scope_violations: 0,
     });
     let payload_objects = manifest_payload_objects(&manifest);
+    let manifest_payload_object_count = payload_objects.len() as u64;
+    let manifest_payload_bytes = payload_objects
+        .iter()
+        .map(|object| object.bytes)
+        .sum::<u64>();
+    let raw_sample_present = payload_objects.iter().any(|object| {
+        object.s3_uri.trim() == proof.raw_sample_uri.trim()
+            && object.sha256 == proof.raw_sample_hash
+    });
+    let acceptance_scope_covers_manifest = accepted_scope.completed_objects
+        == manifest_payload_object_count
+        && accepted_scope.accepted_bytes == manifest_payload_bytes;
     let matching_objects = payload_objects
         .iter()
         .filter(|object| {
-            object.s3_uri.trim() == proof.raw_sample_uri.trim()
-                && object.sha256 == proof.raw_sample_hash
-                && object.bytes <= accepted_scope.accepted_bytes
+            if let Some(selected_uri) = selected_object_uri.as_deref() {
+                object.s3_uri.trim() == selected_uri
+                    && object.bytes <= accepted_scope.accepted_bytes
+            } else {
+                object.s3_uri.trim() == proof.raw_sample_uri.trim()
+                    && object.sha256 == proof.raw_sample_hash
+                    && object.bytes <= accepted_scope.accepted_bytes
+            }
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -351,6 +401,9 @@ fn evaluate_backfill_source_proof_scope_from_values(
     if payload_objects.is_empty() {
         blocking_issues.push(BackfillSourceProofScopeIssue::NoManifestPayloadObjects);
     }
+    if selected_object_uri.is_some() && (!acceptance_scope_covers_manifest || !raw_sample_present) {
+        blocking_issues.push(BackfillSourceProofScopeIssue::AcceptanceScopeDoesNotCoverManifest);
+    }
     if matching_objects.is_empty() {
         blocking_issues.push(BackfillSourceProofScopeIssue::NoMatchingManifestObject);
     } else if matching_objects.len() > 1 {
@@ -362,14 +415,9 @@ fn evaluate_backfill_source_proof_scope_from_values(
     } else {
         BackfillSourceProofScopeStatus::Blocked
     };
-    let manifest_payload_object_count = payload_objects.len() as u64;
-    let object_level_tranche_required = manifest_payload_object_count
-        > accepted_scope.completed_objects
-        || payload_objects
-            .iter()
-            .map(|object| object.bytes)
-            .sum::<u64>()
-            > accepted_scope.accepted_bytes;
+    let object_level_tranche_required = manifest_payload_object_count > 1
+        || manifest_payload_object_count > accepted_scope.completed_objects
+        || manifest_payload_bytes > accepted_scope.accepted_bytes;
 
     BackfillSourceProofScopeReport {
         schema_version: BACKFILL_SOURCE_PROOF_SCOPE_SCHEMA_VERSION.to_string(),
@@ -390,6 +438,12 @@ fn evaluate_backfill_source_proof_scope_from_values(
         source_proof_acceptance_error: acceptance_error,
         blocking_issues,
     }
+}
+
+fn selected_object_uri_from_config(selected_object_uri: Option<String>) -> Option<String> {
+    selected_object_uri
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn manifest_id(manifest: &Value) -> String {

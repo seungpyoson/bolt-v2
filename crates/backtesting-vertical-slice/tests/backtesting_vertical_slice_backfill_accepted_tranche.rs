@@ -37,6 +37,32 @@ fn accepted_tranche_manifest_contains_only_selected_scope_object() {
 }
 
 #[test]
+fn accepted_tranche_manifest_accepts_selected_object_from_broader_object_scope() {
+    let mut scope = candidate_scope_report();
+    scope.accepted_scope_completed_objects = 2;
+    scope.accepted_scope_accepted_bytes = 28;
+    scope.manifest_payload_object_count = 2;
+    scope.object_level_tranche_required = true;
+    let selected = scope.selected_object.as_mut().expect("selected object");
+    selected.sha256 = "selected-object-from-broader-scope".to_string();
+    selected.bytes = 17;
+    let scope_hash = scope_hash(&scope);
+
+    let manifest = evaluate_backfill_accepted_tranche("synthetic-tranche", &scope, &scope_hash)
+        .expect("manifest");
+
+    assert_eq!(manifest.status, BackfillAcceptedTrancheStatus::Accepted);
+    assert!(manifest.blocking_issues.is_empty());
+    assert!(manifest.object_level_tranche_required);
+    assert_eq!(manifest.object_count, 1);
+    assert_eq!(manifest.accepted_bytes, 17);
+    assert_eq!(
+        manifest.objects[0].sha256,
+        "selected-object-from-broader-scope"
+    );
+}
+
+#[test]
 fn accepted_tranche_carries_object_selection_metadata() {
     let mut scope = candidate_scope_report();
     let selected = scope.selected_object.as_mut().expect("selected object");

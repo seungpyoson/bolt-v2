@@ -253,11 +253,14 @@ fn evaluate_backfill_accepted_tranche_report(
     if source_proof_scope.matching_object_count != 1 {
         blocking_issues.push(BackfillAcceptedTrancheIssue::MatchingObjectCountNotOne);
     }
-    if source_proof_scope.accepted_scope_completed_objects != 1 {
+    if !source_proof_scope.object_level_tranche_required
+        && source_proof_scope.accepted_scope_completed_objects != 1
+    {
         blocking_issues.push(BackfillAcceptedTrancheIssue::AcceptedScopeNotSingleObject);
     }
-    if selected
-        .is_some_and(|object| object.bytes != source_proof_scope.accepted_scope_accepted_bytes)
+    if !source_proof_scope.object_level_tranche_required
+        && selected
+            .is_some_and(|object| object.bytes != source_proof_scope.accepted_scope_accepted_bytes)
     {
         blocking_issues.push(BackfillAcceptedTrancheIssue::AcceptedBytesMismatchSelectedObject);
     }

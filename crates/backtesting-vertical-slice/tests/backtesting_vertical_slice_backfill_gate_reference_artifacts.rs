@@ -4,6 +4,7 @@ use backtesting_vertical_slice::{
     backfill_accepted_tranche::{
         BackfillAcceptedTrancheManifest, evaluate_backfill_accepted_tranche,
     },
+    backfill_coverage::{BackfillCoverageLedger, BackfillCoverageStatus},
     backfill_execution_plan::{
         BackfillExecutionPlan, BackfillExecutionRunBinding, BackfillExecutionWorkBudget,
         evaluate_backfill_execution_plan,
@@ -1842,6 +1843,62 @@ fn artifact_index_commit_status_references_committed_proof_reports() {
         sha256_hex(ARTIFACT_INDEX_IAM_SCOPE_PROOF_REPORT_BYTES)
     );
     assert_eq!(status["bte_006_can_close"].as_bool(), Some(false));
+}
+
+#[test]
+fn binance_bnbusdc_venue_coverage_ledger_binds_all_accepted_tranches() {
+    let ledger_root = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../specs/023-nt-research-analytics-platform/reference/backfill-coverage-ledgers/binance-bnbusdc-2026-03-01-2026-05-31",
+    );
+    let spec_path = ledger_root.join("backfill-coverage-ledger.toml");
+    let ledger_path = ledger_root.join("ledger/backfill-coverage-ledger.json");
+    let spec: toml::Value =
+        toml::from_str(&read_required_string(&spec_path)).expect("coverage ledger spec parses");
+    let manifests = spec["manifest"]
+        .as_array()
+        .expect("coverage ledger spec has manifest entries");
+    assert_eq!(manifests.len(), 92);
+    for manifest in manifests {
+        assert_eq!(manifest["coverage_axis"].as_str(), Some("archive_date"));
+        assert_eq!(manifest["source_proof_status"].as_str(), Some("accepted"));
+        assert_eq!(manifest["write_mode"].as_str(), Some("s3_staging"));
+        assert_eq!(manifest["canonical_s3_write"].as_bool(), Some(false));
+    }
+
+    let ledger: BackfillCoverageLedger =
+        serde_json::from_str(&read_required_string(&ledger_path)).expect("coverage ledger parses");
+    assert_eq!(
+        ledger.ledger_id,
+        "backfill-coverage-ledger-binance-bnbusdc-2026-03-01-2026-05-31"
+    );
+    assert_eq!(ledger.summary.total_records, 92);
+    assert_eq!(ledger.summary.accepted_records, 92);
+    assert_eq!(ledger.summary.accepted_objects, 92);
+    assert_eq!(ledger.summary.accepted_bytes, 66_451_476);
+    assert_eq!(ledger.summary.rejected_records, 0);
+    assert_eq!(ledger.summary.physical_only_records, 0);
+    assert_eq!(ledger.summary.canonical_ready_records, 0);
+    assert!(
+        ledger
+            .records
+            .iter()
+            .all(|record| record.status == BackfillCoverageStatus::Accepted),
+        "all Binance BNBUSDC venue coverage records must be accepted"
+    );
+    assert_eq!(
+        ledger
+            .records
+            .first()
+            .map(|record| record.record_id.as_str()),
+        Some("backfill-accepted-tranche-binance-bnbusdc-2026-03-01")
+    );
+    assert_eq!(
+        ledger
+            .records
+            .last()
+            .map(|record| record.record_id.as_str()),
+        Some("backfill-accepted-tranche-binance-bnbusdc-2026-05-31")
+    );
 }
 
 fn source_proof_scope_hash(report: &BackfillSourceProofScopeReport) -> String {

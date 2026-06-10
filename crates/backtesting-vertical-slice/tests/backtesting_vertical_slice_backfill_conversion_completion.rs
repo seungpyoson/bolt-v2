@@ -8,9 +8,8 @@ use std::path::Path;
 fn completion_ledger_proves_entire_binance_bnbusdc_venue_batch_is_published() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
-    let ledger_root = reference_root.join(
-        "backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31",
-    );
+    let ledger_root = reference_root
+        .join("backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31");
     let spec_path = ledger_root.join("backfill-conversion-completion-ledger.toml");
     let artifact = write_backfill_conversion_completion_ledger_from_spec_file(&spec_path)
         .expect("completion ledger generation succeeds");
@@ -49,11 +48,17 @@ fn completion_ledger_proves_entire_binance_bnbusdc_venue_batch_is_published() {
         "all venue records must be published, proven TradeTick catalog inputs"
     );
     assert_eq!(
-        ledger.records.first().map(|record| record.archive_date.as_str()),
+        ledger
+            .records
+            .first()
+            .map(|record| record.archive_date.as_str()),
         Some("2026-03-01")
     );
     assert_eq!(
-        ledger.records.last().map(|record| record.archive_date.as_str()),
+        ledger
+            .records
+            .last()
+            .map(|record| record.archive_date.as_str()),
         Some("2026-05-31")
     );
 }
@@ -102,11 +107,17 @@ fn completion_ledger_proves_entire_bybit_bnbusdc_venue_batch_is_published() {
         "all venue records must be published, proven TradeTick catalog inputs"
     );
     assert_eq!(
-        ledger.records.first().map(|record| record.archive_date.as_str()),
+        ledger
+            .records
+            .first()
+            .map(|record| record.archive_date.as_str()),
         Some("2026-03-01")
     );
     assert_eq!(
-        ledger.records.last().map(|record| record.archive_date.as_str()),
+        ledger
+            .records
+            .last()
+            .map(|record| record.archive_date.as_str()),
         Some("2026-06-01")
     );
 }

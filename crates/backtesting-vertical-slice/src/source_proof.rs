@@ -2725,13 +2725,25 @@ required_cross_market_component_roles = [{roles}]
     fn committed_registry_exposes_required_market_structure_fixtures() {
         let registry = committed_source_binding_registry();
 
-        let perps_spot = registry
-            .source_binding_metadata("bybit-spot-tick-trades", "bybit")
-            .expect("perps/spot sample binding");
-        assert_eq!(
-            perps_spot.market_structure_fixture,
-            Some(FixtureType::PerpsSpot)
-        );
+        for (source_binding, product_family) in [
+            ("bybit-spot-tick-trades", "spot"),
+            ("bybit-linear-tick-trades", "linear"),
+            ("bybit-inverse-tick-trades", "inverse"),
+        ] {
+            let bybit_trade = registry
+                .source_binding_metadata(source_binding, "bybit")
+                .expect("Bybit public archive tick-trades binding");
+            assert_eq!(bybit_trade.product_family, product_family);
+            assert_eq!(
+                bybit_trade.market_structure_fixture,
+                Some(FixtureType::PerpsSpot)
+            );
+            assert_eq!(
+                bybit_trade.evidence_state,
+                EvidenceState::OwnerArchiveBackfillable
+            );
+            assert!(bybit_trade.table_families.contains(&"trades".to_string()));
+        }
 
         let binary_option = registry
             .source_binding_metadata("hyperliquid-hip4-outcome-meta", "hyperliquid")

@@ -2061,8 +2061,7 @@ fn bybit_bnbusdc_venue_backfill_gate_reference_artifacts_match_generic_evaluator
             .record_id
             .strip_prefix("backfill-accepted-tranche-bybit-bnbusdc-")
             .expect("Bybit BNBUSDC record id carries archive date");
-        let gate_root =
-            reference_root.join(format!("backfill-gates/bybit-bnbusdc-{archive_date}"));
+        let gate_root = reference_root.join(format!("backfill-gates/bybit-bnbusdc-{archive_date}"));
         let source_proof_path = reference_root.join(format!(
             "backtesting-vertical-slice-accepted-source-proof.bybit-bnbusdc-{archive_date}.json"
         ));
@@ -2191,6 +2190,158 @@ fn bybit_bnbusdc_venue_conversion_batch_binds_accepted_coverage_to_operator_inpu
 }
 
 #[test]
+fn bybit_public_archive_tick_trade_source_universe_covers_all_staged_categories_and_instruments() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let universe_path = reference_root.join(
+        "backfill-source-universes/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-source-universe.json",
+    );
+    let universe: serde_json::Value = serde_json::from_str(&read_required_string(&universe_path))
+        .expect("Bybit source universe parses");
+
+    assert_eq!(
+        universe["schema_version"].as_str(),
+        Some("backfill-source-universe.v1")
+    );
+    assert_eq!(universe["venue"].as_str(), Some("bybit"));
+    assert_eq!(universe["source"].as_str(), Some("public_archive"));
+    assert_eq!(universe["family"].as_str(), Some("tick_trades"));
+    assert_eq!(
+        universe["accepted_scope"]["commit_granularity"].as_str(),
+        Some("venue_source_family_instrument_universe")
+    );
+    assert_eq!(
+        universe["accepted_scope"]["symbol_or_day_commit_granularity"].as_str(),
+        Some("rejected")
+    );
+
+    let summary = &universe["summary"];
+    assert_eq!(summary["object_count"].as_u64(), Some(5_857));
+    assert_eq!(summary["category_count"].as_u64(), Some(3));
+    assert_eq!(summary["unique_symbol_count"].as_u64(), Some(97));
+    assert_eq!(summary["category_symbol_count"].as_u64(), Some(106));
+    assert_eq!(summary["archive_date_count"].as_u64(), Some(94));
+    assert_eq!(summary["first_archive_date"].as_str(), Some("2025-06-01"));
+    assert_eq!(summary["last_archive_date"].as_str(), Some("2026-06-01"));
+    assert_eq!(summary["compressed_bytes"].as_u64(), Some(20_309_079_098));
+
+    let categories = universe["categories"]
+        .as_array()
+        .expect("universe categories array");
+    let categories_by_name: std::collections::BTreeMap<&str, &serde_json::Value> = categories
+        .iter()
+        .map(|category| {
+            (
+                category["category"].as_str().expect("category name"),
+                category,
+            )
+        })
+        .collect();
+    assert_eq!(
+        categories_by_name.keys().copied().collect::<Vec<_>>(),
+        vec!["inverse", "linear", "spot"]
+    );
+
+    for (category, source_binding, instruments, objects, bytes, sample_symbol) in [
+        (
+            "spot",
+            "bybit-spot-tick-trades",
+            58,
+            3_304,
+            1_264_254_131,
+            "BNBUSDC",
+        ),
+        (
+            "linear",
+            "bybit-linear-tick-trades",
+            38,
+            1_851,
+            18_419_832_484,
+            "BTCUSDT",
+        ),
+        (
+            "inverse",
+            "bybit-inverse-tick-trades",
+            10,
+            702,
+            624_992_483,
+            "BTCUSD",
+        ),
+    ] {
+        let category_entry = categories_by_name
+            .get(category)
+            .unwrap_or_else(|| panic!("missing category {category}"));
+        assert_eq!(
+            category_entry["source_binding"].as_str(),
+            Some(source_binding)
+        );
+        assert!(
+            category_entry["source_uri_template"]
+                .as_str()
+                .expect("source uri template")
+                .contains("{symbol}")
+        );
+        assert_eq!(
+            category_entry["instrument_count"].as_u64(),
+            Some(instruments)
+        );
+        assert_eq!(category_entry["object_count"].as_u64(), Some(objects));
+        assert_eq!(category_entry["compressed_bytes"].as_u64(), Some(bytes));
+        let instrument_entries = category_entry["instruments"]
+            .as_array()
+            .expect("category instruments array");
+        assert_eq!(instrument_entries.len() as u64, instruments);
+        assert!(
+            instrument_entries.iter().all(|instrument| {
+                instrument["category"].as_str() == Some(category)
+                    && instrument["source_binding"].as_str() == Some(source_binding)
+                    && instrument["sample_staged_object"]
+                        .as_str()
+                        .is_some_and(|uri| uri.starts_with("s3://bolt-parquet/backfill-staging/"))
+            }),
+            "all {category} instruments must bind the category source binding and staged S3 object"
+        );
+        assert!(
+            instrument_entries
+                .iter()
+                .any(|instrument| instrument["symbol"].as_str() == Some(sample_symbol)),
+            "{category} universe missing representative symbol {sample_symbol}"
+        );
+    }
+
+    let registry: toml::Value = toml::from_str(&read_required_string(
+        &reference_root.join("backfill-source-bindings.v1.toml"),
+    ))
+    .expect("source bindings registry parses");
+    let configured_keys: std::collections::BTreeSet<&str> = registry["source_binding"]
+        .as_array()
+        .expect("source bindings array")
+        .iter()
+        .filter_map(|binding| binding["key"].as_str())
+        .collect();
+    let universe_binding_keys: std::collections::BTreeSet<&str> = universe["source_bindings"]
+        .as_array()
+        .expect("universe source bindings array")
+        .iter()
+        .map(|binding| binding["key"].as_str().expect("universe binding key"))
+        .collect();
+    assert_eq!(
+        universe_binding_keys,
+        std::collections::BTreeSet::from([
+            "bybit-inverse-tick-trades",
+            "bybit-linear-tick-trades",
+            "bybit-spot-tick-trades",
+        ])
+    );
+    assert!(
+        universe_binding_keys
+            .iter()
+            .all(|binding| configured_keys.contains(binding)),
+        "all universe bindings must exist in the committed source-binding registry"
+    );
+}
+
+#[test]
 fn bybit_bnbusdc_venue_publication_and_mapping_evidence_cover_all_accepted_tranches() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");
@@ -2236,8 +2387,7 @@ fn bybit_bnbusdc_venue_publication_and_mapping_evidence_cover_all_accepted_tranc
             Some(true)
         );
 
-        let gate_root =
-            reference_root.join(format!("backfill-gates/bybit-bnbusdc-{archive_date}"));
+        let gate_root = reference_root.join(format!("backfill-gates/bybit-bnbusdc-{archive_date}"));
         let readiness_spec_path = gate_root.join("source-catalog-mapping-readiness.toml");
         let readiness_spec: SourceCatalogMappingReadinessSpec =
             toml::from_str(&read_required_string(&readiness_spec_path))

@@ -16,8 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     backfill_conversion_batch::{
-        BackfillConversionBatchPlan, BackfillConversionBatchRecord,
-        BackfillConversionBatchStatus,
+        BackfillConversionBatchPlan, BackfillConversionBatchRecord, BackfillConversionBatchStatus,
     },
     backfill_execution_plan::BackfillExecutionPlan,
     source_catalog_mapping_readiness::SourceCatalogMappingStatusEntry,
@@ -191,7 +190,10 @@ impl fmt::Display for BackfillConversionCompletionLedgerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ReadSpec { path, error } => {
-                write!(f, "read backfill conversion-completion spec {path}: {error}")
+                write!(
+                    f,
+                    "read backfill conversion-completion spec {path}: {error}"
+                )
             }
             Self::ParseSpecToml { path, error } => {
                 write!(
@@ -203,7 +205,10 @@ impl fmt::Display for BackfillConversionCompletionLedgerError {
                 write!(f, "read backfill conversion-batch plan {path}: {error}")
             }
             Self::ParseBatchPlanJson { path, error } => {
-                write!(f, "parse backfill conversion-batch plan JSON {path}: {error}")
+                write!(
+                    f,
+                    "parse backfill conversion-batch plan JSON {path}: {error}"
+                )
             }
             Self::ReadPublicationEvidence { path, error } => {
                 write!(f, "read publication evidence {path}: {error}")
@@ -218,7 +223,10 @@ impl fmt::Display for BackfillConversionCompletionLedgerError {
                 write!(f, "parse catalog mapping evaluation JSON {path}: {error}")
             }
             Self::ReadExecutionPlan { path, error } => {
-                write!(f, "read execution plan for conversion completion {path}: {error}")
+                write!(
+                    f,
+                    "read execution plan for conversion completion {path}: {error}"
+                )
             }
             Self::ParseExecutionPlanJson { path, error } => {
                 write!(f, "parse execution plan JSON {path}: {error}")
@@ -484,33 +492,33 @@ fn read_input(
         }
     })?;
     let catalog_mapping_evaluation_hash = format!("{:x}", Sha256::digest(&mapping_bytes));
-    let mapping: SourceCatalogMappingEvaluation = serde_json::from_slice(&mapping_bytes).map_err(
-        |error| BackfillConversionCompletionLedgerError::ParseCatalogMappingEvaluationJson {
-            path: mapping_path,
-            error: error.to_string(),
-        },
-    )?;
+    let mapping: SourceCatalogMappingEvaluation =
+        serde_json::from_slice(&mapping_bytes).map_err(|error| {
+            BackfillConversionCompletionLedgerError::ParseCatalogMappingEvaluationJson {
+                path: mapping_path,
+                error: error.to_string(),
+            }
+        })?;
 
     let execution_plan_path = batch_record
         .map(|record| record.execution_plan_path.clone())
         .unwrap_or_default();
     let execution_plan_path_display = execution_plan_path.display().to_string();
     let resolved_execution_plan_path = resolve_path(path_base, &execution_plan_path);
-    let execution_plan_bytes =
-        fs::read(&resolved_execution_plan_path).map_err(|error| {
-            BackfillConversionCompletionLedgerError::ReadExecutionPlan {
-                path: execution_plan_path_display.clone(),
-                error: error.to_string(),
-            }
-        })?;
+    let execution_plan_bytes = fs::read(&resolved_execution_plan_path).map_err(|error| {
+        BackfillConversionCompletionLedgerError::ReadExecutionPlan {
+            path: execution_plan_path_display.clone(),
+            error: error.to_string(),
+        }
+    })?;
     let execution_plan_hash = format!("{:x}", Sha256::digest(&execution_plan_bytes));
-    let execution_plan: BackfillExecutionPlan =
-        serde_json::from_slice(&execution_plan_bytes).map_err(|error| {
-            BackfillConversionCompletionLedgerError::ParseExecutionPlanJson {
+    let execution_plan: BackfillExecutionPlan = serde_json::from_slice(&execution_plan_bytes)
+        .map_err(
+            |error| BackfillConversionCompletionLedgerError::ParseExecutionPlanJson {
                 path: execution_plan_path_display,
                 error: error.to_string(),
-            }
-        })?;
+            },
+        )?;
 
     Ok(BackfillConversionCompletionInput {
         record_id: spec.record_id,
@@ -534,14 +542,12 @@ fn validate_execution_plan(
     if input.execution_plan.accepted_tranche_id != batch_record.record_id
         || input.execution_plan_hash != batch_record.execution_plan_hash
     {
-        blocking_issues.push(
-            BackfillConversionCompletionBlockingIssue::ExecutionPlanRecordMismatch,
-        );
+        blocking_issues
+            .push(BackfillConversionCompletionBlockingIssue::ExecutionPlanRecordMismatch);
     }
     if input.execution_plan.objects.len() != 1 {
-        blocking_issues.push(
-            BackfillConversionCompletionBlockingIssue::ExecutionPlanObjectCountMismatch,
-        );
+        blocking_issues
+            .push(BackfillConversionCompletionBlockingIssue::ExecutionPlanObjectCountMismatch);
     }
 }
 
@@ -560,7 +566,8 @@ fn validate_publication_evidence(
         || !evidence.scope.staged_to_s3
         || !evidence.scope.published_to_s3
     {
-        blocking_issues.push(BackfillConversionCompletionBlockingIssue::PublicationScopeNotPublished);
+        blocking_issues
+            .push(BackfillConversionCompletionBlockingIssue::PublicationScopeNotPublished);
     }
     if requirements.require_direct_s3_catalog_access
         && (!evidence.scope.direct_s3_catalog_access_proven
@@ -568,12 +575,14 @@ fn validate_publication_evidence(
                 .accepted_conversion_and_publication
                 .published_catalog_direct_s3)
     {
-        blocking_issues.push(
-            BackfillConversionCompletionBlockingIssue::PublicationDirectS3CatalogUnproven,
-        );
+        blocking_issues
+            .push(BackfillConversionCompletionBlockingIssue::PublicationDirectS3CatalogUnproven);
     }
     if requirements.require_publication_verification
-        && evidence.accepted_conversion_and_publication.verification_exit_code() != Some(0)
+        && evidence
+            .accepted_conversion_and_publication
+            .verification_exit_code()
+            != Some(0)
     {
         blocking_issues
             .push(BackfillConversionCompletionBlockingIssue::PublicationVerificationFailed);
@@ -605,24 +614,34 @@ fn validate_publication_evidence(
                 .as_str(),
         )
     {
-        blocking_issues.push(
-            BackfillConversionCompletionBlockingIssue::PublicationAcceptedObjectHashMismatch,
-        );
+        blocking_issues
+            .push(BackfillConversionCompletionBlockingIssue::PublicationAcceptedObjectHashMismatch);
     }
-    if evidence.accepted_conversion_and_publication.canonical_trades_rows
+    if evidence
+        .accepted_conversion_and_publication
+        .canonical_trades_rows
         != evidence
             .accepted_conversion_and_publication
             .catalog_read_back_trade_ticks
-        || evidence.accepted_conversion_and_publication.canonical_trades_rows
+        || evidence
+            .accepted_conversion_and_publication
+            .canonical_trades_rows
             != evidence
                 .accepted_conversion_and_publication
                 .published_catalog_expected_iterations
-        || evidence.accepted_conversion_and_publication.canonical_trades_rows
+        || evidence
+            .accepted_conversion_and_publication
+            .canonical_trades_rows
             != evidence
                 .accepted_conversion_and_publication
                 .published_catalog_nt_iterations
-        || evidence.accepted_conversion_and_publication.canonical_trades_rows
-            != evidence.accepted_conversion_and_publication.nt_result.iterations
+        || evidence
+            .accepted_conversion_and_publication
+            .canonical_trades_rows
+            != evidence
+                .accepted_conversion_and_publication
+                .nt_result
+                .iterations
     {
         blocking_issues.push(BackfillConversionCompletionBlockingIssue::PublicationRowsMismatch);
     }
@@ -677,9 +696,8 @@ fn validate_mapping_evidence<'a>(
             .push(BackfillConversionCompletionBlockingIssue::MappingCurrentBteStatusMismatch);
     }
     if entry.parquet_catalog_status != requirements.parquet_catalog_status {
-        blocking_issues.push(
-            BackfillConversionCompletionBlockingIssue::MappingParquetCatalogStatusMismatch,
-        );
+        blocking_issues
+            .push(BackfillConversionCompletionBlockingIssue::MappingParquetCatalogStatusMismatch);
     }
     if !entry
         .candidate_nt_data_classes
@@ -692,7 +710,10 @@ fn validate_mapping_evidence<'a>(
     let has_publication_ref = entry
         .nt_data_class_evidence_refs
         .get(&requirements.nt_data_type)
-        .is_some_and(|refs| refs.iter().any(|evidence_ref| evidence_ref == &publication_ref));
+        .is_some_and(|refs| {
+            refs.iter()
+                .any(|evidence_ref| evidence_ref == &publication_ref)
+        });
     if !has_publication_ref {
         blocking_issues
             .push(BackfillConversionCompletionBlockingIssue::MappingPublicationEvidenceMissing);

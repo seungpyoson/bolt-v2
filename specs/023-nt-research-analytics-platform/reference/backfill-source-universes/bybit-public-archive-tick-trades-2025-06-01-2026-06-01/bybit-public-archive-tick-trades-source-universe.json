@@ -1,0 +1,1273 @@
+{
+  "schema_version": "backfill-source-universe.v1",
+  "universe_id": "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "venue": "bybit",
+  "source": "public_archive",
+  "family": "tick_trades",
+  "table_families": [
+    "trades"
+  ],
+  "staging_snapshot": "2026-06-01",
+  "staging_prefix": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/",
+  "accepted_scope": {
+    "commit_granularity": "venue_source_family_instrument_universe",
+    "category_split_allowed_only_for_source_contract_or_schema_boundaries": true,
+    "symbol_or_day_commit_granularity": "rejected"
+  },
+  "summary": {
+    "object_count": 5857,
+    "category_count": 3,
+    "unique_symbol_count": 97,
+    "category_symbol_count": 106,
+    "archive_date_count": 94,
+    "first_archive_date": "2025-06-01",
+    "last_archive_date": "2026-06-01",
+    "compressed_bytes": 20309079098
+  },
+  "source_bindings": [
+    {
+      "key": "bybit-spot-tick-trades",
+      "venue": "bybit",
+      "product_family": "spot",
+      "source_uri_template": "https://public.bybit.com/spot/{symbol}/{symbol}_{dt}.csv.gz",
+      "table_families": [
+        "trades"
+      ]
+    },
+    {
+      "key": "bybit-linear-tick-trades",
+      "venue": "bybit",
+      "product_family": "linear",
+      "source_uri_template": "https://public.bybit.com/trading/{symbol}/{symbol}{dt}.csv.gz",
+      "table_families": [
+        "trades"
+      ]
+    },
+    {
+      "key": "bybit-inverse-tick-trades",
+      "venue": "bybit",
+      "product_family": "inverse",
+      "source_uri_template": "https://public.bybit.com/trading/{symbol}/{symbol}{dt}.csv.gz",
+      "table_families": [
+        "trades"
+      ]
+    }
+  ],
+  "categories": [
+    {
+      "category": "spot",
+      "product_family": "spot",
+      "source_binding": "bybit-spot-tick-trades",
+      "source_uri_template": "https://public.bybit.com/spot/{symbol}/{symbol}_{dt}.csv.gz",
+      "object_count": 3304,
+      "instrument_count": 58,
+      "archive_date_count": 94,
+      "first_archive_date": "2025-06-01",
+      "last_archive_date": "2026-06-01",
+      "compressed_bytes": 1264254131,
+      "instruments": [
+        {
+          "category": "spot",
+          "symbol": "0GUSDT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 3,
+          "archive_date_count": 3,
+          "first_archive_date": "2026-03-31",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 84846,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-31/symbol=0GUSDT/object=f3ad1007fdc8cf3582e5ad6847cdabee5b8f50cc8886c0af304c9fe8a5bb3b39.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "1INCHUSDT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 4,
+          "archive_date_count": 4,
+          "first_archive_date": "2025-06-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 84000,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2025-06-01/symbol=1INCHUSDT/object=39e28347f5cda21e991e99251cb4b39213e1d75a56e1042acf7b4b89273d861e.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "2ZUSDC",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 3,
+          "archive_date_count": 3,
+          "first_archive_date": "2026-03-31",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 15329,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-31/symbol=2ZUSDC/object=46c38a0d344a0e79eac74e5899858b6a6c32f4ebb287de5920a44cbe1e1dbfcb.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "2ZUSDT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 3,
+          "archive_date_count": 3,
+          "first_archive_date": "2026-03-31",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 227404,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-31/symbol=2ZUSDT/object=e4f2c111f3128e651d3e77017f96306ac3f3f3cc3f1edf4e50f1be17a579da21.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "A8USDT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 3,
+          "archive_date_count": 3,
+          "first_archive_date": "2026-03-31",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 117681,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-31/symbol=A8USDT/object=cdebf996c1de163edd532518d18cf4d06403dfe454a40ed71cfab1d2b2773f70.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "AAPLXUSDT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 3,
+          "archive_date_count": 3,
+          "first_archive_date": "2026-03-31",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 11084,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-31/symbol=AAPLXUSDT/object=abe6c9ee79289185302ab4609198048a5095f81ab56cc72d3edfcd0f50cc39a8.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "AAVEUSDC",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 3,
+          "archive_date_count": 3,
+          "first_archive_date": "2026-03-31",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 22610,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-31/symbol=AAVEUSDC/object=931b4f8bc31116de162d9c9fcce50b53de505937481a43158d2593f436bf0c83.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "AAVEUSDT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 2,
+          "archive_date_count": 2,
+          "first_archive_date": "2026-04-30",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 363696,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-04-30/symbol=AAVEUSDT/object=f53b4cc499915460b7905aaaaa22de4b214b72ab6b66a3f58cb450dffebd4d2f.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "ACHUSDT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 1,
+          "archive_date_count": 1,
+          "first_archive_date": "2026-05-31",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 3300,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-05-31/symbol=ACHUSDT/object=6a37811be06c4a250be1ef3856a4ac3b535d2f981384d69a918d2a1b17d4118a.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "BNBUSDC",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 93,
+          "archive_date_count": 93,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-06-01",
+          "compressed_bytes": 1156784,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BNBUSDC/object=d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "BNBUSDT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 16546465,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BNBUSDT/object=9fe6e344edde06f7229bd158f4fd11bc1fdd54725d90f8a8249f4f2164d69119.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "BTCAED",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 18,
+          "archive_date_count": 18,
+          "first_archive_date": "2026-03-06",
+          "last_archive_date": "2026-05-22",
+          "compressed_bytes": 2666,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-06/symbol=BTCAED/object=5a5b3456a9fdfc3d5d9852e9d3ac423e0dc57d67970cff708dab25a8b82bff84.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "BTCBRL",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 878945,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BTCBRL/object=7e17384682d06178a6c54e387ab2e58a8e70993ca3ee36b0a8902d8cb012fb00.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "BTCEUR",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 5857009,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BTCEUR/object=8103f1a1de52d263dfb3647ac60e4a0e4e8bde0e2d712c5d52f951750c19bc8f.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "BTCGBP",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 5,
+          "archive_date_count": 5,
+          "first_archive_date": "2026-05-07",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 524,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-05-07/symbol=BTCGBP/object=d9c86227d33b8294d5eae924749eb99ae00f960eb36e1860d72fb401bf13a7a5.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "BTCPLN",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 75,
+          "archive_date_count": 75,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 94072,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BTCPLN/object=2497592f300ae6330a519601af968099f16535db9ad02fbf319cdb0aa7e6a820.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "BTCRLUSD",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 352561,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BTCRLUSD/object=01b3dc4c495d974d14865af9c838d4ff648af8323be8936db32bcb8ebcabf1db.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "BTCTRY",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 61,
+          "archive_date_count": 61,
+          "first_archive_date": "2026-03-02",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 18952,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-02/symbol=BTCTRY/object=2e5308000e6dc8205f3e9ba3426005d08d41d6f6a108e137cdab92b8f62f54a9.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "BTCUSD",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 35,
+          "archive_date_count": 35,
+          "first_archive_date": "2026-04-16",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 160324,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-04-16/symbol=BTCUSD/object=04cfe9abaf23d7c0509fc72d28d91c3269a34fe055794273c23b9cc07f1c4d90.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "BTCUSD1",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 29,
+          "archive_date_count": 29,
+          "first_archive_date": "2026-04-22",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 328735,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-04-22/symbol=BTCUSD1/object=0dd13bd85d1d36010296f6f7380f38c97bdeeb7cb3cb0e999a3b90eb563258a1.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "BTCUSDC",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 41787676,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BTCUSDC/object=37860c84e69dac7a7ec71d4d9242efda0a4300362b87c73656b5e562bf9160f1.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "BTCUSDE",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 182175,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BTCUSDE/object=1737ecb1ef397964dbb5eeaf39b3766363ca046d433c7393fbe1078acb7f5b10.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "BTCUSDT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 512755303,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BTCUSDT/object=cdbd492f061dcf23a703d1d36bc472ddffa5b35015f4139ed48c5fd4392eb647.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "BTCXUSD",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 605515,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=BTCXUSD/object=ff2c9c2418dd9cf8892fefa2019e31f13807fd91213c596ed767e7e6e5d9b74a.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "DOGEEUR",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 192343,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=DOGEEUR/object=9a92b1b444ee465e7c2bedbfa18b7a34f3c4859d68100972db5fbd37fe7a557e.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "DOGEMNT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 1436731,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=DOGEMNT/object=6c7ec2a83bcf99ca5da317ec93c697f9cecea6edfb7a41a7db2fe5b254fe483e.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "DOGEUSDC",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 2802689,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=DOGEUSDC/object=2450e4ef4bf6b7d51910cf85485d30205f8638db9e03199a4179a76d6295d4a3.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "DOGEUSDT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 41309761,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=DOGEUSDT/object=cd2ec9a27c6d066d8f25e1eca9801f1c187aaa09898a24fbbc6ab23e81bfe8bc.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "ETHAED",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 6,
+          "archive_date_count": 6,
+          "first_archive_date": "2026-03-06",
+          "last_archive_date": "2026-04-16",
+          "compressed_bytes": 638,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-06/symbol=ETHAED/object=92d1d5d77fd97d087923c441b18828e16f0a3a06ab1b41794b3d8d3c3d100b0b.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "ETHBRL",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 2072319,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=ETHBRL/object=6a98c14f266d7baa4ac02cc3a78c03658832ea1fabdc873734893c0ea5f31d16.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "ETHBTC",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 6384411,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=ETHBTC/object=f7f7bdfda722394c0cb4e2090dacdd121e8a54d6ed7915cc50cfbf8113cf1de6.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "ETHEUR",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 1114673,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=ETHEUR/object=3298c562be9ee39c57310d1fda1814e8721bf74789c3998f940322fb532421e6.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "ETHGBP",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 2,
+          "archive_date_count": 2,
+          "first_archive_date": "2026-05-07",
+          "last_archive_date": "2026-05-19",
+          "compressed_bytes": 191,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-05-07/symbol=ETHGBP/object=e972ae6ce302422ef5154e31c78a1cedfbe3f10acc9f35a5fef0ebe1d2f07e3b.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "ETHMNT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 5197306,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=ETHMNT/object=0ca96f807bd63b1e4bd9e78dcd310878a71a717c71f6ecc2df70a96d03f14dad.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "ETHPLN",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 67,
+          "archive_date_count": 67,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 104306,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=ETHPLN/object=1194d47045b32e8856b5971ec6f9f961d3344446d6ebbeeeec04411633aee640.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "ETHRLUSD",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 670446,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=ETHRLUSD/object=fb404d9d49d0abb8a6a7efade982cd2f0ec80595b550110155ba144d8aaa39f6.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "ETHTRY",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 63,
+          "archive_date_count": 63,
+          "first_archive_date": "2026-03-02",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 50393,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-02/symbol=ETHTRY/object=cbf820a3ed409fd8f890f5b0cee9c7bcf2564738242506a5fa3976907527cee5.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "ETHUSD",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 35,
+          "archive_date_count": 35,
+          "first_archive_date": "2026-04-16",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 145424,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-04-16/symbol=ETHUSD/object=039be60dcd2341a3b29931eb0746e16456da1ba0906f7ff1353258774e6cc4e5.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "ETHUSD1",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 29,
+          "archive_date_count": 29,
+          "first_archive_date": "2026-04-22",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 8757590,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-04-22/symbol=ETHUSD1/object=9c51f099a12cb665a986a3d118a034e85383bb03305f05f76b6843c729bdff1e.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "ETHUSDC",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 27015279,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=ETHUSDC/object=00a34ea30b73b83c1ddaf21737506a80e0130a78f3e154595f08cd65ca35eade.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "ETHUSDE",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 237226,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=ETHUSDE/object=32158fbb06099c4c3893bd93e002be33b8690ed1a334ccacec43a7bf14e5ee6f.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "ETHUSDT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 336359585,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=ETHUSDT/object=c3e300819e347d75aa5049b3798e967fc5c8f346e93ea28ec6efc2868c1fd127.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "HYPEUSDT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 65388106,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=HYPEUSDT/object=7bbcba381f7a6207cfa7b7a09e1faf3e0872f57daefb8833e7f7122bdcae07c3.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "SOLAED",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 2,
+          "archive_date_count": 2,
+          "first_archive_date": "2026-03-06",
+          "last_archive_date": "2026-05-21",
+          "compressed_bytes": 261,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-06/symbol=SOLAED/object=0d5b95a6137ce6634dcee930f6032b33e5a3e7c1f5aa96f280240a47948e3d2e.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "SOLBRL",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 410432,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=SOLBRL/object=1632ca8bbb7c4b8c2c29e6668035723999416cd62dfb068cba2be849bf2052b2.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "SOLBTC",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 1761157,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=SOLBTC/object=029deee39796529e7213c2e6824582ad480c62da9ed538b187c6e46d01a66ccd.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "SOLEUR",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 631306,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=SOLEUR/object=17e808b0f9ed0520820a48946ba3ca19eecac2216fafb73fa064949ecdf0dd9a.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "SOLGBP",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 5,
+          "archive_date_count": 5,
+          "first_archive_date": "2026-04-02",
+          "last_archive_date": "2026-05-21",
+          "compressed_bytes": 529,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-04-02/symbol=SOLGBP/object=72aedf75b4f3da562bee1039effe79213ea5d6f822690792377b5dfedd52abf4.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "SOLMNT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 2041176,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=SOLMNT/object=d8fe65bdd86e9dc4aca33fb7d05de17ce4637f637667c961414375f47ef74b1a.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "SOLUSDC",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 8046891,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=SOLUSDC/object=d52afe666b6bd78af7f20477586f66d97b852da9439f6830455995b121448b33.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "SOLUSDE",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 166971,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=SOLUSDE/object=40bd81fd0ee03b3b7edf6b55849b00cbc11dc32c0c652e0a7be5681e11d6245c.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "SOLUSDT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 92376480,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=SOLUSDT/object=d89a223dee96186d9d7ff845da7c169d173432aaafe5c59d31b76413be8f01e5.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "XRPBTC",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 861070,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=XRPBTC/object=8928a2565d46e2146c2b6263e6958bc4b070843850acc00ae8a8f4ae083445b9.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "XRPEUR",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 394189,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=XRPEUR/object=061424094f6c89639348ba5e927d48c745140e1d6c7e845792f99a002c1da528.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "XRPMNT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 3271467,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=XRPMNT/object=86f1e39f519d2e5804ba43a3035e7d16f2e56303f6d1f059bb04d69c42101e0a.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "XRPRLUSD",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 292648,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=XRPRLUSD/object=4b275d2c1a559ee8d3e199de9e8944b1ce119ef29cf58af97df0688802d9bf84.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "XRPUSDC",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 9331150,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=XRPUSDC/object=4ef1e636b7cadc655b2f725a2a9f9ae583531a1414b8be78ba54e08bcb52bb79.csv.gz"
+        },
+        {
+          "category": "spot",
+          "symbol": "XRPUSDT",
+          "source_binding": "bybit-spot-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 63771331,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=spot/dt=2026-03-01/symbol=XRPUSDT/object=af00dd9bb8358f0f23f6a5991a82af3d844e42325a01407cac0282387d29cf1d.csv.gz"
+        }
+      ]
+    },
+    {
+      "category": "linear",
+      "product_family": "linear",
+      "source_binding": "bybit-linear-tick-trades",
+      "source_uri_template": "https://public.bybit.com/trading/{symbol}/{symbol}{dt}.csv.gz",
+      "object_count": 1851,
+      "instrument_count": 38,
+      "archive_date_count": 94,
+      "first_archive_date": "2025-06-01",
+      "last_archive_date": "2026-06-01",
+      "compressed_bytes": 18419832484,
+      "instruments": [
+        {
+          "category": "linear",
+          "symbol": "1000000BABYDOGEUSDT",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 4,
+          "archive_date_count": 4,
+          "first_archive_date": "2025-06-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 2127066,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2025-06-01/symbol=1000000BABYDOGEUSDT/object=05f553f64d664763eab91d4f68241c7bb8192ad53a264c111196f2a19c79b86e.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "BNBPERP",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 93,
+          "archive_date_count": 93,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-06-01",
+          "compressed_bytes": 5667267,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=BNBPERP/object=304bc0a99824101b0151a74ace672366ce5dfd8e1818222afe5b7376ea73fcec.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "BNBUSDT",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 236529625,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=BNBUSDT/object=8648c73610c7e0b0d54ca1618c50baf255819f61ded53a5c0430f129fe2c42f9.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "BTCPERP",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 80130449,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=BTCPERP/object=dce16a77ce04f87d2901e00b8621b4ff514e4f4f9fdd9df71719d039a37c4932.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "BTCUSDT",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 5582812486,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=BTCUSDT/object=be6d08065413d29d0f77e448399eb0b2faf7aa6588e30ac7a7766e62f1b07e59.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "BTCUSDT-05JUN26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 9,
+          "archive_date_count": 9,
+          "first_archive_date": "2026-05-15",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 255960,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-15/symbol=BTCUSDT-05JUN26/object=03973c84b649b3d1bf2aa05e11e96d62ce4b44fdec8489c264c68bc40cf1e6f0.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "BTCUSDT-12JUN26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 2,
+          "archive_date_count": 2,
+          "first_archive_date": "2026-05-22",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 83255,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-22/symbol=BTCUSDT-12JUN26/object=92169a8947a4bcd298443ea09c84328653174f08b676c672a0737cf38a7e7623.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "BTCUSDT-25DEC26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 79,
+          "archive_date_count": 79,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 784691,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=BTCUSDT-25DEC26/object=16f6098e2f4aed6226c8433a21e6896bbbd1ba239fa63d33d77f801560e641db.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "BTCUSDT-25SEP26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 79,
+          "archive_date_count": 79,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 1910431,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=BTCUSDT-25SEP26/object=2d9b650a19f487cd8f75245ad36e5e4f890543c62d92d616c9a90415c426a34c.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "BTCUSDT-26JUN26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 79,
+          "archive_date_count": 79,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 4145482,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=BTCUSDT-26JUN26/object=382bb171c62304947e3478b3d30d67ca5990553ca8ff6d1c99344ad80c848c61.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "BTCUSDT-26MAR27",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 46,
+          "archive_date_count": 46,
+          "first_archive_date": "2026-04-03",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 375889,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-04-03/symbol=BTCUSDT-26MAR27/object=199b23e18d8c8651be32ce6a365f3c6ab45150a82cbc441923ae03b71fe6c606.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "BTCUSDT-31JUL26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 16,
+          "archive_date_count": 16,
+          "first_archive_date": "2026-05-08",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 188248,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-08/symbol=BTCUSDT-31JUL26/object=efe35eb3a6f596e4c6954ed55d456a78c7a3e3d19b17807ec0f2ecb7532f2216.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "DOGEPERP",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 14911178,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=DOGEPERP/object=1e18e72ae5402b90fbb7c8d45735937aa03850a1edff4e3bb2aa620c7263821b.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "DOGEUSDT",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 1320596316,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=DOGEUSDT/object=a890d202330bb1a3cae09de9db15e5533fae94bddc8c357f4aa113299fc35669.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "DOGEUSDT-05JUN26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 9,
+          "archive_date_count": 9,
+          "first_archive_date": "2026-05-15",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 84442,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-15/symbol=DOGEUSDT-05JUN26/object=d59a5e4c9aebe67a4469f0e19921b220a7a429c13ad6b94be25a6f5b51456d97.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "DOGEUSDT-12JUN26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 2,
+          "archive_date_count": 2,
+          "first_archive_date": "2026-05-22",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 17603,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-22/symbol=DOGEUSDT-12JUN26/object=a7f0093de09e51669a2f9093ee090642f0531ad8c789bea5091d57d11aa3b742.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "DOGEUSDT-26JUN26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 16,
+          "archive_date_count": 16,
+          "first_archive_date": "2026-05-08",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 185938,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-08/symbol=DOGEUSDT-26JUN26/object=110d704246da4f0f2fd6d8271e9886f7566575c53e25011bd7e1f5ca5a564e51.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "ETHPERP",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 89266767,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=ETHPERP/object=e53ab8fc260fc47113820651a4e77cd64215a63453fa24fd89399e6660beca23.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "ETHUSDT",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 5776567328,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=ETHUSDT/object=bc0bdd6172fe40dd7737adcb723cae3c7860812772c2efc92f8ff7235443e536.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "ETHUSDT-05JUN26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 9,
+          "archive_date_count": 9,
+          "first_archive_date": "2026-05-15",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 329059,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-15/symbol=ETHUSDT-05JUN26/object=cfcea14ca3cf51be1e8b70c5632474149a1cf9fe3b8c5ad3f1789baf28581e61.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "ETHUSDT-12JUN26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 2,
+          "archive_date_count": 2,
+          "first_archive_date": "2026-05-22",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 154407,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-22/symbol=ETHUSDT-12JUN26/object=ce99be83025962c1bb2dc4d899cdd111fc9801ee8e9fb92dce12bbd24044bedc.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "ETHUSDT-25DEC26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 79,
+          "archive_date_count": 79,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 726254,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=ETHUSDT-25DEC26/object=16e316d88b4fbb00b9e8ca3b695faacb19aca52e2b5b05172f21fa3b60ae9bec.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "ETHUSDT-25SEP26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 79,
+          "archive_date_count": 79,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 2655285,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=ETHUSDT-25SEP26/object=5670a59460f3a2efb761731f6b1b32ac579323daf5058116d06fa9788ff81722.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "ETHUSDT-26JUN26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 79,
+          "archive_date_count": 79,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 5807816,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=ETHUSDT-26JUN26/object=656a05cad94be81de357d50595e2f511241075b42879281c0363d0352afff5e1.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "ETHUSDT-26MAR27",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 46,
+          "archive_date_count": 46,
+          "first_archive_date": "2026-04-03",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 365799,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-04-03/symbol=ETHUSDT-26MAR27/object=3013741e1f164db4c4f569e826483ce1a7fbbad944b62b7abe775a5ee6a04ee0.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "ETHUSDT-31JUL26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 16,
+          "archive_date_count": 16,
+          "first_archive_date": "2026-05-08",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 340281,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-08/symbol=ETHUSDT-31JUL26/object=1f23fad39aaca81917c96186c81bcabdbbe043d70fac86c41c6bc9e1dee8fb9a.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "HYPEPERP",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 17064955,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=HYPEPERP/object=50d89d35260d30d8d2d465e35df5bdac32ee7535131c55261ed6bf8cda967289.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "HYPEUSDT",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 2134961048,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=HYPEUSDT/object=56820389b6df6520761624e4350809210d4c3b09e40b967aa46591df41fbb722.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "SOLPERP",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 29306224,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=SOLPERP/object=5971913d9b02f65c924ddf037dc0bf6fc8cc3372a8ac2b7c236bb9553ceb99c6.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "SOLUSDT",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 1677895427,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=SOLUSDT/object=dbeef6c9be05808d809bcb8b0105c162d6d1823c30ebe08d32913018ebf82ab4.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "SOLUSDT-05JUN26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 9,
+          "archive_date_count": 9,
+          "first_archive_date": "2026-05-15",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 84945,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-15/symbol=SOLUSDT-05JUN26/object=e49940349a3324753a23b8afca6a671317d55ff472a3f35a5a6a2b2cd64f09fb.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "SOLUSDT-12JUN26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 2,
+          "archive_date_count": 2,
+          "first_archive_date": "2026-05-22",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 14898,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-22/symbol=SOLUSDT-12JUN26/object=24b583cbc98d41e29be82540d8b9b3e021cdf764d773d437268a8f1069332378.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "SOLUSDT-26JUN26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 16,
+          "archive_date_count": 16,
+          "first_archive_date": "2026-05-08",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 183444,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-08/symbol=SOLUSDT-26JUN26/object=ed7147abf1d8416c798b93b27530de0fcabe7689afc22adb967a2c9f33ef7cc0.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "XRPPERP",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 22433975,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=XRPPERP/object=8e900c76eda856bd37ce737b10526484119f2a84982d17f2b68f636ab91bf3e2.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "XRPUSDT",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 81,
+          "archive_date_count": 81,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 1410479306,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-03-01/symbol=XRPUSDT/object=1156791de259dc91a98722ed21ea98444ebcf192d5f66ad6f1afc1017f85c16e.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "XRPUSDT-05JUN26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 9,
+          "archive_date_count": 9,
+          "first_archive_date": "2026-05-15",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 158172,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-15/symbol=XRPUSDT-05JUN26/object=6a617785df2fe032b61f383ae05dcfd6a8122a948586bbf1387dbcb858e15849.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "XRPUSDT-12JUN26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 2,
+          "archive_date_count": 2,
+          "first_archive_date": "2026-05-22",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 47312,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-22/symbol=XRPUSDT-12JUN26/object=38a0f6a09d600e521f695213c3925b7a82291d32ce5c25ed36af7acfb46fd8b0.csv.gz"
+        },
+        {
+          "category": "linear",
+          "symbol": "XRPUSDT-26JUN26",
+          "source_binding": "bybit-linear-tick-trades",
+          "object_count": 16,
+          "archive_date_count": 16,
+          "first_archive_date": "2026-05-08",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 183456,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/dt=2026-05-08/symbol=XRPUSDT-26JUN26/object=95ea3f0aad7d2aaba81b4b79e47331ce680d0f577e100e667ee9f50e856006c5.csv.gz"
+        }
+      ]
+    },
+    {
+      "category": "inverse",
+      "product_family": "inverse",
+      "source_binding": "bybit-inverse-tick-trades",
+      "source_uri_template": "https://public.bybit.com/trading/{symbol}/{symbol}{dt}.csv.gz",
+      "object_count": 702,
+      "instrument_count": 10,
+      "archive_date_count": 94,
+      "first_archive_date": "2025-06-01",
+      "last_archive_date": "2026-06-01",
+      "compressed_bytes": 624992483,
+      "instruments": [
+        {
+          "category": "inverse",
+          "symbol": "AAVEUSD",
+          "source_binding": "bybit-inverse-tick-trades",
+          "object_count": 4,
+          "archive_date_count": 4,
+          "first_archive_date": "2025-06-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 174764,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2025-06-01/symbol=AAVEUSD/object=0c92b646ffca8f0621eb36741b3d7382c9212905d781905ff066bfc0b5d72516.csv.gz"
+        },
+        {
+          "category": "inverse",
+          "symbol": "BTCUSD",
+          "source_binding": "bybit-inverse-tick-trades",
+          "object_count": 93,
+          "archive_date_count": 93,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-06-01",
+          "compressed_bytes": 292107368,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2026-03-01/symbol=BTCUSD/object=1424554f6a6a84b295eae92d90eca857ab008ebea41fcdad5daf64ed4ee46136.csv.gz"
+        },
+        {
+          "category": "inverse",
+          "symbol": "BTCUSDM26",
+          "source_binding": "bybit-inverse-tick-trades",
+          "object_count": 79,
+          "archive_date_count": 79,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 7572902,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2026-03-01/symbol=BTCUSDM26/object=60b15a6c823f0b87aff3dee5921dc4a19f8bed1a02195423f3c8f23fe5563f25.csv.gz"
+        },
+        {
+          "category": "inverse",
+          "symbol": "BTCUSDU26",
+          "source_binding": "bybit-inverse-tick-trades",
+          "object_count": 67,
+          "archive_date_count": 67,
+          "first_archive_date": "2026-03-13",
+          "last_archive_date": "2026-05-23",
+          "compressed_bytes": 1719858,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2026-03-13/symbol=BTCUSDU26/object=8da590bf6ab7e1fe63ab698ff9034d44edbc03fd54498c7ee48630033453eccc.csv.gz"
+        },
+        {
+          "category": "inverse",
+          "symbol": "DOGEUSD",
+          "source_binding": "bybit-inverse-tick-trades",
+          "object_count": 80,
+          "archive_date_count": 80,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 18301646,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2026-03-01/symbol=DOGEUSD/object=108b55fd0cf3155fd8c7b315846d8ec0bc077bd36fd7542238fe890496ad2c08.csv.gz"
+        },
+        {
+          "category": "inverse",
+          "symbol": "ETHUSD",
+          "source_binding": "bybit-inverse-tick-trades",
+          "object_count": 79,
+          "archive_date_count": 79,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 188381526,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2026-03-01/symbol=ETHUSD/object=acc0760c687dbd802f94da54599d3f81c8562a39a5abf1d33d92066052251cb3.csv.gz"
+        },
+        {
+          "category": "inverse",
+          "symbol": "ETHUSDM26",
+          "source_binding": "bybit-inverse-tick-trades",
+          "object_count": 77,
+          "archive_date_count": 77,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-22",
+          "compressed_bytes": 4491169,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2026-03-01/symbol=ETHUSDM26/object=a03d055725d9259239ab86f00d39eb95ee5f348d246f5d85654b60e294eabc89.csv.gz"
+        },
+        {
+          "category": "inverse",
+          "symbol": "ETHUSDU26",
+          "source_binding": "bybit-inverse-tick-trades",
+          "object_count": 65,
+          "archive_date_count": 65,
+          "first_archive_date": "2026-03-13",
+          "last_archive_date": "2026-05-22",
+          "compressed_bytes": 2054262,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2026-03-13/symbol=ETHUSDU26/object=f9cd410fab18b5f47c81e3536210884ea2c641734a175bb812fd4ceb8a938457.csv.gz"
+        },
+        {
+          "category": "inverse",
+          "symbol": "SOLUSD",
+          "source_binding": "bybit-inverse-tick-trades",
+          "object_count": 79,
+          "archive_date_count": 79,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 38366272,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2026-03-01/symbol=SOLUSD/object=bf7ed3a0d6153c3c899a90b6c0853f480f111842997bc087ac3333541b068d2a.csv.gz"
+        },
+        {
+          "category": "inverse",
+          "symbol": "XRPUSD",
+          "source_binding": "bybit-inverse-tick-trades",
+          "object_count": 79,
+          "archive_date_count": 79,
+          "first_archive_date": "2026-03-01",
+          "last_archive_date": "2026-05-31",
+          "compressed_bytes": 71822716,
+          "sample_staged_object": "s3://bolt-parquet/backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/dt=2026-03-01/symbol=XRPUSD/object=b3596c9956e5156a7efe30b21d4ba41684ca2d413705a0553999db06673af434.csv.gz"
+        }
+      ]
+    }
+  ],
+  "unstaged_categories": [
+    {
+      "category": "option",
+      "source_binding": null,
+      "reason": "No category=option objects are present under the staged Bybit public_archive tick_trades prefix."
+    }
+  ]
+}

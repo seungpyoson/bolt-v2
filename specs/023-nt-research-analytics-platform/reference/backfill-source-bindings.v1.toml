@@ -364,5 +364,35 @@ source_uri = "https://public.bybit.com/spot/{symbol}/{symbol}_{dt}.csv.gz"
 payload_extension = "csv.gz"
 extractor = "bybit_public_archive_spot_tick_trades"
 evidence_state = "owner_archive_backfillable"
-warning = "BNBUSDC 2026-03-01 is operator-attested for the minimal backtesting vertical slice; CI uses a synthetic fixture and this binding is not a global Bybit archive acceptance."
+warning = "Staged universe inventory covers the spot category for the Bybit public archive tick-trades source family; conversion completion remains governed by an explicit completion ledger."
+table_families = ["trades"]
+
+[[source_binding]]
+key = "bybit-linear-tick-trades"
+venue = "bybit"
+product_family = "linear"
+market_structure_fixture = "perps-spot"
+fixture = "native-trades"
+family = "market_data"
+method = "GET"
+source_uri = "https://public.bybit.com/trading/{symbol}/{symbol}{dt}.csv.gz"
+payload_extension = "csv.gz"
+extractor = "bybit_public_archive_derivatives_tick_trades"
+evidence_state = "owner_archive_backfillable"
+warning = "Staged universe inventory covers the linear category for the Bybit public archive tick-trades source family; conversion completion remains governed by an explicit completion ledger."
+table_families = ["trades"]
+
+[[source_binding]]
+key = "bybit-inverse-tick-trades"
+venue = "bybit"
+product_family = "inverse"
+market_structure_fixture = "perps-spot"
+fixture = "native-trades"
+family = "market_data"
+method = "GET"
+source_uri = "https://public.bybit.com/trading/{symbol}/{symbol}{dt}.csv.gz"
+payload_extension = "csv.gz"
+extractor = "bybit_public_archive_derivatives_tick_trades"
+evidence_state = "owner_archive_backfillable"
+warning = "Staged universe inventory covers the inverse category for the Bybit public archive tick-trades source family; conversion completion remains governed by an explicit completion ledger."
 table_families = ["trades"]

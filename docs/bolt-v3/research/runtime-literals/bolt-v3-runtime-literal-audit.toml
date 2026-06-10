@@ -39,6 +39,38 @@ reason = "This joins configured reference_data role names in a validation diagno
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"binary_oracle_entry_order_unsupported_shape"'''
+context = '''"binary_oracle_entry_order_unsupported_shape";'''
+classification = "strategy_archetype_validation_error_code"
+reason = "Stable machine-readable validation code for unsupported binary-oracle entry order shapes; it identifies the diagnostic class and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"binary_oracle_entry_order_reduce_only"'''
+context = '''"binary_oracle_entry_order_reduce_only";'''
+classification = "strategy_archetype_validation_error_code"
+reason = "Stable machine-readable validation code for reduce-only binary-oracle entry order rejection; it identifies the diagnostic class and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"binary_oracle_entry_order_market_quote_quantity"'''
+context = '''"binary_oracle_entry_order_market_quote_quantity";'''
+classification = "strategy_archetype_validation_error_code"
+reason = "Stable machine-readable validation code for market quote-quantity binary-oracle entry order rejection; it identifies the diagnostic class and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"binary_oracle_entry_order_quote_quantity"'''
+context = '''"binary_oracle_entry_order_quote_quantity";'''
+classification = "strategy_archetype_validation_error_code"
+reason = "Stable machine-readable validation code for quote-quantity binary-oracle entry order rejection; it identifies the diagnostic class and does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"blocked_after_seconds"'''
 context = '''"blocked_after_seconds",'''
 classification = "strategy_runtime_schema_field"

@@ -2384,6 +2384,157 @@ fn bybit_public_archive_tick_trade_source_universe_covers_all_staged_categories_
 }
 
 #[test]
+fn bybit_public_archive_tick_trade_conversion_plan_covers_all_instruments_and_categories() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let universe_path = reference_root.join(
+        "backfill-source-universes/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-source-universe.json",
+    );
+    let plan_path = reference_root.join(
+        "backfill-source-universe-conversion-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-conversion-plan.json",
+    );
+    let universe: serde_json::Value = serde_json::from_str(&read_required_string(&universe_path))
+        .expect("Bybit source universe parses");
+    let plan: serde_json::Value =
+        serde_json::from_str(&read_required_string(&plan_path)).expect("conversion plan parses");
+
+    assert_eq!(
+        plan["schema_version"].as_str(),
+        Some("backfill-source-universe-conversion-plan.v1")
+    );
+    assert_eq!(
+        plan["universe_id"].as_str(),
+        universe["universe_id"].as_str()
+    );
+    assert_eq!(
+        plan["status"].as_str(),
+        Some("requires_object_level_gate_materialization")
+    );
+    assert_eq!(
+        plan["selection"]["instrument_universe"].as_str(),
+        Some("all_staged_category_symbols")
+    );
+    assert_eq!(
+        plan["selection"]["commit_granularity"].as_str(),
+        Some("venue_source_family_instrument_universe")
+    );
+    assert_eq!(
+        plan["category_split_policy"]["symbol_or_day_commit_granularity"].as_str(),
+        Some("rejected")
+    );
+    assert_eq!(
+        plan["category_split_policy"]["allowed_only_for_source_contract_or_schema_boundaries"]
+            .as_bool(),
+        Some(true)
+    );
+
+    let universe_summary = &universe["summary"];
+    let plan_summary = &plan["source_universe_summary"];
+    for summary_field in [
+        "object_count",
+        "category_count",
+        "unique_symbol_count",
+        "category_symbol_count",
+        "archive_date_count",
+        "compressed_bytes",
+    ] {
+        assert_eq!(
+            plan_summary[summary_field].as_u64(),
+            universe_summary[summary_field].as_u64(),
+            "conversion plan summary field {summary_field} must match the source universe"
+        );
+    }
+    for summary_field in ["first_archive_date", "last_archive_date"] {
+        assert_eq!(
+            plan_summary[summary_field].as_str(),
+            universe_summary[summary_field].as_str(),
+            "conversion plan summary field {summary_field} must match the source universe"
+        );
+    }
+
+    assert_eq!(
+        plan["operator_contract"]["run_spec_gate_granularity"].as_str(),
+        Some("single_staged_object")
+    );
+    assert_eq!(
+        plan["operator_contract"]["required_gate_records"].as_u64(),
+        universe_summary["object_count"].as_u64()
+    );
+    assert_eq!(
+        plan["operator_contract"]["required_category_batches"].as_u64(),
+        universe_summary["category_count"].as_u64()
+    );
+
+    let plan_categories = plan["category_batches"]
+        .as_array()
+        .expect("conversion plan category batches");
+    let universe_categories = universe["categories"]
+        .as_array()
+        .expect("source universe categories");
+    let universe_categories_by_name: std::collections::BTreeMap<&str, &serde_json::Value> =
+        universe_categories
+            .iter()
+            .map(|category| {
+                (
+                    category["category"].as_str().expect("category name"),
+                    category,
+                )
+            })
+            .collect();
+    let plan_category_names: std::collections::BTreeSet<&str> = plan_categories
+        .iter()
+        .map(|category| category["category"].as_str().expect("plan category name"))
+        .collect();
+    assert_eq!(
+        plan_category_names,
+        std::collections::BTreeSet::from(["inverse", "linear", "spot"])
+    );
+
+    let mut planned_gate_records = 0;
+    for category in plan_categories {
+        let category_name = category["category"].as_str().expect("plan category name");
+        let universe_category = universe_categories_by_name
+            .get(category_name)
+            .unwrap_or_else(|| panic!("missing source universe category {category_name}"));
+        assert_eq!(
+            category["source_binding"].as_str(),
+            universe_category["source_binding"].as_str()
+        );
+        assert_eq!(
+            category["instrument_count"].as_u64(),
+            universe_category["instrument_count"].as_u64()
+        );
+        assert_eq!(
+            category["object_count"].as_u64(),
+            universe_category["object_count"].as_u64()
+        );
+        assert_eq!(
+            category["compressed_bytes"].as_u64(),
+            universe_category["compressed_bytes"].as_u64()
+        );
+        assert_eq!(
+            category["converter_csv"], universe_category["converter_csv"],
+            "{category_name} converter mapping must match the source universe contract"
+        );
+        assert_eq!(
+            category["category_split_reason"].as_str(),
+            Some("source_contract_or_schema_boundary")
+        );
+        assert_eq!(
+            category["status"].as_str(),
+            Some("converter_mapping_configured")
+        );
+        planned_gate_records += category["required_gate_records"]
+            .as_u64()
+            .expect("category required gate records");
+    }
+    assert_eq!(
+        Some(planned_gate_records),
+        universe_summary["object_count"].as_u64()
+    );
+}
+
+#[test]
 fn bybit_bnbusdc_venue_publication_and_mapping_evidence_cover_all_accepted_tranches() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");

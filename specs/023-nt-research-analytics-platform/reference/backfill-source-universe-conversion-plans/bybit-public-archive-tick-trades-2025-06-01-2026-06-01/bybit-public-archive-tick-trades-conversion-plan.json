@@ -1,0 +1,220 @@
+{
+  "schema_version": "backfill-source-universe-conversion-plan.v1",
+  "plan_id": "backfill-source-universe-conversion-plan-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "universe_id": "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "created_at": "2026-06-10",
+  "status": "requires_object_level_gate_materialization",
+  "status_reason": "The Bybit public archive tick-trade source universe and converter mappings cover all staged categories and instruments; runnable conversion batches still require the existing object-level accepted-tranche, run-spec, execution-plan, and readiness gates.",
+  "selection": {
+    "venue": "bybit",
+    "source": "public_archive",
+    "family": "tick_trades",
+    "table_family": "trades",
+    "coverage_axis": "archive_date",
+    "first_archive_date": "2025-06-01",
+    "last_archive_date": "2026-06-01",
+    "instrument_universe": "all_staged_category_symbols",
+    "commit_granularity": "venue_source_family_instrument_universe"
+  },
+  "category_split_policy": {
+    "allowed_only_for_source_contract_or_schema_boundaries": true,
+    "symbol_or_day_commit_granularity": "rejected",
+    "allowed_category_splits": [
+      "spot",
+      "linear",
+      "inverse"
+    ],
+    "rejected_granularities": [
+      "archive_date",
+      "symbol",
+      "category_symbol"
+    ]
+  },
+  "source_universe_summary": {
+    "object_count": 5857,
+    "category_count": 3,
+    "unique_symbol_count": 97,
+    "category_symbol_count": 106,
+    "archive_date_count": 94,
+    "first_archive_date": "2025-06-01",
+    "last_archive_date": "2026-06-01",
+    "compressed_bytes": 20309079098
+  },
+  "operator_contract": {
+    "run_spec_gate_granularity": "single_staged_object",
+    "accepted_objects_per_run_spec": 1,
+    "required_gate_records": 5857,
+    "required_category_batches": 3,
+    "conversion_batch_status_until_gate_materialization": "not_ready",
+    "ready_batch_record_source": "object_level_execution_plans"
+  },
+  "source_bindings": [
+    {
+      "category": "spot",
+      "key": "bybit-spot-tick-trades"
+    },
+    {
+      "category": "linear",
+      "key": "bybit-linear-tick-trades"
+    },
+    {
+      "category": "inverse",
+      "key": "bybit-inverse-tick-trades"
+    }
+  ],
+  "category_batches": [
+    {
+      "category": "spot",
+      "source_binding": "bybit-spot-tick-trades",
+      "category_split_reason": "source_contract_or_schema_boundary",
+      "status": "converter_mapping_configured",
+      "instrument_count": 58,
+      "object_count": 3304,
+      "compressed_bytes": 1264254131,
+      "required_gate_records": 3304,
+      "source_uri_template": "https://public.bybit.com/spot/{symbol}/{symbol}_{dt}.csv.gz",
+      "sample_public_url": "https://public.bybit.com/spot/1INCHUSDT/1INCHUSDT_2025-06-01.csv.gz",
+      "schema_columns": [
+        "id",
+        "timestamp",
+        "price",
+        "volume",
+        "side",
+        "rpi"
+      ],
+      "converter_csv": {
+        "has_headers": true,
+        "trade_id_column": "id",
+        "timestamp_column": "timestamp",
+        "timestamp_unit": "milliseconds",
+        "price_column": "price",
+        "size_column": "volume",
+        "side_column": "side",
+        "buyer_side_values": [
+          "buy"
+        ],
+        "seller_side_values": [
+          "sell"
+        ]
+      }
+    },
+    {
+      "category": "linear",
+      "source_binding": "bybit-linear-tick-trades",
+      "category_split_reason": "source_contract_or_schema_boundary",
+      "status": "converter_mapping_configured",
+      "instrument_count": 38,
+      "object_count": 1851,
+      "compressed_bytes": 18419832484,
+      "required_gate_records": 1851,
+      "source_uri_template": "https://public.bybit.com/trading/{symbol}/{symbol}{dt}.csv.gz",
+      "sample_public_url": "https://public.bybit.com/trading/1000000BABYDOGEUSDT/1000000BABYDOGEUSDT2025-06-01.csv.gz",
+      "schema_columns": [
+        "timestamp",
+        "symbol",
+        "side",
+        "size",
+        "price",
+        "tickDirection",
+        "trdMatchID",
+        "grossValue",
+        "homeNotional",
+        "foreignNotional",
+        "RPI"
+      ],
+      "converter_csv": {
+        "has_headers": true,
+        "trade_id_column": "trdMatchID",
+        "timestamp_column": "timestamp",
+        "timestamp_unit": "decimal_seconds",
+        "price_column": "price",
+        "size_column": "size",
+        "side_column": "side",
+        "buyer_side_values": [
+          "Buy"
+        ],
+        "seller_side_values": [
+          "Sell"
+        ]
+      }
+    },
+    {
+      "category": "inverse",
+      "source_binding": "bybit-inverse-tick-trades",
+      "category_split_reason": "source_contract_or_schema_boundary",
+      "status": "converter_mapping_configured",
+      "instrument_count": 10,
+      "object_count": 702,
+      "compressed_bytes": 624992483,
+      "required_gate_records": 702,
+      "source_uri_template": "https://public.bybit.com/trading/{symbol}/{symbol}{dt}.csv.gz",
+      "sample_public_url": "https://public.bybit.com/trading/AAVEUSD/AAVEUSD2025-06-01.csv.gz",
+      "schema_columns": [
+        "timestamp",
+        "symbol",
+        "side",
+        "size",
+        "price",
+        "tickDirection",
+        "trdMatchID",
+        "grossValue",
+        "homeNotional",
+        "foreignNotional",
+        "RPI"
+      ],
+      "converter_csv": {
+        "has_headers": true,
+        "trade_id_column": "trdMatchID",
+        "timestamp_column": "timestamp",
+        "timestamp_unit": "decimal_seconds",
+        "price_column": "price",
+        "size_column": "size",
+        "side_column": "side",
+        "buyer_side_values": [
+          "Buy"
+        ],
+        "seller_side_values": [
+          "Sell"
+        ]
+      }
+    }
+  ],
+  "next_required_artifacts": [
+    {
+      "category": "spot",
+      "required_gate_records": 3304,
+      "artifact_families": [
+        "accepted_tranche",
+        "materialized_run_spec",
+        "execution_plan",
+        "execution_readiness",
+        "source_catalog_mapping_readiness"
+      ]
+    },
+    {
+      "category": "linear",
+      "required_gate_records": 1851,
+      "artifact_families": [
+        "accepted_tranche",
+        "materialized_run_spec",
+        "execution_plan",
+        "execution_readiness",
+        "source_catalog_mapping_readiness"
+      ]
+    },
+    {
+      "category": "inverse",
+      "required_gate_records": 702,
+      "artifact_families": [
+        "accepted_tranche",
+        "materialized_run_spec",
+        "execution_plan",
+        "execution_readiness",
+        "source_catalog_mapping_readiness"
+      ]
+    }
+  ],
+  "blocking_issues": [
+    "object_level_accepted_tranches_not_materialized"
+  ]
+}

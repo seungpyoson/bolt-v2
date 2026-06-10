@@ -748,13 +748,6 @@ pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admissio
     strategy
 }
 
-pub(super) fn selected_entry_side(strategy: &BinaryOracleEdgeTaker) -> OutcomeSide {
-    let evaluation = strategy.entry_evaluation_at(1_200);
-    evaluation
-        .selected_side
-        .expect("ready-to-trade fixture should select a configured outcome side")
-}
-
 pub(super) fn selected_entry_instrument(strategy: &BinaryOracleEdgeTaker) -> InstrumentId {
     strategy
         .entry_evaluation_at(1_200)
@@ -783,15 +776,6 @@ pub(super) fn configured_position_probe(
     strategy.exposure = original_exposure;
     strategy.refresh_book_subscriptions_for_current_state();
     position
-}
-
-pub(super) fn configured_side_for_instrument(
-    strategy: &mut BinaryOracleEdgeTaker,
-    instrument_id: InstrumentId,
-) -> OutcomeSide {
-    configured_position_probe(strategy, instrument_id)
-        .outcome_side
-        .expect("configured instrument should materialize with an outcome side")
 }
 
 pub(super) fn configured_book_for_instrument(
@@ -868,7 +852,12 @@ pub(super) fn pending_entry_state(
         instrument_id,
         outcome_side: Some(outcome_side),
         outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: strategy.entry_fee_bps(outcome_side).or(Some(0.0)),
+        historical_entry_fee_bps: strategy
+            .context
+            .fee_provider()
+            .fee_bps(instrument_id)
+            .and_then(|value| value.to_f64())
+            .or(Some(0.0)),
         interval_open: Some(3_100.0),
         selection_published_at_ms: Some(1_000),
         seconds_to_expiry_at_selection: Some(300),

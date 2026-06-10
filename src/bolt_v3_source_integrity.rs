@@ -239,8 +239,11 @@ mod tests {
     // Re-derived after exact-head review follow-ups blocked sell-side
     // executable-edge economics, single-sourced typed entry-shape checks, and
     // carried preliminary fee uncertainty into sized re-evaluation.
+    // Re-derived after follow-up cleanup separated sized executable-edge
+    // evidence, probed executable fees at VWAP, coupled slippage/depth config,
+    // labeled executable-edge Debug output, and named notional tolerance.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "1d393da8ee30fc99dfc7531e2fa514e8fd89885a28279e448685e3325677fbf6";
+        "a24648f3e212b9d23495d7ee0dd50fa0f3a20805c0ddb73c155e7d31033e350b";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

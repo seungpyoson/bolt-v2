@@ -2663,6 +2663,14 @@ reason = "This is the basis-points denominator for financial unit conversion, no
 [[allowed]]
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
+literal = '''10_000.0'''
+context = '''pub(crate) const NOTIONAL_FLOAT_TOLERANCE_EPSILON_MULTIPLIER: f64 = 10_000.0;'''
+classification = "float_tolerance_multiplier"
+reason = "This is the named epsilon multiplier for notional float comparison tolerance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_numeric.rs"
+kind = "number"
 literal = '''1_000'''
 context = '''pub(crate) const MILLIS_PER_SECOND_U64: u64 = 1_000;'''
 classification = "time_unit_conversion"

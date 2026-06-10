@@ -11,7 +11,7 @@ use crate::{
 
 const CENTS_PER_SHARE: f64 = 100.0;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExecutableEdgeBlockReason {
     MissingOrderBook,
     InsufficientDepth,
@@ -39,6 +39,12 @@ impl ExecutableEdgeBlockReason {
 }
 
 impl std::fmt::Display for ExecutableEdgeBlockReason {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::fmt::Debug for ExecutableEdgeBlockReason {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.as_str())
     }
@@ -271,16 +277,13 @@ pub(crate) fn evaluate_executable_edge(inputs: &ExecutableEdgeInputs<'_>) -> Exe
             ExecutableEdgeBlockReason::InvalidProbability,
         );
     };
-    if inputs
-        .fair_probability_up
-        .and_then(sanitize_probability)
-        .is_none()
-    {
+    let Some(fair_probability_up) = inputs.fair_probability_up.and_then(sanitize_probability)
+    else {
         return ExecutableEdgeResult::blocked(
             inputs.side,
             ExecutableEdgeBlockReason::InvalidProbability,
         );
-    }
+    };
     let Some(book) = inputs.book else {
         return ExecutableEdgeResult::blocked(
             inputs.side,
@@ -317,6 +320,10 @@ pub(crate) fn evaluate_executable_edge(inputs: &ExecutableEdgeInputs<'_>) -> Exe
         OutcomeSide::Up => adjusted_probability_up,
         OutcomeSide::Down => UNIT_F64 - adjusted_probability_up,
     };
+    let fair_success_probability = match inputs.side {
+        OutcomeSide::Up => fair_probability_up,
+        OutcomeSide::Down => UNIT_F64 - fair_probability_up,
+    };
     if !is_non_negative_finite(success_probability) || success_probability > UNIT_F64 {
         return ExecutableEdgeResult::blocked(
             inputs.side,
@@ -333,7 +340,7 @@ pub(crate) fn evaluate_executable_edge(inputs: &ExecutableEdgeInputs<'_>) -> Exe
         return ExecutableEdgeResult::blocked(inputs.side, ExecutableEdgeBlockReason::InvalidCost);
     }
 
-    let gross_edge_cents_per_share = success_probability * CENTS_PER_SHARE - gross_cost_cents;
+    let gross_edge_cents_per_share = fair_success_probability * CENTS_PER_SHARE - gross_cost_cents;
     let edge_cents_per_share = success_probability * CENTS_PER_SHARE - total_adjusted_cost_cents;
     let edge_bps = edge_cents_per_share / total_adjusted_cost_cents * BPS_DENOMINATOR;
     if !edge_bps.is_finite() || !edge_cents_per_share.is_finite() {
@@ -512,6 +519,14 @@ mod tests {
     }
 
     #[test]
+    fn executable_edge_block_reason_debug_uses_evidence_label() {
+        assert_eq!(
+            format!("{:?}", ExecutableEdgeBlockReason::EdgeBelowThreshold),
+            "edge_below_threshold"
+        );
+    }
+
+    #[test]
     fn negative_threshold_does_not_allow_fee_wiped_net_negative_edge() {
         let ask_price = HALF_F64;
         let ask_quantity = CENTS_PER_SHARE;
@@ -532,6 +547,23 @@ mod tests {
             result.block_reason,
             Some(ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge)
         );
+    }
+
+    #[test]
+    fn fair_probability_controls_fee_wipe_classification() {
+        let book = priced_book(&[(0.50, 100.0)]);
+        let mut inputs = inputs(OutcomeSide::Up, Some(&book));
+        inputs.fair_probability_up = Some(0.49);
+        inputs.adjusted_probability_up = Some(0.505);
+        inputs.fee_bps = Some(200.0);
+
+        let result = evaluate_executable_edge(&inputs);
+
+        assert_eq!(
+            result.block_reason,
+            Some(ExecutableEdgeBlockReason::EdgeBelowThreshold)
+        );
+        assert!(!result.trade_allowed);
     }
 
     #[test]
@@ -767,5 +799,21 @@ mod tests {
         );
         assert!((result.edge_cents_per_share - expected_edge_cents_per_share).abs() < EPSILON);
         assert!((result.edge_bps - expected_edge_bps).abs() < EPSILON);
+    }
+
+    #[test]
+    fn edge_equal_to_minimum_threshold_blocks() {
+        let book = priced_book(&[(0.50, 100.0)]);
+        let mut inputs = inputs(OutcomeSide::Up, Some(&book));
+        inputs.adjusted_probability_up = Some(0.60);
+        inputs.minimum_edge_bps = 2_000.0;
+
+        let result = evaluate_executable_edge(&inputs);
+
+        assert_eq!(
+            result.block_reason,
+            Some(ExecutableEdgeBlockReason::EdgeBelowThreshold)
+        );
+        assert!(!result.trade_allowed);
     }
 }

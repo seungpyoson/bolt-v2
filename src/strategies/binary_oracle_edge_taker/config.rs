@@ -320,6 +320,10 @@ impl BinaryOracleEdgeTakerBuilder {
                 "{field} must be at most {BPS_DENOMINATOR}"
             );
         }
+        anyhow::ensure!(
+            config.slippage_buffer_bps >= config.vwap_depth_limit_bps,
+            "slippage_buffer_bps must be greater than or equal to vwap_depth_limit_bps"
+        );
         Ok(())
     }
 
@@ -563,6 +567,7 @@ impl BinaryOracleEdgeTakerBuilder {
             errors,
         );
         Self::validate_executable_entry_order_shape(table, field_prefix, errors);
+        Self::validate_slippage_buffer_covers_vwap_depth(table, field_prefix, errors);
         Self::validate_rotating_market_family(table, field_prefix, errors);
     }
 
@@ -631,6 +636,35 @@ impl BinaryOracleEdgeTakerBuilder {
                 field: format!("{field_prefix}.{field_name}"),
                 code: stringify!(bps_out_of_range),
                 message: format!("must be at most {BPS_DENOMINATOR} bps"),
+            });
+        }
+    }
+
+    fn validate_slippage_buffer_covers_vwap_depth(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let Some(vwap_depth_limit_bps) = table
+            .get(stringify!(vwap_depth_limit_bps))
+            .and_then(Value::as_integer)
+        else {
+            return;
+        };
+        let Some(slippage_buffer_bps) = table
+            .get(stringify!(slippage_buffer_bps))
+            .and_then(Value::as_integer)
+        else {
+            return;
+        };
+        if vwap_depth_limit_bps.is_negative() || slippage_buffer_bps.is_negative() {
+            return;
+        }
+        if slippage_buffer_bps < vwap_depth_limit_bps {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{}", stringify!(slippage_buffer_bps)),
+                code: stringify!(slippage_buffer_below_vwap_depth_limit),
+                message: "must be greater than or equal to vwap_depth_limit_bps".to_string(),
             });
         }
     }

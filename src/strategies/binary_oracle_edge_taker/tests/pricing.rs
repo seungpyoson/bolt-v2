@@ -794,6 +794,7 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
     strategy.config.order_notional_target = 10.0;
     strategy.config.maximum_position_notional = 100.0;
     strategy.config.risk_lambda = 0.10;
+    strategy.config.book_impact_cap_bps = 5_000;
     strategy.config.vwap_depth_limit_bps = 5_000;
     strategy.config.edge_threshold_basis_points = i64::default();
     strategy.config.slippage_buffer_bps = 0;
@@ -842,18 +843,24 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
         evaluation.selected_side, None,
         "sized re-evaluation must block when the sized limit price has a wider fee band: {evaluation:#?}"
     );
-    assert_eq!(
+    assert!(
         evaluation
             .up_executable_edge
+            .is_some_and(|edge| edge.trade_allowed),
+        "preliminary UP edge should remain visible when sized re-evaluation blocks: {evaluation:#?}"
+    );
+    assert_eq!(
+        evaluation
+            .sized_executable_edge
             .as_ref()
             .and_then(|edge| edge.block_reason),
-        Some(ExecutableEdgeBlockReason::EdgeBelowThreshold)
+        Some(ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge)
     );
     assert_eq!(
         evaluation.pricing_blocked_by,
         vec![EntryPricingBlockReason::ExecutableEdgeUnavailable(
             OutcomeSide::Up,
-            ExecutableEdgeBlockReason::EdgeBelowThreshold
+            ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge
         )],
         "sized selected-side threshold failure should surface as a pricing block"
     );
@@ -862,6 +869,57 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
             .uncertainty_band_probability
             .is_some_and(|band| (band - 0.5).abs() < 1e-9),
         "final selected-side band should be recomputed from the sized fee: {evaluation:#?}"
+    );
+}
+
+#[test]
+fn executable_edge_fee_uses_exact_size_vwap_price_not_limit_price() {
+    let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
+    strategy.config.order_notional_target = 5.0;
+    strategy.config.maximum_position_notional = 5.0;
+    strategy.config.vwap_depth_limit_bps = 2_000;
+    strategy.config.edge_threshold_basis_points = 0;
+    strategy.config.slippage_buffer_bps = 0;
+    strategy.config.warmup_tick_count = 2;
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    strategy.active.price_to_beat = Some(3_100.0);
+    strategy.active.interval_open = Some(3_100.0);
+    strategy.active.warmup_count = 2;
+    strategy.active.last_reference_ts_ms = Some(1_200);
+    strategy.active.fast_venue_incoherent = false;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+    strategy.pricing.last_lead_gap_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    register_test_strategy_with_active_instruments(&mut strategy);
+    set_configured_books_depth(
+        &mut strategy,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 5.0),
+            (BookAction::Add, OrderSide::Sell, 0.60, 100.0),
+        ],
+    );
+
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert_eq!(
+        evaluation
+            .up_executable_edge
+            .as_ref()
+            .map(|edge| edge.cost_breakdown.limit_price),
+        Some(Some(0.60))
+    );
+    assert!(
+        evaluation
+            .up_executable_edge
+            .as_ref()
+            .and_then(|edge| executable_edge_fee_bps(Some(*edge)))
+            .is_some_and(|fee_bps| (fee_bps - 5_000.0).abs() < 1e-9),
+        "fee must be probed at exact-size VWAP price, not the last limit level: {evaluation:#?}"
     );
 }
 
@@ -972,6 +1030,18 @@ fn entry_submission_notional_guard_allows_scaled_float_noise() {
 }
 
 #[test]
+fn entry_submission_notional_guard_blocks_non_finite_inputs() {
+    assert!(limit_notional_exceeds_sized_notional(
+        f64::NAN,
+        BPS_DENOMINATOR
+    ));
+    assert!(limit_notional_exceeds_sized_notional(
+        BPS_DENOMINATOR,
+        f64::INFINITY
+    ));
+}
+
+#[test]
 fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.config.order_notional_target = UNIT_F64;
@@ -1064,7 +1134,7 @@ fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
         near_expiry.pricing_blocked_by.contains(
             &EntryPricingBlockReason::ExecutableEdgeUnavailable(
                 OutcomeSide::Up,
-                ExecutableEdgeBlockReason::EdgeBelowThreshold
+                ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge
             )
         ),
         "theta-scaled threshold miss should surface as an executable-edge pricing block: {near_expiry:#?}"

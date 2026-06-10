@@ -1231,49 +1231,6 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
 }
 
 #[test]
-fn down_entry_submission_price_uses_configured_order_side_price() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
-    let selected_side = selected_entry_side(&strategy);
-    assert_eq!(strategy.submission_entry_price(selected_side), Some(0.41));
-    assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.41));
-
-    strategy.config.entry_order.side = "sell".to_string();
-    strategy.config.entry_order.position_side = "short".to_string();
-    strategy.config.exit_order.side = "buy".to_string();
-    strategy.config.exit_order.position_side = "short".to_string();
-
-    assert_eq!(strategy.submission_entry_price(selected_side), Some(0.40));
-    assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.40));
-}
-
-#[test]
-fn post_only_entry_submission_price_uses_passive_book_price() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
-    strategy.config.entry_order.is_post_only = true;
-    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
-    let selected_side = OutcomeSide::Up;
-
-    assert_eq!(strategy.submission_entry_price(selected_side), Some(0.40));
-    assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.40));
-}
-
-#[test]
-fn stop_market_entry_submission_price_uses_trigger_price_for_notional_sizing() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    strategy.config.entry_order.order_type = OrderType::StopMarket;
-    strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
-    strategy.config.entry_order.trigger_price = Some(0.52);
-    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
-    let instrument_id = selected_entry_instrument(&strategy);
-    let selected_side = configured_side_for_instrument(&mut strategy, instrument_id);
-
-    assert_eq!(strategy.submission_entry_price(selected_side), Some(0.52));
-    assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.52));
-}
-
-#[test]
 fn quote_quantity_entry_submission_is_unsupported_executable_shape() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
@@ -1315,10 +1272,6 @@ fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
     strategy.config.entry_order.trigger_type = Some(TriggerType::MarkPrice);
     set_active_books_best_prices(&mut strategy, 0.40, 0.41);
     let instrument_id = selected_entry_instrument(&strategy);
-    let selected_side = configured_side_for_instrument(&mut strategy, instrument_id);
-
-    assert_eq!(strategy.submission_entry_price(selected_side), Some(0.52));
-    assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.52));
 
     let quantity = Quantity::new(2.0, 2);
     let fallback_price = Price::new(0.40, 2);

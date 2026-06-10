@@ -37,6 +37,20 @@ fn unsupported_executable_entry_order_shape_cases() -> Vec<(&'static str, Value)
         (stringify!(is_reduce_only), Value::Boolean(true)),
         (stringify!(is_quote_quantity), Value::Boolean(true)),
         (stringify!(trigger_price), Value::Float(1.0)),
+        (stringify!(activation_price), Value::Float(1.0)),
+        (
+            stringify!(trigger_type),
+            Value::String(stringify!(mark_price).to_string()),
+        ),
+        (
+            stringify!(trigger_instrument_id),
+            Value::String("TRIGGER.POLYMARKET".to_string()),
+        ),
+        (stringify!(trailing_offset), Value::Float(1.0)),
+        (
+            stringify!(trailing_offset_type),
+            Value::String(stringify!(price).to_string()),
+        ),
     ]
 }
 
@@ -150,6 +164,43 @@ fn parse_config_rejects_bps_runtime_knobs_above_full_scale() {
 }
 
 #[test]
+fn parse_config_accepts_bps_runtime_knob_boundaries() {
+    for value in [0_i64, BPS_DENOMINATOR as i64] {
+        let mut raw = valid_raw_config();
+        let table = raw.as_table_mut().expect("raw config should be a table");
+        for field in BPS_RUNTIME_KNOB_FIELDS {
+            table.insert((*field).to_string(), Value::Integer(value));
+        }
+
+        BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .unwrap_or_else(|error| panic!("bps boundary {value} should parse: {error}"));
+    }
+}
+
+#[test]
+fn parse_config_rejects_slippage_buffer_below_vwap_depth_limit() {
+    let mut raw = valid_raw_config();
+    let table = raw.as_table_mut().expect("raw config should be a table");
+    table.insert(
+        stringify!(vwap_depth_limit_bps).to_string(),
+        Value::Integer(50),
+    );
+    table.insert(
+        stringify!(slippage_buffer_bps).to_string(),
+        Value::Integer(49),
+    );
+
+    let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+        .expect_err("slippage buffer must cover the configured VWAP depth limit");
+
+    assert!(
+        err.to_string()
+            .contains("slippage_buffer_bps must be greater than or equal to vwap_depth_limit_bps"),
+        "expected coupling rejection, got: {err}"
+    );
+}
+
+#[test]
 fn validate_config_rejects_bps_runtime_knobs_above_full_scale() {
     for field in BPS_RUNTIME_KNOB_FIELDS {
         let mut raw = valid_raw_config();
@@ -170,6 +221,56 @@ fn validate_config_rejects_bps_runtime_knobs_above_full_scale() {
             format!("must be at most {BPS_DENOMINATOR} bps")
         );
     }
+}
+
+#[test]
+fn validate_config_rejects_negative_bps_runtime_knobs() {
+    for field in BPS_RUNTIME_KNOB_FIELDS {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert((*field).to_string(), Value::Integer(-1));
+        let mut errors = Vec::new();
+
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+        let error = find_error(
+            &errors,
+            &format!("strategies[0].config.{field}"),
+            "bps_out_of_range",
+        );
+        assert_eq!(
+            error.message,
+            format!("must be at most {BPS_DENOMINATOR} bps")
+        );
+    }
+}
+
+#[test]
+fn validate_config_rejects_slippage_buffer_below_vwap_depth_limit() {
+    let mut raw = valid_raw_config();
+    let table = raw.as_table_mut().expect("raw config should be a table");
+    table.insert(
+        stringify!(vwap_depth_limit_bps).to_string(),
+        Value::Integer(50),
+    );
+    table.insert(
+        stringify!(slippage_buffer_bps).to_string(),
+        Value::Integer(49),
+    );
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    let error = find_error(
+        &errors,
+        "strategies[0].config.slippage_buffer_bps",
+        "slippage_buffer_below_vwap_depth_limit",
+    );
+    assert_eq!(
+        error.message,
+        "must be greater than or equal to vwap_depth_limit_bps"
+    );
 }
 
 #[test]

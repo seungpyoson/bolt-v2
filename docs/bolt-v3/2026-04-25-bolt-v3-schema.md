@@ -460,6 +460,18 @@ This section owns both Bolt-v3 strategy-sizing limits and the configurable pinne
 - enforced by bolt-v3 strategy validation: each strategy file's `parameters.order_notional_target` must be `<=` this value
 - not automatically expanded into NautilusTrader per-instrument maps; `risk.nautilus.max_notional_per_order` is the explicit NT map when instrument-level caps are intentionally configured
 
+#### `[risk.kill_switch]`
+
+- required: no
+- when absent or `enabled = false`, no kill-switch loss controller is wired
+- when enabled, startup loads `store_path` and seeds submit admission from the recovered state before the runner loop starts
+- `daily_realized_loss_limit` is a positive decimal string owned by TOML
+- `store_path` is a root-relative private JSON evidence path; missing or corrupt evidence fails closed
+- `account_ids` scopes NT position-event PnL to configured execution accounts
+- `instrument_ids` scopes NT position-event PnL to configured execution instruments; it must contain concrete Nautilus execution instrument IDs when enabled
+- `forced_reduction_policy_sha256`, `forced_reduction_max_live_order_count`, and `forced_reduction_max_notional_per_order` configure the forced-reduction admission policy used after a halt
+- `authorized_operator_ids`, `manual_reset_evidence_max_age_ms`, and `mandatory_proof_max_age_ms` define the manual-reset evidence envelope; deleting or corrupting the store is not a reset path because restart recovery will fail closed
+
 #### NautilusTrader risk-engine bypass (removed config field)
 
 - the previously configurable `bypass` field inside `[risk.nautilus]` has been removed

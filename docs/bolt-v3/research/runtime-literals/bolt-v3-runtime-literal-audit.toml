@@ -9487,3 +9487,99 @@ literal = '''"spread_or_slippage_wiped_edge"'''
 context = '''Self::SpreadOrSlippageWipedEdge => "spread_or_slippage_wiped_edge",'''
 classification = "executable_edge_block_reason_label"
 reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "number"
+literal = '''86_400_000_000_000'''
+context = '''const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;'''
+classification = "kill_switch_time_unit_conversion_constant"
+reason = "Named nanoseconds-per-UTC-day conversion used to bucket observed PnL by exchange timestamp day; it is not an operator runtime knob."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"kill-switch-recovery-fail-closed"'''
+context = '''const FAIL_CLOSED_RECOVERY_HALT_ID: &str = "kill-switch-recovery-fail-closed";'''
+classification = "kill_switch_synthetic_halt_id"
+reason = "Stable synthetic halt id used only when recovery has no persisted halt id; it records fail-closed provenance and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"daily_realized_loss_limit"'''
+context = '''const LOSS_TRIGGER_REASON: &str = "daily_realized_loss_limit";'''
+classification = "kill_switch_trigger_reason_code"
+reason = "Stable structured reason code identifying the TOML-owned daily loss limit that triggered a halt; the numeric limit remains configured in TOML."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"cancel-open-orders"'''
+context = '''const CANCEL_ACTION_ID: &str = "cancel-open-orders";'''
+classification = "kill_switch_action_evidence_label"
+reason = "Stable action evidence label emitted after a halt; it records the required reaction step and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"flatten-positions"'''
+context = '''const FLATTEN_ACTION_ID: &str = "flatten-positions";'''
+classification = "kill_switch_action_evidence_label"
+reason = "Stable action evidence label emitted after a halt; it records the required forced-exit step and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"missing_evidence"'''
+context = '''KillSwitchRecoveryReason::MissingEvidence => "missing_evidence",'''
+classification = "kill_switch_recovery_reason_code"
+reason = "Stable recovery reason code for absent durable state evidence; it records fail-closed provenance and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"corrupt_evidence"'''
+context = '''KillSwitchRecoveryReason::CorruptEvidence => "corrupt_evidence",'''
+classification = "kill_switch_recovery_reason_code"
+reason = "Stable recovery reason code for unreadable durable state evidence; it records fail-closed provenance and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"unsupported_schema_version"'''
+context = '''KillSwitchRecoveryReason::UnsupportedSchemaVersion => "unsupported_schema_version",'''
+classification = "kill_switch_recovery_reason_code"
+reason = "Stable recovery reason code for unsupported durable state schema; it records fail-closed provenance and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"unresolved_halt"'''
+context = '''KillSwitchRecoveryReason::UnresolvedHalt => "unresolved_halt",'''
+classification = "kill_switch_recovery_reason_code"
+reason = "Stable recovery reason code for persisted halt states that cannot recover as entry-admissible; it records fail-closed provenance and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"nt_position_changed"'''
+context = '''source: "nt_position_changed",'''
+classification = "kill_switch_position_event_source_label"
+reason = "Stable source label for realized PnL derived from NT PositionChanged events; it records event provenance and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"nt_position_closed"'''
+context = '''source: "nt_position_closed",'''
+classification = "kill_switch_position_event_source_label"
+reason = "Stable source label for realized PnL derived from NT PositionClosed events; it records event provenance and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"nt_position_adjusted"'''
+context = '''source: "nt_position_adjusted",'''
+classification = "kill_switch_position_event_source_label"
+reason = "Stable source label for realized PnL derived from NT PositionAdjusted events; it records event provenance and does not configure runtime behavior."

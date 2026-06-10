@@ -38,12 +38,11 @@
 //! from its own boundary code.
 
 #[cfg(test)]
+use std::cell::Cell;
 use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-};
-use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap},
+    rc::Rc,
     str::FromStr,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -52,7 +51,11 @@ use std::{
 use ahash::AHashMap;
 use anyhow::Result;
 use log::LevelFilter;
-use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
+use nautilus_common::{
+    enums::Environment,
+    logging::logger::LoggerConfig,
+    msgbus::{TypedHandler, subscribe_position_events, unsubscribe_position_events},
+};
 use nautilus_live::{
     builder::LiveNodeBuilder,
     config::LiveNodeConfig,
@@ -65,8 +68,10 @@ use nautilus_model::{
 };
 use nautilus_model::{
     enums::BarIntervalType,
+    events::PositionEvent,
     identifiers::{ClientId, StrategyId},
 };
+use nautilus_system::trader::Trader;
 use ustr::Ustr;
 use zeroize::Zeroizing;
 
@@ -88,6 +93,11 @@ use crate::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
     },
+    bolt_v3_kill_switch_store::KillSwitchStore,
+    bolt_v3_loss_protection::{
+        KillSwitchLossAction, KillSwitchLossActionKind, KillSwitchLossActionSink,
+        KillSwitchLossProtection, KillSwitchLossProtectionConfig,
+    },
     bolt_v3_providers::{
         self, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
         ProviderRuntimeApprovals,
@@ -100,8 +110,14 @@ use crate::{
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, register_bolt_v3_strategies_on_node_with_bindings,
     },
-    bolt_v3_submit_admission::{BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState},
-    nt_runtime_capture::{NtRuntimeCaptureGuards, wire_nt_runtime_capture},
+    bolt_v3_submit_admission::{
+        BoltV3KillSwitchForcedReductionPolicy, BoltV3LiveSubmitApprovalLimits,
+        BoltV3SubmitAdmissionState,
+    },
+    bolt_v3_validate::parse_decimal_string,
+    nt_runtime_capture::{
+        NtRuntimeCaptureGuards, position_events_pattern, wire_nt_runtime_capture,
+    },
     secrets::SsmResolverSession,
 };
 
@@ -120,6 +136,7 @@ pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     registration_summary: BoltV3RegistrationSummary,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    loss_protection: Option<Rc<RefCell<KillSwitchLossProtection>>>,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -1018,12 +1035,14 @@ impl BoltV3LiveNodeRuntime {
         node: LiveNode,
         registration_summary: BoltV3RegistrationSummary,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
+        loss_protection: Option<Rc<RefCell<KillSwitchLossProtection>>>,
         redaction_values: Vec<Zeroizing<String>>,
     ) -> Self {
         Self {
             node,
             registration_summary,
             submit_admission,
+            loss_protection,
             redaction_values,
         }
     }
@@ -1132,6 +1151,7 @@ pub enum BoltV3LiveNodeError {
     ClientRegistration(BoltV3ClientRegistrationError),
     StrategyRegistration(BoltV3StrategyRegistrationError),
     Build(anyhow::Error),
+    KillSwitchLossProtection(anyhow::Error),
     /// Provider-specific live-submit approval loading or consumption failed
     /// while building the adapter bundle. This is intentionally outside the
     /// live runner wrapper; production `run_bolt_v3_live_node` still enters NT
@@ -1253,6 +1273,12 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 write!(f, "bolt-v3 strategy registration failed: {error}")
             }
             BoltV3LiveNodeError::Build(error) => write!(f, "LiveNode build failed: {error}"),
+            BoltV3LiveNodeError::KillSwitchLossProtection(error) => {
+                write!(
+                    f,
+                    "bolt-v3 kill-switch loss protection setup failed: {error}"
+                )
+            }
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => {
                 write!(
                     f,
@@ -1365,6 +1391,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::StrategyRegistration(error) => Some(error),
             BoltV3LiveNodeError::Build(error) => error.source(),
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => Some(error.as_ref()),
+            BoltV3LiveNodeError::KillSwitchLossProtection(error) => Some(error.as_ref()),
             BoltV3LiveNodeError::Run(error) => error.source(),
             BoltV3LiveNodeError::RuntimeCaptureWire(error)
             | BoltV3LiveNodeError::RuntimeCaptureShutdown(error) => error.source(),
@@ -1694,6 +1721,7 @@ pub async fn run_bolt_v3_live_node(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
+    let _loss_protection_guards = wire_bolt_v3_loss_protection_runtime(runtime);
     let node = &mut runtime.node;
     let node_handle = node.handle();
     let mut capture_guards = wire_bolt_v3_runtime_capture(node, node_handle, loaded)
@@ -1719,6 +1747,46 @@ pub async fn run_bolt_v3_live_node(
     let shutdown_result = capture_guards.shutdown().await;
 
     classify_live_node_run_and_capture_shutdown(run_result, shutdown_result)
+}
+
+struct BoltV3LossProtectionRuntimeGuards {
+    position_events: Option<TypedHandler<PositionEvent>>,
+}
+
+impl BoltV3LossProtectionRuntimeGuards {
+    fn none() -> Self {
+        Self {
+            position_events: None,
+        }
+    }
+}
+
+impl Drop for BoltV3LossProtectionRuntimeGuards {
+    fn drop(&mut self) {
+        if let Some(position_events) = self.position_events.take() {
+            unsubscribe_position_events(position_events_pattern(), &position_events);
+        }
+    }
+}
+
+fn wire_bolt_v3_loss_protection_runtime(
+    runtime: &BoltV3LiveNodeRuntime,
+) -> BoltV3LossProtectionRuntimeGuards {
+    let Some(loss_protection) = runtime.loss_protection.as_ref() else {
+        return BoltV3LossProtectionRuntimeGuards::none();
+    };
+    let loss_protection = Rc::clone(loss_protection);
+    let position_events = TypedHandler::from(move |event: &PositionEvent| {
+        if let Err(error) = loss_protection.borrow_mut().record_position_event(event) {
+            log::error!(
+                "bolt-v3 kill-switch loss protection position-event handling failed: {error}"
+            );
+        }
+    });
+    subscribe_position_events(position_events_pattern(), position_events.clone(), None);
+    BoltV3LossProtectionRuntimeGuards {
+        position_events: Some(position_events),
+    }
 }
 
 #[cfg(test)]
@@ -1894,15 +1962,118 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             strategy.registered_strategy_id
         );
     }
+    let strategy_ids = strategy_summary
+        .registered
+        .iter()
+        .map(|strategy| StrategyId::from(strategy.registered_strategy_id.as_str()))
+        .collect::<Vec<_>>();
+    let loss_protection = configure_bolt_v3_kill_switch_loss_protection(
+        loaded,
+        &node,
+        submit_admission.clone(),
+        strategy_ids,
+    )?;
     Ok((
         BoltV3LiveNodeRuntime::new(
             node,
             summary.clone(),
             submit_admission,
+            loss_protection,
             resolved.redaction_values(),
         ),
         summary,
     ))
+}
+
+struct NtMarketExitLossActionSink {
+    trader: Rc<RefCell<Trader>>,
+    strategy_ids: Vec<StrategyId>,
+    dispatched_halts: RefCell<BTreeSet<String>>,
+}
+
+impl NtMarketExitLossActionSink {
+    fn new(trader: Rc<RefCell<Trader>>, strategy_ids: Vec<StrategyId>) -> Self {
+        Self {
+            trader,
+            strategy_ids,
+            dispatched_halts: RefCell::new(BTreeSet::new()),
+        }
+    }
+}
+
+impl KillSwitchLossActionSink for NtMarketExitLossActionSink {
+    fn emit(&self, action: KillSwitchLossAction) -> Result<()> {
+        if action.kind != KillSwitchLossActionKind::FlattenPositions {
+            return Ok(());
+        }
+        if !self.dispatched_halts.borrow_mut().insert(action.halt_id) {
+            return Ok(());
+        }
+        for strategy_id in &self.strategy_ids {
+            Trader::market_exit_strategy(&self.trader, strategy_id)?;
+        }
+        Ok(())
+    }
+}
+
+fn configure_bolt_v3_kill_switch_loss_protection(
+    loaded: &LoadedBoltV3Config,
+    node: &LiveNode,
+    submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    strategy_ids: Vec<StrategyId>,
+) -> Result<Option<Rc<RefCell<KillSwitchLossProtection>>>, BoltV3LiveNodeError> {
+    let Some(kill_switch) = loaded
+        .root
+        .risk
+        .kill_switch
+        .as_ref()
+        .filter(|kill_switch| kill_switch.enabled)
+    else {
+        return Ok(None);
+    };
+    let daily_realized_loss_limit = parse_decimal_string(&kill_switch.daily_realized_loss_limit)
+        .map_err(|reason| {
+            BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(
+                "risk.kill_switch.daily_realized_loss_limit parse failed: {reason}"
+            ))
+        })?;
+    let forced_reduction_max_notional = parse_decimal_string(
+        &kill_switch.forced_reduction_max_notional_per_order,
+    )
+    .map_err(|reason| {
+        BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(
+            "risk.kill_switch.forced_reduction_max_notional_per_order parse failed: {reason}"
+        ))
+    })?;
+    let forced_reduction_policy = BoltV3KillSwitchForcedReductionPolicy::new(
+        kill_switch.forced_reduction_policy_sha256.clone(),
+        kill_switch.forced_reduction_max_live_order_count,
+        forced_reduction_max_notional,
+    )
+    .map_err(|error| {
+        BoltV3LiveNodeError::KillSwitchLossProtection(anyhow::anyhow!(
+            "risk.kill_switch forced-reduction policy is invalid: {error:?}"
+        ))
+    })?;
+    let config = KillSwitchLossProtectionConfig {
+        daily_realized_loss_limit,
+        forced_reduction_policy,
+        policy_sha256: kill_switch.forced_reduction_policy_sha256.clone(),
+        account_ids: kill_switch.account_ids.clone(),
+        instrument_ids: kill_switch.instrument_ids.clone(),
+    };
+    let store = KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch);
+    let action_sink = Rc::new(NtMarketExitLossActionSink::new(
+        Rc::clone(node.kernel().trader()),
+        strategy_ids,
+    ));
+    let mut protection =
+        KillSwitchLossProtection::new(config, submit_admission, store, action_sink)
+            .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
+    protection
+        .seed_from_store()
+        .map_err(BoltV3LiveNodeError::KillSwitchLossProtection)?;
+    Ok(Some(Rc::new(RefCell::new(protection))))
 }
 
 /// Translates a validated bolt-v3 config into an NT-native

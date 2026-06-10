@@ -42,7 +42,7 @@ impl KillSwitchStore {
     }
 
     pub fn from_root_config_path(root_path: &Path, config: &KillSwitchConfigBlock) -> Self {
-        Self::new(resolve_root_relative_path(root_path, &config.state_path))
+        Self::new(resolve_root_relative_path(root_path, &config.store_path))
     }
 
     pub fn path(&self) -> &Path {

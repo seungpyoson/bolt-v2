@@ -349,7 +349,7 @@ fn order_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern(ORDER_EVENTS_PATTERN)
 }
 
-fn position_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
+pub(crate) fn position_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern(POSITION_EVENTS_PATTERN)
 }
 

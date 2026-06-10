@@ -1259,20 +1259,30 @@ fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
     }
 
     let mut errors = Vec::new();
-    let state_path = Path::new(block.state_path.trim());
-    if state_path.as_os_str().is_empty()
-        || state_path.is_absolute()
-        || state_path
+    let store_path = Path::new(block.store_path.trim());
+    if store_path.as_os_str().is_empty()
+        || store_path.is_absolute()
+        || store_path
             .components()
             .any(|component| matches!(component, std::path::Component::ParentDir))
     {
         errors.push(
-            "risk.kill_switch.state_path must be a non-empty relative path under the configured root"
+            "risk.kill_switch.store_path must be a non-empty relative path under the configured root"
                 .to_string(),
         );
     }
     if block.max_state_file_bytes == 0 {
         errors.push("risk.kill_switch.max_state_file_bytes must be positive".to_string());
+    }
+    match parse_decimal_string(&block.daily_realized_loss_limit) {
+        Ok(limit) if limit > Decimal::ZERO => {}
+        Ok(_) => {
+            errors.push("risk.kill_switch.daily_realized_loss_limit must be positive".to_string());
+        }
+        Err(reason) => errors.push(format!(
+            "risk.kill_switch.daily_realized_loss_limit is not a valid decimal string ({reason}): `{}`",
+            block.daily_realized_loss_limit
+        )),
     }
     if block.action_retry_interval_ms == 0 {
         errors.push("risk.kill_switch.action_retry_interval_ms must be positive".to_string());

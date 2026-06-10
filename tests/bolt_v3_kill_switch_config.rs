@@ -8,8 +8,9 @@ fn valid_kill_switch_block() -> &'static str {
     r#"
 [risk.kill_switch]
 enabled = true
-state_path = "state/kill-switch.json"
+store_path = "state/kill-switch.json"
 max_state_file_bytes = 65536
+daily_realized_loss_limit = "250.00"
 action_retry_interval_ms = 250
 action_retry_timeout_ms = 5000
 mandatory_proof_max_age_ms = 1000
@@ -38,7 +39,8 @@ fn kill_switch_config_is_optional_and_parses_when_present() {
         .expect("kill-switch block should parse");
 
     assert!(kill_switch.enabled);
-    assert_eq!(kill_switch.state_path, "state/kill-switch.json");
+    assert_eq!(kill_switch.store_path, "state/kill-switch.json");
+    assert_eq!(kill_switch.daily_realized_loss_limit, "250.00");
     assert_eq!(
         kill_switch.forced_reduction_policy_sha256,
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -57,8 +59,9 @@ fn enabled_kill_switch_rejects_invalid_runtime_settings() {
         r#"
 [risk.kill_switch]
 enabled = true
-state_path = ""
+store_path = ""
 max_state_file_bytes = 0
+daily_realized_loss_limit = "0"
 action_retry_interval_ms = 0
 action_retry_timeout_ms = 0
 mandatory_proof_max_age_ms = 0
@@ -76,8 +79,9 @@ instrument_ids = ["not-an-instrument"]
     let errors = validate_root_only(&root);
 
     for expected in [
-        "risk.kill_switch.state_path must be a non-empty relative path",
+        "risk.kill_switch.store_path must be a non-empty relative path",
         "risk.kill_switch.max_state_file_bytes must be positive",
+        "risk.kill_switch.daily_realized_loss_limit must be positive",
         "risk.kill_switch.action_retry_interval_ms must be positive",
         "risk.kill_switch.action_retry_timeout_ms must be positive",
         "risk.kill_switch.mandatory_proof_max_age_ms must be positive",

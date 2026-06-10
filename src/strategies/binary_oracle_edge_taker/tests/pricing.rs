@@ -647,6 +647,7 @@ fn task6_entry_evaluation_blocks_when_realized_vol_is_not_ready() {
 #[test]
 fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.4, 1_200));
     strategy
         .pricing
@@ -736,6 +737,7 @@ fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap
 #[test]
 fn executable_edge_selects_tradeable_side_when_opposite_side_is_blocked() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.order_notional_target = 5.0;
     strategy.config.maximum_position_notional = 5.0;
     strategy.config.vwap_depth_limit_bps = 0;
@@ -924,6 +926,49 @@ fn executable_edge_fee_uses_exact_size_vwap_price_not_limit_price() {
 }
 
 #[test]
+fn executable_edge_fee_requires_cached_instrument_in_test_builds() {
+    let mut strategy = test_strategy_with_fee_provider(Arc::new(PriceSensitiveEntryFeeProvider));
+    strategy.config.order_notional_target = 5.0;
+    strategy.config.maximum_position_notional = 5.0;
+    strategy.config.vwap_depth_limit_bps = 2_000;
+    strategy.config.edge_threshold_basis_points = 0;
+    strategy.config.slippage_buffer_bps = 0;
+    strategy.config.warmup_tick_count = 2;
+    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
+    strategy.active.price_to_beat = Some(3_100.0);
+    strategy.active.interval_open = Some(3_100.0);
+    strategy.active.warmup_count = 2;
+    strategy.active.last_reference_ts_ms = Some(1_200);
+    strategy.active.fast_venue_incoherent = false;
+    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+    strategy.pricing.last_lead_gap_probability = Some(0.0);
+    strategy.pricing.last_jitter_penalty_probability = Some(0.0);
+    set_configured_books_depth(
+        &mut strategy,
+        &[
+            (BookAction::Clear, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Buy, 0.49, 100.0),
+            (BookAction::Add, OrderSide::Sell, 0.50, 100.0),
+        ],
+    );
+
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert_eq!(
+        evaluation.pricing_blocked_by,
+        vec![
+            EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Up),
+            EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Down),
+        ],
+        "test builds must not fall back to FeeProvider::fee_bps when the NT instrument is missing: {evaluation:#?}"
+    );
+    assert_eq!(evaluation.selected_side, None);
+}
+
+#[test]
 fn executable_edge_blocks_unsupported_post_only_entry_shape() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
@@ -1016,8 +1061,9 @@ fn entry_submission_caps_quantity_to_limit_price_liability() {
 #[test]
 fn entry_submission_notional_guard_allows_scaled_float_noise() {
     let sized_notional = BPS_DENOMINATOR;
-    let representational_overage = sized_notional + (sized_notional * f64::EPSILON);
-    let material_overage = sized_notional + (sized_notional / BPS_DENOMINATOR);
+    let tolerance = notional_float_tolerance(sized_notional);
+    let representational_overage = sized_notional + (tolerance / MIDPOINT_DIVISOR_F64);
+    let material_overage = sized_notional + (tolerance * MIDPOINT_DIVISOR_F64);
 
     assert!(!limit_notional_exceeds_sized_notional(
         representational_overage,
@@ -1044,6 +1090,7 @@ fn entry_submission_notional_guard_blocks_non_finite_inputs() {
 #[test]
 fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.order_notional_target = UNIT_F64;
     strategy.config.maximum_position_notional = UNIT_F64;
     strategy.config.edge_threshold_basis_points = 0;
@@ -1093,6 +1140,7 @@ fn task6_entry_evaluation_uses_live_uncertainty_band_probability() {
 fn task6_entry_evaluation_requires_live_uncertainty_components() {
     let mut strategy =
         ready_to_trade_strategy_with_live_fees(Decimal::new(250, 2), Decimal::new(250, 2));
+    register_test_strategy_with_active_instruments(&mut strategy);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.4, 1_200));
     strategy
         .pricing
@@ -1112,6 +1160,7 @@ fn task6_entry_evaluation_requires_live_uncertainty_components() {
 #[test]
 fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_120.0, 1_200));
     strategy
         .pricing
@@ -1154,6 +1203,7 @@ fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
 #[test]
 fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    register_test_strategy_with_active_instruments(&mut strategy);
     strategy.observe_reference_snapshot(&ReferenceSnapshot {
         ts_ms: 1_200,
         topic: "platform.reference.test.spot".to_string(),

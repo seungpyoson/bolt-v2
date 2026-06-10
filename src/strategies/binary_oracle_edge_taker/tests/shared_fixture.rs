@@ -332,6 +332,24 @@ pub(super) fn register_test_strategy_with_active_instruments(strategy: &mut Bina
     add_active_instruments_to_cache(strategy, &cache);
 }
 
+pub(super) fn register_test_strategy_with_instrument(
+    strategy: &mut BinaryOracleEdgeTaker,
+    instrument_id: &InstrumentId,
+) {
+    let cache = register_test_strategy(strategy);
+    cache
+        .borrow_mut()
+        .add_instrument(updown_binary_option(
+            &instrument_id.to_string(),
+            "test-market-entry",
+            "test-market",
+            "Up",
+            1_000,
+            1_300,
+        ))
+        .expect("test cache should accept selected instrument");
+}
+
 pub(super) fn add_active_instruments_to_cache(
     strategy: &BinaryOracleEdgeTaker,
     cache: &Rc<RefCell<Cache>>,

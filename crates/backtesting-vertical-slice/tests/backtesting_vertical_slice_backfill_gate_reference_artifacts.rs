@@ -2411,7 +2411,7 @@ fn bybit_public_archive_tick_trade_conversion_plan_covers_all_instruments_and_ca
     );
     assert_eq!(
         plan["status"].as_str(),
-        Some("requires_object_level_gate_materialization")
+        Some("conversion_run_plan_materialized")
     );
     assert_eq!(
         plan["selection"]["instrument_universe"].as_str(),

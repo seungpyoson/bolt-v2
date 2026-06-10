@@ -3,8 +3,8 @@
   "plan_id": "backfill-source-universe-conversion-plan-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
   "universe_id": "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
   "created_at": "2026-06-10",
-  "status": "requires_object_level_gate_materialization",
-  "status_reason": "The Bybit public archive tick-trade source universe and converter mappings cover all staged categories and instruments; runnable conversion batches still require the existing object-level accepted-tranche, run-spec, execution-plan, and readiness gates.",
+  "status": "conversion_run_plan_materialized",
+  "status_reason": "The Bybit public archive tick-trade source universe, converter mappings, object-level gates, and bounded conversion run plan cover all staged categories and instruments; runnable conversion outputs still require execution of the planned runs into an NT catalog and completion-ledger acceptance.",
   "selection": {
     "venue": "bybit",
     "source": "public_archive",
@@ -45,8 +45,8 @@
     "accepted_objects_per_run_spec": 1,
     "required_gate_records": 5857,
     "required_category_batches": 3,
-    "conversion_batch_status_until_gate_materialization": "not_ready",
-    "ready_batch_record_source": "object_level_execution_plans"
+    "conversion_batch_status_after_run_plan_materialization": "planned",
+    "ready_batch_record_source": "source_universe_conversion_run_plan"
   },
   "source_bindings": [
     {
@@ -181,6 +181,15 @@
   ],
   "next_required_artifacts": [
     {
+      "category": "all",
+      "required_gate_records": 5857,
+      "artifact_families": [
+        "source_universe_conversion_run_plan",
+        "nt_catalog_conversion_outputs",
+        "conversion_completion_ledger"
+      ]
+    },
+    {
       "category": "spot",
       "required_gate_records": 3304,
       "artifact_families": [
@@ -215,6 +224,6 @@
     }
   ],
   "blocking_issues": [
-    "object_level_accepted_tranches_not_materialized"
+    "nt_catalog_conversion_outputs_not_materialized"
   ]
 }

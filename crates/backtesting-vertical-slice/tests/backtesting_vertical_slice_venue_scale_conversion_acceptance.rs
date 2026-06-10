@@ -15,6 +15,7 @@ fn venue_scale_acceptance_ledger_reports_current_binance_bybit_pmxt_scope_withou
         .path()
         .join("venue-scale-conversion-acceptance-ledger.toml");
     let binance_archive_seed = temp_dir.path().join("binance-archive-discovery-seed.json");
+    let bybit_conversion_run_plan = temp_dir.path().join("bybit-conversion-run-plan.json");
     let pmxt_archive_seed = temp_dir.path().join("pmxt-archive-discovery-seed.json");
 
     fs::write(
@@ -36,6 +37,36 @@ fn venue_scale_acceptance_ledger_reports_current_binance_bybit_pmxt_scope_withou
 }"#,
     )
     .expect("write binance discovery seed");
+    fs::write(
+        &bybit_conversion_run_plan,
+        r#"{
+  "schema_version": "source-universe-conversion-run-plan.v1",
+  "plan_id": "source-universe-conversion-run-plan-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "status": "ready",
+  "gate_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "queue_id": "source-universe-conversion-queue-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "manifest_id": "backfill-source-universe-object-manifest-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "universe_id": "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+  "venue": "bybit",
+  "source": "public_archive",
+  "family": "tick_trades",
+  "table_family": "trades",
+  "object_gates_path": "source-universe-object-gates.json",
+  "object_gates_hash": "object-gates-hash",
+  "max_objects_per_run": 500,
+  "max_source_bytes_per_run": 2000000000,
+  "source_binding_count": 3,
+  "object_count": 5857,
+  "planned_object_count": 5857,
+  "total_source_bytes": 20309079098,
+  "planned_source_bytes": 20309079098,
+  "run_count": 19,
+  "category_summaries": [],
+  "artifact_refs": [],
+  "runs": []
+}"#,
+    )
+    .expect("write bybit conversion run plan");
     fs::write(
         &pmxt_archive_seed,
         r#"{
@@ -100,6 +131,7 @@ scope_label = "Bybit public archive tick trades all staged categories"
 status = "source_only"
 source_universe_manifest_path = "{bybit_source_manifest}"
 source_universe_object_gates_path = "{bybit_object_gates}"
+source_universe_conversion_run_plan_path = "{bybit_conversion_run_plan}"
 
 [[venue]]
 venue_id = "pmxt-current-reference"
@@ -127,6 +159,7 @@ blocking_issues = [
 "#,
             output_dir = output_dir.display(),
             binance_archive_seed = binance_archive_seed.display(),
+            bybit_conversion_run_plan = bybit_conversion_run_plan.display(),
             pmxt_archive_seed = pmxt_archive_seed.display(),
             binance_completion_ledger = reference_root
                 .join("backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json")
@@ -245,11 +278,29 @@ blocking_issues = [
     );
     assert_eq!(bybit_source_only.source_object_gate_count, 5_857);
     assert_eq!(bybit_source_only.source_object_gate_source_binding_count, 3);
+    assert_eq!(
+        bybit_source_only.source_conversion_run_plan_id.as_deref(),
+        Some(
+            "source-universe-conversion-run-plan-bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
+        )
+    );
+    assert_eq!(bybit_source_only.source_conversion_run_count, 19);
+    assert_eq!(bybit_source_only.source_conversion_run_object_count, 5_857);
+    assert_eq!(
+        bybit_source_only.source_conversion_run_planned_bytes,
+        20_309_079_098
+    );
     assert!(
         bybit_source_only
             .artifact_refs
             .iter()
             .any(|artifact| artifact.role == "source_universe_object_gates")
+    );
+    assert!(
+        bybit_source_only
+            .artifact_refs
+            .iter()
+            .any(|artifact| artifact.role == "source_universe_conversion_run_plan")
     );
 
     let pmxt = ledger

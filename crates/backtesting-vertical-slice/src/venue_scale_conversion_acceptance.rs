@@ -46,6 +46,7 @@ pub struct VenueScaleConversionAcceptanceUniverseSpec {
     pub source_archive_discovery_seed_path: Option<PathBuf>,
     pub source_universe_manifest_path: Option<PathBuf>,
     pub source_universe_object_gates_path: Option<PathBuf>,
+    pub source_universe_conversion_run_plan_path: Option<PathBuf>,
     pub selected_conversion_manifest_path: Option<PathBuf>,
     pub selected_source_report_path: Option<PathBuf>,
     #[serde(default)]
@@ -92,6 +93,10 @@ pub struct VenueScaleConversionAcceptanceUniverse {
     pub source_manifest_id: Option<String>,
     pub source_object_gate_id: Option<String>,
     pub source_object_gate_queue_id: Option<String>,
+    pub source_conversion_run_plan_id: Option<String>,
+    pub source_conversion_run_count: u64,
+    pub source_conversion_run_object_count: u64,
+    pub source_conversion_run_planned_bytes: u64,
     pub converted_record_count: u64,
     pub converted_canonical_rows: u64,
     pub converted_nt_catalog_rows: u64,
@@ -198,6 +203,17 @@ struct SourceUniverseObjectGateSummary {
     accepted_gate_count: u64,
     source_binding_count: u64,
     total_accepted_bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceUniverseConversionRunPlanSummary {
+    plan_id: String,
+    status: String,
+    gate_id: String,
+    run_count: u64,
+    source_binding_count: u64,
+    planned_object_count: u64,
+    planned_source_bytes: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -451,6 +467,10 @@ fn evaluate_universe(
     let mut source_manifest_universe_id = None;
     let mut source_object_gate_id = None;
     let mut source_object_gate_queue_id = None;
+    let mut source_conversion_run_plan_id = None;
+    let mut source_conversion_run_count = 0;
+    let mut source_conversion_run_object_count = 0;
+    let mut source_conversion_run_planned_bytes = 0;
     let mut converted_record_count = 0;
     let mut converted_canonical_rows = 0;
     let mut converted_nt_catalog_rows = 0;
@@ -573,6 +593,49 @@ fn evaluate_universe(
         source_object_gate_source_binding_count = gates.source_binding_count;
     }
 
+    if let Some(path) = &spec.source_universe_conversion_run_plan_path {
+        let path = resolve_existing_path(base_dir, path);
+        artifact_refs.push(artifact_ref("source_universe_conversion_run_plan", &path)?);
+        let run_plan: SourceUniverseConversionRunPlanSummary = read_json(&path)?;
+        ensure!(
+            run_plan.status == "ready",
+            "source-universe conversion run plan {} is not ready",
+            path.display()
+        );
+        if let Some(gate_id) = &source_object_gate_id {
+            ensure!(
+                gate_id == &run_plan.gate_id,
+                "source-universe conversion run plan {} gate_id does not match object gates",
+                path.display()
+            );
+        }
+        if source_object_gate_count > 0 {
+            ensure!(
+                source_object_gate_count == run_plan.planned_object_count,
+                "source-universe conversion run plan {} object count does not match object gates",
+                path.display()
+            );
+        }
+        if source_accepted_bytes > 0 {
+            ensure!(
+                source_accepted_bytes == run_plan.planned_source_bytes,
+                "source-universe conversion run plan {} planned bytes do not match source evidence",
+                path.display()
+            );
+        }
+        if source_object_gate_source_binding_count > 0 {
+            ensure!(
+                source_object_gate_source_binding_count == run_plan.source_binding_count,
+                "source-universe conversion run plan {} source binding count does not match object gates",
+                path.display()
+            );
+        }
+        source_conversion_run_plan_id = Some(run_plan.plan_id);
+        source_conversion_run_count = run_plan.run_count;
+        source_conversion_run_object_count = run_plan.planned_object_count;
+        source_conversion_run_planned_bytes = run_plan.planned_source_bytes;
+    }
+
     if let Some(path) = &spec.selected_conversion_manifest_path {
         let path = resolve_existing_path(base_dir, path);
         artifact_refs.push(artifact_ref("selected_conversion_manifest", &path)?);
@@ -615,6 +678,10 @@ fn evaluate_universe(
         source_manifest_id,
         source_object_gate_id,
         source_object_gate_queue_id,
+        source_conversion_run_plan_id,
+        source_conversion_run_count,
+        source_conversion_run_object_count,
+        source_conversion_run_planned_bytes,
         converted_record_count,
         converted_canonical_rows,
         converted_nt_catalog_rows,

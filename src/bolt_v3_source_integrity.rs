@@ -296,8 +296,10 @@ mod tests {
     // labeled executable-edge Debug output, and named notional tolerance.
     // Re-derived after merging #606 reference-current-price fail-closed fixes
     // with executable-edge main.
+    // Re-derived after requiring reference-current-price asset/physical-source
+    // consistency and persisting reference source attribution in evidence.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "9a09ff78d97fc9ea902be0a908157d6e09688555f1946b307ba308c137ee6a53";
+        "80e374d48b8fc53a2e58c7b859d0d20c7283771d617debcc872eeab07cf63b0f";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

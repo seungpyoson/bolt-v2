@@ -27,6 +27,7 @@ const BUILD_CANONICAL_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/source_canonicalization.rs");
     for env_var in build_script_rerun_env_vars() {
         println!("cargo:rerun-if-env-changed={env_var}");
     }

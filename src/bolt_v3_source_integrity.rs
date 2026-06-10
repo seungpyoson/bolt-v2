@@ -243,7 +243,7 @@ mod tests {
     // evidence, probed executable fees at VWAP, coupled slippage/depth config,
     // labeled executable-edge Debug output, and named notional tolerance.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "aa6f2cdf9780bd3308d52853bf639b3c49b33834ef5a0f037247f09d1cbaab19";
+        "be7654f04e853a692daf5ef3a04d8ff24afdc5233f1882a8b5c4c04891a59c20";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -253,7 +253,7 @@ mod tests {
     // terminology from submit-admission construction.
     // Re-derived again after adding checked fee-inclusive admission arithmetic.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "986e4e99c865a9b742cdaa8d0a34cc8cadfcb6633012b4915042a0ac5c9d506a";
+        "765681e898d3e6ab3c957031b30d2aefe82722ff2dccabfe6bdd85b3ee0b9131";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
@@ -364,7 +364,8 @@ mod tests {
             &[
                 "src/strategies/binary_oracle_edge_taker",
                 "src/bolt_v3_book_sizing.rs",
-                "src/bolt_v3_executable_edge.rs",
+                "src/bolt_v3_binary_outcome_edge.rs",
+                "src/bolt_v3_executable_cost.rs",
             ]
         );
     }

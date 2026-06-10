@@ -46,6 +46,7 @@ pub struct VenueScaleConversionAcceptanceUniverseSpec {
     pub source_archive_discovery_seed_path: Option<PathBuf>,
     pub source_archive_index_manifest_path: Option<PathBuf>,
     pub source_universe_manifest_path: Option<PathBuf>,
+    pub source_universe_conversion_queue_path: Option<PathBuf>,
     pub source_universe_object_gates_path: Option<PathBuf>,
     pub source_universe_conversion_run_plan_path: Option<PathBuf>,
     pub selected_conversion_manifest_path: Option<PathBuf>,
@@ -97,6 +98,10 @@ pub struct VenueScaleConversionAcceptanceUniverse {
     pub source_archive_index_verified_head_count: u64,
     pub source_archive_index_total_content_length_bytes: u64,
     pub source_manifest_id: Option<String>,
+    pub source_conversion_queue_id: Option<String>,
+    pub source_conversion_queue_work_item_count: u64,
+    pub source_conversion_queue_pending_items: u64,
+    pub source_conversion_queue_total_bytes: u64,
     pub source_object_gate_id: Option<String>,
     pub source_object_gate_queue_id: Option<String>,
     pub source_conversion_run_plan_id: Option<String>,
@@ -188,6 +193,17 @@ struct SourceUniverseManifestSummary {
     accepted_bytes: u64,
     #[serde(default)]
     category_summaries: Vec<SourceUniverseCategorySummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceUniverseConversionQueueSummary {
+    queue_id: String,
+    status: String,
+    manifest_id: String,
+    universe_id: String,
+    work_item_count: u64,
+    pending_conversion_items: u64,
+    total_source_bytes: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -486,6 +502,10 @@ fn evaluate_universe(
     let mut source_archive_index_total_content_length_bytes = 0;
     let mut source_manifest_id = None;
     let mut source_manifest_universe_id = None;
+    let mut source_conversion_queue_id = None;
+    let mut source_conversion_queue_work_item_count = 0;
+    let mut source_conversion_queue_pending_items = 0;
+    let mut source_conversion_queue_total_bytes = 0;
     let mut source_object_gate_id = None;
     let mut source_object_gate_queue_id = None;
     let mut source_conversion_run_plan_id = None;
@@ -577,6 +597,62 @@ fn evaluate_universe(
                 compressed_bytes: summary.compressed_bytes,
             }
         }));
+    }
+
+    if let Some(path) = &spec.source_universe_conversion_queue_path {
+        let path = resolve_existing_path(base_dir, path);
+        artifact_refs.push(artifact_ref("source_universe_conversion_queue", &path)?);
+        let queue: SourceUniverseConversionQueueSummary = read_json(&path)?;
+        ensure!(
+            queue.status == "ready",
+            "source-universe conversion queue {} is not ready",
+            path.display()
+        );
+        ensure!(
+            queue.work_item_count == queue.pending_conversion_items,
+            "source-universe conversion queue {} pending count does not cover every work item",
+            path.display()
+        );
+        if let Some(manifest_id) = &source_manifest_id {
+            ensure!(
+                manifest_id == &queue.manifest_id,
+                "source-universe conversion queue {} manifest_id does not match source manifest",
+                path.display()
+            );
+        } else {
+            source_manifest_id = Some(queue.manifest_id.clone());
+        }
+        if let Some(universe_id) = &source_manifest_universe_id {
+            ensure!(
+                universe_id == &queue.universe_id,
+                "source-universe conversion queue {} universe_id does not match source manifest",
+                path.display()
+            );
+        } else {
+            source_manifest_universe_id = Some(queue.universe_id.clone());
+        }
+        if source_object_count == 0 {
+            source_object_count = queue.work_item_count;
+        } else {
+            ensure!(
+                source_object_count == queue.work_item_count,
+                "source-universe conversion queue {} work item count does not match source manifest",
+                path.display()
+            );
+        }
+        if source_accepted_bytes == 0 {
+            source_accepted_bytes = queue.total_source_bytes;
+        } else {
+            ensure!(
+                source_accepted_bytes == queue.total_source_bytes,
+                "source-universe conversion queue {} total source bytes do not match source manifest",
+                path.display()
+            );
+        }
+        source_conversion_queue_id = Some(queue.queue_id);
+        source_conversion_queue_work_item_count = queue.work_item_count;
+        source_conversion_queue_pending_items = queue.pending_conversion_items;
+        source_conversion_queue_total_bytes = queue.total_source_bytes;
     }
 
     if let Some(path) = &spec.source_universe_object_gates_path {
@@ -723,6 +799,10 @@ fn evaluate_universe(
         source_archive_index_verified_head_count,
         source_archive_index_total_content_length_bytes,
         source_manifest_id,
+        source_conversion_queue_id,
+        source_conversion_queue_work_item_count,
+        source_conversion_queue_pending_items,
+        source_conversion_queue_total_bytes,
         source_object_gate_id,
         source_object_gate_queue_id,
         source_conversion_run_plan_id,

@@ -130,6 +130,13 @@ status = "converted"
 completion_ledger_path = "{binance_completion_ledger}"
 
 [[venue.universe]]
+universe_id = "binance-data-vision-trades-2026-03-01-all-instruments"
+scope_label = "Binance Data Vision daily trades all instruments 2026-03-01"
+status = "source_only"
+source_universe_manifest_path = "{binance_source_manifest}"
+source_universe_conversion_queue_path = "{binance_conversion_queue}"
+
+[[venue.universe]]
 universe_id = "binance-public-archive-full-current-data"
 scope_label = "Binance public archive full current data"
 status = "blocked"
@@ -155,6 +162,7 @@ universe_id = "bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
 scope_label = "Bybit public archive tick trades all staged categories"
 status = "source_only"
 source_universe_manifest_path = "{bybit_source_manifest}"
+source_universe_conversion_queue_path = "{bybit_conversion_queue}"
 source_universe_object_gates_path = "{bybit_object_gates}"
 source_universe_conversion_run_plan_path = "{bybit_conversion_run_plan}"
 
@@ -191,11 +199,20 @@ blocking_issues = [
             binance_completion_ledger = reference_root
                 .join("backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json")
                 .display(),
+            binance_source_manifest = reference_root
+                .join("backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/binance-data-vision-trades-object-manifest.json")
+                .display(),
+            binance_conversion_queue = reference_root
+                .join("source-universe-conversion-queues/binance-data-vision-trades-2026-03-01-all-instruments/queue/source-universe-conversion-queue.json")
+                .display(),
             bybit_completion_ledger = reference_root
                 .join("backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01/ledger/backfill-conversion-completion-ledger.json")
                 .display(),
             bybit_source_manifest = reference_root
                 .join("backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json")
+                .display(),
+            bybit_conversion_queue = reference_root
+                .join("source-universe-conversion-queues/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/queue/source-universe-conversion-queue.json")
                 .display(),
             bybit_object_gates = reference_root
                 .join("source-universe-object-gates/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/gates/source-universe-object-gates.json")
@@ -222,15 +239,15 @@ blocking_issues = [
     );
     assert_eq!(ledger.status, VenueScaleConversionAcceptanceStatus::Blocked);
     assert_eq!(ledger.venue_count, 3);
-    assert_eq!(ledger.universe_count, 6);
+    assert_eq!(ledger.universe_count, 7);
     assert_eq!(ledger.converted_universes, 3);
-    assert_eq!(ledger.source_only_universes, 1);
+    assert_eq!(ledger.source_only_universes, 2);
     assert_eq!(ledger.blocked_universes, 2);
     assert_eq!(ledger.total_converted_canonical_rows, 4_602_457);
     assert_eq!(ledger.total_converted_nt_catalog_rows, 4_602_458);
-    assert_eq!(ledger.total_source_only_objects, 5_857);
+    assert_eq!(ledger.total_source_only_objects, 7_908);
     assert_eq!(ledger.total_source_only_object_gates, 5_857);
-    assert_eq!(ledger.total_source_only_accepted_bytes, 20_309_079_098);
+    assert_eq!(ledger.total_source_only_accepted_bytes, 22_057_801_068);
 
     let binance = ledger
         .venues
@@ -242,8 +259,60 @@ blocking_issues = [
         VenueScaleConversionAcceptanceStatus::Blocked
     );
     assert_eq!(binance.converted_universes, 1);
+    assert_eq!(binance.source_only_universes, 1);
     assert_eq!(binance.blocked_universes, 1);
     assert_eq!(binance.total_converted_canonical_rows, 4_470_719);
+    assert_eq!(binance.total_source_only_objects, 2_051);
+    assert_eq!(binance.total_source_only_accepted_bytes, 1_748_721_970);
+    let binance_source_only = binance
+        .universes
+        .iter()
+        .find(|universe| {
+            universe.universe_id == "binance-data-vision-trades-2026-03-01-all-instruments"
+        })
+        .expect("binance source-only universe");
+    assert_eq!(
+        binance_source_only.status,
+        VenueScaleConversionAcceptanceStatus::SourceOnly
+    );
+    assert_eq!(
+        binance_source_only.source_manifest_id.as_deref(),
+        Some(
+            "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments"
+        )
+    );
+    assert_eq!(
+        binance_source_only.source_conversion_queue_id.as_deref(),
+        Some(
+            "source-universe-conversion-queue-binance-data-vision-trades-2026-03-01-all-instruments"
+        )
+    );
+    assert_eq!(binance_source_only.source_object_count, 2_051);
+    assert_eq!(binance_source_only.source_accepted_bytes, 1_748_721_970);
+    assert_eq!(
+        binance_source_only.source_conversion_queue_work_item_count,
+        2_051
+    );
+    assert_eq!(
+        binance_source_only.source_conversion_queue_pending_items,
+        2_051
+    );
+    assert_eq!(
+        binance_source_only.source_conversion_queue_total_bytes,
+        1_748_721_970
+    );
+    assert!(
+        binance_source_only
+            .artifact_refs
+            .iter()
+            .any(|artifact| artifact.role == "source_universe_manifest")
+    );
+    assert!(
+        binance_source_only
+            .artifact_refs
+            .iter()
+            .any(|artifact| artifact.role == "source_universe_conversion_queue")
+    );
     let binance_full = binance
         .universes
         .iter()
@@ -303,6 +372,24 @@ blocking_issues = [
         bybit_source_only.source_object_gate_id.as_deref(),
         Some("source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01")
     );
+    assert_eq!(
+        bybit_source_only.source_conversion_queue_id.as_deref(),
+        Some(
+            "source-universe-conversion-queue-bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
+        )
+    );
+    assert_eq!(
+        bybit_source_only.source_conversion_queue_work_item_count,
+        5_857
+    );
+    assert_eq!(
+        bybit_source_only.source_conversion_queue_pending_items,
+        5_857
+    );
+    assert_eq!(
+        bybit_source_only.source_conversion_queue_total_bytes,
+        20_309_079_098
+    );
     assert_eq!(bybit_source_only.source_object_gate_count, 5_857);
     assert_eq!(bybit_source_only.source_object_gate_source_binding_count, 3);
     assert_eq!(
@@ -316,6 +403,12 @@ blocking_issues = [
     assert_eq!(
         bybit_source_only.source_conversion_run_planned_bytes,
         20_309_079_098
+    );
+    assert!(
+        bybit_source_only
+            .artifact_refs
+            .iter()
+            .any(|artifact| artifact.role == "source_universe_conversion_queue")
     );
     assert!(
         bybit_source_only

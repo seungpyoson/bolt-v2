@@ -1246,9 +1246,14 @@ mod tests {
                 .as_object()
                 .expect("snapshot should encode as an object")
                 .len(),
-            51
+            53
         );
         assert_eq!(snapshot_field["price_to_beat_source"], "source-one");
+        assert_eq!(
+            snapshot_field["reference_current_price_source_id"],
+            "chainlink_primary"
+        );
+        assert_eq!(snapshot_field["reference_current_price_failed_over"], false);
         assert_eq!(snapshot_field["reference_quote_ts_event"], 1200);
         assert_eq!(snapshot_field["client_order_id"], "client-order-one");
     }

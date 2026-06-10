@@ -794,6 +794,10 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
     strategy.config.order_notional_target = 10.0;
     strategy.config.maximum_position_notional = 100.0;
     strategy.config.risk_lambda = 0.10;
+    // A deliberately high EV reference scales the sized notional below the
+    // 0.50-level depth so the sized probe's limit price drops into the
+    // punitive <= 0.55 fee region and forces the sized re-evaluation block.
+    strategy.config.sizing_ev_reference_bps = 100_000;
     strategy.config.book_impact_cap_bps = 5_000;
     strategy.config.vwap_depth_limit_bps = 5_000;
     strategy.config.edge_threshold_basis_points = i64::default();

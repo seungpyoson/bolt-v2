@@ -1030,6 +1030,7 @@ warmup_tick_count = 20
 reentry_cooldown_secs = 30
 book_impact_cap_bps = 50
 risk_lambda = 0.5
+sizing_ev_reference_bps = 500
 exit_hysteresis_bps = 25
 trade_flow_window_secs = 60
 trade_flow_max_samples = 2000
@@ -1449,6 +1450,7 @@ Runtime fields:
 - `reentry_cooldown_secs`: unsigned integer; cooldown after an entry attempt
 - `book_impact_cap_bps`: unsigned integer; maximum allowed book-impact basis points for order construction
 - `risk_lambda`: float; sizing risk coefficient
+- `sizing_ev_reference_bps`: unsigned integer; worst-case EV (bps) at which sizing saturates at `order_notional_target` (must be > 0)
 - `exit_hysteresis_bps`: integer; exit hysteresis threshold
 - `trade_flow_window_secs`: unsigned integer; rolling retention window for signed trade flow
 - `trade_flow_max_samples`: unsigned integer; hard cap on retained signed trades per instrument (memory bound)
@@ -1745,6 +1747,7 @@ warmup_tick_count = 20
 reentry_cooldown_secs = 30
 book_impact_cap_bps = 50
 risk_lambda = 0.5
+sizing_ev_reference_bps = 500
 exit_hysteresis_bps = 25
 trade_flow_window_secs = 60
 trade_flow_max_samples = 2000

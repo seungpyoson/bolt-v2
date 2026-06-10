@@ -4679,6 +4679,8 @@ impl BinaryOracleEdgeTaker {
             {
                 evaluation.sized_notional = Some(choose_robust_size(&RobustSizingInputs {
                     expected_ev_per_notional,
+                    ev_reference_per_notional: self.config.sizing_ev_reference_bps as f64
+                        / BPS_DENOMINATOR,
                     risk_lambda: self.config.risk_lambda,
                     order_notional_target: self.config.order_notional_target,
                     maximum_position_notional: self.config.maximum_position_notional,
@@ -4755,6 +4757,8 @@ impl BinaryOracleEdgeTaker {
                     evaluation.expected_ev_per_notional = Some(sized_expected_ev_per_notional);
                     let resized_notional = choose_robust_size(&RobustSizingInputs {
                         expected_ev_per_notional: sized_expected_ev_per_notional,
+                        ev_reference_per_notional: self.config.sizing_ev_reference_bps as f64
+                            / BPS_DENOMINATOR,
                         risk_lambda: self.config.risk_lambda,
                         order_notional_target: self.config.order_notional_target,
                         maximum_position_notional: self.config.maximum_position_notional,

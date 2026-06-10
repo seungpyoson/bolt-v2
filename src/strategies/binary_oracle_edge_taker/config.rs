@@ -66,6 +66,7 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             vwap_depth_limit_bps: u64 => Integer;
             slippage_buffer_bps: u64 => Integer;
             risk_lambda: f64 => Float;
+            sizing_ev_reference_bps: u64 => Integer;
             edge_threshold_basis_points: i64 => Integer;
             exit_hysteresis_bps: i64 => Integer;
             trade_flow_window_secs: u64 => Integer;

@@ -242,8 +242,11 @@ mod tests {
     // Re-derived after follow-up cleanup separated sized executable-edge
     // evidence, probed executable fees at VWAP, coupled slippage/depth config,
     // labeled executable-edge Debug output, and named notional tolerance.
+    // Re-derived by #618 after robust sizing started scaling the operator's
+    // dollar target by the EV fraction against the configured EV reference
+    // instead of reinterpreting the EV fraction as dollars.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "a24648f3e212b9d23495d7ee0dd50fa0f3a20805c0ddb73c155e7d31033e350b";
+        "2ea7efda82af4f14b245a232ffcb64ccc28cb9a27395a9c8fc5f4742da0e4fdd";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

@@ -541,6 +541,7 @@ fn builder_requires_strategy_id_and_client_id() {
         vwap_depth_limit_bps = 15
         slippage_buffer_bps = 15
         risk_lambda = 0.5
+        sizing_ev_reference_bps = 500
         edge_threshold_basis_points = -20
         exit_hysteresis_bps = 5
         forced_flat_stale_reference_ms = 1500
@@ -777,6 +778,7 @@ fn builder_requires_pricing_model_fields() {
         vwap_depth_limit_bps = 15
         slippage_buffer_bps = 15
         risk_lambda = 0.5
+        sizing_ev_reference_bps = 500
         edge_threshold_basis_points = -20
         exit_hysteresis_bps = 5
         forced_flat_stale_reference_ms = 1500

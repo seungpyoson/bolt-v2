@@ -32,7 +32,7 @@ use crate::{
         require_registered_source_adapter_for_table_family,
     },
     catalog_projection::{
-        CatalogProjection, SpotInstrumentSpec, logical_catalog_hash, read_back_trade_ticks,
+        CatalogInstrumentSpec, CatalogProjection, logical_catalog_hash, read_back_trade_ticks,
     },
     conversion_boundary::{
         CATALOG_METADATA_FILE, ConversionCatalogMetadata, ConversionCheckpoint,
@@ -84,7 +84,7 @@ pub struct RunSpec {
     pub source_bindings_path: PathBuf,
     pub accepted_object: IngestManifestObjectRecord,
     pub source_proof: SourceProofReport,
-    pub instrument_spec: SpotInstrumentSpec,
+    pub instrument_spec: CatalogInstrumentSpec,
     pub identity: CanonicalInstrumentIdentity,
     pub converter: ConverterConfig,
     pub manifest: BacktestingRunManifest,
@@ -2089,9 +2089,13 @@ table_families = ["trades", "bars"]
         spec.manifest.source_proof_id = "source-proof-binance-spot-native-trades".to_string();
         spec.manifest.venue.nt_venue = "BINANCE".to_string();
         spec.manifest.catalog_inputs[0].nt_instrument_id = "BNBUSDC.BINANCE".to_string();
-        spec.instrument_spec.nt_instrument_id = "BNBUSDC.BINANCE".to_string();
-        spec.instrument_spec.price_increment = "0.00000001".to_string();
-        spec.instrument_spec.size_increment = "0.000001".to_string();
+        let instrument_spec = spec
+            .instrument_spec
+            .spot_mut()
+            .expect("spot instrument spec");
+        instrument_spec.nt_instrument_id = "BNBUSDC.BINANCE".to_string();
+        instrument_spec.price_increment = "0.00000001".to_string();
+        instrument_spec.size_increment = "0.000001".to_string();
         spec.identity.nt_instrument_id = "BNBUSDC.BINANCE".to_string();
         spec.manifest.strategy.parameters.insert(
             "bar_type".to_string(),

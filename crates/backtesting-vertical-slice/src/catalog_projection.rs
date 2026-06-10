@@ -6,8 +6,8 @@
 //! the resolved `bolt-v2` NautilusTrader dependency can read the projection back.
 //!
 //! The NautilusTrader instrument is built from accepted instrument-universe
-//! metadata ([`SpotInstrumentSpec`]); price/size precision and increments
-//! are derived from the source tick size and base precision, never hardcoded.
+//! metadata ([`CatalogInstrumentSpec`]); price/size precision and increments
+//! are derived from the source tick size and size precision, never hardcoded.
 
 use std::{
     fs,
@@ -21,7 +21,9 @@ use nautilus_model::{
     data::{OrderBookDelta, TradeTick},
     enums::AggressorSide,
     identifiers::{InstrumentId, Symbol, TradeId},
-    instruments::{BinaryOption, CurrencyPair, Instrument, InstrumentAny},
+    instruments::{
+        BinaryOption, CryptoFuture, CryptoPerpetual, CurrencyPair, Instrument, InstrumentAny,
+    },
     types::{Currency, Money, Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
@@ -40,6 +42,7 @@ pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
 /// Accepted spot instrument metadata needed to build the NautilusTrader
 /// `CurrencyPair`. Built from the accepted instrument-universe payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpotInstrumentSpec {
     /// NautilusTrader instrument id, such as `SYMBOL.VENUE`.
     pub nt_instrument_id: String,
@@ -61,6 +64,127 @@ pub struct SpotInstrumentSpec {
     pub min_notional: String,
     /// Maximum order notional decimal string (quote currency).
     pub max_notional: String,
+}
+
+/// Instrument spec parsed from run-spec TOML and projected through NT's native
+/// instrument constructors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CatalogInstrumentSpec {
+    CryptoPerpetual(CryptoPerpetualInstrumentSpec),
+    CryptoFuture(CryptoFutureInstrumentSpec),
+    Spot(SpotInstrumentSpec),
+}
+
+impl CatalogInstrumentSpec {
+    #[cfg(test)]
+    pub(crate) fn spot_mut(&mut self) -> Option<&mut SpotInstrumentSpec> {
+        match self {
+            Self::Spot(spec) => Some(spec),
+            Self::CryptoPerpetual(_) | Self::CryptoFuture(_) => None,
+        }
+    }
+}
+
+/// TOML discriminator for an NT [`CryptoPerpetual`] instrument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CryptoPerpetualInstrumentKind {
+    CryptoPerpetual,
+}
+
+/// Accepted crypto perpetual metadata needed to build NT's
+/// [`CryptoPerpetual`] instrument.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CryptoPerpetualInstrumentSpec {
+    pub instrument_kind: CryptoPerpetualInstrumentKind,
+    pub nt_instrument_id: String,
+    pub raw_symbol: String,
+    pub base_currency: String,
+    pub quote_currency: String,
+    pub settlement_currency: String,
+    pub is_inverse: bool,
+    pub price_increment: String,
+    pub size_increment: String,
+    pub min_quantity: String,
+    pub max_quantity: String,
+    pub min_notional: String,
+    pub max_notional: String,
+    pub multiplier: Option<String>,
+    pub lot_size: Option<String>,
+    pub max_price: Option<String>,
+    pub min_price: Option<String>,
+    pub margin_init: Option<String>,
+    pub margin_maint: Option<String>,
+    pub maker_fee: Option<String>,
+    pub taker_fee: Option<String>,
+}
+
+/// TOML discriminator for an NT [`CryptoFuture`] instrument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CryptoFutureInstrumentKind {
+    CryptoFuture,
+}
+
+/// Accepted crypto future metadata needed to build NT's [`CryptoFuture`]
+/// instrument.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CryptoFutureInstrumentSpec {
+    pub instrument_kind: CryptoFutureInstrumentKind,
+    pub nt_instrument_id: String,
+    pub raw_symbol: String,
+    pub base_currency: String,
+    pub quote_currency: String,
+    pub settlement_currency: String,
+    pub is_inverse: bool,
+    pub activation_time_nanos: u64,
+    pub expiration_time_nanos: u64,
+    pub price_increment: String,
+    pub size_increment: String,
+    pub min_quantity: String,
+    pub max_quantity: String,
+    pub min_notional: String,
+    pub max_notional: String,
+    pub multiplier: Option<String>,
+    pub lot_size: Option<String>,
+    pub max_price: Option<String>,
+    pub min_price: Option<String>,
+    pub margin_init: Option<String>,
+    pub margin_maint: Option<String>,
+    pub maker_fee: Option<String>,
+    pub taker_fee: Option<String>,
+}
+
+/// A source of accepted metadata that can build one NT instrument.
+pub trait CatalogInstrumentSpecSource {
+    /// Build the native NT instrument variant for this spec.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any field fails to parse or violates NT instrument
+    /// correctness checks.
+    fn build_instrument_any(&self) -> Result<InstrumentAny>;
+}
+
+impl CatalogInstrumentSpecSource for SpotInstrumentSpec {
+    fn build_instrument_any(&self) -> Result<InstrumentAny> {
+        Ok(InstrumentAny::CurrencyPair(build_currency_pair(self)?))
+    }
+}
+
+impl CatalogInstrumentSpecSource for CatalogInstrumentSpec {
+    fn build_instrument_any(&self) -> Result<InstrumentAny> {
+        match self {
+            Self::Spot(spec) => spec.build_instrument_any(),
+            Self::CryptoPerpetual(spec) => Ok(InstrumentAny::CryptoPerpetual(
+                build_crypto_perpetual(spec)?,
+            )),
+            Self::CryptoFuture(spec) => Ok(InstrumentAny::CryptoFuture(build_crypto_future(spec)?)),
+        }
+    }
 }
 
 /// Result of projecting canonical trades into a NautilusTrader catalog.
@@ -160,6 +284,225 @@ pub fn build_currency_pair(spec: &SpotInstrumentSpec) -> Result<CurrencyPair> {
     })
 }
 
+fn parse_instrument_id(value: &str) -> Result<InstrumentId> {
+    InstrumentId::from_str(value).with_context(|| format!("invalid nt_instrument_id {value:?}"))
+}
+
+fn parse_raw_symbol(value: &str) -> Result<Symbol> {
+    Symbol::new_checked(value)
+        .map_err(|error| anyhow::anyhow!("invalid raw_symbol {value:?}: {error}"))
+}
+
+fn parse_currency(value: &str, label: &str) -> Result<Currency> {
+    Currency::from_str(value).with_context(|| format!("invalid {label} {value:?}"))
+}
+
+fn parse_price(value: &str, label: &str) -> Result<Price> {
+    Price::from_str(value).map_err(|error| anyhow::anyhow!("invalid {label} {value:?}: {error}"))
+}
+
+fn parse_quantity(value: &str, label: &str) -> Result<Quantity> {
+    Quantity::from_str(value).map_err(|error| anyhow::anyhow!("invalid {label} {value:?}: {error}"))
+}
+
+fn parse_optional_quantity(value: Option<&str>, label: &str) -> Result<Option<Quantity>> {
+    value.map(|value| parse_quantity(value, label)).transpose()
+}
+
+fn parse_optional_price(value: Option<&str>, label: &str) -> Result<Option<Price>> {
+    value.map(|value| parse_price(value, label)).transpose()
+}
+
+fn parse_optional_decimal(value: Option<&str>, label: &str) -> Result<Option<Decimal>> {
+    value
+        .map(|value| Decimal::from_str(value).with_context(|| format!("invalid {label} {value:?}")))
+        .transpose()
+}
+
+fn parse_money(value: &str, currency: Currency, label: &str) -> Result<Money> {
+    Money::new_checked(
+        value
+            .parse()
+            .with_context(|| format!("invalid {label} {value:?}"))?,
+        currency,
+    )
+    .map_err(|error| anyhow::anyhow!("invalid {label} {value:?}: {error}"))
+}
+
+fn derivative_common_fields(
+    input: DerivativeCommonFieldInput<'_>,
+) -> Result<DerivativeCommonFields> {
+    let instrument_id = parse_instrument_id(input.nt_instrument_id)?;
+    let raw_symbol = parse_raw_symbol(input.raw_symbol)?;
+    let price_increment = parse_price(input.price_increment, "price_increment")?;
+    let size_increment = parse_quantity(input.size_increment, "size_increment")?;
+    Ok(DerivativeCommonFields {
+        instrument_id,
+        raw_symbol,
+        price_precision: price_increment.precision,
+        size_precision: size_increment.precision,
+        price_increment,
+        size_increment,
+        min_quantity: parse_quantity(input.min_quantity, "min_quantity")?,
+        max_quantity: parse_quantity(input.max_quantity, "max_quantity")?,
+        min_notional: parse_money(input.min_notional, input.quote_currency, "min_notional")?,
+        max_notional: parse_money(input.max_notional, input.quote_currency, "max_notional")?,
+    })
+}
+
+struct DerivativeCommonFieldInput<'a> {
+    nt_instrument_id: &'a str,
+    raw_symbol: &'a str,
+    quote_currency: Currency,
+    price_increment: &'a str,
+    size_increment: &'a str,
+    min_quantity: &'a str,
+    max_quantity: &'a str,
+    min_notional: &'a str,
+    max_notional: &'a str,
+}
+
+struct DerivativeCommonFields {
+    instrument_id: InstrumentId,
+    raw_symbol: Symbol,
+    price_precision: u8,
+    size_precision: u8,
+    price_increment: Price,
+    size_increment: Quantity,
+    min_quantity: Quantity,
+    max_quantity: Quantity,
+    min_notional: Money,
+    max_notional: Money,
+}
+
+/// Build the NautilusTrader instrument variant from accepted metadata.
+///
+/// # Errors
+///
+/// Returns an error if any field fails to parse or fails NautilusTrader's
+/// instrument correctness checks.
+pub fn build_catalog_instrument(spec: &CatalogInstrumentSpec) -> Result<InstrumentAny> {
+    spec.build_instrument_any()
+}
+
+/// Build NT's [`CryptoPerpetual`] from accepted derivative metadata.
+///
+/// # Errors
+///
+/// Returns an error if accepted metadata cannot construct a checked NT crypto
+/// perpetual.
+pub fn build_crypto_perpetual(spec: &CryptoPerpetualInstrumentSpec) -> Result<CryptoPerpetual> {
+    let base_currency = parse_currency(&spec.base_currency, "base_currency")?;
+    let quote_currency = parse_currency(&spec.quote_currency, "quote_currency")?;
+    let settlement_currency = parse_currency(&spec.settlement_currency, "settlement_currency")?;
+    let common = derivative_common_fields(DerivativeCommonFieldInput {
+        nt_instrument_id: &spec.nt_instrument_id,
+        raw_symbol: &spec.raw_symbol,
+        quote_currency,
+        price_increment: &spec.price_increment,
+        size_increment: &spec.size_increment,
+        min_quantity: &spec.min_quantity,
+        max_quantity: &spec.max_quantity,
+        min_notional: &spec.min_notional,
+        max_notional: &spec.max_notional,
+    })?;
+    CryptoPerpetual::new_checked(
+        common.instrument_id,
+        common.raw_symbol,
+        base_currency,
+        quote_currency,
+        settlement_currency,
+        spec.is_inverse,
+        common.price_precision,
+        common.size_precision,
+        common.price_increment,
+        common.size_increment,
+        parse_optional_quantity(spec.multiplier.as_deref(), "multiplier")?,
+        parse_optional_quantity(spec.lot_size.as_deref(), "lot_size")?,
+        Some(common.max_quantity),
+        Some(common.min_quantity),
+        Some(common.max_notional),
+        Some(common.min_notional),
+        parse_optional_price(spec.max_price.as_deref(), "max_price")?,
+        parse_optional_price(spec.min_price.as_deref(), "min_price")?,
+        parse_optional_decimal(spec.margin_init.as_deref(), "margin_init")?,
+        parse_optional_decimal(spec.margin_maint.as_deref(), "margin_maint")?,
+        parse_optional_decimal(spec.maker_fee.as_deref(), "maker_fee")?,
+        parse_optional_decimal(spec.taker_fee.as_deref(), "taker_fee")?,
+        None,
+        UnixNanos::default(),
+        UnixNanos::default(),
+    )
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "invalid crypto perpetual for {:?}: {error}",
+            spec.nt_instrument_id
+        )
+    })
+}
+
+/// Build NT's [`CryptoFuture`] from accepted derivative metadata.
+///
+/// # Errors
+///
+/// Returns an error if accepted metadata cannot construct a checked NT crypto
+/// future.
+pub fn build_crypto_future(spec: &CryptoFutureInstrumentSpec) -> Result<CryptoFuture> {
+    let underlying = parse_currency(&spec.base_currency, "base_currency")?;
+    let quote_currency = parse_currency(&spec.quote_currency, "quote_currency")?;
+    let settlement_currency = parse_currency(&spec.settlement_currency, "settlement_currency")?;
+    ensure!(
+        spec.activation_time_nanos < spec.expiration_time_nanos,
+        "activation_time_nanos must be before expiration_time_nanos"
+    );
+    let common = derivative_common_fields(DerivativeCommonFieldInput {
+        nt_instrument_id: &spec.nt_instrument_id,
+        raw_symbol: &spec.raw_symbol,
+        quote_currency,
+        price_increment: &spec.price_increment,
+        size_increment: &spec.size_increment,
+        min_quantity: &spec.min_quantity,
+        max_quantity: &spec.max_quantity,
+        min_notional: &spec.min_notional,
+        max_notional: &spec.max_notional,
+    })?;
+    CryptoFuture::new_checked(
+        common.instrument_id,
+        common.raw_symbol,
+        underlying,
+        quote_currency,
+        settlement_currency,
+        spec.is_inverse,
+        UnixNanos::from(spec.activation_time_nanos),
+        UnixNanos::from(spec.expiration_time_nanos),
+        common.price_precision,
+        common.size_precision,
+        common.price_increment,
+        common.size_increment,
+        parse_optional_quantity(spec.multiplier.as_deref(), "multiplier")?,
+        parse_optional_quantity(spec.lot_size.as_deref(), "lot_size")?,
+        Some(common.max_quantity),
+        Some(common.min_quantity),
+        Some(common.max_notional),
+        Some(common.min_notional),
+        parse_optional_price(spec.max_price.as_deref(), "max_price")?,
+        parse_optional_price(spec.min_price.as_deref(), "min_price")?,
+        parse_optional_decimal(spec.margin_init.as_deref(), "margin_init")?,
+        parse_optional_decimal(spec.margin_maint.as_deref(), "margin_maint")?,
+        parse_optional_decimal(spec.maker_fee.as_deref(), "maker_fee")?,
+        parse_optional_decimal(spec.taker_fee.as_deref(), "taker_fee")?,
+        None,
+        UnixNanos::default(),
+        UnixNanos::default(),
+    )
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "invalid crypto future for {:?}: {error}",
+            spec.nt_instrument_id
+        )
+    })
+}
+
 fn rescaled(value: &str, precision: u8) -> Result<String> {
     let mut decimal = Decimal::from_str(value).with_context(|| format!("decimal {value:?}"))?;
     decimal.normalize_assign();
@@ -178,9 +521,9 @@ fn rescaled(value: &str, precision: u8) -> Result<String> {
 ///
 /// Returns an error if a price/size cannot be represented at the instrument
 /// precision.
-pub fn canonical_rows_to_trade_ticks(
+pub fn canonical_rows_to_trade_ticks<I: Instrument + ?Sized>(
     table: &CanonicalTradesTable,
-    instrument: &CurrencyPair,
+    instrument: &I,
 ) -> Result<Vec<TradeTick>> {
     let instrument_id = instrument.id();
     let price_precision = instrument.price_precision();
@@ -228,13 +571,13 @@ pub fn canonical_rows_to_trade_ticks(
 ///
 /// Returns an error if instrument construction, conversion, or catalog writes
 /// fail.
-pub fn project_canonical_trades_to_catalog(
+pub fn project_canonical_trades_to_catalog<S: CatalogInstrumentSpecSource + ?Sized>(
     table: &CanonicalTradesTable,
-    spec: &SpotInstrumentSpec,
+    spec: &S,
     catalog_root: &Path,
 ) -> Result<CatalogProjection> {
     table.validate()?;
-    let instrument = build_currency_pair(spec)?;
+    let instrument = spec.build_instrument_any()?;
     let instrument_id = instrument.id();
     let row_instrument_id = table.rows[0]
         .nt_instrument_id
@@ -266,7 +609,7 @@ pub fn project_canonical_trades_to_catalog(
         .with_context(|| format!("create catalog root {}", catalog_root.display()))?;
     let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
     catalog
-        .write_instruments(vec![InstrumentAny::CurrencyPair(instrument)])
+        .write_instruments(vec![instrument])
         .context("write instrument to catalog")?;
     catalog
         .write_to_parquet(ticks, None, None, None)
@@ -411,6 +754,12 @@ fn update_instrument_hash(hasher: &mut Sha256, instrument: &InstrumentAny) -> Re
         InstrumentAny::BinaryOption(binary_option) => {
             update_binary_option_hash(hasher, binary_option)?
         }
+        InstrumentAny::CryptoPerpetual(crypto_perpetual) => {
+            update_crypto_perpetual_hash(hasher, crypto_perpetual)?
+        }
+        InstrumentAny::CryptoFuture(crypto_future) => {
+            update_crypto_future_hash(hasher, crypto_future)?
+        }
         other => {
             anyhow::bail!(
                 "logical catalog hash does not support instrument type for {}",
@@ -418,6 +767,268 @@ fn update_instrument_hash(hasher: &mut Sha256, instrument: &InstrumentAny) -> Re
             );
         }
     }
+    Ok(())
+}
+
+fn update_crypto_perpetual_hash(hasher: &mut Sha256, instrument: &CryptoPerpetual) -> Result<()> {
+    ensure!(
+        instrument.info.is_none(),
+        "logical catalog hash does not support opaque crypto perpetual info for {}",
+        instrument.id
+    );
+    update_hash_field(hasher, "instrument.type", "crypto_perpetual");
+    update_hash_field(hasher, "instrument.id", &instrument.id.to_string());
+    update_hash_field(
+        hasher,
+        "instrument.raw_symbol",
+        instrument.raw_symbol.as_ref(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.base_currency",
+        &instrument.base_currency.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.quote_currency",
+        &instrument.quote_currency.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.settlement_currency",
+        &instrument.settlement_currency.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.is_inverse",
+        &instrument.is_inverse.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.price_precision",
+        &instrument.price_precision.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.size_precision",
+        &instrument.size_precision.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.price_increment",
+        &instrument.price_increment.as_decimal().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.size_increment",
+        &instrument.size_increment.as_decimal().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.multiplier",
+        &instrument.multiplier.as_decimal().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.lot_size",
+        &instrument.lot_size.as_decimal().to_string(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.max_quantity",
+        instrument.max_quantity.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.min_quantity",
+        instrument.min_quantity.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.max_notional",
+        instrument.max_notional.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.min_notional",
+        instrument.min_notional.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.max_price",
+        instrument.max_price.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.min_price",
+        instrument.min_price.as_ref(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.margin_init",
+        &instrument.margin_init.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.margin_maint",
+        &instrument.margin_maint.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.maker_fee",
+        &instrument.maker_fee.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.taker_fee",
+        &instrument.taker_fee.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.ts_event",
+        &instrument.ts_event.as_u64().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.ts_init",
+        &instrument.ts_init.as_u64().to_string(),
+    );
+    Ok(())
+}
+
+fn update_crypto_future_hash(hasher: &mut Sha256, instrument: &CryptoFuture) -> Result<()> {
+    ensure!(
+        instrument.info.is_none(),
+        "logical catalog hash does not support opaque crypto future info for {}",
+        instrument.id
+    );
+    update_hash_field(hasher, "instrument.type", "crypto_future");
+    update_hash_field(hasher, "instrument.id", &instrument.id.to_string());
+    update_hash_field(
+        hasher,
+        "instrument.raw_symbol",
+        instrument.raw_symbol.as_ref(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.underlying",
+        &instrument.underlying.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.quote_currency",
+        &instrument.quote_currency.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.settlement_currency",
+        &instrument.settlement_currency.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.is_inverse",
+        &instrument.is_inverse.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.activation_ns",
+        &instrument.activation_ns.as_u64().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.expiration_ns",
+        &instrument.expiration_ns.as_u64().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.price_precision",
+        &instrument.price_precision.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.size_precision",
+        &instrument.size_precision.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.price_increment",
+        &instrument.price_increment.as_decimal().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.size_increment",
+        &instrument.size_increment.as_decimal().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.multiplier",
+        &instrument.multiplier.as_decimal().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.lot_size",
+        &instrument.lot_size.as_decimal().to_string(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.max_quantity",
+        instrument.max_quantity.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.min_quantity",
+        instrument.min_quantity.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.max_notional",
+        instrument.max_notional.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.min_notional",
+        instrument.min_notional.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.max_price",
+        instrument.max_price.as_ref(),
+    );
+    update_optional_hash_field(
+        hasher,
+        "instrument.min_price",
+        instrument.min_price.as_ref(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.margin_init",
+        &instrument.margin_init.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.margin_maint",
+        &instrument.margin_maint.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.maker_fee",
+        &instrument.maker_fee.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.taker_fee",
+        &instrument.taker_fee.to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.ts_event",
+        &instrument.ts_event.as_u64().to_string(),
+    );
+    update_hash_field(
+        hasher,
+        "instrument.ts_init",
+        &instrument.ts_init.as_u64().to_string(),
+    );
     Ok(())
 }
 
@@ -703,6 +1314,114 @@ mod tests {
         }
     }
 
+    fn linear_perpetual_spec() -> CatalogInstrumentSpec {
+        CatalogInstrumentSpec::CryptoPerpetual(CryptoPerpetualInstrumentSpec {
+            instrument_kind: CryptoPerpetualInstrumentKind::CryptoPerpetual,
+            nt_instrument_id: "BTCUSDT.BYBIT".to_string(),
+            raw_symbol: "BTCUSDT".to_string(),
+            base_currency: "BTC".to_string(),
+            quote_currency: "USDT".to_string(),
+            settlement_currency: "USDT".to_string(),
+            is_inverse: false,
+            price_increment: "0.1".to_string(),
+            size_increment: "0.001".to_string(),
+            min_quantity: "0.001".to_string(),
+            max_quantity: "1000".to_string(),
+            min_notional: "5".to_string(),
+            max_notional: "100000000".to_string(),
+            multiplier: Some("1".to_string()),
+            lot_size: Some("1".to_string()),
+            max_price: Some("10000000".to_string()),
+            min_price: Some("0.1".to_string()),
+            margin_init: Some("0".to_string()),
+            margin_maint: Some("0".to_string()),
+            maker_fee: Some("0".to_string()),
+            taker_fee: Some("0".to_string()),
+        })
+    }
+
+    fn linear_future_spec() -> CatalogInstrumentSpec {
+        CatalogInstrumentSpec::CryptoFuture(CryptoFutureInstrumentSpec {
+            instrument_kind: CryptoFutureInstrumentKind::CryptoFuture,
+            nt_instrument_id: "BTCUSDT-05JUN26.BYBIT".to_string(),
+            raw_symbol: "BTCUSDT-05JUN26".to_string(),
+            base_currency: "BTC".to_string(),
+            quote_currency: "USDT".to_string(),
+            settlement_currency: "USDT".to_string(),
+            is_inverse: false,
+            activation_time_nanos: 1_778_832_000_000_000_000,
+            expiration_time_nanos: 1_780_646_400_000_000_000,
+            price_increment: "0.1".to_string(),
+            size_increment: "0.001".to_string(),
+            min_quantity: "0.001".to_string(),
+            max_quantity: "1000".to_string(),
+            min_notional: "5".to_string(),
+            max_notional: "100000000".to_string(),
+            multiplier: Some("1".to_string()),
+            lot_size: Some("1".to_string()),
+            max_price: Some("10000000".to_string()),
+            min_price: Some("0.1".to_string()),
+            margin_init: Some("0".to_string()),
+            margin_maint: Some("0".to_string()),
+            maker_fee: Some("0".to_string()),
+            taker_fee: Some("0".to_string()),
+        })
+    }
+
+    fn inverse_perpetual_spec() -> CatalogInstrumentSpec {
+        CatalogInstrumentSpec::CryptoPerpetual(CryptoPerpetualInstrumentSpec {
+            instrument_kind: CryptoPerpetualInstrumentKind::CryptoPerpetual,
+            nt_instrument_id: "BTCUSD.BYBIT".to_string(),
+            raw_symbol: "BTCUSD".to_string(),
+            base_currency: "BTC".to_string(),
+            quote_currency: "USD".to_string(),
+            settlement_currency: "BTC".to_string(),
+            is_inverse: true,
+            price_increment: "0.5".to_string(),
+            size_increment: "1".to_string(),
+            min_quantity: "1".to_string(),
+            max_quantity: "1000000".to_string(),
+            min_notional: "1".to_string(),
+            max_notional: "100000000".to_string(),
+            multiplier: Some("1".to_string()),
+            lot_size: Some("1".to_string()),
+            max_price: Some("10000000".to_string()),
+            min_price: Some("0.5".to_string()),
+            margin_init: Some("0".to_string()),
+            margin_maint: Some("0".to_string()),
+            maker_fee: Some("0".to_string()),
+            taker_fee: Some("0".to_string()),
+        })
+    }
+
+    fn inverse_future_spec() -> CatalogInstrumentSpec {
+        CatalogInstrumentSpec::CryptoFuture(CryptoFutureInstrumentSpec {
+            instrument_kind: CryptoFutureInstrumentKind::CryptoFuture,
+            nt_instrument_id: "BTCUSDM26.BYBIT".to_string(),
+            raw_symbol: "BTCUSDM26".to_string(),
+            base_currency: "BTC".to_string(),
+            quote_currency: "USD".to_string(),
+            settlement_currency: "BTC".to_string(),
+            is_inverse: true,
+            activation_time_nanos: 1_764_892_800_000_000_000,
+            expiration_time_nanos: 1_781_020_800_000_000_000,
+            price_increment: "0.5".to_string(),
+            size_increment: "1".to_string(),
+            min_quantity: "1".to_string(),
+            max_quantity: "1000000".to_string(),
+            min_notional: "1".to_string(),
+            max_notional: "100000000".to_string(),
+            multiplier: Some("1".to_string()),
+            lot_size: Some("1".to_string()),
+            max_price: Some("10000000".to_string()),
+            min_price: Some("0.5".to_string()),
+            margin_init: Some("0".to_string()),
+            margin_maint: Some("0".to_string()),
+            maker_fee: Some("0".to_string()),
+            taker_fee: Some("0".to_string()),
+        })
+    }
+
     fn accepted_dataset() -> AcceptedDataset {
         let checks = RequiredChecks {
             source_access: RequiredCheck::passed("manifest"),
@@ -937,6 +1656,112 @@ mod tests {
         assert_eq!(instrument.id().to_string(), "BNBUSDC.BYBIT");
         assert_eq!(instrument.price_precision(), 1);
         assert_eq!(instrument.size_precision(), 4);
+    }
+
+    #[test]
+    fn builds_crypto_perpetual_from_accepted_spec() {
+        let instrument = build_catalog_instrument(&linear_perpetual_spec()).expect("instrument");
+        let InstrumentAny::CryptoPerpetual(perpetual) = instrument else {
+            panic!("expected CryptoPerpetual");
+        };
+        assert_eq!(perpetual.id().to_string(), "BTCUSDT.BYBIT");
+        assert_eq!(perpetual.base_currency.to_string(), "BTC");
+        assert_eq!(perpetual.quote_currency.to_string(), "USDT");
+        assert_eq!(perpetual.settlement_currency.to_string(), "USDT");
+        assert!(!perpetual.is_inverse);
+        assert_eq!(perpetual.price_precision(), 1);
+        assert_eq!(perpetual.size_precision(), 3);
+    }
+
+    #[test]
+    fn builds_crypto_future_from_accepted_spec() {
+        let instrument = build_catalog_instrument(&linear_future_spec()).expect("instrument");
+        let InstrumentAny::CryptoFuture(future) = instrument else {
+            panic!("expected CryptoFuture");
+        };
+        assert_eq!(future.id().to_string(), "BTCUSDT-05JUN26.BYBIT");
+        assert_eq!(future.underlying.to_string(), "BTC");
+        assert_eq!(future.quote_currency.to_string(), "USDT");
+        assert_eq!(future.settlement_currency.to_string(), "USDT");
+        assert_eq!(future.activation_ns.as_u64(), 1_778_832_000_000_000_000);
+        assert_eq!(future.expiration_ns.as_u64(), 1_780_646_400_000_000_000);
+        assert!(!future.is_inverse);
+    }
+
+    #[test]
+    fn builds_inverse_crypto_perpetual_from_accepted_spec() {
+        let instrument = build_catalog_instrument(&inverse_perpetual_spec()).expect("instrument");
+        let InstrumentAny::CryptoPerpetual(perpetual) = instrument else {
+            panic!("expected CryptoPerpetual");
+        };
+        assert_eq!(perpetual.id().to_string(), "BTCUSD.BYBIT");
+        assert_eq!(perpetual.base_currency.to_string(), "BTC");
+        assert_eq!(perpetual.quote_currency.to_string(), "USD");
+        assert_eq!(perpetual.settlement_currency.to_string(), "BTC");
+        assert!(perpetual.is_inverse);
+    }
+
+    #[test]
+    fn builds_inverse_crypto_future_from_accepted_spec() {
+        let instrument = build_catalog_instrument(&inverse_future_spec()).expect("instrument");
+        let InstrumentAny::CryptoFuture(future) = instrument else {
+            panic!("expected CryptoFuture");
+        };
+        assert_eq!(future.id().to_string(), "BTCUSDM26.BYBIT");
+        assert_eq!(future.underlying.to_string(), "BTC");
+        assert_eq!(future.quote_currency.to_string(), "USD");
+        assert_eq!(future.settlement_currency.to_string(), "BTC");
+        assert!(future.is_inverse);
+        assert!(future.activation_ns < future.expiration_ns);
+    }
+
+    #[test]
+    fn catalog_instrument_spec_deserializes_legacy_spot_shape() {
+        let parsed: CatalogInstrumentSpec = toml::from_str(
+            r#"
+nt_instrument_id = "BNBUSDC.BYBIT"
+raw_symbol = "BNBUSDC"
+base_currency = "BNB"
+quote_currency = "USDC"
+price_increment = "0.1"
+size_increment = "0.0001"
+min_quantity = "0.0001"
+max_quantity = "1400"
+min_notional = "5"
+max_notional = "200000"
+"#,
+        )
+        .expect("legacy spot spec parses");
+        assert!(matches!(parsed, CatalogInstrumentSpec::Spot(_)));
+    }
+
+    #[test]
+    fn projects_derivative_trade_ticks_with_nt_crypto_instrument() {
+        let identity = CanonicalInstrumentIdentity {
+            instrument_id: "BTCUSDT".to_string(),
+            venue_symbol: "BTCUSDT".to_string(),
+            nt_instrument_id: "BTCUSDT.BYBIT".to_string(),
+        };
+        let csv = "id,timestamp,price,volume,side,rpi\n\
+            1,1772323201665,617.20,0.3000,buy,0\n";
+        let table = normalize_sample_spot_tick_trades(
+            &accepted_dataset(),
+            &identity,
+            csv,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let projection =
+            project_canonical_trades_to_catalog(&table, &linear_perpetual_spec(), dir.path())
+                .expect("project derivative");
+
+        assert_eq!(projection.trade_count, 1);
+        assert_eq!(projection.nt_instrument_id, "BTCUSDT.BYBIT");
+        let loaded = read_back_trade_ticks(dir.path(), "BTCUSDT.BYBIT").expect("read back");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].instrument_id.to_string(), "BTCUSDT.BYBIT");
     }
 
     #[test]

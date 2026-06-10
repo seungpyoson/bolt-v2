@@ -26,7 +26,7 @@ use super::{
         TradeAggressorSide, normalize_registered_trade_converter,
     },
     catalog_projection::{
-        CatalogProjection, SpotInstrumentSpec, project_canonical_trades_to_catalog,
+        CatalogInstrumentSpecSource, CatalogProjection, project_canonical_trades_to_catalog,
         read_back_trade_ticks,
     },
     conversion_boundary::{
@@ -91,7 +91,7 @@ pub(crate) fn result_contract_warnings(nt_result: &BacktestResult) -> Vec<String
 pub struct BacktestRunInputs<'a> {
     pub accepted: &'a AcceptedDataset,
     pub identity: &'a CanonicalInstrumentIdentity,
-    pub instrument_spec: &'a SpotInstrumentSpec,
+    pub instrument_spec: &'a dyn CatalogInstrumentSpecSource,
     /// Decompressed text of the accepted object (hash already verified).
     pub csv_text: &'a str,
     pub capture_time_nanos: i64,

@@ -236,14 +236,8 @@ impl ReferenceQuoteProvenance {
             validate_provenance_component(key, "key")?;
             validate_provenance_component(value, "value")?;
             let key_lower = key.to_ascii_lowercase();
-            if key_lower.contains("secret")
-                || key_lower.contains("authorization")
-                || key_lower.contains("auth_header")
-                || key_lower.contains("credential")
-                || key_lower.contains("api_key")
-                || key_lower.contains("apikey")
-                || key_lower.contains("token")
-                || key_lower.contains("password")
+            if provenance_component_is_secret_bearing_key(&key_lower)
+                || provenance_component_is_secret_bearing_value(value)
             {
                 return Err(
                     "reference quote provenance must not contain secret-bearing fields".to_string(),
@@ -785,6 +779,27 @@ fn validate_provenance_component(value: &str, field: &'static str) -> Result<(),
         return Err(format!("reference quote provenance {field} is invalid"));
     }
     Ok(())
+}
+
+fn provenance_component_is_secret_bearing_key(key_lower: &str) -> bool {
+    key_lower == "auth"
+        || key_lower.contains("secret")
+        || key_lower.contains("authorization")
+        || key_lower.contains("auth_header")
+        || key_lower.contains("credential")
+        || key_lower.contains("api_key")
+        || key_lower.contains("apikey")
+        || key_lower.contains("token")
+        || key_lower.contains("password")
+}
+
+fn provenance_component_is_secret_bearing_value(value: &str) -> bool {
+    let value_lower = value.to_ascii_lowercase();
+    value_lower.starts_with("bearer ")
+        || value_lower.starts_with("basic ")
+        || value_lower.starts_with("apikey ")
+        || value_lower.starts_with("api-key ")
+        || value_lower.starts_with("token ")
 }
 
 fn validate_reference_values(

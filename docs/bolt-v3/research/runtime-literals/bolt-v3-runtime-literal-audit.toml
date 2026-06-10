@@ -8553,18 +8553,26 @@ reason = "Diagnostic type tag for redacted Chainlink reference-price provider co
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink_reference.rs"
 kind = "string"
-literal = '''"/api/v1/ws"'''
-context = '''const CHAINLINK_REFERENCE_WS_PATH: &str = "/api/v1/ws";'''
-classification = "chainlink_websocket_protocol_path"
-reason = "Fixed Chainlink Data Streams WebSocket API path; endpoint host remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/chainlink_reference.rs"
-kind = "string"
 literal = '''"feedIDs"'''
 context = '''const CHAINLINK_REFERENCE_FEED_IDS_QUERY_FIELD: &str = "feedIDs";'''
 classification = "chainlink_websocket_protocol_field"
 reason = "Fixed Chainlink Data Streams WebSocket query field; feed id values come from the root-owned TOML catalog."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"/"'''
+context = '''|| value == "/"'''
+classification = "chainlink_websocket_path_validation_guard"
+reason = "Rejected root-only Chainlink websocket_path sentinel; the actual provider path is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink_reference.rs"
+kind = "string"
+literal = '''"//"'''
+context = '''|| value.starts_with("//")'''
+classification = "chainlink_websocket_path_validation_guard"
+reason = "Rejected scheme-relative Chainlink websocket_path prefix; the actual provider path is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink_reference.rs"
@@ -8962,9 +8970,17 @@ reason = "Validation field label for reference-price provenance map values."
 path = "src/bolt_v3_reference_price.rs"
 kind = "string"
 literal = '''"secret"'''
-context = '''if key_lower.contains("secret")'''
+context = '''|| key_lower.contains("secret")'''
 classification = "secret_bearing_field_guard"
 reason = "Forbidden provenance key substring used to prevent secret-bearing metadata from entering normalized reference-price updates."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"auth"'''
+context = '''key_lower == "auth"'''
+classification = "secret_bearing_field_guard"
+reason = "Forbidden provenance key name used to prevent ambiguously named authentication metadata from entering normalized reference-price updates."
 
 [[allowed]]
 path = "src/bolt_v3_reference_price.rs"
@@ -9021,6 +9037,46 @@ literal = '''"password"'''
 context = '''|| key_lower.contains("password")'''
 classification = "secret_bearing_field_guard"
 reason = "Forbidden provenance key substring used to prevent password metadata from entering normalized reference-price updates."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"bearer "'''
+context = '''value_lower.starts_with("bearer ")'''
+classification = "secret_bearing_value_guard"
+reason = "Forbidden provenance value prefix used to prevent bearer tokens from entering normalized reference-price updates."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"basic "'''
+context = '''|| value_lower.starts_with("basic ")'''
+classification = "secret_bearing_value_guard"
+reason = "Forbidden provenance value prefix used to prevent basic-auth material from entering normalized reference-price updates."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"apikey "'''
+context = '''|| value_lower.starts_with("apikey ")'''
+classification = "secret_bearing_value_guard"
+reason = "Forbidden provenance value prefix used to prevent API-key material from entering normalized reference-price updates."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"api-key "'''
+context = '''|| value_lower.starts_with("api-key ")'''
+classification = "secret_bearing_value_guard"
+reason = "Forbidden provenance value prefix used to prevent API-key material from entering normalized reference-price updates."
+
+[[allowed]]
+path = "src/bolt_v3_reference_price.rs"
+kind = "string"
+literal = '''"token "'''
+context = '''|| value_lower.starts_with("token ")'''
+classification = "secret_bearing_value_guard"
+reason = "Forbidden provenance value prefix used to prevent token material from entering normalized reference-price updates."
 
 [[allowed]]
 path = "src/bolt_v3_reference_price.rs"

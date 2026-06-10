@@ -97,6 +97,7 @@ fn reference_quote_rejects_non_positive_price() {
 fn reference_quote_provenance_rejects_secret_bearing_key_names() {
     for key in [
         "authorization",
+        "auth",
         "auth_header",
         "credential_id",
         "api_key",
@@ -109,6 +110,27 @@ fn reference_quote_provenance_rejects_secret_bearing_key_names() {
             "redacted".to_string(),
         )]))
         .expect_err("secret-bearing provenance key names must fail closed");
+
+        assert!(
+            error.contains("secret-bearing"),
+            "secret-bearing provenance rejection should name the class, got: {error}"
+        );
+    }
+}
+
+#[test]
+fn reference_quote_provenance_rejects_secret_bearing_values() {
+    for value in [
+        "Bearer live-token",
+        "Basic live-token",
+        "ApiKey live-token",
+        "Token live-token",
+    ] {
+        let error = ReferenceQuoteProvenance::try_from_fields(BTreeMap::from([(
+            "provider_note".to_string(),
+            value.to_string(),
+        )]))
+        .expect_err("secret-bearing provenance values must fail closed");
 
         assert!(
             error.contains("secret-bearing"),

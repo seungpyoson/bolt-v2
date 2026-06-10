@@ -75,13 +75,13 @@ pub const FORBIDDEN_ENV_VARS: &[&str] = &[];
 
 const FACTORY_NAME: &str = KEY;
 const CONFIG_TYPE: &str = "ChainlinkReferencePriceClientConfig";
-const CHAINLINK_REFERENCE_WS_PATH: &str = "/api/v1/ws";
 const CHAINLINK_REFERENCE_FEED_IDS_QUERY_FIELD: &str = "feedIDs";
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ChainlinkReferencePriceDataConfig {
     pub websocket_endpoint: String,
+    pub websocket_path: String,
     pub transport_backend: TransportBackend,
     pub heartbeat_secs: Option<u64>,
     pub heartbeat_message: Option<String>,
@@ -133,6 +133,7 @@ impl ProviderResolvedSecrets for ResolvedBoltV3ChainlinkReferenceSecrets {
 #[derive(Clone)]
 pub struct ChainlinkReferencePriceClientConfig {
     pub websocket_endpoint: String,
+    pub websocket_path: String,
     pub transport_backend: TransportBackend,
     pub heartbeat_secs: Option<u64>,
     pub heartbeat_message: Option<String>,
@@ -152,6 +153,7 @@ impl std::fmt::Debug for ChainlinkReferencePriceClientConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChainlinkReferencePriceClientConfig")
             .field("websocket_endpoint", &self.websocket_endpoint)
+            .field("websocket_path", &self.websocket_path)
             .field("transport_backend", &self.transport_backend)
             .field("heartbeat_secs", &self.heartbeat_secs)
             .field("heartbeat_message", &self.heartbeat_message)
@@ -303,8 +305,11 @@ impl DataClient for ChainlinkReferencePriceClient {
             .iter()
             .map(|binding| binding.feed_id.clone())
             .collect::<Vec<_>>();
-        let (url, path_with_query) =
-            chainlink_reference_websocket_url(&self.config.websocket_endpoint, &feed_ids)?;
+        let (url, path_with_query) = chainlink_reference_websocket_url(
+            &self.config.websocket_endpoint,
+            &self.config.websocket_path,
+            &feed_ids,
+        )?;
         let credentials =
             chainlink_data_streams_credentials(&self.config.api_key, &self.config.api_secret)
                 .map_err(|error| {
@@ -401,13 +406,15 @@ fn chainlink_reference_transport_connected(
 
 fn chainlink_reference_websocket_url(
     websocket_endpoint: &str,
+    websocket_path: &str,
     feed_ids: &[String],
 ) -> anyhow::Result<(Url, String)> {
     if feed_ids.is_empty() {
         anyhow::bail!("Chainlink reference WebSocket requires at least one feed id");
     }
     let mut url = validate_chainlink_reference_websocket_endpoint(websocket_endpoint)?;
-    url.set_path(CHAINLINK_REFERENCE_WS_PATH);
+    validate_chainlink_reference_websocket_path(websocket_path).map_err(anyhow::Error::msg)?;
+    url.set_path(websocket_path);
     url.set_query(None);
     url.set_fragment(None);
     url.query_pairs_mut().append_pair(
@@ -420,6 +427,23 @@ fn chainlink_reference_websocket_url(
         path_with_query.push_str(query);
     }
     Ok((url, path_with_query))
+}
+
+fn validate_chainlink_reference_websocket_path(value: &str) -> Result<(), String> {
+    if value.trim() != value
+        || value == "/"
+        || !value.starts_with('/')
+        || value.starts_with("//")
+        || value.contains('?')
+        || value.contains('#')
+        || value.chars().any(char::is_whitespace)
+        || value.chars().any(char::is_control)
+    {
+        return Err(
+            "Chainlink reference websocket_path must be a rooted credential-free path".to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn validate_chainlink_reference_websocket_endpoint(value: &str) -> anyhow::Result<Url> {
@@ -679,6 +703,9 @@ fn validate_data_bounds(key: &str, data: &ChainlinkReferencePriceDataConfig) -> 
         &data.websocket_endpoint,
         &mut errors,
     );
+    if let Err(message) = validate_chainlink_reference_websocket_path(&data.websocket_path) {
+        errors.push(format!("clients.{key}.data.websocket_path: {message}"));
+    }
     validate_positive_optional_u64(
         &format!("clients.{key}.data.heartbeat_secs"),
         data.heartbeat_secs,
@@ -881,6 +908,7 @@ fn map_data(
         })?;
     Ok(ChainlinkReferencePriceClientConfig {
         websocket_endpoint: cfg.websocket_endpoint,
+        websocket_path: cfg.websocket_path,
         transport_backend: cfg.transport_backend,
         heartbeat_secs: cfg.heartbeat_secs,
         heartbeat_message: cfg.heartbeat_message,
@@ -944,6 +972,7 @@ mod tests {
     fn fixture_config() -> ChainlinkReferencePriceClientConfig {
         ChainlinkReferencePriceClientConfig {
             websocket_endpoint: "wss://ws.testnet-dataengine.chain.link".to_string(),
+            websocket_path: "/api/v1/ws".to_string(),
             transport_backend: TransportBackend::Sockudo,
             heartbeat_secs: Some(5),
             heartbeat_message: Some("ping".to_string()),
@@ -1012,20 +1041,21 @@ mod tests {
     }
 
     #[test]
-    fn websocket_url_uses_chainlink_ws_path_and_shared_feed_ids() {
+    fn websocket_url_uses_configured_chainlink_ws_path_and_shared_feed_ids() {
         let (url, path_with_query) = chainlink_reference_websocket_url(
             "wss://ws.testnet-dataengine.chain.link",
+            "/custom/ws",
             &[TEST_FEED_ID.to_string()],
         )
         .expect("valid Chainlink WS origin and feed id should build");
 
         assert_eq!(
             url.as_str(),
-            format!("wss://ws.testnet-dataengine.chain.link/api/v1/ws?feedIDs={TEST_FEED_ID}")
+            format!("wss://ws.testnet-dataengine.chain.link/custom/ws?feedIDs={TEST_FEED_ID}")
         );
         assert_eq!(
             path_with_query,
-            format!("/api/v1/ws?feedIDs={TEST_FEED_ID}")
+            format!("/custom/ws?feedIDs={TEST_FEED_ID}")
         );
     }
 
@@ -1033,6 +1063,7 @@ mod tests {
     fn websocket_config_carries_hmac_auth_headers_and_user_agent() {
         let (_url, path_with_query) = chainlink_reference_websocket_url(
             "wss://ws.testnet-dataengine.chain.link",
+            "/api/v1/ws",
             &[TEST_FEED_ID.to_string()],
         )
         .expect("valid Chainlink WS origin and feed id should build");

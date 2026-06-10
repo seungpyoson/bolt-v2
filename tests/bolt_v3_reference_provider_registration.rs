@@ -23,6 +23,7 @@ venue = "CHAINLINK_REFERENCE_PRICE"
 
 [data]
 websocket_endpoint = "wss://streams.chain.link"
+websocket_path = "/api/v1/ws"
 transport_backend = "sockudo"
 heartbeat_secs = 5
 heartbeat_message = "ping"
@@ -50,6 +51,7 @@ venue = "CHAINLINK_REFERENCE_PRICE"
 
 [data]
 websocket_endpoint = "wss://streams.chain.link"
+websocket_path = "/api/v1/ws"
 transport_backend = "sockudo"
 heartbeat_secs = 5
 heartbeat_message = "ping"
@@ -85,6 +87,7 @@ venue = "CHAINLINK_REFERENCE_PRICE"
 
 [data]
 websocket_endpoint = "wss://streams.chain.link"
+websocket_path = "/api/v1/ws"
 transport_backend = "sockudo"
 heartbeat_secs = 5
 heartbeat_message = "ping"
@@ -115,6 +118,7 @@ venue = "CHAINLINK_REFERENCE_PRICE"
 
 [data]
 websocket_endpoint = "wss://streams.chain.link"
+websocket_path = "/api/v1/ws"
 transport_backend = "sockudo"
 heartbeat_secs = 5
 heartbeat_message = "ping"
@@ -164,6 +168,7 @@ reconnect_delay_max_ms = 5000
 reconnect_backoff_factor = 1.5
 reconnect_jitter_ms = 100
 reconnect_max_attempts = "unlimited"
+subscribe_ack_timeout_ms = 2000
 idle_timeout_ms = 10000
 
 [secrets]
@@ -190,6 +195,7 @@ reconnect_delay_max_ms = 5000
 reconnect_backoff_factor = 1.5
 reconnect_jitter_ms = 100
 reconnect_max_attempts = "unlimited"
+subscribe_ack_timeout_ms = 2000
 idle_timeout_ms = 10000
 
 [execution]
@@ -255,6 +261,7 @@ reconnect_delay_max_ms = 5000
 reconnect_backoff_factor = 1.5
 reconnect_jitter_ms = 100
 reconnect_max_attempts = 0
+subscribe_ack_timeout_ms = 2000
 idle_timeout_ms = 10000
 
 [secrets]

@@ -188,7 +188,32 @@ load idle; the catalog lives at `/srv/bolt-v2/var/bolt-v3-live/catalog/`, not th
   run.** That armed shadow run is the one remaining gate before sizing capital on the
   btc GO.
 
-## 5. Reproduction
+## 5. Deliverables and pending decisions (plain-language summary for the operator)
+
+Deliverables across the two sessions (#617 → PR #624, #626 → PR #627):
+
+1. **PR #624** — the main study: `docs/research/leadlag-taker-edge-2026-06-10.md` +
+   `scripts/leadlag_session4.py`. Answers the session-4 brief; 19/19 CI checks green.
+2. **PR #627** (this branch, stacked on #624) — this report +
+   `scripts/leadlag_subsecond.py`: sub-second latency curve, available-size measurement,
+   the asset-split evidence, and the live-server passive harvest.
+3. **The answer**: the taker edge is real on **Bitcoin only** — roughly 10–17 c per $1
+   share after spread and fees, and it survives any reaction speed from 100 ms to ~2 s.
+   ETH/SOL/XRP are not tradable as takers (their sell side repositions within 100 ms);
+   recommend dropping them from the taker strategy. Capacity is the constraint: ~$60
+   typically displayed at the best price per opportunity. The real fee observed live is
+   700 bps (study conservatively charged 1000 bps, so the edge is understated). Naive
+   market-making is not an alternative (negative mark-outs).
+4. **The path forward**: one unknown remains before sizing capital — whether a fired
+   order actually achieves the on-screen price. That requires a small supervised live
+   pilot: node on, reference feed connected (also unblocks the model-calibration
+   measurement, impossible from existing logs), Bitcoin only, tiny sizes, compare
+   expected vs achieved per fill.
+
+Operator decisions pending: merge #624, then #627; green-light the pilot as its own
+scoped piece of work.
+
+## 6. Reproduction
 
 ```
 # session-4 caches must exist first (see leadlag-taker-edge-2026-06-10.md §8)

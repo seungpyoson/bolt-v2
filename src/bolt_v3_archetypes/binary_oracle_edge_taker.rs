@@ -1480,6 +1480,11 @@ fn validate_parameter_bounds(
 
 fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {
     let mut errors = check_enabled_order_template(context, "entry_order", entry);
+    if !executable_entry_order_shape_supported(entry) {
+        errors.push(format!(
+            "{context}: parameters.entry_order unsupported executable entry shape: must be buy/long limit FOK without post-only, reduce-only, quote-quantity, trigger, or trailing fields"
+        ));
+    }
     if entry.is_reduce_only {
         errors.push(format!(
             "{context}: parameters.entry_order.is_reduce_only must be false because `binary_oracle_edge_taker` entry orders open the managed position"
@@ -1511,6 +1516,22 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
         ));
     }
     errors
+}
+
+fn executable_entry_order_shape_supported(entry: &OrderParams) -> bool {
+    entry.side == OrderSide::Buy
+        && entry.position_side == PositionSide::Long
+        && entry.order_type == OrderType::Limit
+        && entry.time_in_force == TimeInForce::Fok
+        && !entry.is_post_only
+        && !entry.is_reduce_only
+        && !entry.is_quote_quantity
+        && entry.trigger_price.is_none()
+        && entry.activation_price.is_none()
+        && entry.trigger_type.is_none()
+        && entry.trigger_instrument_id.is_none()
+        && entry.trailing_offset.is_none()
+        && entry.trailing_offset_type.is_none()
 }
 
 fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {

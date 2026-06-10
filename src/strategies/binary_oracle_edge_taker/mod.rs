@@ -2303,16 +2303,7 @@ impl BinaryOracleEdgeTaker {
 
     fn entry_fee_bps_at_price(&self, side: OutcomeSide, entry_price: f64) -> Option<f64> {
         let instrument_id = self.instrument_id_for_side(side)?;
-        let Some(instrument) = self.current_instrument(instrument_id) else {
-            #[cfg(test)]
-            {
-                return self.context.fee_provider().fee_bps(instrument_id)?.to_f64();
-            }
-            #[cfg(not(test))]
-            {
-                return None;
-            }
-        };
+        let instrument = self.current_instrument(instrument_id)?;
         let entry_price = Decimal::from_f64(entry_price)?;
         self.context
             .fee_provider()
@@ -2324,12 +2315,6 @@ impl BinaryOracleEdgeTaker {
     /// fee-inclusive admission notional from the configured fee provider.
     /// Fail-closed: a missing instrument context or absent fee bound is a hard error so the
     /// downstream cap check never silently passes a raw notional.
-    ///
-    /// In production the order is built from a cached instrument, so
-    /// `current_instrument` resolves. Unit tests that exercise this path
-    /// without populating the NT cache supply the bound through the
-    /// `FeeProvider::fee_bps` map, matching the established `#[cfg(test)]`
-    /// fallback in `entry_fee_bps_at_price`.
     ///
     /// SYMMETRIC-FEE ASSUMPTION (A12): both entry AND risk-reducing-exit
     /// admission scale their notional by THIS entry-fee bound. Polymarket
@@ -2345,19 +2330,15 @@ impl BinaryOracleEdgeTaker {
         instrument_id: InstrumentId,
         price: Decimal,
     ) -> Result<Decimal> {
-        let max_fee_bps = match self.current_instrument(instrument_id) {
-            Some(instrument) => self.context.fee_provider().max_entry_fee_bps(&instrument, price),
-            None => {
-                #[cfg(test)]
-                {
-                    self.context.fee_provider().fee_bps(instrument_id)
-                }
-                #[cfg(not(test))]
-                {
-                    None
-                }
-            }
-        }
+        let instrument = self.current_instrument(instrument_id).with_context(|| {
+            format!(
+                "bolt-v3 submit admission requires cached instrument for instrument_id={instrument_id}"
+            )
+        })?;
+        let max_fee_bps = self
+            .context
+            .fee_provider()
+            .max_entry_fee_bps(&instrument, price)
         .with_context(|| {
             format!(
                 "bolt-v3 submit admission requires a max entry fee bound for instrument_id={instrument_id}"
@@ -2485,10 +2466,7 @@ impl BinaryOracleEdgeTaker {
                 self.config.book_impact_cap_bps,
             )
             .filter(|execution| is_positive_finite(execution.quantity))?;
-        Some(match side {
-            OutcomeSide::Up => capped_execution.quantity * capped_execution.vwap_price,
-            OutcomeSide::Down => capped_execution.quantity * capped_execution.vwap_price,
-        })
+        Some(capped_execution.quantity * capped_execution.vwap_price)
     }
 
     fn instrument_id_for_side(&self, side: OutcomeSide) -> Option<InstrumentId> {
@@ -4409,7 +4387,12 @@ impl BinaryOracleEdgeTaker {
         let quantity = instrument.try_make_qty(quantity_value, Some(true))?;
 
         if self.exposure_occupancy().is_some() {
-            let _ = self.enforce_one_position_invariant();
+            if let Err(error) = self.enforce_one_position_invariant() {
+                log::warn!(
+                    "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason=one_position_invariant_violation error={error:#}",
+                    self.config.strategy_id
+                );
+            }
             return Ok(None);
         }
 

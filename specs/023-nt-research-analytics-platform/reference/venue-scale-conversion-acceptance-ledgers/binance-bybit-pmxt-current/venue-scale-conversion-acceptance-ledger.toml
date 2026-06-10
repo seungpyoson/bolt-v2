@@ -11,6 +11,16 @@ scope_label = "BNBUSDC spot daily trades"
 status = "converted"
 completion_ledger_path = "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json"
 
+[[venue.universe]]
+universe_id = "binance-public-archive-full-current-data"
+scope_label = "Binance public archive full current data"
+status = "blocked"
+blocking_issues = [
+  "missing_accepted_binance_source_universe",
+  "missing_binance_non_spot_trade_source_bindings",
+  "bnbusdc_slice_only_not_full_binance",
+]
+
 [[venue]]
 venue_id = "bybit-current-reference"
 venue = "bybit"

@@ -32,6 +32,16 @@ scope_label = "BNBUSDC spot daily trades"
 status = "converted"
 completion_ledger_path = "{binance_completion_ledger}"
 
+[[venue.universe]]
+universe_id = "binance-public-archive-full-current-data"
+scope_label = "Binance public archive full current data"
+status = "blocked"
+blocking_issues = [
+  "missing_accepted_binance_source_universe",
+  "missing_binance_non_spot_trade_source_bindings",
+  "bnbusdc_slice_only_not_full_binance",
+]
+
 [[venue]]
 venue_id = "bybit-current-reference"
 venue = "bybit"
@@ -106,10 +116,10 @@ blocking_issues = [
     );
     assert_eq!(ledger.status, VenueScaleConversionAcceptanceStatus::Blocked);
     assert_eq!(ledger.venue_count, 3);
-    assert_eq!(ledger.universe_count, 5);
+    assert_eq!(ledger.universe_count, 6);
     assert_eq!(ledger.converted_universes, 3);
     assert_eq!(ledger.source_only_universes, 1);
-    assert_eq!(ledger.blocked_universes, 1);
+    assert_eq!(ledger.blocked_universes, 2);
     assert_eq!(ledger.total_converted_canonical_rows, 4_602_457);
     assert_eq!(ledger.total_converted_nt_catalog_rows, 4_602_458);
     assert_eq!(ledger.total_source_only_objects, 5_857);
@@ -123,9 +133,28 @@ blocking_issues = [
         .expect("binance venue");
     assert_eq!(
         binance.status,
-        VenueScaleConversionAcceptanceStatus::Converted
+        VenueScaleConversionAcceptanceStatus::Blocked
     );
+    assert_eq!(binance.converted_universes, 1);
+    assert_eq!(binance.blocked_universes, 1);
     assert_eq!(binance.total_converted_canonical_rows, 4_470_719);
+    let binance_full = binance
+        .universes
+        .iter()
+        .find(|universe| universe.universe_id == "binance-public-archive-full-current-data")
+        .expect("binance full current universe");
+    assert_eq!(
+        binance_full.status,
+        VenueScaleConversionAcceptanceStatus::Blocked
+    );
+    assert_eq!(
+        binance_full.blocking_issues,
+        vec![
+            "missing_accepted_binance_source_universe",
+            "missing_binance_non_spot_trade_source_bindings",
+            "bnbusdc_slice_only_not_full_binance",
+        ]
+    );
 
     let bybit = ledger
         .venues

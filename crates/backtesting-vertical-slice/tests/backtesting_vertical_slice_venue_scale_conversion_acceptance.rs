@@ -17,6 +17,7 @@ fn venue_scale_acceptance_ledger_reports_current_binance_bybit_pmxt_scope_withou
     let binance_archive_seed = temp_dir.path().join("binance-archive-discovery-seed.json");
     let bybit_conversion_run_plan = temp_dir.path().join("bybit-conversion-run-plan.json");
     let pmxt_archive_seed = temp_dir.path().join("pmxt-archive-discovery-seed.json");
+    let pmxt_archive_index_manifest = temp_dir.path().join("pmxt-archive-index-manifest.json");
 
     fs::write(
         &binance_archive_seed,
@@ -86,6 +87,30 @@ fn venue_scale_acceptance_ledger_reports_current_binance_bybit_pmxt_scope_withou
 }"#,
     )
     .expect("write pmxt discovery seed");
+    fs::write(
+        &pmxt_archive_index_manifest,
+        r#"{
+  "schema_version": "source-archive-index-manifest.v1",
+  "manifest_id": "source-archive-index-manifest-pmxt-polymarket-v2-current",
+  "status": "ready",
+  "snapshot_id": "source-archive-index-snapshot-pmxt-polymarket-v2-current-2026-06-10T15",
+  "fetched_at_utc": "2026-06-10T16:40:00Z",
+  "venue": "pmxt",
+  "source": "polymarket-v2-archive",
+  "family": "orderbook",
+  "table_family": "order_book_snapshot_deltas",
+  "index_url": "https://archive.example.test/Polymarket/v2",
+  "page_count": 28,
+  "object_count": 1351,
+  "verified_head_count": 1351,
+  "total_content_length_bytes": 686000000000,
+  "first_archive_hour_utc": "2026-04-13T19:00:00Z",
+  "last_archive_hour_utc": "2026-06-10T15:00:00Z",
+  "artifact_refs": [],
+  "records": []
+}"#,
+    )
+    .expect("write pmxt archive index manifest");
 
     fs::write(
         &spec_path,
@@ -149,9 +174,10 @@ universe_id = "pmxt-polymarket-full-current-data"
 scope_label = "Polymarket full current local/archive data"
 status = "blocked"
 source_archive_discovery_seed_path = "{pmxt_archive_seed}"
+source_archive_index_manifest_path = "{pmxt_archive_index_manifest}"
 selected_source_report_path = "{pmxt_selected_source_report}"
 blocking_issues = [
-  "missing_pmxt_full_source_universe_manifest",
+  "missing_pmxt_accepted_source_universe_manifest_with_payload_hashes",
   "missing_pmxt_full_nt_catalog_conversion_manifest",
   "missing_pmxt_l2_tick_size_epoch_policy",
   "selected_source_only_not_full_pmxt",
@@ -161,6 +187,7 @@ blocking_issues = [
             binance_archive_seed = binance_archive_seed.display(),
             bybit_conversion_run_plan = bybit_conversion_run_plan.display(),
             pmxt_archive_seed = pmxt_archive_seed.display(),
+            pmxt_archive_index_manifest = pmxt_archive_index_manifest.display(),
             binance_completion_ledger = reference_root
                 .join("backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json")
                 .display(),
@@ -327,6 +354,26 @@ blocking_issues = [
     assert_eq!(
         pmxt_full.source_archive_discovery_seed_representative_object_count,
         1
+    );
+    assert_eq!(
+        pmxt_full.source_archive_index_manifest_id.as_deref(),
+        Some("source-archive-index-manifest-pmxt-polymarket-v2-current")
+    );
+    assert_eq!(
+        pmxt_full.source_archive_index_snapshot_id.as_deref(),
+        Some("source-archive-index-snapshot-pmxt-polymarket-v2-current-2026-06-10T15")
+    );
+    assert_eq!(pmxt_full.source_archive_index_object_count, 1_351);
+    assert_eq!(pmxt_full.source_archive_index_verified_head_count, 1_351);
+    assert_eq!(
+        pmxt_full.source_archive_index_total_content_length_bytes,
+        686_000_000_000
+    );
+    assert!(
+        pmxt_full
+            .artifact_refs
+            .iter()
+            .any(|artifact| artifact.role == "source_archive_index_manifest")
     );
 
     let pmxt_selected = pmxt

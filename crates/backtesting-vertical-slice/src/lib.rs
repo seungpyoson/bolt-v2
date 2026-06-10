@@ -51,6 +51,7 @@ pub mod run_manifest;
 pub mod runner;
 pub mod selected_source_slice;
 pub mod source_archive_discovery_seed;
+pub mod source_archive_index_manifest;
 pub mod source_catalog_mapping_readiness;
 pub mod source_proof;
 pub mod source_proof_admissibility;

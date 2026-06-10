@@ -1,0 +1,3 @@
+manifest_id = "source-archive-index-manifest-pmxt-polymarket-v2-current"
+index_snapshot_path = "specs/023-nt-research-analytics-platform/reference/source-archive-index-manifests/pmxt-polymarket-v2-current/source-archive-index-snapshot.json"
+output_dir = "specs/023-nt-research-analytics-platform/reference/source-archive-index-manifests/pmxt-polymarket-v2-current/manifest"

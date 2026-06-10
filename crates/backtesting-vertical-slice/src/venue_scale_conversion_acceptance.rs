@@ -44,6 +44,7 @@ pub struct VenueScaleConversionAcceptanceUniverseSpec {
     pub status: VenueScaleConversionAcceptanceStatus,
     pub completion_ledger_path: Option<PathBuf>,
     pub source_archive_discovery_seed_path: Option<PathBuf>,
+    pub source_archive_index_manifest_path: Option<PathBuf>,
     pub source_universe_manifest_path: Option<PathBuf>,
     pub source_universe_object_gates_path: Option<PathBuf>,
     pub source_universe_conversion_run_plan_path: Option<PathBuf>,
@@ -90,6 +91,11 @@ pub struct VenueScaleConversionAcceptanceUniverse {
     pub source_archive_discovery_seed_id: Option<String>,
     pub source_archive_discovery_seed_source_binding_count: u64,
     pub source_archive_discovery_seed_representative_object_count: u64,
+    pub source_archive_index_manifest_id: Option<String>,
+    pub source_archive_index_snapshot_id: Option<String>,
+    pub source_archive_index_object_count: u64,
+    pub source_archive_index_verified_head_count: u64,
+    pub source_archive_index_total_content_length_bytes: u64,
     pub source_manifest_id: Option<String>,
     pub source_object_gate_id: Option<String>,
     pub source_object_gate_queue_id: Option<String>,
@@ -190,6 +196,16 @@ struct SourceArchiveDiscoverySeedSummary {
     status: String,
     source_binding_count: u64,
     representative_object_count: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceArchiveIndexManifestSummary {
+    manifest_id: String,
+    status: String,
+    snapshot_id: String,
+    object_count: u64,
+    verified_head_count: u64,
+    total_content_length_bytes: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -463,6 +479,11 @@ fn evaluate_universe(
     let mut source_archive_discovery_seed_id = None;
     let mut source_archive_discovery_seed_source_binding_count = 0;
     let mut source_archive_discovery_seed_representative_object_count = 0;
+    let mut source_archive_index_manifest_id = None;
+    let mut source_archive_index_snapshot_id = None;
+    let mut source_archive_index_object_count = 0;
+    let mut source_archive_index_verified_head_count = 0;
+    let mut source_archive_index_total_content_length_bytes = 0;
     let mut source_manifest_id = None;
     let mut source_manifest_universe_id = None;
     let mut source_object_gate_id = None;
@@ -516,6 +537,27 @@ fn evaluate_universe(
         source_archive_discovery_seed_source_binding_count = seed.source_binding_count;
         source_archive_discovery_seed_representative_object_count =
             seed.representative_object_count;
+    }
+
+    if let Some(path) = &spec.source_archive_index_manifest_path {
+        let path = resolve_existing_path(base_dir, path);
+        artifact_refs.push(artifact_ref("source_archive_index_manifest", &path)?);
+        let manifest: SourceArchiveIndexManifestSummary = read_json(&path)?;
+        ensure!(
+            manifest.status == "ready",
+            "source archive index manifest {} is not ready",
+            path.display()
+        );
+        ensure!(
+            manifest.object_count == manifest.verified_head_count,
+            "source archive index manifest {} verified head count does not cover every object",
+            path.display()
+        );
+        source_archive_index_manifest_id = Some(manifest.manifest_id);
+        source_archive_index_snapshot_id = Some(manifest.snapshot_id);
+        source_archive_index_object_count = manifest.object_count;
+        source_archive_index_verified_head_count = manifest.verified_head_count;
+        source_archive_index_total_content_length_bytes = manifest.total_content_length_bytes;
     }
 
     if let Some(path) = &spec.source_universe_manifest_path {
@@ -675,6 +717,11 @@ fn evaluate_universe(
         source_archive_discovery_seed_id,
         source_archive_discovery_seed_source_binding_count,
         source_archive_discovery_seed_representative_object_count,
+        source_archive_index_manifest_id,
+        source_archive_index_snapshot_id,
+        source_archive_index_object_count,
+        source_archive_index_verified_head_count,
+        source_archive_index_total_content_length_bytes,
         source_manifest_id,
         source_object_gate_id,
         source_object_gate_queue_id,

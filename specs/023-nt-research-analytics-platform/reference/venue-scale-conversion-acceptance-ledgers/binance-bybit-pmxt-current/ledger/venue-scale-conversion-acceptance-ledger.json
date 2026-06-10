@@ -37,6 +37,11 @@
           "source_archive_discovery_seed_id": null,
           "source_archive_discovery_seed_source_binding_count": 0,
           "source_archive_discovery_seed_representative_object_count": 0,
+          "source_archive_index_manifest_id": null,
+          "source_archive_index_snapshot_id": null,
+          "source_archive_index_object_count": 0,
+          "source_archive_index_verified_head_count": 0,
+          "source_archive_index_total_content_length_bytes": 0,
           "source_manifest_id": null,
           "source_object_gate_id": null,
           "source_object_gate_queue_id": null,
@@ -63,7 +68,7 @@
           "artifact_refs": [
             {
               "role": "completion_ledger",
-              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json",
+              "path": "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json",
               "sha256": "4920d6d102d4a362fb6ab8301e8afd61faa57df2977561522971d0b12aef1752"
             }
           ],
@@ -77,6 +82,11 @@
           "source_archive_discovery_seed_id": "source-archive-discovery-seed-binance-data-vision-trades-current",
           "source_archive_discovery_seed_source_binding_count": 5,
           "source_archive_discovery_seed_representative_object_count": 5,
+          "source_archive_index_manifest_id": null,
+          "source_archive_index_snapshot_id": null,
+          "source_archive_index_object_count": 0,
+          "source_archive_index_verified_head_count": 0,
+          "source_archive_index_total_content_length_bytes": 0,
           "source_manifest_id": null,
           "source_object_gate_id": null,
           "source_object_gate_queue_id": null,
@@ -103,7 +113,7 @@
           "artifact_refs": [
             {
               "role": "source_archive_discovery_seed",
-              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/source-archive-discovery-seeds/binance-data-vision-trades-current/seed/source-archive-discovery-seed.json",
+              "path": "specs/023-nt-research-analytics-platform/reference/source-archive-discovery-seeds/binance-data-vision-trades-current/seed/source-archive-discovery-seed.json",
               "sha256": "3a084d6167e9107e74d09b308d647df9fd54c4f65ebf0cd354cec64d7322152c"
             }
           ],
@@ -138,6 +148,11 @@
           "source_archive_discovery_seed_id": null,
           "source_archive_discovery_seed_source_binding_count": 0,
           "source_archive_discovery_seed_representative_object_count": 0,
+          "source_archive_index_manifest_id": null,
+          "source_archive_index_snapshot_id": null,
+          "source_archive_index_object_count": 0,
+          "source_archive_index_verified_head_count": 0,
+          "source_archive_index_total_content_length_bytes": 0,
           "source_manifest_id": null,
           "source_object_gate_id": null,
           "source_object_gate_queue_id": null,
@@ -164,7 +179,7 @@
           "artifact_refs": [
             {
               "role": "completion_ledger",
-              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01/ledger/backfill-conversion-completion-ledger.json",
+              "path": "specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01/ledger/backfill-conversion-completion-ledger.json",
               "sha256": "684d1fc5a614423c61a0d1d3e13724375273043bf6b4bb3dcca21fe41c2c3b65"
             }
           ],
@@ -178,6 +193,11 @@
           "source_archive_discovery_seed_id": null,
           "source_archive_discovery_seed_source_binding_count": 0,
           "source_archive_discovery_seed_representative_object_count": 0,
+          "source_archive_index_manifest_id": null,
+          "source_archive_index_snapshot_id": null,
+          "source_archive_index_object_count": 0,
+          "source_archive_index_verified_head_count": 0,
+          "source_archive_index_total_content_length_bytes": 0,
           "source_manifest_id": "backfill-source-universe-object-manifest-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
           "source_object_gate_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
           "source_object_gate_queue_id": "source-universe-conversion-queue-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
@@ -226,17 +246,17 @@
           "artifact_refs": [
             {
               "role": "source_universe_manifest",
-              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json",
+              "path": "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json",
               "sha256": "11cad048895acc6349452f9b92a30efe0f00090434abc82f8c23521addd29803"
             },
             {
               "role": "source_universe_object_gates",
-              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/gates/source-universe-object-gates.json",
+              "path": "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/gates/source-universe-object-gates.json",
               "sha256": "ceb8521f4f9ca2fbdcf0ec1f5aa1eccf8766be46cd8058612659abba9cbcb50b"
             },
             {
               "role": "source_universe_conversion_run_plan",
-              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.json",
+              "path": "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/run-plan/source-universe-conversion-run-plan.json",
               "sha256": "40c22e8cdf40f30ea6e7d4eb72d6f3236e6b8265b77c36b6c0e319dd7a535f1c"
             }
           ],
@@ -267,6 +287,11 @@
           "source_archive_discovery_seed_id": null,
           "source_archive_discovery_seed_source_binding_count": 0,
           "source_archive_discovery_seed_representative_object_count": 0,
+          "source_archive_index_manifest_id": null,
+          "source_archive_index_snapshot_id": null,
+          "source_archive_index_object_count": 0,
+          "source_archive_index_verified_head_count": 0,
+          "source_archive_index_total_content_length_bytes": 0,
           "source_manifest_id": null,
           "source_object_gate_id": null,
           "source_object_gate_queue_id": null,
@@ -296,12 +321,12 @@
           "artifact_refs": [
             {
               "role": "selected_conversion_manifest",
-              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/backtests/pmxt-run/conversion-manifest.json",
+              "path": "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/backtests/pmxt-run/conversion-manifest.json",
               "sha256": "fdf16126c1135c4caaeae97244143244d0f72023714c23c0c093092cb3c3980e"
             },
             {
               "role": "selected_source_report",
-              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json",
+              "path": "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json",
               "sha256": "cc5110c9f97f167bc243ac542fda8cbac252f57d847436cc2a3e7dee5b426a73"
             }
           ],
@@ -315,6 +340,11 @@
           "source_archive_discovery_seed_id": "source-archive-discovery-seed-pmxt-polymarket-v2-current",
           "source_archive_discovery_seed_source_binding_count": 1,
           "source_archive_discovery_seed_representative_object_count": 1,
+          "source_archive_index_manifest_id": "source-archive-index-manifest-pmxt-polymarket-v2-current",
+          "source_archive_index_snapshot_id": "source-archive-index-snapshot-pmxt-polymarket-v2-current-2026-06-10T15",
+          "source_archive_index_object_count": 1351,
+          "source_archive_index_verified_head_count": 1351,
+          "source_archive_index_total_content_length_bytes": 557815904970,
           "source_manifest_id": null,
           "source_object_gate_id": null,
           "source_object_gate_queue_id": null,
@@ -341,17 +371,22 @@
           "artifact_refs": [
             {
               "role": "source_archive_discovery_seed",
-              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/source-archive-discovery-seeds/pmxt-polymarket-v2-current/seed/source-archive-discovery-seed.json",
+              "path": "specs/023-nt-research-analytics-platform/reference/source-archive-discovery-seeds/pmxt-polymarket-v2-current/seed/source-archive-discovery-seed.json",
               "sha256": "7fb02694fdcd82b5dc34a0ca28e01788dbe08e4be38f5bb97b9a2c5c39997802"
             },
             {
+              "role": "source_archive_index_manifest",
+              "path": "specs/023-nt-research-analytics-platform/reference/source-archive-index-manifests/pmxt-polymarket-v2-current/manifest/source-archive-index-manifest.json",
+              "sha256": "d7a368616332d73afebae03abf9f28bac94089498d82f7edc285ddea3371cd74"
+            },
+            {
               "role": "selected_source_report",
-              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json",
+              "path": "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json",
               "sha256": "cc5110c9f97f167bc243ac542fda8cbac252f57d847436cc2a3e7dee5b426a73"
             }
           ],
           "blocking_issues": [
-            "missing_pmxt_full_source_universe_manifest",
+            "missing_pmxt_accepted_source_universe_manifest_with_payload_hashes",
             "missing_pmxt_full_nt_catalog_conversion_manifest",
             "missing_pmxt_l2_tick_size_epoch_policy",
             "selected_source_only_not_full_pmxt"

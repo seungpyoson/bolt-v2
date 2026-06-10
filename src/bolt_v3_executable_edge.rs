@@ -176,7 +176,7 @@ pub(crate) fn price_exact_size_vwap(
                     &mut remaining_notional,
                     &mut filled_quantity,
                     &mut filled_notional,
-                );
+                )?;
                 if remaining_notional < previous_remaining_notional {
                     limit_price = Some(price);
                 }
@@ -198,7 +198,7 @@ pub(crate) fn price_exact_size_vwap(
                     &mut remaining_notional,
                     &mut filled_quantity,
                     &mut filled_notional,
-                );
+                )?;
                 if remaining_notional < previous_remaining_notional {
                     limit_price = Some(price);
                 }
@@ -245,19 +245,23 @@ fn consume_exact_notional_level(
     remaining_notional: &mut f64,
     filled_quantity: &mut f64,
     filled_notional: &mut f64,
-) {
-    if !is_positive_finite(price) || !is_positive_finite(size) || *remaining_notional <= ZERO_F64 {
-        return;
+) -> Result<(), ExecutableEdgeBlockReason> {
+    if *remaining_notional <= ZERO_F64 {
+        return Ok(());
+    }
+    if !is_positive_finite(price) || !is_positive_finite(size) {
+        return Err(ExecutableEdgeBlockReason::InvalidCost);
     }
     let level_notional = price * size;
     if !is_positive_finite(level_notional) {
-        return;
+        return Err(ExecutableEdgeBlockReason::InvalidCost);
     }
     let take_notional = remaining_notional.min(level_notional);
     let take_quantity = take_notional / price;
     *filled_quantity += take_quantity;
     *filled_notional += take_notional;
     *remaining_notional -= take_notional;
+    Ok(())
 }
 
 pub(crate) fn evaluate_executable_edge(inputs: &ExecutableEdgeInputs<'_>) -> ExecutableEdgeResult {
@@ -485,6 +489,17 @@ mod tests {
         assert!((priced.vwap_quantity - expected_vwap_quantity).abs() < EPSILON);
         assert_eq!(priced.limit_price, second_level_price);
         assert!(priced.exact_size_filled);
+    }
+
+    #[test]
+    fn exact_size_vwap_blocks_corrupt_book_level_before_deeper_liquidity() {
+        let corrupt_level_size = ZERO_F64;
+        let book = priced_book(&[(0.50, corrupt_level_size), (0.51, 100.0)]);
+
+        let reason = price_exact_size_vwap(&book, OrderSide::Buy, 5.0, 2_000)
+            .expect_err("corrupt visible liquidity must fail closed instead of being skipped");
+
+        assert_eq!(reason, ExecutableEdgeBlockReason::InvalidCost);
     }
 
     #[test]

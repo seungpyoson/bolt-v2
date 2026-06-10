@@ -1985,16 +1985,40 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     ))
 }
 
-struct NtMarketExitLossActionSink {
+trait MarketExitDispatcher {
+    fn market_exit_strategy(&self, strategy_id: &StrategyId) -> Result<()>;
+}
+
+struct NtTraderMarketExitDispatcher {
     trader: Rc<RefCell<Trader>>,
+}
+
+impl MarketExitDispatcher for NtTraderMarketExitDispatcher {
+    fn market_exit_strategy(&self, strategy_id: &StrategyId) -> Result<()> {
+        Trader::market_exit_strategy(&self.trader, strategy_id)
+    }
+}
+
+struct NtMarketExitLossActionSink {
+    dispatcher: Rc<dyn MarketExitDispatcher>,
     strategy_ids: Vec<StrategyId>,
     dispatched_halts: RefCell<BTreeSet<String>>,
 }
 
 impl NtMarketExitLossActionSink {
     fn new(trader: Rc<RefCell<Trader>>, strategy_ids: Vec<StrategyId>) -> Self {
+        Self::new_with_dispatcher(
+            Rc::new(NtTraderMarketExitDispatcher { trader }),
+            strategy_ids,
+        )
+    }
+
+    fn new_with_dispatcher(
+        dispatcher: Rc<dyn MarketExitDispatcher>,
+        strategy_ids: Vec<StrategyId>,
+    ) -> Self {
         Self {
-            trader,
+            dispatcher,
             strategy_ids,
             dispatched_halts: RefCell::new(BTreeSet::new()),
         }
@@ -2006,12 +2030,21 @@ impl KillSwitchLossActionSink for NtMarketExitLossActionSink {
         if action.kind != KillSwitchLossActionKind::FlattenPositions {
             return Ok(());
         }
-        if !self.dispatched_halts.borrow_mut().insert(action.halt_id) {
+        if self.dispatched_halts.borrow().contains(&action.halt_id) {
             return Ok(());
         }
+        let mut first_error = None;
         for strategy_id in &self.strategy_ids {
-            Trader::market_exit_strategy(&self.trader, strategy_id)?;
+            match self.dispatcher.market_exit_strategy(strategy_id) {
+                Ok(()) => {}
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(_) => {}
+            }
         }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        self.dispatched_halts.borrow_mut().insert(action.halt_id);
         Ok(())
     }
 }
@@ -2057,6 +2090,8 @@ fn configure_bolt_v3_kill_switch_loss_protection(
     })?;
     let config = KillSwitchLossProtectionConfig {
         daily_realized_loss_limit,
+        action_retry_interval_ms: kill_switch.action_retry_interval_ms,
+        action_retry_timeout_ms: kill_switch.action_retry_timeout_ms,
         forced_reduction_policy,
         policy_sha256: kill_switch.forced_reduction_policy_sha256.clone(),
         account_ids: kill_switch.account_ids.clone(),
@@ -2430,6 +2465,75 @@ mod tests {
     use nautilus_model::types::{Price, Quantity};
     use rust_decimal::Decimal;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn market_exit_loss_action_sink_retries_halt_until_all_strategies_exit() {
+        let dispatcher = Rc::new(RecordingMarketExitDispatcher::new("strategy-b"));
+        let sink = NtMarketExitLossActionSink::new_with_dispatcher(
+            dispatcher.clone(),
+            vec![
+                StrategyId::from("strategy-a"),
+                StrategyId::from("strategy-b"),
+            ],
+        );
+        let action = KillSwitchLossAction {
+            kind: KillSwitchLossActionKind::FlattenPositions,
+            halt_id: "halt-1".to_string(),
+            action_id: "flatten-positions".to_string(),
+            policy_sha256: "a".repeat(64),
+            account_ids: vec!["POLYMARKET-001".to_string()],
+            instrument_ids: vec!["BTC-USD.BINANCE".to_string()],
+        };
+
+        assert!(sink.emit(action.clone()).is_err());
+        assert_eq!(dispatcher.attempts(), vec!["strategy-a", "strategy-b"]);
+
+        sink.emit(action.clone())
+            .expect("retry should succeed once every strategy exits");
+        assert_eq!(
+            dispatcher.attempts(),
+            vec!["strategy-a", "strategy-b", "strategy-a", "strategy-b"]
+        );
+
+        sink.emit(action)
+            .expect("completed halt should not dispatch again");
+        assert_eq!(
+            dispatcher.attempts(),
+            vec!["strategy-a", "strategy-b", "strategy-a", "strategy-b"]
+        );
+    }
+
+    #[derive(Debug)]
+    struct RecordingMarketExitDispatcher {
+        fail_once_strategy_id: String,
+        attempts: RefCell<Vec<String>>,
+        failed: Cell<bool>,
+    }
+
+    impl RecordingMarketExitDispatcher {
+        fn new(fail_once_strategy_id: &str) -> Self {
+            Self {
+                fail_once_strategy_id: fail_once_strategy_id.to_string(),
+                attempts: RefCell::new(Vec::new()),
+                failed: Cell::new(false),
+            }
+        }
+
+        fn attempts(&self) -> Vec<String> {
+            self.attempts.borrow().clone()
+        }
+    }
+
+    impl MarketExitDispatcher for RecordingMarketExitDispatcher {
+        fn market_exit_strategy(&self, strategy_id: &StrategyId) -> Result<()> {
+            let strategy = strategy_id.to_string();
+            self.attempts.borrow_mut().push(strategy.clone());
+            if strategy == self.fail_once_strategy_id && !self.failed.replace(true) {
+                return Err(anyhow::anyhow!("configured market exit failure"));
+            }
+            Ok(())
+        }
+    }
 
     #[test]
     fn live_node_adapter_mapping_consumes_hyperliquid_live_submit_approval_artifact() {

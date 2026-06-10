@@ -1,6 +1,6 @@
 use std::{
     fs::{self, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -27,6 +27,7 @@ pub enum KillSwitchRecoveryState {
 pub enum KillSwitchRecoveryReason {
     MissingEvidence,
     CorruptEvidence,
+    OversizedEvidence,
     UnsupportedSchemaVersion,
     UnresolvedHalt,
 }
@@ -34,15 +35,22 @@ pub enum KillSwitchRecoveryReason {
 #[derive(Debug)]
 pub struct KillSwitchStore {
     path: PathBuf,
+    max_state_file_bytes: u64,
 }
 
 impl KillSwitchStore {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+    pub fn new(path: impl Into<PathBuf>, max_state_file_bytes: u64) -> Self {
+        Self {
+            path: path.into(),
+            max_state_file_bytes,
+        }
     }
 
     pub fn from_root_config_path(root_path: &Path, config: &KillSwitchConfigBlock) -> Self {
-        Self::new(resolve_root_relative_path(root_path, &config.store_path))
+        Self::new(
+            resolve_root_relative_path(root_path, &config.store_path),
+            config.max_state_file_bytes,
+        )
     }
 
     pub fn path(&self) -> &Path {
@@ -56,6 +64,13 @@ impl KillSwitchStore {
         };
         let bytes =
             serde_json::to_vec_pretty(&persisted).map_err(KillSwitchStoreError::Serialize)?;
+        if bytes.len() as u64 > self.max_state_file_bytes {
+            return Err(KillSwitchStoreError::StateTooLarge {
+                path: self.path.clone(),
+                bytes: bytes.len() as u64,
+                max_bytes: self.max_state_file_bytes,
+            });
+        }
 
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(|source| KillSwitchStoreError::Io {
@@ -75,8 +90,8 @@ impl KillSwitchStore {
     }
 
     pub fn load_recovery_state(&self) -> Result<KillSwitchRecoveryState, KillSwitchStoreError> {
-        let bytes = match fs::read(&self.path) {
-            Ok(bytes) => bytes,
+        let file = match fs::File::open(&self.path) {
+            Ok(file) => file,
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
                 return Ok(KillSwitchRecoveryState::FailClosed {
                     reason: KillSwitchRecoveryReason::MissingEvidence,
@@ -90,6 +105,24 @@ impl KillSwitchStore {
                 });
             }
         };
+
+        let mut bytes = Vec::new();
+        let read_limit = self.max_state_file_bytes.saturating_add(1);
+        match file.take(read_limit).read_to_end(&mut bytes) {
+            Ok(_) => {}
+            Err(source) => {
+                return Err(KillSwitchStoreError::Io {
+                    path: self.path.clone(),
+                    source,
+                });
+            }
+        };
+        if bytes.len() as u64 > self.max_state_file_bytes {
+            return Ok(KillSwitchRecoveryState::FailClosed {
+                reason: KillSwitchRecoveryReason::OversizedEvidence,
+                state: None,
+            });
+        }
 
         let persisted = match serde_json::from_slice::<PersistedKillSwitchState>(&bytes) {
             Ok(persisted) => persisted,
@@ -134,8 +167,16 @@ struct PersistedKillSwitchState {
 
 #[derive(Debug)]
 pub enum KillSwitchStoreError {
-    Io { path: PathBuf, source: io::Error },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
     Serialize(serde_json::Error),
+    StateTooLarge {
+        path: PathBuf,
+        bytes: u64,
+        max_bytes: u64,
+    },
 }
 
 fn write_private_synced_file(path: &Path, bytes: &[u8]) -> Result<(), KillSwitchStoreError> {

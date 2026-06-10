@@ -1,6 +1,7 @@
 mod support;
 
 use std::{
+    fs,
     rc::Rc,
     sync::{Arc, Mutex},
 };
@@ -23,17 +24,26 @@ use bolt_v2::{
 };
 use nautilus_core::UUID4;
 use nautilus_model::{
-    enums::{OrderSide, PositionAdjustmentType},
-    events::{PositionAdjusted, PositionEvent},
-    identifiers::{AccountId, InstrumentId, PositionId, StrategyId, TraderId},
-    types::{Currency, Money},
+    enums::{OrderSide, PositionAdjustmentType, PositionSide},
+    events::{PositionAdjusted, PositionChanged, PositionEvent},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId},
+    types::{Currency, Money, Price, Quantity},
 };
 use rust_decimal::Decimal;
+
+const TEST_MAX_STATE_FILE_BYTES: u64 = 65_536;
+const TEST_ACTION_RETRY_INTERVAL_MS: u64 = 250;
+const TEST_ACTION_RETRY_TIMEOUT_MS: u64 = 5_000;
+const NANOS_PER_MILLISECOND: u64 = 1_000_000;
+const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;
 
 #[test]
 fn realized_loss_breach_latches_persists_and_emits_flatten_actions() {
     let temp = support::TempCaseDir::new("bolt-v3-loss-protection-breach");
-    let store = KillSwitchStore::new(temp.path().join("kill-switch.json"));
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
     )));
@@ -106,7 +116,8 @@ fn realized_loss_breach_latches_persists_and_emits_flatten_actions() {
 #[test]
 fn startup_recovery_blocks_entries_from_halting_and_missing_store_files() {
     let temp = support::TempCaseDir::new("bolt-v3-loss-protection-restart");
-    let halting_store = KillSwitchStore::new(temp.path().join("halting.json"));
+    let halting_store =
+        KillSwitchStore::new(temp.path().join("halting.json"), TEST_MAX_STATE_FILE_BYTES);
     let halting = KillSwitchState::Halting {
         halt_id: "halt-1".to_string(),
         trigger: KillSwitchHaltTrigger::loss_governor_breach(
@@ -133,7 +144,8 @@ fn startup_recovery_blocks_entries_from_halting_and_missing_store_files() {
         })
     ));
 
-    let missing_store = KillSwitchStore::new(temp.path().join("missing.json"));
+    let missing_store =
+        KillSwitchStore::new(temp.path().join("missing.json"), TEST_MAX_STATE_FILE_BYTES);
     let missing_admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
     )));
@@ -156,7 +168,10 @@ fn startup_recovery_blocks_entries_from_halting_and_missing_store_files() {
 #[test]
 fn position_event_filter_requires_configured_account_and_instrument() {
     let temp = support::TempCaseDir::new("bolt-v3-loss-protection-position-filter");
-    let store = KillSwitchStore::new(temp.path().join("kill-switch.json"));
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
     )));
@@ -197,6 +212,158 @@ fn position_event_filter_requires_configured_account_and_instrument() {
     assert_eq!(actions.actions().len(), 2);
 }
 
+#[test]
+fn persistence_failure_fails_closed_before_returning_error() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-persist-failure");
+    let parent_path = temp.path().join("state");
+    fs::write(&parent_path, "not-a-directory").expect("blocking path should write");
+    let store = KillSwitchStore::new(
+        parent_path.join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(1, 0)),
+        admission.clone(),
+        store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    let error = protection
+        .record_realized_pnl(RealizedPnlObservation {
+            source: "nt_position_event",
+            observed_at_unix_nanos: 1_717_200_000_000_000_000,
+            realized_pnl: Decimal::new(-2, 0),
+        })
+        .expect_err("failed persistence should return an error");
+
+    assert!(
+        error
+            .to_string()
+            .contains("daily realized loss halt persistence failed")
+    );
+    assert!(matches!(
+        admission.admit(&entry_request()),
+        Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
+            state: KillSwitchStateKind::FailedManualIntervention
+        })
+    ));
+    assert!(actions.actions().is_empty());
+}
+
+#[test]
+fn cumulative_position_pnl_keeps_prior_baseline_across_utc_day_rollover() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-cumulative-rollover");
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(12, 0)),
+        admission.clone(),
+        store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    assert!(
+        protection
+            .record_position_event(&changed_position_event(
+                "POLYMARKET-001",
+                "BTC-USD.BINANCE",
+                -10.0,
+                NANOS_PER_UTC_DAY - 1,
+            ))
+            .expect("prior-day cumulative event should record")
+            .is_none()
+    );
+    assert!(
+        protection
+            .record_position_event(&changed_position_event(
+                "POLYMARKET-001",
+                "BTC-USD.BINANCE",
+                -15.0,
+                NANOS_PER_UTC_DAY,
+            ))
+            .expect("first current-day cumulative event should record")
+            .is_none()
+    );
+    assert!(
+        protection
+            .record_position_event(&changed_position_event(
+                "POLYMARKET-001",
+                "BTC-USD.BINANCE",
+                -20.0,
+                NANOS_PER_UTC_DAY + 1,
+            ))
+            .expect("second current-day cumulative event should not phantom breach")
+            .is_none()
+    );
+
+    assert!(admission.admit(&entry_request()).is_ok());
+    assert!(actions.actions().is_empty());
+}
+
+#[test]
+fn failed_halt_actions_retry_after_configured_interval_until_success() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-action-retry");
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(FlakyLossActionSink::new(1));
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(1, 0)),
+        admission.clone(),
+        store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    protection
+        .record_realized_pnl(RealizedPnlObservation {
+            source: "nt_position_event",
+            observed_at_unix_nanos: 1_717_200_000_000_000_000,
+            realized_pnl: Decimal::new(-2, 0),
+        })
+        .expect_err("first flatten dispatch should fail");
+    assert_eq!(actions.flatten_attempts(), 1);
+    assert!(matches!(
+        admission.admit(&entry_request()),
+        Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
+            state: KillSwitchStateKind::Halting
+        })
+    ));
+
+    protection
+        .record_realized_pnl(RealizedPnlObservation {
+            source: "nt_position_event",
+            observed_at_unix_nanos: 1_717_200_000_000_000_000
+                + (TEST_ACTION_RETRY_INTERVAL_MS * NANOS_PER_MILLISECOND),
+            realized_pnl: Decimal::ZERO,
+        })
+        .expect("configured action retry should succeed");
+
+    assert_eq!(actions.flatten_attempts(), 2);
+    assert!(matches!(
+        admission.admit(&entry_request()),
+        Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
+            state: KillSwitchStateKind::Halting
+        })
+    ));
+}
+
 #[derive(Debug, Default)]
 struct RecordingLossActionSink {
     actions: Mutex<Vec<KillSwitchLossAction>>,
@@ -221,9 +388,55 @@ impl KillSwitchLossActionSink for RecordingLossActionSink {
     }
 }
 
+#[derive(Debug)]
+struct FlakyLossActionSink {
+    failures_remaining: Mutex<usize>,
+    actions: Mutex<Vec<KillSwitchLossAction>>,
+}
+
+impl FlakyLossActionSink {
+    fn new(flatten_failures: usize) -> Self {
+        Self {
+            failures_remaining: Mutex::new(flatten_failures),
+            actions: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn flatten_attempts(&self) -> usize {
+        self.actions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|action| action.kind == KillSwitchLossActionKind::FlattenPositions)
+            .count()
+    }
+}
+
+impl KillSwitchLossActionSink for FlakyLossActionSink {
+    fn emit(&self, action: KillSwitchLossAction) -> anyhow::Result<()> {
+        self.actions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(action.clone());
+        if action.kind == KillSwitchLossActionKind::FlattenPositions {
+            let mut failures = self
+                .failures_remaining
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if *failures > 0 {
+                *failures -= 1;
+                return Err(anyhow::anyhow!("configured flatten dispatch failure"));
+            }
+        }
+        Ok(())
+    }
+}
+
 fn loss_config(daily_realized_loss_limit: Decimal) -> KillSwitchLossProtectionConfig {
     KillSwitchLossProtectionConfig {
         daily_realized_loss_limit,
+        action_retry_interval_ms: TEST_ACTION_RETRY_INTERVAL_MS,
+        action_retry_timeout_ms: TEST_ACTION_RETRY_TIMEOUT_MS,
         forced_reduction_policy: BoltV3KillSwitchForcedReductionPolicy::new(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             4,
@@ -273,6 +486,39 @@ fn adjusted_position_event(
         ts_event.into(),
         ts_event.into(),
     ))
+}
+
+fn changed_position_event(
+    account_id: &str,
+    instrument_id: &str,
+    cumulative_pnl: f64,
+    ts_event: u64,
+) -> PositionEvent {
+    PositionEvent::PositionChanged(PositionChanged {
+        trader_id: TraderId::from("TESTER-001"),
+        strategy_id: StrategyId::from("strategy-a"),
+        instrument_id: InstrumentId::from(instrument_id),
+        position_id: PositionId::from("P-001"),
+        account_id: AccountId::from(account_id),
+        opening_order_id: ClientOrderId::from("O-19700101-000000-001-001-1"),
+        entry: OrderSide::Buy,
+        side: PositionSide::Long,
+        signed_qty: 1.0,
+        quantity: Quantity::from("1"),
+        peak_quantity: Quantity::from("1"),
+        last_qty: Quantity::from("1"),
+        last_px: Price::from("1.0"),
+        currency: Currency::USDC(),
+        avg_px_open: 1.0,
+        avg_px_close: None,
+        realized_return: 0.0,
+        realized_pnl: Some(Money::new(cumulative_pnl, Currency::USDC())),
+        unrealized_pnl: Money::new(0.0, Currency::USDC()),
+        event_id: UUID4::default(),
+        ts_opened: ts_event.into(),
+        ts_event: ts_event.into(),
+        ts_init: ts_event.into(),
+    })
 }
 
 trait HaltIdForTest {

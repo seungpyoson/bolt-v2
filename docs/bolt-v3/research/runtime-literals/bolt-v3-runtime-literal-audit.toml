@@ -9498,6 +9498,14 @@ reason = "Named nanoseconds-per-UTC-day conversion used to bucket observed PnL b
 
 [[allowed]]
 path = "src/bolt_v3_loss_protection.rs"
+kind = "number"
+literal = '''1_000_000'''
+context = '''const NANOS_PER_MILLISECOND: u64 = 1_000_000;'''
+classification = "kill_switch_time_unit_conversion_constant"
+reason = "Named nanoseconds-per-millisecond conversion used only to apply TOML-owned retry intervals on event timestamps; it is not an operator runtime knob."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
 kind = "string"
 literal = '''"kill-switch-recovery-fail-closed"'''
 context = '''const FAIL_CLOSED_RECOVERY_HALT_ID: &str = "kill-switch-recovery-fail-closed";'''
@@ -9511,6 +9519,14 @@ literal = '''"daily_realized_loss_limit"'''
 context = '''const LOSS_TRIGGER_REASON: &str = "daily_realized_loss_limit";'''
 classification = "kill_switch_trigger_reason_code"
 reason = "Stable structured reason code identifying the TOML-owned daily loss limit that triggered a halt; the numeric limit remains configured in TOML."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"halt_action_retry_timeout"'''
+context = '''const HALT_ACTION_RETRY_TIMEOUT_REASON: &str = "halt_action_retry_timeout";'''
+classification = "kill_switch_trigger_reason_code"
+reason = "Stable structured reason code for exhausted TOML-owned halt-action retry policy; retry timing remains configured in TOML."
 
 [[allowed]]
 path = "src/bolt_v3_loss_protection.rs"
@@ -9547,6 +9563,14 @@ reason = "Stable recovery reason code for unreadable durable state evidence; it 
 [[allowed]]
 path = "src/bolt_v3_loss_protection.rs"
 kind = "string"
+literal = '''"oversized_evidence"'''
+context = '''KillSwitchRecoveryReason::OversizedEvidence => "oversized_evidence",'''
+classification = "kill_switch_recovery_reason_code"
+reason = "Stable recovery reason code for durable state evidence that exceeds the TOML-owned byte ceiling; it records fail-closed provenance and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
 literal = '''"unsupported_schema_version"'''
 context = '''KillSwitchRecoveryReason::UnsupportedSchemaVersion => "unsupported_schema_version",'''
 classification = "kill_switch_recovery_reason_code"
@@ -9563,6 +9587,14 @@ reason = "Stable recovery reason code for persisted halt states that cannot reco
 [[allowed]]
 path = "src/bolt_v3_loss_protection.rs"
 kind = "string"
+literal = '''"daily realized loss halt action retry timeout"'''
+context = '''return Err(anyhow!("daily realized loss halt action retry timeout"));'''
+classification = "kill_switch_diagnostic_template"
+reason = "Operator-facing diagnostic emitted when the TOML-owned halt-action retry timeout is exhausted; it is not a configured runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
 literal = '''"nt_position_changed"'''
 context = '''source: "nt_position_changed",'''
 classification = "kill_switch_position_event_source_label"
@@ -9575,6 +9607,14 @@ literal = '''"nt_position_closed"'''
 context = '''source: "nt_position_closed",'''
 classification = "kill_switch_position_event_source_label"
 reason = "Stable source label for realized PnL derived from NT PositionClosed events; it records event provenance and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = '''1'''
+context = '''let read_limit = self.max_state_file_bytes.saturating_add(1);'''
+classification = "kill_switch_store_bounded_read_sentinel"
+reason = "The store reads one byte past the TOML-owned byte ceiling to detect oversized evidence without an unbounded read; it is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_loss_protection.rs"

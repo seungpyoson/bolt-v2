@@ -24,7 +24,7 @@ use backtesting_vertical_slice::{
         SourceCatalogMappingReadinessSpec, SourceCatalogMappingReadinessStatus,
         SourceCatalogMappingStatusEntry, evaluate_source_catalog_mapping_readiness,
     },
-    source_proof::SourceProofUsageScope,
+    source_proof::{SourceProofReport, SourceProofStatus, SourceProofUsageScope},
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -2673,6 +2673,127 @@ fn bybit_public_archive_tick_trade_object_manifest_covers_all_staged_objects() {
                 .map(|count| count as usize)
         );
     }
+}
+
+#[test]
+fn bybit_public_archive_tick_trade_category_source_proofs_cover_all_staged_objects() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let manifest_path = reference_root.join(
+        "backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json",
+    );
+    let manifest: serde_json::Value = serde_json::from_str(&read_required_string(&manifest_path))
+        .expect("Bybit source universe object manifest parses");
+    let category_summaries = manifest["category_summaries"]
+        .as_array()
+        .expect("category summaries array");
+    let summaries_by_category: std::collections::BTreeMap<&str, &serde_json::Value> =
+        category_summaries
+            .iter()
+            .map(|summary| {
+                (
+                    summary["category"].as_str().expect("summary category"),
+                    summary,
+                )
+            })
+            .collect();
+    assert_eq!(
+        summaries_by_category.keys().copied().collect::<Vec<_>>(),
+        vec!["inverse", "linear", "spot"]
+    );
+
+    let proof_root = reference_root
+        .join("backfill-source-proofs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01");
+    let mut total_completed_objects = 0_u64;
+    let mut total_accepted_bytes = 0_u64;
+    for (category, proof_file, product_family, source_binding) in [
+        (
+            "inverse",
+            "source-proof-bybit-inverse-public-archive-tick-trades.json",
+            "inverse",
+            "bybit-inverse-tick-trades",
+        ),
+        (
+            "linear",
+            "source-proof-bybit-linear-public-archive-tick-trades.json",
+            "linear",
+            "bybit-linear-tick-trades",
+        ),
+        (
+            "spot",
+            "source-proof-bybit-spot-public-archive-tick-trades.json",
+            "spot",
+            "bybit-spot-tick-trades",
+        ),
+    ] {
+        let proof_path = proof_root.join(proof_file);
+        let proof: SourceProofReport = serde_json::from_str(&read_required_string(&proof_path))
+            .unwrap_or_else(|error| panic!("parse {proof_file}: {error}"));
+        let summary = summaries_by_category
+            .get(category)
+            .unwrap_or_else(|| panic!("missing category summary {category}"));
+        assert_eq!(proof.status, SourceProofStatus::Accepted);
+        proof
+            .evaluate_acceptance()
+            .unwrap_or_else(|error| panic!("{category} source proof must be accepted: {error}"));
+        assert_eq!(proof.source_binding, source_binding);
+        assert_eq!(proof.venue, "bybit");
+        assert_eq!(proof.product_family, product_family);
+        assert_eq!(proof.product_category, category);
+        assert_eq!(proof.table_family, "trades");
+        assert_eq!(
+            proof.instrument_universe_id,
+            "backfill-source-universe-bybit-public-archive-tick-trades-2025-06-01-2026-06-01"
+        );
+        let acceptance_scope = proof
+            .acceptance_scope
+            .as_ref()
+            .expect("accepted proof has acceptance scope");
+        assert_eq!(
+            acceptance_scope.planned_objects,
+            summary["object_count"].as_u64().expect("object count")
+        );
+        assert_eq!(
+            acceptance_scope.completed_objects,
+            summary["object_count"].as_u64().expect("object count")
+        );
+        assert_eq!(acceptance_scope.failed_objects, 0);
+        assert_eq!(acceptance_scope.skipped_objects, 0);
+        assert_eq!(
+            acceptance_scope.accepted_bytes,
+            summary["compressed_bytes"]
+                .as_u64()
+                .expect("compressed bytes")
+        );
+        assert_eq!(acceptance_scope.selector_scope_violations, 0);
+        assert!(
+            manifest["payload_records"]
+                .as_array()
+                .expect("payload records array")
+                .iter()
+                .any(|record| {
+                    record["category"].as_str() == Some(category)
+                        && record["s3_uri"].as_str() == Some(proof.raw_sample_uri.as_str())
+                        && record["sha256"].as_str() == Some(proof.raw_sample_hash.as_str())
+                }),
+            "{category} proof raw sample must be a staged object in the object manifest"
+        );
+        total_completed_objects += acceptance_scope.completed_objects;
+        total_accepted_bytes += acceptance_scope.accepted_bytes;
+    }
+
+    assert_eq!(
+        total_completed_objects,
+        manifest["object_count"]
+            .as_u64()
+            .expect("manifest object count")
+    );
+    assert_eq!(
+        total_accepted_bytes,
+        manifest["accepted_bytes"]
+            .as_u64()
+            .expect("manifest accepted bytes")
+    );
 }
 
 #[test]

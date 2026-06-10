@@ -69,6 +69,7 @@ source_archive_discovery_seed_path = "specs/023-nt-research-analytics-platform/r
 source_archive_index_manifest_path = "specs/023-nt-research-analytics-platform/reference/source-archive-index-manifests/pmxt-polymarket-v2-current/manifest/source-archive-index-manifest.json"
 source_universe_manifest_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json"
 source_universe_conversion_queue_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json"
+source_universe_source_proof_set_path = "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proof-set.json"
 selected_source_report_path = "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json"
 blocking_issues = [
   "missing_source_universe_object_gates",

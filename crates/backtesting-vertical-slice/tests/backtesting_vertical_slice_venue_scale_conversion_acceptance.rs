@@ -20,6 +20,7 @@ fn venue_scale_acceptance_ledger_reports_current_binance_bybit_pmxt_scope_withou
     let pmxt_archive_index_manifest = temp_dir.path().join("pmxt-archive-index-manifest.json");
     let pmxt_source_manifest = temp_dir.path().join("pmxt-source-universe-manifest.json");
     let pmxt_conversion_queue = temp_dir.path().join("pmxt-conversion-queue.json");
+    let pmxt_source_proof_set = temp_dir.path().join("pmxt-source-proof-set.json");
 
     fs::write(
         &binance_archive_seed,
@@ -147,6 +148,19 @@ fn venue_scale_acceptance_ledger_reports_current_binance_bybit_pmxt_scope_withou
 }"#,
     )
     .expect("write pmxt conversion queue");
+    fs::write(
+        &pmxt_source_proof_set,
+        r#"{
+  "schema_version": "source-universe-source-proof-set.v1",
+  "proof_set_id": "source-universe-source-proofs-pmxt-polymarket-v2-current",
+  "proof_count": 1,
+  "accepted_proof_count": 0,
+  "total_completed_objects": 1351,
+  "total_accepted_bytes": 557815904970,
+  "proofs": []
+}"#,
+    )
+    .expect("write pmxt source proof set");
 
     fs::write(
         &spec_path,
@@ -223,6 +237,7 @@ source_archive_discovery_seed_path = "{pmxt_archive_seed}"
 source_archive_index_manifest_path = "{pmxt_archive_index_manifest}"
 source_universe_manifest_path = "{pmxt_source_manifest}"
 source_universe_conversion_queue_path = "{pmxt_conversion_queue}"
+source_universe_source_proof_set_path = "{pmxt_source_proof_set}"
 selected_source_report_path = "{pmxt_selected_source_report}"
 blocking_issues = [
   "missing_source_universe_object_gates",
@@ -237,6 +252,7 @@ blocking_issues = [
             pmxt_archive_index_manifest = pmxt_archive_index_manifest.display(),
             pmxt_source_manifest = pmxt_source_manifest.display(),
             pmxt_conversion_queue = pmxt_conversion_queue.display(),
+            pmxt_source_proof_set = pmxt_source_proof_set.display(),
             binance_completion_ledger = reference_root
                 .join("backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json")
                 .display(),
@@ -583,6 +599,13 @@ blocking_issues = [
         pmxt_full.source_conversion_queue_total_bytes,
         557_815_904_970
     );
+    let pmxt_full_value = serde_json::to_value(pmxt_full).expect("serialize pmxt full universe");
+    assert_eq!(
+        pmxt_full_value["source_proof_set_id"],
+        "source-universe-source-proofs-pmxt-polymarket-v2-current"
+    );
+    assert_eq!(pmxt_full_value["source_proof_count"], 1);
+    assert_eq!(pmxt_full_value["source_accepted_proof_count"], 0);
     assert!(
         pmxt_full
             .artifact_refs
@@ -594,6 +617,12 @@ blocking_issues = [
             .artifact_refs
             .iter()
             .any(|artifact| artifact.role == "source_universe_conversion_queue")
+    );
+    assert!(
+        pmxt_full
+            .artifact_refs
+            .iter()
+            .any(|artifact| artifact.role == "source_universe_source_proof_set")
     );
 
     let pmxt_selected = pmxt

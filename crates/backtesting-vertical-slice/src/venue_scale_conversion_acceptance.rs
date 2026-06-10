@@ -47,6 +47,7 @@ pub struct VenueScaleConversionAcceptanceUniverseSpec {
     pub source_archive_index_manifest_path: Option<PathBuf>,
     pub source_universe_manifest_path: Option<PathBuf>,
     pub source_universe_conversion_queue_path: Option<PathBuf>,
+    pub source_universe_source_proof_set_path: Option<PathBuf>,
     pub source_universe_object_gates_path: Option<PathBuf>,
     pub source_universe_conversion_run_plan_path: Option<PathBuf>,
     pub selected_conversion_manifest_path: Option<PathBuf>,
@@ -102,6 +103,11 @@ pub struct VenueScaleConversionAcceptanceUniverse {
     pub source_conversion_queue_work_item_count: u64,
     pub source_conversion_queue_pending_items: u64,
     pub source_conversion_queue_total_bytes: u64,
+    pub source_proof_set_id: Option<String>,
+    pub source_proof_count: u64,
+    pub source_accepted_proof_count: u64,
+    pub source_proof_completed_objects: u64,
+    pub source_proof_accepted_bytes: u64,
     pub source_object_gate_id: Option<String>,
     pub source_object_gate_queue_id: Option<String>,
     pub source_conversion_run_plan_id: Option<String>,
@@ -204,6 +210,15 @@ struct SourceUniverseConversionQueueSummary {
     work_item_count: u64,
     pending_conversion_items: u64,
     total_source_bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceUniverseSourceProofSetSummary {
+    proof_set_id: String,
+    proof_count: u64,
+    accepted_proof_count: u64,
+    total_completed_objects: u64,
+    total_accepted_bytes: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -506,6 +521,11 @@ fn evaluate_universe(
     let mut source_conversion_queue_work_item_count = 0;
     let mut source_conversion_queue_pending_items = 0;
     let mut source_conversion_queue_total_bytes = 0;
+    let mut source_proof_set_id = None;
+    let mut source_proof_count = 0;
+    let mut source_accepted_proof_count = 0;
+    let mut source_proof_completed_objects = 0;
+    let mut source_proof_accepted_bytes = 0;
     let mut source_object_gate_id = None;
     let mut source_object_gate_queue_id = None;
     let mut source_conversion_run_plan_id = None;
@@ -653,6 +673,35 @@ fn evaluate_universe(
         source_conversion_queue_work_item_count = queue.work_item_count;
         source_conversion_queue_pending_items = queue.pending_conversion_items;
         source_conversion_queue_total_bytes = queue.total_source_bytes;
+    }
+
+    if let Some(path) = &spec.source_universe_source_proof_set_path {
+        let path = resolve_existing_path(base_dir, path);
+        artifact_refs.push(artifact_ref("source_universe_source_proof_set", &path)?);
+        let proof_set: SourceUniverseSourceProofSetSummary = read_json(&path)?;
+        if source_object_count > 0 {
+            ensure!(
+                source_object_count == proof_set.total_completed_objects,
+                "source-universe source proof set {} completed object count does not match source manifest",
+                path.display()
+            );
+        } else {
+            source_object_count = proof_set.total_completed_objects;
+        }
+        if source_accepted_bytes > 0 {
+            ensure!(
+                source_accepted_bytes == proof_set.total_accepted_bytes,
+                "source-universe source proof set {} accepted bytes do not match source manifest",
+                path.display()
+            );
+        } else {
+            source_accepted_bytes = proof_set.total_accepted_bytes;
+        }
+        source_proof_set_id = Some(proof_set.proof_set_id);
+        source_proof_count = proof_set.proof_count;
+        source_accepted_proof_count = proof_set.accepted_proof_count;
+        source_proof_completed_objects = proof_set.total_completed_objects;
+        source_proof_accepted_bytes = proof_set.total_accepted_bytes;
     }
 
     if let Some(path) = &spec.source_universe_object_gates_path {
@@ -803,6 +852,11 @@ fn evaluate_universe(
         source_conversion_queue_work_item_count,
         source_conversion_queue_pending_items,
         source_conversion_queue_total_bytes,
+        source_proof_set_id,
+        source_proof_count,
+        source_accepted_proof_count,
+        source_proof_completed_objects,
+        source_proof_accepted_bytes,
         source_object_gate_id,
         source_object_gate_queue_id,
         source_conversion_run_plan_id,

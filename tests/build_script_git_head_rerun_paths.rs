@@ -2,7 +2,10 @@
 #[path = "../build.rs"]
 mod build_script;
 
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 fn temp_git_fixture(name: &str) -> PathBuf {
     let dir = env::temp_dir().join(format!("bolt-v3-build-rs-{name}-{}", std::process::id()));
@@ -69,11 +72,30 @@ fn build_script_reruns_when_manifest_dir_env_changes() {
 
 #[test]
 fn build_script_reads_manifest_dir_at_run_time() {
+    let manifest_dir = fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+        .expect("manifest dir should canonicalize");
+
     assert_eq!(
         build_script::build_script_manifest_dir(),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+        manifest_dir,
         "build script source embeds must use the checkout path Cargo gives the running build script"
     );
+}
+
+#[test]
+fn build_script_resolves_relative_manifest_dir_against_current_dir() {
+    let fixture = temp_git_fixture("relative-manifest-dir");
+    let checkout = fixture.join("checkout");
+    fs::create_dir_all(&checkout).expect("checkout fixture should create");
+
+    let resolved = build_script::resolve_build_script_manifest_dir(Path::new("checkout"), &fixture);
+
+    assert_eq!(
+        resolved,
+        fs::canonicalize(&checkout).expect("checkout fixture should canonicalize")
+    );
+
+    let _ = fs::remove_dir_all(fixture);
 }
 
 #[test]

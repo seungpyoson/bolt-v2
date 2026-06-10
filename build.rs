@@ -102,9 +102,19 @@ pub fn build_script_rerun_env_vars() -> &'static [&'static str] {
 }
 
 pub fn build_script_manifest_dir() -> PathBuf {
-    PathBuf::from(
-        env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set by Cargo"),
-    )
+    let manifest_dir =
+        env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set by Cargo");
+    let current_dir = env::current_dir().expect("build script current dir should be available");
+    resolve_build_script_manifest_dir(Path::new(&manifest_dir), &current_dir)
+}
+
+pub fn resolve_build_script_manifest_dir(manifest_dir: &Path, current_dir: &Path) -> PathBuf {
+    let manifest_dir = if manifest_dir.is_absolute() {
+        manifest_dir.to_path_buf()
+    } else {
+        current_dir.join(manifest_dir)
+    };
+    canonicalize_existing(manifest_dir)
 }
 
 pub fn canonical_source_rerun_paths(manifest_dir: &Path) -> io::Result<Vec<PathBuf>> {
@@ -120,7 +130,15 @@ pub fn canonical_source_rerun_paths(manifest_dir: &Path) -> io::Result<Vec<PathB
 }
 
 fn collect_canonical_source_rerun_paths(path: &Path, paths: &mut Vec<PathBuf>) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "canonical source rerun metadata failed for {}: {error}",
+                path.display()
+            ),
+        )
+    })?;
     let file_type = metadata.file_type();
     if file_type.is_dir() {
         paths.push(path.to_path_buf());

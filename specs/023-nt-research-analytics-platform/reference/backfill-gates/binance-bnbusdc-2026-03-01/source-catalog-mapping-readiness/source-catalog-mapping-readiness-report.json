@@ -2,7 +2,7 @@
   "schema_version": "source-catalog-mapping-readiness-report.v2",
   "readiness_id": "binance-bnbusdc-2026-03-01-source-catalog-mapping-readiness",
   "status": "ready",
-  "catalog_mapping_evaluation_hash": "d4c82f57a260432ddc609e408cd8389028e75fae6d0e2a1a155d9fd9a057d162",
+  "catalog_mapping_evaluation_hash": "22c6598c8b307d38b5a167cd3376236b5f9c6af1918e53a1d2cd55c678c771f1",
   "source_proof_id": "source-proof-binance-spot-native-trades-bnbusdc-2026-03-01",
   "source_proof_version": 1,
   "source_binding": "binance-spot-native-trades",
@@ -30,8 +30,7 @@
   "observed_nt_data_type_evidence_refs": {
     "TradeTick": [
       "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.binance-bnbusdc-2026-03-01.json",
-      "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-catalog-metadata.bnbusdc-2026-03-01.json",
-      "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-result-contract.bnbusdc-2026-03-01.json"
+      "repo://specs/023-nt-research-analytics-platform/reference/binance-bnbusdc-2026-03-01-accepted-publication-evidence.2026-06-10.json"
     ]
   },
   "observed_current_bte_status": "accepted",

@@ -4,6 +4,7 @@ use backtesting_vertical_slice::{
     backfill_accepted_tranche::{
         BackfillAcceptedTrancheManifest, evaluate_backfill_accepted_tranche,
     },
+    backfill_conversion_batch::{BackfillConversionBatchPlan, BackfillConversionBatchStatus},
     backfill_coverage::{BackfillCoverageLedger, BackfillCoverageStatus},
     backfill_execution_plan::{
         BackfillExecutionPlan, BackfillExecutionRunBinding, BackfillExecutionWorkBudget,
@@ -60,9 +61,15 @@ const EXECUTION_PLAN_BYTES: &[u8] = include_bytes!(
     "../../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-03-01/execution-plan/backfill-execution-plan.json"
 );
 const CATALOG_MAPPING_EVALUATION: &str = include_str!(
-    "../../../specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-evaluation.backtesting-engine.2026-06-08.json"
+    "../../../specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-evaluation.backtesting-engine.binance-bnbusdc-2026-03-01.2026-06-10.json"
 );
 const CATALOG_MAPPING_EVALUATION_BYTES: &[u8] = include_bytes!(
+    "../../../specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-evaluation.backtesting-engine.binance-bnbusdc-2026-03-01.2026-06-10.json"
+);
+const BLOCKED_CATALOG_MAPPING_EVALUATION: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-evaluation.backtesting-engine.2026-06-08.json"
+);
+const BLOCKED_CATALOG_MAPPING_EVALUATION_BYTES: &[u8] = include_bytes!(
     "../../../specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-evaluation.backtesting-engine.2026-06-08.json"
 );
 const SOURCE_CATALOG_MAPPING_READINESS_REPORT: &str = include_str!(
@@ -1776,7 +1783,8 @@ fn binance_2026_05_31_backfill_gate_reference_artifacts_match_generic_evaluators
 #[test]
 fn blocked_canonical_source_catalog_mapping_reference_artifact_matches_generic_evaluator() {
     let mapping_evaluation: SourceCatalogMappingEvaluation =
-        serde_json::from_str(CATALOG_MAPPING_EVALUATION).expect("mapping evaluation parses");
+        serde_json::from_str(BLOCKED_CATALOG_MAPPING_EVALUATION)
+            .expect("mapping evaluation parses");
     let expected_blocked_readiness: SourceCatalogMappingReadinessReport =
         serde_json::from_str(BLOCKED_SOURCE_CATALOG_MAPPING_READINESS_REPORT)
             .expect("blocked source catalog-mapping readiness parses");
@@ -1784,7 +1792,7 @@ fn blocked_canonical_source_catalog_mapping_reference_artifact_matches_generic_e
     let actual_blocked_readiness =
         evaluate_source_catalog_mapping_readiness(SourceCatalogMappingReadinessInput {
             readiness_id: &expected_blocked_readiness.readiness_id,
-            catalog_mapping_evaluation_hash: &sha256_hex(CATALOG_MAPPING_EVALUATION_BYTES),
+            catalog_mapping_evaluation_hash: &sha256_hex(BLOCKED_CATALOG_MAPPING_EVALUATION_BYTES),
             source_sample_mapping_status: &mapping_evaluation.source_sample_mapping_status,
             source_proof_id: &expected_blocked_readiness.source_proof_id,
             source_proof_version: expected_blocked_readiness.source_proof_version,
@@ -1899,6 +1907,142 @@ fn binance_bnbusdc_venue_coverage_ledger_binds_all_accepted_tranches() {
             .map(|record| record.record_id.as_str()),
         Some("backfill-accepted-tranche-binance-bnbusdc-2026-05-31")
     );
+}
+
+#[test]
+fn binance_bnbusdc_venue_conversion_batch_binds_accepted_coverage_to_operator_inputs() {
+    let batch_root = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31",
+    );
+    let spec_path = batch_root.join("backfill-conversion-batch-plan.toml");
+    let plan_path = batch_root.join("plan/backfill-conversion-batch-plan.json");
+    let spec: toml::Value =
+        toml::from_str(&read_required_string(&spec_path)).expect("conversion batch spec parses");
+    let inputs = spec["input"]
+        .as_array()
+        .expect("conversion batch spec has input entries");
+    assert_eq!(inputs.len(), 92);
+    assert_eq!(spec["selection"]["max_records"].as_integer(), Some(92));
+    assert_eq!(
+        spec["selection"]["max_accepted_objects"].as_integer(),
+        Some(92)
+    );
+    assert_eq!(
+        spec["selection"]["max_accepted_bytes"].as_integer(),
+        Some(66_451_476)
+    );
+    assert_eq!(
+        spec["selection"]["require_uniform_source_binding"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(spec["selection"]["allow_gaps"].as_bool(), Some(false));
+
+    let plan: BackfillConversionBatchPlan = serde_json::from_str(&read_required_string(&plan_path))
+        .expect("conversion batch plan parses");
+    assert_eq!(
+        plan.batch_id,
+        "backfill-conversion-batch-binance-bnbusdc-2026-03-01-2026-05-31"
+    );
+    assert_eq!(
+        plan.coverage_ledger_id,
+        "backfill-coverage-ledger-binance-bnbusdc-2026-03-01-2026-05-31"
+    );
+    assert_eq!(plan.status, BackfillConversionBatchStatus::Ready);
+    assert_eq!(plan.record_count, 92);
+    assert_eq!(plan.total_accepted_objects, 92);
+    assert_eq!(plan.total_accepted_bytes, 66_451_476);
+    assert_eq!(plan.canonical_ready_records, 0);
+    assert!(plan.blocking_issues.is_empty());
+    assert!(
+        plan.records.iter().all(|record| {
+            record.source_binding == "binance-spot-native-trades"
+                && record.table_family == "trades"
+                && record.coverage_axis == "archive_date"
+                && !record.canonical_ready
+                && record.accepted_objects == 1
+        }),
+        "all Binance BNBUSDC venue conversion records must bind one accepted staging object"
+    );
+    assert_eq!(
+        plan.records.first().map(|record| record.record_id.as_str()),
+        Some("backfill-accepted-tranche-binance-bnbusdc-2026-03-01")
+    );
+    assert_eq!(
+        plan.records.last().map(|record| record.record_id.as_str()),
+        Some("backfill-accepted-tranche-binance-bnbusdc-2026-05-31")
+    );
+}
+
+#[test]
+fn binance_bnbusdc_venue_publication_and_mapping_evidence_cover_all_accepted_tranches() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let batch_root =
+        reference_root.join("backfill-conversion-batches/binance-bnbusdc-2026-03-01-2026-05-31");
+    let plan_path = batch_root.join("plan/backfill-conversion-batch-plan.json");
+    let plan: BackfillConversionBatchPlan = serde_json::from_str(&read_required_string(&plan_path))
+        .expect("conversion batch plan parses");
+    assert_eq!(plan.records.len(), 92);
+
+    for record in &plan.records {
+        let archive_date = record
+            .record_id
+            .strip_prefix("backfill-accepted-tranche-binance-bnbusdc-")
+            .expect("Binance BNBUSDC record id carries archive date");
+        let publication_path = single_reference_file_with_prefix_suffix(
+            &reference_root,
+            &format!("binance-bnbusdc-{archive_date}-accepted-publication-evidence."),
+            ".json",
+        );
+        let mapping_path = single_reference_file_with_prefix_suffix(
+            &reference_root,
+            &format!(
+                "source-proof-nt-catalog-mapping-evaluation.backtesting-engine.binance-bnbusdc-{archive_date}."
+            ),
+            ".json",
+        );
+
+        let publication: serde_json::Value =
+            serde_json::from_str(&read_required_string(&publication_path))
+                .expect("accepted publication evidence parses");
+        assert_eq!(
+            publication["scope"]["archive_date"].as_str(),
+            Some(archive_date)
+        );
+        assert_eq!(
+            publication["scope"]["status"].as_str(),
+            Some("accepted_gate_committed_and_s3_published")
+        );
+        assert_eq!(
+            publication["accepted_conversion_and_publication"]["published_catalog_direct_s3"]
+                .as_bool(),
+            Some(true)
+        );
+
+        let gate_root =
+            reference_root.join(format!("backfill-gates/binance-bnbusdc-{archive_date}"));
+        let readiness_spec_path = gate_root.join("source-catalog-mapping-readiness.toml");
+        let readiness_spec: SourceCatalogMappingReadinessSpec =
+            toml::from_str(&read_required_string(&readiness_spec_path))
+                .expect("source catalog-mapping readiness spec parses");
+        assert_eq!(
+            repo_relative_path(&readiness_spec.catalog_mapping_evaluation_path),
+            mapping_path
+        );
+        let readiness_report_path = gate_root
+            .join("source-catalog-mapping-readiness/source-catalog-mapping-readiness-report.json");
+        let readiness_report: SourceCatalogMappingReadinessReport =
+            serde_json::from_str(&read_required_string(&readiness_report_path))
+                .expect("source catalog-mapping readiness report parses");
+        assert_eq!(
+            readiness_report.status,
+            SourceCatalogMappingReadinessStatus::Ready
+        );
+        assert_eq!(
+            readiness_report.catalog_mapping_evaluation_hash,
+            sha256_hex(&read_required_bytes(&mapping_path))
+        );
+    }
 }
 
 fn source_proof_scope_hash(report: &BackfillSourceProofScopeReport) -> String {
@@ -2145,6 +2289,29 @@ fn read_required_bytes(path: &Path) -> Vec<u8> {
     );
     fs::read(path)
         .unwrap_or_else(|error| panic!("read reference artifact {}: {error}", path.display()))
+}
+
+fn single_reference_file_with_prefix_suffix(
+    reference_root: &Path,
+    prefix: &str,
+    suffix: &str,
+) -> std::path::PathBuf {
+    let matches = fs::read_dir(reference_root)
+        .unwrap_or_else(|error| panic!("read reference root {}: {error}", reference_root.display()))
+        .map(|entry| entry.expect("reference root entry reads").path())
+        .filter(|path| {
+            let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+                return false;
+            };
+            file_name.starts_with(prefix) && file_name.ends_with(suffix)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one reference artifact matching {prefix}*{suffix}, got {matches:?}"
+    );
+    matches.into_iter().next().expect("one reference match")
 }
 
 fn repo_relative_path(path: &Path) -> std::path::PathBuf {

@@ -750,13 +750,15 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
             )?;
             bind_manifest_file_metadata(
                 &mut summary,
-                source_binding,
-                table_family,
-                coverage_axis,
-                source_proof_id,
-                source_proof_version,
-                write_mode,
-                canonical_s3_write,
+                ManifestFileMetadata {
+                    source_binding,
+                    table_family,
+                    coverage_axis,
+                    source_proof_id,
+                    source_proof_version,
+                    write_mode,
+                    canonical_s3_write,
+                },
             );
             Ok(BackfillCoverageManifestJson {
                 manifest_uri,
@@ -773,6 +775,49 @@ pub fn write_coverage_ledger_artifact_from_manifest_files(
     .map_err(BackfillCoverageManifestFileError::BuildLedger)?;
     write_coverage_ledger_artifact(output_dir, &ledger)
         .map_err(BackfillCoverageManifestFileError::WriteArtifact)
+}
+
+struct ManifestFileMetadata {
+    source_binding: Option<String>,
+    table_family: Option<String>,
+    coverage_axis: Option<String>,
+    source_proof_id: Option<String>,
+    source_proof_version: Option<u32>,
+    write_mode: Option<BackfillWriteMode>,
+    canonical_s3_write: Option<bool>,
+}
+
+fn bind_manifest_file_metadata(summary: &mut Value, metadata: ManifestFileMetadata) {
+    let Some(object) = summary.as_object_mut() else {
+        return;
+    };
+    if let Some(value) = metadata.source_binding {
+        object.insert("source_binding".to_string(), Value::String(value));
+    }
+    if let Some(value) = metadata.table_family {
+        object.insert("table_family".to_string(), Value::String(value));
+    }
+    if let Some(value) = metadata.coverage_axis {
+        object.insert("coverage_axis".to_string(), Value::String(value));
+    }
+    if let Some(value) = metadata.source_proof_id {
+        object.insert("source_proof_id".to_string(), Value::String(value));
+    }
+    if let Some(value) = metadata.source_proof_version {
+        object.insert(
+            "source_proof_version".to_string(),
+            Value::Number(value.into()),
+        );
+    }
+    if let Some(value) = metadata.write_mode {
+        object.insert(
+            "write_mode".to_string(),
+            serde_json::to_value(value).expect("serialize backfill write mode"),
+        );
+    }
+    if let Some(value) = metadata.canonical_s3_write {
+        object.insert("canonical_s3_write".to_string(), Value::Bool(value));
+    }
 }
 
 pub fn write_coverage_ledger_artifact_from_spec_file(
@@ -885,48 +930,6 @@ fn merge_source_proof_metadata_status(
         ),
         (Some(value), _) | (_, Some(value)) => Ok(Some(value)),
         (None, None) => Ok(None),
-    }
-}
-
-fn bind_manifest_file_metadata(
-    summary: &mut Value,
-    source_binding: Option<String>,
-    table_family: Option<String>,
-    coverage_axis: Option<String>,
-    source_proof_id: Option<String>,
-    source_proof_version: Option<u32>,
-    write_mode: Option<BackfillWriteMode>,
-    canonical_s3_write: Option<bool>,
-) {
-    let Some(object) = summary.as_object_mut() else {
-        return;
-    };
-    if let Some(value) = source_binding {
-        object.insert("source_binding".to_string(), Value::String(value));
-    }
-    if let Some(value) = table_family {
-        object.insert("table_family".to_string(), Value::String(value));
-    }
-    if let Some(value) = coverage_axis {
-        object.insert("coverage_axis".to_string(), Value::String(value));
-    }
-    if let Some(value) = source_proof_id {
-        object.insert("source_proof_id".to_string(), Value::String(value));
-    }
-    if let Some(value) = source_proof_version {
-        object.insert(
-            "source_proof_version".to_string(),
-            Value::Number(value.into()),
-        );
-    }
-    if let Some(value) = write_mode {
-        object.insert(
-            "write_mode".to_string(),
-            serde_json::to_value(value).expect("serialize backfill write mode"),
-        );
-    }
-    if let Some(value) = canonical_s3_write {
-        object.insert("canonical_s3_write".to_string(), Value::Bool(value));
     }
 }
 

@@ -2,7 +2,8 @@ use backtesting_vertical_slice::{
     artifact_index::ArtifactKind,
     artifact_index_commit_proof::ArtifactIndexCommitProofReport,
     backfill_accepted_tranche::{
-        BackfillAcceptedTrancheManifest, evaluate_backfill_accepted_tranche,
+        BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheStatus,
+        evaluate_backfill_accepted_tranche,
     },
     backfill_conversion_batch::{BackfillConversionBatchPlan, BackfillConversionBatchStatus},
     backfill_coverage::{BackfillCoverageLedger, BackfillCoverageStatus},
@@ -16,7 +17,9 @@ use backtesting_vertical_slice::{
         BackfillExecutionReadinessSupportedDataPath, evaluate_backfill_execution_readiness,
     },
     backfill_source_proof_scope::{
-        BackfillSourceProofScopeReport, evaluate_backfill_source_proof_scope,
+        BackfillSourceProofScopeReport, BackfillSourceProofScopeStatus,
+        evaluate_backfill_source_proof_scope,
+        evaluate_backfill_source_proof_scope_for_selected_object,
     },
     operator::RunSpec,
     source_catalog_mapping_readiness::{
@@ -2793,6 +2796,209 @@ fn bybit_public_archive_tick_trade_category_source_proofs_cover_all_staged_objec
         manifest["accepted_bytes"]
             .as_u64()
             .expect("manifest accepted bytes")
+    );
+}
+
+#[test]
+fn bybit_public_archive_tick_trade_category_object_manifests_cover_all_staged_objects() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let manifest_path = reference_root.join(
+        "backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json",
+    );
+    let full_manifest: serde_json::Value =
+        serde_json::from_str(&read_required_string(&manifest_path))
+            .expect("Bybit source universe object manifest parses");
+    let full_records = full_manifest["payload_records"]
+        .as_array()
+        .expect("full manifest payload records");
+    let summaries_by_category: std::collections::BTreeMap<&str, &serde_json::Value> = full_manifest
+        ["category_summaries"]
+        .as_array()
+        .expect("category summaries array")
+        .iter()
+        .map(|summary| {
+            (
+                summary["category"].as_str().expect("summary category"),
+                summary,
+            )
+        })
+        .collect();
+    let category_manifest_root = reference_root.join(
+        "backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/category-manifests",
+    );
+    let proof_root = reference_root
+        .join("backfill-source-proofs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01");
+
+    let mut covered_object_uris = std::collections::BTreeSet::<String>::new();
+    let mut covered_bytes = 0_u64;
+    for (category, category_manifest_file, proof_file, source_binding) in [
+        (
+            "inverse",
+            "bybit-public-archive-tick-trades-object-manifest-inverse.json",
+            "source-proof-bybit-inverse-public-archive-tick-trades.json",
+            "bybit-inverse-tick-trades",
+        ),
+        (
+            "linear",
+            "bybit-public-archive-tick-trades-object-manifest-linear.json",
+            "source-proof-bybit-linear-public-archive-tick-trades.json",
+            "bybit-linear-tick-trades",
+        ),
+        (
+            "spot",
+            "bybit-public-archive-tick-trades-object-manifest-spot.json",
+            "source-proof-bybit-spot-public-archive-tick-trades.json",
+            "bybit-spot-tick-trades",
+        ),
+    ] {
+        let category_manifest_path = category_manifest_root.join(category_manifest_file);
+        let category_manifest_text = read_required_string(&category_manifest_path);
+        let category_manifest: serde_json::Value = serde_json::from_str(&category_manifest_text)
+            .unwrap_or_else(|error| panic!("parse {category_manifest_file}: {error}"));
+        let proof_text = read_required_string(&proof_root.join(proof_file));
+        let summary = summaries_by_category
+            .get(category)
+            .unwrap_or_else(|| panic!("missing category summary {category}"));
+
+        assert_eq!(
+            category_manifest["schema_version"].as_str(),
+            Some("backfill-source-universe-object-manifest.v1")
+        );
+        assert_eq!(
+            category_manifest["parent_manifest_id"].as_str(),
+            full_manifest["manifest_id"].as_str()
+        );
+        assert_eq!(
+            category_manifest["universe_id"].as_str(),
+            full_manifest["universe_id"].as_str()
+        );
+        assert_eq!(category_manifest["category"].as_str(), Some(category));
+        assert_eq!(
+            category_manifest["source_binding"].as_str(),
+            Some(source_binding)
+        );
+        assert_eq!(
+            category_manifest["object_count"].as_u64(),
+            summary["object_count"].as_u64()
+        );
+        assert_eq!(
+            category_manifest["accepted_bytes"].as_u64(),
+            summary["compressed_bytes"].as_u64()
+        );
+
+        let category_records = category_manifest["payload_records"]
+            .as_array()
+            .expect("category manifest payload records");
+        assert_eq!(
+            category_records.len() as u64,
+            summary["object_count"].as_u64().expect("object count")
+        );
+        let filtered_full_records = full_records
+            .iter()
+            .filter(|record| record["category"].as_str() == Some(category))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            category_records.len(),
+            filtered_full_records.len(),
+            "{category} category manifest must contain every staged object from the full manifest"
+        );
+        assert_eq!(
+            category_records
+                .iter()
+                .map(|record| record["s3_uri"].as_str().expect("category record s3 uri"))
+                .collect::<std::collections::BTreeSet<_>>(),
+            filtered_full_records
+                .iter()
+                .map(|record| record["s3_uri"].as_str().expect("full record s3 uri"))
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+
+        let mut category_bytes = 0_u64;
+        for record in category_records {
+            assert_eq!(record["category"].as_str(), Some(category));
+            assert_eq!(record["source_binding"].as_str(), Some(source_binding));
+            let s3_uri = record["s3_uri"].as_str().expect("category record s3 uri");
+            assert!(
+                covered_object_uris.insert(s3_uri.to_string()),
+                "duplicate category object {s3_uri}"
+            );
+            let bytes = record["bytes"].as_u64().expect("category record bytes");
+            assert!(
+                bytes
+                    <= summary["compressed_bytes"]
+                        .as_u64()
+                        .expect("category compressed bytes")
+            );
+            category_bytes += bytes;
+            covered_bytes += bytes;
+        }
+        assert_eq!(
+            category_bytes,
+            summary["compressed_bytes"]
+                .as_u64()
+                .expect("category compressed bytes")
+        );
+
+        for record in [
+            category_records.first().expect("first category record"),
+            category_records.last().expect("last category record"),
+        ] {
+            let s3_uri = record["s3_uri"].as_str().expect("selected record s3 uri");
+            let sha256 = record["sha256"].as_str().expect("selected record sha256");
+            let scope = evaluate_backfill_source_proof_scope_for_selected_object(
+                format!("backfill-source-proof-scope-bybit-public-archive-tick-trades-{category}-{sha256}"),
+                &proof_text,
+                &category_manifest_text,
+                s3_uri,
+            )
+            .unwrap_or_else(|error| panic!("{category} selected source scope evaluates: {error}"));
+            assert_eq!(scope.status, BackfillSourceProofScopeStatus::CandidateFound);
+            assert!(scope.blocking_issues.is_empty());
+            assert_eq!(scope.matching_object_count, 1);
+            assert!(scope.object_level_tranche_required);
+            assert_eq!(
+                scope
+                    .selected_object
+                    .as_ref()
+                    .expect("selected object")
+                    .s3_uri,
+                s3_uri
+            );
+            let tranche = evaluate_backfill_accepted_tranche(
+                format!(
+                    "backfill-accepted-tranche-bybit-public-archive-tick-trades-{category}-{sha256}"
+                ),
+                &scope,
+                &source_proof_scope_hash(&scope),
+            )
+            .unwrap_or_else(|error| panic!("{category} accepted tranche evaluates: {error}"));
+            assert_eq!(tranche.status, BackfillAcceptedTrancheStatus::Accepted);
+            assert!(tranche.blocking_issues.is_empty());
+            assert!(tranche.object_level_tranche_required);
+            assert_eq!(tranche.object_count, 1);
+            assert_eq!(
+                tranche.accepted_bytes,
+                record["bytes"].as_u64().expect("selected record bytes")
+            );
+            assert_eq!(
+                tranche.objects.first().expect("tranche object").s3_uri,
+                s3_uri
+            );
+        }
+    }
+
+    assert_eq!(
+        covered_object_uris.len() as u64,
+        full_manifest["object_count"]
+            .as_u64()
+            .expect("full manifest object count")
+    );
+    assert_eq!(
+        covered_bytes,
+        full_manifest["accepted_bytes"]
+            .as_u64()
+            .expect("full manifest accepted bytes")
     );
 }
 

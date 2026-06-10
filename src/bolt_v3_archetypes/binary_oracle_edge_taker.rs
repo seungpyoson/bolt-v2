@@ -110,6 +110,8 @@ pub struct RuntimeParametersBlock {
     pub warmup_tick_count: u64,
     pub reentry_cooldown_secs: u64,
     pub book_impact_cap_bps: u64,
+    pub vwap_depth_limit_bps: u64,
+    pub slippage_buffer_bps: u64,
     pub risk_lambda: f64,
     pub exit_hysteresis_bps: i64,
     pub trade_flow_window_secs: u64,
@@ -134,6 +136,8 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             warmup_tick_count: u64,
             reentry_cooldown_secs: u64,
             book_impact_cap_bps: u64,
+            vwap_depth_limit_bps: u64,
+            slippage_buffer_bps: u64,
             risk_lambda: f64,
             exit_hysteresis_bps: i64,
             trade_flow_window_secs: u64,
@@ -189,6 +193,8 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             warmup_tick_count: wire.warmup_tick_count,
             reentry_cooldown_secs: wire.reentry_cooldown_secs,
             book_impact_cap_bps: wire.book_impact_cap_bps,
+            vwap_depth_limit_bps: wire.vwap_depth_limit_bps,
+            slippage_buffer_bps: wire.slippage_buffer_bps,
             risk_lambda: wire.risk_lambda,
             exit_hysteresis_bps: wire.exit_hysteresis_bps,
             trade_flow_window_secs: wire.trade_flow_window_secs,
@@ -704,6 +710,18 @@ pub fn raw_taker_config(
         strategy_instance_id,
         "book_impact_cap_bps",
         parameters.runtime.book_impact_cap_bps,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "vwap_depth_limit_bps",
+        parameters.runtime.vwap_depth_limit_bps,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "slippage_buffer_bps",
+        parameters.runtime.slippage_buffer_bps,
     )?;
     insert_float(&mut table, "risk_lambda", parameters.runtime.risk_lambda);
     insert_i64(
@@ -1578,6 +1596,11 @@ fn validate_parameter_bounds(
 
 fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {
     let mut errors = check_enabled_order_template(context, "entry_order", entry);
+    if !executable_entry_order_shape_supported(entry) {
+        errors.push(format!(
+            "{context}: parameters.entry_order unsupported executable entry shape: must be buy/long limit FOK without post-only, reduce-only, quote-quantity, trigger, or trailing fields"
+        ));
+    }
     if entry.is_reduce_only {
         errors.push(format!(
             "{context}: parameters.entry_order.is_reduce_only must be false because `binary_oracle_edge_taker` entry orders open the managed position"
@@ -1609,6 +1632,22 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
         ));
     }
     errors
+}
+
+fn executable_entry_order_shape_supported(entry: &OrderParams) -> bool {
+    entry.side == OrderSide::Buy
+        && entry.position_side == PositionSide::Long
+        && entry.order_type == OrderType::Limit
+        && entry.time_in_force == TimeInForce::Fok
+        && !entry.is_post_only
+        && !entry.is_reduce_only
+        && !entry.is_quote_quantity
+        && entry.trigger_price.is_none()
+        && entry.activation_price.is_none()
+        && entry.trigger_type.is_none()
+        && entry.trigger_instrument_id.is_none()
+        && entry.trailing_offset.is_none()
+        && entry.trailing_offset_type.is_none()
 }
 
 fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {

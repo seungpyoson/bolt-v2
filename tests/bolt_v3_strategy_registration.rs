@@ -50,6 +50,33 @@ impl FeeProvider for NoopFeeProvider {
     }
 }
 
+fn assert_unsupported_executable_entry_order_shape(raw: &toml::Value, label: &str) {
+    let mut errors: Vec<ValidationError> = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(
+        raw,
+        "strategies.configured_updown_main.parameters.runtime",
+        &mut errors,
+    );
+    assert!(
+        errors.iter().any(|error| {
+            error.field == "strategies.configured_updown_main.parameters.runtime.entry_order"
+                && error.code == "unsupported_executable_entry_order_shape"
+        }),
+        "{label} entry runtime table should reject unsupported executable entry shape: {errors:?}"
+    );
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let context = StrategyBuildContext::new(
+        Arc::new(NoopFeeProvider),
+        writer.clone(),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
+        support::fixture_execution_venue(),
+    );
+    assert!(
+        BinaryOracleEdgeTakerBuilder::build(raw, &context).is_err(),
+        "{label} entry runtime table must not parse into the strategy config"
+    );
+}
+
 fn valid_realized_volatility_surface() -> RealizedVolatilitySurfaceBlock {
     RealizedVolatilitySurfaceBlock {
         canonical_base_asset: "CONFIGURED_ASSET".to_string(),
@@ -760,7 +787,7 @@ fn binary_oracle_runtime_mapping_rejects_decision_reference_resolution_identity_
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_post_only_gtc_entry_order() {
+fn binary_oracle_runtime_mapping_rejects_post_only_gtc_entry_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -814,10 +841,12 @@ fn binary_oracle_runtime_mapping_preserves_post_only_gtc_entry_order() {
             .and_then(toml::Value::as_bool),
         Some(false)
     );
+
+    assert_unsupported_executable_entry_order_shape(&raw, "PostOnlyGtc");
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_stop_market_entry_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_stop_market_entry_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -871,29 +900,11 @@ fn binary_oracle_runtime_mapping_preserves_stop_market_entry_order_round_trip() 
         Some("last_price")
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "StopMarket runtime table should validate: {errors:?}"
-    );
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
-        .expect("StopMarket runtime table should parse into the strategy config");
+    assert_unsupported_executable_entry_order_shape(&raw, "StopMarket");
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_market_if_touched_entry_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_market_if_touched_entry_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -939,25 +950,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_entry_order_round_t
         Some(0.52)
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "MarketIfTouched runtime table should validate: {errors:?}"
-    );
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
-        .expect("MarketIfTouched runtime table should parse into the strategy config");
+    assert_unsupported_executable_entry_order_shape(&raw, "MarketIfTouched");
 }
 
 #[test]
@@ -1041,7 +1034,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_tr
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_entry_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_trailing_stop_market_entry_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -1110,25 +1103,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_entry_order_roun
         Some("basis_points")
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "TrailingStopMarket entry runtime table should validate: {errors:?}"
-    );
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
-        .expect("TrailingStopMarket entry runtime table should parse into the strategy config");
+    assert_unsupported_executable_entry_order_shape(&raw, "TrailingStopMarket");
 }
 
 #[test]
@@ -1222,7 +1197,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_stop_limit_entry_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_stop_limit_entry_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -1272,29 +1247,11 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_entry_order_round_trip() {
         Some(true)
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "StopLimit runtime table should validate: {errors:?}"
-    );
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
-        .expect("StopLimit runtime table should parse into the strategy config");
+    assert_unsupported_executable_entry_order_shape(&raw, "StopLimit");
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_limit_if_touched_entry_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_limit_if_touched_entry_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -1344,25 +1301,7 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_entry_order_round_tr
         Some(true)
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "LimitIfTouched runtime table should validate: {errors:?}"
-    );
-    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
-        writer.clone(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer)),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build(&raw, &context)
-        .expect("LimitIfTouched runtime table should parse into the strategy config");
+    assert_unsupported_executable_entry_order_shape(&raw, "LimitIfTouched");
 }
 
 #[test]

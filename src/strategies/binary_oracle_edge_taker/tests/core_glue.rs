@@ -41,6 +41,7 @@ fn decision_evidence_failure_rejects_before_nt_submit() {
         RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
         Arc::new(FailingDecisionEvidenceWriter),
     );
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(0.50, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");

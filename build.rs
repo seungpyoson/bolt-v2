@@ -19,7 +19,7 @@ use std::{
 mod source_canonicalization;
 
 // Generous in-build cap. The strategy source set is now the strategy directory
-// plus shared sizing source, whose framed canonical stream is well under this
+// plus shared execution sources, whose framed canonical stream is well under this
 // cap; the runtime digest path applies the operator-configured
 // `max_source_bytes` instead. This only bounds the bytes embedded into the
 // binary at build time.

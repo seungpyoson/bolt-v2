@@ -4,6 +4,7 @@ pub mod bolt_v3_book_sizing;
 pub mod bolt_v3_client_registration;
 pub mod bolt_v3_config;
 pub mod bolt_v3_decision_evidence;
+pub mod bolt_v3_executable_edge;
 pub mod bolt_v3_instrument_filters;
 pub mod bolt_v3_kill_switch;
 pub mod bolt_v3_kill_switch_store;

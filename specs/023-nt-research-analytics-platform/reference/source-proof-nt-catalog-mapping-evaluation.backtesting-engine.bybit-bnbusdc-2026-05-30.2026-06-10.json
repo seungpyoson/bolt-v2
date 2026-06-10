@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "evidence_id": "source-proof-nt-catalog-mapping-evaluation-backtesting-engine-bybit-bnbusdc-2026-05-30-2026-06-10",
+  "observed_at_utc": "2026-06-10T00:00:00Z",
+  "task": "BACKTESTING_ENGINE-022",
+  "scope": {
+    "purpose": "Evaluate whether shortlisted source samples map to NT-compatible catalog classes and the ParquetDataCatalog input path.",
+    "not_source_selection": true,
+    "not_backfill_authorization": true,
+    "not_converter_implementation": true,
+    "task_status_after_this_artifact": "date_specific_bybit_2026-05-30_mapping_ready_broad_task_open"
+  },
+  "nt_surface_evidence": {
+    "nt_revision": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+    "parquet_catalog_api": {
+      "catalog_from_uri": "nautilus_persistence::backend::catalog::ParquetDataCatalog::from_uri",
+      "write_api": "nautilus_persistence::backend::catalog::ParquetDataCatalog::write_to_parquet<T>",
+      "instrument_write_api": "nautilus_persistence::backend::catalog::ParquetDataCatalog::write_instruments",
+      "typed_read_api": "nautilus_persistence::backend::catalog::ParquetDataCatalog::query_typed_data<T>",
+      "source_refs": [
+        "nt://crates/persistence/src/backend/catalog.rs#write_to_parquet",
+        "nt://crates/persistence/src/backend/catalog.rs#query_typed_data",
+        "nt://crates/backtest/src/node.rs#create_catalog"
+      ]
+    },
+    "nt_backtestnode_dispatch_data_classes": [
+      "QuoteTick",
+      "TradeTick",
+      "Bar",
+      "OrderBookDelta",
+      "OrderBookDepth10",
+      "MarkPriceUpdate",
+      "IndexPriceUpdate",
+      "InstrumentStatus",
+      "InstrumentClose"
+    ],
+    "current_bte_manifest_exposure": {
+      "accepted_data_classes": [
+        "TradeTick",
+        "OrderBookDelta"
+      ],
+      "rejected_for_now": [
+        "QuoteTick",
+        "Bar",
+        "OrderBookDepth10",
+        "MarkPriceUpdate",
+        "IndexPriceUpdate",
+        "InstrumentStatus",
+        "InstrumentClose"
+      ],
+      "reason": "run_manifest.rs maps TradeTick and OrderBookDelta into NautilusDataType, supports configured instrument_ids and multiple [[catalog_inputs]], and rejects unmapped data_type strings. Fidelity matching accepts TradeTick for TRADE_REPLAY and requires OrderBookDelta for L2_REPLAY while allowing supplemental TradeTick.",
+      "source_refs": [
+        "repo://crates/backtesting-vertical-slice/src/run_manifest.rs#to_nt_data_config",
+        "repo://crates/backtesting-vertical-slice/src/run_manifest.rs#ensure_data_type_matches_fidelity"
+      ]
+    }
+  },
+  "source_sample_mapping_status": [
+    {
+      "source_binding": "bybit-spot-tick-trades",
+      "source_proof_id": "source-proof-bybit-spot-tick-trades-bnbusdc-2026-05-30",
+      "source_proof_version": 1,
+      "usage_scope": "canonical_backfill_input",
+      "fixture_type": "perps-spot",
+      "table_family": "trades",
+      "source_sample_status": "sample_and_accepted_object_available",
+      "candidate_nt_data_classes": [
+        "TradeTick"
+      ],
+      "nt_data_class_evidence_refs": {
+        "TradeTick": [
+          "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.bybit-bnbusdc-2026-05-30.json",
+          "repo://specs/023-nt-research-analytics-platform/reference/bybit-bnbusdc-2026-05-30-accepted-publication-evidence.2026-06-10.json"
+        ]
+      },
+      "current_bte_status": "accepted",
+      "parquet_catalog_status": "proven",
+      "evidence_refs": [
+        "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.bybit-bnbusdc-2026-05-30.json",
+        "repo://specs/023-nt-research-analytics-platform/reference/bybit-bnbusdc-2026-05-30-accepted-publication-evidence.2026-06-10.json"
+      ],
+      "decision": "NT catalog/backtest input path is proven for this date-specific accepted Bybit source proof by the accepted 2026-05-30 canonical conversion, NT TradeTick catalog projection, query_typed_data read-back, BacktestNode iteration evidence, publication, and direct S3 catalog read-back."
+    }
+  ],
+  "task_conclusion": {
+    "status": "open",
+    "reason": "BTE-022 is proven for this date-specific Bybit TradeTick path; broad mapping remains open for other source families and data classes."
+  },
+  "non_hardcoding_rules_for_the_next_mapping_work": [
+    "Add NT data-class support by table family and source schema contract, not by venue name.",
+    "Keep concrete source bindings in TOML/proof artifacts and keep runtime mapping selected through source proof, not code constants.",
+    "Reuse NT instrument providers/parsers where NT already owns a venue instrument model.",
+    "Only build Bolt-owned adapters for raw-source-to-NT-typed data projection when NT does not already provide that raw-source parser.",
+    "Each new data class must have ParquetDataCatalog write and query_typed_data read-back proof before BacktestNode input is accepted."
+  ]
+}

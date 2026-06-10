@@ -1,0 +1,122 @@
+{
+  "schema_version": "backtesting-accepted-publication-evidence.v1",
+  "evidence_id": "bybit-bnbusdc-2026-06-01-accepted-publication-2026-06-10",
+  "created_at_utc": "2026-06-10T00:00:00Z",
+  "scope": {
+    "status": "accepted_gate_committed_and_s3_published",
+    "source_binding": "bybit-spot-tick-trades",
+    "instrument_id": "BNBUSDC",
+    "nt_instrument_id": "BNBUSDC.BYBIT",
+    "table_family": "trades",
+    "nt_data_type": "TradeTick",
+    "archive_date": "2026-06-01",
+    "accepted_reference_gate_committed": true,
+    "staged_to_s3": true,
+    "published_to_s3": true,
+    "direct_s3_catalog_access_proven": true,
+    "published_prefix_observed_at_utc": "2026-06-10T00:00:00Z"
+  },
+  "accepted_gate": {
+    "source_proof_ref": "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.bybit-bnbusdc-2026-06-01.json",
+    "run_spec_template_ref": "repo://specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bybit-bnbusdc-2026-06-01.toml",
+    "materialized_run_spec_ref": "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/bybit-bnbusdc-2026-06-01/materialized-run-spec/backfill-run-spec.toml",
+    "execution_plan_ref": "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/bybit-bnbusdc-2026-06-01/execution-plan/backfill-execution-plan.json",
+    "execution_readiness_ref": "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/bybit-bnbusdc-2026-06-01/execution-readiness/backfill-execution-readiness-report.json",
+    "execution_readiness_status": "ready",
+    "artifact_index_required_readiness_ref": "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/bybit-bnbusdc-2026-06-01/execution-readiness-artifact-index-required/backfill-execution-readiness-report.json",
+    "artifact_index_required_status": "blocked",
+    "artifact_index_required_blocker": "artifact_index_producer_iam_scope_unproven"
+  },
+  "raw_object_staging": {
+    "manifest_ref": "repo://specs/023-nt-research-analytics-platform/reference/backfill-gates/bybit-bnbusdc-2026-06-01/object-staging/backfill-object-staging-manifest.json",
+    "manifest_sha256": "a7818790af7ed14a4042a27eb04efed33c01cdec3a0a72857039a9952bd4ec7c",
+    "manifest_bytes": 906,
+    "artifact_root": "s3://bolt-parquet/nt-research-analytics",
+    "object_uri": "s3://bolt-parquet/nt-research-analytics/raw/source=public.bybit.com/product=spot/frequency=daily/family=trades/symbol=BNBUSDC/dt=2026-06-01/object=3010fa0cc9726af4d7c7a683ada88ccbe58ef8493cefa2a72871790c90138466.csv.gz",
+    "object_sha256": "3010fa0cc9726af4d7c7a683ada88ccbe58ef8493cefa2a72871790c90138466",
+    "object_bytes": 31550,
+    "payload_records": 1
+  },
+  "source_proof_evidence_staging": {
+    "manifest_ref": null,
+    "manifest_sha256": null,
+    "manifest_bytes": 0,
+    "artifact_root": "s3://bolt-parquet/nt-research-analytics",
+    "record_count": 0,
+    "total_bytes": 0,
+    "evidence_records": []
+  },
+  "accepted_conversion_and_publication": {
+    "command": "/Users/spson/.cache/rust-verification/bolt-v2/target/debug/backtesting-vertical-slice --run-spec specs/023-nt-research-analytics-platform/reference/backfill-gates/bybit-bnbusdc-2026-06-01/materialized-run-spec/backfill-run-spec.toml --execution-plan specs/023-nt-research-analytics-platform/reference/backfill-gates/bybit-bnbusdc-2026-06-01/execution-plan/backfill-execution-plan.json --object /private/tmp/bte-bybit-bnbusdc-batch-20260610/raw/bybit-bnbusdc-2026-06-01.csv.gz --output-dir /private/tmp/bte-bybit-bnbusdc-batch-20260610/published/2026-06-01/output --publish-output --prove-published-catalog",
+    "exit_code": 0,
+    "publication_verification_exit_code": 0,
+    "run_id": "backtesting-vertical-slice-bybit-bnbusdc-2026-06-01-accepted-batch",
+    "source_proof_id": "source-proof-bybit-spot-tick-trades-bnbusdc-2026-06-01",
+    "source_proof_version": 1,
+    "accepted_object_sha256": "3010fa0cc9726af4d7c7a683ada88ccbe58ef8493cefa2a72871790c90138466",
+    "canonical_trades_rows": 3478,
+    "catalog_hash": "c73db970f3895285135cbd02cf8a9e7a3ffe15718b8dd520666347700291dde8",
+    "catalog_read_back_trade_ticks": 3478,
+    "published_catalog_uri": "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-bybit-bnbusdc-2026-06-01-accepted-batch/nt-catalog",
+    "published_catalog_direct_s3": true,
+    "published_catalog_expected_iterations": 3478,
+    "published_catalog_nt_iterations": 3478,
+    "nt_version": "6e059dcbb59ac1e582132fc431a581936c216c3c",
+    "nt_result": {
+      "iterations": 3478,
+      "total_events": 0,
+      "total_orders": 0,
+      "total_positions": 0
+    },
+    "fidelity_class": "TRADE_REPLAY"
+  },
+  "published_uris": {
+    "source_proof_uri": "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-bybit-bnbusdc-2026-06-01-accepted-batch/accepted-source-proof.json",
+    "canonical_table_uri": "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-bybit-bnbusdc-2026-06-01-accepted-batch/canonical-trades.parquet",
+    "nt_catalog_uri": "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-bybit-bnbusdc-2026-06-01-accepted-batch/nt-catalog",
+    "catalog_metadata_uri": "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-bybit-bnbusdc-2026-06-01-accepted-batch/catalog-metadata.json",
+    "result_contract_uri": "s3://bolt-parquet/nt-research-analytics/backtests/backtesting-vertical-slice-bybit-bnbusdc-2026-06-01-accepted-batch/backtest-result-contract.json"
+  },
+  "published_artifacts": {
+    "accepted-source-proof.json": {
+      "sha256": "fb36276f1af127b2baacdc99c0fa187145b78882b3f138bd463e2e13e7e66622",
+      "bytes": 5921
+    },
+    "backtest-result-contract.json": {
+      "sha256": "ce3eb3405bac587c1f8ba933d14d8f79ccb6c93486b878a533ba257b840aa13e",
+      "bytes": 11934
+    },
+    "backtest-run-manifest.json": {
+      "sha256": "30cbf9e50f5bbe1efbe2a5276ad5150cd9be366e3ce5751852244e85a1646a03",
+      "bytes": 14873
+    },
+    "canonical-trades.parquet": {
+      "sha256": "b3ccc0051e06e1718e612ed765fcb6f1b4c39a38e0962acb5539accf38827dfc",
+      "bytes": 153685
+    },
+    "catalog-metadata.json": {
+      "sha256": "2a6138d08eb67d5acdc8dd402891e5630e7d780b6797c267632f4b03b2e21d20",
+      "bytes": 874
+    },
+    "conversion-checkpoint.json": {
+      "sha256": "bcd65b22d791b85c5fa79595551d52bd2908e73bcbc4600a855aa5ffe3188bab",
+      "bytes": 660
+    },
+    "conversion-manifest.json": {
+      "sha256": "dcb80cb675a55bc7057508e2d8474f9d73d8ce2ffec78359e792dc0d978b13ba",
+      "bytes": 1110
+    },
+    "nt-catalog/data/instruments/BNBUSDC.BYBIT/1970-01-01T00-00-00-000000000Z_1970-01-01T00-00-00-000000000Z.parquet": {
+      "sha256": "fdab23bbc7dea69f93a400dc520a4b34cda331ede0b47e9d6a1a43cec083c9e5",
+      "bytes": 6584
+    },
+    "nt-catalog/data/trades/BNBUSDC.BYBIT/2026-06-01T00-00-39-601000000Z_2026-06-01T23-59-45-289000000Z.parquet": {
+      "sha256": "601020da67d44de4031ae1b7ffceac2cc76ceab775892089d6cd2f293d0c2f1e",
+      "bytes": 95235
+    },
+    "published-catalog-proof.json": {
+      "sha256": "8f9acca3a33a53ffed932c4b1e82b9ede8d184f40af06704be436b77c55ffcab",
+      "bytes": 518
+    }
+  }
+}

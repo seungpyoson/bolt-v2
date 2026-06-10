@@ -2045,6 +2045,223 @@ fn binance_bnbusdc_venue_publication_and_mapping_evidence_cover_all_accepted_tra
     }
 }
 
+#[test]
+fn bybit_bnbusdc_venue_backfill_gate_reference_artifacts_match_generic_evaluators() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let batch_root =
+        reference_root.join("backfill-conversion-batches/bybit-bnbusdc-2026-03-01-2026-06-01");
+    let plan_path = batch_root.join("plan/backfill-conversion-batch-plan.json");
+    let plan: BackfillConversionBatchPlan = serde_json::from_str(&read_required_string(&plan_path))
+        .expect("conversion batch plan parses");
+    assert_eq!(plan.records.len(), 93);
+
+    for record in &plan.records {
+        let archive_date = record
+            .record_id
+            .strip_prefix("backfill-accepted-tranche-bybit-bnbusdc-")
+            .expect("Bybit BNBUSDC record id carries archive date");
+        let gate_root =
+            reference_root.join(format!("backfill-gates/bybit-bnbusdc-{archive_date}"));
+        let source_proof_path = reference_root.join(format!(
+            "backtesting-vertical-slice-accepted-source-proof.bybit-bnbusdc-{archive_date}.json"
+        ));
+        assert_binance_gate_matches_generic_evaluators(&gate_root, &source_proof_path);
+    }
+}
+
+#[test]
+fn bybit_bnbusdc_venue_coverage_ledger_binds_all_accepted_tranches() {
+    let ledger_root = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../specs/023-nt-research-analytics-platform/reference/backfill-coverage-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01",
+    );
+    let spec_path = ledger_root.join("backfill-coverage-ledger.toml");
+    let ledger_path = ledger_root.join("ledger/backfill-coverage-ledger.json");
+    let spec: toml::Value =
+        toml::from_str(&read_required_string(&spec_path)).expect("coverage ledger spec parses");
+    let manifests = spec["manifest"]
+        .as_array()
+        .expect("coverage ledger spec has manifest entries");
+    assert_eq!(manifests.len(), 93);
+    for manifest in manifests {
+        assert_eq!(manifest["coverage_axis"].as_str(), Some("archive_date"));
+        assert_eq!(manifest["source_proof_status"].as_str(), Some("accepted"));
+        assert_eq!(manifest["write_mode"].as_str(), Some("s3_staging"));
+        assert_eq!(manifest["canonical_s3_write"].as_bool(), Some(false));
+    }
+
+    let ledger: BackfillCoverageLedger =
+        serde_json::from_str(&read_required_string(&ledger_path)).expect("coverage ledger parses");
+    assert_eq!(
+        ledger.ledger_id,
+        "backfill-coverage-ledger-bybit-bnbusdc-2026-03-01-2026-06-01"
+    );
+    assert_eq!(ledger.summary.total_records, 93);
+    assert_eq!(ledger.summary.accepted_records, 93);
+    assert_eq!(ledger.summary.accepted_objects, 93);
+    assert_eq!(ledger.summary.accepted_bytes, 1_156_784);
+    assert_eq!(ledger.summary.rejected_records, 0);
+    assert_eq!(ledger.summary.physical_only_records, 0);
+    assert_eq!(ledger.summary.canonical_ready_records, 0);
+    assert!(
+        ledger
+            .records
+            .iter()
+            .all(|record| record.status == BackfillCoverageStatus::Accepted),
+        "all Bybit BNBUSDC venue coverage records must be accepted"
+    );
+    assert_eq!(
+        ledger
+            .records
+            .first()
+            .map(|record| record.record_id.as_str()),
+        Some("backfill-accepted-tranche-bybit-bnbusdc-2026-03-01")
+    );
+    assert_eq!(
+        ledger
+            .records
+            .last()
+            .map(|record| record.record_id.as_str()),
+        Some("backfill-accepted-tranche-bybit-bnbusdc-2026-06-01")
+    );
+}
+
+#[test]
+fn bybit_bnbusdc_venue_conversion_batch_binds_accepted_coverage_to_operator_inputs() {
+    let batch_root = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../specs/023-nt-research-analytics-platform/reference/backfill-conversion-batches/bybit-bnbusdc-2026-03-01-2026-06-01",
+    );
+    let spec_path = batch_root.join("backfill-conversion-batch-plan.toml");
+    let plan_path = batch_root.join("plan/backfill-conversion-batch-plan.json");
+    let spec: toml::Value =
+        toml::from_str(&read_required_string(&spec_path)).expect("conversion batch spec parses");
+    let inputs = spec["input"]
+        .as_array()
+        .expect("conversion batch spec has input entries");
+    assert_eq!(inputs.len(), 93);
+    assert_eq!(spec["selection"]["max_records"].as_integer(), Some(93));
+    assert_eq!(
+        spec["selection"]["max_accepted_objects"].as_integer(),
+        Some(93)
+    );
+    assert_eq!(
+        spec["selection"]["max_accepted_bytes"].as_integer(),
+        Some(1_156_784)
+    );
+    assert_eq!(
+        spec["selection"]["require_uniform_source_binding"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(spec["selection"]["allow_gaps"].as_bool(), Some(false));
+
+    let plan: BackfillConversionBatchPlan = serde_json::from_str(&read_required_string(&plan_path))
+        .expect("conversion batch plan parses");
+    assert_eq!(
+        plan.batch_id,
+        "backfill-conversion-batch-bybit-bnbusdc-2026-03-01-2026-06-01"
+    );
+    assert_eq!(
+        plan.coverage_ledger_id,
+        "backfill-coverage-ledger-bybit-bnbusdc-2026-03-01-2026-06-01"
+    );
+    assert_eq!(plan.status, BackfillConversionBatchStatus::Ready);
+    assert_eq!(plan.record_count, 93);
+    assert_eq!(plan.total_accepted_objects, 93);
+    assert_eq!(plan.total_accepted_bytes, 1_156_784);
+    assert_eq!(plan.canonical_ready_records, 0);
+    assert!(plan.blocking_issues.is_empty());
+    assert!(
+        plan.records.iter().all(|record| {
+            record.source_binding == "bybit-spot-tick-trades"
+                && record.table_family == "trades"
+                && record.coverage_axis == "archive_date"
+                && !record.canonical_ready
+                && record.accepted_objects == 1
+        }),
+        "all Bybit BNBUSDC venue conversion records must bind one accepted staging object"
+    );
+    assert_eq!(
+        plan.records.first().map(|record| record.record_id.as_str()),
+        Some("backfill-accepted-tranche-bybit-bnbusdc-2026-03-01")
+    );
+    assert_eq!(
+        plan.records.last().map(|record| record.record_id.as_str()),
+        Some("backfill-accepted-tranche-bybit-bnbusdc-2026-06-01")
+    );
+}
+
+#[test]
+fn bybit_bnbusdc_venue_publication_and_mapping_evidence_cover_all_accepted_tranches() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let batch_root =
+        reference_root.join("backfill-conversion-batches/bybit-bnbusdc-2026-03-01-2026-06-01");
+    let plan_path = batch_root.join("plan/backfill-conversion-batch-plan.json");
+    let plan: BackfillConversionBatchPlan = serde_json::from_str(&read_required_string(&plan_path))
+        .expect("conversion batch plan parses");
+    assert_eq!(plan.records.len(), 93);
+
+    for record in &plan.records {
+        let archive_date = record
+            .record_id
+            .strip_prefix("backfill-accepted-tranche-bybit-bnbusdc-")
+            .expect("Bybit BNBUSDC record id carries archive date");
+        let publication_path = single_reference_file_with_prefix_suffix(
+            &reference_root,
+            &format!("bybit-bnbusdc-{archive_date}-accepted-publication-evidence."),
+            ".json",
+        );
+        let mapping_path = single_reference_file_with_prefix_suffix(
+            &reference_root,
+            &format!(
+                "source-proof-nt-catalog-mapping-evaluation.backtesting-engine.bybit-bnbusdc-{archive_date}."
+            ),
+            ".json",
+        );
+
+        let publication: serde_json::Value =
+            serde_json::from_str(&read_required_string(&publication_path))
+                .expect("accepted publication evidence parses");
+        assert_eq!(
+            publication["scope"]["archive_date"].as_str(),
+            Some(archive_date)
+        );
+        assert_eq!(
+            publication["scope"]["status"].as_str(),
+            Some("accepted_gate_committed_and_s3_published")
+        );
+        assert_eq!(
+            publication["accepted_conversion_and_publication"]["published_catalog_direct_s3"]
+                .as_bool(),
+            Some(true)
+        );
+
+        let gate_root =
+            reference_root.join(format!("backfill-gates/bybit-bnbusdc-{archive_date}"));
+        let readiness_spec_path = gate_root.join("source-catalog-mapping-readiness.toml");
+        let readiness_spec: SourceCatalogMappingReadinessSpec =
+            toml::from_str(&read_required_string(&readiness_spec_path))
+                .expect("source catalog-mapping readiness spec parses");
+        assert_eq!(
+            repo_relative_path(&readiness_spec.catalog_mapping_evaluation_path),
+            mapping_path
+        );
+        let readiness_report_path = gate_root
+            .join("source-catalog-mapping-readiness/source-catalog-mapping-readiness-report.json");
+        let readiness_report: SourceCatalogMappingReadinessReport =
+            serde_json::from_str(&read_required_string(&readiness_report_path))
+                .expect("source catalog-mapping readiness report parses");
+        assert_eq!(
+            readiness_report.status,
+            SourceCatalogMappingReadinessStatus::Ready
+        );
+        assert_eq!(
+            readiness_report.catalog_mapping_evaluation_hash,
+            sha256_hex(&read_required_bytes(&mapping_path))
+        );
+    }
+}
+
 fn source_proof_scope_hash(report: &BackfillSourceProofScopeReport) -> String {
     let bytes = serde_json::to_vec(report).expect("scope report serializes");
     sha256_hex(&bytes)

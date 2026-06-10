@@ -626,6 +626,14 @@ const BINANCE_2026_05_06_SOURCE_PROOF_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.binance-bnbusdc-2026-05-06.json"
 );
+const BINANCE_2026_05_07_GATE_ROOT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../specs/023-nt-research-analytics-platform/reference/backfill-gates/binance-bnbusdc-2026-05-07"
+);
+const BINANCE_2026_05_07_SOURCE_PROOF_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-accepted-source-proof.binance-bnbusdc-2026-05-07.json"
+);
 
 #[test]
 fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
@@ -1369,6 +1377,14 @@ fn binance_2026_05_06_backfill_gate_reference_artifacts_match_generic_evaluators
     assert_binance_gate_matches_generic_evaluators(
         Path::new(BINANCE_2026_05_06_GATE_ROOT),
         Path::new(BINANCE_2026_05_06_SOURCE_PROOF_PATH),
+    );
+}
+
+#[test]
+fn binance_2026_05_07_backfill_gate_reference_artifacts_match_generic_evaluators() {
+    assert_binance_gate_matches_generic_evaluators(
+        Path::new(BINANCE_2026_05_07_GATE_ROOT),
+        Path::new(BINANCE_2026_05_07_SOURCE_PROOF_PATH),
     );
 }
 

@@ -79,7 +79,7 @@ pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecre
     consumer: "PolyResearch reference-price source",
 }];
 pub const SECRET_FIELD_NAMES: &[&str] = &["api_key_ssm_parameter"];
-pub const CREDENTIAL_LOG_MODULES: &[&str] = &[];
+pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_network::websocket::client"];
 pub const FORBIDDEN_ENV_VARS: &[&str] = &[];
 
 const FACTORY_NAME: &str = KEY;

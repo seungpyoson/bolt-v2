@@ -8769,6 +8769,14 @@ reason = "PolyResearch reference-price secret config field name; the secret valu
 [[allowed]]
 path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
+literal = '''"nautilus_network::websocket::client"'''
+context = '''pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_network::websocket::client"];'''
+classification = "provider_credential_log_module"
+reason = "PolyResearch authenticates with an SSM-resolved API key in the WebSocket URL query, so Bolt-v3 forces the NT WebSocket client module to WARN before LiveNode construction."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "string"
 literal = '''"PolyResearchReferencePriceClientConfig"'''
 context = '''const CONFIG_TYPE: &str = "PolyResearchReferencePriceClientConfig";'''
 classification = "provider_config_type_tag"

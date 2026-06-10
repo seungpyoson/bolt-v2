@@ -1201,6 +1201,19 @@ mod tests {
             binance.credential_log_modules,
             binance::CREDENTIAL_LOG_MODULES
         );
+
+        let polyresearch = binding_for_provider_key(polyresearch::KEY)
+            .expect("PolyResearch binding must be registered");
+        assert_eq!(
+            polyresearch.credential_log_modules,
+            polyresearch::CREDENTIAL_LOG_MODULES
+        );
+        assert!(
+            polyresearch
+                .credential_log_modules
+                .contains(&"nautilus_network::websocket::client"),
+            "PolyResearch carries its API key in the WebSocket URL query; the NT WebSocket client module must stay credential-sensitive"
+        );
     }
 
     #[test]

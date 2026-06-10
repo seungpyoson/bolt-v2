@@ -4127,10 +4127,9 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
 
     #[test]
     fn live_node_config_suppresses_nt_credential_module_logs_to_warn() {
-        // Regression for the slice-7 review finding: NT's
-        // `nautilus_polymarket::common::credential` and
-        // `nautilus_binance::common::credential` modules log credential
-        // material at info-level. Bolt-v3 forces those targets to
+        // Regression for the slice-7 review finding: provider-owned NT
+        // modules may see credential material before redaction. Bolt-v3
+        // forces those targets to
         // `Warn` even when the root TOML log level is `Info`, so the
         // logger filter must contain both module paths with at most
         // `Warn` regardless of the configured root level.

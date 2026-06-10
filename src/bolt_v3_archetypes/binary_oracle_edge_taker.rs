@@ -1463,7 +1463,7 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
     let mut errors = check_enabled_order_template(context, "entry_order", entry);
     if !executable_entry_order_shape_supported(entry) {
         errors.push(format!(
-            "{context}: parameters.entry_order unsupported executable entry shape: must be buy/long limit FOK without post-only, reduce-only, quote-quantity, trigger, or trailing fields"
+            "{context}: parameters.entry_order unsupported executable entry shape: must be buy/long limit FOK without post-only, trigger, or trailing fields"
         ));
     }
     if entry.is_reduce_only {
@@ -1500,12 +1500,13 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
 }
 
 fn executable_entry_order_shape_supported(entry: &OrderParams) -> bool {
+    // Fields with dedicated entry diagnostics stay out of this broad shape predicate
+    // so operators see one specific error for those cases.
     entry.side == OrderSide::Buy
         && entry.position_side == PositionSide::Long
         && entry.order_type == OrderType::Limit
         && entry.time_in_force == TimeInForce::Fok
         && !entry.is_post_only
-        && !entry.is_quote_quantity
         && entry.trigger_price.is_none()
         && entry.activation_price.is_none()
         && entry.trigger_type.is_none()

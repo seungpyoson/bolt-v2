@@ -1437,6 +1437,12 @@ fn bolt_v3_archetype_rejects_quote_quantity_limit_entry_order() {
         }),
         "limit quote-quantity entry must fail closed at load via the base-quantity guard: {messages:#?}"
     );
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("unsupported executable entry shape")),
+        "limit quote-quantity entry should use the specific quote-quantity error, not the broad executable-shape error: {messages:#?}"
+    );
 }
 
 #[test]

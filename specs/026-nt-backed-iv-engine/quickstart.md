@@ -29,6 +29,7 @@ max_smiles = operator_positive_integer
 max_surfaces = operator_positive_integer
 max_derived_points = operator_positive_integer
 max_source_health_events = operator_positive_integer
+max_source_event_age_ns = operator_positive_integer
 interpolation_policies = []
 fallback_policies = []
 quorum_policies = []
@@ -71,6 +72,9 @@ accepted_conventions = ["operator_convention"]
 nt_revision = "operator_pinned_nt_revision"
 nt_evidence_path = "operator_nt_option_greeks_evidence_path"
 nt_symbol = "OptionGreeks"
+
+# Runtime provenance stamps the NT revision resolved from Cargo.lock.
+# The TOML revision remains operator evidence and is not the runtime source of truth.
 
 [iv.profiles.sources.selector]
 selector_kind = "source_option_greeks"

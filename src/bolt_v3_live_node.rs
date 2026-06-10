@@ -4656,6 +4656,53 @@ configured_source_param = "configured-value"
         }
     }
 
+    #[test]
+    fn iv_option_chain_start_plan_translates_parseable_strike_range_to_runtime_data_command() {
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-chain-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeOptionChain,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionChain,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceOptionChain {
+                series_ids: vec!["DERIBIT:BTC:BTC:2024-01-01T00:00:00Z".to_string()],
+                strike_range_policy: "atm_relative:1:1".to_string(),
+                nt_params: toml::toml! {
+                    snapshot_interval_ms = 250
+                }
+                .into(),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+
+        let commands = iv_runtime_data_commands_for_plan(&plan)
+            .expect("valid option-chain plan should translate to an NT data command");
+
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            nautilus_common::messages::data::DataCommand::Subscribe(
+                SubscribeCommand::OptionChain(command),
+            ) => {
+                assert_eq!(
+                    command.series_id,
+                    OptionSeriesId::from_str("DERIBIT:BTC:BTC:2024-01-01T00:00:00Z").unwrap()
+                );
+                assert_eq!(
+                    command.strike_range,
+                    StrikeRange::AtmRelative {
+                        strikes_above: 1,
+                        strikes_below: 1,
+                    }
+                );
+                assert_eq!(command.snapshot_interval_ms, Some(250));
+                assert_eq!(command.client_id, Some(ClientId::from("configured-client")));
+            }
+            other => panic!("expected option-chain subscribe command, got {other:?}"),
+        }
+    }
+
     #[derive(Debug)]
     struct RecordingDataCommandSender {
         commands: std::sync::Arc<std::sync::Mutex<Vec<DataCommand>>>,

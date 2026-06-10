@@ -6,6 +6,7 @@ use bolt_v2::bolt_v3_iv::{
     query::{IvProductQuery, IvQuery, IvQueryError, IvQueryHandle, IvQueryProduct},
     runtime::{
         IvRuntimeBindingAdapter, IvRuntimeEngine, IvRuntimeEngineError, apply_subscription_plans,
+        cargo_pinned_nt_revision,
     },
     selector::IvSelector,
     subscription::{
@@ -204,7 +205,7 @@ nt_symbol = "ConfiguredOptionChain"
 [profiles.sources.selector]
 selector_kind = "source_option_chain"
 series_ids = ["DERIBIT:BTC:BTC:2024-01-01T00:00:00Z"]
-strike_range_policy = "configured-strike-range-policy"
+strike_range_policy = "atm_relative:1:1"
 
 [profiles.sources.selector.nt_params]
 configured_nt_param = "chain-value"
@@ -225,7 +226,7 @@ fn runtime_engine_carries_configured_source_nt_provenance() {
         .source_nt_provenance("iv-profile", "greeks-source")
         .unwrap();
 
-    assert_eq!(provenance.nt_revision, "configured-nt-revision");
+    assert_eq!(provenance.nt_revision, cargo_pinned_nt_revision());
     assert_eq!(
         provenance.nt_evidence_path,
         "configured/nt/evidence/path.rs"
@@ -265,7 +266,7 @@ fn runtime_engine_ingests_nt_option_greeks_as_queryable_iv_point() {
         )
         .unwrap();
 
-    assert_eq!(raw.provenance.nt_revision, "configured-nt-revision");
+    assert_eq!(raw.provenance.nt_revision, cargo_pinned_nt_revision());
     assert_eq!(raw.provenance.nt_symbol, "ConfiguredOptionGreeks");
     assert_eq!(raw.provenance.ts_event_ns, UnixNanos::new(2_000));
     let IvRawPayload::OptionGreeks(payload) = &raw.payload else {
@@ -448,7 +449,7 @@ fn option_chain_sources_plan_nt_subscribe_operations() {
             "configured-series-a".to_string(),
             "configured-series-b".to_string(),
         ],
-        strike_range_policy: "configured-strike-range-policy".to_string(),
+        strike_range_policy: "atm_relative:1:1".to_string(),
         nt_params: toml::toml! {
             configured_nt_param = "chain-value"
         }
@@ -1142,7 +1143,7 @@ fn reload_unsubscribes_old_generation_subscribes_new_generation_and_removes_dele
         "configured-client",
         IvSelector::SourceOptionChain {
             series_ids: vec!["configured-series-a".to_string()],
-            strike_range_policy: "configured-strike-range-policy".to_string(),
+            strike_range_policy: "atm_relative:1:1".to_string(),
             nt_params: toml::toml! {
                 configured_nt_param = "removed-chain-value"
             }

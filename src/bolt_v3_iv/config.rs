@@ -33,6 +33,7 @@ pub struct IvProfile {
     pub max_surfaces: usize,
     pub max_derived_points: usize,
     pub max_source_health_events: usize,
+    pub max_source_event_age_ns: Option<u64>,
     pub audit_policy: IvAuditPolicy,
     pub projection_policies: Vec<IvProjectionPolicy>,
     pub interpolation_policies: Vec<IvInterpolationPolicy>,
@@ -209,6 +210,14 @@ fn validate_profile(profile: &IvProfile) -> Vec<String> {
         "max_source_health_events",
         profile.max_source_health_events,
     );
+    if let Some(max_source_event_age_ns) = profile.max_source_event_age_ns {
+        validate_positive_u64_bound(
+            &mut errors,
+            &profile_context,
+            "max_source_event_age_ns",
+            max_source_event_age_ns,
+        );
+    }
     if profile.sources.is_empty() {
         errors.push(format!(
             "{profile_context}.sources must contain at least one source"
@@ -918,6 +927,12 @@ fn validate_projection_policies(context: &str, profile: &IvProfile) -> Vec<Strin
 }
 
 fn validate_positive_bound(errors: &mut Vec<String>, context: &str, field: &str, value: usize) {
+    if value == 0 {
+        errors.push(format!("{context}.{field} must be positive"));
+    }
+}
+
+fn validate_positive_u64_bound(errors: &mut Vec<String>, context: &str, field: &str, value: u64) {
     if value == 0 {
         errors.push(format!("{context}.{field} must be positive"));
     }

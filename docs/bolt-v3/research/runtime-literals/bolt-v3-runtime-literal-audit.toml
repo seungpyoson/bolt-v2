@@ -8603,6 +8603,14 @@ reason = "IV capability inventory scans the Cargo-pinned NT checkout using Rust 
 [[allowed]]
 path = "src/bolt_v3_iv/capability.rs"
 kind = "string"
+literal = '''"crates/model/src/data/option_chain"'''
+context = '''} else if relative_path.contains("crates/model/src/data/option_chain") {'''
+classification = "iv_capability_discovery_literal"
+reason = "IV capability inventory classifies the Cargo-pinned NT checkout by stable NT source path families; this path fragment is scan metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/capability.rs"
+kind = "string"
 literal = '''"rev="'''
 context = '''source.find("rev=").and_then(|start| {'''
 classification = "iv_capability_discovery_literal"
@@ -9059,6 +9067,14 @@ reason = "IV config parsing uses schema field names, version tags, and internal 
 [[allowed]]
 path = "src/bolt_v3_iv/config.rs"
 kind = "string"
+literal = '''"max_source_event_age_ns"'''
+context = '''"max_source_event_age_ns",'''
+classification = "iv_config_schema_literal"
+reason = "IV config parsing uses schema field names to validate TOML freshness policy; operator runtime values are supplied by TOML, not this literal."
+
+[[allowed]]
+path = "src/bolt_v3_iv/config.rs"
+kind = "string"
 literal = '''"iv.profiles.{} profile_id is duplicated"'''
 context = '''"iv.profiles.{} profile_id is duplicated",'''
 classification = "iv_config_schema_literal"
@@ -9457,6 +9473,38 @@ classification = "iv_source_health_counter_literal"
 reason = "IV runtime initializes source-health reject counters from observed binding errors; this count is computed state, not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "number"
+literal = '''1'''
+context = '''let revision = source.split_once('#')?.1.trim_end_matches('"');'''
+classification = "iv_cargo_evidence_parser_literal"
+reason = "IV runtime extracts the Cargo.lock git revision after the lockfile source separator; this is dependency evidence parsing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "number"
+literal = '''40'''
+context = '''const PINNED_NT_REVISION_LENGTH: usize = 40;'''
+classification = "iv_cargo_evidence_parser_literal"
+reason = "Git revisions are validated as 40-character SHA-1 object IDs when stamping NT provenance from Cargo.lock; this is dependency evidence shape, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "string"
+literal = '''"../../Cargo.lock"'''
+context = '''const CARGO_LOCK_TEXT: &str = include_str!("../../Cargo.lock");'''
+classification = "iv_cargo_evidence_parser_literal"
+reason = "Runtime NT provenance is stamped from the repository Cargo.lock embedded at compile time; this path is dependency evidence wiring, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/runtime.rs"
+kind = "string"
+literal = '''"source = \"git+https://github.com/nautechsystems/nautilus_trader.git?rev="'''
+context = '''"source = \"git+https://github.com/nautechsystems/nautilus_trader.git?rev=";'''
+classification = "iv_cargo_evidence_parser_literal"
+reason = "Runtime NT provenance identifies the Cargo.lock source line for the pinned NautilusTrader dependency; this is dependency evidence parsing, not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_iv/query.rs"
 kind = "number"
 literal = '''0'''
@@ -9467,10 +9515,82 @@ reason = "IV query state initializes source-health reject counters from observed
 [[allowed]]
 path = "src/bolt_v3_iv/query.rs"
 kind = "number"
+literal = '''0'''
+context = '''_ => 0,'''
+classification = "iv_policy_algorithm_literal"
+reason = "IV projection skew calculation returns zero for an empty input set before higher-level policy rejection; this is algorithmic math, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "number"
 literal = '''1'''
 context = '''const REJECT_COUNT_INCREMENT: u64 = 1;'''
 classification = "iv_source_health_counter_literal"
 reason = "IV query state increments source-health reject counters from observed rejected events; this count is computed state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"raw_event_id"'''
+context = '''"raw_event_id" => provenance'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"payload_kind"'''
+context = '''"payload_kind" => provenance'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"nt_revision"'''
+context = '''"nt_revision" => !provenance.nt_revision.trim().is_empty(),'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"nt_symbol"'''
+context = '''"nt_symbol" => !provenance.nt_symbol.trim().is_empty(),'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"nt_evidence_path"'''
+context = '''"nt_evidence_path" => !provenance.nt_evidence_path.trim().is_empty(),'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"input_event_ids"'''
+context = '''"input_event_ids" => !provenance.input_event_ids.is_empty(),'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"helper_identity"'''
+context = '''"helper_identity" => provenance.helper_identity.is_some(),'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_iv/query.rs"
+kind = "string"
+literal = '''"policy_decisions"'''
+context = '''"policy_decisions" => !provenance.policy_decisions.is_empty(),'''
+classification = "iv_policy_schema_field_literal"
+reason = "Fallback policies name required provenance fields by schema key; this literal is a typed field discriminator, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_iv/store.rs"

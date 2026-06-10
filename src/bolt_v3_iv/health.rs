@@ -72,8 +72,6 @@ pub struct IvSourceHealth {
 
 impl IvSourceHealth {
     pub fn can_satisfy_current_query(&self) -> bool {
-        self.subscription_state.can_satisfy_current_query()
-            && !self.stale_state
-            && !self.retention_state
+        self.subscription_state.can_satisfy_current_query() && !self.stale_state
     }
 }

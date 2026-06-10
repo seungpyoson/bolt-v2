@@ -58,6 +58,19 @@ use crate::bolt_v3_iv::ingest::{IvRawEvent, IvRawPayload};
 }
 
 #[test]
+fn source_fence_rejects_strategy_state_handle_escape_hatch() {
+    let source = r#"
+use crate::bolt_v3_iv::query::IvQueryHandle;
+
+fn strategy_escapes_query_authz(handle: &IvQueryHandle) {
+    let _ = handle.state_handle();
+}
+"#;
+
+    assert_strategy_source_fence_rejects(source, "IV query state escape hatch");
+}
+
+#[test]
 fn source_fence_rejects_iv_core_hardcoded_runtime_values() {
     let source = r#"
 pub fn configured_source() -> &'static str {
@@ -168,6 +181,7 @@ fn iv_strategy_source_fence_violations(_source: &str) -> Vec<String> {
         ("IvRawAuditRequest", "raw IV payload bypass"),
         ("IvRawEvent", "raw IV payload bypass"),
         ("IvRawPayload", "raw IV payload bypass"),
+        ("state_handle", "IV query state escape hatch"),
     ];
 
     for (needle, reason) in checks {

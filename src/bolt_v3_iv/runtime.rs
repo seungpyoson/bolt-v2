@@ -25,6 +25,15 @@ use super::{
 use nautilus_model::data::{CustomData, HasTsInit};
 
 const INITIAL_SUBSCRIPTION_GENERATION: u64 = 0;
+const NAUTILUS_TRADER_LOCK_SOURCE_PREFIX: &str =
+    "source = \"git+https://github.com/nautechsystems/nautilus_trader.git?rev=";
+const PINNED_NT_REVISION_LENGTH: usize = 40;
+const CARGO_LOCK_TEXT: &str = include_str!("../../Cargo.lock");
+
+pub fn cargo_pinned_nt_revision() -> &'static str {
+    cargo_pinned_nt_revision_from_lock(CARGO_LOCK_TEXT)
+        .expect("Cargo.lock must contain the pinned NautilusTrader revision")
+}
 
 pub trait IvRuntimeBindingAdapter {
     fn apply_subscription_plan(
@@ -78,6 +87,7 @@ struct IvRuntimeSourceConfig {
     source_kind: IvSourceKind,
     selector_fingerprint: String,
     subscription_generation: u64,
+    max_source_event_age_ns: Option<u64>,
     accepted_conventions: BTreeSet<String>,
     nt_provenance: IvSourceNtProvenance,
     selector: IvSelector,
@@ -689,6 +699,15 @@ impl IvRuntimeEngine {
             ));
         }
         if source.subscription_generation != event.subscription_generation {
+            return Err(self.reject_stale_generation_event(event, source.subscription_generation));
+        }
+        if source.max_source_event_age_ns.is_some_and(|max_age_ns| {
+            event
+                .received_ts_ns
+                .get()
+                .saturating_sub(event.ts_event_ns.get())
+                > max_age_ns
+        }) {
             return Err(self.reject_ingest_event(
                 event,
                 source.subscription_generation,
@@ -750,6 +769,31 @@ impl IvRuntimeEngine {
             profile_id: event.profile_id.clone(),
             source_id: event.source_id.clone(),
             reason,
+        }
+    }
+
+    fn reject_stale_generation_event(
+        &self,
+        event: &IvIngestEvent,
+        health_generation: u64,
+    ) -> IvRuntimeEngineError {
+        if let Some(state) = self.state_for_profile(&event.profile_id) {
+            self.record_source_rejection_diagnostic_with_retention(
+                &state,
+                IvRuntimeRejectionRecord {
+                    profile_id: &event.profile_id,
+                    source_id: &event.source_id,
+                    subscription_generation: health_generation,
+                    ts_event_ns: event.ts_event_ns,
+                    reason: IvRejectReason::StaleData,
+                    mark_rejected: false,
+                },
+            );
+        }
+        IvRuntimeEngineError::IngestRejected {
+            profile_id: event.profile_id.clone(),
+            source_id: event.source_id.clone(),
+            reason: IvRejectReason::StaleData,
         }
     }
 
@@ -829,6 +873,23 @@ impl IvRuntimeEngine {
         }
     }
 
+    fn record_source_rejection_diagnostic_with_retention(
+        &self,
+        state: &IvQueryStateHandle,
+        rejection: IvRuntimeRejectionRecord<'_>,
+    ) {
+        state.record_source_rejection_diagnostic(
+            rejection.profile_id.to_string(),
+            rejection.source_id.to_string(),
+            rejection.subscription_generation,
+            rejection.ts_event_ns,
+            rejection.reason,
+        );
+        if let Some(policy) = self.retention_policy(rejection.profile_id) {
+            state.enforce_retention(&policy);
+        }
+    }
+
     fn retention_policy(&self, profile_id: &str) -> Option<IvRetentionPolicy> {
         self.read_inner()
             .retention_policies
@@ -876,8 +937,22 @@ fn query_state_from_profile(profile: &IvProfile) -> IvQueryState {
         .with_quorum_policies(profile.quorum_policies.clone())
         .with_helper_policies(profile.helper_policies.clone())
         .with_derived_input_policies(profile.derived_input_policies.clone())
-        .with_derived_inputs(profile.derived_inputs.clone())
+        .with_derived_inputs(runtime_derived_inputs_from_profile(profile))
         .with_current_subscription_generations(current_generations_from_profile(profile))
+}
+
+fn runtime_derived_inputs_from_profile(
+    profile: &IvProfile,
+) -> Vec<super::derive::IvDerivedInputSet> {
+    profile
+        .derived_inputs
+        .iter()
+        .cloned()
+        .map(|mut inputs| {
+            inputs.nt_revision = cargo_pinned_nt_revision().to_string();
+            inputs
+        })
+        .collect()
 }
 
 fn current_generations_from_profile(profile: &IvProfile) -> BTreeMap<String, u64> {
@@ -904,14 +979,17 @@ fn runtime_sources_from_profile(profile: &IvProfile) -> BTreeMap<String, IvRunti
         .sources
         .iter()
         .map(|source| {
+            let mut nt_provenance = source.nt_provenance.clone();
+            nt_provenance.nt_revision = cargo_pinned_nt_revision().to_string();
             (
                 source.source_id.clone(),
                 IvRuntimeSourceConfig {
                     source_kind: source.source_kind,
                     selector_fingerprint: source.selector_fingerprint.clone(),
                     subscription_generation: source.subscription_generation,
+                    max_source_event_age_ns: profile.max_source_event_age_ns,
                     accepted_conventions: source.accepted_conventions.clone(),
-                    nt_provenance: source.nt_provenance.clone(),
+                    nt_provenance,
                     selector: source.selector.clone(),
                 },
             )
@@ -926,6 +1004,20 @@ fn source_generations_from_runtime_sources(
         .iter()
         .map(|(source_id, source)| (source_id.clone(), source.subscription_generation))
         .collect()
+}
+
+fn cargo_pinned_nt_revision_from_lock(lock_text: &'static str) -> Option<&'static str> {
+    lock_text.lines().find_map(|line| {
+        let source = line
+            .trim()
+            .strip_prefix(NAUTILUS_TRADER_LOCK_SOURCE_PREFIX)?;
+        let revision = source.split_once('#')?.1.trim_end_matches('"');
+        (revision.len() == PINNED_NT_REVISION_LENGTH
+            && revision
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+        .then_some(revision)
+    })
 }
 
 fn removed_source_generations(

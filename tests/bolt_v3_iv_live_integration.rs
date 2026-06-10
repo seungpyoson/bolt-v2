@@ -182,7 +182,7 @@ nt_symbol = "ConfiguredOptionChain"
 [iv.profiles.sources.selector]
 selector_kind = "source_option_chain"
 series_ids = ["DERIBIT:BTC:BTC:2024-01-01T00:00:00Z"]
-strike_range_policy = "configured-strike-range-policy"
+strike_range_policy = "atm_relative:1:1"
 
 [iv.profiles.sources.selector.nt_params]
 configured_nt_param = "configured-chain-value"
@@ -1465,7 +1465,7 @@ configured_source_param = "configured-value"
                 source_filter: None,
             },
         })),
-        Err(bolt_v2::bolt_v3_iv::query::IvQueryError::ProductNotFound)
+        Err(bolt_v2::bolt_v3_iv::query::IvQueryError::RetentionMiss)
     ));
 
     let product = handle
@@ -1965,4 +1965,39 @@ configured_source_param = "configured-value"
         })),
         Err(bolt_v2::bolt_v3_iv::query::IvQueryError::ProductNotFound)
     ));
+}
+
+#[test]
+fn runtime_engine_rejects_events_older_than_profile_freshness_bound() {
+    let mut parsed = live_event_router_root_config();
+    let profile = parsed
+        .iv
+        .as_mut()
+        .unwrap()
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.profile_id == "configured-profile")
+        .unwrap();
+    profile.max_source_event_age_ns = Some(5);
+    let engine = IvRuntimeEngine::from_iv_root(parsed.iv.as_ref().unwrap()).unwrap();
+    let mut event = greeks_event_with_generation(2_000, 7);
+    event.received_ts_ns = UnixNanos::new(2_006);
+
+    let stale_rejection = engine
+        .ingest_event(event)
+        .expect_err("events older than the profile freshness bound must reject before indexing");
+    assert!(matches!(
+        stale_rejection,
+        bolt_v2::bolt_v3_iv::runtime::IvRuntimeEngineError::IngestRejected {
+            reason: bolt_v2::bolt_v3_iv::error::IvRejectReason::StaleData,
+            ..
+        }
+    ));
+
+    let health = engine
+        .source_health("configured-profile", "configured-greeks-source")
+        .expect("stale event must be reflected in source health");
+    assert_eq!(health.subscription_state, IvSourceHealthState::Stale);
+    assert!(health.stale_state);
+    assert_eq!(health.last_reject_reason, Some(IvRejectReason::StaleData));
 }

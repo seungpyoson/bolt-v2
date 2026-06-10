@@ -316,6 +316,36 @@ pub fn resolve_nt_cargo_evidence(
 pub fn scan_seed_families(root: &Path) -> Result<Vec<IvCapabilityCandidate>, IvCapabilityError> {
     let mut candidates = scan_candidates(root)?;
     candidates.retain(|candidate| candidate.seed_family.is_some());
+    let mut discovered = candidates
+        .iter()
+        .filter_map(|candidate| candidate.seed_family)
+        .collect::<BTreeSet<_>>();
+    let mut files = Vec::new();
+    collect_rust_files(root, &mut files)?;
+    for file in files {
+        let text = fs::read_to_string(&file)?;
+        let relative_path = relative_path(root, &file);
+        let Some(seed_family) = classify_seed_family(&relative_path, &text) else {
+            continue;
+        };
+        if discovered.contains(&seed_family) {
+            continue;
+        }
+        let matched_terms = matched_terms(&relative_path, &text);
+        if matched_terms.is_empty() || !has_capability_anchor(&matched_terms) {
+            continue;
+        }
+        discovered.insert(seed_family);
+        let symbol = format!("{seed_family:?}SeedFamily");
+        candidates.push(IvCapabilityCandidate {
+            surface_id: surface_id(&relative_path, &symbol),
+            evidence_path: relative_path,
+            symbol,
+            matched_terms,
+            seed_family: Some(seed_family),
+            engine_mapping: None,
+        });
+    }
     Ok(candidates)
 }
 
@@ -574,6 +604,13 @@ fn classify_seed_family(relative_path: &str, text: &str) -> Option<SeedFamily> {
         Some(SeedFamily::CustomData)
     } else if relative_path.contains("crates/adapters") {
         Some(SeedFamily::Adapter)
+    } else if relative_path.contains("crates/model/src/data/option_chain") {
+        Some(SeedFamily::ModelData)
+    } else if relative_path.contains("crates/data/src/client") || text.contains("subscribe_option")
+    {
+        Some(SeedFamily::DataActorSubscription)
+    } else if relative_path.contains("crates/data/src/engine") || text.contains("publish_option") {
+        Some(SeedFamily::DataEnginePublication)
     } else if relative_path.contains("msgbus")
         || relative_path.contains("topic")
         || text.contains("topic")
@@ -586,11 +623,6 @@ fn classify_seed_family(relative_path: &str, text: &str) -> Option<SeedFamily> {
         Some(SeedFamily::OptionChainManager)
     } else if relative_path.contains("greeks") || text.contains("blackscholes") {
         Some(SeedFamily::GreeksHelper)
-    } else if relative_path.contains("crates/data/src/client") || text.contains("subscribe_option")
-    {
-        Some(SeedFamily::DataActorSubscription)
-    } else if relative_path.contains("crates/data/src/engine") || text.contains("publish_option") {
-        Some(SeedFamily::DataEnginePublication)
     } else if relative_path.contains("crates/model/src/data") {
         Some(SeedFamily::ModelData)
     } else {

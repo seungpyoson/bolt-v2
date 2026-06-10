@@ -12,7 +12,7 @@ use super::{
         derive_iv, resolve_derived_input_policy, select_helper_policy,
     },
     error::IvRejectReason,
-    health::IvSourceHealth,
+    health::{IvSourceHealth, IvSourceHealthState},
     ingest::{IvIngestEvent, IvRawEvent},
     policy::{
         IvFallbackCandidate, IvFallbackPolicy, IvInterpolationPolicy, IvPolicyInput,
@@ -88,6 +88,7 @@ pub enum IvQueryError {
     ProfileMismatch,
     ProductKindMismatch,
     ProductNotFound,
+    RetentionMiss,
     ProjectionPolicyNotFound,
     ProjectionRejected,
     HelperPolicyNotFound,
@@ -102,6 +103,8 @@ pub enum IvQueryError {
 pub struct IvQueryState {
     store: IvStore,
     source_health: Vec<IvSourceHealth>,
+    retention_misses: BTreeSet<IvRetainedProductKey>,
+    query_rejections: Vec<IvPolicyDecision>,
     projection_policies: Vec<IvProjectionPolicy>,
     interpolation_policies: Vec<IvInterpolationPolicy>,
     fallback_policies: Vec<IvFallbackPolicy>,
@@ -126,11 +129,24 @@ pub struct IvQueryHandle {
     retention_policy: Option<IvRetentionPolicy>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+struct IvRetainedProductKey {
+    profile_id: String,
+    source_id: String,
+    subscription_generation: u64,
+    instrument_id: String,
+    basis: IvBasis,
+    ts_event_ns: UnixNanos,
+    product_kind: IvProductKind,
+}
+
 impl IvQueryState {
     pub fn new(store: IvStore) -> Self {
         Self {
             store,
             source_health: Vec::new(),
+            retention_misses: BTreeSet::new(),
+            query_rejections: Vec::new(),
             projection_policies: Vec::new(),
             interpolation_policies: Vec::new(),
             fallback_policies: Vec::new(),
@@ -279,23 +295,61 @@ impl IvQueryStateHandle {
                 .reject_counts
                 .entry(reject_reason)
                 .or_insert(INITIAL_REJECT_COUNT) += REJECT_COUNT_INCREMENT;
-            if mark_rejected {
-                existing.subscription_state = super::health::IvSourceHealthState::Rejected;
-            }
+            apply_source_rejection_flags(existing, reject_reason, mark_rejected);
             return;
         }
 
         let mut reject_counts = BTreeMap::new();
         reject_counts.insert(reject_reason, REJECT_COUNT_INCREMENT);
         let subscription_state = if mark_rejected {
-            super::health::IvSourceHealthState::Rejected
+            IvSourceHealthState::Rejected
+        } else if reject_reason == IvRejectReason::StaleData {
+            IvSourceHealthState::Stale
         } else {
-            super::health::IvSourceHealthState::Active
+            IvSourceHealthState::Active
         };
         state.source_health.push(IvSourceHealth {
             profile_id,
             source_id,
             subscription_state,
+            last_event_ts_ns: Some(last_event_ts_ns),
+            last_reject_reason: Some(reject_reason),
+            reject_counts,
+            stale_state: reject_reason == IvRejectReason::StaleData,
+            retention_state: reject_reason == IvRejectReason::RetentionMiss,
+            subscription_generation,
+        });
+    }
+
+    pub fn record_source_rejection_diagnostic(
+        &self,
+        profile_id: String,
+        source_id: String,
+        subscription_generation: u64,
+        last_event_ts_ns: super::time::UnixNanos,
+        reject_reason: super::error::IvRejectReason,
+    ) {
+        let mut state = self.write_state();
+        if let Some(existing) = state.source_health.iter_mut().find(|existing| {
+            existing.profile_id == profile_id
+                && existing.source_id == source_id
+                && existing.subscription_generation == subscription_generation
+        }) {
+            existing.last_event_ts_ns = Some(last_event_ts_ns);
+            existing.last_reject_reason = Some(reject_reason);
+            *existing
+                .reject_counts
+                .entry(reject_reason)
+                .or_insert(INITIAL_REJECT_COUNT) += REJECT_COUNT_INCREMENT;
+            return;
+        }
+
+        let mut reject_counts = BTreeMap::new();
+        reject_counts.insert(reject_reason, REJECT_COUNT_INCREMENT);
+        state.source_health.push(IvSourceHealth {
+            profile_id,
+            source_id,
+            subscription_state: IvSourceHealthState::Active,
             last_event_ts_ns: Some(last_event_ts_ns),
             last_reject_reason: Some(reject_reason),
             reject_counts,
@@ -305,6 +359,25 @@ impl IvQueryStateHandle {
         });
     }
 
+    pub fn record_query_rejection(&self, provenance: &IvProvenance, reject_reason: IvRejectReason) {
+        let mut state = self.write_state();
+        record_query_rejection_locked(&mut state, provenance, reject_reason);
+    }
+
+    fn record_retention_miss(&self, miss: &IvRetainedProductKey) {
+        let mut state = self.write_state();
+        if state.retention_misses.contains(miss) {
+            record_source_rejection_locked(
+                &mut state,
+                &miss.profile_id,
+                &miss.source_id,
+                miss.subscription_generation,
+                miss.ts_event_ns,
+                IvRejectReason::RetentionMiss,
+            );
+        }
+    }
+
     pub fn source_health_for(&self, profile_id: &str, source_id: &str) -> Option<IvSourceHealth> {
         let state = self.read_state();
         select_source_health(&state, profile_id, source_id).cloned()
@@ -312,8 +385,10 @@ impl IvQueryStateHandle {
 
     pub fn enforce_retention(&self, policy: &IvRetentionPolicy) {
         let mut state = self.write_state();
+        record_retention_misses(&mut state, policy);
         state.store.enforce_retention(policy);
         truncate_front(&mut state.derived_outputs, policy.max_derived_points);
+        truncate_front(&mut state.query_rejections, policy.max_source_health_events);
         let current_subscription_generations = state.current_subscription_generations.clone();
         retain_source_health_events(
             &mut state.source_health,
@@ -433,6 +508,7 @@ impl IvQueryHandle {
 
     pub fn with_retention_policy(mut self, retention_policy: IvRetentionPolicy) -> Self {
         self.retention_policy = Some(retention_policy);
+        self.enforce_retention_policy();
         self
     }
 
@@ -493,8 +569,12 @@ impl IvQueryHandle {
         self
     }
 
-    pub fn state_handle(&self) -> IvQueryStateHandle {
-        self.state.clone()
+    pub fn source_health_for(&self, profile_id: &str, source_id: &str) -> Option<IvSourceHealth> {
+        self.state.source_health_for(profile_id, source_id)
+    }
+
+    pub fn derived_outputs(&self) -> Vec<IvDerivedOutput> {
+        self.state.derived_outputs()
     }
 
     pub fn authorization(&self) -> &IvSelectorAuthorization {
@@ -524,12 +604,16 @@ impl IvQueryHandle {
             return Err(IvQueryError::ProductKindMismatch);
         }
 
-        let product = if query_requires_snapshot(query) {
-            let state = self.state.snapshot();
-            self.query_product_from_state(query, &state)?
-        } else {
-            let state = self.state.read_state();
-            self.query_product_from_state(query, &state)?
+        let state = self.state.snapshot();
+        let product = match self.query_product_from_state(query, &state) {
+            Ok(product) => product,
+            Err(IvQueryError::RetentionMiss) => {
+                if let Some(miss) = retention_miss_for_query(&state, query) {
+                    self.state.record_retention_miss(&miss);
+                }
+                return Err(IvQueryError::RetentionMiss);
+            }
+            Err(error) => return Err(error),
         };
 
         if let IvQueryProduct::DerivedIv(derived) = &product
@@ -557,13 +641,19 @@ impl IvQueryHandle {
                 product.selector_fingerprint(),
             );
         if !product_is_authorized {
-            product = self.find_authorized_current_product(query, state)?.ok_or(
-                if product_is_current {
-                    IvQueryError::StrategyNotAuthorized
-                } else {
-                    IvQueryError::ProductNotFound
-                },
-            )?;
+            product = self
+                .find_authorized_current_product(query, state)?
+                .ok_or_else(|| {
+                    if product_is_current {
+                        IvQueryError::StrategyNotAuthorized
+                    } else {
+                        if let Some(provenance) = product.provenance() {
+                            self.state
+                                .record_query_rejection(provenance, IvRejectReason::StaleData);
+                        }
+                        IvQueryError::ProductNotFound
+                    }
+                })?;
         }
 
         if !self.authorization.authorizes(
@@ -641,7 +731,12 @@ impl IvQueryHandle {
                 })
                 .cloned()
                 .map(IvQueryProduct::IvPoint)
-                .ok_or(IvQueryError::ProductNotFound),
+                .ok_or_else(|| {
+                    retention_miss_for_query(state, query)
+                        .map_or(IvQueryError::ProductNotFound, |_| {
+                            IvQueryError::RetentionMiss
+                        })
+                }),
             (
                 IvProductKind::IvGreeksPoint,
                 IvSelector::PointQuery {
@@ -663,7 +758,12 @@ impl IvQueryHandle {
                 })
                 .cloned()
                 .map(IvQueryProduct::IvGreeksPoint)
-                .ok_or(IvQueryError::ProductNotFound),
+                .ok_or_else(|| {
+                    retention_miss_for_query(state, query)
+                        .map_or(IvQueryError::ProductNotFound, |_| {
+                            IvQueryError::RetentionMiss
+                        })
+                }),
             (
                 IvProductKind::Smile,
                 IvSelector::SmileQuery {
@@ -853,7 +953,7 @@ impl IvQueryHandle {
         }
 
         if interpolation_rejected {
-            let output = fallback_only(policy, state, &inputs)?;
+            let output = fallback_only(policy, state, &input_products, &inputs)?;
             let mut provenance = projected_output_provenance(&input_products, &output)?;
             provenance.policy_decisions.extend(policy_decisions);
             provenance.policy_decisions.extend(output.policy_decisions);
@@ -878,28 +978,12 @@ impl IvQueryHandle {
                 .ok_or(IvQueryError::ProjectionRejected)?;
             let quorum_output = match resolve_quorum(quorum_policy, &inputs) {
                 Ok(output) => output,
-                Err(_) => {
-                    let output = fallback_only(policy, state, &inputs)?;
-                    let mut provenance = projected_output_provenance(&input_products, &output)?;
-                    provenance.policy_decisions.extend(policy_decisions);
-                    provenance.policy_decisions.extend(output.policy_decisions);
-                    provenance.ts_event_ns = as_of_ns;
-
-                    return Ok(IvQueryProduct::ProjectedScalarIv(IvProjectedScalarIv {
-                        profile_id: query.profile_id.clone(),
-                        source_id: provenance.source_id.clone(),
-                        selector_fingerprint: provenance.selector_fingerprint.clone(),
-                        projection_policy_id: projection_policy_id.to_string(),
-                        value: output.value,
-                        as_of_ns,
-                        provenance,
-                    }));
-                }
+                Err(_) => return Err(IvQueryError::ProjectionRejected),
             };
             policy_decisions.extend(quorum_output.policy_decisions);
         }
 
-        let output = project_or_fallback(policy, state, &inputs)?;
+        let output = project_or_fallback(policy, state, &input_products, &inputs)?;
         let mut provenance = projected_output_provenance(&input_products, &output)?;
         provenance.policy_decisions.extend(policy_decisions);
         provenance.policy_decisions.extend(output.policy_decisions);
@@ -1516,20 +1600,6 @@ fn should_cache_derived_output(query: &IvProductQuery) -> bool {
     )
 }
 
-fn query_requires_snapshot(query: &IvProductQuery) -> bool {
-    selector_requires_query_time_writes(&query.selector)
-}
-
-fn selector_requires_query_time_writes(selector: &IvSelector) -> bool {
-    match selector {
-        IvSelector::DerivedIvQuery { .. } => true,
-        IvSelector::ProjectedScalarIvQuery { input_selector, .. } => {
-            selector_requires_query_time_writes(input_selector)
-        }
-        _ => false,
-    }
-}
-
 fn same_derived_output_cache_slot(left: &IvDerivedOutput, right: &IvDerivedOutput) -> bool {
     left.point.profile_id == right.point.profile_id
         && left.point.source_id == right.point.source_id
@@ -1570,11 +1640,12 @@ fn derived_output_matches_input(
 fn project_or_fallback(
     policy: &IvProjectionPolicy,
     state: &IvQueryState,
+    input_products: &[IvQueryProduct],
     inputs: &[IvPolicyInput],
 ) -> Result<QueryPolicyOutput, IvQueryError> {
     match project_scalar(policy, inputs) {
         Ok(output) => Ok(QueryPolicyOutput::from_policy_output(output)),
-        Err(_) => fallback_only(policy, state, inputs),
+        Err(_) => fallback_only(policy, state, input_products, inputs),
     }
 }
 
@@ -1614,6 +1685,7 @@ impl From<&IvPolicyInput> for SelectedProjectionInput {
 fn fallback_only(
     policy: &IvProjectionPolicy,
     state: &IvQueryState,
+    input_products: &[IvQueryProduct],
     inputs: &[IvPolicyInput],
 ) -> Result<QueryPolicyOutput, IvQueryError> {
     let Some(fallback_policy_ref) = &policy.fallback_policy_ref else {
@@ -1646,12 +1718,28 @@ fn fallback_only(
                 })
                 .map(SelectedProjectionInput::from)
         });
+    if projection_input_skew(inputs) > fallback_policy.maximum_timestamp_skew_ns {
+        return Err(IvQueryError::ProjectionRejected);
+    }
+    let Some(selected_input) = selected_input else {
+        return Err(IvQueryError::ProjectionRejected);
+    };
+    let selected_product = selected_product_for_input(input_products, &selected_input)
+        .ok_or(IvQueryError::ProjectionRejected)?;
+    if !provenance_satisfies_required_fields(
+        selected_product
+            .provenance()
+            .ok_or(IvQueryError::ProjectionRejected)?,
+        &fallback_policy.required_provenance_fields,
+    ) {
+        return Err(IvQueryError::ProjectionRejected);
+    }
     let output = resolve_fallback(fallback_policy, &candidates)
         .map_err(|_| IvQueryError::ProjectionRejected)?;
     Ok(QueryPolicyOutput {
         value: output.value,
         policy_decisions: output.policy_decisions,
-        selected_input,
+        selected_input: Some(selected_input),
     })
 }
 
@@ -1659,12 +1747,10 @@ fn projected_output_provenance(
     input_products: &[IvQueryProduct],
     output: &QueryPolicyOutput,
 ) -> Result<IvProvenance, IvQueryError> {
-    let selected_product = output.selected_input.as_ref().and_then(|selected_input| {
-        input_products.iter().find(|product| {
-            projection_inputs(product)
-                .is_ok_and(|inputs| inputs.iter().any(|input| selected_input.matches(input)))
-        })
-    });
+    let selected_product = output
+        .selected_input
+        .as_ref()
+        .and_then(|selected_input| selected_product_for_input(input_products, selected_input));
     selected_product
         .or_else(|| input_products.first())
         .ok_or(IvQueryError::ProductNotFound)?
@@ -1679,6 +1765,49 @@ impl SelectedProjectionInput {
             && self.source_id == input.source_id
             && self.selector_fingerprint == input.selector_fingerprint
     }
+}
+
+fn selected_product_for_input<'a>(
+    input_products: &'a [IvQueryProduct],
+    selected_input: &SelectedProjectionInput,
+) -> Option<&'a IvQueryProduct> {
+    input_products.iter().find(|product| {
+        projection_inputs(product)
+            .is_ok_and(|inputs| inputs.iter().any(|input| selected_input.matches(input)))
+    })
+}
+
+fn projection_input_skew(inputs: &[IvPolicyInput]) -> u64 {
+    match (
+        inputs.iter().map(|input| input.ts_event_ns.get()).min(),
+        inputs.iter().map(|input| input.ts_event_ns.get()).max(),
+    ) {
+        (Some(min), Some(max)) => max.saturating_sub(min),
+        _ => 0,
+    }
+}
+
+fn provenance_satisfies_required_fields(
+    provenance: &IvProvenance,
+    required_fields: &[String],
+) -> bool {
+    required_fields.iter().all(|field| match field.as_str() {
+        "raw_event_id" => provenance
+            .raw_event_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty()),
+        "payload_kind" => provenance
+            .payload_kind
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty()),
+        "nt_revision" => !provenance.nt_revision.trim().is_empty(),
+        "nt_symbol" => !provenance.nt_symbol.trim().is_empty(),
+        "nt_evidence_path" => !provenance.nt_evidence_path.trim().is_empty(),
+        "input_event_ids" => !provenance.input_event_ids.is_empty(),
+        "helper_identity" => provenance.helper_identity.is_some(),
+        "policy_decisions" => !provenance.policy_decisions.is_empty(),
+        _ => false,
+    })
 }
 
 enum ProjectedInputInterpolation {
@@ -1885,6 +2014,160 @@ fn derive_reject_reason(error: &IvDeriveError) -> IvRejectReason {
     }
 }
 
+fn record_retention_misses(state: &mut IvQueryState, policy: &IvRetentionPolicy) {
+    let evicted_iv_points = state
+        .store
+        .iv_points()
+        .len()
+        .saturating_sub(policy.max_indexed_points);
+    for point in state.store.iv_points().iter().take(evicted_iv_points) {
+        state
+            .retention_misses
+            .insert(retained_iv_point_key(point, IvProductKind::IvPoint));
+    }
+
+    let evicted_greeks_points = state
+        .store
+        .greeks_points()
+        .len()
+        .saturating_sub(policy.max_indexed_points);
+    for point in state
+        .store
+        .greeks_points()
+        .iter()
+        .take(evicted_greeks_points)
+    {
+        state.retention_misses.insert(retained_iv_point_key(
+            &point.point,
+            IvProductKind::IvGreeksPoint,
+        ));
+    }
+}
+
+fn retained_iv_point_key(point: &IvPoint, product_kind: IvProductKind) -> IvRetainedProductKey {
+    IvRetainedProductKey {
+        profile_id: point.profile_id.clone(),
+        source_id: point.source_id.clone(),
+        subscription_generation: point.provenance.subscription_generation,
+        instrument_id: point.instrument_id.clone(),
+        basis: point.basis,
+        ts_event_ns: point.ts_event_ns,
+        product_kind,
+    }
+}
+
+fn retention_miss_for_query(
+    state: &IvQueryState,
+    query: &IvProductQuery,
+) -> Option<IvRetainedProductKey> {
+    match (&query.product_kind, &query.selector) {
+        (
+            IvProductKind::IvPoint | IvProductKind::IvGreeksPoint,
+            IvSelector::PointQuery {
+                instrument_ids,
+                basis,
+                as_of_ns,
+                source_filter,
+            },
+        ) => state
+            .retention_misses
+            .iter()
+            .find(|miss| {
+                miss.profile_id == query.profile_id
+                    && miss.product_kind == query.product_kind
+                    && instrument_ids.contains(&miss.instrument_id)
+                    && miss.basis == *basis
+                    && miss.ts_event_ns == *as_of_ns
+                    && source_matches(&miss.source_id, source_filter)
+            })
+            .cloned(),
+        _ => None,
+    }
+}
+
+fn record_query_rejection_locked(
+    state: &mut IvQueryState,
+    provenance: &IvProvenance,
+    reject_reason: IvRejectReason,
+) {
+    record_source_rejection_locked(
+        state,
+        &provenance.profile_id,
+        &provenance.source_id,
+        provenance.subscription_generation,
+        provenance.ts_event_ns,
+        reject_reason,
+    );
+}
+
+fn record_source_rejection_locked(
+    state: &mut IvQueryState,
+    profile_id: &str,
+    source_id: &str,
+    subscription_generation: u64,
+    ts_event_ns: UnixNanos,
+    reject_reason: IvRejectReason,
+) {
+    if let Some(existing) = state.source_health.iter_mut().find(|existing| {
+        existing.profile_id == profile_id
+            && existing.source_id == source_id
+            && existing.subscription_generation == subscription_generation
+    }) {
+        existing.last_event_ts_ns = Some(ts_event_ns);
+        existing.last_reject_reason = Some(reject_reason);
+        *existing
+            .reject_counts
+            .entry(reject_reason)
+            .or_insert(INITIAL_REJECT_COUNT) += REJECT_COUNT_INCREMENT;
+        apply_source_rejection_flags(existing, reject_reason, false);
+    } else {
+        let mut reject_counts = BTreeMap::new();
+        reject_counts.insert(reject_reason, REJECT_COUNT_INCREMENT);
+        state.source_health.push(IvSourceHealth {
+            profile_id: profile_id.to_string(),
+            source_id: source_id.to_string(),
+            subscription_state: rejection_health_state(reject_reason),
+            last_event_ts_ns: Some(ts_event_ns),
+            last_reject_reason: Some(reject_reason),
+            reject_counts,
+            stale_state: reject_reason == IvRejectReason::StaleData,
+            retention_state: reject_reason == IvRejectReason::RetentionMiss,
+            subscription_generation,
+        });
+    }
+    state
+        .query_rejections
+        .push(IvPolicyDecision::RejectionDecision {
+            reject_reason,
+            failed_field: None,
+            policy_id: None,
+            source_health_state: rejection_health_state(reject_reason),
+            subscription_generation,
+        });
+}
+
+fn apply_source_rejection_flags(
+    health: &mut IvSourceHealth,
+    reject_reason: IvRejectReason,
+    mark_rejected: bool,
+) {
+    if mark_rejected {
+        health.subscription_state = IvSourceHealthState::Rejected;
+    } else if reject_reason == IvRejectReason::StaleData {
+        health.subscription_state = IvSourceHealthState::Stale;
+    }
+    health.stale_state |= reject_reason == IvRejectReason::StaleData;
+    health.retention_state |= reject_reason == IvRejectReason::RetentionMiss;
+}
+
+fn rejection_health_state(reject_reason: IvRejectReason) -> IvSourceHealthState {
+    if reject_reason == IvRejectReason::StaleData {
+        IvSourceHealthState::Stale
+    } else {
+        IvSourceHealthState::Active
+    }
+}
+
 fn truncate_front<T>(values: &mut Vec<T>, max_len: usize) {
     if values.len() > max_len {
         let retained_start = values.len() - max_len;
@@ -1981,6 +2264,9 @@ mod tests {
     };
 
     use crate::bolt_v3_iv::health::IvSourceHealthState;
+    use crate::bolt_v3_iv::policy::{
+        IvBasisSelection, IvEvidenceMapping, IvProjectionKind, IvTenorSelection,
+    };
 
     use super::*;
 
@@ -2001,43 +2287,75 @@ mod tests {
     }
 
     #[test]
-    fn only_derived_queries_require_snapshot_for_query_time_writes() {
-        let point_query = IvProductQuery {
-            strategy_id: "test-strategy".to_string(),
-            profile_id: "test-profile".to_string(),
-            product_kind: IvProductKind::IvPoint,
-            selector: IvSelector::PointQuery {
-                instrument_ids: vec!["test-instrument".to_string()],
-                basis: IvBasis::Mark,
-                as_of_ns: UnixNanos::new(1),
-                source_filter: None,
-            },
+    fn fallback_policy_rejects_inputs_exceeding_maximum_timestamp_skew() {
+        let projection_policy = IvProjectionPolicy {
+            policy_id: "test_projection_policy".to_string(),
+            projection_kind: IvProjectionKind::Mean,
+            basis_selection: IvBasisSelection::PreserveInputBasis,
+            source_eligibility: vec!["test_source_a".to_string(), "test_source_b".to_string()],
+            strike_selection: IvStrikeSelection::AllConfiguredStrikes,
+            tenor_selection: IvTenorSelection::AllConfiguredTenors,
+            evidence_mapping: IvEvidenceMapping::PreserveEvidenceKind,
+            minimum_points: 3,
+            max_projection_input_skew_ns: 100,
+            fallback_policy_ref: Some("test_fallback_policy".to_string()),
+            interpolation_policy_ref: None,
+            quorum_policy_ref: None,
         };
-        let derived_query = IvProductQuery {
-            strategy_id: "test-strategy".to_string(),
-            profile_id: "test-profile".to_string(),
-            product_kind: IvProductKind::DerivedIv,
-            selector: IvSelector::DerivedIvQuery {
-                instrument_id: "test-instrument".to_string(),
-                helper_policy_id: "test-helper-policy".to_string(),
-                as_of_ns: UnixNanos::new(1),
-                inputs: None,
-            },
-        };
-        let projected_from_derived_query = IvProductQuery {
-            strategy_id: "test-strategy".to_string(),
-            profile_id: "test-profile".to_string(),
-            product_kind: IvProductKind::ProjectedScalarIv,
-            selector: IvSelector::ProjectedScalarIvQuery {
-                input_selector: Box::new(derived_query.selector.clone()),
-                projection_policy_id: "test-projection-policy".to_string(),
-                as_of_ns: UnixNanos::new(1),
-            },
-        };
+        let state =
+            IvQueryState::new(IvStore::empty()).with_fallback_policies(vec![IvFallbackPolicy {
+                policy_id: "test_fallback_policy".to_string(),
+                candidate_order: vec!["test_instrument".to_string()],
+                eligible_sources: Vec::new(),
+                maximum_timestamp_skew_ns: 5,
+                required_provenance_fields: Vec::new(),
+            }]);
+        let products = vec![
+            IvQueryProduct::IvPoint(test_point("test_source_a", 100)),
+            IvQueryProduct::IvPoint(test_point("test_source_b", 120)),
+        ];
+        let inputs = projection_inputs_from_products(&products).unwrap();
 
-        assert!(!query_requires_snapshot(&point_query));
-        assert!(query_requires_snapshot(&derived_query));
-        assert!(query_requires_snapshot(&projected_from_derived_query));
+        assert!(matches!(
+            fallback_only(&projection_policy, &state, &products, &inputs),
+            Err(IvQueryError::ProjectionRejected)
+        ));
+    }
+
+    fn test_point(source_id: &str, ts_event_ns: u64) -> IvPoint {
+        let timestamp = UnixNanos::new(ts_event_ns);
+        IvPoint {
+            profile_id: "test_profile".to_string(),
+            source_id: source_id.to_string(),
+            instrument_id: "test_instrument".to_string(),
+            basis: IvBasis::Mark,
+            iv: 0.42,
+            convention: IvConvention::Named("test_convention".to_string()),
+            ts_event_ns: timestamp,
+            ts_init_ns: Some(timestamp),
+            provenance: IvProvenance {
+                profile_id: "test_profile".to_string(),
+                source_id: source_id.to_string(),
+                source_kind: crate::bolt_v3_iv::types::IvSourceKind::OptionGreeks,
+                selector_fingerprint: format!("test_selector_{source_id}"),
+                nt_revision: crate::bolt_v3_iv::runtime::cargo_pinned_nt_revision().to_string(),
+                nt_evidence_path: "test/evidence.rs".to_string(),
+                nt_symbol: "TestNtSymbol".to_string(),
+                raw_event_id: Some(format!("test_raw_event_{source_id}")),
+                payload_kind: Some("option_greeks".to_string()),
+                input_event_ids: Vec::new(),
+                helper_identity: None,
+                policy_decisions: Vec::new(),
+                transformation_steps: Vec::new(),
+                ts_event_ns: timestamp,
+                ts_init_ns: Some(timestamp),
+                received_ts_ns: timestamp,
+                ingest_sequence: 1,
+                subscription_generation: 1,
+                source_health_state: IvSourceHealthState::Active,
+                reject_reason: None,
+            },
+        }
     }
 
     #[test]

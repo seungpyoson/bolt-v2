@@ -192,7 +192,7 @@ nt_symbol = "ConfiguredOptionChain"
 [profiles.sources.selector]
 selector_kind = "source_option_chain"
 series_ids = ["configured-series"]
-strike_range_policy = "configured-strike-range-policy"
+strike_range_policy = "atm_relative:1:1"
 
 [profiles.sources.selector.nt_params]
 configured_nt_param = "configured-value"
@@ -562,6 +562,51 @@ fn numeric_bounds_and_empty_selectors_reject() {
         errors
             .iter()
             .any(|message| message.contains("instrument_ids"))
+    );
+}
+
+#[test]
+fn profile_freshness_bound_rejects_zero_when_configured() {
+    let invalid = valid_iv_toml().replace(
+        "max_source_health_events = 2",
+        "max_source_health_events = 2\nmax_source_event_age_ns = 0",
+    );
+    let config: IvRootConfig = toml::from_str(&invalid).unwrap();
+    let errors = validate_iv_root_config(&config);
+
+    assert!(
+        errors
+            .iter()
+            .any(|message| message.contains("max_source_event_age_ns")),
+        "expected max_source_event_age_ns validation error, got {errors:?}"
+    );
+}
+
+#[test]
+fn source_rename_is_a_single_profile_scoped_edit() {
+    let renamed = valid_iv_toml().replace(
+        "configured-greeks-source",
+        "configured-renamed-greeks-source",
+    );
+    let config = load_iv_config_from_toml(&renamed).unwrap();
+    let profile = &config.profiles[0];
+
+    assert!(
+        profile
+            .sources
+            .iter()
+            .any(|source| source.source_id == "configured-renamed-greeks-source")
+    );
+    assert!(
+        profile
+            .audit_policy
+            .eligible_sources
+            .contains(&"configured-renamed-greeks-source".to_string())
+    );
+    assert!(
+        profile.projection_policies[0]
+            .source_eligibility
+            .contains(&"configured-renamed-greeks-source".to_string())
     );
 }
 

@@ -68,7 +68,7 @@ Optional query fields are allowed only when the owning IV profile permits overri
 Responses are either:
 
 - `Ok(product)` with `IvProvenance`, profile identity, source identity, timestamp units, and policy decisions
-- `Err(IvQueryError)` for profile mismatch, product-kind mismatch, not found, missing projection/helper policy, missing derived input, raw-payload rejection, strategy authorization rejection, or unsupported product-kind routing
+- `Err(IvQueryError)` for profile mismatch, product-kind mismatch, not found, retention miss, missing projection/helper policy, missing derived input, raw-payload rejection, strategy authorization rejection, or unsupported product-kind routing
 
 No query may silently fall back to another basis, convention, source, timestamp, projection, interpolation, fallback, quorum, extrapolation policy, rate input, carry input, or time convention.
 

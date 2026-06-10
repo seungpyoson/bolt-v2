@@ -186,7 +186,7 @@ As a strategy author, I need a strategy-agnostic IV API that exposes all strateg
 - **FR-050**: System MUST define `IvAuditPolicy` inside each `IvProfile` so raw payload access has explicit enabled raw products, access purposes, authorized audit handles, retention limits, and source eligibility.
 - **FR-051**: System MUST define `IvSelectorAuthorization` so each profile can choose whether strategy access is profile-wide or selector-scoped; selector-scoped profiles must map strategy IDs to allowed products and selector fingerprints.
 - **FR-052**: System MUST define `IvNumericBounds` and `IvConventionBounds` for input and output validation, including finiteness, positivity, IV ranges, rate/carry ranges, time-to-expiry ranges, strike ranges, and convention eligibility.
-- **FR-053**: System MUST define the accepted IV TOML schema-version set, version bump rule, and migration behavior; unknown versions reject before subscription planning.
+- **FR-053**: System MUST define the accepted IV TOML schema-version set and fail closed for unknown versions before subscription planning; this slice ships no automatic schema migrator.
 - **FR-054**: System MUST include option-microstructure terms such as strike, expiry, expiration, tenor, moneyness, skew, premium, and vol in the whole-checkout candidate sweep so NT symbols without explicit `iv` or `implied` names are still surfaced for classification.
 
 ### Key Entities *(include if feature involves data)*
@@ -250,7 +250,7 @@ As a strategy author, I need a strategy-agnostic IV API that exposes all strateg
 - **SC-021**: Audit-policy tests prove raw payload access is available only through configured audit/replay handles and is never injected into strategy query handles.
 - **SC-022**: Selector-authorization tests prove profile-wide access and selector-scoped access both enforce configured products and selector fingerprints exactly.
 - **SC-023**: Bound-schema tests prove every numeric and convention bound rejects non-finite, out-of-range, unit-ambiguous, or convention-ineligible input before ingestion, projection, or helper output is accepted.
-- **SC-024**: Schema-version tests prove accepted IV TOML schema versions load, unknown versions reject before source planning, and version-bump migrations are explicit.
+- **SC-024**: Schema-version tests prove accepted IV TOML schema versions load and unknown versions reject before source planning.
 
 ## Assumptions
 

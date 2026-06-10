@@ -369,6 +369,21 @@ fn capability_ledger_classifies_whole_cargo_resolved_nt_checkout() {
     let lock_text = fs::read_to_string(repo_path("Cargo.lock")).unwrap();
     let evidence = resolve_nt_cargo_evidence(&metadata, &lock_text).unwrap();
     let candidates = scan_whole_checkout_candidates(&evidence.resolved_checkout_path).unwrap();
+    assert!(
+        !candidates.is_empty(),
+        "whole-checkout capability scan must discover NT IV/options candidates"
+    );
+    let discovered_families = scan_seed_families(&evidence.resolved_checkout_path)
+        .unwrap()
+        .into_iter()
+        .filter_map(|candidate| candidate.seed_family)
+        .collect::<BTreeSet<_>>();
+    for required_family in SeedFamily::required() {
+        assert!(
+            discovered_families.contains(required_family),
+            "whole-checkout capability scan missed required seed family {required_family:?}"
+        );
+    }
     let fixture = load_capability_ledger_fixture(&repo_path(
         "tests/fixtures/bolt_v3_iv/capability-ledger.toml",
     ))

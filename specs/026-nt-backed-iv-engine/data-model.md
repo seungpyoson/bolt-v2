@@ -38,23 +38,23 @@ Fields:
 - `max_indexed_points`
 - `max_smiles`
 - `max_surfaces`
+- `max_derived_points`
 - `max_source_health_events`
+- `max_source_event_age_ns` (optional)
 - `sources`
-- `accepted_conventions`
-- `enabled_bases`
-- `interpolation_policy`
-- `fallback_policy`
-- `quorum_policy`
-- `projection_policy`
-- `derived_input_policy`
-- `helper_policy`
-- `schema_version_policy`
+- `audit_policy`
+- `interpolation_policies`
+- `fallback_policies`
+- `quorum_policies`
+- `projection_policies`
+- `derived_input_policies`
+- `helper_policies`
+- `derived_inputs`
 
 Validation:
 
 - Profile IDs are unique and non-empty.
-- Unknown or unsupported schema versions reject at startup.
-- Supported schema versions and migration behavior are declared in `schema_version_policy`; no best-effort schema compatibility is allowed.
+- Unknown or unsupported root schema versions reject at startup; this slice accepts only `schema_version = 1` and does not ship an automatic migrator.
 - Strategy authorization, sources, source lifecycle, enabled products, memory bounds, numeric bounds, and query policies live in this profile boundary.
 - Each strategy authorization carries its own strategy ID, product allowlist, source allowlist, and selector-fingerprint allowlist so two strategies in the same profile can use different configured selectors.
 - Bounds reference named `IvNumericBounds` and convention-bound policies used by ingestion, projection, helper inputs, helper outputs, quorum agreement bands, and configured operator values.
@@ -718,12 +718,8 @@ Fields:
 - `profile_id`
 - `selector`
 - `product_kind`
-- `basis`
-- `as_of_ns`
-- `projection_policy`
-- `derived_inputs`
-- `history_policy`
-- `policy_overrides`
+
+Selector variants carry their own typed query fields such as basis, timestamp, source filter, projection policy ID, helper policy ID, and optional derived-input bundle.
 
 Validation:
 

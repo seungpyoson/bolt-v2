@@ -17,13 +17,14 @@ The exact final pushed SHA cannot be embedded in the commit that contains this f
 - Runtime fail-closed checks for configured NT greeks conventions, missing IV basis, non-finite strategy-visible numeric fields, stale/reloaded subscription generations, malformed custom data, and audit retention windows.
 - Raw event preservation, including serialized NT custom-data JSON for custom-data backed sources, audit-only raw access, and strategy-safe indexed IV products.
 - IV points, greeks points, smiles, surfaces, aggregate greeks, custom IV evidence, source health, projected scalar IV, and derived IV query products.
-- Typed projection policy selectors with Rust-validated TOML values, all-strikes smile projection, fail-closed single-strike interpolation fallback/rejection, quorum fallback routing, accepted-candidate fallback provenance, per-source smile interpolation before quorum, selector-scoped product candidate selection, current-generation product filtering, helper-output config validation, and read-guard based non-derived query execution.
+- Typed projection policy selectors with Rust-validated TOML values, all-strikes smile projection, fail-closed single-strike interpolation fallback/rejection, fail-closed quorum rejection, accepted-candidate fallback provenance with required-field and skew enforcement, per-source smile interpolation before quorum, selector-scoped product candidate selection, current-generation product filtering, helper-output config validation, and snapshot-based query execution for query-time rejection recording.
 - Rust validation for policy and derived-input source references, including interpolation/fallback/quorum `eligible_sources`, reciprocal helper/input-policy refs, derived-input `profile_source_ref` source-selector pairs, non-empty and internally consistent derived-input source-kind allowlists, and duplicate derived-input field policies.
 - Per-strategy TOML authorization entries so two registered strategy instances in the same IV profile can receive different selector/source scopes through the runtime-backed registry.
 - NT helper-backed derived IV through `nautilus_model::data::imply_vol_and_greeks`.
 - Strategy query handle registration through `StrategyRegistrationContext::iv_query_handles`.
 - Live-node IV startup/stop lifecycle planning through `IvEngineLifecyclePlan` and `plan_iv_engine_lifecycle`, plus IV reload planning and runtime IV root reload state updates for existing query handles. This PR does not introduce a production config hot-reload trigger in the live-node runner.
 - IV source-fence checks wired through `just source-fence`.
+- Collateral CI installer hardening: raw GitHub release downloads for `just`/`cargo-zigbuild` were replaced with the commit-pinned `taiki-e/install-action` because those installer failures blocked exact-head IV CI verification on this branch.
 
 ## NT APIs Used
 

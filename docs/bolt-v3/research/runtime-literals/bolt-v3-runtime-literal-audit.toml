@@ -655,10 +655,10 @@ reason = "This domain separator pins the config-bundle checksum format used to b
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''10'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 10;'''
+literal = '''11'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 11;'''
 classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v10 renames reference_fair_value to reference_current_price in strategy-input evidence; it is part of the audit-record contract, not an operator runtime value."
+reason = "This is the decision-evidence JSONL envelope schema version. v11 adds reference_current_price source attribution to strategy-input evidence; it is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -9144,6 +9144,14 @@ reason = "Config validation diagnostic for impossible reference-price quorum set
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"{context}: reference_current_price.source.{source_id} uses the same physical reference feed as reference_current_price.source.{existing_source_id}: provider `{}`, client_id `{}`, identifier `{identifier}`"'''
+context = '''"{context}: reference_current_price.source.{source_id} uses the same physical reference feed as reference_current_price.source.{existing_source_id}: provider `{}`, client_id `{}`, identifier `{identifier}`",'''
+classification = "reference_price_validation_diagnostic"
+reason = "Config validation diagnostic for duplicate enabled reference-current-price sources bound to the same provider, client, and provider identifier; it is not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
 kind = "number"
 literal = '''1'''
 context = '''valid_enabled_sources = valid_enabled_sources.saturating_sub(1);'''
@@ -9237,22 +9245,6 @@ literal = '''"no enabled reference_current_price sources are configured"'''
 context = '''"no enabled reference_current_price sources are configured"'''
 classification = "reference_current_price_health_diagnostic"
 reason = "Diagnostic for a config that has no enabled reference-current-price source to probe."
-
-[[allowed]]
-path = "src/bolt_v3_reference_price_health.rs"
-kind = "string"
-literal = '''"ok"'''
-context = '''connect_status: "ok".to_string(),'''
-classification = "reference_current_price_health_status_code"
-reason = "Stable operator output status for a successful bounded client connect."
-
-[[allowed]]
-path = "src/bolt_v3_reference_price_health.rs"
-kind = "string"
-literal = '''"ok"'''
-context = '''disconnect_status: "ok".to_string(),'''
-classification = "reference_current_price_health_status_code"
-reason = "Stable operator output status for a successful bounded client disconnect."
 
 [[allowed]]
 path = "src/bolt_v3_reference_price_health.rs"

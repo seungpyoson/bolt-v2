@@ -419,7 +419,7 @@ fn reference_current_price_does_not_open_interval_without_source_bound_price_to_
         1_000,
     )
     .expect("reference current price quote should construct");
-    assert!(strategy.active.observe_reference_price_quote(&quote));
+    assert!(strategy.active.observe_reference_price_quote(&quote, false));
 
     assert_eq!(strategy.active.interval_open, None);
     assert_eq!(strategy.active.reference_current_price, Some(3_101.0));

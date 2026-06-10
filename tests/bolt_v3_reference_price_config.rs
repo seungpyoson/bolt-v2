@@ -113,6 +113,81 @@ instrument_id = "BTC-USD.CHAINLINK"
 }
 
 #[test]
+fn reference_current_price_asset_must_match_target_underlying_asset() {
+    let messages = validate_reference_current_price(
+        r#"
+[reference_current_price]
+asset = "ADA"
+sources = ["chainlink_primary"]
+min_valid_sources = 1
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.chainlink_primary]
+provider = "chainlink_ws"
+enabled = true
+required = false
+client_id = "chainlink_reference"
+instrument_id = "ADA-USD.CHAINLINK"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("reference_current_price.asset")
+                && message.contains("target.underlying_asset")
+                && message.contains("ADA")
+                && message.contains("BTC")
+        }),
+        "reference_current_price.asset should match target.underlying_asset, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn reference_current_price_validation_rejects_duplicate_enabled_physical_sources() {
+    let messages = validate_reference_current_price(
+        r#"
+[reference_current_price]
+asset = "BTC"
+sources = ["chainlink_primary", "chainlink_alias"]
+min_valid_sources = 2
+selection_policy = "first_valid_per_interval"
+max_source_age_ms = 2000
+max_source_drift_bps = 25
+drift_policy = "observe"
+stale_policy = "block"
+
+[reference_current_price.source.chainlink_primary]
+provider = "chainlink_ws"
+enabled = true
+required = false
+client_id = "chainlink_reference"
+instrument_id = "BTC-USD.CHAINLINK"
+
+[reference_current_price.source.chainlink_alias]
+provider = "chainlink_ws"
+enabled = true
+required = false
+client_id = "chainlink_reference"
+instrument_id = "BTC-USD.CHAINLINK"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("reference_current_price.source.chainlink_alias")
+                && message.contains("chainlink_primary")
+                && message.contains("same physical reference feed")
+                && message.contains("BTC-USD.CHAINLINK")
+        }),
+        "duplicate enabled physical source should fail validation, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn reference_current_price_requires_explicit_min_valid_sources() {
     let err = try_parse_strategy(
         r#"

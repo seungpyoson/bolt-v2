@@ -64,8 +64,6 @@ pub struct ReferenceCurrentPriceHealthClientReport {
     pub registered_data_client_ids: Vec<String>,
     pub registered_exec_client_ids: Vec<String>,
     pub registered_strategy_ids: Vec<String>,
-    pub connect_status: String,
-    pub disconnect_status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -263,8 +261,6 @@ pub async fn run_prepared_reference_current_price_health(
             registered_data_client_ids: registered_data_client_ids.clone(),
             registered_exec_client_ids: registered_exec_client_ids.clone(),
             registered_strategy_ids: registered_strategy_ids.clone(),
-            connect_status: "ok".to_string(),
-            disconnect_status: "ok".to_string(),
         })
         .collect();
 
@@ -857,6 +853,31 @@ mod tests {
 
         report.source_update_observations = vec![observed];
         assert!(report.all_sources_observed());
+    }
+
+    #[test]
+    fn reference_current_price_health_client_report_does_not_fabricate_transport_statuses() {
+        let report = ReferenceCurrentPriceHealthReport {
+            targets: Vec::new(),
+            clients: vec![ReferenceCurrentPriceHealthClientReport {
+                client_key: "chainlink_reference".to_string(),
+                registered_data_client_ids: vec!["chainlink_reference".to_string()],
+                registered_exec_client_ids: Vec::new(),
+                registered_strategy_ids: Vec::new(),
+            }],
+            source_update_observations: Vec::new(),
+        };
+
+        let json = serde_json::to_value(report).expect("health report should serialize");
+        let client = json
+            .get("clients")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|clients| clients.first())
+            .expect("report should include one client");
+        assert!(
+            client.get("connect_status").is_none() && client.get("disconnect_status").is_none(),
+            "health report must not fabricate transport status fields: {client}"
+        );
     }
 
     #[test]

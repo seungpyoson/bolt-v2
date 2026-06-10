@@ -597,7 +597,7 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
         table
             .get("underlying_asset")
             .and_then(|value| value.as_str()),
-        Some("CONFIGURED_ASSET")
+        Some("BTC")
     );
     assert_eq!(
         table
@@ -1879,8 +1879,8 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_with_non_chainlink_clie
 }
 
 /// (b) The resolution_data client is the Chainlink strike client and the
-/// instrument exists as a feed_binding, but its asset prefix (`BTC`) does not
-/// match the target's `underlying_asset` (`CONFIGURED_ASSET`). A wrong-asset
+/// instrument asset prefix (`ETH`) does not match the target's
+/// `underlying_asset` (`BTC`). A wrong-asset
 /// strike feed must fail closed at load time, not silently at subscribe time.
 #[test]
 fn binary_oracle_runtime_mapping_rejects_resolution_data_instrument_asset_mismatch() {
@@ -1891,11 +1891,11 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_instrument_asset_mismat
         .iter()
         .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
-    // The fixture target's underlying_asset is "CONFIGURED_ASSET"; the Chainlink
-    // strike feed_binding instrument is "BTC-USD.CHAINLINK" (asset prefix "BTC").
+    // The fixture target's underlying_asset is "BTC"; the configured strike
+    // instrument has asset prefix "ETH".
     loaded.strategies[strategy_index].config.resolution_data = Some(DataInstrumentBlock {
         data_client_id: ClientId::from("chainlink_strike"),
-        instrument_id: InstrumentId::from("BTC-USD.CHAINLINK"),
+        instrument_id: InstrumentId::from("ETH-USD.CHAINLINK"),
     });
 
     let strategy = &loaded.strategies[strategy_index];
@@ -1905,8 +1905,8 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_instrument_asset_mismat
     let rendered = error.to_string();
     assert!(
         rendered.contains("resolution_data")
-            && rendered.contains("BTC-USD.CHAINLINK")
-            && rendered.contains("CONFIGURED_ASSET"),
+            && rendered.contains("ETH-USD.CHAINLINK")
+            && rendered.contains("BTC"),
         "asset-mismatched resolution instrument should fail with a clear message naming the instrument and the underlying_asset, got: {rendered}"
     );
 }

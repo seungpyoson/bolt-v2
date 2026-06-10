@@ -18,7 +18,7 @@ use crate::bolt_v3_realized_volatility::{
     RealizedVolSourceRejectReason, RealizedVolSourceStatus,
 };
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 10;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 11;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
@@ -348,6 +348,8 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub reference_quote_ts_event: u64,
     pub spot_price: String,
     pub reference_current_price: Option<String>,
+    pub reference_current_price_source_id: Option<String>,
+    pub reference_current_price_failed_over: Option<bool>,
     pub realized_volatility: String,
     pub realized_volatility_surface_id: String,
     pub realized_volatility_as_of_ms: Option<u64>,
@@ -1180,6 +1182,8 @@ mod tests {
             reference_quote_ts_event: 1200,
             spot_price: "3100.5".to_string(),
             reference_current_price: Some("3100.5".to_string()),
+            reference_current_price_source_id: Some("chainlink_primary".to_string()),
+            reference_current_price_failed_over: Some(false),
             realized_volatility: "1.5".to_string(),
             realized_volatility_surface_id: String::new(),
             realized_volatility_as_of_ms: None,

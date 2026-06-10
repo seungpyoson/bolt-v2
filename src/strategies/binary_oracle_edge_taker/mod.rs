@@ -65,9 +65,10 @@ use crate::{
     bolt_v3_reference_price::{
         REFERENCE_PRICE_ASSET_PARAM, REFERENCE_PRICE_INSTRUMENT_ID_PARAM,
         REFERENCE_PRICE_PROVIDER_PARAM, REFERENCE_PRICE_SOURCE_KEY_PARAM,
-        REFERENCE_PRICE_SYMBOL_PARAM, ReferencePriceSelector, ReferencePriceSourceHealth,
-        ReferencePriceSourceSpec, ReferencePriceSourceStatus, ReferencePriceUpdate, ReferenceQuote,
-        reference_price_source_is_runtime_available, reference_price_source_is_unsupported,
+        REFERENCE_PRICE_SYMBOL_PARAM, ReferencePriceSelection, ReferencePriceSelector,
+        ReferencePriceSourceHealth, ReferencePriceSourceSpec, ReferencePriceSourceStatus,
+        ReferencePriceUpdate, ReferenceQuote, reference_price_source_is_runtime_available,
+        reference_price_source_is_unsupported,
     },
     bolt_v3_submit_admission::{
         BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionRequest,
@@ -298,6 +299,7 @@ struct ActiveMarketState {
     price_to_beat: Option<f64>,
     reference_current_price: Option<f64>,
     reference_current_price_source_id: Option<String>,
+    reference_current_price_failed_over: Option<bool>,
     reference_current_price_ts_ms: Option<u64>,
     market_selection_outcome: MarketSelectionOutcome,
     interval_start_ms: Option<u64>,
@@ -754,6 +756,7 @@ impl ActiveMarketState {
             price_to_beat: None,
             reference_current_price: None,
             reference_current_price_source_id: None,
+            reference_current_price_failed_over: None,
             reference_current_price_ts_ms: None,
             market_selection_outcome: MarketSelectionOutcome::Current,
             interval_start_ms: None,
@@ -805,6 +808,7 @@ impl ActiveMarketState {
             price_to_beat: market.price_to_beat,
             reference_current_price: None,
             reference_current_price_source_id: None,
+            reference_current_price_failed_over: None,
             reference_current_price_ts_ms: None,
             market_selection_outcome: market.selection_outcome,
             interval_start_ms: Some(market.start_ts_ms),
@@ -907,7 +911,7 @@ impl ActiveMarketState {
         self.last_resolution_ts_ms = Some(observed_ts_ms);
     }
 
-    fn observe_reference_price_quote(&mut self, quote: &ReferenceQuote) -> bool {
+    fn observe_reference_price_quote(&mut self, quote: &ReferenceQuote, failed_over: bool) -> bool {
         if self.phase == SelectionPhase::Idle {
             return false;
         }
@@ -931,6 +935,7 @@ impl ActiveMarketState {
 
         self.reference_current_price = Some(quote.price());
         self.reference_current_price_source_id = Some(quote.source_id().to_string());
+        self.reference_current_price_failed_over = Some(failed_over);
         self.reference_current_price_ts_ms = Some(quote.observed_ts_ms());
         self.last_reference_ts_ms = Some(quote.observed_ts_ms());
         if self.interval_open.is_none()
@@ -949,6 +954,7 @@ impl ActiveMarketState {
     fn clear_reference_price_quote(&mut self) {
         self.reference_current_price = None;
         self.reference_current_price_source_id = None;
+        self.reference_current_price_failed_over = None;
         self.reference_current_price_ts_ms = None;
     }
 
@@ -1648,12 +1654,12 @@ impl BinaryOracleEdgeTaker {
         self.observe_current_reference_price_selection(interval_start_ms, interval_end_ms, now_ms);
     }
 
-    fn select_current_reference_price_source_id(
+    fn select_current_reference_price(
         &mut self,
         interval_start_ms: u64,
         interval_end_ms: u64,
         now_ms: u64,
-    ) -> Option<String> {
+    ) -> Option<ReferencePriceSelection> {
         let selector = self.reference_price_selector.as_mut()?;
         let quotes = self
             .reference_price_quotes
@@ -1665,7 +1671,7 @@ impl BinaryOracleEdgeTaker {
         if selection.is_none() {
             self.clear_reference_current_price_selection_state();
         }
-        selection.map(|selection| selection.source_id().to_string())
+        selection
     }
 
     fn observe_current_reference_price_selection(
@@ -1674,15 +1680,16 @@ impl BinaryOracleEdgeTaker {
         interval_end_ms: u64,
         now_ms: u64,
     ) {
-        let Some(selected_source_id) = self.select_current_reference_price_source_id(
-            interval_start_ms,
-            interval_end_ms,
-            now_ms,
-        ) else {
+        let Some(selection) =
+            self.select_current_reference_price(interval_start_ms, interval_end_ms, now_ms)
+        else {
             return;
         };
+        let selected_source_id = selection.source_id().to_string();
         if let Some(selected_quote) = self.reference_price_quotes.get(&selected_source_id)
-            && self.active.observe_reference_price_quote(selected_quote)
+            && self
+                .active
+                .observe_reference_price_quote(selected_quote, selection.failed_over())
         {
             self.pricing
                 .observe_reference_current_price(&FastSpotObservation {
@@ -4267,6 +4274,11 @@ impl BinaryOracleEdgeTaker {
                 .pricing
                 .last_reference_current_price
                 .map(evidence_number),
+            reference_current_price_source_id: self
+                .active
+                .reference_current_price_source_id
+                .clone(),
+            reference_current_price_failed_over: self.active.reference_current_price_failed_over,
             realized_volatility: String::new(),
             realized_volatility_surface_id: realized_volatility.surface_id,
             realized_volatility_as_of_ms: realized_volatility.as_of_ms,
@@ -4479,6 +4491,11 @@ impl BinaryOracleEdgeTaker {
                 .pricing
                 .last_reference_current_price
                 .map(evidence_number),
+            reference_current_price_source_id: self
+                .active
+                .reference_current_price_source_id
+                .clone(),
+            reference_current_price_failed_over: self.active.reference_current_price_failed_over,
             realized_volatility: evidence_number(realized_volatility),
             realized_volatility_surface_id: realized_volatility_fields.surface_id,
             realized_volatility_as_of_ms: realized_volatility_fields.as_of_ms,

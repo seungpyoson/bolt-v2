@@ -2330,6 +2330,15 @@ fn validate_reference_current_price(
             "{context}: reference_current_price.asset must be a normalized non-empty uppercase ASCII asset symbol containing only letters and digits"
         ));
     }
+    if let Ok(target) =
+        crate::bolt_v3_market_families::target_runtime_fields_from_target(&strategy.target)
+        && reference_current_price.asset != target.underlying_asset
+    {
+        errors.push(format!(
+            "{context}: reference_current_price.asset `{}` must match target.underlying_asset `{}`",
+            reference_current_price.asset, target.underlying_asset,
+        ));
+    }
 
     if reference_current_price.source_order.is_empty() {
         errors.push(format!(
@@ -2394,6 +2403,39 @@ fn validate_reference_current_price(
     }
 
     let mut valid_enabled_sources = enabled_source_count;
+    let mut physical_source_keys: BTreeMap<(String, String, String), &str> = BTreeMap::new();
+    for source_id in &reference_current_price.source_order {
+        let Some(source) = reference_current_price.sources.get(source_id.as_str()) else {
+            continue;
+        };
+        if !source.enabled {
+            continue;
+        }
+        let Some(provider_metadata) = reference_price_provider_metadata(source.provider.as_str())
+        else {
+            continue;
+        };
+        let identifier = match provider_metadata.identifier_kind {
+            ReferencePriceIdentifierKind::InstrumentId => source.instrument_id.as_deref(),
+            ReferencePriceIdentifierKind::Symbol => source.symbol.as_deref(),
+        };
+        let Some(identifier) = identifier.filter(|value| !reference_price_field_is_blank(value))
+        else {
+            continue;
+        };
+        let key = (
+            source.provider.as_str().to_string(),
+            source.client_id.to_string(),
+            identifier.to_string(),
+        );
+        if let Some(existing_source_id) = physical_source_keys.insert(key, source_id.as_str()) {
+            errors.push(format!(
+                "{context}: reference_current_price.source.{source_id} uses the same physical reference feed as reference_current_price.source.{existing_source_id}: provider `{}`, client_id `{}`, identifier `{identifier}`",
+                source.provider.as_str(),
+                source.client_id,
+            ));
+        }
+    }
 
     for (source_id, source) in &reference_current_price.sources {
         let provider_metadata = reference_price_provider_metadata(source.provider.as_str());

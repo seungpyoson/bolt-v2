@@ -133,7 +133,7 @@ fn plan_market_identity_from_fixture_yields_one_updown_target_plan() {
     assert_eq!(target.strategy_instance_id, "configured_updown_main");
     assert_eq!(target.configured_target_id, "configured_updown_target");
     assert_eq!(target.execution_client_id, "polymarket_main");
-    assert_eq!(target.underlying_asset, "CONFIGURED_ASSET");
+    assert_eq!(target.underlying_asset, "BTC");
     assert_eq!(target.cadence_secs, 300);
     assert_eq!(target.cadence_slug_token, "configuredwindow");
 }

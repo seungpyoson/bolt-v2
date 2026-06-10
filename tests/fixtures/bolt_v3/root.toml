@@ -6,7 +6,7 @@ strategy_files = [
 ]
 
 [realized_volatility_surfaces.configured_rv_surface]
-canonical_base_asset = "CONFIGURED_ASSET"
+canonical_base_asset = "BTC"
 canonical_quote_asset = "USDT"
 
 [realized_volatility_surfaces.configured_rv_surface.policy]
@@ -25,7 +25,7 @@ upper_quantile = 1.0
 [[realized_volatility_surfaces.configured_rv_surface.sources]]
 source_id = "configured_rv_okx_midpoint"
 data_client_id = "okx_data"
-instrument_id = "CONFIGURED_ASSET-USDT.OKX"
+instrument_id = "BTC-USDT.OKX"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true

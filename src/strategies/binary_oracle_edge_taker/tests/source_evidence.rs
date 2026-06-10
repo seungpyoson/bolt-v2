@@ -694,6 +694,13 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
         submit_admission,
     );
     register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.active.reference_current_price = Some(3_100.5);
+    strategy.active.reference_current_price_source_id = Some("chainlink_primary".to_string());
+    strategy.active.reference_current_price_failed_over = Some(false);
+    strategy.active.reference_current_price_ts_ms = Some(1_200);
+    strategy.pricing.last_reference_current_price = Some(3_100.5);
+    strategy.pricing.last_reference_current_price_source_id = Some("chainlink_primary".to_string());
+    strategy.pricing.last_reference_current_price_ts_ms = Some(1_200);
 
     let error = strategy
         .try_submit_entry_order(1_200)
@@ -717,6 +724,20 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
     assert_eq!(snapshot.price_to_beat_value, "3100");
     assert_eq!(snapshot.reference_quote_ts_event, 1_200);
     assert_eq!(snapshot.spot_price, "3100.5");
+    let snapshot_json =
+        serde_json::to_value(&**snapshot).expect("strategy-input snapshot should serialize");
+    assert_eq!(
+        snapshot_json
+            .get("reference_current_price_source_id")
+            .and_then(serde_json::Value::as_str),
+        Some("chainlink_primary")
+    );
+    assert_eq!(
+        snapshot_json
+            .get("reference_current_price_failed_over")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
     assert_eq!(snapshot.realized_volatility, "1.5");
     assert_eq!(snapshot.seconds_to_market_end, 300);
     assert_eq!(snapshot.market_id.as_deref(), Some("MKT-1"));

@@ -460,11 +460,11 @@
           "source_archive_index_object_count": 1351,
           "source_archive_index_verified_head_count": 1351,
           "source_archive_index_total_content_length_bytes": 557815904970,
-          "source_manifest_id": null,
-          "source_conversion_queue_id": null,
-          "source_conversion_queue_work_item_count": 0,
-          "source_conversion_queue_pending_items": 0,
-          "source_conversion_queue_total_bytes": 0,
+          "source_manifest_id": "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current",
+          "source_conversion_queue_id": "source-universe-conversion-queue-pmxt-polymarket-v2-current",
+          "source_conversion_queue_work_item_count": 1351,
+          "source_conversion_queue_pending_items": 1351,
+          "source_conversion_queue_total_bytes": 557815904970,
           "source_object_gate_id": null,
           "source_object_gate_queue_id": null,
           "source_conversion_run_plan_id": null,
@@ -474,10 +474,10 @@
           "converted_record_count": 0,
           "converted_canonical_rows": 0,
           "converted_nt_catalog_rows": 0,
-          "source_object_count": 0,
+          "source_object_count": 1351,
           "source_object_gate_count": 0,
           "source_object_gate_source_binding_count": 0,
-          "source_accepted_bytes": 0,
+          "source_accepted_bytes": 557815904970,
           "catalog_rows_by_nt_data_type": {},
           "catalog_hash": null,
           "output_catalog_uri": null,
@@ -486,7 +486,15 @@
           "selected_projected_row_groups": 1,
           "selected_rows": 5,
           "selected_asset_count": 1,
-          "category_summaries": [],
+          "category_summaries": [
+            {
+              "category": "orderbook",
+              "source_binding": "polymarket-parquet-archive-index",
+              "instrument_count": 1,
+              "object_count": 1351,
+              "compressed_bytes": 557815904970
+            }
+          ],
           "artifact_refs": [
             {
               "role": "source_archive_discovery_seed",
@@ -499,16 +507,25 @@
               "sha256": "d7a368616332d73afebae03abf9f28bac94089498d82f7edc285ddea3371cd74"
             },
             {
+              "role": "source_universe_manifest",
+              "path": "specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",
+              "sha256": "d020be8d337b404f1b7cea7b5962bccd5873ca1532e7cc9d6b0be09c33528299"
+            },
+            {
+              "role": "source_universe_conversion_queue",
+              "path": "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json",
+              "sha256": "e96a49330cb03640d2046bec134a523f59596ecd97e90f02233505835a97b2d5"
+            },
+            {
               "role": "selected_source_report",
               "path": "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json",
               "sha256": "cc5110c9f97f167bc243ac542fda8cbac252f57d847436cc2a3e7dee5b426a73"
             }
           ],
           "blocking_issues": [
-            "missing_pmxt_accepted_source_universe_manifest_with_payload_hashes",
+            "pmxt_archive_source_hashes_are_r2_multipart_etags_not_payload_sha256",
             "missing_pmxt_full_nt_catalog_conversion_manifest",
-            "missing_pmxt_l2_tick_size_epoch_policy",
-            "selected_source_only_not_full_pmxt"
+            "missing_pmxt_l2_tick_size_epoch_policy"
           ]
         }
       ]

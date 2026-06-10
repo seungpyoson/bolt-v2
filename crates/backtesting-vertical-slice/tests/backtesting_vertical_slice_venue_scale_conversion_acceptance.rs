@@ -18,6 +18,8 @@ fn venue_scale_acceptance_ledger_reports_current_binance_bybit_pmxt_scope_withou
     let bybit_conversion_run_plan = temp_dir.path().join("bybit-conversion-run-plan.json");
     let pmxt_archive_seed = temp_dir.path().join("pmxt-archive-discovery-seed.json");
     let pmxt_archive_index_manifest = temp_dir.path().join("pmxt-archive-index-manifest.json");
+    let pmxt_source_manifest = temp_dir.path().join("pmxt-source-universe-manifest.json");
+    let pmxt_conversion_queue = temp_dir.path().join("pmxt-conversion-queue.json");
 
     fs::write(
         &binance_archive_seed,
@@ -111,6 +113,40 @@ fn venue_scale_acceptance_ledger_reports_current_binance_bybit_pmxt_scope_withou
 }"#,
     )
     .expect("write pmxt archive index manifest");
+    fs::write(
+        &pmxt_source_manifest,
+        r#"{
+  "schema_version": "backfill-source-universe-object-manifest.v1",
+  "manifest_id": "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current",
+  "universe_id": "backfill-source-universe-pmxt-polymarket-v2-current",
+  "object_count": 1351,
+  "accepted_bytes": 557815904970,
+  "category_summaries": [
+    {
+      "category": "orderbook",
+      "source_binding": "polymarket-parquet-archive-index",
+      "instrument_count": 1,
+      "object_count": 1351,
+      "compressed_bytes": 557815904970
+    }
+  ]
+}"#,
+    )
+    .expect("write pmxt source-universe manifest");
+    fs::write(
+        &pmxt_conversion_queue,
+        r#"{
+  "schema_version": "source-universe-conversion-queue.v1",
+  "queue_id": "source-universe-conversion-queue-pmxt-polymarket-v2-current",
+  "status": "ready",
+  "manifest_id": "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current",
+  "universe_id": "backfill-source-universe-pmxt-polymarket-v2-current",
+  "work_item_count": 1351,
+  "pending_conversion_items": 1351,
+  "total_source_bytes": 557815904970
+}"#,
+    )
+    .expect("write pmxt conversion queue");
 
     fs::write(
         &spec_path,
@@ -183,12 +219,13 @@ scope_label = "Polymarket full current local/archive data"
 status = "blocked"
 source_archive_discovery_seed_path = "{pmxt_archive_seed}"
 source_archive_index_manifest_path = "{pmxt_archive_index_manifest}"
+source_universe_manifest_path = "{pmxt_source_manifest}"
+source_universe_conversion_queue_path = "{pmxt_conversion_queue}"
 selected_source_report_path = "{pmxt_selected_source_report}"
 blocking_issues = [
-  "missing_pmxt_accepted_source_universe_manifest_with_payload_hashes",
+  "pmxt_archive_source_hashes_are_r2_multipart_etags_not_payload_sha256",
   "missing_pmxt_full_nt_catalog_conversion_manifest",
   "missing_pmxt_l2_tick_size_epoch_policy",
-  "selected_source_only_not_full_pmxt",
 ]
 "#,
             output_dir = output_dir.display(),
@@ -196,6 +233,8 @@ blocking_issues = [
             bybit_conversion_run_plan = bybit_conversion_run_plan.display(),
             pmxt_archive_seed = pmxt_archive_seed.display(),
             pmxt_archive_index_manifest = pmxt_archive_index_manifest.display(),
+            pmxt_source_manifest = pmxt_source_manifest.display(),
+            pmxt_conversion_queue = pmxt_conversion_queue.display(),
             binance_completion_ledger = reference_root
                 .join("backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json")
                 .display(),
@@ -437,6 +476,14 @@ blocking_issues = [
         .find(|universe| universe.universe_id == "pmxt-polymarket-full-current-data")
         .expect("pmxt full current universe");
     assert_eq!(
+        pmxt_full.blocking_issues,
+        vec![
+            "pmxt_archive_source_hashes_are_r2_multipart_etags_not_payload_sha256",
+            "missing_pmxt_full_nt_catalog_conversion_manifest",
+            "missing_pmxt_l2_tick_size_epoch_policy",
+        ]
+    );
+    assert_eq!(
         pmxt_full.source_archive_discovery_seed_id.as_deref(),
         Some("source-archive-discovery-seed-pmxt-polymarket-v2-current")
     );
@@ -467,6 +514,34 @@ blocking_issues = [
             .artifact_refs
             .iter()
             .any(|artifact| artifact.role == "source_archive_index_manifest")
+    );
+    assert_eq!(
+        pmxt_full.source_manifest_id.as_deref(),
+        Some("backfill-source-universe-object-manifest-pmxt-polymarket-v2-current")
+    );
+    assert_eq!(
+        pmxt_full.source_conversion_queue_id.as_deref(),
+        Some("source-universe-conversion-queue-pmxt-polymarket-v2-current")
+    );
+    assert_eq!(pmxt_full.source_object_count, 1_351);
+    assert_eq!(pmxt_full.source_accepted_bytes, 557_815_904_970);
+    assert_eq!(pmxt_full.source_conversion_queue_work_item_count, 1_351);
+    assert_eq!(pmxt_full.source_conversion_queue_pending_items, 1_351);
+    assert_eq!(
+        pmxt_full.source_conversion_queue_total_bytes,
+        557_815_904_970
+    );
+    assert!(
+        pmxt_full
+            .artifact_refs
+            .iter()
+            .any(|artifact| artifact.role == "source_universe_manifest")
+    );
+    assert!(
+        pmxt_full
+            .artifact_refs
+            .iter()
+            .any(|artifact| artifact.role == "source_universe_conversion_queue")
     );
 
     let pmxt_selected = pmxt

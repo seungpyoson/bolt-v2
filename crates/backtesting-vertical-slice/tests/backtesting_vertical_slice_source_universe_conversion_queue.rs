@@ -187,3 +187,161 @@ output_prefix_template = "source-universe={universe_id}/category={category}/symb
         "output prefix must be derived from the manifest object, not a symbol-only fixture"
     );
 }
+
+#[test]
+fn source_universe_conversion_queue_preserves_non_sha_source_hash_without_sha256_claim() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let manifest_path = temp_dir.path().join("pmxt-source-universe.json");
+    let output_dir = temp_dir.path().join("conversion-queue");
+    let spec_path = temp_dir
+        .path()
+        .join("source-universe-conversion-queue.toml");
+
+    fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": "backfill-source-universe-object-manifest.v1",
+  "manifest_id": "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current",
+  "universe_id": "backfill-source-universe-pmxt-polymarket-v2-current",
+  "venue": "pmxt",
+  "source": "polymarket-v2-archive",
+  "family": "prediction_market_outcome",
+  "table_family": "order_book_snapshot_deltas",
+  "object_count": 1,
+  "accepted_bytes": 586780173,
+  "category_summaries": [
+    {
+      "category": "orderbook",
+      "source_binding": "polymarket-parquet-archive-index",
+      "instrument_count": 1,
+      "object_count": 1,
+      "compressed_bytes": 586780173,
+      "first_archive_date": "2026-06-10T15:00:00Z",
+      "last_archive_date": "2026-06-10T15:00:00Z"
+    }
+  ],
+  "payload_records": [
+    {
+      "s3_uri": "s3://bolt-parquet/backfill-staging/pmxt/raw/v1/source=polymarket-v2-archive/family=order_book_snapshot_deltas/category=orderbook/dt=2026-06-10T15:00:00Z/object=etag-9b8839adc79af4b1c8fd607cf5cc8f97-70.parquet",
+      "source_url": "https://r2v2.pmxt.dev/polymarket_orderbook_2026-06-10T15.parquet",
+      "source_hash_algorithm": "r2_multipart_etag",
+      "source_hash": "\"9b8839adc79af4b1c8fd607cf5cc8f97-70\"",
+      "bytes": 586780173,
+      "archive_date": "2026-06-10T15:00:00Z",
+      "category": "orderbook",
+      "symbol": "POLYMARKET",
+      "source_binding": "polymarket-parquet-archive-index",
+      "schema_columns": ["asset_id", "price", "size", "side", "timestamp"]
+    }
+  ]
+}"#,
+    )
+    .expect("write manifest");
+
+    fs::write(
+        &spec_path,
+        format!(
+            r#"
+queue_id = "source-universe-conversion-queue-pmxt-polymarket-v2-current"
+source_universe_manifest_path = "{manifest_path}"
+output_dir = "{output_dir}"
+output_prefix_template = "source-universe={{universe_id}}/category={{category}}/symbol={{symbol}}/dt={{archive_date}}/object={{source_hash}}"
+"#,
+            manifest_path = manifest_path.display(),
+            output_dir = output_dir.display(),
+        ),
+    )
+    .expect("write spec");
+
+    let artifact = write_source_universe_conversion_queue_from_spec_file(&spec_path)
+        .expect("queue generation succeeds");
+    let queue: SourceUniverseConversionQueue =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read queue"))
+            .expect("queue parses");
+    let first = queue.work_items.first().expect("first work item");
+
+    assert_eq!(first.source_hash_algorithm, "r2_multipart_etag");
+    assert_eq!(first.source_hash, "\"9b8839adc79af4b1c8fd607cf5cc8f97-70\"");
+    assert_eq!(first.source_sha256, "");
+    assert!(
+        first
+            .work_item_id
+            .ends_with(":\"9b8839adc79af4b1c8fd607cf5cc8f97-70\"")
+    );
+    assert!(
+        first
+            .output_prefix
+            .ends_with("/object=etag-9b8839adc79af4b1c8fd607cf5cc8f97-70"),
+        "output prefix must sanitize non-path-safe source hashes"
+    );
+}
+
+#[test]
+fn source_universe_conversion_queue_materializes_every_pmxt_archive_index_object_without_sha256_claim()
+ {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let spec_path = reference_root.join(
+        "source-universe-conversion-queues/pmxt-polymarket-v2-current/source-universe-conversion-queue.toml",
+    );
+
+    let artifact = write_source_universe_conversion_queue_from_spec_file(&spec_path)
+        .expect("PMXT queue remains reproducible");
+    let queue: SourceUniverseConversionQueue =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read queue"))
+            .expect("queue parses");
+
+    assert_eq!(
+        queue.queue_id,
+        "source-universe-conversion-queue-pmxt-polymarket-v2-current"
+    );
+    assert_eq!(queue.status, SourceUniverseConversionQueueStatus::Ready);
+    assert_eq!(
+        queue.manifest_id,
+        "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current"
+    );
+    assert_eq!(
+        queue.universe_id,
+        "backfill-source-universe-pmxt-polymarket-v2-current"
+    );
+    assert_eq!(queue.work_item_count, 1_351);
+    assert_eq!(queue.pending_conversion_items, 1_351);
+    assert_eq!(queue.total_source_bytes, 557_815_904_970);
+    assert_eq!(queue.category_summaries.len(), 1);
+    assert_eq!(queue.category_summaries[0].category, "orderbook");
+    assert_eq!(
+        queue.category_summaries[0].source_binding,
+        "polymarket-parquet-archive-index"
+    );
+    assert_eq!(queue.category_summaries[0].work_item_count, 1_351);
+    assert_eq!(queue.category_summaries[0].source_bytes, 557_815_904_970);
+    assert!(
+        queue
+            .work_items
+            .iter()
+            .all(|item| item.work_state == SourceUniverseConversionWorkState::PendingConversion),
+        "every PMXT archive index object must become a pending conversion work item"
+    );
+    assert!(
+        queue
+            .work_items
+            .iter()
+            .all(|item| item.source_sha256.is_empty()),
+        "PMXT queue must not claim SHA-256 for multipart ETag source objects"
+    );
+
+    let first = queue.work_items.first().expect("first work item");
+    assert_eq!(first.category, "orderbook");
+    assert_eq!(first.symbol, "POLYMARKET");
+    assert_eq!(first.archive_date, "2026-06-10T15:00:00Z");
+    assert_eq!(first.source_binding, "polymarket-parquet-archive-index");
+    assert_eq!(first.source_hash_algorithm, "r2_multipart_etag");
+    assert_eq!(first.source_hash, "\"9b8839adc79af4b1c8fd607cf5cc8f97-70\"");
+    assert_eq!(first.source_bytes, 586_780_173);
+    assert!(
+        first.output_prefix.ends_with(
+            "source-universe=backfill-source-universe-pmxt-polymarket-v2-current/category=orderbook/symbol=POLYMARKET/dt=2026-06-10T15:00:00Z/object=etag-9b8839adc79af4b1c8fd607cf5cc8f97-70"
+        ),
+        "output prefix must be derived from the PMXT archive index object"
+    );
+}

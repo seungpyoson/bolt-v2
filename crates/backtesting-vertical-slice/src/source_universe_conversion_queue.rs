@@ -70,6 +70,11 @@ pub struct SourceUniverseConversionWorkItem {
     pub archive_date: String,
     pub source_uri: String,
     pub source_url: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_hash_algorithm: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_hash: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source_sha256: String,
     pub source_bytes: u64,
     pub schema_columns: Vec<String>,
@@ -140,6 +145,11 @@ struct SourceUniverseManifestCategorySummary {
 struct SourceUniverseManifestPayloadRecord {
     s3_uri: String,
     source_url: String,
+    #[serde(default)]
+    source_hash_algorithm: String,
+    #[serde(default)]
+    source_hash: String,
+    #[serde(default)]
     sha256: String,
     bytes: u64,
     archive_date: String,
@@ -278,9 +288,19 @@ fn work_item(
     record: &SourceUniverseManifestPayloadRecord,
     output_prefix_template: &str,
 ) -> Result<SourceUniverseConversionWorkItem> {
-    let output_prefix = render_output_prefix(manifest, record, output_prefix_template)?;
+    let source_hash_algorithm = source_hash_algorithm(record)?;
+    let source_hash = source_hash(record)?;
+    let source_sha256 = source_sha256(record, &source_hash_algorithm, &source_hash)?;
+    let output_prefix = render_output_prefix(
+        manifest,
+        record,
+        &source_hash_algorithm,
+        &source_hash,
+        &source_sha256,
+        output_prefix_template,
+    )?;
     Ok(SourceUniverseConversionWorkItem {
-        work_item_id: work_item_id(record),
+        work_item_id: work_item_id(record, &source_hash),
         work_state: SourceUniverseConversionWorkState::PendingConversion,
         source_binding: record.source_binding.clone(),
         table_family: manifest.table_family.clone(),
@@ -289,26 +309,32 @@ fn work_item(
         archive_date: record.archive_date.clone(),
         source_uri: record.s3_uri.clone(),
         source_url: record.source_url.clone(),
-        source_sha256: record.sha256.clone(),
+        source_hash_algorithm,
+        source_hash,
+        source_sha256,
         source_bytes: record.bytes,
         schema_columns: record.schema_columns.clone(),
         output_prefix,
     })
 }
 
-fn work_item_id(record: &SourceUniverseManifestPayloadRecord) -> String {
+fn work_item_id(record: &SourceUniverseManifestPayloadRecord, source_hash: &str) -> String {
     format!(
         "{}:{}:{}:{}",
-        record.source_binding, record.symbol, record.archive_date, record.sha256
+        record.source_binding, record.symbol, record.archive_date, source_hash
     )
 }
 
 fn render_output_prefix(
     manifest: &SourceUniverseManifest,
     record: &SourceUniverseManifestPayloadRecord,
+    source_hash_algorithm: &str,
+    source_hash: &str,
+    source_sha256: &str,
     template: &str,
 ) -> Result<String> {
     let mut output = template.to_string();
+    let source_hash_path = source_hash_path_component(source_hash_algorithm, source_hash);
     for (token, value) in [
         ("{manifest_id}", manifest.manifest_id.as_str()),
         ("{universe_id}", manifest.universe_id.as_str()),
@@ -319,7 +345,10 @@ fn render_output_prefix(
         ("{category}", record.category.as_str()),
         ("{symbol}", record.symbol.as_str()),
         ("{archive_date}", record.archive_date.as_str()),
-        ("{sha256}", record.sha256.as_str()),
+        ("{sha256}", source_sha256),
+        ("{source_hash_algorithm}", source_hash_algorithm),
+        ("{source_hash}", source_hash_path.as_str()),
+        ("{source_hash_raw}", source_hash),
         ("{source_binding}", record.source_binding.as_str()),
     ] {
         output = output.replace(token, value);
@@ -329,6 +358,70 @@ fn render_output_prefix(
         "output_prefix_template contains an unsupported placeholder"
     );
     Ok(output)
+}
+
+fn source_hash_algorithm(record: &SourceUniverseManifestPayloadRecord) -> Result<String> {
+    if !record.source_hash.trim().is_empty() {
+        ensure!(
+            !record.source_hash_algorithm.trim().is_empty(),
+            "source_hash_algorithm must be set when source_hash is set"
+        );
+        return Ok(record.source_hash_algorithm.clone());
+    }
+    ensure!(
+        !record.sha256.trim().is_empty(),
+        "payload record must include sha256 or source_hash"
+    );
+    Ok("sha256".to_string())
+}
+
+fn source_hash(record: &SourceUniverseManifestPayloadRecord) -> Result<String> {
+    if !record.source_hash.trim().is_empty() {
+        return Ok(record.source_hash.clone());
+    }
+    ensure!(
+        !record.sha256.trim().is_empty(),
+        "payload record must include sha256 or source_hash"
+    );
+    Ok(record.sha256.clone())
+}
+
+fn source_sha256(
+    record: &SourceUniverseManifestPayloadRecord,
+    source_hash_algorithm: &str,
+    source_hash: &str,
+) -> Result<String> {
+    if !record.sha256.trim().is_empty() {
+        if source_hash_algorithm == "sha256" {
+            ensure!(
+                record.sha256 == source_hash,
+                "sha256 must match source_hash when source_hash_algorithm is sha256"
+            );
+        }
+        return Ok(record.sha256.clone());
+    }
+    if source_hash_algorithm == "sha256" {
+        return Ok(source_hash.to_string());
+    }
+    Ok(String::new())
+}
+
+fn source_hash_path_component(source_hash_algorithm: &str, source_hash: &str) -> String {
+    let trimmed = source_hash.trim_matches('"');
+    let value = if source_hash_algorithm.contains("etag") {
+        format!("etag-{trimmed}")
+    } else {
+        trimmed.to_string()
+    };
+    let mut path = String::with_capacity(value.len());
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+            path.push(character);
+        } else {
+            path.push('-');
+        }
+    }
+    path
 }
 
 fn category_summaries(
@@ -400,7 +493,15 @@ fn resolve_output_dir(base_dir: &Path, path: &Path) -> PathBuf {
 }
 
 fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() || path.exists() {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    if looks_repo_relative(path)
+        && let Some(candidate) = resolve_from_known_anchors(path)
+    {
+        return candidate;
+    }
+    if path.exists() {
         return path.to_path_buf();
     }
     let base_candidate = base_dir.join(path);

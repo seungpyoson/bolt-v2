@@ -249,7 +249,7 @@ mod tests {
     // more after the strategy-agnostic sizing primitive moved out of the
     // taker-only signal module into `src/bolt_v3_sizing.rs`.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "4f4ed2c55b566af8acd8e361c64a03533d7c199753093ca5d4929993a18d29cb";
+        "1a8c07d109a928e75b0bf6dbc8c7f34fd0c19cb4559916cd76c457ef1b217afc";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

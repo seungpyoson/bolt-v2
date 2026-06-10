@@ -13,6 +13,7 @@ fn source_universe_execution_acceptance_reports_ready_and_blocked_universes_with
     let run_plan_path = temp_dir
         .path()
         .join("source-universe-conversion-run-plan.json");
+    let operator_inputs_path = temp_dir.path().join("source-universe-operator-inputs.json");
     let manifest_path = temp_dir.path().join("pmxt-source-universe-manifest.json");
     let queue_path = temp_dir.path().join("pmxt-conversion-queue.json");
     let output_dir = temp_dir.path().join("execution-ledger");
@@ -136,6 +137,102 @@ fn source_universe_execution_acceptance_reports_ready_and_blocked_universes_with
 }"#,
     )
     .expect("write run plan");
+    fs::write(
+        &operator_inputs_path,
+        r#"{
+  "schema_version": "source-universe-operator-inputs.v1",
+  "input_id": "source-universe-operator-inputs-binance-test",
+  "status": "blocked",
+  "gate_id": "source-universe-object-gates-binance-test",
+  "conversion_run_plan_id": "source-universe-conversion-run-plan-binance-test",
+  "universe_id": "backfill-source-universe-binance-test",
+  "venue": "binance",
+  "source": "data_vision",
+  "family": "trades",
+  "table_family": "trades",
+  "operator_run_id_prefix": "source-universe-operator-run-binance-test",
+  "nt_venue": "BINANCE",
+  "converter_identity": "csv-native-trades-to-canonical-trades.v1",
+  "converter_version": "1",
+  "raw_payload_container": "single_csv_zip",
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "planned_object_count": 2,
+  "planned_source_bytes": 300,
+  "conversion_run_count": 1,
+  "instrument_spec_count": 1,
+  "converter_mapping_count": 1,
+  "ready_input_count": 1,
+  "blocked_input_count": 1,
+  "artifact_refs": [],
+  "converter_mappings": [],
+  "instrument_specs": [],
+  "records": [
+    {
+      "work_item_id": "binance:BTCUSDT:2026-03-01:hash-a",
+      "status": "ready",
+      "operator_run_id": "source-universe-operator-run-binance-test-00000",
+      "source_binding": "binance-spot-native-trades",
+      "category": "spot",
+      "symbol": "BTCUSDT",
+      "archive_date": "2026-03-01",
+      "source_uri": "s3://example/raw/hash-a.zip",
+      "source_url": "https://data.example/BTCUSDT.zip",
+      "selected_object_sha256": "hash-a",
+      "selected_object_bytes": 100,
+      "source_proof_id": "source-proof-binance-test",
+      "source_proof_version": 1,
+      "accepted_tranche_id": "tranche-a",
+      "output_prefix": "s3://example/backtests/a",
+      "instrument_key": "binance-spot-native-trades:spot:BTCUSDT",
+      "converter_identity": "csv-native-trades-to-canonical-trades.v1",
+      "converter_version": "1",
+      "raw_payload_container": "single_csv_zip",
+      "zip_member": "BTCUSDT-trades-2026-03-01.csv",
+      "max_decoded_bytes": 268435456,
+      "max_source_rows": 1000000,
+      "max_projected_row_groups": 128,
+      "max_wall_seconds": 1800,
+      "schema_columns": null,
+      "converter_csv": null,
+      "blocking_reasons": []
+    },
+    {
+      "work_item_id": "binance:ETHUSDT:2026-03-01:hash-b",
+      "status": "blocked",
+      "operator_run_id": "source-universe-operator-run-binance-test-00001",
+      "source_binding": "binance-spot-native-trades",
+      "category": "spot",
+      "symbol": "ETHUSDT",
+      "archive_date": "2026-03-01",
+      "source_uri": "s3://example/raw/hash-b.zip",
+      "source_url": "https://data.example/ETHUSDT.zip",
+      "selected_object_sha256": "hash-b",
+      "selected_object_bytes": 200,
+      "source_proof_id": "source-proof-binance-test",
+      "source_proof_version": 1,
+      "accepted_tranche_id": "tranche-b",
+      "output_prefix": "s3://example/backtests/b",
+      "instrument_key": "binance-spot-native-trades:spot:ETHUSDT",
+      "converter_identity": "csv-native-trades-to-canonical-trades.v1",
+      "converter_version": "1",
+      "raw_payload_container": "single_csv_zip",
+      "zip_member": "ETHUSDT-trades-2026-03-01.csv",
+      "max_decoded_bytes": 268435456,
+      "max_source_rows": 1000000,
+      "max_projected_row_groups": 128,
+      "max_wall_seconds": 1800,
+      "schema_columns": null,
+      "converter_csv": null,
+      "blocking_reasons": ["missing_instrument_metadata"]
+    }
+  ],
+  "blocking_reasons": ["blocked_operator_input_records"]
+}"#,
+    )
+    .expect("write operator inputs");
     fs::write(&manifest_path, b"{}").expect("write pmxt manifest");
     fs::write(
         &queue_path,
@@ -207,6 +304,7 @@ source = "data_vision"
 family = "trades"
 source_universe_object_gates_path = "{gates_path}"
 source_universe_conversion_run_plan_path = "{run_plan_path}"
+source_universe_operator_inputs_path = "{operator_inputs_path}"
 
 [[universe]]
 universe_id = "backfill-source-universe-pmxt-test"
@@ -222,6 +320,7 @@ blocking_reasons = [
             output_dir = output_dir.display(),
             gates_path = gates_path.display(),
             run_plan_path = run_plan_path.display(),
+            operator_inputs_path = operator_inputs_path.display(),
             manifest_path = manifest_path.display(),
             queue_path = queue_path.display(),
         ),
@@ -238,20 +337,32 @@ blocking_reasons = [
         ledger.status,
         SourceUniverseExecutionAcceptanceLedgerStatus::Incomplete
     );
-    assert_eq!(ledger.ready_for_conversion_universes, 1);
+    assert_eq!(ledger.ready_for_conversion_universes, 0);
+    assert_eq!(ledger.partially_ready_for_conversion_universes, 1);
     assert_eq!(ledger.blocked_universes, 1);
     assert_eq!(ledger.total_planned_conversion_objects, 4);
     assert_eq!(ledger.total_required_single_object_operator_runs, 4);
+    assert_eq!(ledger.total_executable_single_object_operator_runs, 1);
+    assert_eq!(ledger.total_withheld_conversion_objects, 3);
 
     let binance = record(&ledger, "backfill-source-universe-binance-test");
     assert_eq!(
         binance.status,
-        SourceUniverseExecutionAcceptanceUniverseStatus::ReadyForConversionExecution
+        SourceUniverseExecutionAcceptanceUniverseStatus::PartiallyReadyForConversionExecution
     );
     assert_eq!(binance.source_conversion_batch_count, 1);
     assert_eq!(binance.planned_conversion_objects, 2);
+    assert_eq!(binance.ready_operator_input_count, 1);
+    assert_eq!(binance.blocked_operator_input_count, 1);
+    assert_eq!(binance.executable_single_object_operator_runs, 1);
+    assert_eq!(binance.withheld_conversion_objects, 1);
     assert_eq!(binance.remaining_conversion_objects, 2);
-    assert!(binance.blocking_reasons.is_empty());
+    assert!(
+        binance
+            .blocking_reasons
+            .iter()
+            .any(|reason| reason == "missing_instrument_metadata")
+    );
 
     let pmxt = record(&ledger, "backfill-source-universe-pmxt-test");
     assert_eq!(
@@ -261,6 +372,8 @@ blocking_reasons = [
     assert_eq!(pmxt.planned_conversion_objects, 2);
     assert_eq!(pmxt.planned_source_bytes, 300);
     assert_eq!(pmxt.required_single_object_operator_runs, 2);
+    assert_eq!(pmxt.executable_single_object_operator_runs, 0);
+    assert_eq!(pmxt.withheld_conversion_objects, 2);
     assert!(
         pmxt.blocking_reasons
             .iter()
@@ -288,10 +401,13 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
     );
     assert_eq!(ledger.universe_count, 3);
     assert_eq!(ledger.converted_universes, 0);
-    assert_eq!(ledger.ready_for_conversion_universes, 2);
+    assert_eq!(ledger.ready_for_conversion_universes, 1);
+    assert_eq!(ledger.partially_ready_for_conversion_universes, 1);
     assert_eq!(ledger.blocked_universes, 1);
     assert_eq!(ledger.total_planned_conversion_objects, 9_259);
     assert_eq!(ledger.total_required_single_object_operator_runs, 9_259);
+    assert_eq!(ledger.total_executable_single_object_operator_runs, 7_892);
+    assert_eq!(ledger.total_withheld_conversion_objects, 1_367);
     assert_eq!(ledger.total_remaining_conversion_objects, 9_259);
 
     let binance = record(
@@ -300,13 +416,22 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
     );
     assert_eq!(
         binance.status,
-        SourceUniverseExecutionAcceptanceUniverseStatus::ReadyForConversionExecution
+        SourceUniverseExecutionAcceptanceUniverseStatus::PartiallyReadyForConversionExecution
     );
     assert_eq!(binance.source_gate_count, 2_051);
     assert_eq!(binance.source_conversion_batch_count, 8);
     assert_eq!(binance.planned_conversion_objects, 2_051);
+    assert_eq!(binance.ready_operator_input_count, 2_035);
+    assert_eq!(binance.blocked_operator_input_count, 16);
     assert_eq!(binance.required_single_object_operator_runs, 2_051);
-    assert!(binance.blocking_reasons.is_empty());
+    assert_eq!(binance.executable_single_object_operator_runs, 2_035);
+    assert_eq!(binance.withheld_conversion_objects, 16);
+    assert!(
+        binance
+            .blocking_reasons
+            .iter()
+            .any(|reason| reason == "missing_instrument_metadata")
+    );
 
     let bybit = record(
         &ledger,
@@ -319,7 +444,11 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
     assert_eq!(bybit.source_gate_count, 5_857);
     assert_eq!(bybit.source_conversion_batch_count, 19);
     assert_eq!(bybit.planned_conversion_objects, 5_857);
+    assert_eq!(bybit.ready_operator_input_count, 5_857);
+    assert_eq!(bybit.blocked_operator_input_count, 0);
     assert_eq!(bybit.required_single_object_operator_runs, 5_857);
+    assert_eq!(bybit.executable_single_object_operator_runs, 5_857);
+    assert_eq!(bybit.withheld_conversion_objects, 0);
     assert!(bybit.blocking_reasons.is_empty());
 
     let pmxt = record(
@@ -333,6 +462,8 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
     assert_eq!(pmxt.planned_conversion_objects, 1_351);
     assert_eq!(pmxt.planned_source_bytes, 557_815_904_970);
     assert_eq!(pmxt.required_single_object_operator_runs, 1_351);
+    assert_eq!(pmxt.executable_single_object_operator_runs, 0);
+    assert_eq!(pmxt.withheld_conversion_objects, 1_351);
     assert!(
         pmxt.blocking_reasons
             .iter()

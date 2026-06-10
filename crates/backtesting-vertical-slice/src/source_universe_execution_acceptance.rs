@@ -26,6 +26,10 @@ use crate::{
     source_universe_object_gates::{
         SourceUniverseObjectGateMaterialization, SourceUniverseObjectGateStatus,
     },
+    source_universe_operator_inputs::{
+        SourceUniverseOperatorInputRecordStatus, SourceUniverseOperatorInputs,
+        SourceUniverseOperatorInputsStatus,
+    },
 };
 
 pub const SOURCE_UNIVERSE_EXECUTION_ACCEPTANCE_SCHEMA_VERSION: &str =
@@ -58,6 +62,8 @@ pub struct SourceUniverseExecutionAcceptanceUniverseSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_universe_conversion_run_plan_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_universe_operator_inputs_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversion_completion_ledger_path: Option<PathBuf>,
     #[serde(default)]
     pub blocking_reasons: Vec<String>,
@@ -75,6 +81,7 @@ pub enum SourceUniverseExecutionAcceptanceLedgerStatus {
 pub enum SourceUniverseExecutionAcceptanceUniverseStatus {
     Converted,
     ReadyForConversionExecution,
+    PartiallyReadyForConversionExecution,
     Blocked,
 }
 
@@ -97,9 +104,14 @@ pub struct SourceUniverseExecutionAcceptanceRecord {
     pub status: SourceUniverseExecutionAcceptanceUniverseStatus,
     pub source_gate_count: u64,
     pub source_conversion_batch_count: u64,
+    pub operator_input_count: u64,
+    pub ready_operator_input_count: u64,
+    pub blocked_operator_input_count: u64,
     pub planned_conversion_objects: u64,
     pub planned_source_bytes: u64,
     pub required_single_object_operator_runs: u64,
+    pub executable_single_object_operator_runs: u64,
+    pub withheld_conversion_objects: u64,
     pub completed_conversion_records: u64,
     pub completed_canonical_rows: u64,
     pub completed_nt_catalog_rows: u64,
@@ -117,10 +129,13 @@ pub struct SourceUniverseExecutionAcceptanceLedger {
     pub universe_count: u64,
     pub converted_universes: u64,
     pub ready_for_conversion_universes: u64,
+    pub partially_ready_for_conversion_universes: u64,
     pub blocked_universes: u64,
     pub total_planned_conversion_objects: u64,
     pub total_planned_source_bytes: u64,
     pub total_required_single_object_operator_runs: u64,
+    pub total_executable_single_object_operator_runs: u64,
+    pub total_withheld_conversion_objects: u64,
     pub total_completed_conversion_records: u64,
     pub total_completed_canonical_rows: u64,
     pub total_completed_nt_catalog_rows: u64,
@@ -237,6 +252,13 @@ pub fn evaluate_source_universe_execution_acceptance_ledger(
                 == SourceUniverseExecutionAcceptanceUniverseStatus::ReadyForConversionExecution
         })
         .count() as u64;
+    let partially_ready_for_conversion_universes = records
+        .iter()
+        .filter(|record| {
+            record.status
+                == SourceUniverseExecutionAcceptanceUniverseStatus::PartiallyReadyForConversionExecution
+        })
+        .count() as u64;
     let blocked_universes = records
         .iter()
         .filter(|record| record.status == SourceUniverseExecutionAcceptanceUniverseStatus::Blocked)
@@ -252,6 +274,14 @@ pub fn evaluate_source_universe_execution_acceptance_ledger(
     let total_required_single_object_operator_runs = records
         .iter()
         .map(|record| record.required_single_object_operator_runs)
+        .sum();
+    let total_executable_single_object_operator_runs = records
+        .iter()
+        .map(|record| record.executable_single_object_operator_runs)
+        .sum();
+    let total_withheld_conversion_objects = records
+        .iter()
+        .map(|record| record.withheld_conversion_objects)
         .sum();
     let total_completed_conversion_records = records
         .iter()
@@ -282,10 +312,13 @@ pub fn evaluate_source_universe_execution_acceptance_ledger(
         universe_count: records.len() as u64,
         converted_universes,
         ready_for_conversion_universes,
+        partially_ready_for_conversion_universes,
         blocked_universes,
         total_planned_conversion_objects,
         total_planned_source_bytes,
         total_required_single_object_operator_runs,
+        total_executable_single_object_operator_runs,
+        total_withheld_conversion_objects,
         total_completed_conversion_records,
         total_completed_canonical_rows,
         total_completed_nt_catalog_rows,
@@ -313,6 +346,7 @@ fn evaluate_universe(
         .filter(|reason| !reason.trim().is_empty())
         .cloned()
         .collect::<Vec<_>>();
+    let mut has_non_operator_blocking_reasons = !blocking_reasons.is_empty();
 
     push_optional_ref(
         &mut artifact_refs,
@@ -338,6 +372,12 @@ fn evaluate_universe(
         spec.source_universe_conversion_run_plan_path.as_ref(),
         &mut artifact_refs,
     )?;
+    let operator_inputs = read_optional_artifact::<SourceUniverseOperatorInputs>(
+        base_dir,
+        "source_universe_operator_inputs",
+        spec.source_universe_operator_inputs_path.as_ref(),
+        &mut artifact_refs,
+    )?;
     let completion_ledger = read_optional_artifact::<BackfillConversionCompletionLedger>(
         base_dir,
         "conversion_completion_ledger",
@@ -348,6 +388,9 @@ fn evaluate_universe(
     let mut table_family = None;
     let mut source_gate_count = 0;
     let mut source_conversion_batch_count = 0;
+    let mut operator_input_count = 0;
+    let mut ready_operator_input_count = 0;
+    let mut blocked_operator_input_count = 0;
     let mut planned_conversion_objects = 0;
     let mut planned_source_bytes = 0;
     let mut completed_conversion_records = 0;
@@ -366,18 +409,24 @@ fn evaluate_universe(
             source_gate_count = gates.accepted_gate_count;
             if gates.status != SourceUniverseObjectGateStatus::Ready {
                 blocking_reasons.push("source_universe_object_gates_not_ready".to_string());
+                has_non_operator_blocking_reasons = true;
             }
             if gates.accepted_gate_count != gates.work_item_count {
                 blocking_reasons
                     .push("source_universe_object_gates_do_not_cover_all_work_items".to_string());
+                has_non_operator_blocking_reasons = true;
             }
             if gates.records.len() as u64 != gates.accepted_gate_count {
                 blocking_reasons.push(
                     "source_universe_object_gate_records_do_not_match_accepted_count".to_string(),
                 );
+                has_non_operator_blocking_reasons = true;
             }
         }
-        None => blocking_reasons.push("missing_source_universe_object_gates".to_string()),
+        None => {
+            blocking_reasons.push("missing_source_universe_object_gates".to_string());
+            has_non_operator_blocking_reasons = true;
+        }
     }
 
     match run_plan.as_ref() {
@@ -388,17 +437,23 @@ fn evaluate_universe(
             planned_source_bytes = run_plan.planned_source_bytes;
             if run_plan.status != SourceUniverseConversionRunPlanStatus::Ready {
                 blocking_reasons.push("source_universe_conversion_run_plan_not_ready".to_string());
+                has_non_operator_blocking_reasons = true;
             }
             if run_plan.planned_object_count != run_plan.object_count {
                 blocking_reasons
                     .push("source_universe_conversion_run_plan_object_count_mismatch".to_string());
+                has_non_operator_blocking_reasons = true;
             }
             if run_plan.planned_source_bytes != run_plan.total_source_bytes {
                 blocking_reasons
                     .push("source_universe_conversion_run_plan_source_bytes_mismatch".to_string());
+                has_non_operator_blocking_reasons = true;
             }
         }
-        None => blocking_reasons.push("missing_source_universe_conversion_run_plan".to_string()),
+        None => {
+            blocking_reasons.push("missing_source_universe_conversion_run_plan".to_string());
+            has_non_operator_blocking_reasons = true;
+        }
     }
 
     if let (Some(gates), Some(run_plan)) = (gates.as_ref(), run_plan.as_ref()) {
@@ -409,15 +464,44 @@ fn evaluate_universe(
         {
             blocking_reasons
                 .push("source_universe_object_gates_run_plan_identity_mismatch".to_string());
+            has_non_operator_blocking_reasons = true;
         }
         if gates.accepted_gate_count != run_plan.planned_object_count {
             blocking_reasons
                 .push("source_universe_object_gates_run_plan_object_count_mismatch".to_string());
+            has_non_operator_blocking_reasons = true;
         }
         if gates.total_accepted_bytes != run_plan.planned_source_bytes {
             blocking_reasons
                 .push("source_universe_object_gates_run_plan_source_bytes_mismatch".to_string());
+            has_non_operator_blocking_reasons = true;
         }
+    }
+
+    match operator_inputs.as_ref() {
+        Some(operator_inputs) => {
+            table_family.get_or_insert_with(|| operator_inputs.table_family.clone());
+            operator_input_count = operator_inputs.records.len() as u64;
+            ready_operator_input_count = operator_inputs.ready_input_count;
+            blocked_operator_input_count = operator_inputs.blocked_input_count;
+            validate_operator_inputs(
+                operator_inputs,
+                OperatorInputValidationContext {
+                    gates: gates.as_ref(),
+                    run_plan: run_plan.as_ref(),
+                    planned_conversion_objects,
+                    planned_source_bytes,
+                    source_conversion_batch_count,
+                },
+                &mut blocking_reasons,
+                &mut has_non_operator_blocking_reasons,
+            );
+        }
+        None if gates.is_some() && run_plan.is_some() && completion_ledger.is_none() => {
+            blocking_reasons.push("missing_source_universe_operator_inputs".to_string());
+            has_non_operator_blocking_reasons = true;
+        }
+        None => {}
     }
 
     if let Some(completion_ledger) = completion_ledger.as_ref() {
@@ -426,19 +510,28 @@ fn evaluate_universe(
         completed_nt_catalog_rows = completion_ledger.total_nt_iterations;
         if completion_ledger.status != BackfillConversionCompletionStatus::Ready {
             blocking_reasons.push("conversion_completion_ledger_not_ready".to_string());
+            has_non_operator_blocking_reasons = true;
         }
         if planned_conversion_objects > 0
             && completion_ledger.record_count != planned_conversion_objects
         {
             blocking_reasons.push("conversion_completion_ledger_record_count_mismatch".to_string());
+            has_non_operator_blocking_reasons = true;
         }
     }
 
     blocking_reasons.sort();
     blocking_reasons.dedup();
 
+    let has_partial_operator_inputs = operator_inputs.is_some()
+        && ready_operator_input_count > 0
+        && blocked_operator_input_count > 0;
     let status = if !blocking_reasons.is_empty() {
-        SourceUniverseExecutionAcceptanceUniverseStatus::Blocked
+        if has_partial_operator_inputs && !has_non_operator_blocking_reasons {
+            SourceUniverseExecutionAcceptanceUniverseStatus::PartiallyReadyForConversionExecution
+        } else {
+            SourceUniverseExecutionAcceptanceUniverseStatus::Blocked
+        }
     } else if completion_ledger.is_some() {
         SourceUniverseExecutionAcceptanceUniverseStatus::Converted
     } else {
@@ -452,6 +545,18 @@ fn evaluate_universe(
         } else {
             remaining_conversion_objects
         };
+    let executable_single_object_operator_runs = if status
+        == SourceUniverseExecutionAcceptanceUniverseStatus::Blocked
+        || status == SourceUniverseExecutionAcceptanceUniverseStatus::Converted
+    {
+        0
+    } else if operator_inputs.is_some() {
+        ready_operator_input_count.saturating_sub(completed_conversion_records)
+    } else {
+        remaining_conversion_objects
+    };
+    let withheld_conversion_objects =
+        remaining_conversion_objects.saturating_sub(executable_single_object_operator_runs);
 
     Ok(SourceUniverseExecutionAcceptanceRecord {
         universe_id: spec.universe_id.clone(),
@@ -462,9 +567,14 @@ fn evaluate_universe(
         status,
         source_gate_count,
         source_conversion_batch_count,
+        operator_input_count,
+        ready_operator_input_count,
+        blocked_operator_input_count,
         planned_conversion_objects,
         planned_source_bytes,
         required_single_object_operator_runs,
+        executable_single_object_operator_runs,
+        withheld_conversion_objects,
         completed_conversion_records,
         completed_canonical_rows,
         completed_nt_catalog_rows,
@@ -472,6 +582,107 @@ fn evaluate_universe(
         artifact_refs,
         blocking_reasons,
     })
+}
+
+struct OperatorInputValidationContext<'a> {
+    gates: Option<&'a SourceUniverseObjectGateMaterialization>,
+    run_plan: Option<&'a SourceUniverseConversionRunPlan>,
+    planned_conversion_objects: u64,
+    planned_source_bytes: u64,
+    source_conversion_batch_count: u64,
+}
+
+fn validate_operator_inputs(
+    operator_inputs: &SourceUniverseOperatorInputs,
+    context: OperatorInputValidationContext<'_>,
+    blocking_reasons: &mut Vec<String>,
+    has_non_operator_blocking_reasons: &mut bool,
+) {
+    let actual_ready_input_count = operator_inputs
+        .records
+        .iter()
+        .filter(|record| record.status == SourceUniverseOperatorInputRecordStatus::Ready)
+        .count() as u64;
+    let actual_blocked_input_count = operator_inputs
+        .records
+        .iter()
+        .filter(|record| record.status == SourceUniverseOperatorInputRecordStatus::Blocked)
+        .count() as u64;
+
+    if operator_inputs.ready_input_count != actual_ready_input_count {
+        blocking_reasons.push("source_universe_operator_inputs_ready_count_mismatch".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
+    if operator_inputs.blocked_input_count != actual_blocked_input_count {
+        blocking_reasons.push("source_universe_operator_inputs_blocked_count_mismatch".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
+    if operator_inputs.ready_input_count + operator_inputs.blocked_input_count
+        != operator_inputs.records.len() as u64
+    {
+        blocking_reasons.push("source_universe_operator_inputs_record_count_mismatch".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
+    if operator_inputs.planned_object_count != operator_inputs.records.len() as u64 {
+        blocking_reasons
+            .push("source_universe_operator_inputs_planned_object_count_mismatch".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
+    if context.planned_conversion_objects > 0
+        && operator_inputs.planned_object_count != context.planned_conversion_objects
+    {
+        blocking_reasons.push("source_universe_operator_inputs_planned_count_mismatch".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
+    if context.planned_source_bytes > 0
+        && operator_inputs.planned_source_bytes != context.planned_source_bytes
+    {
+        blocking_reasons.push("source_universe_operator_inputs_source_bytes_mismatch".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
+    if context.source_conversion_batch_count > 0
+        && operator_inputs.conversion_run_count != context.source_conversion_batch_count
+    {
+        blocking_reasons.push("source_universe_operator_inputs_run_count_mismatch".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
+    if operator_inputs.status != SourceUniverseOperatorInputsStatus::Ready {
+        blocking_reasons.push("blocked_source_universe_operator_input_records".to_string());
+    }
+    for record in operator_inputs
+        .records
+        .iter()
+        .filter(|record| record.status == SourceUniverseOperatorInputRecordStatus::Blocked)
+    {
+        blocking_reasons.extend(record.blocking_reasons.iter().cloned());
+    }
+
+    if let Some(gates) = context.gates
+        && (operator_inputs.universe_id != gates.universe_id
+            || operator_inputs.gate_id != gates.gate_id
+            || operator_inputs.venue != gates.venue
+            || operator_inputs.source != gates.source
+            || operator_inputs.family != gates.family
+            || operator_inputs.table_family != gates.table_family)
+    {
+        blocking_reasons
+            .push("source_universe_operator_inputs_object_gates_identity_mismatch".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
+
+    if let Some(run_plan) = context.run_plan
+        && (operator_inputs.universe_id != run_plan.universe_id
+            || operator_inputs.gate_id != run_plan.gate_id
+            || operator_inputs.conversion_run_plan_id != run_plan.plan_id
+            || operator_inputs.venue != run_plan.venue
+            || operator_inputs.source != run_plan.source
+            || operator_inputs.family != run_plan.family
+            || operator_inputs.table_family != run_plan.table_family)
+    {
+        blocking_reasons
+            .push("source_universe_operator_inputs_run_plan_identity_mismatch".to_string());
+        *has_non_operator_blocking_reasons = true;
+    }
 }
 
 fn read_optional_artifact<T>(

@@ -38,10 +38,22 @@ fn main() -> Result<()> {
         "ready_for_conversion_universes = {}",
         ledger.ready_for_conversion_universes
     );
+    println!(
+        "partially_ready_for_conversion_universes = {}",
+        ledger.partially_ready_for_conversion_universes
+    );
     println!("blocked_universes = {}", ledger.blocked_universes);
     println!(
         "total_required_single_object_operator_runs = {}",
         ledger.total_required_single_object_operator_runs
+    );
+    println!(
+        "total_executable_single_object_operator_runs = {}",
+        ledger.total_executable_single_object_operator_runs
+    );
+    println!(
+        "total_withheld_conversion_objects = {}",
+        ledger.total_withheld_conversion_objects
     );
     println!(
         "total_remaining_conversion_objects = {}",

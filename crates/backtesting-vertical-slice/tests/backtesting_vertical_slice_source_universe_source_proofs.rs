@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 use backtesting_vertical_slice::{
-    source_proof::{SourceProofReport, SourceProofStatus},
+    source_proof::{SourceProofFidelityClass, SourceProofReport, SourceProofStatus},
     source_universe_source_proofs::{
         SourceUniverseSourceProofSet, write_source_universe_source_proof_set_from_spec_file,
     },
@@ -151,4 +151,109 @@ category_manifest_path = "{manifest_root}/binance-data-vision-trades-object-mani
     );
     spot.evaluate_acceptance()
         .expect("generated spot proof is accepted by source-proof gate");
+}
+
+#[test]
+fn source_universe_source_proofs_preserve_configured_l2_replay_evidence() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let output_dir = temp_dir.path().join("source-proofs");
+    let spec_path = temp_dir.path().join("source-universe-source-proofs.toml");
+    let manifest_path = reference_root.join(
+        "backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/category-manifests/binance-data-vision-trades-object-manifest-spot.json",
+    );
+
+    fs::write(
+        &spec_path,
+        format!(
+            r#"
+proof_set_id = "source-universe-source-proofs-binance-l2-evidence-regression"
+output_dir = "{output_dir}"
+venue = "binance"
+table_family = "trades"
+manifest_table_family = "native_trades"
+source_candidate_class = "official_free"
+source_selection_status = "ACCEPTED_FOR_REQUIRED_FIDELITY"
+usage_scope = "canonical_backfill_input"
+fidelity_class = "L2_REPLAY"
+acceptance_mode = "manual"
+accepted_by = "backtesting-vertical-slice-operator"
+accepted_at_utc = "2026-06-10T00:00:00Z"
+requested_start_utc = "2026-03-01T00:00:00Z"
+requested_end_utc = "2026-03-02T00:00:00Z"
+coverage_start_utc = "2026-03-01T00:00:00Z"
+coverage_end_utc = "2026-03-02T00:00:00Z"
+license_ref = "https://github.com/binance/binance-public-data README: Licence MIT; observed 2026-06-07"
+license_scope = "public"
+retention_ref = "https://github.com/binance/binance-public-data README: daily/monthly public archive and checksum sidecars; observed 2026-06-07"
+cost_ref = "cost://free-public-archive"
+gap_policy_id = ""
+raw_sample_selection = "first_manifest_record"
+schema_sample_policy = "raw_sample"
+
+[l2_replay_evidence]
+order_book_delta_ref = "source-proof://source-universe-source-proofs-binance-l2-evidence-regression/order-book-delta"
+no_tick_size_change_universe_ref = "source-proof://source-universe-source-proofs-binance-l2-evidence-regression/no-tick-size-change"
+
+[required_checks]
+source_access = "Binance Data Vision source URLs are enumerated in category manifest {{manifest_id}}"
+license = "Binance public data README license review permits BTE canonical/backtest input"
+schema = "Schema columns are committed in category manifest {{manifest_id}}"
+time_semantics = "Binance native trade time column maps to Unix milliseconds"
+instrument_universe = "{{instrument_universe_id}} category={{category}} instrument_count={{instrument_count}}"
+coverage = "category={{category}} object_count={{object_count}} archive_date_range=[{{first_archive_date}},{{last_archive_date}}]"
+retention_freshness = "Binance public data archive retention reviewed 2026-06-07"
+granularity = "Synthetic L2 replay evidence regression binds configured evidence fields"
+completeness = "object_count={{object_count}} compressed_bytes={{accepted_bytes}} from committed category manifest"
+nt_mapping = "Configured L2 replay evidence is carried into SourceProofReport"
+cost = "cost://free-public-archive"
+storage = "raw objects are staged under category manifest {{manifest_id}}"
+
+[[claim_limit]]
+id = "source-proof-claim-limit-l2-evidence-regression"
+severity = "blocking"
+claim = "No dynamic tick-size replay claim outside the configured tick-size policy evidence."
+reason = "The generated source proof must bind explicit L2 replay and tick-size policy evidence."
+evidence_ref = "source-proof://{{source_proof_id}}/l2-replay-evidence"
+
+[[source_binding]]
+source_binding = "binance-spot-native-trades"
+source_proof_id = "source-proof-binance-l2-evidence-regression"
+product_category = "spot"
+instrument_universe_id = "binance-spot-instruments-2026-03-01-all-instruments"
+category_manifest_path = "{manifest_path}"
+"#,
+            output_dir = output_dir.display(),
+            manifest_path = manifest_path.display(),
+        ),
+    )
+    .expect("write spec");
+
+    write_source_universe_source_proof_set_from_spec_file(&spec_path)
+        .expect("source proof set writes");
+    let proof_path = output_dir.join("source-proof-binance-l2-evidence-regression.json");
+    let proof: SourceProofReport =
+        serde_json::from_slice(&fs::read(proof_path).expect("read generated proof"))
+            .expect("parse generated proof");
+
+    assert_eq!(proof.fidelity_class, SourceProofFidelityClass::L2Replay);
+    assert_eq!(
+        proof.l2_replay_evidence.order_book_delta_ref.as_deref(),
+        Some(
+            "source-proof://source-universe-source-proofs-binance-l2-evidence-regression/order-book-delta"
+        )
+    );
+    assert_eq!(
+        proof
+            .l2_replay_evidence
+            .no_tick_size_change_universe_ref
+            .as_deref(),
+        Some(
+            "source-proof://source-universe-source-proofs-binance-l2-evidence-regression/no-tick-size-change"
+        )
+    );
+    proof
+        .evaluate_acceptance()
+        .expect("configured L2 evidence produces accepted source proof");
 }

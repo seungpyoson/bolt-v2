@@ -51,6 +51,8 @@ pub struct SourceUniverseSourceProofSetSpec {
     pub gap_policy_id: String,
     pub raw_sample_selection: String,
     pub schema_sample_policy: String,
+    #[serde(default)]
+    pub l2_replay_evidence: SourceUniverseSourceProofL2ReplayEvidenceTemplate,
     pub required_checks: SourceUniverseSourceProofRequiredCheckTemplates,
     #[serde(rename = "claim_limit", default)]
     pub claim_limits: Vec<SourceUniverseSourceProofClaimLimitTemplate>,
@@ -83,6 +85,39 @@ pub struct SourceUniverseSourceProofClaimLimitTemplate {
     pub claim: String,
     pub reason: String,
     pub evidence_ref: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceUniverseSourceProofL2ReplayEvidenceTemplate {
+    #[serde(default)]
+    pub order_book_delta_ref: Option<String>,
+    #[serde(default)]
+    pub sufficient_snapshot_cadence_ref: Option<String>,
+    #[serde(default)]
+    pub no_tick_size_change_universe_ref: Option<String>,
+    #[serde(default)]
+    pub timed_instrument_epoch_replay_ref: Option<String>,
+}
+
+impl SourceUniverseSourceProofL2ReplayEvidenceTemplate {
+    fn has_any(&self) -> bool {
+        self.order_book_delta_ref
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
+            || self
+                .sufficient_snapshot_cadence_ref
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty())
+            || self
+                .no_tick_size_change_universe_ref
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty())
+            || self
+                .timed_instrument_epoch_replay_ref
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -234,6 +269,11 @@ fn evaluate_and_write_source_universe_source_proofs(
         !spec.claim_limits.is_empty(),
         "claim_limit set must not be empty"
     );
+    ensure!(
+        spec.fidelity_class == SourceProofFidelityClass::L2Replay
+            || !spec.l2_replay_evidence.has_any(),
+        "l2_replay_evidence is only valid when fidelity_class is L2_REPLAY"
+    );
 
     let registry = committed_source_binding_registry();
     let mut seen_bindings = BTreeSet::new();
@@ -345,12 +385,7 @@ fn evaluate_and_write_source_universe_source_proofs(
             cost_ref: spec.cost_ref.clone(),
             nt_mapping_status: NtMappingStatus::Accepted,
             fidelity_class: spec.fidelity_class,
-            l2_replay_evidence: L2ReplayEvidence {
-                order_book_delta_ref: None,
-                sufficient_snapshot_cadence_ref: None,
-                no_tick_size_change_universe_ref: None,
-                timed_instrument_epoch_replay_ref: None,
-            },
+            l2_replay_evidence: l2_replay_evidence(spec, &context),
             forbidden_claims: claim_limits(spec, &context)
                 .into_iter()
                 .map(|limit| limit.claim)
@@ -437,6 +472,36 @@ fn claim_limits(
         .collect()
 }
 
+fn l2_replay_evidence(
+    spec: &SourceUniverseSourceProofSetSpec,
+    context: &TemplateContext<'_>,
+) -> L2ReplayEvidence {
+    L2ReplayEvidence {
+        order_book_delta_ref: render_optional_template(
+            spec.l2_replay_evidence.order_book_delta_ref.as_ref(),
+            context,
+        ),
+        sufficient_snapshot_cadence_ref: render_optional_template(
+            spec.l2_replay_evidence
+                .sufficient_snapshot_cadence_ref
+                .as_ref(),
+            context,
+        ),
+        no_tick_size_change_universe_ref: render_optional_template(
+            spec.l2_replay_evidence
+                .no_tick_size_change_universe_ref
+                .as_ref(),
+            context,
+        ),
+        timed_instrument_epoch_replay_ref: render_optional_template(
+            spec.l2_replay_evidence
+                .timed_instrument_epoch_replay_ref
+                .as_ref(),
+            context,
+        ),
+    }
+}
+
 fn required_checks(
     spec: &SourceUniverseSourceProofSetSpec,
     context: &TemplateContext<'_>,
@@ -509,6 +574,18 @@ fn render_template(template: &str, context: &TemplateContext<'_>) -> String {
         output = output.replace(token, &value);
     }
     output
+}
+
+fn render_optional_template(
+    template: Option<&String>,
+    context: &TemplateContext<'_>,
+) -> Option<String> {
+    let rendered = render_template(template?, context);
+    if rendered.trim().is_empty() {
+        None
+    } else {
+        Some(rendered)
+    }
 }
 
 fn read_json<T>(path: &Path) -> Result<T>

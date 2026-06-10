@@ -43,6 +43,7 @@ pub struct VenueScaleConversionAcceptanceUniverseSpec {
     pub scope_label: String,
     pub status: VenueScaleConversionAcceptanceStatus,
     pub completion_ledger_path: Option<PathBuf>,
+    pub source_archive_discovery_seed_path: Option<PathBuf>,
     pub source_universe_manifest_path: Option<PathBuf>,
     pub source_universe_object_gates_path: Option<PathBuf>,
     pub selected_conversion_manifest_path: Option<PathBuf>,
@@ -85,6 +86,9 @@ pub struct VenueScaleConversionAcceptanceUniverse {
     pub scope_label: String,
     pub status: VenueScaleConversionAcceptanceStatus,
     pub completion_ledger_id: Option<String>,
+    pub source_archive_discovery_seed_id: Option<String>,
+    pub source_archive_discovery_seed_source_binding_count: u64,
+    pub source_archive_discovery_seed_representative_object_count: u64,
     pub source_manifest_id: Option<String>,
     pub source_object_gate_id: Option<String>,
     pub source_object_gate_queue_id: Option<String>,
@@ -173,6 +177,14 @@ struct SourceUniverseManifestSummary {
     accepted_bytes: u64,
     #[serde(default)]
     category_summaries: Vec<SourceUniverseCategorySummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceArchiveDiscoverySeedSummary {
+    discovery_id: String,
+    status: String,
+    source_binding_count: u64,
+    representative_object_count: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -432,6 +444,9 @@ fn evaluate_universe(
 
     let mut artifact_refs = Vec::new();
     let mut completion_ledger_id = None;
+    let mut source_archive_discovery_seed_id = None;
+    let mut source_archive_discovery_seed_source_binding_count = 0;
+    let mut source_archive_discovery_seed_representative_object_count = 0;
     let mut source_manifest_id = None;
     let mut source_manifest_universe_id = None;
     let mut source_object_gate_id = None;
@@ -466,6 +481,21 @@ fn evaluate_universe(
         converted_record_count += ledger.record_count;
         converted_canonical_rows += ledger.total_canonical_rows;
         converted_nt_catalog_rows += ledger.total_nt_iterations;
+    }
+
+    if let Some(path) = &spec.source_archive_discovery_seed_path {
+        let path = resolve_existing_path(base_dir, path);
+        artifact_refs.push(artifact_ref("source_archive_discovery_seed", &path)?);
+        let seed: SourceArchiveDiscoverySeedSummary = read_json(&path)?;
+        ensure!(
+            seed.status == "ready",
+            "source archive discovery seed {} is not ready",
+            path.display()
+        );
+        source_archive_discovery_seed_id = Some(seed.discovery_id);
+        source_archive_discovery_seed_source_binding_count = seed.source_binding_count;
+        source_archive_discovery_seed_representative_object_count =
+            seed.representative_object_count;
     }
 
     if let Some(path) = &spec.source_universe_manifest_path {
@@ -579,6 +609,9 @@ fn evaluate_universe(
         scope_label: spec.scope_label.clone(),
         status: spec.status,
         completion_ledger_id,
+        source_archive_discovery_seed_id,
+        source_archive_discovery_seed_source_binding_count,
+        source_archive_discovery_seed_representative_object_count,
         source_manifest_id,
         source_object_gate_id,
         source_object_gate_queue_id,

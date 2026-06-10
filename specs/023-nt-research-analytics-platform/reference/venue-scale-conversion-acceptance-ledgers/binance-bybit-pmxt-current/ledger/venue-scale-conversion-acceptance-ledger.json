@@ -34,6 +34,9 @@
           "scope_label": "BNBUSDC spot daily trades",
           "status": "converted",
           "completion_ledger_id": "backfill-conversion-completion-ledger-binance-bnbusdc-2026-03-01-2026-05-31",
+          "source_archive_discovery_seed_id": null,
+          "source_archive_discovery_seed_source_binding_count": 0,
+          "source_archive_discovery_seed_representative_object_count": 0,
           "source_manifest_id": null,
           "source_object_gate_id": null,
           "source_object_gate_queue_id": null,
@@ -67,6 +70,9 @@
           "scope_label": "Binance public archive full current data",
           "status": "blocked",
           "completion_ledger_id": null,
+          "source_archive_discovery_seed_id": "source-archive-discovery-seed-binance-data-vision-trades-current",
+          "source_archive_discovery_seed_source_binding_count": 5,
+          "source_archive_discovery_seed_representative_object_count": 5,
           "source_manifest_id": null,
           "source_object_gate_id": null,
           "source_object_gate_queue_id": null,
@@ -86,10 +92,16 @@
           "selected_rows": null,
           "selected_asset_count": null,
           "category_summaries": [],
-          "artifact_refs": [],
+          "artifact_refs": [
+            {
+              "role": "source_archive_discovery_seed",
+              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/source-archive-discovery-seeds/binance-data-vision-trades-current/seed/source-archive-discovery-seed.json",
+              "sha256": "3a084d6167e9107e74d09b308d647df9fd54c4f65ebf0cd354cec64d7322152c"
+            }
+          ],
           "blocking_issues": [
-            "missing_accepted_binance_source_universe",
-            "missing_binance_full_scope_source_proofs",
+            "missing_binance_full_source_universe_manifest",
+            "missing_binance_full_source_universe_conversion_queue",
             "bnbusdc_slice_only_not_full_binance"
           ]
         }
@@ -115,6 +127,9 @@
           "scope_label": "BNBUSDC spot tick trades",
           "status": "converted",
           "completion_ledger_id": "backfill-conversion-completion-ledger-bybit-bnbusdc-2026-03-01-2026-06-01",
+          "source_archive_discovery_seed_id": null,
+          "source_archive_discovery_seed_source_binding_count": 0,
+          "source_archive_discovery_seed_representative_object_count": 0,
           "source_manifest_id": null,
           "source_object_gate_id": null,
           "source_object_gate_queue_id": null,
@@ -148,6 +163,9 @@
           "scope_label": "Bybit public archive tick trades all staged categories",
           "status": "source_only",
           "completion_ledger_id": null,
+          "source_archive_discovery_seed_id": null,
+          "source_archive_discovery_seed_source_binding_count": 0,
+          "source_archive_discovery_seed_representative_object_count": 0,
           "source_manifest_id": "backfill-source-universe-object-manifest-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
           "source_object_gate_id": "source-universe-object-gates-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
           "source_object_gate_queue_id": "source-universe-conversion-queue-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
@@ -225,6 +243,9 @@
           "scope_label": "Polymarket selected source one binary option",
           "status": "converted",
           "completion_ledger_id": null,
+          "source_archive_discovery_seed_id": null,
+          "source_archive_discovery_seed_source_binding_count": 0,
+          "source_archive_discovery_seed_representative_object_count": 0,
           "source_manifest_id": null,
           "source_object_gate_id": null,
           "source_object_gate_queue_id": null,
@@ -266,6 +287,9 @@
           "scope_label": "Polymarket full current local/archive data",
           "status": "blocked",
           "completion_ledger_id": null,
+          "source_archive_discovery_seed_id": "source-archive-discovery-seed-pmxt-polymarket-v2-current",
+          "source_archive_discovery_seed_source_binding_count": 1,
+          "source_archive_discovery_seed_representative_object_count": 1,
           "source_manifest_id": null,
           "source_object_gate_id": null,
           "source_object_gate_queue_id": null,
@@ -287,14 +311,20 @@
           "category_summaries": [],
           "artifact_refs": [
             {
+              "role": "source_archive_discovery_seed",
+              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/source-archive-discovery-seeds/pmxt-polymarket-v2-current/seed/source-archive-discovery-seed.json",
+              "sha256": "7fb02694fdcd82b5dc34a0ca28e01788dbe08e4be38f5bb97b9a2c5c39997802"
+            },
+            {
               "role": "selected_source_report",
               "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json",
               "sha256": "cc5110c9f97f167bc243ac542fda8cbac252f57d847436cc2a3e7dee5b426a73"
             }
           ],
           "blocking_issues": [
-            "missing_accepted_pmxt_source_universe",
-            "missing_full_file_tick_size_epoch_policy",
+            "missing_pmxt_full_source_universe_manifest",
+            "missing_pmxt_full_nt_catalog_conversion_manifest",
+            "missing_pmxt_l2_tick_size_epoch_policy",
             "selected_source_only_not_full_pmxt"
           ]
         }

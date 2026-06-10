@@ -14,6 +14,47 @@ fn venue_scale_acceptance_ledger_reports_current_binance_bybit_pmxt_scope_withou
     let spec_path = temp_dir
         .path()
         .join("venue-scale-conversion-acceptance-ledger.toml");
+    let binance_archive_seed = temp_dir.path().join("binance-archive-discovery-seed.json");
+    let pmxt_archive_seed = temp_dir.path().join("pmxt-archive-discovery-seed.json");
+
+    fs::write(
+        &binance_archive_seed,
+        r#"{
+  "schema_version": "source-archive-discovery-seed.v1",
+  "discovery_id": "source-archive-discovery-seed-binance-data-vision-trades-current",
+  "status": "ready",
+  "venue": "binance",
+  "source": "data-vision",
+  "window_start": "2026-03-01",
+  "window_end": "2026-03-01",
+  "source_binding_count": 5,
+  "representative_object_count": 5,
+  "total_representative_object_bytes": 52653072,
+  "product_families": ["coin_m_delivery", "coin_m_perpetual", "spot", "usd_m_delivery", "usd_m_perpetual"],
+  "table_families": ["native_trades"],
+  "bindings": []
+}"#,
+    )
+    .expect("write binance discovery seed");
+    fs::write(
+        &pmxt_archive_seed,
+        r#"{
+  "schema_version": "source-archive-discovery-seed.v1",
+  "discovery_id": "source-archive-discovery-seed-pmxt-polymarket-v2-current",
+  "status": "ready",
+  "venue": "pmxt",
+  "source": "polymarket-v2-archive",
+  "window_start": "2026-05-20",
+  "window_end": "2026-06-08",
+  "source_binding_count": 1,
+  "representative_object_count": 1,
+  "total_representative_object_bytes": 361365244,
+  "product_families": ["prediction_market_outcome"],
+  "table_families": ["order_book_snapshot_deltas"],
+  "bindings": []
+}"#,
+    )
+    .expect("write pmxt discovery seed");
 
     fs::write(
         &spec_path,
@@ -36,9 +77,10 @@ completion_ledger_path = "{binance_completion_ledger}"
 universe_id = "binance-public-archive-full-current-data"
 scope_label = "Binance public archive full current data"
 status = "blocked"
+source_archive_discovery_seed_path = "{binance_archive_seed}"
 blocking_issues = [
-  "missing_accepted_binance_source_universe",
-  "missing_binance_full_scope_source_proofs",
+  "missing_binance_full_source_universe_manifest",
+  "missing_binance_full_source_universe_conversion_queue",
   "bnbusdc_slice_only_not_full_binance",
 ]
 
@@ -74,14 +116,18 @@ selected_source_report_path = "{pmxt_selected_source_report}"
 universe_id = "pmxt-polymarket-full-current-data"
 scope_label = "Polymarket full current local/archive data"
 status = "blocked"
+source_archive_discovery_seed_path = "{pmxt_archive_seed}"
 selected_source_report_path = "{pmxt_selected_source_report}"
 blocking_issues = [
-  "missing_accepted_pmxt_source_universe",
-  "missing_full_file_tick_size_epoch_policy",
+  "missing_pmxt_full_source_universe_manifest",
+  "missing_pmxt_full_nt_catalog_conversion_manifest",
+  "missing_pmxt_l2_tick_size_epoch_policy",
   "selected_source_only_not_full_pmxt",
 ]
 "#,
             output_dir = output_dir.display(),
+            binance_archive_seed = binance_archive_seed.display(),
+            pmxt_archive_seed = pmxt_archive_seed.display(),
             binance_completion_ledger = reference_root
                 .join("backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json")
                 .display(),
@@ -150,10 +196,28 @@ blocking_issues = [
     assert_eq!(
         binance_full.blocking_issues,
         vec![
-            "missing_accepted_binance_source_universe",
-            "missing_binance_full_scope_source_proofs",
+            "missing_binance_full_source_universe_manifest",
+            "missing_binance_full_source_universe_conversion_queue",
             "bnbusdc_slice_only_not_full_binance",
         ]
+    );
+    assert_eq!(
+        binance_full.source_archive_discovery_seed_id.as_deref(),
+        Some("source-archive-discovery-seed-binance-data-vision-trades-current")
+    );
+    assert_eq!(
+        binance_full.source_archive_discovery_seed_source_binding_count,
+        5
+    );
+    assert_eq!(
+        binance_full.source_archive_discovery_seed_representative_object_count,
+        5
+    );
+    assert!(
+        binance_full
+            .artifact_refs
+            .iter()
+            .any(|artifact| artifact.role == "source_archive_discovery_seed")
     );
 
     let bybit = ledger
@@ -196,6 +260,23 @@ blocking_issues = [
     assert_eq!(pmxt.status, VenueScaleConversionAcceptanceStatus::Blocked);
     assert_eq!(pmxt.converted_universes, 1);
     assert_eq!(pmxt.blocked_universes, 1);
+    let pmxt_full = pmxt
+        .universes
+        .iter()
+        .find(|universe| universe.universe_id == "pmxt-polymarket-full-current-data")
+        .expect("pmxt full current universe");
+    assert_eq!(
+        pmxt_full.source_archive_discovery_seed_id.as_deref(),
+        Some("source-archive-discovery-seed-pmxt-polymarket-v2-current")
+    );
+    assert_eq!(
+        pmxt_full.source_archive_discovery_seed_source_binding_count,
+        1
+    );
+    assert_eq!(
+        pmxt_full.source_archive_discovery_seed_representative_object_count,
+        1
+    );
 
     let pmxt_selected = pmxt
         .universes

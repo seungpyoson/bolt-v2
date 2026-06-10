@@ -18,6 +18,8 @@ use std::{
 #[path = "src/source_canonicalization.rs"]
 mod source_canonicalization;
 
+const SOURCE_CANONICALIZATION_SOURCE: &str = include_str!("src/source_canonicalization.rs");
+
 // Generous in-build cap. The strategy source set is now the strategy directory
 // plus shared sizing source, whose framed canonical stream is well under this
 // cap; the runtime digest path applies the operator-configured
@@ -27,6 +29,8 @@ const BUILD_CANONICAL_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/source_canonicalization.rs");
+    let _ = SOURCE_CANONICALIZATION_SOURCE.len();
     for env_var in build_script_rerun_env_vars() {
         println!("cargo:rerun-if-env-changed={env_var}");
     }
@@ -73,9 +77,9 @@ fn emit_git_head_rerun_paths(manifest_dir: &Path) {
 /// re-triggers the build.
 fn emit_canonical_source_artifacts(manifest_dir: &Path) {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
-    for path in canonical_source_rerun_paths(manifest_dir)
-        .expect("canonical source rerun paths should collect")
-    {
+    let rerun_paths = canonical_source_rerun_paths(manifest_dir)
+        .unwrap_or_else(|error| panic!("canonical source rerun paths should collect: {error}"));
+    for path in rerun_paths {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     for entry in source_canonicalization::GATED_SOURCE_ROOTS {

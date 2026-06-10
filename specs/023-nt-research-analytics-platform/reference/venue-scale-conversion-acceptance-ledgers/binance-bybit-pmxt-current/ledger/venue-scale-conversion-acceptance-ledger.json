@@ -1,0 +1,244 @@
+{
+  "schema_version": "venue-scale-conversion-acceptance-ledger.v1",
+  "ledger_id": "venue-scale-conversion-acceptance-ledger-binance-bybit-pmxt-current",
+  "status": "blocked",
+  "venue_count": 3,
+  "universe_count": 5,
+  "converted_universes": 3,
+  "source_only_universes": 1,
+  "blocked_universes": 1,
+  "total_converted_records": 186,
+  "total_converted_canonical_rows": 4602457,
+  "total_converted_nt_catalog_rows": 4602458,
+  "total_source_only_objects": 5857,
+  "total_source_only_accepted_bytes": 20309079098,
+  "venues": [
+    {
+      "venue_id": "binance-current-reference",
+      "venue": "binance",
+      "status": "converted",
+      "universe_count": 1,
+      "converted_universes": 1,
+      "source_only_universes": 0,
+      "blocked_universes": 0,
+      "total_converted_records": 92,
+      "total_converted_canonical_rows": 4470719,
+      "total_converted_nt_catalog_rows": 4470719,
+      "total_source_only_objects": 0,
+      "total_source_only_accepted_bytes": 0,
+      "universes": [
+        {
+          "universe_id": "binance-bnbusdc-spot-2026-03-01-2026-05-31",
+          "scope_label": "BNBUSDC spot daily trades",
+          "status": "converted",
+          "completion_ledger_id": "backfill-conversion-completion-ledger-binance-bnbusdc-2026-03-01-2026-05-31",
+          "source_manifest_id": null,
+          "converted_record_count": 92,
+          "converted_canonical_rows": 4470719,
+          "converted_nt_catalog_rows": 4470719,
+          "source_object_count": 0,
+          "source_accepted_bytes": 0,
+          "catalog_rows_by_nt_data_type": {},
+          "catalog_hash": null,
+          "output_catalog_uri": null,
+          "selected_source_rows": null,
+          "selected_source_row_groups": null,
+          "selected_projected_row_groups": null,
+          "selected_rows": null,
+          "selected_asset_count": null,
+          "category_summaries": [],
+          "artifact_refs": [
+            {
+              "role": "completion_ledger",
+              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/binance-bnbusdc-2026-03-01-2026-05-31/ledger/backfill-conversion-completion-ledger.json",
+              "sha256": "4920d6d102d4a362fb6ab8301e8afd61faa57df2977561522971d0b12aef1752"
+            }
+          ],
+          "blocking_issues": []
+        }
+      ]
+    },
+    {
+      "venue_id": "bybit-current-reference",
+      "venue": "bybit",
+      "status": "partially_converted",
+      "universe_count": 2,
+      "converted_universes": 1,
+      "source_only_universes": 1,
+      "blocked_universes": 0,
+      "total_converted_records": 93,
+      "total_converted_canonical_rows": 131635,
+      "total_converted_nt_catalog_rows": 131635,
+      "total_source_only_objects": 5857,
+      "total_source_only_accepted_bytes": 20309079098,
+      "universes": [
+        {
+          "universe_id": "bybit-bnbusdc-spot-2026-03-01-2026-06-01",
+          "scope_label": "BNBUSDC spot tick trades",
+          "status": "converted",
+          "completion_ledger_id": "backfill-conversion-completion-ledger-bybit-bnbusdc-2026-03-01-2026-06-01",
+          "source_manifest_id": null,
+          "converted_record_count": 93,
+          "converted_canonical_rows": 131635,
+          "converted_nt_catalog_rows": 131635,
+          "source_object_count": 0,
+          "source_accepted_bytes": 0,
+          "catalog_rows_by_nt_data_type": {},
+          "catalog_hash": null,
+          "output_catalog_uri": null,
+          "selected_source_rows": null,
+          "selected_source_row_groups": null,
+          "selected_projected_row_groups": null,
+          "selected_rows": null,
+          "selected_asset_count": null,
+          "category_summaries": [],
+          "artifact_refs": [
+            {
+              "role": "completion_ledger",
+              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-conversion-completion-ledgers/bybit-bnbusdc-2026-03-01-2026-06-01/ledger/backfill-conversion-completion-ledger.json",
+              "sha256": "684d1fc5a614423c61a0d1d3e13724375273043bf6b4bb3dcca21fe41c2c3b65"
+            }
+          ],
+          "blocking_issues": []
+        },
+        {
+          "universe_id": "bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+          "scope_label": "Bybit public archive tick trades all staged categories",
+          "status": "source_only",
+          "completion_ledger_id": null,
+          "source_manifest_id": "backfill-source-universe-object-manifest-bybit-public-archive-tick-trades-2025-06-01-2026-06-01",
+          "converted_record_count": 0,
+          "converted_canonical_rows": 0,
+          "converted_nt_catalog_rows": 0,
+          "source_object_count": 5857,
+          "source_accepted_bytes": 20309079098,
+          "catalog_rows_by_nt_data_type": {},
+          "catalog_hash": null,
+          "output_catalog_uri": null,
+          "selected_source_rows": null,
+          "selected_source_row_groups": null,
+          "selected_projected_row_groups": null,
+          "selected_rows": null,
+          "selected_asset_count": null,
+          "category_summaries": [
+            {
+              "category": "inverse",
+              "source_binding": "bybit-inverse-tick-trades",
+              "instrument_count": 10,
+              "object_count": 702,
+              "compressed_bytes": 624992483
+            },
+            {
+              "category": "linear",
+              "source_binding": "bybit-linear-tick-trades",
+              "instrument_count": 38,
+              "object_count": 1851,
+              "compressed_bytes": 18419832484
+            },
+            {
+              "category": "spot",
+              "source_binding": "bybit-spot-tick-trades",
+              "instrument_count": 58,
+              "object_count": 3304,
+              "compressed_bytes": 1264254131
+            }
+          ],
+          "artifact_refs": [
+            {
+              "role": "source_universe_manifest",
+              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-object-manifest.json",
+              "sha256": "11cad048895acc6349452f9b92a30efe0f00090434abc82f8c23521addd29803"
+            }
+          ],
+          "blocking_issues": []
+        }
+      ]
+    },
+    {
+      "venue_id": "pmxt-current-reference",
+      "venue": "pmxt",
+      "status": "blocked",
+      "universe_count": 2,
+      "converted_universes": 1,
+      "source_only_universes": 0,
+      "blocked_universes": 1,
+      "total_converted_records": 1,
+      "total_converted_canonical_rows": 103,
+      "total_converted_nt_catalog_rows": 104,
+      "total_source_only_objects": 0,
+      "total_source_only_accepted_bytes": 0,
+      "universes": [
+        {
+          "universe_id": "pmxt-polymarket-selected-source-2026-05-20",
+          "scope_label": "Polymarket selected source one binary option",
+          "status": "converted",
+          "completion_ledger_id": null,
+          "source_manifest_id": null,
+          "converted_record_count": 1,
+          "converted_canonical_rows": 103,
+          "converted_nt_catalog_rows": 104,
+          "source_object_count": 0,
+          "source_accepted_bytes": 0,
+          "catalog_rows_by_nt_data_type": {
+            "OrderBookDelta": 103,
+            "TradeTick": 1
+          },
+          "catalog_hash": "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236",
+          "output_catalog_uri": "file:///Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/backtests/pmxt-run/nt-catalog",
+          "selected_source_rows": 64877467,
+          "selected_source_row_groups": 62,
+          "selected_projected_row_groups": 1,
+          "selected_rows": 5,
+          "selected_asset_count": 1,
+          "category_summaries": [],
+          "artifact_refs": [
+            {
+              "role": "selected_conversion_manifest",
+              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/backtests/pmxt-run/conversion-manifest.json",
+              "sha256": "fdf16126c1135c4caaeae97244143244d0f72023714c23c0c093092cb3c3980e"
+            },
+            {
+              "role": "selected_source_report",
+              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json",
+              "sha256": "cc5110c9f97f167bc243ac542fda8cbac252f57d847436cc2a3e7dee5b426a73"
+            }
+          ],
+          "blocking_issues": []
+        },
+        {
+          "universe_id": "pmxt-polymarket-full-current-data",
+          "scope_label": "Polymarket full current local/archive data",
+          "status": "blocked",
+          "completion_ledger_id": null,
+          "source_manifest_id": null,
+          "converted_record_count": 0,
+          "converted_canonical_rows": 0,
+          "converted_nt_catalog_rows": 0,
+          "source_object_count": 0,
+          "source_accepted_bytes": 0,
+          "catalog_rows_by_nt_data_type": {},
+          "catalog_hash": null,
+          "output_catalog_uri": null,
+          "selected_source_rows": 64877467,
+          "selected_source_row_groups": 62,
+          "selected_projected_row_groups": 1,
+          "selected_rows": 5,
+          "selected_asset_count": 1,
+          "category_summaries": [],
+          "artifact_refs": [
+            {
+              "role": "selected_source_report",
+              "path": "/Users/spson/Projects/Claude/bolt-v2/.worktrees/bte-clean-converter-nt-use-main-reconcile/specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json",
+              "sha256": "cc5110c9f97f167bc243ac542fda8cbac252f57d847436cc2a3e7dee5b426a73"
+            }
+          ],
+          "blocking_issues": [
+            "missing_accepted_pmxt_source_universe",
+            "missing_full_file_tick_size_epoch_policy",
+            "selected_source_only_not_full_pmxt"
+          ]
+        }
+      ]
+    }
+  ]
+}

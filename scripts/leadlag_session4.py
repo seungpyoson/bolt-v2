@@ -45,6 +45,7 @@ import math
 import statistics
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -146,12 +147,26 @@ def leader_path(workdir: Path, date: str, coin: str) -> Path:
 # ----- resolve: Gamma market identity + settlement per 5-minute cycle -------
 
 
-def fetch_cycle(session: requests.Session, asset: str, start: int) -> dict:
+_thread_local = threading.local()
+
+
+def _gamma_session() -> requests.Session:
+    # requests.Session is not documented thread-safe; one session per pool thread
+    # keeps connection pooling without sharing mutable state across threads.
+    if not hasattr(_thread_local, "session"):
+        _thread_local.session = requests.Session()
+    return _thread_local.session
+
+
+def fetch_cycle(asset: str, start: int) -> dict:
     slug = f"{asset}-updown-5m-{start}"
+    session = _gamma_session()
     for attempt in range(5):
         try:
             resp = session.get(GAMMA_EVENTS_URL, params={"slug": slug}, timeout=30)
             if resp.status_code == 429:
+                if attempt == 4:
+                    raise RuntimeError(f"Gamma rate limit persisted after 5 attempts for {slug}")
                 time.sleep(2.0 * (attempt + 1))
                 continue
             resp.raise_for_status()
@@ -192,7 +207,6 @@ def fetch_cycle(session: requests.Session, asset: str, start: int) -> dict:
 
 def cmd_resolve(args: argparse.Namespace) -> None:
     workdir = Path(args.workdir)
-    session = requests.Session()
     for date in parse_dates(args.dates):
         base = day_epoch(date)
         starts = [base + i * CADENCE_SECS for i in range(86_400 // CADENCE_SECS)]
@@ -203,7 +217,7 @@ def cmd_resolve(args: argparse.Namespace) -> None:
                 continue
             out.parent.mkdir(parents=True, exist_ok=True)
             with cf.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-                rows = list(pool.map(lambda s: fetch_cycle(session, asset, s), starts))
+                rows = list(pool.map(lambda s: fetch_cycle(asset, s), starts))
             rows.sort(key=lambda r: r["start"])
             missing = sum(1 for r in rows if r["missing"])
             tmp = out.with_suffix(".tmp")
@@ -266,28 +280,27 @@ def extract_pm_object(workdir: Path, date: str, key: str, tokens: list[str]) -> 
             ["aws", "s3", "cp", f"s3://bolt-parquet/{key}", str(local), "--only-show-errors"],
             check=True,
         )
-        con = duckdb.connect()
-        con.execute("SET threads=4;")
-        raw_tob = con.execute(
-            f"""
-            SELECT asset_id, CAST(epoch_ms(timestamp_received) AS BIGINT) AS ts_ms,
-                   CAST(best_bid AS DOUBLE) AS best_bid, CAST(best_ask AS DOUBLE) AS best_ask
-            FROM read_parquet('{local}')
-            WHERE event_type = 'price_change' AND asset_id IN ({token_list})
-            ORDER BY asset_id, ts_ms
-            """
-        ).pl()
-        raw_trades = con.execute(
-            f"""
-            SELECT asset_id, CAST(epoch_ms(timestamp_received) AS BIGINT) AS ts_ms,
-                   CAST(price AS DOUBLE) AS price, CAST(size AS DOUBLE) AS size,
-                   side, CAST(fee_rate_bps AS INTEGER) AS fee_rate_bps
-            FROM read_parquet('{local}')
-            WHERE event_type = 'last_trade_price' AND asset_id IN ({token_list})
-            ORDER BY asset_id, ts_ms
-            """
-        ).pl()
-        con.close()
+        with duckdb.connect() as con:
+            con.execute("SET threads=4;")
+            raw_tob = con.execute(
+                f"""
+                SELECT asset_id, CAST(epoch_ms(timestamp_received) AS BIGINT) AS ts_ms,
+                       CAST(best_bid AS DOUBLE) AS best_bid, CAST(best_ask AS DOUBLE) AS best_ask
+                FROM read_parquet('{local}')
+                WHERE event_type = 'price_change' AND asset_id IN ({token_list})
+                ORDER BY asset_id, ts_ms
+                """
+            ).pl()
+            raw_trades = con.execute(
+                f"""
+                SELECT asset_id, CAST(epoch_ms(timestamp_received) AS BIGINT) AS ts_ms,
+                       CAST(price AS DOUBLE) AS price, CAST(size AS DOUBLE) AS size,
+                       side, CAST(fee_rate_bps AS INTEGER) AS fee_rate_bps
+                FROM read_parquet('{local}')
+                WHERE event_type = 'last_trade_price' AND asset_id IN ({token_list})
+                ORDER BY asset_id, ts_ms
+                """
+            ).pl()
     # Keep only top-of-book *changes* (price_change rows repeat the venue-provided
     # best bid/ask on every book delta; consecutive duplicates carry no information).
     if raw_tob.height:

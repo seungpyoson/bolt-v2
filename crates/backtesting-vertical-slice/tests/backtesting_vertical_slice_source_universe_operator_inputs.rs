@@ -1,0 +1,252 @@
+use std::{fs, path::Path};
+
+use backtesting_vertical_slice::source_universe_operator_inputs::{
+    SourceUniverseOperatorInputRecordStatus, SourceUniverseOperatorInputs,
+    SourceUniverseOperatorInputsStatus, write_source_universe_operator_inputs_from_spec_file,
+};
+
+#[test]
+fn source_universe_operator_inputs_materialize_ready_bybit_spot_object() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let gates_path = temp_dir.path().join("source-universe-object-gates.json");
+    let run_plan_path = temp_dir
+        .path()
+        .join("source-universe-conversion-run-plan.json");
+    let conversion_plan_path = temp_dir.path().join("conversion-plan.json");
+    let metadata_path = temp_dir.path().join("instrument-metadata.json");
+    let output_dir = temp_dir.path().join("operator-inputs");
+    let spec_path = temp_dir.path().join("source-universe-operator-inputs.toml");
+
+    fs::write(
+        &gates_path,
+        r#"{
+  "schema_version": "source-universe-object-gates.v1",
+  "gate_id": "source-universe-object-gates-bybit-test",
+  "status": "ready",
+  "queue_id": "source-universe-conversion-queue-bybit-test",
+  "manifest_id": "backfill-source-universe-object-manifest-bybit-test",
+  "universe_id": "backfill-source-universe-bybit-test",
+  "venue": "bybit",
+  "source": "public_archive",
+  "family": "tick-trades",
+  "table_family": "trades",
+  "queue_path": "queue.json",
+  "queue_hash": "queue-hash",
+  "work_item_count": 1,
+  "accepted_gate_count": 1,
+  "source_binding_count": 1,
+  "total_accepted_bytes": 100,
+  "source_binding_summaries": [],
+  "artifact_refs": [],
+  "records": [
+    {
+      "work_item_id": "bybit:spot:BNBUSDC:2026-03-01:hash-a",
+      "gate_status": "ready",
+      "source_binding": "bybit-spot-native-trades",
+      "table_family": "trades",
+      "category": "spot",
+      "symbol": "BNBUSDC",
+      "archive_date": "2026-03-01",
+      "source_uri": "s3://example/raw/hash-a.csv.gz",
+      "source_url": "https://public.bybit.example/spot/BNBUSDC.csv.gz",
+      "selected_object_sha256": "hash-a",
+      "selected_object_bytes": 100,
+      "source_proof_id": "source-proof-bybit-test",
+      "source_proof_version": 1,
+      "source_proof_hash": "proof-hash",
+      "category_manifest_id": "category-manifest-bybit-test",
+      "category_manifest_hash": "manifest-hash",
+      "source_proof_scope_report_id": "scope-a",
+      "accepted_tranche_id": "tranche-a",
+      "output_prefix": "s3://example/backtests/a"
+    }
+  ]
+}"#,
+    )
+    .expect("write gates");
+    fs::write(
+        &run_plan_path,
+        r#"{
+  "schema_version": "source-universe-conversion-run-plan.v1",
+  "plan_id": "source-universe-conversion-run-plan-bybit-test",
+  "status": "ready",
+  "gate_id": "source-universe-object-gates-bybit-test",
+  "queue_id": "source-universe-conversion-queue-bybit-test",
+  "manifest_id": "backfill-source-universe-object-manifest-bybit-test",
+  "universe_id": "backfill-source-universe-bybit-test",
+  "venue": "bybit",
+  "source": "public_archive",
+  "family": "tick-trades",
+  "table_family": "trades",
+  "object_gates_path": "source-universe-object-gates.json",
+  "object_gates_hash": "gates-hash",
+  "max_objects_per_run": 500,
+  "max_source_bytes_per_run": 1000,
+  "source_binding_count": 1,
+  "object_count": 1,
+  "planned_object_count": 1,
+  "total_source_bytes": 100,
+  "planned_source_bytes": 100,
+  "run_count": 1,
+  "category_summaries": [],
+  "artifact_refs": [],
+  "runs": [
+    {
+      "run_id": "source-universe-conversion-run-plan-bybit-test:run-00001",
+      "run_index": 1,
+      "source_binding": "bybit-spot-native-trades",
+      "table_family": "trades",
+      "category": "spot",
+      "first_archive_date": "2026-03-01",
+      "last_archive_date": "2026-03-01",
+      "object_count": 1,
+      "source_bytes": 100,
+      "work_item_ids": ["bybit:spot:BNBUSDC:2026-03-01:hash-a"],
+      "accepted_tranche_ids": ["tranche-a"],
+      "output_prefixes": ["s3://example/backtests/a"]
+    }
+  ]
+}"#,
+    )
+    .expect("write run plan");
+    fs::write(
+        &conversion_plan_path,
+        r#"{
+  "category_batches": [
+    {
+      "category": "spot",
+      "source_binding": "bybit-spot-native-trades",
+      "status": "converter_mapping_configured",
+      "schema_columns": ["id", "timestamp", "price", "volume", "side", "rpi"],
+      "converter_csv": {
+        "has_headers": true,
+        "trade_id_column": "id",
+        "timestamp_column": "timestamp",
+        "timestamp_unit": "milliseconds",
+        "price_column": "price",
+        "size_column": "volume",
+        "side_column": "side",
+        "buyer_side_values": ["buy"],
+        "seller_side_values": ["sell"]
+      }
+    }
+  ]
+}"#,
+    )
+    .expect("write conversion plan");
+    fs::write(
+        &metadata_path,
+        r#"{
+  "records": [
+    {
+      "category": "spot",
+      "source_binding": "bybit-spot-native-trades",
+      "source_uri": "https://api.bybit.example/v5/market/instruments-info?category=spot&symbol=BNBUSDC",
+      "symbol": "BNBUSDC",
+      "instrument": {
+        "symbol": "BNBUSDC",
+        "baseCoin": "BNB",
+        "quoteCoin": "USDC",
+        "priceFilter": {
+          "tickSize": "0.1"
+        },
+        "lotSizeFilter": {
+          "basePrecision": "0.0001",
+          "minOrderQty": "0.0001",
+          "maxOrderQty": "1400",
+          "minOrderAmt": "5",
+          "maxOrderAmt": "200000"
+        }
+      }
+    }
+  ]
+}"#,
+    )
+    .expect("write metadata");
+    fs::write(
+        &spec_path,
+        format!(
+            r#"input_id = "source-universe-operator-inputs-bybit-test"
+source_universe_object_gates_path = "{gates_path}"
+source_universe_conversion_run_plan_path = "{run_plan_path}"
+source_universe_conversion_plan_path = "{conversion_plan_path}"
+instrument_metadata_snapshot_path = "{metadata_path}"
+output_dir = "{output_dir}"
+operator_run_id_prefix = "source-universe-operator-run-bybit-test"
+nt_venue = "BYBIT"
+converter_identity = "csv-native-trades-to-canonical-trades.v1"
+converter_version = "1"
+raw_payload_container = "csv_gzip"
+max_decoded_bytes = 268435456
+max_source_rows = 1000000
+max_projected_row_groups = 128
+max_wall_seconds = 1800
+default_spot_max_notional = "1000000000"
+default_derivative_max_notional = "1000000000"
+default_derivative_multiplier = "1"
+default_maker_fee = "0"
+default_taker_fee = "0"
+"#,
+            gates_path = gates_path.display(),
+            run_plan_path = run_plan_path.display(),
+            conversion_plan_path = conversion_plan_path.display(),
+            metadata_path = metadata_path.display(),
+            output_dir = output_dir.display(),
+        ),
+    )
+    .expect("write spec");
+
+    let artifact = write_source_universe_operator_inputs_from_spec_file(&spec_path)
+        .expect("operator inputs write succeeds");
+    let inputs: SourceUniverseOperatorInputs =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read inputs"))
+            .expect("inputs parse");
+
+    assert_eq!(inputs.status, SourceUniverseOperatorInputsStatus::Ready);
+    assert_eq!(inputs.planned_object_count, 1);
+    assert_eq!(inputs.ready_input_count, 1);
+    assert_eq!(inputs.blocked_input_count, 0);
+    assert_eq!(inputs.instrument_spec_count, 1);
+    assert_eq!(inputs.converter_mapping_count, 1);
+    assert_eq!(inputs.records.len(), 1);
+    assert_eq!(
+        inputs.records[0].status,
+        SourceUniverseOperatorInputRecordStatus::Ready
+    );
+    assert_eq!(
+        inputs.records[0].instrument_key,
+        "bybit-spot-native-trades:spot:BNBUSDC"
+    );
+    assert!(inputs.records[0].schema_columns.is_some());
+    assert!(inputs.records[0].converter_csv.is_some());
+    assert!(inputs.records[0].blocking_reasons.is_empty());
+}
+
+#[test]
+fn committed_bybit_source_universe_operator_inputs_track_current_gates() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let spec_path = reference_root
+        .join("source-universe-operator-inputs/bybit-public-archive-tick-trades-2025-06-01-2026-06-01")
+        .join("source-universe-operator-inputs.toml");
+    let artifact = write_source_universe_operator_inputs_from_spec_file(&spec_path)
+        .expect("committed Bybit operator inputs are reproducible");
+    let inputs: SourceUniverseOperatorInputs =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read inputs"))
+            .expect("inputs parse");
+
+    assert_eq!(inputs.status, SourceUniverseOperatorInputsStatus::Ready);
+    assert_eq!(inputs.planned_object_count, 5_857);
+    assert_eq!(inputs.ready_input_count, 5_857);
+    assert_eq!(inputs.blocked_input_count, 0);
+    assert_eq!(inputs.instrument_spec_count, 106);
+    assert_eq!(inputs.converter_mapping_count, 3);
+    assert_eq!(inputs.records.len(), 5_857);
+    assert!(inputs.blocking_reasons.is_empty());
+    assert!(
+        inputs
+            .records
+            .iter()
+            .all(|record| record.status == SourceUniverseOperatorInputRecordStatus::Ready)
+    );
+}

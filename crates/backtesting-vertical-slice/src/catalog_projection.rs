@@ -214,10 +214,8 @@ pub fn build_currency_pair(spec: &SpotInstrumentSpec) -> Result<CurrencyPair> {
         .with_context(|| format!("invalid nt_instrument_id {:?}", spec.nt_instrument_id))?;
     let raw_symbol = Symbol::new_checked(&spec.raw_symbol)
         .map_err(|error| anyhow::anyhow!("invalid raw_symbol {:?}: {error}", spec.raw_symbol))?;
-    let base_currency = Currency::from_str(&spec.base_currency)
-        .with_context(|| format!("invalid base_currency {:?}", spec.base_currency))?;
-    let quote_currency = Currency::from_str(&spec.quote_currency)
-        .with_context(|| format!("invalid quote_currency {:?}", spec.quote_currency))?;
+    let base_currency = parse_venue_currency(&spec.base_currency, "base_currency")?;
+    let quote_currency = parse_venue_currency(&spec.quote_currency, "quote_currency")?;
     let price_increment = Price::from_str(&spec.price_increment).map_err(|error| {
         anyhow::anyhow!(
             "invalid price_increment {:?}: {error}",
@@ -293,8 +291,10 @@ fn parse_raw_symbol(value: &str) -> Result<Symbol> {
         .map_err(|error| anyhow::anyhow!("invalid raw_symbol {value:?}: {error}"))
 }
 
-fn parse_currency(value: &str, label: &str) -> Result<Currency> {
-    Currency::from_str(value).with_context(|| format!("invalid {label} {value:?}"))
+fn parse_venue_currency(value: &str, label: &str) -> Result<Currency> {
+    let code = value.trim();
+    ensure!(!code.is_empty(), "{label} must not be empty");
+    Ok(Currency::get_or_create_crypto(code))
 }
 
 fn parse_price(value: &str, label: &str) -> Result<Price> {
@@ -392,9 +392,10 @@ pub fn build_catalog_instrument(spec: &CatalogInstrumentSpec) -> Result<Instrume
 /// Returns an error if accepted metadata cannot construct a checked NT crypto
 /// perpetual.
 pub fn build_crypto_perpetual(spec: &CryptoPerpetualInstrumentSpec) -> Result<CryptoPerpetual> {
-    let base_currency = parse_currency(&spec.base_currency, "base_currency")?;
-    let quote_currency = parse_currency(&spec.quote_currency, "quote_currency")?;
-    let settlement_currency = parse_currency(&spec.settlement_currency, "settlement_currency")?;
+    let base_currency = parse_venue_currency(&spec.base_currency, "base_currency")?;
+    let quote_currency = parse_venue_currency(&spec.quote_currency, "quote_currency")?;
+    let settlement_currency =
+        parse_venue_currency(&spec.settlement_currency, "settlement_currency")?;
     let common = derivative_common_fields(DerivativeCommonFieldInput {
         nt_instrument_id: &spec.nt_instrument_id,
         raw_symbol: &spec.raw_symbol,
@@ -448,9 +449,10 @@ pub fn build_crypto_perpetual(spec: &CryptoPerpetualInstrumentSpec) -> Result<Cr
 /// Returns an error if accepted metadata cannot construct a checked NT crypto
 /// future.
 pub fn build_crypto_future(spec: &CryptoFutureInstrumentSpec) -> Result<CryptoFuture> {
-    let underlying = parse_currency(&spec.base_currency, "base_currency")?;
-    let quote_currency = parse_currency(&spec.quote_currency, "quote_currency")?;
-    let settlement_currency = parse_currency(&spec.settlement_currency, "settlement_currency")?;
+    let underlying = parse_venue_currency(&spec.base_currency, "base_currency")?;
+    let quote_currency = parse_venue_currency(&spec.quote_currency, "quote_currency")?;
+    let settlement_currency =
+        parse_venue_currency(&spec.settlement_currency, "settlement_currency")?;
     ensure!(
         spec.activation_time_nanos < spec.expiration_time_nanos,
         "activation_time_nanos must be before expiration_time_nanos"

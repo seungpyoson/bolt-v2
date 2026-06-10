@@ -19,6 +19,7 @@ use crate::{
     backfill_conversion_completion::{
         BackfillConversionCompletionLedger, BackfillConversionCompletionStatus,
     },
+    source_universe_conversion_queue::SourceUniverseConversionQueue,
     source_universe_conversion_run_plan::{
         SourceUniverseConversionRunPlan, SourceUniverseConversionRunPlanStatus,
     },
@@ -319,13 +320,12 @@ fn evaluate_universe(
         "source_universe_manifest",
         spec.source_universe_manifest_path.as_ref(),
     )?;
-    push_optional_ref(
-        &mut artifact_refs,
+    let queue = read_optional_artifact::<SourceUniverseConversionQueue>(
         base_dir,
         "source_universe_conversion_queue",
         spec.source_universe_conversion_queue_path.as_ref(),
+        &mut artifact_refs,
     )?;
-
     let gates = read_optional_artifact::<SourceUniverseObjectGateMaterialization>(
         base_dir,
         "source_universe_object_gates",
@@ -353,6 +353,12 @@ fn evaluate_universe(
     let mut completed_conversion_records = 0;
     let mut completed_canonical_rows = 0;
     let mut completed_nt_catalog_rows = 0;
+
+    if let Some(queue) = queue.as_ref() {
+        table_family = Some(queue.table_family.clone());
+        planned_conversion_objects = queue.pending_conversion_items;
+        planned_source_bytes = queue.total_source_bytes;
+    }
 
     match gates.as_ref() {
         Some(gates) => {
@@ -485,7 +491,7 @@ where
         .with_context(|| format!("read {role} artifact {}", resolved.display()))?;
     artifact_refs.push(SourceUniverseExecutionAcceptanceArtifactRef {
         role: role.to_string(),
-        path: resolved,
+        path: portable_artifact_path(&resolved),
         sha256: sha256_bytes(&bytes),
     });
     serde_json::from_slice(&bytes)
@@ -507,10 +513,34 @@ fn push_optional_ref(
         .with_context(|| format!("read {role} artifact {}", resolved.display()))?;
     artifact_refs.push(SourceUniverseExecutionAcceptanceArtifactRef {
         role: role.to_string(),
-        path: resolved,
+        path: portable_artifact_path(&resolved),
         sha256: sha256_bytes(&bytes),
     });
     Ok(())
+}
+
+fn portable_artifact_path(path: &Path) -> PathBuf {
+    if !path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    let mut anchors = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        anchors.push(current_dir);
+    }
+    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+
+    for anchor in anchors {
+        for ancestor in anchor.ancestors() {
+            if let Ok(candidate) = path.strip_prefix(ancestor)
+                && looks_repo_relative(candidate)
+            {
+                return candidate.to_path_buf();
+            }
+        }
+    }
+
+    path.to_path_buf()
 }
 
 fn resolve_output_dir(base_dir: &Path, path: &Path) -> PathBuf {

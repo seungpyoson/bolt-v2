@@ -6,13 +6,13 @@
   "converted_universes": 0,
   "ready_for_conversion_universes": 2,
   "blocked_universes": 1,
-  "total_planned_conversion_objects": 7908,
-  "total_planned_source_bytes": 22057801068,
-  "total_required_single_object_operator_runs": 7908,
+  "total_planned_conversion_objects": 9259,
+  "total_planned_source_bytes": 579873706038,
+  "total_required_single_object_operator_runs": 9259,
   "total_completed_conversion_records": 0,
   "total_completed_canonical_rows": 0,
   "total_completed_nt_catalog_rows": 0,
-  "total_remaining_conversion_objects": 7908,
+  "total_remaining_conversion_objects": 9259,
   "records": [
     {
       "universe_id": "backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments",
@@ -79,17 +79,17 @@
       "venue": "pmxt",
       "source": "polymarket-v2-archive",
       "family": "orderbook",
-      "table_family": null,
+      "table_family": "order_book_snapshot_deltas",
       "status": "blocked",
       "source_gate_count": 0,
       "source_conversion_batch_count": 0,
-      "planned_conversion_objects": 0,
-      "planned_source_bytes": 0,
-      "required_single_object_operator_runs": 0,
+      "planned_conversion_objects": 1351,
+      "planned_source_bytes": 557815904970,
+      "required_single_object_operator_runs": 1351,
       "completed_conversion_records": 0,
       "completed_canonical_rows": 0,
       "completed_nt_catalog_rows": 0,
-      "remaining_conversion_objects": 0,
+      "remaining_conversion_objects": 1351,
       "artifact_refs": [
         {
           "role": "source_universe_manifest",
@@ -103,8 +103,6 @@
         }
       ],
       "blocking_reasons": [
-        "missing_pmxt_full_accepted_source_proof_and_object_gates",
-        "missing_pmxt_full_nt_catalog_conversion_manifest",
         "missing_pmxt_l2_tick_size_epoch_policy",
         "missing_source_universe_conversion_run_plan",
         "missing_source_universe_object_gates"

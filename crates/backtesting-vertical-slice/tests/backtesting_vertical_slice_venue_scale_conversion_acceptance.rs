@@ -218,15 +218,15 @@ selected_source_report_path = "{pmxt_selected_source_report}"
 [[venue.universe]]
 universe_id = "pmxt-polymarket-full-current-data"
 scope_label = "Polymarket full current local/archive data"
-status = "blocked"
+status = "source_only"
 source_archive_discovery_seed_path = "{pmxt_archive_seed}"
 source_archive_index_manifest_path = "{pmxt_archive_index_manifest}"
 source_universe_manifest_path = "{pmxt_source_manifest}"
 source_universe_conversion_queue_path = "{pmxt_conversion_queue}"
 selected_source_report_path = "{pmxt_selected_source_report}"
 blocking_issues = [
-  "missing_pmxt_full_accepted_source_proof_and_object_gates",
-  "missing_pmxt_full_nt_catalog_conversion_manifest",
+  "missing_source_universe_object_gates",
+  "missing_source_universe_conversion_run_plan",
   "missing_pmxt_l2_tick_size_epoch_policy",
 ]
 "#,
@@ -288,13 +288,13 @@ blocking_issues = [
     assert_eq!(ledger.venue_count, 3);
     assert_eq!(ledger.universe_count, 7);
     assert_eq!(ledger.converted_universes, 3);
-    assert_eq!(ledger.source_only_universes, 2);
-    assert_eq!(ledger.blocked_universes, 2);
+    assert_eq!(ledger.source_only_universes, 3);
+    assert_eq!(ledger.blocked_universes, 1);
     assert_eq!(ledger.total_converted_canonical_rows, 4_602_457);
     assert_eq!(ledger.total_converted_nt_catalog_rows, 4_602_458);
-    assert_eq!(ledger.total_source_only_objects, 7_908);
+    assert_eq!(ledger.total_source_only_objects, 9_259);
     assert_eq!(ledger.total_source_only_object_gates, 7_908);
-    assert_eq!(ledger.total_source_only_accepted_bytes, 22_057_801_068);
+    assert_eq!(ledger.total_source_only_accepted_bytes, 579_873_706_038);
 
     let binance = ledger
         .venues
@@ -512,9 +512,16 @@ blocking_issues = [
         .iter()
         .find(|venue| venue.venue == "pmxt")
         .expect("pmxt venue");
-    assert_eq!(pmxt.status, VenueScaleConversionAcceptanceStatus::Blocked);
+    assert_eq!(
+        pmxt.status,
+        VenueScaleConversionAcceptanceStatus::PartiallyConverted
+    );
     assert_eq!(pmxt.converted_universes, 1);
-    assert_eq!(pmxt.blocked_universes, 1);
+    assert_eq!(pmxt.source_only_universes, 1);
+    assert_eq!(pmxt.blocked_universes, 0);
+    assert_eq!(pmxt.total_source_only_objects, 1_351);
+    assert_eq!(pmxt.total_source_only_object_gates, 0);
+    assert_eq!(pmxt.total_source_only_accepted_bytes, 557_815_904_970);
     let pmxt_full = pmxt
         .universes
         .iter()
@@ -523,8 +530,8 @@ blocking_issues = [
     assert_eq!(
         pmxt_full.blocking_issues,
         vec![
-            "missing_pmxt_full_accepted_source_proof_and_object_gates",
-            "missing_pmxt_full_nt_catalog_conversion_manifest",
+            "missing_source_universe_object_gates",
+            "missing_source_universe_conversion_run_plan",
             "missing_pmxt_l2_tick_size_epoch_policy",
         ]
     );

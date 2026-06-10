@@ -125,6 +125,8 @@ pub struct SourceUniverseOperatorInputRecord {
     pub converter_identity: String,
     pub converter_version: String,
     pub raw_payload_container: RawPayloadContainer,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zip_member: Option<String>,
     pub max_decoded_bytes: u64,
     pub max_source_rows: u64,
     pub max_projected_row_groups: u64,
@@ -439,6 +441,7 @@ pub fn evaluate_source_universe_operator_inputs(
             converter_identity: spec.converter_identity.clone(),
             converter_version: spec.converter_version.clone(),
             raw_payload_container: spec.raw_payload_container,
+            zip_member: zip_member_for_source_url(&gate.source_url, spec.raw_payload_container)?,
             max_decoded_bytes: spec.max_decoded_bytes,
             max_source_rows: spec.max_source_rows,
             max_projected_row_groups: spec.max_projected_row_groups,
@@ -550,7 +553,10 @@ fn venue_instrument_spec(
 
     let contract_type = required_string(instrument, "contractType")?;
     let settlement_currency = required_string(instrument, "settleCoin")?;
-    let is_inverse = record.category == "inverse";
+    let is_inverse = instrument
+        .get("isInverse")
+        .and_then(Value::as_bool)
+        .unwrap_or(record.category == "inverse");
     let max_notional = spec.default_derivative_max_notional.clone();
     let common = DerivativeSpecFields {
         nt_instrument_id,
@@ -751,6 +757,24 @@ fn instrument_key(source_binding: &str, category: &str, symbol: &str) -> String 
     format!("{source_binding}:{category}:{symbol}")
 }
 
+fn zip_member_for_source_url(
+    source_url: &str,
+    container: RawPayloadContainer,
+) -> Result<Option<String>> {
+    if container != RawPayloadContainer::SingleCsvZip {
+        return Ok(None);
+    }
+    let file_name = source_url
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("missing source filename in {source_url:?}"))?;
+    let zip_stem = file_name.strip_suffix(".zip").with_context(|| {
+        format!("single_csv_zip source filename must end in .zip: {file_name:?}")
+    })?;
+    Ok(Some(format!("{zip_stem}.csv")))
+}
+
 fn artifact_ref(
     role: &str,
     path: PathBuf,
@@ -758,9 +782,33 @@ fn artifact_ref(
 ) -> SourceUniverseOperatorInputsArtifactRef {
     SourceUniverseOperatorInputsArtifactRef {
         role: role.to_string(),
-        path,
+        path: portable_artifact_path(&path),
         sha256,
     }
+}
+
+fn portable_artifact_path(path: &Path) -> PathBuf {
+    if !path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    let mut anchors = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        anchors.push(current_dir);
+    }
+    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+
+    for anchor in anchors {
+        for ancestor in anchor.ancestors() {
+            if let Ok(candidate) = path.strip_prefix(ancestor)
+                && looks_repo_relative(candidate)
+            {
+                return candidate.to_path_buf();
+            }
+        }
+    }
+
+    path.to_path_buf()
 }
 
 fn read_json_artifact<T>(base_dir: &Path, path: &Path, role: &str) -> Result<(PathBuf, String, T)>

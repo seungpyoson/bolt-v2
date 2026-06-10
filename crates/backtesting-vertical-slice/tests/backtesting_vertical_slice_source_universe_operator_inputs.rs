@@ -219,6 +219,7 @@ default_taker_fee = "0"
     );
     assert!(inputs.records[0].schema_columns.is_some());
     assert!(inputs.records[0].converter_csv.is_some());
+    assert_eq!(inputs.records[0].zip_member, None);
     assert!(inputs.records[0].blocking_reasons.is_empty());
 }
 
@@ -248,5 +249,48 @@ fn committed_bybit_source_universe_operator_inputs_track_current_gates() {
             .records
             .iter()
             .all(|record| record.status == SourceUniverseOperatorInputRecordStatus::Ready)
+    );
+}
+
+#[test]
+fn committed_binance_source_universe_operator_inputs_track_current_gates_without_overclaiming() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let spec_path = reference_root
+        .join(
+            "source-universe-operator-inputs/binance-data-vision-trades-2026-03-01-all-instruments",
+        )
+        .join("source-universe-operator-inputs.toml");
+    let artifact = write_source_universe_operator_inputs_from_spec_file(&spec_path)
+        .expect("committed Binance operator inputs are reproducible");
+    let inputs: SourceUniverseOperatorInputs =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read inputs"))
+            .expect("inputs parse");
+
+    assert_eq!(inputs.planned_object_count, 2_051);
+    assert_eq!(inputs.status, SourceUniverseOperatorInputsStatus::Blocked);
+    assert_eq!(inputs.ready_input_count, 2_035);
+    assert_eq!(inputs.blocked_input_count, 16);
+    assert_eq!(inputs.instrument_spec_count, 2_035);
+    assert_eq!(inputs.converter_mapping_count, 5);
+    assert_eq!(inputs.records.len(), 2_051);
+    assert_eq!(
+        inputs.ready_input_count + inputs.blocked_input_count,
+        inputs.planned_object_count
+    );
+    assert!(
+        inputs.records.iter().all(|record| record
+            .zip_member
+            .as_ref()
+            .is_some_and(|value| value.ends_with(".csv"))),
+        "single_csv_zip Binance records must identify their CSV member"
+    );
+    assert!(
+        inputs
+            .records
+            .iter()
+            .filter(|record| record.status == SourceUniverseOperatorInputRecordStatus::Blocked)
+            .all(|record| record.blocking_reasons == ["missing_instrument_metadata"]),
+        "blocked Binance records must only reflect missing metadata, not converter/gate gaps"
     );
 }

@@ -5,14 +5,14 @@
   "venue_count": 3,
   "universe_count": 7,
   "converted_universes": 3,
-  "source_only_universes": 2,
-  "blocked_universes": 2,
+  "source_only_universes": 3,
+  "blocked_universes": 1,
   "total_converted_records": 186,
   "total_converted_canonical_rows": 4602457,
   "total_converted_nt_catalog_rows": 4602458,
-  "total_source_only_objects": 7908,
+  "total_source_only_objects": 9259,
   "total_source_only_object_gates": 7908,
-  "total_source_only_accepted_bytes": 22057801068,
+  "total_source_only_accepted_bytes": 579873706038,
   "venues": [
     {
       "venue_id": "binance-current-reference",
@@ -388,17 +388,17 @@
     {
       "venue_id": "pmxt-current-reference",
       "venue": "pmxt",
-      "status": "blocked",
+      "status": "partially_converted",
       "universe_count": 2,
       "converted_universes": 1,
-      "source_only_universes": 0,
-      "blocked_universes": 1,
+      "source_only_universes": 1,
+      "blocked_universes": 0,
       "total_converted_records": 1,
       "total_converted_canonical_rows": 103,
       "total_converted_nt_catalog_rows": 104,
-      "total_source_only_objects": 0,
+      "total_source_only_objects": 1351,
       "total_source_only_object_gates": 0,
-      "total_source_only_accepted_bytes": 0,
+      "total_source_only_accepted_bytes": 557815904970,
       "universes": [
         {
           "universe_id": "pmxt-polymarket-selected-source-2026-05-20",
@@ -460,7 +460,7 @@
         {
           "universe_id": "pmxt-polymarket-full-current-data",
           "scope_label": "Polymarket full current local/archive data",
-          "status": "blocked",
+          "status": "source_only",
           "completion_ledger_id": null,
           "source_archive_discovery_seed_id": "source-archive-discovery-seed-pmxt-polymarket-v2-current",
           "source_archive_discovery_seed_source_binding_count": 1,
@@ -533,8 +533,8 @@
             }
           ],
           "blocking_issues": [
-            "missing_pmxt_full_accepted_source_proof_and_object_gates",
-            "missing_pmxt_full_nt_catalog_conversion_manifest",
+            "missing_source_universe_object_gates",
+            "missing_source_universe_conversion_run_plan",
             "missing_pmxt_l2_tick_size_epoch_policy"
           ]
         }

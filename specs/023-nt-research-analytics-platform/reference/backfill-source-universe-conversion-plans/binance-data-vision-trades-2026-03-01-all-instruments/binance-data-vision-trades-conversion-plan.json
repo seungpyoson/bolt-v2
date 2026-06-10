@@ -1,0 +1,138 @@
+{
+  "schema_version": "backfill-source-universe-conversion-plan.v1",
+  "plan_id": "backfill-source-universe-conversion-plan-binance-data-vision-trades-2026-03-01-all-instruments",
+  "status": "ready_for_operator_input_materialization",
+  "universe_id": "backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments",
+  "selection": {
+    "instrument_universe": "all_staged_category_symbols",
+    "archive_dates": ["2026-03-01"],
+    "metadata_query_strategy": "current_exchange_info_with_missing_metadata_blockers"
+  },
+  "source_universe_summary": {
+    "category_symbol_count": 2051,
+    "object_count": 2051,
+    "compressed_bytes": 1748721970
+  },
+  "category_batches": [
+    {
+      "category": "spot",
+      "source_binding": "binance-spot-native-trades",
+      "category_split_reason": "source_contract_or_schema_boundary",
+      "status": "converter_mapping_configured",
+      "instrument_count": 1416,
+      "object_count": 1416,
+      "compressed_bytes": 406812965,
+      "required_gate_records": 1416,
+      "source_uri_template": "https://data.binance.vision/data/spot/daily/trades/{symbol}/{symbol}-trades-{dt}.zip",
+      "sample_public_url": "https://data.binance.vision/data/spot/daily/trades/0GTRY/0GTRY-trades-2026-03-01.zip",
+      "schema_columns": ["trade_id", "price", "qty", "quote_qty", "time", "is_buyer_maker", "is_best_match"],
+      "converter_csv": {
+        "has_headers": false,
+        "trade_id_column": "trade_id",
+        "timestamp_column": "time",
+        "timestamp_unit": "microseconds",
+        "price_column": "price",
+        "size_column": "qty",
+        "side_column": "is_buyer_maker",
+        "buyer_side_values": ["False"],
+        "seller_side_values": ["True"]
+      }
+    },
+    {
+      "category": "usd_m_perpetual",
+      "source_binding": "binance-usd-m-perpetual-native-trades",
+      "category_split_reason": "source_contract_or_schema_boundary",
+      "status": "converter_mapping_configured",
+      "instrument_count": 593,
+      "object_count": 593,
+      "compressed_bytes": 1316489815,
+      "required_gate_records": 593,
+      "source_uri_template": "https://data.binance.vision/data/futures/um/daily/trades/{symbol}/{symbol}-trades-{dt}.zip",
+      "sample_public_url": "https://data.binance.vision/data/futures/um/daily/trades/0GUSDT/0GUSDT-trades-2026-03-01.zip",
+      "schema_columns": ["trade_id", "price", "qty", "quote_qty", "time", "is_buyer_maker"],
+      "converter_csv": {
+        "has_headers": false,
+        "trade_id_column": "trade_id",
+        "timestamp_column": "time",
+        "timestamp_unit": "microseconds",
+        "price_column": "price",
+        "size_column": "qty",
+        "side_column": "is_buyer_maker",
+        "buyer_side_values": ["False"],
+        "seller_side_values": ["True"]
+      }
+    },
+    {
+      "category": "usd_m_delivery",
+      "source_binding": "binance-usd-m-delivery-native-trades",
+      "category_split_reason": "source_contract_or_schema_boundary",
+      "status": "converter_mapping_configured",
+      "instrument_count": 4,
+      "object_count": 4,
+      "compressed_bytes": 891154,
+      "required_gate_records": 4,
+      "source_uri_template": "https://data.binance.vision/data/futures/um/daily/trades/{symbol}/{symbol}-trades-{dt}.zip",
+      "sample_public_url": "https://data.binance.vision/data/futures/um/daily/trades/BTCUSDT_260327/BTCUSDT_260327-trades-2026-03-01.zip",
+      "schema_columns": ["trade_id", "price", "qty", "quote_qty", "time", "is_buyer_maker"],
+      "converter_csv": {
+        "has_headers": false,
+        "trade_id_column": "trade_id",
+        "timestamp_column": "time",
+        "timestamp_unit": "microseconds",
+        "price_column": "price",
+        "size_column": "qty",
+        "side_column": "is_buyer_maker",
+        "buyer_side_values": ["False"],
+        "seller_side_values": ["True"]
+      }
+    },
+    {
+      "category": "coin_m_perpetual",
+      "source_binding": "binance-coin-m-perpetual-native-trades",
+      "category_split_reason": "source_contract_or_schema_boundary",
+      "status": "converter_mapping_configured",
+      "instrument_count": 28,
+      "object_count": 28,
+      "compressed_bytes": 23588863,
+      "required_gate_records": 28,
+      "source_uri_template": "https://data.binance.vision/data/futures/cm/daily/trades/{symbol}/{symbol}-trades-{dt}.zip",
+      "sample_public_url": "https://data.binance.vision/data/futures/cm/daily/trades/AAVEUSD_PERP/AAVEUSD_PERP-trades-2026-03-01.zip",
+      "schema_columns": ["trade_id", "price", "qty", "quote_qty", "time", "is_buyer_maker"],
+      "converter_csv": {
+        "has_headers": false,
+        "trade_id_column": "trade_id",
+        "timestamp_column": "time",
+        "timestamp_unit": "microseconds",
+        "price_column": "price",
+        "size_column": "qty",
+        "side_column": "is_buyer_maker",
+        "buyer_side_values": ["False"],
+        "seller_side_values": ["True"]
+      }
+    },
+    {
+      "category": "coin_m_delivery",
+      "source_binding": "binance-coin-m-delivery-native-trades",
+      "category_split_reason": "source_contract_or_schema_boundary",
+      "status": "converter_mapping_configured",
+      "instrument_count": 10,
+      "object_count": 10,
+      "compressed_bytes": 939173,
+      "required_gate_records": 10,
+      "source_uri_template": "https://data.binance.vision/data/futures/cm/daily/trades/{symbol}/{symbol}-trades-{dt}.zip",
+      "sample_public_url": "https://data.binance.vision/data/futures/cm/daily/trades/BNBUSD_260327/BNBUSD_260327-trades-2026-03-01.zip",
+      "schema_columns": ["trade_id", "price", "qty", "quote_qty", "time", "is_buyer_maker"],
+      "converter_csv": {
+        "has_headers": false,
+        "trade_id_column": "trade_id",
+        "timestamp_column": "time",
+        "timestamp_unit": "microseconds",
+        "price_column": "price",
+        "size_column": "qty",
+        "side_column": "is_buyer_maker",
+        "buyer_side_values": ["False"],
+        "seller_side_values": ["True"]
+      }
+    }
+  ]
+}

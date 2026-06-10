@@ -137,7 +137,63 @@ fn source_universe_execution_acceptance_reports_ready_and_blocked_universes_with
     )
     .expect("write run plan");
     fs::write(&manifest_path, b"{}").expect("write pmxt manifest");
-    fs::write(&queue_path, b"{}").expect("write pmxt queue");
+    fs::write(
+        &queue_path,
+        r#"{
+  "schema_version": "source-universe-conversion-queue.v1",
+  "queue_id": "source-universe-conversion-queue-pmxt-test",
+  "status": "ready",
+  "manifest_id": "backfill-source-universe-object-manifest-pmxt-test",
+  "universe_id": "backfill-source-universe-pmxt-test",
+  "venue": "pmxt",
+  "source": "polymarket-v2-archive",
+  "family": "orderbook",
+  "table_family": "orderbook",
+  "source_manifest_path": "pmxt-source-universe-manifest.json",
+  "source_manifest_hash": "manifest-hash",
+  "output_prefix_template": "s3://example/pmxt/{symbol}",
+  "work_item_count": 2,
+  "pending_conversion_items": 2,
+  "total_source_bytes": 300,
+  "category_summaries": [],
+  "artifact_refs": [],
+  "work_items": [
+    {
+      "work_item_id": "pmxt:orderbook:POLYMARKET:2026-06-10T15:00:00Z:hash-a",
+      "work_state": "pending_conversion",
+      "source_binding": "polymarket-parquet-archive-index",
+      "table_family": "orderbook",
+      "category": "orderbook",
+      "symbol": "POLYMARKET",
+      "archive_date": "2026-06-10T15:00:00Z",
+      "source_uri": "s3://example/pmxt/a.parquet",
+      "source_url": "https://example.invalid/pmxt/a.parquet",
+      "source_hash_algorithm": "etag",
+      "source_hash": "hash-a",
+      "source_bytes": 100,
+      "schema_columns": ["timestamp", "market", "asset_id", "bids", "asks"],
+      "output_prefix": "s3://example/pmxt/a"
+    },
+    {
+      "work_item_id": "pmxt:orderbook:POLYMARKET:2026-06-10T16:00:00Z:hash-b",
+      "work_state": "pending_conversion",
+      "source_binding": "polymarket-parquet-archive-index",
+      "table_family": "orderbook",
+      "category": "orderbook",
+      "symbol": "POLYMARKET",
+      "archive_date": "2026-06-10T16:00:00Z",
+      "source_uri": "s3://example/pmxt/b.parquet",
+      "source_url": "https://example.invalid/pmxt/b.parquet",
+      "source_hash_algorithm": "etag",
+      "source_hash": "hash-b",
+      "source_bytes": 200,
+      "schema_columns": ["timestamp", "market", "asset_id", "bids", "asks"],
+      "output_prefix": "s3://example/pmxt/b"
+    }
+  ]
+}"#,
+    )
+    .expect("write pmxt queue");
     fs::write(
         &spec_path,
         format!(
@@ -160,7 +216,6 @@ family = "orderbook"
 source_universe_manifest_path = "{manifest_path}"
 source_universe_conversion_queue_path = "{queue_path}"
 blocking_reasons = [
-  "missing_pmxt_full_accepted_source_proof_and_object_gates",
   "missing_pmxt_l2_tick_size_epoch_policy",
 ]
 "#,
@@ -185,8 +240,8 @@ blocking_reasons = [
     );
     assert_eq!(ledger.ready_for_conversion_universes, 1);
     assert_eq!(ledger.blocked_universes, 1);
-    assert_eq!(ledger.total_planned_conversion_objects, 2);
-    assert_eq!(ledger.total_required_single_object_operator_runs, 2);
+    assert_eq!(ledger.total_planned_conversion_objects, 4);
+    assert_eq!(ledger.total_required_single_object_operator_runs, 4);
 
     let binance = record(&ledger, "backfill-source-universe-binance-test");
     assert_eq!(
@@ -203,12 +258,9 @@ blocking_reasons = [
         pmxt.status,
         SourceUniverseExecutionAcceptanceUniverseStatus::Blocked
     );
-    assert!(pmxt.planned_conversion_objects == 0);
-    assert!(
-        pmxt.blocking_reasons
-            .iter()
-            .any(|reason| { reason == "missing_pmxt_full_accepted_source_proof_and_object_gates" })
-    );
+    assert_eq!(pmxt.planned_conversion_objects, 2);
+    assert_eq!(pmxt.planned_source_bytes, 300);
+    assert_eq!(pmxt.required_single_object_operator_runs, 2);
     assert!(
         pmxt.blocking_reasons
             .iter()
@@ -238,9 +290,9 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
     assert_eq!(ledger.converted_universes, 0);
     assert_eq!(ledger.ready_for_conversion_universes, 2);
     assert_eq!(ledger.blocked_universes, 1);
-    assert_eq!(ledger.total_planned_conversion_objects, 7_908);
-    assert_eq!(ledger.total_required_single_object_operator_runs, 7_908);
-    assert_eq!(ledger.total_remaining_conversion_objects, 7_908);
+    assert_eq!(ledger.total_planned_conversion_objects, 9_259);
+    assert_eq!(ledger.total_required_single_object_operator_runs, 9_259);
+    assert_eq!(ledger.total_remaining_conversion_objects, 9_259);
 
     let binance = record(
         &ledger,
@@ -278,15 +330,23 @@ fn committed_source_universe_execution_acceptance_ledger_tracks_current_venue_sc
         pmxt.status,
         SourceUniverseExecutionAcceptanceUniverseStatus::Blocked
     );
-    assert!(
-        pmxt.blocking_reasons
-            .iter()
-            .any(|reason| { reason == "missing_pmxt_full_accepted_source_proof_and_object_gates" })
-    );
+    assert_eq!(pmxt.planned_conversion_objects, 1_351);
+    assert_eq!(pmxt.planned_source_bytes, 557_815_904_970);
+    assert_eq!(pmxt.required_single_object_operator_runs, 1_351);
     assert!(
         pmxt.blocking_reasons
             .iter()
             .any(|reason| reason == "missing_pmxt_l2_tick_size_epoch_policy")
+    );
+    assert!(
+        pmxt.blocking_reasons
+            .iter()
+            .any(|reason| reason == "missing_source_universe_object_gates")
+    );
+    assert!(
+        pmxt.blocking_reasons
+            .iter()
+            .any(|reason| reason == "missing_source_universe_conversion_run_plan")
     );
 }
 

@@ -923,9 +923,33 @@ fn count_status(
 fn artifact_ref(role: &str, path: &Path) -> Result<VenueScaleConversionAcceptanceArtifactRef> {
     Ok(VenueScaleConversionAcceptanceArtifactRef {
         role: role.to_string(),
-        path: path.to_path_buf(),
+        path: portable_artifact_path(path),
         sha256: sha256_file(path)?,
     })
+}
+
+fn portable_artifact_path(path: &Path) -> PathBuf {
+    if !path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    let mut anchors = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        anchors.push(current_dir);
+    }
+    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+
+    for anchor in anchors {
+        for ancestor in anchor.ancestors() {
+            if let Ok(candidate) = path.strip_prefix(ancestor)
+                && looks_repo_relative(candidate)
+            {
+                return candidate.to_path_buf();
+            }
+        }
+    }
+
+    path.to_path_buf()
 }
 
 fn read_json<T>(path: &Path) -> Result<T>

@@ -28,6 +28,8 @@ pub struct SourceArchiveIndexSourceUniverseSpec {
     pub universe_id: String,
     pub source_archive_index_manifest_path: PathBuf,
     pub output_dir: PathBuf,
+    #[serde(default)]
+    pub category_manifest_path: Option<PathBuf>,
     pub staging_uri_template: String,
     pub category: String,
     pub symbol: String,
@@ -91,6 +93,26 @@ pub struct SourceArchiveIndexSourceUniverseManifest {
     pub accepted_bytes: u64,
     pub category_summaries: Vec<SourceArchiveIndexSourceUniverseCategorySummary>,
     pub artifact_refs: Vec<SourceArchiveIndexSourceUniverseArtifactRef>,
+    pub payload_records: Vec<SourceArchiveIndexSourceUniversePayloadRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceArchiveIndexSourceUniverseCategoryManifest {
+    pub schema_version: String,
+    pub manifest_id: String,
+    pub parent_manifest_id: String,
+    pub universe_id: String,
+    pub venue: String,
+    pub source: String,
+    pub family: String,
+    pub table_family: String,
+    pub category: String,
+    pub source_binding: String,
+    pub object_count: u64,
+    pub accepted_bytes: u64,
+    pub first_archive_date: String,
+    pub last_archive_date: String,
     pub payload_records: Vec<SourceArchiveIndexSourceUniversePayloadRecord>,
 }
 
@@ -158,6 +180,17 @@ pub fn write_source_archive_index_source_universe_manifest(
             )
         })?;
     }
+    if let Some(category_manifest_path) = spec.category_manifest_path.as_ref() {
+        let category_path = resolve_output_dir(base_dir, category_manifest_path);
+        let category_manifest = category_manifest(&manifest);
+        let category_bytes = serde_json::to_vec_pretty(&category_manifest)
+            .context("serialize source archive index category manifest")?;
+        write_clean_artifact(
+            &category_path,
+            &category_bytes,
+            "source archive index category manifest",
+        )?;
+    }
 
     Ok(SourceArchiveIndexSourceUniverseArtifact {
         path,
@@ -166,6 +199,32 @@ pub fn write_source_archive_index_source_universe_manifest(
         object_count: manifest.object_count,
         accepted_bytes: manifest.accepted_bytes,
     })
+}
+
+fn category_manifest(
+    manifest: &SourceArchiveIndexSourceUniverseManifest,
+) -> SourceArchiveIndexSourceUniverseCategoryManifest {
+    let summary = manifest
+        .category_summaries
+        .first()
+        .expect("source archive index source-universe has one category summary");
+    SourceArchiveIndexSourceUniverseCategoryManifest {
+        schema_version: SOURCE_ARCHIVE_INDEX_SOURCE_UNIVERSE_SCHEMA_VERSION.to_string(),
+        manifest_id: format!("{}-category-{}", manifest.manifest_id, summary.category),
+        parent_manifest_id: manifest.manifest_id.clone(),
+        universe_id: manifest.universe_id.clone(),
+        venue: manifest.venue.clone(),
+        source: manifest.source.clone(),
+        family: manifest.family.clone(),
+        table_family: manifest.table_family.clone(),
+        category: summary.category.clone(),
+        source_binding: summary.source_binding.clone(),
+        object_count: summary.object_count,
+        accepted_bytes: summary.compressed_bytes,
+        first_archive_date: summary.first_archive_date.clone(),
+        last_archive_date: summary.last_archive_date.clone(),
+        payload_records: manifest.payload_records.clone(),
+    }
 }
 
 pub fn evaluate_source_archive_index_source_universe_manifest(
@@ -357,9 +416,32 @@ where
         .with_context(|| format!("parse JSON artifact {}", path.display()))
 }
 
+fn write_clean_artifact(path: &Path, bytes: &[u8], label: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create {label} directory {}", parent.display()))?;
+    }
+    if path.exists() {
+        let existing =
+            fs::read(path).with_context(|| format!("read existing {label} {}", path.display()))?;
+        ensure!(
+            existing == bytes,
+            "dirty {label} {}: existing file content differs",
+            path.display()
+        );
+        return Ok(());
+    }
+    fs::write(path, bytes).with_context(|| format!("write {label} {}", path.display()))
+}
+
 fn resolve_output_dir(base_dir: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
         return path.to_path_buf();
+    }
+    if looks_repo_relative(path)
+        && let Some(candidate) = resolve_repo_relative_output(path)
+    {
+        return candidate;
     }
     if looks_repo_relative(path)
         && let Some(candidate) = resolve_from_known_anchors(path)
@@ -374,6 +456,27 @@ fn resolve_output_dir(base_dir: &Path, path: &Path) -> PathBuf {
         return base_candidate;
     }
     resolve_from_known_anchors(path).unwrap_or(base_candidate)
+}
+
+fn resolve_repo_relative_output(path: &Path) -> Option<PathBuf> {
+    let mut anchors = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        anchors.push(current_dir);
+    }
+    anchors.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+
+    for anchor in anchors {
+        for ancestor in anchor.ancestors() {
+            if let Some(Component::Normal(component)) = path.components().next()
+                && ancestor.join(component).exists()
+                && ancestor.join("justfile").exists()
+                && ancestor.join("AGENTS.md").exists()
+            {
+                return Some(ancestor.join(path));
+            }
+        }
+    }
+    None
 }
 
 fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {

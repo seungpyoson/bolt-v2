@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 use backtesting_vertical_slice::source_archive_index_source_universe::{
-    SourceArchiveIndexSourceUniverseManifest,
+    SourceArchiveIndexSourceUniverseCategoryManifest, SourceArchiveIndexSourceUniverseManifest,
     write_source_archive_index_source_universe_manifest_from_spec_file,
 };
 
@@ -10,6 +10,9 @@ fn source_archive_index_source_universe_manifest_preserves_etag_hash_identity() 
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let archive_index_path = temp_dir.path().join("source-archive-index-manifest.json");
     let output_dir = temp_dir.path().join("source-universe");
+    let category_manifest_path = temp_dir
+        .path()
+        .join("category-manifests/pmxt-object-manifest-orderbook.json");
     let spec_path = temp_dir
         .path()
         .join("source-archive-index-source-universe.toml");
@@ -69,6 +72,7 @@ manifest_id = "backfill-source-universe-object-manifest-pmxt-polymarket-v2-curre
 universe_id = "backfill-source-universe-pmxt-polymarket-v2-current"
 source_archive_index_manifest_path = "{archive_index_path}"
 output_dir = "{output_dir}"
+category_manifest_path = "{category_manifest_path}"
 staging_uri_template = "s3://bolt-parquet/backfill-staging/pmxt/raw/v1/source={{source}}/family={{table_family}}/category={{category}}/dt={{archive_date}}/object={{source_hash}}.parquet"
 category = "orderbook"
 symbol = "POLYMARKET"
@@ -78,6 +82,7 @@ schema_columns = ["asset_id", "price", "size", "side", "timestamp"]
 "#,
             archive_index_path = archive_index_path.display(),
             output_dir = output_dir.display(),
+            category_manifest_path = category_manifest_path.display(),
         ),
     )
     .expect("write spec");
@@ -117,6 +122,26 @@ schema_columns = ["asset_id", "price", "size", "side", "timestamp"]
             .ends_with("object=etag-9b8839adc79af4b1c8fd607cf5cc8f97-70.parquet"),
         "staging URI must use a path-safe ETag identity"
     );
+
+    let category_manifest: SourceArchiveIndexSourceUniverseCategoryManifest =
+        serde_json::from_slice(&fs::read(category_manifest_path).expect("read category manifest"))
+            .expect("category manifest parses");
+    assert_eq!(
+        category_manifest.manifest_id,
+        "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current-category-orderbook"
+    );
+    assert_eq!(
+        category_manifest.parent_manifest_id,
+        "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current"
+    );
+    assert_eq!(
+        category_manifest.source_binding,
+        "polymarket-parquet-archive-index"
+    );
+    assert_eq!(category_manifest.table_family, "order_book_snapshot_deltas");
+    assert_eq!(category_manifest.object_count, 2);
+    assert_eq!(category_manifest.accepted_bytes, 1_131_035_039);
+    assert_eq!(category_manifest.payload_records, manifest.payload_records);
 }
 
 #[test]
@@ -180,4 +205,19 @@ fn pmxt_source_archive_index_source_universe_reference_manifest_matches_full_ind
             .s3_uri
             .ends_with("object=etag-9b8839adc79af4b1c8fd607cf5cc8f97-70.parquet")
     );
+
+    let category_manifest_path = reference_root.join(
+        "backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/category-manifests/pmxt-polymarket-v2-object-manifest-orderbook.json",
+    );
+    let category_manifest: SourceArchiveIndexSourceUniverseCategoryManifest =
+        serde_json::from_slice(
+            &fs::read(category_manifest_path).expect("read PMXT category manifest"),
+        )
+        .expect("PMXT category manifest parses");
+    assert_eq!(
+        category_manifest.manifest_id,
+        "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current-category-orderbook"
+    );
+    assert_eq!(category_manifest.object_count, 1_351);
+    assert_eq!(category_manifest.accepted_bytes, 557_815_904_970);
 }

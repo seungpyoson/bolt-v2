@@ -52,6 +52,8 @@ pub(super) fn valid_raw_config() -> Value {
         order_notional_target = 1000.0
         maximum_position_notional = 1000.0
         book_impact_cap_bps = 15
+        vwap_depth_limit_bps = 15
+        slippage_buffer_bps = 15
         risk_lambda = 0.5
         edge_threshold_basis_points = -20
         exit_hysteresis_bps = 5
@@ -491,6 +493,8 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             order_notional_target: 1000.0,
             maximum_position_notional: 1000.0,
             book_impact_cap_bps: 15,
+            vwap_depth_limit_bps: 15,
+            slippage_buffer_bps: 15,
             risk_lambda: 0.5,
             edge_threshold_basis_points: -20,
             exit_hysteresis_bps: 5,
@@ -624,16 +628,16 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
         .books
         .up
         .bid_levels
-        .insert(Price::new(0.43, 2), 500.0);
+        .insert(Price::new(0.43, 2), 5_000.0);
     strategy
         .active
         .books
         .up
         .ask_levels
-        .insert(Price::new(0.45, 2), 500.0);
+        .insert(Price::new(0.45, 2), 5_000.0);
     strategy.active.books.up.best_bid = Some(0.43);
     strategy.active.books.up.best_ask = Some(0.45);
-    strategy.active.books.up.liquidity_available = Some(500.0);
+    strategy.active.books.up.liquidity_available = Some(5_000.0);
     strategy.active.books.down.last_observed_instrument_id =
         strategy.active.books.down.instrument_id;
     strategy
@@ -641,16 +645,16 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
         .books
         .down
         .bid_levels
-        .insert(Price::new(0.43, 2), 500.0);
+        .insert(Price::new(0.43, 2), 5_000.0);
     strategy
         .active
         .books
         .down
         .ask_levels
-        .insert(Price::new(0.45, 2), 500.0);
+        .insert(Price::new(0.45, 2), 5_000.0);
     strategy.active.books.down.best_bid = Some(0.43);
     strategy.active.books.down.best_ask = Some(0.45);
-    strategy.active.books.down.liquidity_available = Some(500.0);
+    strategy.active.books.down.liquidity_available = Some(5_000.0);
     strategy.active.fast_venue_incoherent = false;
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
     strategy
@@ -690,16 +694,16 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
         .books
         .up
         .bid_levels
-        .insert(Price::new(0.50, 2), 500.0);
+        .insert(Price::new(0.50, 2), 5_000.0);
     strategy
         .active
         .books
         .up
         .ask_levels
-        .insert(Price::new(0.50, 2), 500.0);
+        .insert(Price::new(0.50, 2), 5_000.0);
     strategy.active.books.up.best_bid = Some(0.50);
     strategy.active.books.up.best_ask = Some(0.50);
-    strategy.active.books.up.liquidity_available = Some(500.0);
+    strategy.active.books.up.liquidity_available = Some(5_000.0);
     strategy.active.books.down.last_observed_instrument_id =
         strategy.active.books.down.instrument_id;
     strategy
@@ -707,16 +711,16 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
         .books
         .down
         .bid_levels
-        .insert(Price::new(0.48, 2), 500.0);
+        .insert(Price::new(0.48, 2), 5_000.0);
     strategy
         .active
         .books
         .down
         .ask_levels
-        .insert(Price::new(0.49, 2), 500.0);
+        .insert(Price::new(0.49, 2), 5_000.0);
     strategy.active.books.down.best_bid = Some(0.48);
     strategy.active.books.down.best_ask = Some(0.49);
-    strategy.active.books.down.liquidity_available = Some(500.0);
+    strategy.active.books.down.liquidity_available = Some(5_000.0);
     strategy.active.fast_venue_incoherent = false;
     strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
     strategy
@@ -742,13 +746,6 @@ pub(super) fn ready_to_trade_strategy_with_decision_evidence_and_submit_admissio
     strategy.config.edge_threshold_basis_points = 1;
     strategy.active.price_to_beat = Some(3_100.0);
     strategy
-}
-
-pub(super) fn selected_entry_side(strategy: &BinaryOracleEdgeTaker) -> OutcomeSide {
-    let evaluation = strategy.entry_evaluation_at(1_200);
-    evaluation
-        .selected_side
-        .expect("ready-to-trade fixture should select a configured outcome side")
 }
 
 pub(super) fn selected_entry_instrument(strategy: &BinaryOracleEdgeTaker) -> InstrumentId {
@@ -779,15 +776,6 @@ pub(super) fn configured_position_probe(
     strategy.exposure = original_exposure;
     strategy.refresh_book_subscriptions_for_current_state();
     position
-}
-
-pub(super) fn configured_side_for_instrument(
-    strategy: &mut BinaryOracleEdgeTaker,
-    instrument_id: InstrumentId,
-) -> OutcomeSide {
-    configured_position_probe(strategy, instrument_id)
-        .outcome_side
-        .expect("configured instrument should materialize with an outcome side")
 }
 
 pub(super) fn configured_book_for_instrument(
@@ -864,7 +852,12 @@ pub(super) fn pending_entry_state(
         instrument_id,
         outcome_side: Some(outcome_side),
         outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: strategy.entry_fee_bps(outcome_side).or(Some(0.0)),
+        historical_entry_fee_bps: strategy
+            .context
+            .fee_provider()
+            .fee_bps(instrument_id)
+            .and_then(|value| value.to_f64())
+            .or(Some(0.0)),
         interval_open: Some(3_100.0),
         selection_published_at_ms: Some(1_000),
         seconds_to_expiry_at_selection: Some(300),

@@ -259,6 +259,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 relative_roots: &[
                     "src/strategies/binary_oracle_edge_taker",
                     "src/bolt_v3_book_sizing.rs",
+                    "src/bolt_v3_executable_edge.rs",
                 ],
             },
             GatedSourceRoot {

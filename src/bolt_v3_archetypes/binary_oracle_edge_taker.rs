@@ -109,6 +109,8 @@ pub struct RuntimeParametersBlock {
     pub warmup_tick_count: u64,
     pub reentry_cooldown_secs: u64,
     pub book_impact_cap_bps: u64,
+    pub vwap_depth_limit_bps: u64,
+    pub slippage_buffer_bps: u64,
     pub risk_lambda: f64,
     pub exit_hysteresis_bps: i64,
     pub trade_flow_window_secs: u64,
@@ -134,6 +136,8 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             warmup_tick_count: u64,
             reentry_cooldown_secs: u64,
             book_impact_cap_bps: u64,
+            vwap_depth_limit_bps: u64,
+            slippage_buffer_bps: u64,
             risk_lambda: f64,
             exit_hysteresis_bps: i64,
             trade_flow_window_secs: u64,
@@ -190,6 +194,8 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             warmup_tick_count: wire.warmup_tick_count,
             reentry_cooldown_secs: wire.reentry_cooldown_secs,
             book_impact_cap_bps: wire.book_impact_cap_bps,
+            vwap_depth_limit_bps: wire.vwap_depth_limit_bps,
+            slippage_buffer_bps: wire.slippage_buffer_bps,
             risk_lambda: wire.risk_lambda,
             exit_hysteresis_bps: wire.exit_hysteresis_bps,
             trade_flow_window_secs: wire.trade_flow_window_secs,
@@ -711,6 +717,18 @@ pub fn raw_taker_config(
         strategy_instance_id,
         "book_impact_cap_bps",
         parameters.runtime.book_impact_cap_bps,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "vwap_depth_limit_bps",
+        parameters.runtime.vwap_depth_limit_bps,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "slippage_buffer_bps",
+        parameters.runtime.slippage_buffer_bps,
     )?;
     insert_float(&mut table, "risk_lambda", parameters.runtime.risk_lambda);
     insert_i64(

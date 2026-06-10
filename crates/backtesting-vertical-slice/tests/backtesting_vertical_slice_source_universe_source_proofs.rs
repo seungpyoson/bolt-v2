@@ -1,7 +1,9 @@
 use std::{fs, path::Path};
 
 use backtesting_vertical_slice::{
-    source_proof::{SourceProofFidelityClass, SourceProofReport, SourceProofStatus},
+    source_proof::{
+        CheckOutcome, EvidenceState, SourceProofFidelityClass, SourceProofReport, SourceProofStatus,
+    },
     source_universe_source_proofs::{
         SourceUniverseSourceProofSet, write_source_universe_source_proof_set_from_spec_file,
     },
@@ -256,4 +258,163 @@ category_manifest_path = "{manifest_path}"
     proof
         .evaluate_acceptance()
         .expect("configured L2 evidence produces accepted source proof");
+}
+
+#[test]
+fn source_universe_source_proofs_materialize_pmxt_pending_manifest_scoped_l2_proof() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let output_dir = temp_dir.path().join("source-proofs");
+    let spec_path = temp_dir.path().join("source-universe-source-proofs.toml");
+    let manifest_path = reference_root.join(
+        "backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/category-manifests/pmxt-polymarket-v2-object-manifest-orderbook.json",
+    );
+
+    fs::write(
+        &spec_path,
+        format!(
+            r#"
+proof_set_id = "source-universe-source-proofs-pmxt-polymarket-v2-current"
+output_dir = "{output_dir}"
+venue = "polymarket"
+table_family = "order_book_snapshot_deltas"
+manifest_table_family = "order_book_snapshot_deltas"
+status = "pending"
+source_candidate_class = "official_free"
+source_selection_status = "PENDING_MORE_PROOF"
+usage_scope = "one_off_backfill_data"
+fidelity_class = "L2_REPLAY"
+requested_start_utc = "2026-04-13T19:00:00Z"
+requested_end_utc = "2026-06-10T16:00:00Z"
+coverage_start_utc = "2026-04-13T19:00:00Z"
+coverage_end_utc = "2026-06-10T16:00:00Z"
+license_ref = "https://archive.pmxt.dev/docs/v2-data-overview#license"
+license_scope = "public"
+retention_ref = "pending://source-proofs/pmxt-polymarket-v2-current/retention-freshness"
+cost_ref = "pending://source-proofs/pmxt-polymarket-v2-current/cost"
+gap_policy_id = ""
+raw_sample_selection = "first_manifest_record"
+schema_sample_policy = "raw_sample"
+
+[l2_replay_evidence]
+order_book_delta_ref = "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json"
+sufficient_snapshot_cadence_ref = "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json"
+
+[required_checks.source_access]
+outcome = "passed"
+evidence_ref = "PMXT archive objects are enumerated in category manifest {{manifest_id}}"
+
+[required_checks.license]
+outcome = "passed"
+evidence_ref = "PMXT archive license review permits public research use"
+
+[required_checks.schema]
+outcome = "passed"
+evidence_ref = "Schema columns are committed in category manifest {{manifest_id}}"
+
+[required_checks.time_semantics]
+outcome = "passed"
+evidence_ref = "timestamp_received is the archive-hour axis; timestamp is upstream event time"
+
+[required_checks.instrument_universe]
+outcome = "pending"
+evidence_ref = "pending broad BinaryOption instrument-universe proof for {{instrument_universe_id}}"
+
+[required_checks.coverage]
+outcome = "pending"
+evidence_ref = "pending coverage proof for object_count={{object_count}} archive_date_range=[{{first_archive_date}},{{last_archive_date}}]"
+
+[required_checks.retention_freshness]
+outcome = "pending"
+evidence_ref = "pending durable archive retention and update-lag proof"
+
+[required_checks.granularity]
+outcome = "passed"
+evidence_ref = "PMXT v2 orderbook files include book, price_change, last_trade_price, and tick_size_change events"
+
+[required_checks.completeness]
+outcome = "pending"
+evidence_ref = "pending completeness proof for compressed_bytes={{accepted_bytes}}"
+
+[required_checks.nt_mapping]
+outcome = "passed"
+evidence_ref = "bounded PMXT selected-source NT mapping evidence exists for OrderBookDelta and TradeTick"
+
+[required_checks.cost]
+outcome = "pending"
+evidence_ref = "pending accepted cost proof for 557815904970 bytes of PMXT source archive data"
+
+[required_checks.storage]
+outcome = "pending"
+evidence_ref = "pending artifact-root staging proof for PMXT source-proof evidence"
+
+[[claim_limit]]
+id = "pmxt-source-proof-claim-limit-001"
+severity = "blocking"
+claim = "No canonical, production, or broad NT catalog/backtest input from this pending PMXT L2 source proof."
+reason = "The generated proof is manifest-scoped but remains pending until coverage, cost, storage, completeness, and tick-size policy evidence are accepted."
+evidence_ref = "source-proof://{{source_proof_id}}/status"
+
+[[claim_limit]]
+id = "pmxt-source-proof-claim-limit-002"
+severity = "blocking"
+claim = "No dynamic tick-size replay claim until NT-native timed instrument-epoch replay or a source-proof-bound no-tick-size-change universe is accepted."
+reason = "The PMXT source includes tick_size_change fields and the current broad replay policy remains unaccepted."
+evidence_ref = "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json"
+
+[[source_binding]]
+source_binding = "polymarket-parquet-archive-index"
+source_proof_id = "source-proof-pmxt-polymarket-v2-current-orderbook"
+product_category = "binary-option"
+instrument_universe_id = "pmxt-polymarket-v2-current-orderbook"
+category_manifest_path = "{manifest_path}"
+"#,
+            output_dir = output_dir.display(),
+            manifest_path = manifest_path.display(),
+        ),
+    )
+    .expect("write spec");
+
+    let artifact = write_source_universe_source_proof_set_from_spec_file(&spec_path)
+        .expect("pending source proof set writes");
+    let proof_set: SourceUniverseSourceProofSet =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read proof set"))
+            .expect("parse proof set");
+    assert_eq!(proof_set.proof_count, 1);
+    assert_eq!(proof_set.accepted_proof_count, 0);
+    assert_eq!(proof_set.total_completed_objects, 1_351);
+    assert_eq!(proof_set.total_accepted_bytes, 557_815_904_970);
+
+    let proof_path = output_dir.join("source-proof-pmxt-polymarket-v2-current-orderbook.json");
+    let proof: SourceProofReport =
+        serde_json::from_slice(&fs::read(proof_path).expect("read generated proof"))
+            .expect("parse generated proof");
+
+    assert_eq!(proof.status, SourceProofStatus::Pending);
+    assert_eq!(proof.fidelity_class, SourceProofFidelityClass::L2Replay);
+    assert_eq!(proof.evidence_state, EvidenceState::PendingSourceProof);
+    assert!(proof.acceptance_mode.is_none());
+    assert!(proof.accepted_by.is_none());
+    assert!(proof.accepted_at.is_none());
+    assert_eq!(
+        proof.required_checks.coverage.outcome,
+        CheckOutcome::Pending
+    );
+    assert_eq!(proof.required_checks.storage.outcome, CheckOutcome::Pending);
+    assert_eq!(
+        proof
+            .acceptance_scope
+            .as_ref()
+            .expect("acceptance scope")
+            .completed_objects,
+        1_351
+    );
+    assert!(
+        proof
+            .evaluate_acceptance()
+            .expect_err("pending PMXT proof must remain non-accepted")
+            .to_string()
+            .contains("evidence_state")
+    );
 }

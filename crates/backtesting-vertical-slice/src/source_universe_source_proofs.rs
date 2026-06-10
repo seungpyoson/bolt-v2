@@ -1,7 +1,9 @@
 //! Source-proof materialization for source-universe category manifests.
 //!
 //! The materializer turns a config-owned proof policy plus category manifests
-//! into accepted [`SourceProofReport`] artifacts that can feed object gates.
+//! into [`SourceProofReport`] artifacts. Accepted reports can feed object gates;
+//! pending reports preserve the exact remaining proof blockers without
+//! overclaiming gate readiness.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -14,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::source_proof::{
-    AcceptanceMode, AcceptanceScope, CONTRACT_VERSION, L2ReplayEvidence, LicenseScope,
-    NtMappingStatus, RequiredCheck, RequiredChecks, SOURCE_PROOF_SCHEMA_VERSION,
+    AcceptanceMode, AcceptanceScope, CONTRACT_VERSION, CheckOutcome, L2ReplayEvidence,
+    LicenseScope, NtMappingStatus, RequiredCheck, RequiredChecks, SOURCE_PROOF_SCHEMA_VERSION,
     SourceCandidateClass, SourceProofClaimLimit, SourceProofFidelityClass, SourceProofReport,
     SourceProofStatus, SourceProofUsageScope, SourceSelectionStatus, TimeRange,
     committed_source_binding_registry,
@@ -33,13 +35,18 @@ pub struct SourceUniverseSourceProofSetSpec {
     pub venue: String,
     pub table_family: String,
     pub manifest_table_family: String,
+    #[serde(default = "default_source_proof_status")]
+    pub status: SourceProofStatus,
     pub source_candidate_class: SourceCandidateClass,
     pub source_selection_status: SourceSelectionStatus,
     pub usage_scope: SourceProofUsageScope,
     pub fidelity_class: SourceProofFidelityClass,
-    pub acceptance_mode: AcceptanceMode,
-    pub accepted_by: String,
-    pub accepted_at_utc: String,
+    #[serde(default)]
+    pub acceptance_mode: Option<AcceptanceMode>,
+    #[serde(default)]
+    pub accepted_by: Option<String>,
+    #[serde(default)]
+    pub accepted_at_utc: Option<String>,
     pub requested_start_utc: String,
     pub requested_end_utc: String,
     pub coverage_start_utc: String,
@@ -63,18 +70,34 @@ pub struct SourceUniverseSourceProofSetSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceUniverseSourceProofRequiredCheckTemplates {
-    pub source_access: String,
-    pub license: String,
-    pub schema: String,
-    pub time_semantics: String,
-    pub instrument_universe: String,
-    pub coverage: String,
-    pub retention_freshness: String,
-    pub granularity: String,
-    pub completeness: String,
-    pub nt_mapping: String,
-    pub cost: String,
-    pub storage: String,
+    pub source_access: SourceUniverseSourceProofRequiredCheckTemplate,
+    pub license: SourceUniverseSourceProofRequiredCheckTemplate,
+    pub schema: SourceUniverseSourceProofRequiredCheckTemplate,
+    pub time_semantics: SourceUniverseSourceProofRequiredCheckTemplate,
+    pub instrument_universe: SourceUniverseSourceProofRequiredCheckTemplate,
+    pub coverage: SourceUniverseSourceProofRequiredCheckTemplate,
+    pub retention_freshness: SourceUniverseSourceProofRequiredCheckTemplate,
+    pub granularity: SourceUniverseSourceProofRequiredCheckTemplate,
+    pub completeness: SourceUniverseSourceProofRequiredCheckTemplate,
+    pub nt_mapping: SourceUniverseSourceProofRequiredCheckTemplate,
+    pub cost: SourceUniverseSourceProofRequiredCheckTemplate,
+    pub storage: SourceUniverseSourceProofRequiredCheckTemplate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum SourceUniverseSourceProofRequiredCheckTemplate {
+    PassedEvidenceRef(String),
+    Structured(SourceUniverseSourceProofRequiredCheckStructuredTemplate),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceUniverseSourceProofRequiredCheckStructuredTemplate {
+    pub outcome: CheckOutcome,
+    pub evidence_ref: String,
+    #[serde(default)]
+    pub expires_at_utc: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -118,6 +141,10 @@ impl SourceUniverseSourceProofL2ReplayEvidenceTemplate {
                 .as_ref()
                 .is_some_and(|value| !value.trim().is_empty())
     }
+}
+
+const fn default_source_proof_status() -> SourceProofStatus {
+    SourceProofStatus::Accepted
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -274,11 +301,13 @@ fn evaluate_and_write_source_universe_source_proofs(
             || !spec.l2_replay_evidence.has_any(),
         "l2_replay_evidence is only valid when fidelity_class is L2_REPLAY"
     );
+    validate_acceptance_provenance_config(spec)?;
 
     let registry = committed_source_binding_registry();
     let mut seen_bindings = BTreeSet::new();
     let mut seen_proofs = BTreeSet::new();
     let mut summaries = Vec::with_capacity(spec.source_bindings.len());
+    let mut accepted_proof_count = 0;
 
     for binding in &spec.source_bindings {
         ensure!(
@@ -353,7 +382,7 @@ fn evaluate_and_write_source_universe_source_proofs(
             source_proof_version: 1,
             contract_version: CONTRACT_VERSION.to_string(),
             schema_version: SOURCE_PROOF_SCHEMA_VERSION.to_string(),
-            status: SourceProofStatus::Accepted,
+            status: spec.status,
             source_binding: binding.source_binding.clone(),
             venue: source_binding.venue,
             product_family: source_binding.product_family,
@@ -402,17 +431,20 @@ fn evaluate_and_write_source_universe_source_proofs(
             }),
             gap_policy_id: spec.gap_policy_id.clone(),
             required_checks: required_checks(spec, &context),
-            acceptance_mode: Some(spec.acceptance_mode),
-            accepted_by: Some(spec.accepted_by.clone()),
-            accepted_at: Some(spec.accepted_at_utc.clone()),
+            acceptance_mode: spec.acceptance_mode,
+            accepted_by: spec.accepted_by.clone(),
+            accepted_at: spec.accepted_at_utc.clone(),
             supersedes_source_proof_id: None,
         };
-        proof.evaluate_acceptance().with_context(|| {
-            format!(
-                "generated source proof {} is not accepted",
-                proof.source_proof_id
-            )
-        })?;
+        if proof.status == SourceProofStatus::Accepted {
+            proof.evaluate_acceptance().with_context(|| {
+                format!(
+                    "generated source proof {} is not accepted",
+                    proof.source_proof_id
+                )
+            })?;
+            accepted_proof_count += 1;
+        }
         let proof_bytes = serde_json::to_vec_pretty(&proof)
             .with_context(|| format!("serialize source proof {}", proof.source_proof_id))?;
         let proof_path = output_dir.join(format!("{}.json", proof.source_proof_id));
@@ -438,11 +470,49 @@ fn evaluate_and_write_source_universe_source_proofs(
         schema_version: SOURCE_UNIVERSE_SOURCE_PROOF_SET_SCHEMA_VERSION.to_string(),
         proof_set_id: spec.proof_set_id.clone(),
         proof_count: summaries.len() as u64,
-        accepted_proof_count: summaries.len() as u64,
+        accepted_proof_count,
         total_completed_objects,
         total_accepted_bytes,
         proofs: summaries,
     })
+}
+
+fn validate_acceptance_provenance_config(spec: &SourceUniverseSourceProofSetSpec) -> Result<()> {
+    match spec.status {
+        SourceProofStatus::Accepted => {
+            ensure!(
+                spec.acceptance_mode.is_some(),
+                "accepted source proofs require acceptance_mode"
+            );
+            ensure!(
+                spec.accepted_by
+                    .as_ref()
+                    .is_some_and(|value| !value.trim().is_empty()),
+                "accepted source proofs require accepted_by"
+            );
+            ensure!(
+                spec.accepted_at_utc
+                    .as_ref()
+                    .is_some_and(|value| !value.trim().is_empty()),
+                "accepted source proofs require accepted_at_utc"
+            );
+        }
+        SourceProofStatus::Pending | SourceProofStatus::Rejected => {
+            ensure!(
+                spec.acceptance_mode.is_none()
+                    && spec
+                        .accepted_by
+                        .as_ref()
+                        .is_none_or(|value| value.trim().is_empty())
+                    && spec
+                        .accepted_at_utc
+                        .as_ref()
+                        .is_none_or(|value| value.trim().is_empty()),
+                "acceptance provenance is only valid for accepted source proofs"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn sample_hash(record: &CategoryObjectManifestRecord) -> Result<String> {
@@ -507,39 +577,34 @@ fn required_checks(
     context: &TemplateContext<'_>,
 ) -> RequiredChecks {
     RequiredChecks {
-        source_access: RequiredCheck::passed(render_template(
-            &spec.required_checks.source_access,
-            context,
-        )),
-        license: RequiredCheck::passed(render_template(&spec.required_checks.license, context)),
-        schema: RequiredCheck::passed(render_template(&spec.required_checks.schema, context)),
-        time_semantics: RequiredCheck::passed(render_template(
-            &spec.required_checks.time_semantics,
-            context,
-        )),
-        instrument_universe: RequiredCheck::passed(render_template(
-            &spec.required_checks.instrument_universe,
-            context,
-        )),
-        coverage: RequiredCheck::passed(render_template(&spec.required_checks.coverage, context)),
-        retention_freshness: RequiredCheck::passed(render_template(
-            &spec.required_checks.retention_freshness,
-            context,
-        )),
-        granularity: RequiredCheck::passed(render_template(
-            &spec.required_checks.granularity,
-            context,
-        )),
-        completeness: RequiredCheck::passed(render_template(
-            &spec.required_checks.completeness,
-            context,
-        )),
-        nt_mapping: RequiredCheck::passed(render_template(
-            &spec.required_checks.nt_mapping,
-            context,
-        )),
-        cost: RequiredCheck::passed(render_template(&spec.required_checks.cost, context)),
-        storage: RequiredCheck::passed(render_template(&spec.required_checks.storage, context)),
+        source_access: required_check(&spec.required_checks.source_access, context),
+        license: required_check(&spec.required_checks.license, context),
+        schema: required_check(&spec.required_checks.schema, context),
+        time_semantics: required_check(&spec.required_checks.time_semantics, context),
+        instrument_universe: required_check(&spec.required_checks.instrument_universe, context),
+        coverage: required_check(&spec.required_checks.coverage, context),
+        retention_freshness: required_check(&spec.required_checks.retention_freshness, context),
+        granularity: required_check(&spec.required_checks.granularity, context),
+        completeness: required_check(&spec.required_checks.completeness, context),
+        nt_mapping: required_check(&spec.required_checks.nt_mapping, context),
+        cost: required_check(&spec.required_checks.cost, context),
+        storage: required_check(&spec.required_checks.storage, context),
+    }
+}
+
+fn required_check(
+    template: &SourceUniverseSourceProofRequiredCheckTemplate,
+    context: &TemplateContext<'_>,
+) -> RequiredCheck {
+    match template {
+        SourceUniverseSourceProofRequiredCheckTemplate::PassedEvidenceRef(evidence_ref) => {
+            RequiredCheck::passed(render_template(evidence_ref, context))
+        }
+        SourceUniverseSourceProofRequiredCheckTemplate::Structured(template) => RequiredCheck {
+            outcome: template.outcome,
+            evidence_ref: render_template(&template.evidence_ref, context),
+            expires_at_utc: render_optional_template(template.expires_at_utc.as_ref(), context),
+        },
     }
 }
 

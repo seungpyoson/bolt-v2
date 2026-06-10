@@ -1231,50 +1231,7 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
 }
 
 #[test]
-fn down_entry_submission_price_uses_configured_order_side_price() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
-    let selected_side = selected_entry_side(&strategy);
-    assert_eq!(strategy.submission_entry_price(selected_side), Some(0.41));
-    assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.41));
-
-    strategy.config.entry_order.side = "sell".to_string();
-    strategy.config.entry_order.position_side = "short".to_string();
-    strategy.config.exit_order.side = "buy".to_string();
-    strategy.config.exit_order.position_side = "short".to_string();
-
-    assert_eq!(strategy.submission_entry_price(selected_side), Some(0.40));
-    assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.40));
-}
-
-#[test]
-fn post_only_entry_submission_price_uses_passive_book_price() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
-    strategy.config.entry_order.is_post_only = true;
-    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
-    let selected_side = selected_entry_side(&strategy);
-
-    assert_eq!(strategy.submission_entry_price(selected_side), Some(0.40));
-    assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.40));
-}
-
-#[test]
-fn stop_market_entry_submission_price_uses_trigger_price_for_notional_sizing() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    strategy.config.entry_order.order_type = OrderType::StopMarket;
-    strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
-    strategy.config.entry_order.trigger_price = Some(0.52);
-    set_active_books_best_prices(&mut strategy, 0.40, 0.41);
-    let instrument_id = selected_entry_instrument(&strategy);
-    let selected_side = configured_side_for_instrument(&mut strategy, instrument_id);
-
-    assert_eq!(strategy.submission_entry_price(selected_side), Some(0.52));
-    assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.52));
-}
-
-#[test]
-fn quote_quantity_entry_submission_sizes_quantity_as_quote_notional() {
+fn quote_quantity_entry_submission_is_unsupported_executable_shape() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.entry_order.is_quote_quantity = true;
@@ -1283,18 +1240,25 @@ fn quote_quantity_entry_submission_sizes_quantity_as_quote_notional() {
     strategy.config.risk_lambda = 0.0001;
 
     let decision = strategy.entry_submission_decision_at(1_200);
-    let sized_notional = decision
-        .evaluation
-        .sized_notional
-        .expect("test setup should produce a positive sized notional");
 
-    assert_eq!(decision.blocked_reason, None);
-    assert!(
-        decision
-            .quantity_value
-            .is_some_and(|quantity| (quantity - sized_notional).abs() < 1e-9),
-        "quote-quantity entry should send quote notional as NT quantity, got {decision:#?}"
+    assert_eq!(
+        decision.blocked_reason,
+        Some(ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED)
     );
+    assert_eq!(
+        decision.evaluation.pricing_blocked_by,
+        vec![
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Up,
+                ExecutableEdgeBlockReason::UnsupportedOrderShape
+            ),
+            EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                OutcomeSide::Down,
+                ExecutableEdgeBlockReason::UnsupportedOrderShape
+            ),
+        ]
+    );
+    assert_eq!(decision.quantity_value, None);
 }
 
 #[test]
@@ -1308,10 +1272,6 @@ fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
     strategy.config.entry_order.trigger_type = Some(TriggerType::MarkPrice);
     set_active_books_best_prices(&mut strategy, 0.40, 0.41);
     let instrument_id = selected_entry_instrument(&strategy);
-    let selected_side = configured_side_for_instrument(&mut strategy, instrument_id);
-
-    assert_eq!(strategy.submission_entry_price(selected_side), Some(0.52));
-    assert_eq!(strategy.executable_entry_cost(selected_side), Some(0.52));
 
     let quantity = Quantity::new(2.0, 2);
     let fallback_price = Price::new(0.40, 2);
@@ -1835,23 +1795,23 @@ fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
 #[test]
 fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
     let mut raw = valid_raw_config();
-    let entry_order = raw
+    let exit_order = raw
         .as_table_mut()
         .expect("valid config must be a table")
-        .get_mut("entry_order")
-        .expect("valid config should include entry_order")
+        .get_mut("exit_order")
+        .expect("valid config should include exit_order")
         .as_table_mut()
-        .expect("entry_order should be a table");
-    entry_order.insert(
+        .expect("exit_order should be a table");
+    exit_order.insert(
         "order_type".to_string(),
         Value::String("stop_market".to_string()),
     );
-    entry_order.insert(
+    exit_order.insert(
         "time_in_force".to_string(),
         Value::String("gtc".to_string()),
     );
-    entry_order.insert("trigger_price".to_string(), Value::Float(0.52));
-    entry_order.insert(
+    exit_order.insert("trigger_price".to_string(), Value::Float(0.52));
+    exit_order.insert(
         "trigger_instrument_id".to_string(),
         Value::String("TRIGGER.SOURCE".to_string()),
     );
@@ -1873,9 +1833,9 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
 
     let order = strategy
-        .build_configured_entry_order(
+        .build_configured_exit_order(
             instrument_id,
-            OrderSide::Buy,
+            OrderSide::Sell,
             Quantity::new(2.0, 2),
             Price::new(0.40, 2),
             ClientOrderId::from("O-19700101-000000-001-021-1"),
@@ -1891,14 +1851,14 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
 #[test]
 fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
     let mut raw = valid_raw_config();
-    let entry_order = raw
+    let exit_order = raw
         .as_table_mut()
         .expect("valid config must be a table")
-        .get_mut("entry_order")
-        .expect("valid config should include entry_order")
+        .get_mut("exit_order")
+        .expect("valid config should include exit_order")
         .as_table_mut()
-        .expect("entry_order should be a table");
-    entry_order.insert(
+        .expect("exit_order should be a table");
+    exit_order.insert(
         "trigger_instrument_id".to_string(),
         Value::String("TRIGGER.SOURCE".to_string()),
     );
@@ -1919,9 +1879,9 @@ fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
 
     let error = strategy
-        .build_configured_entry_order(
+        .build_configured_exit_order(
             instrument_id,
-            OrderSide::Buy,
+            OrderSide::Sell,
             Quantity::new(2.0, 2),
             Price::new(0.40, 2),
             ClientOrderId::from("O-19700101-000000-001-022-1"),

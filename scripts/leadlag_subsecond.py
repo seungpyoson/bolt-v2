@@ -214,11 +214,13 @@ class SizedBook:
         if not (0.0 < ask < 1.0):
             return None
         lo_ms = t_ms - int(lookback_secs * 1000)
-        for j in range(idx, -1, -1):
-            if int(self.ts[j]) < lo_ms:
-                break
-            if self.side[j] == "SELL" and float(self.level_price[j]) == ask:
-                return ask, float(self.level_size[j])
+        lo_idx = int(np.searchsorted(self.ts, lo_ms, side="left"))
+        if lo_idx > idx:
+            return None
+        mask = (self.side[lo_idx : idx + 1] == "SELL") & (self.level_price[lo_idx : idx + 1] == ask)
+        matching = np.flatnonzero(mask)
+        if matching.size > 0:
+            return ask, float(self.level_size[lo_idx + matching[-1]])
         return None
 
 

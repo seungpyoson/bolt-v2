@@ -437,7 +437,7 @@ fn option_greeks_sources_plan_nt_subscribe_operations() {
     assert_eq!(adapter.applied, plans);
     assert_eq!(
         outcomes[0].source_health.subscription_state,
-        IvSourceHealthState::Active
+        IvSourceHealthState::Subscribing
     );
 }
 
@@ -660,7 +660,7 @@ configured_source_param = "greeks-source-value"
             product_kind: IvProductKind::SourceHealth,
             selector: IvSelector::SourceHealthQuery {
                 source_filter: Some("greeks-source".to_string()),
-                state_filter: vec!["active".to_string()],
+                state_filter: vec!["subscribing".to_string()],
             },
         }))
         .unwrap();
@@ -668,7 +668,7 @@ configured_source_param = "greeks-source-value"
     let IvQueryProduct::SourceHealth(health) = product else {
         panic!("expected source-health product");
     };
-    assert_eq!(health.subscription_state, IvSourceHealthState::Active);
+    assert_eq!(health.subscription_state, IvSourceHealthState::Subscribing);
     assert_eq!(health.subscription_generation, 7);
 }
 
@@ -762,7 +762,7 @@ configured_source_param = "greeks-source-value"
             product_kind: IvProductKind::SourceHealth,
             selector: IvSelector::SourceHealthQuery {
                 source_filter: Some("greeks-source".to_string()),
-                state_filter: vec!["active".to_string()],
+                state_filter: vec!["subscribing".to_string()],
             },
         }))
         .unwrap();
@@ -770,7 +770,7 @@ configured_source_param = "greeks-source-value"
     let IvQueryProduct::SourceHealth(health) = product else {
         panic!("expected source-health product");
     };
-    assert_eq!(health.subscription_state, IvSourceHealthState::Active);
+    assert_eq!(health.subscription_state, IvSourceHealthState::Subscribing);
     assert_eq!(health.subscription_generation, 7);
 }
 
@@ -963,7 +963,7 @@ fn runtime_engine_rejects_stale_generation_ingest_without_poisoning_active_healt
     let health = engine
         .source_health("iv-profile", "greeks-source")
         .expect("configured source health should remain queryable");
-    assert_eq!(health.subscription_state, IvSourceHealthState::Active);
+    assert_eq!(health.subscription_state, IvSourceHealthState::Subscribing);
     assert_eq!(health.subscription_generation, 7);
     assert_eq!(health.last_reject_reason, Some(IvRejectReason::StaleData));
     assert_eq!(

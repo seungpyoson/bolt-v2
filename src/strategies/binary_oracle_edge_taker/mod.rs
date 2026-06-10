@@ -2335,21 +2335,8 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn executable_edge_order_shape_block_reason(&self) -> Option<ExecutableEdgeBlockReason> {
-        let entry_order = &self.config.entry_order;
-        let unsupported = entry_order.side != ORDER_SIDE_BUY_VALUE
-            || entry_order.position_side != POSITION_SIDE_LONG_VALUE
-            || entry_order.order_type != OrderType::Limit
-            || entry_order.time_in_force != TimeInForce::Fok
-            || entry_order.is_post_only
-            || entry_order.is_reduce_only
-            || entry_order.is_quote_quantity
-            || entry_order.trigger_price.is_some()
-            || entry_order.activation_price.is_some()
-            || entry_order.trigger_type.is_some()
-            || entry_order.trigger_instrument_id.is_some()
-            || entry_order.trailing_offset.is_some()
-            || entry_order.trailing_offset_type.is_some();
-        unsupported.then_some(ExecutableEdgeBlockReason::UnsupportedOrderShape)
+        (!BinaryOracleEdgeTakerBuilder::entry_order_shape_supported(&self.config.entry_order))
+            .then_some(ExecutableEdgeBlockReason::UnsupportedOrderShape)
     }
 
     #[cfg(test)]
@@ -2435,15 +2422,18 @@ impl BinaryOracleEdgeTaker {
         })
     }
 
-    fn adjusted_probability_up_for_side_fee(
+    fn adjusted_probability_up_for_fee_uncertainty(
         &self,
         now_ms: u64,
         side: OutcomeSide,
         fair_probability_up: f64,
-        fee_bps: f64,
+        fee_uncertainty_bps: f64,
     ) -> Option<(f64, f64)> {
-        let uncertainty_band_probability =
-            self.current_uncertainty_band_probability_at(now_ms, fee_bps, fee_bps)?;
+        let uncertainty_band_probability = self.current_uncertainty_band_probability_at(
+            now_ms,
+            fee_uncertainty_bps,
+            fee_uncertainty_bps,
+        )?;
         let adjusted_probability_up = match side {
             OutcomeSide::Up => {
                 clamp_probability(fair_probability_up - uncertainty_band_probability)
@@ -4679,12 +4669,13 @@ impl BinaryOracleEdgeTaker {
                     sized_notional,
                 ) {
                     Ok(probe) => {
+                        let sized_fee_uncertainty_bps = fee_uncertainty_bps.max(probe.fee_bps);
                         let Some((selected_uncertainty_band, adjusted_probability_up)) = self
-                            .adjusted_probability_up_for_side_fee(
+                            .adjusted_probability_up_for_fee_uncertainty(
                                 now_ms,
                                 selected_side,
                                 fair_probability_up,
-                                probe.fee_bps,
+                                sized_fee_uncertainty_bps,
                             )
                         else {
                             evaluation

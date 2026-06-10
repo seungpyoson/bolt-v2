@@ -137,7 +137,7 @@ pub(crate) fn price_exact_size_vwap(
     let (best_touch, is_buy) = match order_side {
         OrderSide::Buy => (book.best_ask, true),
         OrderSide::Sell => (book.best_bid, false),
-        _ => return Err(ExecutableEdgeBlockReason::MissingOrderBook),
+        _ => return Err(ExecutableEdgeBlockReason::UnsupportedOrderShape),
     };
     let best_touch = best_touch
         .filter(|value| is_positive_finite(*value))
@@ -201,7 +201,7 @@ pub(crate) fn price_exact_size_vwap(
                 }
             }
         }
-        _ => return Err(ExecutableEdgeBlockReason::MissingOrderBook),
+        _ => return Err(ExecutableEdgeBlockReason::UnsupportedOrderShape),
     }
 
     if remaining_notional > notional_float_tolerance(edge_pricing_notional)
@@ -255,6 +255,13 @@ fn consume_exact_notional_level(
 }
 
 pub(crate) fn evaluate_executable_edge(inputs: &ExecutableEdgeInputs<'_>) -> ExecutableEdgeResult {
+    if inputs.order_side != OrderSide::Buy {
+        return ExecutableEdgeResult::blocked(
+            inputs.side,
+            ExecutableEdgeBlockReason::UnsupportedOrderShape,
+        );
+    }
+
     let Some(adjusted_probability_up) = inputs
         .adjusted_probability_up
         .and_then(sanitize_probability)
@@ -392,7 +399,7 @@ mod tests {
         for (price, size) in asks {
             book.ask_levels.insert(Price::new(*price, 2), *size);
         }
-        book.best_ask = asks.first().map(|(price, _)| *price);
+        book.best_ask = asks.iter().map(|(price, _)| *price).min_by(f64::total_cmp);
         book.liquidity_available = Some(
             book.bid_levels.values().copied().sum::<f64>()
                 + book.ask_levels.values().copied().sum::<f64>(),
@@ -498,11 +505,8 @@ mod tests {
         );
         assert!(!result.trade_allowed);
         assert_eq!(result.cost_breakdown.vwap_price, Some(0.50));
-        let expected_fee_cost_cents = result.cost_breakdown.gross_cost_cents
-            * inputs.fee_bps.expect("fee configured")
-            / BPS_DENOMINATOR;
-        let expected_edge_cents_per_share = result.adjusted_probability * CENTS_PER_SHARE
-            - result.cost_breakdown.total_adjusted_cost_cents;
+        let expected_fee_cost_cents = 1.0;
+        let expected_edge_cents_per_share = -0.5;
         assert!((result.cost_breakdown.fee_cost_cents - expected_fee_cost_cents).abs() < EPSILON);
         assert!((result.edge_cents_per_share - expected_edge_cents_per_share).abs() < EPSILON);
     }
@@ -553,6 +557,24 @@ mod tests {
     }
 
     #[test]
+    fn evaluate_executable_edge_blocks_sell_order_shape() {
+        let book = priced_book_with_levels(&[(0.60, 100.0)], &[(0.70, 100.0)]);
+        let mut inputs = inputs(OutcomeSide::Up, Some(&book));
+        inputs.order_side = OrderSide::Sell;
+        inputs.adjusted_probability_up = Some(0.70);
+        inputs.fee_bps = Some(100.0);
+
+        let result = evaluate_executable_edge(&inputs);
+
+        assert_eq!(
+            result.block_reason,
+            Some(ExecutableEdgeBlockReason::UnsupportedOrderShape)
+        );
+        assert!(!result.cost_breakdown.cost_available);
+        assert!(!result.trade_allowed);
+    }
+
+    #[test]
     fn slippage_buffer_wipes_out_otherwise_positive_edge() {
         let book = priced_book(&[(0.50, 100.0)]);
         let mut inputs = inputs(OutcomeSide::Up, Some(&book));
@@ -566,11 +588,8 @@ mod tests {
             Some(ExecutableEdgeBlockReason::SpreadOrSlippageWipedEdge)
         );
         assert!(!result.trade_allowed);
-        let expected_slippage_buffer_cents = result.cost_breakdown.gross_cost_cents
-            * inputs.slippage_buffer_bps as f64
-            / BPS_DENOMINATOR;
-        let expected_edge_cents_per_share = result.adjusted_probability * CENTS_PER_SHARE
-            - result.cost_breakdown.total_adjusted_cost_cents;
+        let expected_slippage_buffer_cents = 1.0;
+        let expected_edge_cents_per_share = -0.5;
         assert!(
             (result.cost_breakdown.slippage_buffer_cents - expected_slippage_buffer_cents).abs()
                 < EPSILON
@@ -639,39 +658,78 @@ mod tests {
     }
 
     #[test]
-    fn cents_per_share_and_bps_outputs_share_one_formula() {
+    fn cost_breakdown_pins_buy_single_level_arithmetic() {
         let book = priced_book(&[(0.50, 100.0)]);
         let mut inputs = inputs(OutcomeSide::Up, Some(&book));
-        inputs.fee_bps = Some(100.0);
+        inputs.fee_bps = Some(200.0);
         inputs.slippage_buffer_bps = 100;
 
         let result = evaluate_executable_edge(&inputs);
 
         assert!(result.trade_allowed);
-        let expected_fee_cost_cents = result.cost_breakdown.gross_cost_cents
-            * inputs.fee_bps.expect("fee configured")
-            / BPS_DENOMINATOR;
-        let expected_slippage_buffer_cents = result.cost_breakdown.gross_cost_cents
-            * inputs.slippage_buffer_bps as f64
-            / BPS_DENOMINATOR;
-        let expected_total_adjusted_cost_cents = result.cost_breakdown.gross_cost_cents
-            + expected_fee_cost_cents
-            + expected_slippage_buffer_cents;
-        let expected_edge_cents_per_share =
-            result.adjusted_probability * CENTS_PER_SHARE - expected_total_adjusted_cost_cents;
+        let expected_gross_cost_cents = 50.0;
+        let expected_fee_cost_cents = 1.0;
+        let expected_slippage_buffer_cents = 0.5;
+        let expected_total_adjusted_cost_cents = 51.5;
+        let expected_edge_cents_per_share = 8.5;
+        let expected_edge_bps =
+            expected_edge_cents_per_share / expected_total_adjusted_cost_cents * BPS_DENOMINATOR;
+        assert!(
+            (result.cost_breakdown.gross_cost_cents - expected_gross_cost_cents).abs() < EPSILON
+        );
+        assert!((result.cost_breakdown.fee_cost_cents - expected_fee_cost_cents).abs() < EPSILON);
+        assert!(
+            (result.cost_breakdown.slippage_buffer_cents - expected_slippage_buffer_cents).abs()
+                < EPSILON
+        );
         assert!(
             (result.cost_breakdown.total_adjusted_cost_cents - expected_total_adjusted_cost_cents)
                 .abs()
                 < EPSILON
         );
         assert!((result.edge_cents_per_share - expected_edge_cents_per_share).abs() < EPSILON);
+        assert!((result.edge_bps - expected_edge_bps).abs() < EPSILON);
+    }
+
+    #[test]
+    fn cost_breakdown_pins_buy_multi_level_partial_fill_arithmetic() {
+        let book = priced_book(&[(0.50, 5.0), (0.60, 100.0)]);
+        let mut inputs = inputs(OutcomeSide::Up, Some(&book));
+        inputs.fee_bps = Some(100.0);
+        inputs.slippage_buffer_bps = 100;
+        inputs.vwap_depth_limit_bps = 2_000;
+
+        let result = evaluate_executable_edge(&inputs);
+
+        assert!(result.trade_allowed);
+        let expected_vwap_price = 6.0 / 11.0;
+        let expected_gross_cost_cents = 600.0 / 11.0;
+        let expected_fee_cost_cents = 6.0 / 11.0;
+        let expected_slippage_buffer_cents = 6.0 / 11.0;
+        let expected_total_adjusted_cost_cents = 612.0 / 11.0;
+        let expected_edge_cents_per_share = 48.0 / 11.0;
+        let expected_edge_bps = 48.0 / 612.0 * BPS_DENOMINATOR;
         assert!(
-            (result.edge_bps
-                - result.edge_cents_per_share / result.cost_breakdown.total_adjusted_cost_cents
-                    * BPS_DENOMINATOR)
+            result
+                .cost_breakdown
+                .vwap_price
+                .is_some_and(|value| (value - expected_vwap_price).abs() < EPSILON)
+        );
+        assert!(
+            (result.cost_breakdown.gross_cost_cents - expected_gross_cost_cents).abs() < EPSILON
+        );
+        assert!((result.cost_breakdown.fee_cost_cents - expected_fee_cost_cents).abs() < EPSILON);
+        assert!(
+            (result.cost_breakdown.slippage_buffer_cents - expected_slippage_buffer_cents).abs()
+                < EPSILON
+        );
+        assert!(
+            (result.cost_breakdown.total_adjusted_cost_cents - expected_total_adjusted_cost_cents)
                 .abs()
                 < EPSILON
         );
+        assert!((result.edge_cents_per_share - expected_edge_cents_per_share).abs() < EPSILON);
+        assert!((result.edge_bps - expected_edge_bps).abs() < EPSILON);
     }
 
     #[test]
@@ -699,13 +757,15 @@ mod tests {
         let result = evaluate_executable_edge(&inputs);
 
         assert!(result.trade_allowed);
-        let expected_adjusted_probability = UNIT_F64
-            - inputs
-                .adjusted_probability_up
-                .expect("probability configured");
-        let expected_edge_cents_per_share = expected_adjusted_probability * CENTS_PER_SHARE
-            - result.cost_breakdown.total_adjusted_cost_cents;
+        let expected_adjusted_probability = 0.70;
+        let expected_gross_cost_cents = 40.0;
+        let expected_edge_cents_per_share = 30.0;
+        let expected_edge_bps = 7_500.0;
         assert!((result.adjusted_probability - expected_adjusted_probability).abs() < EPSILON);
+        assert!(
+            (result.cost_breakdown.gross_cost_cents - expected_gross_cost_cents).abs() < EPSILON
+        );
         assert!((result.edge_cents_per_share - expected_edge_cents_per_share).abs() < EPSILON);
+        assert!((result.edge_bps - expected_edge_bps).abs() < EPSILON);
     }
 }

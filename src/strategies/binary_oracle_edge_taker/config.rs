@@ -331,7 +331,7 @@ impl BinaryOracleEdgeTakerBuilder {
         Ok(())
     }
 
-    fn entry_order_shape_supported(order: &BinaryOracleEdgeTakerOrderConfig) -> bool {
+    pub(super) fn entry_order_shape_supported(order: &BinaryOracleEdgeTakerOrderConfig) -> bool {
         order.side == ORDER_SIDE_BUY_VALUE
             && order.position_side == POSITION_SIDE_LONG_VALUE
             && order.order_type == OrderType::Limit

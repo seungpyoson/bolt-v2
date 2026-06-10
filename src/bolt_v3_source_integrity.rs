@@ -236,8 +236,11 @@ mod tests {
     // set.
     // Re-derived after executable-edge review cleanup made non-positive net
     // edge untradeable regardless of a negative configured threshold.
+    // Re-derived after exact-head review follow-ups blocked sell-side
+    // executable-edge economics, single-sourced typed entry-shape checks, and
+    // carried preliminary fee uncertainty into sized re-evaluation.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "eee3c04d3ba7bb028650ba036bac2b056dac6cd8242c91d6b69dd82cdf040902";
+        "1d393da8ee30fc99dfc7531e2fa514e8fd89885a28279e448685e3325677fbf6";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

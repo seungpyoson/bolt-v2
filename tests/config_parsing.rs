@@ -1472,6 +1472,12 @@ fn bolt_v3_archetype_rejects_reduce_only_entry_order() {
             .any(|message| message.contains("entry_order") && message.contains("is_reduce_only")),
         "reduce-only entry order should be rejected before NT submission: {messages:#?}"
     );
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("unsupported executable entry shape")),
+        "reduce-only entry order should use the specific reduce-only error, not the broad executable-shape error: {messages:#?}"
+    );
 }
 
 #[test]

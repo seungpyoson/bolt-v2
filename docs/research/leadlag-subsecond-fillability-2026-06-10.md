@@ -98,6 +98,32 @@ sits entirely inside the leader feed's blind window. BTC's gradual decay (still 
 at a 2-second reaction) is the same 30-second drift the session-4 study found, and it is
 what makes BTC operationally forgiving.
 
+### 1.1 Why BTC and not the others — evidence against the "BTC should be more efficient" objection
+
+The asset split is counter-intuitive (BTC spot is the most efficient underlying), so it
+was stress-tested:
+
+- **Per-day robustness.** BTC executable net (X=5 bps, h=30 s) is independently positive
+  on all 7 days: +11.3 / +14.6 / +19.5 / +43.0(n=1) / +12.0 / +4.4 / +3.9 c, with
+  56–88% of events positive each day. Not an outlier-day artifact.
+- **Mid repricing is gradual everywhere.** Fraction of the total 30 s mid response
+  completed at each offset (X=5 bps): btc 30%@0.1s → 52%@1s → 86%@10s;
+  eth 43%@0.1s → 54%@1s; sol 62%@0.1s; xrp 40%@0.1s. The mids differ moderately, not
+  night-and-day.
+- **The ask is what differs.** Ask jump within ~100 ms of detection (pre-move net minus
+  δ=0.1 s net): eth ~10.9 c — while its mid had moved only ~5.7 c — i.e. the offer side
+  *gaps* past fair immediately. btc ~6.9 c vs mid ~5.9 c — the ask tracks the mid.
+- **Depth explains who can gap.** Touch size ordering (section 2): btc 105 shares >
+  eth 43 > sol 17 ≈ xrp 15 — exactly the executable-edge ordering. A 105-share
+  many-owner level cannot be yanked in 100 ms; a 15-share level can.
+
+Corrected interpretation: all four Polymarket books reprice their mids gradually; on the
+thin books the *purchasable price* (the ask) gaps to fair within 100 ms, while BTC's
+deep, retail-heavy book leaves a lagging, fillable ask. Depth is inertia. The efficiency
+of the underlying spot market does not transfer to the Polymarket book's microstructure;
+the most-traded PM market having the thickest, slowest-to-gap book is consistent with
+retail flow concentration.
+
 ## 2. Fill realism: displayed size at the best ask
 
 Method: the top-of-book stream was re-extracted with the level-delta `price`/`size`

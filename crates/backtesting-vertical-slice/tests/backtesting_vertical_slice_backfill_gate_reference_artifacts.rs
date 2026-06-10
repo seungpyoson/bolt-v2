@@ -2538,6 +2538,190 @@ fn bybit_public_archive_tick_trade_conversion_plan_covers_all_instruments_and_ca
 }
 
 #[test]
+fn bybit_public_archive_tick_trade_instrument_metadata_snapshot_covers_all_category_symbols() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let universe_path = reference_root.join(
+        "backfill-source-universes/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-public-archive-tick-trades-source-universe.json",
+    );
+    let snapshot_path = reference_root.join(
+        "backfill-instrument-metadata/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/bybit-instrument-metadata-snapshot.json",
+    );
+    let universe: serde_json::Value = serde_json::from_str(&read_required_string(&universe_path))
+        .expect("Bybit source universe parses");
+    let snapshot: serde_json::Value = serde_json::from_str(&read_required_string(&snapshot_path))
+        .expect("Bybit instrument metadata snapshot parses");
+
+    assert_eq!(
+        snapshot["schema_version"].as_str(),
+        Some("bybit-instrument-metadata-snapshot.v1")
+    );
+    assert_eq!(
+        snapshot["universe_id"].as_str(),
+        universe["universe_id"].as_str()
+    );
+    assert_eq!(
+        snapshot["selection"]["instrument_universe"].as_str(),
+        Some("all_staged_category_symbols")
+    );
+    assert_eq!(
+        snapshot["selection"]["metadata_query_strategy"].as_str(),
+        Some("category_symbol_exact")
+    );
+    assert_eq!(
+        snapshot["category_symbol_count"].as_u64(),
+        universe["summary"]["category_symbol_count"].as_u64()
+    );
+
+    let records = snapshot["records"]
+        .as_array()
+        .expect("metadata snapshot records");
+    assert_eq!(
+        records.len() as u64,
+        universe["summary"]["category_symbol_count"]
+            .as_u64()
+            .expect("category-symbol count")
+    );
+    let mut records_by_category_symbol =
+        std::collections::BTreeMap::<(String, String), &serde_json::Value>::new();
+    for record in records {
+        let category = record["category"]
+            .as_str()
+            .expect("metadata record category");
+        let symbol = record["symbol"].as_str().expect("metadata record symbol");
+        assert!(
+            records_by_category_symbol
+                .insert((category.to_string(), symbol.to_string()), record)
+                .is_none(),
+            "duplicate Bybit metadata record for {category}/{symbol}"
+        );
+    }
+
+    let mut closed_linear_futures = std::collections::BTreeSet::<String>::new();
+    for category in universe["categories"]
+        .as_array()
+        .expect("universe categories")
+    {
+        let category_name = category["category"].as_str().expect("category name");
+        let source_binding = category["source_binding"]
+            .as_str()
+            .expect("category source binding");
+        for instrument in category["instruments"]
+            .as_array()
+            .expect("category instruments")
+        {
+            let symbol = instrument["symbol"].as_str().expect("instrument symbol");
+            let record = records_by_category_symbol
+                .get(&(category_name.to_string(), symbol.to_string()))
+                .unwrap_or_else(|| panic!("missing Bybit metadata for {category_name}/{symbol}"));
+            assert_eq!(record["source_binding"].as_str(), Some(source_binding));
+            assert_eq!(record["api_ret_code"].as_i64(), Some(0));
+            assert_eq!(record["instrument_count"].as_u64(), Some(1));
+            assert!(
+                record["source_uri"]
+                    .as_str()
+                    .expect("metadata source uri")
+                    .contains(&format!("category={category_name}"))
+            );
+            assert!(
+                record["source_uri"]
+                    .as_str()
+                    .expect("metadata source uri")
+                    .contains(&format!("symbol={symbol}"))
+            );
+
+            let metadata = &record["instrument"];
+            assert_eq!(metadata["symbol"].as_str(), Some(symbol));
+            assert!(
+                metadata["baseCoin"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+            assert!(
+                metadata["quoteCoin"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+            assert!(
+                metadata["status"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+            assert!(
+                metadata["priceFilter"]["tickSize"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+
+            if category_name == "spot" {
+                assert!(metadata["contractType"].is_null());
+                assert!(
+                    metadata["lotSizeFilter"]["basePrecision"]
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty())
+                );
+                assert!(
+                    metadata["lotSizeFilter"]["minOrderAmt"]
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty())
+                );
+            } else {
+                let contract_type = metadata["contractType"]
+                    .as_str()
+                    .expect("derivative metadata contract type");
+                assert!(
+                    contract_type.starts_with("Linear") || contract_type.starts_with("Inverse")
+                );
+                assert!(
+                    metadata["lotSizeFilter"]["qtyStep"]
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty())
+                );
+                assert!(
+                    metadata["lotSizeFilter"]["minNotionalValue"]
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty())
+                );
+                if symbol.ends_with("-05JUN26") {
+                    closed_linear_futures.insert(symbol.to_string());
+                    assert_eq!(category_name, "linear");
+                    assert_eq!(contract_type, "LinearFutures");
+                    assert_eq!(metadata["status"].as_str(), Some("Closed"));
+                    assert!(
+                        metadata["deliveryTime"]
+                            .as_str()
+                            .and_then(|value| value.parse::<u64>().ok())
+                            .expect("delivery time")
+                            > metadata["launchTime"]
+                                .as_str()
+                                .and_then(|value| value.parse::<u64>().ok())
+                                .expect("launch time")
+                    );
+                }
+            }
+        }
+    }
+
+    assert_eq!(
+        closed_linear_futures,
+        std::collections::BTreeSet::from([
+            "BTCUSDT-05JUN26".to_string(),
+            "DOGEUSDT-05JUN26".to_string(),
+            "ETHUSDT-05JUN26".to_string(),
+            "SOLUSDT-05JUN26".to_string(),
+            "XRPUSDT-05JUN26".to_string(),
+        ])
+    );
+    assert_eq!(
+        snapshot["coverage"]["missing_category_symbols"]
+            .as_array()
+            .expect("missing category symbols")
+            .len(),
+        0
+    );
+}
+
+#[test]
 fn bybit_public_archive_tick_trade_object_manifest_covers_all_staged_objects() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");

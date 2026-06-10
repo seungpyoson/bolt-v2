@@ -533,6 +533,9 @@ pub fn read_latest_entry_decision_evidence_chain(
             serde_json::from_slice(line).with_context(|| {
                 format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
             })?;
+        if header.schema_version < BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION {
+            continue;
+        }
         match header.kind.as_str() {
             "strategy_input_snapshot" => {
                 header.validate(

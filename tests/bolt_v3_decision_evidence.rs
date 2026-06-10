@@ -173,6 +173,32 @@ fn latest_entry_decision_evidence_chain_binds_snapshot_order_intent_and_admissio
 }
 
 #[test]
+fn latest_entry_decision_evidence_chain_skips_older_schema_lines() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let mut lines = Vec::new();
+    lines.push(serde_json::json!({
+        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION - 1,
+        "recorded_at_utc_ns": 1_i64,
+        "gate_id": BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": "strategy_input_snapshot",
+        "snapshot": {"reference_fair_value": "3100.5"}
+    }));
+    lines.extend(sample_entry_decision_evidence_lines());
+    write_decision_evidence_lines(&evidence_path, &lines);
+
+    let chain = read_latest_entry_decision_evidence_chain(&evidence_path, 100_000)
+        .expect("latest supported evidence chain should parse past old schema records");
+
+    assert_eq!(chain.snapshot.client_order_id, "client-order-one");
+    assert_eq!(
+        chain.snapshot.reference_current_price.as_deref(),
+        Some("3100.5")
+    );
+}
+
+#[test]
 #[allow(clippy::type_complexity)]
 fn latest_entry_decision_evidence_chain_rejects_untrusted_record_metadata() {
     let cases: [(&str, fn(&mut serde_json::Value)); 8] = [

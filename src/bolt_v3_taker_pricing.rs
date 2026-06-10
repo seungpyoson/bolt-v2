@@ -368,7 +368,20 @@ impl TakerPricingState {
     ) -> Result<TakerPricingInputs, Vec<TakerPricingBlockReason>> {
         let mut blocked_by = Vec::new();
 
-        let spot_price = self.spot_price().filter(|value| is_positive_finite(*value));
+        let spot_price = self
+            .fast_spot
+            .as_ref()
+            .filter(|spot| is_positive_finite(spot.price))
+            .filter(|spot| {
+                !(self.lead_quality_policy_applied
+                    && config
+                        .max_reference_current_price_age_ms
+                        .is_some_and(|max_age_ms| {
+                            spot.observed_ts_ms > request.now_ms
+                                || request.now_ms - spot.observed_ts_ms > max_age_ms
+                        }))
+            })
+            .map(|spot| spot.price);
         if spot_price.is_none() {
             blocked_by.push(TakerPricingBlockReason::SpotPriceMissing);
         }
@@ -700,6 +713,38 @@ mod tests {
             blocked_by,
             vec![TakerPricingBlockReason::ReferenceCurrentPriceStale]
         );
+    }
+
+    #[test]
+    fn stale_signal_fast_spot_blocks_entry_inputs_at_decision_time() {
+        let config = config(1, 30, 10);
+        let mut pricing = TakerPricingState::from_config(&config);
+
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            100.0,
+            1_000,
+        ));
+        pricing.observe_signal_quote(&quote(signal_venue(), 100.1, 1_000), &config);
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            100.2,
+            3_000,
+        ));
+        pricing.seed_ready_realized_vol(Some("rv".to_string()), 1.5, 3_000);
+
+        let blocked_by = pricing
+            .entry_pricing_inputs_at(
+                &config,
+                TakerPricingRequest {
+                    now_ms: 3_001,
+                    strike_price: Some(100.0),
+                    seconds_to_market_end: Some(300),
+                },
+            )
+            .expect_err("stale signal fast spot must block entry pricing inputs");
+
+        assert_eq!(blocked_by, vec![TakerPricingBlockReason::SpotPriceMissing]);
     }
 
     #[test]

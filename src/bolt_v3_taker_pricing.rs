@@ -163,7 +163,7 @@ impl TakerPricingState {
         self.last_reference_current_price_source_id = Some(quote.venue.clone());
         self.last_reference_current_price_ts_ms = Some(quote.observed_ts_ms);
         self.last_reference_current_price = Some(quote.price);
-        if !self.fast_venue_incoherent {
+        if !self.lead_quality_policy_applied {
             self.fast_spot = Some(quote.clone());
         }
     }
@@ -631,6 +631,47 @@ mod tests {
         assert_eq!(pricing.fast_spot, None);
         assert_eq!(pricing.last_reference_current_price, Some(101.0));
         assert_eq!(pricing.last_reference_current_price_ts_ms, Some(1_100));
+    }
+
+    #[test]
+    fn reference_tick_does_not_overwrite_coherent_signal_fast_spot() {
+        let config = config(1, 30, 10);
+        let mut pricing = TakerPricingState::from_config(&config);
+
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            100.0,
+            1_000,
+        ));
+        assert_eq!(
+            pricing.fast_spot.as_ref().map(|spot| spot.price),
+            Some(100.0)
+        );
+
+        pricing.observe_signal_quote(&quote(signal_venue(), 100.1, 1_050), &config);
+        assert!(!pricing.fast_venue_incoherent);
+        assert!(pricing.lead_quality_policy_applied);
+        assert_eq!(
+            pricing.fast_spot.as_ref().map(|spot| spot.price),
+            Some(100.1)
+        );
+
+        pricing.observe_reference_current_price(&quote(
+            reference_current_price_source(),
+            99.9,
+            1_100,
+        ));
+
+        assert_eq!(pricing.last_reference_current_price, Some(99.9));
+        assert_eq!(pricing.last_reference_current_price_ts_ms, Some(1_100));
+        assert_eq!(
+            pricing.fast_spot.as_ref().map(|spot| spot.price),
+            Some(100.1)
+        );
+        assert_eq!(
+            pricing.fast_spot.as_ref().map(|spot| spot.venue.as_str()),
+            Some(signal_venue())
+        );
     }
 
     #[test]

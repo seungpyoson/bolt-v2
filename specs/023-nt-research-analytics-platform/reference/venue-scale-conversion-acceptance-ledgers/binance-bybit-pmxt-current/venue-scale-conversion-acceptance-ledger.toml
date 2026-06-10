@@ -69,7 +69,7 @@ source_universe_manifest_path = "specs/023-nt-research-analytics-platform/refere
 source_universe_conversion_queue_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/source-universe-conversion-queue.json"
 selected_source_report_path = "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json"
 blocking_issues = [
-  "pmxt_archive_source_hashes_are_r2_multipart_etags_not_payload_sha256",
+  "missing_pmxt_full_accepted_source_proof_and_object_gates",
   "missing_pmxt_full_nt_catalog_conversion_manifest",
   "missing_pmxt_l2_tick_size_epoch_policy",
 ]

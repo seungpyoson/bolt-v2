@@ -81,6 +81,11 @@ pub struct SourceUniverseObjectGateRecord {
     pub archive_date: String,
     pub source_uri: String,
     pub source_url: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub selected_object_hash_algorithm: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub selected_object_hash: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub selected_object_sha256: String,
     pub selected_object_bytes: u64,
     pub source_proof_id: String,
@@ -139,6 +144,11 @@ struct CategoryObjectManifest {
 struct CategoryObjectManifestRecord {
     s3_uri: String,
     source_url: String,
+    #[serde(default)]
+    source_hash_algorithm: String,
+    #[serde(default)]
+    source_hash: String,
+    #[serde(default)]
     sha256: String,
     bytes: u64,
     archive_date: String,
@@ -330,7 +340,7 @@ pub fn evaluate_source_universe_object_gate_materialization(
             .get_mut(&item.source_binding)
             .expect("context and accumulator keys match");
         accumulator.observe(&item.archive_date, item.source_bytes);
-        records.push(object_gate_record(spec, item, context));
+        records.push(object_gate_record(spec, item, context)?);
     }
 
     let source_binding_summaries = accumulators
@@ -466,10 +476,27 @@ fn validate_manifest_acceptance_scope(
         "source proof {} accepted_bytes does not match category manifest bytes",
         proof.source_proof_id
     );
+    ensure_raw_sample_is_in_manifest(proof, manifest)?;
+    Ok(())
+}
+
+fn ensure_raw_sample_is_in_manifest(
+    proof: &SourceProofReport,
+    manifest: &CategoryObjectManifest,
+) -> Result<()> {
+    for record in &manifest.payload_records {
+        let object_hash_algorithm = object_hash_algorithm(record)?;
+        let object_hash = object_hash(record)?;
+        let object_sha256 = object_sha256(record, &object_hash_algorithm, &object_hash)?;
+        if record.s3_uri == proof.raw_sample_uri
+            && (object_hash == proof.raw_sample_hash
+                || (!object_sha256.is_empty() && object_sha256 == proof.raw_sample_hash))
+        {
+            return Ok(());
+        }
+    }
     ensure!(
-        manifest.payload_records.iter().any(|record| {
-            record.s3_uri == proof.raw_sample_uri && record.sha256 == proof.raw_sample_hash
-        }),
+        false,
         "source proof {} raw sample is absent from category manifest {}",
         proof.source_proof_id,
         manifest.manifest_id
@@ -481,13 +508,29 @@ fn validate_item_object_match(
     item: &SourceUniverseConversionWorkItem,
     object: &CategoryObjectManifestRecord,
 ) -> Result<()> {
+    let item_hash_algorithm = item_hash_algorithm(item)?;
+    let item_hash = item_hash(item)?;
+    let item_sha256 = item_sha256(item, &item_hash_algorithm, &item_hash)?;
+    let object_hash_algorithm = object_hash_algorithm(object)?;
+    let object_hash = object_hash(object)?;
+    let object_sha256 = object_sha256(object, &object_hash_algorithm, &object_hash)?;
     ensure!(
         item.source_url == object.source_url,
         "queue source_url does not match category manifest for {}",
         item.work_item_id
     );
     ensure!(
-        item.source_sha256 == object.sha256,
+        item_hash_algorithm == object_hash_algorithm,
+        "queue source_hash_algorithm does not match category manifest for {}",
+        item.work_item_id
+    );
+    ensure!(
+        item_hash == object_hash,
+        "queue source_hash does not match category manifest for {}",
+        item.work_item_id
+    );
+    ensure!(
+        item_sha256 == object_sha256,
         "queue sha256 does not match category manifest for {}",
         item.work_item_id
     );
@@ -517,6 +560,98 @@ fn validate_item_object_match(
         item.work_item_id
     );
     Ok(())
+}
+
+fn item_hash_algorithm(item: &SourceUniverseConversionWorkItem) -> Result<String> {
+    if !item.source_hash.trim().is_empty() {
+        ensure!(
+            !item.source_hash_algorithm.trim().is_empty(),
+            "queue source_hash_algorithm must be set when source_hash is set"
+        );
+        return Ok(item.source_hash_algorithm.clone());
+    }
+    ensure!(
+        !item.source_sha256.trim().is_empty(),
+        "queue work item must include source_sha256 or source_hash"
+    );
+    Ok("sha256".to_string())
+}
+
+fn item_hash(item: &SourceUniverseConversionWorkItem) -> Result<String> {
+    if !item.source_hash.trim().is_empty() {
+        return Ok(item.source_hash.clone());
+    }
+    ensure!(
+        !item.source_sha256.trim().is_empty(),
+        "queue work item must include source_sha256 or source_hash"
+    );
+    Ok(item.source_sha256.clone())
+}
+
+fn item_sha256(
+    item: &SourceUniverseConversionWorkItem,
+    source_hash_algorithm: &str,
+    source_hash: &str,
+) -> Result<String> {
+    if !item.source_sha256.trim().is_empty() {
+        if source_hash_algorithm == "sha256" {
+            ensure!(
+                item.source_sha256 == source_hash,
+                "queue source_sha256 must match source_hash when source_hash_algorithm is sha256"
+            );
+        }
+        return Ok(item.source_sha256.clone());
+    }
+    if source_hash_algorithm == "sha256" {
+        return Ok(source_hash.to_string());
+    }
+    Ok(String::new())
+}
+
+fn object_hash_algorithm(object: &CategoryObjectManifestRecord) -> Result<String> {
+    if !object.source_hash.trim().is_empty() {
+        ensure!(
+            !object.source_hash_algorithm.trim().is_empty(),
+            "category manifest source_hash_algorithm must be set when source_hash is set"
+        );
+        return Ok(object.source_hash_algorithm.clone());
+    }
+    ensure!(
+        !object.sha256.trim().is_empty(),
+        "category manifest object must include sha256 or source_hash"
+    );
+    Ok("sha256".to_string())
+}
+
+fn object_hash(object: &CategoryObjectManifestRecord) -> Result<String> {
+    if !object.source_hash.trim().is_empty() {
+        return Ok(object.source_hash.clone());
+    }
+    ensure!(
+        !object.sha256.trim().is_empty(),
+        "category manifest object must include sha256 or source_hash"
+    );
+    Ok(object.sha256.clone())
+}
+
+fn object_sha256(
+    object: &CategoryObjectManifestRecord,
+    source_hash_algorithm: &str,
+    source_hash: &str,
+) -> Result<String> {
+    if !object.sha256.trim().is_empty() {
+        if source_hash_algorithm == "sha256" {
+            ensure!(
+                object.sha256 == source_hash,
+                "category manifest sha256 must match source_hash when source_hash_algorithm is sha256"
+            );
+        }
+        return Ok(object.sha256.clone());
+    }
+    if source_hash_algorithm == "sha256" {
+        return Ok(source_hash.to_string());
+    }
+    Ok(String::new())
 }
 
 fn validate_context_coverage(
@@ -550,8 +685,12 @@ fn object_gate_record(
     spec: &SourceUniverseObjectGateMaterializationSpec,
     item: &SourceUniverseConversionWorkItem,
     context: &BindingContext,
-) -> SourceUniverseObjectGateRecord {
-    SourceUniverseObjectGateRecord {
+) -> Result<SourceUniverseObjectGateRecord> {
+    let selected_object_hash_algorithm = item_hash_algorithm(item)?;
+    let selected_object_hash = item_hash(item)?;
+    let selected_object_sha256 =
+        item_sha256(item, &selected_object_hash_algorithm, &selected_object_hash)?;
+    Ok(SourceUniverseObjectGateRecord {
         work_item_id: item.work_item_id.clone(),
         gate_status: SourceUniverseObjectGateStatus::Ready,
         source_binding: item.source_binding.clone(),
@@ -561,7 +700,9 @@ fn object_gate_record(
         archive_date: item.archive_date.clone(),
         source_uri: item.source_uri.clone(),
         source_url: item.source_url.clone(),
-        selected_object_sha256: item.source_sha256.clone(),
+        selected_object_hash_algorithm,
+        selected_object_hash,
+        selected_object_sha256,
         selected_object_bytes: item.source_bytes,
         source_proof_id: context.source_proof.source_proof_id.clone(),
         source_proof_version: context.source_proof.source_proof_version,
@@ -574,7 +715,7 @@ fn object_gate_record(
         ),
         accepted_tranche_id: format!("{}:{}:accepted-tranche", spec.gate_id, item.work_item_id),
         output_prefix: item.output_prefix.clone(),
-    }
+    })
 }
 
 fn artifact_ref(role: &str, path: &Path) -> Result<SourceUniverseObjectGateArtifactRef> {

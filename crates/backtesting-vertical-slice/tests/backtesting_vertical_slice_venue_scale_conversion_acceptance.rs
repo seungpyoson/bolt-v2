@@ -223,7 +223,7 @@ source_universe_manifest_path = "{pmxt_source_manifest}"
 source_universe_conversion_queue_path = "{pmxt_conversion_queue}"
 selected_source_report_path = "{pmxt_selected_source_report}"
 blocking_issues = [
-  "pmxt_archive_source_hashes_are_r2_multipart_etags_not_payload_sha256",
+  "missing_pmxt_full_accepted_source_proof_and_object_gates",
   "missing_pmxt_full_nt_catalog_conversion_manifest",
   "missing_pmxt_l2_tick_size_epoch_policy",
 ]
@@ -478,7 +478,7 @@ blocking_issues = [
     assert_eq!(
         pmxt_full.blocking_issues,
         vec![
-            "pmxt_archive_source_hashes_are_r2_multipart_etags_not_payload_sha256",
+            "missing_pmxt_full_accepted_source_proof_and_object_gates",
             "missing_pmxt_full_nt_catalog_conversion_manifest",
             "missing_pmxt_l2_tick_size_epoch_policy",
         ]

@@ -8238,6 +8238,38 @@ reason = "Rejects zero as an invalid limited reconnect attempt count so PolyRese
 
 [[allowed]]
 path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "number"
+literal = '''0'''
+context = '''provider_subscription_generation: Arc::new(AtomicU64::new(0)),'''
+classification = "provider_internal_generation_counter"
+reason = "Initializes the client-owned PRR provider-subscription generation token; it is an in-memory stale-timeout guard and not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "number"
+literal = '''0'''
+context = '''let provider_subscription_generation = Arc::new(AtomicU64::new(0));'''
+classification = "provider_internal_generation_counter"
+reason = "Initializes the test-helper PRR provider-subscription generation token used by ACK-drain tests; live subscriptions and timeout durations still come from TOML and provider state."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "number"
+literal = '''1'''
+context = '''.fetch_add(1, Ordering::SeqCst);'''
+classification = "provider_internal_generation_counter"
+reason = "Advances the client-owned PRR provider-subscription generation by one epoch when provider subscription state is cleared, invalidating stale subscribe-ack timeout tasks."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
+kind = "number"
+literal = '''1'''
+context = '''provider_subscription_generation.fetch_add(1, Ordering::SeqCst);'''
+classification = "provider_internal_generation_counter"
+reason = "Advances the shared PRR provider-subscription generation by one epoch during reconnect-state clearing, invalidating stale subscribe-ack timeout tasks before replay."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
 literal = '''"wss"'''
 context = '''if url.scheme() != "wss" || !url.has_host() || !value[url.scheme().len()..].starts_with("://") {'''

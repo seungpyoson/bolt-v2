@@ -12,7 +12,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicU8, AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -241,6 +241,7 @@ impl DataClientFactory for PolyResearchReferencePriceClientFactory {
             subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
             pending_provider_subscriptions: Arc::new(Mutex::new(VecDeque::new())),
             provider_subscription_ids: Arc::new(Mutex::new(BTreeMap::new())),
+            provider_subscription_generation: Arc::new(AtomicU64::new(0)),
             outbound: None,
             connection_mode: None,
             data_sender: get_data_event_sender(),
@@ -266,6 +267,7 @@ struct PolyResearchReferencePriceClient {
     >,
     pending_provider_subscriptions: Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
     provider_subscription_ids: Arc<Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, String>>>,
+    provider_subscription_generation: Arc<AtomicU64>,
     outbound: Option<PolyResearchReferenceOutboundHandle>,
     connection_mode: Option<Arc<AtomicU8>>,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
@@ -369,6 +371,7 @@ impl PolyResearchReferencePriceClient {
             .lock()
             .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
             .clear();
+        self.advance_provider_subscription_generation();
         Ok(())
     }
 
@@ -381,7 +384,13 @@ impl PolyResearchReferencePriceClient {
             .lock()
             .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
             .clear();
+        self.advance_provider_subscription_generation();
         Ok(())
+    }
+
+    fn advance_provider_subscription_generation(&self) {
+        self.provider_subscription_generation
+            .fetch_add(1, Ordering::SeqCst);
     }
 
     fn spawn_disconnect(&mut self) {
@@ -456,6 +465,7 @@ impl DataClient for PolyResearchReferencePriceClient {
             Arc::clone(&self.subscriptions),
             Arc::clone(&self.pending_provider_subscriptions),
             Arc::clone(&self.provider_subscription_ids),
+            Arc::clone(&self.provider_subscription_generation),
             Some(outbound.clone()),
             self.config.subscribe_ack_timeout_ms,
             self.data_sender.clone(),
@@ -464,6 +474,7 @@ impl DataClient for PolyResearchReferencePriceClient {
             Arc::clone(&self.subscriptions),
             Arc::clone(&self.pending_provider_subscriptions),
             Arc::clone(&self.provider_subscription_ids),
+            Arc::clone(&self.provider_subscription_generation),
             outbound.clone(),
             self.config.subscribe_ack_timeout_ms,
         );
@@ -481,6 +492,7 @@ impl DataClient for PolyResearchReferencePriceClient {
         replay_polyresearch_reference_subscriptions(
             &self.subscriptions,
             &self.pending_provider_subscriptions,
+            &self.provider_subscription_generation,
             &outbound,
             self.config.subscribe_ack_timeout_ms,
         )?;
@@ -523,6 +535,7 @@ impl DataClient for PolyResearchReferencePriceClient {
             && let Err(error) = queue_polyresearch_reference_subscribe(
                 &subscription,
                 &self.pending_provider_subscriptions,
+                &self.provider_subscription_generation,
                 outbound,
                 self.config.subscribe_ack_timeout_ms,
             )
@@ -688,6 +701,7 @@ fn polyresearch_reference_post_reconnection_handler(
     >,
     pending_provider_subscriptions: Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
     provider_subscription_ids: Arc<Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, String>>>,
+    provider_subscription_generation: Arc<AtomicU64>,
     outbound: PolyResearchReferenceOutboundHandle,
     subscribe_ack_timeout_ms: u64,
 ) -> Arc<dyn Fn() + Send + Sync> {
@@ -695,11 +709,13 @@ fn polyresearch_reference_post_reconnection_handler(
         if let Err(error) = clear_polyresearch_provider_subscription_state(
             &pending_provider_subscriptions,
             &provider_subscription_ids,
+            &provider_subscription_generation,
         )
         .and_then(|_| {
             replay_polyresearch_reference_subscriptions(
                 &subscriptions,
                 &pending_provider_subscriptions,
+                &provider_subscription_generation,
                 &outbound,
                 subscribe_ack_timeout_ms,
             )
@@ -716,6 +732,7 @@ fn replay_polyresearch_reference_subscriptions(
         Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, PolyResearchReferenceSubscription>>,
     >,
     pending_provider_subscriptions: &Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
+    provider_subscription_generation: &Arc<AtomicU64>,
     outbound: &PolyResearchReferenceOutboundHandle,
     subscribe_ack_timeout_ms: u64,
 ) -> anyhow::Result<()> {
@@ -729,6 +746,7 @@ fn replay_polyresearch_reference_subscriptions(
         if let Err(error) = queue_polyresearch_reference_subscribe(
             subscription,
             pending_provider_subscriptions,
+            provider_subscription_generation,
             outbound,
             subscribe_ack_timeout_ms,
         ) {
@@ -742,6 +760,7 @@ fn replay_polyresearch_reference_subscriptions(
 fn clear_polyresearch_provider_subscription_state(
     pending_provider_subscriptions: &Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
     provider_subscription_ids: &Arc<Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, String>>>,
+    provider_subscription_generation: &Arc<AtomicU64>,
 ) -> anyhow::Result<()> {
     pending_provider_subscriptions
         .lock()
@@ -751,17 +770,20 @@ fn clear_polyresearch_provider_subscription_state(
         .lock()
         .map_err(|error| anyhow::anyhow!("PolyResearch subscription state poisoned: {error}"))?
         .clear();
+    provider_subscription_generation.fetch_add(1, Ordering::SeqCst);
     Ok(())
 }
 
 fn queue_polyresearch_reference_subscribe(
     subscription: &PolyResearchReferenceSubscription,
     pending_provider_subscriptions: &Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
+    provider_subscription_generation: &Arc<AtomicU64>,
     outbound: &PolyResearchReferenceOutboundHandle,
     subscribe_ack_timeout_ms: u64,
 ) -> anyhow::Result<()> {
     let provider_frame = polyresearch_reference_subscribe_frame(subscription)?;
     let subscription_key = PolyResearchReferenceSubscriptionKey::from_subscription(subscription);
+    let expected_generation = provider_subscription_generation.load(Ordering::SeqCst);
     let should_send = {
         let mut pending = pending_provider_subscriptions.lock().map_err(|error| {
             anyhow::anyhow!("PolyResearch subscription state poisoned: {error}")
@@ -780,8 +802,10 @@ fn queue_polyresearch_reference_subscribe(
     if should_send {
         spawn_polyresearch_reference_subscribe_ack_timeout(
             Arc::clone(pending_provider_subscriptions),
+            Arc::clone(provider_subscription_generation),
             outbound.clone(),
             subscription_key,
+            expected_generation,
             subscribe_ack_timeout_ms,
         );
     }
@@ -790,16 +814,20 @@ fn queue_polyresearch_reference_subscribe(
 
 fn spawn_polyresearch_reference_subscribe_ack_timeout(
     pending_provider_subscriptions: Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
+    provider_subscription_generation: Arc<AtomicU64>,
     outbound: PolyResearchReferenceOutboundHandle,
     subscription_key: PolyResearchReferenceSubscriptionKey,
+    expected_generation: u64,
     subscribe_ack_timeout_ms: u64,
 ) {
     get_runtime().spawn(async move {
         tokio::time::sleep(Duration::from_millis(subscribe_ack_timeout_ms)).await;
         if let Err(error) = polyresearch_reference_handle_subscribe_ack_timeout(
             &pending_provider_subscriptions,
+            &provider_subscription_generation,
             &outbound,
             &subscription_key,
+            expected_generation,
         ) {
             log::warn!("PolyResearch provider subscribe ack timeout handling failed: {error}");
         }
@@ -808,9 +836,14 @@ fn spawn_polyresearch_reference_subscribe_ack_timeout(
 
 fn polyresearch_reference_handle_subscribe_ack_timeout(
     pending_provider_subscriptions: &Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
+    provider_subscription_generation: &Arc<AtomicU64>,
     outbound: &PolyResearchReferenceOutboundHandle,
     subscription_key: &PolyResearchReferenceSubscriptionKey,
+    expected_generation: u64,
 ) -> Result<(), String> {
+    if provider_subscription_generation.load(Ordering::SeqCst) != expected_generation {
+        return Ok(());
+    }
     let timed_out = pending_provider_subscriptions
         .lock()
         .map_err(|error| format!("PolyResearch subscription state poisoned: {error}"))?
@@ -1051,10 +1084,12 @@ fn polyresearch_reference_record_subscription_ack(
 ) -> Result<bool, String> {
     let parsed = serde_json::from_str::<PolyResearchPriceFrame>(frame)
         .map_err(|error| format!("invalid PolyResearch control frame JSON: {error}"))?;
+    let provider_subscription_generation = Arc::new(AtomicU64::new(0));
     polyresearch_reference_record_subscription_ack_from_parsed(
         subscriptions,
         pending_provider_subscriptions,
         provider_subscription_ids,
+        &provider_subscription_generation,
         outbound,
         subscribe_ack_timeout_ms,
         &parsed,
@@ -1067,6 +1102,7 @@ fn polyresearch_reference_record_subscription_ack_from_parsed(
     >,
     pending_provider_subscriptions: &Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
     provider_subscription_ids: &Arc<Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, String>>>,
+    provider_subscription_generation: &Arc<AtomicU64>,
     outbound: Option<&PolyResearchReferenceOutboundHandle>,
     subscribe_ack_timeout_ms: u64,
     parsed: &PolyResearchPriceFrame,
@@ -1100,6 +1136,7 @@ fn polyresearch_reference_record_subscription_ack_from_parsed(
         send_next_polyresearch_pending_subscription(
             subscriptions,
             pending_provider_subscriptions,
+            provider_subscription_generation,
             outbound,
             subscribe_ack_timeout_ms,
         )?;
@@ -1113,6 +1150,7 @@ fn polyresearch_reference_record_subscription_ack_from_parsed(
     send_next_polyresearch_pending_subscription(
         subscriptions,
         pending_provider_subscriptions,
+        provider_subscription_generation,
         outbound,
         subscribe_ack_timeout_ms,
     )?;
@@ -1124,6 +1162,7 @@ fn send_next_polyresearch_pending_subscription(
         Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, PolyResearchReferenceSubscription>>,
     >,
     pending_provider_subscriptions: &Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
+    provider_subscription_generation: &Arc<AtomicU64>,
     outbound: Option<&PolyResearchReferenceOutboundHandle>,
     subscribe_ack_timeout_ms: u64,
 ) -> Result<(), String> {
@@ -1148,13 +1187,16 @@ fn send_next_polyresearch_pending_subscription(
             let frame = polyresearch_reference_subscribe_frame(&subscription).map_err(|error| {
                 format!("PolyResearch subscribe frame serialization failed: {error}")
             })?;
+            let expected_generation = provider_subscription_generation.load(Ordering::SeqCst);
             outbound
                 .send_text(frame)
                 .map_err(|error| format!("PolyResearch subscribe frame send failed: {error}"))?;
             spawn_polyresearch_reference_subscribe_ack_timeout(
                 Arc::clone(pending_provider_subscriptions),
+                Arc::clone(provider_subscription_generation),
                 (*outbound).clone(),
                 subscription_key,
+                expected_generation,
                 subscribe_ack_timeout_ms,
             );
             return Ok(());
@@ -1174,6 +1216,7 @@ fn polyresearch_reference_message_handler(
     >,
     pending_provider_subscriptions: Arc<Mutex<VecDeque<PolyResearchReferenceSubscriptionKey>>>,
     provider_subscription_ids: Arc<Mutex<BTreeMap<PolyResearchReferenceSubscriptionKey, String>>>,
+    provider_subscription_generation: Arc<AtomicU64>,
     outbound: Option<PolyResearchReferenceOutboundHandle>,
     subscribe_ack_timeout_ms: u64,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
@@ -1200,6 +1243,7 @@ fn polyresearch_reference_message_handler(
             &subscriptions,
             &pending_provider_subscriptions,
             &provider_subscription_ids,
+            &provider_subscription_generation,
             outbound.as_ref(),
             subscribe_ack_timeout_ms,
             &parsed,
@@ -1591,6 +1635,7 @@ mod tests {
                 subscriptions: Arc::new(Mutex::new(BTreeMap::new())),
                 pending_provider_subscriptions: Arc::new(Mutex::new(VecDeque::new())),
                 provider_subscription_ids: Arc::new(Mutex::new(BTreeMap::new())),
+                provider_subscription_generation: Arc::new(AtomicU64::new(0)),
                 outbound: None,
                 connection_mode: None,
                 data_sender,
@@ -1675,6 +1720,7 @@ mod tests {
             subscriptions,
             Arc::new(Mutex::new(VecDeque::new())),
             Arc::new(Mutex::new(BTreeMap::new())),
+            Arc::new(AtomicU64::new(0)),
             None,
             2_000,
             data_sender,
@@ -1712,6 +1758,7 @@ mod tests {
             subscriptions,
             Arc::new(Mutex::new(VecDeque::new())),
             Arc::new(Mutex::new(BTreeMap::new())),
+            Arc::new(AtomicU64::new(0)),
             None,
             2_000,
             data_sender,
@@ -2000,11 +2047,14 @@ mod tests {
         let (outbound_sender, mut outbound_receiver) =
             tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
         let outbound = PolyResearchReferenceOutboundHandle::from_sender(outbound_sender);
+        let provider_subscription_generation = Arc::new(AtomicU64::new(0));
 
         polyresearch_reference_handle_subscribe_ack_timeout(
             &pending_provider_subscriptions,
+            &provider_subscription_generation,
             &outbound,
             &btc_key,
+            0,
         )
         .expect("subscribe ack timeout handling should not fail");
 
@@ -2102,6 +2152,7 @@ mod tests {
             Arc::clone(&subscriptions),
             Arc::new(Mutex::new(VecDeque::new())),
             Arc::new(Mutex::new(BTreeMap::new())),
+            Arc::new(AtomicU64::new(0)),
             outbound,
             2_000,
         );
@@ -2116,6 +2167,53 @@ mod tests {
         assert_eq!(
             frame,
             r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["BTC/USD"]}}"#
+        );
+    }
+
+    #[test]
+    fn stale_prr_provider_subscribe_ack_timeout_after_reconnect_does_not_disconnect_replay() {
+        let (mut client, _data_receiver) = fixture_client();
+        client.config.subscribe_ack_timeout_ms = 100;
+        let (outbound_sender, mut outbound_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<PolyResearchReferenceOutboundCommand>();
+        let outbound = PolyResearchReferenceOutboundHandle::from_sender(outbound_sender);
+        client.outbound = Some(outbound.clone());
+
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                "BTC",
+                "polyresearch_primary",
+                "BTC/USD",
+            ))
+            .expect("PRR reference subscription should be accepted");
+        let PolyResearchReferenceOutboundCommand::SendText(_) = outbound_receiver
+            .try_recv()
+            .expect("initial PRR subscription should send provider subscribe")
+        else {
+            panic!("initial PRR subscription should send text");
+        };
+
+        std::thread::sleep(Duration::from_millis(70));
+        let handler = polyresearch_reference_post_reconnection_handler(
+            Arc::clone(&client.subscriptions),
+            Arc::clone(&client.pending_provider_subscriptions),
+            Arc::clone(&client.provider_subscription_ids),
+            Arc::clone(&client.provider_subscription_generation),
+            outbound,
+            client.config.subscribe_ack_timeout_ms,
+        );
+        handler();
+        let PolyResearchReferenceOutboundCommand::SendText(_) = outbound_receiver
+            .try_recv()
+            .expect("post-reconnect replay should send provider subscribe")
+        else {
+            panic!("post-reconnect replay should send text");
+        };
+
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            outbound_receiver.try_recv().is_err(),
+            "stale pre-reconnect timeout must not disconnect a freshly replayed subscription"
         );
     }
 
@@ -2142,6 +2240,7 @@ mod tests {
         let error = replay_polyresearch_reference_subscriptions(
             &subscriptions,
             &pending_provider_subscriptions,
+            &Arc::new(AtomicU64::new(0)),
             &outbound,
             2_000,
         )
@@ -2286,6 +2385,7 @@ mod tests {
             Arc::clone(&client.subscriptions),
             Arc::clone(&client.pending_provider_subscriptions),
             Arc::clone(&client.provider_subscription_ids),
+            Arc::clone(&client.provider_subscription_generation),
             Some(outbound),
             client.config.subscribe_ack_timeout_ms,
             data_sender,

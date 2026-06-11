@@ -298,8 +298,10 @@ mod tests {
     // with executable-edge main.
     // Re-derived after requiring reference-current-price asset/physical-source
     // consistency and persisting reference source attribution in evidence.
+    // Re-derived after reference provider review follow-ups added stale-timeout
+    // and reference-health regression coverage.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "80e374d48b8fc53a2e58c7b859d0d20c7283771d617debcc872eeab07cf63b0f";
+        "949eb3b81f3a80d518a1d6952223f6a1cb4e5fb41993af1ad170135d3673fc7b";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

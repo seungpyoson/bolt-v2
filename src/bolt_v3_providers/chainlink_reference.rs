@@ -738,7 +738,7 @@ fn validate_data_bounds(key: &str, data: &ChainlinkReferencePriceDataConfig) -> 
     );
     if data.reconnect_max_attempts != Some(0) {
         errors.push(format!(
-            "clients.{key}.data.reconnect_max_attempts must be 0 because Chainlink reference WebSocket auth headers are regenerated only on DataClient connect"
+            "clients.{key}.data.reconnect_max_attempts must be explicitly set to 0 because Chainlink reference WebSocket auth headers are regenerated only on DataClient connect"
         ));
     }
     validate_positive_u64(
@@ -897,6 +897,17 @@ fn map_data(
             ),
         })?
         .feed_bindings
+        .as_slice();
+    if feed_bindings.is_empty() {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field: "chainlink_data_streams.feed_bindings",
+            message: format!(
+                "chainlink_data_streams.feed_bindings must contain one or more resolution feed bindings for clients.{client_key}"
+            ),
+        });
+    }
+    let feed_bindings = feed_bindings
         .iter()
         .enumerate()
         .map(|(index, binding)| parse_feed_binding(client_key, index, binding))
@@ -989,6 +1000,18 @@ mod tests {
         }
     }
 
+    fn fixture_root_config() -> crate::bolt_v3_config::BoltV3RootConfig {
+        toml::from_str(include_str!("../../tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture root config should parse")
+    }
+
+    fn fixture_resolved_secrets() -> ResolvedBoltV3ChainlinkReferenceSecrets {
+        ResolvedBoltV3ChainlinkReferenceSecrets {
+            api_key: Zeroizing::new("chainlink-api-key".to_string()),
+            api_secret: Zeroizing::new("chainlink-api-secret".to_string()),
+        }
+    }
+
     fn fixture_feed_binding() -> ChainlinkStrikeFeedBinding {
         ChainlinkStrikeFeedBinding {
             feed_id: TEST_FEED_ID.to_string(),
@@ -1038,6 +1061,32 @@ mod tests {
             },
             data_receiver,
         )
+    }
+
+    #[test]
+    fn map_data_rejects_empty_root_feed_bindings() {
+        let mut root = fixture_root_config();
+        root.chainlink_data_streams
+            .as_mut()
+            .expect("fixture root should have Chainlink feed bindings")
+            .feed_bindings
+            .clear();
+        let data = root
+            .clients
+            .get("chainlink_reference")
+            .and_then(|client| client.data.as_ref())
+            .expect("fixture Chainlink reference client should have data");
+        let secrets = fixture_resolved_secrets();
+
+        let error = map_data(&root, "chainlink_reference", data, &secrets)
+            .expect_err("empty root feed bindings should be rejected by adapter mapping");
+
+        assert!(
+            error
+                .to_string()
+                .contains("chainlink_data_streams.feed_bindings must contain one or more"),
+            "unexpected empty feed binding error: {error}"
+        );
     }
 
     #[test]
@@ -1250,6 +1299,21 @@ mod tests {
             (update.price() - TEST_BENCHMARK_PRICE).abs() < TEST_PRICE_TOLERANCE,
             "benchmark price should round-trip, got {}",
             update.price()
+        );
+        let quote = update
+            .to_reference_quote()
+            .expect("Chainlink update should convert to a reference quote");
+        assert!(
+            (quote.bid().expect("Chainlink quote should carry bid") - TEST_BID_PRICE).abs()
+                < TEST_PRICE_TOLERANCE,
+            "bid price should round-trip, got {:?}",
+            quote.bid()
+        );
+        assert!(
+            (quote.ask().expect("Chainlink quote should carry ask") - TEST_ASK_PRICE).abs()
+                < TEST_PRICE_TOLERANCE,
+            "ask price should round-trip, got {:?}",
+            quote.ask()
         );
         assert_eq!(
             update.observed_ts_ms(),

@@ -1197,6 +1197,55 @@ fn stale_attempt_timestamp_survives_later_status_refresh() {
 }
 
 #[test]
+fn future_stale_attempt_status_survives_refresh_when_accepted_quote_is_still_fresh() {
+    let mut strategy = test_strategy();
+    let mut reference_price = reference_price_config();
+    reference_price
+        .sources
+        .get_mut(CHAINLINK_PRIMARY_SOURCE_ID)
+        .expect("chainlink source should exist")
+        .required = false;
+    reference_price.max_source_age_ms = 5_000;
+    strategy.config.reference_current_price = Some(reference_price);
+    strategy.active =
+        ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+    let (_cache, clock) = register_test_strategy_with_clock(&mut strategy);
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_170_u64 * NANOS_PER_MILLI_U64));
+
+    let fresh_primary = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.0,
+        1_140,
+        1_145,
+    );
+    DataActor::on_data(&mut strategy, &fresh_primary)
+        .expect("fresh primary quote should be handled");
+
+    let future_primary_attempt = reference_price_update(
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        CHAINLINK_REFERENCE_INSTRUMENT,
+        100.5,
+        1_180,
+        1_185,
+    );
+    DataActor::on_data(&mut strategy, &future_primary_attempt)
+        .expect("future primary attempt should be handled");
+
+    let primary_health = strategy
+        .reference_price_source_health
+        .get(CHAINLINK_PRIMARY_SOURCE_ID)
+        .expect("primary health should exist");
+    assert_eq!(primary_health.status(), ReferencePriceSourceStatus::Stale);
+    assert_eq!(primary_health.observed_ts_ms(), Some(1_180));
+    assert_eq!(primary_health.received_ts_ms(), Some(1_185));
+}
+
+#[test]
 fn out_of_order_stale_attempt_without_accepted_quote_preserves_newer_health_timestamp() {
     let mut strategy = test_strategy();
     let mut reference_price = reference_price_config();

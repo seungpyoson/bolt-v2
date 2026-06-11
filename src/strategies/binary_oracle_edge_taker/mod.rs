@@ -1773,6 +1773,27 @@ impl BinaryOracleEdgeTaker {
                             Some(quote.observed_ts_ms()),
                             Some(quote.received_ts_ms()),
                         ),
+                        Some(quote)
+                            if self
+                                .reference_price_source_health
+                                .get(source_id)
+                                .is_some_and(|health| {
+                                    health.status() == ReferencePriceSourceStatus::Stale
+                                        && health.observed_ts_ms().is_some_and(|observed_ts_ms| {
+                                            observed_ts_ms > quote.observed_ts_ms()
+                                        })
+                                }) =>
+                        {
+                            let health = self
+                                .reference_price_source_health
+                                .get(source_id)
+                                .expect("reference price source health checked above");
+                            (
+                                health.status(),
+                                health.observed_ts_ms(),
+                                health.received_ts_ms(),
+                            )
+                        }
                         Some(quote) => (
                             ReferencePriceSourceStatus::Available,
                             Some(quote.observed_ts_ms()),

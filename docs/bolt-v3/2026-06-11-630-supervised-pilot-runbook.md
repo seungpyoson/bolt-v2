@@ -47,7 +47,7 @@ and individually approved. Read-only probes (`ls`/`cat`/log greps via SSM) need 
 - [ ] Record a `deploy/<date>-<shortsha>/deploy.txt` evidence entry (existing
       convention): binary sha256, config sha256, git SHA, operator id, date.
 
-## Phase 2 — unarmed smoke gate (no approval artifact present)
+## Phase 2 — smoke gate with submission disabled (no approval artifact present)
 
 Start the service WITHOUT a live-submit approval artifact; the node runs its readiness
 probe with submission structurally disabled.
@@ -67,7 +67,7 @@ FAIL on any → stop the service, collect logs, file findings on #630. Do not pr
 
 ## Phase 3 — abort + kill-switch verification (before any order)
 
-- [ ] Abort drill while unarmed: `systemctl stop bolt-v2`; confirm clean shutdown in
+- [ ] Abort drill before any approval artifact exists: `systemctl stop bolt-v2`; confirm clean shutdown in
       journal and zero open orders/positions on the venue account.
 - [ ] Configure `[risk.kill_switch]` in the operator-local config (`state_path` on the
       `/srv/bolt-v2` data volume; `forced_reduction_max_notional_per_order` at or below
@@ -108,8 +108,8 @@ FAIL on any → stop the service, collect logs, file findings on #630. Do not pr
 - [ ] Report (committed under `docs/research/`): per-fill expected-vs-achieved table
       (quoted ask vs achieved price; displayed size vs filled size), and live
       Brier/reliability of `fair_probability_up` against realized settlement.
-- [ ] Post-run hygiene: leave the box unarmed (no valid approval artifact), service
-      stopped or back in unarmed probe mode per operator choice.
+- [ ] Post-run hygiene: leave the box with no valid approval artifact (submission
+      disabled), service stopped or back in probe mode per operator choice.
 
 ## Acceptance mapping (issue #630)
 

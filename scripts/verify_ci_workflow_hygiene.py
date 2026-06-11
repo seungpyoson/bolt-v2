@@ -47,7 +47,18 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/backtester-ci.yml": "backtester_ci",
     "ci-runner-debug.yml": "ci_runner_debug",
     ".github/workflows/ci-runner-debug.yml": "ci_runner_debug",
+    "actionlint.yml": "actionlint",
+    ".github/workflows/actionlint.yml": "actionlint",
+    "advisory.yml": "advisory",
+    ".github/workflows/advisory.yml": "advisory",
+    "summary.yml": "summary",
+    ".github/workflows/summary.yml": "summary",
+    "stale.yml": "stale",
+    ".github/workflows/stale.yml": "stale",
+    "ci-docs-pass-stub.yml": "ci_docs_pass_stub",
+    ".github/workflows/ci-docs-pass-stub.yml": "ci_docs_pass_stub",
 }
+SSH_RUNNER_ACTION_RE = re.compile(r"^ubicloud/ssh-runner@[0-9a-f]{40}$")
 DEFAULT_REPO_AUTOMATION_FILES = (REPO_ROOT / "justfile",)
 DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / "scripts", "*.sh"),
@@ -6071,6 +6082,12 @@ def load_github_actions_runners_config(
         tier_to_var[tier] = variable
         if tier != "github_hosted":
             managed_labels.append(label)
+    for workflow_key, job_table in workflows.items():
+        if not isinstance(job_table, dict):
+            raise ValueError(f"workflows.{workflow_key} must be a table")
+        for job, tier in job_table.items():
+            if not isinstance(tier, str) or not tier:
+                raise ValueError(f"workflows.{workflow_key}.{job} must name a runner tier")
     return {
         "tier_to_var": tier_to_var,
         "managed_labels": sorted(set(managed_labels)),
@@ -6087,6 +6104,31 @@ def extract_job_runs_on_var(job_lines: list[str]) -> str | None:
     return None
 
 
+def workflow_trigger_keys(workflow_text: str) -> set[str]:
+    lines = [strip_comment(line).rstrip() for line in workflow_text.splitlines()]
+    for index, line in enumerate(lines):
+        if line == "on:":
+            triggers: set[str] = set()
+            for child in lines[index + 1 :]:
+                if child and not child.startswith((" ", "\t")):
+                    break
+                match = re.match(r"^  ([^ \t:#][^:#]*):", child)
+                if match:
+                    triggers.add(match.group(1).strip().strip("'\""))
+            return triggers
+        if line.startswith("on:"):
+            inline = line[len("on:") :].strip()
+            if inline.startswith("[") and inline.endswith("]"):
+                return {
+                    item.strip().strip("'\"")
+                    for item in inline[1:-1].split(",")
+                    if item.strip()
+                }
+            if inline:
+                return {inline.strip().strip("'\"")}
+    return set()
+
+
 def load_ci_runner_debug_config(path: pathlib.Path = DEFAULT_RUNNERS_CONFIG) -> dict[str, str]:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     section = data.get("ci_runner_debug")
@@ -6099,6 +6141,10 @@ def load_ci_runner_debug_config(path: pathlib.Path = DEFAULT_RUNNERS_CONFIG) -> 
         if not isinstance(value, str) or not value:
             raise ValueError(f"ci_runner_debug.{key} must be a non-empty string")
         config[key] = value
+    if not SSH_RUNNER_ACTION_RE.fullmatch(config["ssh_runner_action"]):
+        raise ValueError(
+            "ci_runner_debug.ssh_runner_action must pin ubicloud/ssh-runner to a 40-character SHA"
+        )
     return config
 
 
@@ -6118,20 +6164,22 @@ def verify_ci_runner_debug_workflow(workflows: dict[str, str]) -> list[str]:
     expected_action = f"uses: {debug_config['ssh_runner_action']}"
     expected_secret = f"secrets.{debug_config['ssh_public_key_secret']}"
     expected_wait = f"vars.{debug_config['ssh_wait_minutes_variable']}"
-    if expected_action not in workflow_text:
+    triggers = workflow_trigger_keys(workflow_text)
+    if triggers != {"workflow_dispatch"}:
         errors.append(
-            f"{workflow_name} must reference {expected_action!r} for ubicloud/ssh-runner"
+            f"{workflow_name} must be manual-only with only workflow_dispatch, got {sorted(triggers)!r}"
         )
-    if expected_secret not in workflow_text:
-        errors.append(
-            f"{workflow_name} must reference {expected_secret!r} for SSH public key"
-        )
-    if expected_wait not in workflow_text:
-        errors.append(
-            f"{workflow_name} must reference {expected_wait!r} for SSH wait minutes"
-        )
-    if "workflow_dispatch:" not in workflow_text:
-        errors.append(f"{workflow_name} must be manual-only (workflow_dispatch)")
+    jobs = parse_jobs(workflow_text)
+    for job in ("debug-heavy", "debug-light"):
+        job_lines = jobs.get(job)
+        if job_lines is None:
+            continue
+        if not any(expected_action in line for line in job_lines):
+            errors.append(f"{workflow_name} {job} must reference {expected_action!r}")
+        if not any(expected_secret in line for line in job_lines):
+            errors.append(f"{workflow_name} {job} must reference {expected_secret!r}")
+        if not any(expected_wait in line for line in job_lines):
+            errors.append(f"{workflow_name} {job} must reference {expected_wait!r}")
     return errors
 
 
@@ -6146,18 +6194,39 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
     tier_to_var = config["tier_to_var"]
     workflow_tables = config["workflows"]
     errors: list[str] = []
+    known_workflow_keys = set(WORKFLOW_RUNNER_CONFIG_KEYS.values())
+    for workflow_key in sorted(workflow_tables):
+        if workflow_key not in known_workflow_keys:
+            errors.append(
+                f"workflows.{workflow_key} in ci/github-actions-runners.toml has no workflow contract"
+            )
 
-    for workflow_name, workflow_key in WORKFLOW_RUNNER_CONFIG_KEYS.items():
-        if workflow_name not in workflows:
+    for workflow_name, workflow_text in sorted(workflows.items()):
+        jobs = parse_jobs(workflow_text)
+        if not jobs:
+            continue
+        workflow_key = WORKFLOW_RUNNER_CONFIG_KEYS.get(workflow_name)
+        if workflow_key is None:
+            errors.append(
+                f"{workflow_name} must be mapped in ci/github-actions-runners.toml"
+            )
             continue
         job_table = workflow_tables.get(workflow_key)
         if not isinstance(job_table, dict):
             errors.append(f"workflows.{workflow_key} missing in ci/github-actions-runners.toml")
             continue
-        jobs = parse_jobs(workflows[workflow_name])
-        for job, tier in job_table.items():
-            if job not in jobs:
-                continue
+        configured_jobs = set(job_table)
+        actual_jobs = set(jobs)
+        for job in sorted(configured_jobs - actual_jobs):
+            errors.append(
+                f"{workflow_name} configured runner job {job} missing from workflow"
+            )
+        for job in sorted(actual_jobs - configured_jobs):
+            errors.append(
+                f"{workflow_name} job {job} missing from ci/github-actions-runners.toml"
+            )
+        for job in sorted(configured_jobs & actual_jobs):
+            tier = job_table[job]
             expected_var = tier_to_var.get(tier)
             if expected_var is None:
                 errors.append(f"unknown runner tier {tier!r} for {workflow_name} {job}")

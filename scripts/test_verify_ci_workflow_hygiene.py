@@ -8,6 +8,7 @@ import io
 import importlib.util
 import pathlib
 import re
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -15,6 +16,9 @@ import textwrap
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
+SYNC_CI_DEBUG_SSH_PATH = REPO_ROOT / "scripts" / "sync_ci_debug_ssh_secret.py"
+DEBUG_WORKFLOW_PATH = ".github/workflows/ci-runner-debug.yml"
+SSH_RUNNER_ACTION = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a828"
 GATE_NEEDS = "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]"
 DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
@@ -31,6 +35,17 @@ def load_verifier(
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise AssertionError("could not load verify_ci_workflow_hygiene.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_sync_ci_debug_ssh_script(
+    path: pathlib.Path = SYNC_CI_DEBUG_SSH_PATH, module_name: str = "sync_ci_debug_ssh_secret"
+):
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("could not load sync_ci_debug_ssh_secret.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -681,6 +696,110 @@ def replace_once(text: str, old: str, new: str) -> str:
     if old not in text:
         raise AssertionError(f"fixture fragment not found: {old!r}")
     return text.replace(old, new, 1)
+
+
+def repo_workflow_text(path: str) -> str:
+    return (REPO_ROOT / path).read_text()
+
+
+def assert_runner_contract_rejects_missing_and_extra_jobs() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/ci.yml"
+    workflow = repo_workflow_text(workflow_name)
+    renamed = replace_once(workflow, "  fmt-check:\n", "  fmt-renamed:\n")
+    errors = verifier.verify_github_actions_runner_contract({workflow_name: renamed})
+    if not any("fmt-check" in error and "missing from workflow" in error for error in errors):
+        raise AssertionError(f"runner contract must reject TOML job without workflow job, got: {errors}")
+    if not any(
+        "fmt-renamed" in error and "ci/github-actions-runners.toml" in error
+        for error in errors
+    ):
+        raise AssertionError(f"runner contract must reject workflow job without TOML mapping, got: {errors}")
+
+
+def assert_runner_contract_rejects_unmapped_workflow_jobs() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/actionlint.yml"
+    workflow = repo_workflow_text(workflow_name)
+    rogue = replace_once(
+        workflow,
+        "jobs:\n",
+        """jobs:
+  rogue:
+    name: rogue
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo rogue
+
+""",
+    )
+    errors = verifier.verify_github_actions_runner_contract({workflow_name: rogue})
+    if not any("rogue" in error and "ci/github-actions-runners.toml" in error for error in errors):
+        raise AssertionError(f"runner contract must reject unmapped workflow jobs, got: {errors}")
+
+
+def assert_debug_workflow_rejects_non_manual_trigger() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(DEBUG_WORKFLOW_PATH)
+    with_push = replace_once(
+        workflow,
+        "on:\n  workflow_dispatch:\n",
+        "on:\n  push:\n    branches: [main]\n  workflow_dispatch:\n",
+    )
+    errors = verifier.verify_ci_runner_debug_workflow({DEBUG_WORKFLOW_PATH: with_push})
+    if not any("manual-only" in error and "workflow_dispatch" in error for error in errors):
+        raise AssertionError(f"debug workflow must reject non-manual triggers, got: {errors}")
+
+
+def assert_debug_workflow_checks_each_ssh_runner_step() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(DEBUG_WORKFLOW_PATH)
+    unpinned_first_job = replace_once(
+        workflow,
+        f"uses: {SSH_RUNNER_ACTION} # v2.0",
+        "uses: ubicloud/ssh-runner@v2",
+    )
+    errors = verifier.verify_ci_runner_debug_workflow({DEBUG_WORKFLOW_PATH: unpinned_first_job})
+    if not any("debug-heavy" in error and SSH_RUNNER_ACTION in error for error in errors):
+        raise AssertionError(f"debug verifier must check each SSH runner step, got: {errors}")
+
+
+def assert_bootstrap_uses_onepassword_key_generation() -> None:
+    sync_script = load_sync_ci_debug_ssh_script()
+    commands: list[tuple[list[str], str | None]] = []
+    private_key = "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate\n-----END OPENSSH PRIVATE KEY-----"
+
+    def fake_run_checked(
+        command: list[str], *, input_text: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append((command, input_text))
+        if command and command[0] == "ssh-keygen":
+            key_path = pathlib.Path(command[command.index("-f") + 1])
+            key_path.write_text(private_key, encoding="utf-8")
+            key_path.with_suffix(".pub").write_text("ssh-ed25519 AAAATEST test\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    sync_script.run_checked = fake_run_checked
+    sync_script.onepassword_item_exists = lambda config: False
+    config = {
+        "ssh_public_key_secret": "SSH_PUBLIC_KEY",
+        "onepassword_vault": "Private",
+        "onepassword_item_title": "bolt-v2 CI runner debug SSH",
+        "onepassword_public_key_field": "public key",
+        "onepassword_private_key_field": "private key",
+    }
+    with contextlib.redirect_stdout(io.StringIO()):
+        sync_script.bootstrap_onepassword_item(config)
+    if any(command and command[0] == "ssh-keygen" for command, _ in commands):
+        raise AssertionError("bootstrap must let 1Password generate the SSH key, not local ssh-keygen")
+    create_commands = [command for command, _ in commands if command[:3] == ["op", "item", "create"]]
+    if not create_commands or not any(
+        arg == "--ssh-generate-key" or arg.startswith("--ssh-generate-key=")
+        for arg in create_commands[0]
+    ):
+        raise AssertionError(f"bootstrap must use op item create --ssh-generate-key, got: {commands}")
+    if any(private_key in arg for command, _ in commands for arg in command):
+        raise AssertionError(f"bootstrap must not pass private key material on argv, got: {commands}")
 
 
 def without_pr_concurrency(workflow: str) -> str:
@@ -5164,6 +5283,11 @@ def main() -> int:
     )
     assert_v6_deploy_artifact_s3_stays_allowed()
     assert_v6_red_workflow_policy_gaps()
+    assert_runner_contract_rejects_missing_and_extra_jobs()
+    assert_runner_contract_rejects_unmapped_workflow_jobs()
+    assert_debug_workflow_rejects_non_manual_trigger()
+    assert_debug_workflow_checks_each_ssh_runner_step()
+    assert_bootstrap_uses_onepassword_key_generation()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"

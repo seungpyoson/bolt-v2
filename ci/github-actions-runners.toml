@@ -41,6 +41,24 @@ gate = "github_hosted"
 debug-heavy = "managed_heavy"
 debug-light = "managed_light"
 
+[workflows.actionlint]
+actionlint = "github_hosted"
+
+[workflows.advisory]
+advisories = "github_hosted"
+
+[workflows.summary]
+summary = "github_hosted"
+
+[workflows.stale]
+stale = "github_hosted"
+
+[workflows.ci_docs_pass_stub]
+build = "github_hosted"
+clippy = "github_hosted"
+test = "github_hosted"
+gate = "github_hosted"
+
 [ci_runner_debug]
 ssh_wait_minutes_variable = "CI_DEBUG_SSH_WAIT_MINUTES"
 ssh_public_key_secret = "SSH_PUBLIC_KEY"
@@ -48,4 +66,3 @@ ssh_runner_action = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a82
 onepassword_vault = "Private"
 onepassword_item_title = "bolt-v2 CI runner debug SSH"
 onepassword_public_key_field = "public key"
-onepassword_private_key_field = "private key"

@@ -8,7 +8,6 @@ import pathlib
 import shutil
 import subprocess
 import sys
-import tempfile
 import tomllib
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -26,7 +25,6 @@ def load_ci_runner_debug_config(path: pathlib.Path = DEFAULT_RUNNERS_CONFIG) -> 
         "onepassword_vault",
         "onepassword_item_title",
         "onepassword_public_key_field",
-        "onepassword_private_key_field",
     )
     config: dict[str, str] = {}
     for key in required:
@@ -136,40 +134,20 @@ def bootstrap_onepassword_item(config: dict[str, str]) -> None:
             f"{config['onepassword_item_title']!r}"
         )
 
-    with tempfile.TemporaryDirectory(prefix="bolt-ci-debug-ssh-") as tmp_dir:
-        key_path = pathlib.Path(tmp_dir) / "bolt-ci-debug"
-        run_checked(
-            [
-                "ssh-keygen",
-                "-t",
-                "ed25519",
-                "-f",
-                str(key_path),
-                "-C",
-                config["onepassword_item_title"],
-                "-N",
-                "",
-            ]
-        )
-        public_key = key_path.with_suffix(".pub").read_text(encoding="utf-8").strip()
-        private_key = key_path.read_text(encoding="utf-8").strip()
-        validate_public_key(public_key)
-
-        run_checked(
-            [
-                "op",
-                "item",
-                "create",
-                "--category",
-                "SSH Key",
-                "--title",
-                config["onepassword_item_title"],
-                "--vault",
-                config["onepassword_vault"],
-                f"{config['onepassword_public_key_field']}={public_key}",
-                f"{config['onepassword_private_key_field']}[password]={private_key}",
-            ]
-        )
+    run_checked(
+        [
+            "op",
+            "item",
+            "create",
+            "--category",
+            "SSH Key",
+            "--title",
+            config["onepassword_item_title"],
+            "--vault",
+            config["onepassword_vault"],
+            "--ssh-generate-key=ed25519",
+        ]
+    )
 
     print(
         "OK: created 1Password SSH key item "
@@ -197,7 +175,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     require_command("op")
     require_command("gh")
-    require_command("ssh-keygen")
 
     try:
         config = load_ci_runner_debug_config(args.config)

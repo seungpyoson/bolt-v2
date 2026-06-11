@@ -40,6 +40,7 @@ fn submit_intent_compiles_to_post_only_limit_nt_order_inputs() {
     });
 
     let Some(MakerCompiledOrderCommand::Submit {
+        leg,
         template,
         inputs,
         fallback_price,
@@ -48,6 +49,7 @@ fn submit_intent_compiles_to_post_only_limit_nt_order_inputs() {
         panic!("expected submit command, got {decision:?}");
     };
     assert_eq!(decision.blocked_by, None);
+    assert_eq!(leg, Leg::Yes);
     assert_eq!(fallback_price, Price::new(0.42, 2));
     assert_eq!(
         inputs,

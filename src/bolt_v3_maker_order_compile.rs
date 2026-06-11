@@ -27,6 +27,7 @@ pub struct MakerOrderCompileInput<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum MakerCompiledOrderCommand {
     Submit {
+        leg: Leg,
         template: Box<NtOrderTemplate>,
         inputs: NtOrderBuildInputs,
         fallback_price: Price,
@@ -63,6 +64,7 @@ pub struct MakerOrderCompileDecision {
 pub fn compile_maker_order_intent(input: MakerOrderCompileInput<'_>) -> MakerOrderCompileDecision {
     match input.intent {
         MakerOrderIntent::Submit {
+            leg,
             instrument_id,
             order_side,
             order_identity,
@@ -71,6 +73,7 @@ pub fn compile_maker_order_intent(input: MakerOrderCompileInput<'_>) -> MakerOrd
             ..
         } => compile_submit(
             input,
+            *leg,
             *instrument_id,
             *order_side,
             order_identity,
@@ -105,6 +108,7 @@ pub fn compile_maker_order_intent(input: MakerOrderCompileInput<'_>) -> MakerOrd
 
 fn compile_submit(
     input: MakerOrderCompileInput<'_>,
+    leg: Leg,
     instrument_id: InstrumentId,
     order_side: nautilus_model::enums::OrderSide,
     order_identity: &crate::bolt_v3_maker_event_fence::OrderIdentity,
@@ -124,6 +128,7 @@ fn compile_submit(
     let price = Price::new(price, input.price_precision);
     let quantity = Quantity::new(quantity, input.quantity_precision);
     compiled(MakerCompiledOrderCommand::Submit {
+        leg,
         template: Box::new(input.submit_template.clone()),
         inputs: NtOrderBuildInputs {
             instrument_id,

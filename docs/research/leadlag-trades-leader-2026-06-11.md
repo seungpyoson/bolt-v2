@@ -17,10 +17,10 @@ with the HL baseline recomputed on the same window:
 
 | asset | HL-clock verdict (#626) | Bybit-clock verdict (this run) |
 |---|---|---|
-| btc | GO at any latency ≤2s | **GO, edge larger**: +18.7c @0.1s, +13.3c @1s, +7.4c @2s |
-| eth | NO-GO at any latency (+0.7c NS @0.1s) | **FLIPS: conditional GO ≤0.5s** (+9.9c @0.1s, +5.2c @0.5s, dead by ~1s) |
-| sol | NO-GO (−1.8c @0.1s) | **FLIPS: marginal GO ≤0.25s only** (+6.0c @0.1s, +3.4c @0.25s, dead by 0.5s) |
-| xrp | NO-GO (−3.2c @0.1s) | still NO-GO (+3.5c @0.1s barely clears zero; dead by 0.25s) |
+| btc | GO at any latency ≤2s | **GO, edge larger**: +18.7c @0.1s, +13.3c @1s, +7.4c @2s; survives settlement marking (§4.1) |
+| eth | NO-GO at any latency (+0.7c NS @0.1s) | **FLIPS: conditional GO ≤0.25s firm, 0.5s suggestive** (+9.9c @0.1s; settlement-marked CI>0 at ≤0.25s, point-positive NS at 0.5s) |
+| sol | NO-GO (−1.8c @0.1s) | mid-mark suggests ≤0.25s edge (+6.0c @0.1s) but **not confirmed under settlement marking** (§4.1) — treat as NO-GO |
+| xrp | NO-GO (−3.2c @0.1s) | still NO-GO (+3.5c @0.1s barely clears zero on mid-mark; NS under settlement marking) |
 
 All values: mean net edge in cents/share, X=5bps events, entry at best ask at
 detection+δ, mark = book mid at detection+30s, taker fee (archive-stamped 1000bps)
@@ -73,6 +73,13 @@ also *finds 1.5–2× more events*: many moves never register as a 1s/5bps move 
 0.54s snapshot mid at all. The unmatched share (~57–70%) is mostly these
 threshold-straddling moves, not clock disagreement.
 
+Attribution caveat: part of the +1s offset is HL's own 0.54s snapshot cadence
+interacting with the 1s detection grid, not pure venue speed — a move landing between
+snapshots is seen one grid-second late even if HL's *book* moved instantly. The two
+causes are not separated here, and they don't need to be: either way, a snapshot-mid
+clock is structurally late, which is exactly the operational point (§6). The edge
+tables below depend only on each clock's own event times, not on this attribution.
+
 ## 4. Net edge under the Bybit trades clock (2026-04-22..25)
 
 | asset | X (bps) | entry at detection | n (mark 30s) | mean net (c) | 95% CI |
@@ -118,6 +125,41 @@ threshold-straddling moves, not clock disagreement.
 (Full grid including every threshold/delta cell is emitted by the tool; rows with no
 events omitted here for readability — none of the omissions change a verdict.)
 
+### 4.1 Settlement-marked robustness (is the mid mark real money?)
+
+The tables above mark each entry to the book **mid 30s later** — an interim value
+proxy, not cash. The adversarial objection: mid embeds half-spread you may never
+monetize, and an exit trade would pay spread plus a second taker fee. The live
+strategy's answer is that it holds to expiry, so the honest robustness check is to
+mark every event to the **venue's own settlement payout** (bought token pays $1 or
+$0, no exit trade, no exit fee). Same event definitions and guards; `--mark
+settlement`:
+
+| asset | X (bps) | entry | n (mark settlement) | mean net (c) | 95% CI |
+|---|---|---|---|---|---|
+| btc | 5 | +0.1s | 146 | +15.89 | [+8.82, +22.96] |
+| btc | 5 | +0.5s | 145 | +13.78 | [+6.55, +21.00] |
+| btc | 5 | +1s | 144 | +10.88 | [+3.79, +17.98] |
+| btc | 5 | +2s | 143 | +5.60 | [-1.62, +12.82] |
+| eth | 5 | +0.1s | 266 | +8.34 | [+3.33, +13.35] |
+| eth | 5 | +0.25s | 266 | +6.66 | [+1.63, +11.68] |
+| eth | 5 | +0.5s | 266 | +3.72 | [-1.26, +8.70] |
+| eth | 5 | +1s | 264 | +0.30 | [-4.77, +5.36] |
+| sol | 5 | +0.1s | 228 | +3.20 | [-2.61, +9.02] |
+| sol | 5 | +0.25s | 228 | +0.76 | [-4.99, +6.52] |
+| xrp | 5 | +0.1s | 127 | +6.09 | [-1.08, +13.26] |
+| xrp | 5 | +0.25s | 128 | +4.45 | [-2.56, +11.47] |
+
+Binary payouts are far noisier than 30s mid marks, so CIs widen (~±7c at n≈140) —
+that is expected, not a discrepancy. Read against the §4 table:
+
+- **btc: the GO survives marking to actual cash.** +15.9c @0.1s and +10.9c @1s with
+  CIs clear of zero. The mid-mark objection is disproven for btc.
+- **eth: holds at ≤0.25s (CI>0), softens at 0.5s** (+3.7c point estimate, NS). The §1
+  verdict is stated accordingly: firm to 0.25s, suggestive at 0.5s.
+- **sol: the mid-mark flip does NOT survive** (+3.2c NS @0.1s). Treat sol as NO-GO.
+- **xrp: NS everywhere** (wide-spread entries cost what the lag pays).
+
 ## 5. Same-window HL-clock baseline (2026-04-22..25)
 
 For comparison, the #626 measurement restricted to the identical 4 days:
@@ -144,16 +186,18 @@ Differences vs the Bybit-clock table are therefore clock effects, not window eff
   clock, 7 days) was understated by the late clock: +18.7c@0.1s / +13.3c@1s on the
   same-window Bybit clock. Still positive at 2s. The pilot (#630) conclusion is
   unchanged, slightly reinforced.
-- **eth — conditional GO, sub-second only.** +9.9c@0.1s decaying to zero by ~1s.
+- **eth — conditional GO, ≤0.25s firm / 0.5s suggestive.** +9.9c@0.1s decaying to
+  zero by ~1s; settlement-marked CIs clear zero at ≤0.25s and go NS at 0.5s (§4.1).
   Tradable **only if** the live signal is clocked off a fast venue feed (the deployed
   bot's reference is OKX live WS — appropriate) **and** end-to-end reaction including
-  Polymarket order placement is ≤0.5s. Touch size is the binding constraint: #626 §2
-  measured eth median $27 at touch (X=5) — roughly half btc's, so dollar capacity is
-  small even where the per-share edge is real.
-- **sol — marginal, ≤0.25s only.** Positive but small at 0.1–0.25s; sol touch size
-  (median $10) makes this near-untradable in dollars regardless.
-- **xrp — NO-GO unchanged.** Only the 0.1s cell clears zero, barely, and touch size
-  is $11 median with 2–3c spreads.
+  Polymarket order placement is in the 0.25–0.5s range or better. Touch size is the
+  binding constraint: #626 §2 measured eth median $27 at touch (X=5) — roughly half
+  btc's, so dollar capacity is small even where the per-share edge is real.
+- **sol — NO-GO.** The mid-mark table suggests a ≤0.25s edge, but it is not confirmed
+  under settlement marking (§4.1), and sol touch size (median $10) makes it
+  near-untradable in dollars regardless.
+- **xrp — NO-GO unchanged.** Only the 0.1s mid-mark cell clears zero, barely; NS
+  under settlement marking; touch size is $11 median with 2–3c spreads.
 - **Pilot implication:** none of this changes #630's scope (btc, supervised, tiny).
   It does add one design requirement for any later alt extension: the decision clock
   must be the fast-venue feed, never an HL-style snapshot mid.
@@ -172,8 +216,19 @@ Differences vs the Bybit-clock table are therefore clock effects, not window eff
 4. **Fillability for the flipped cells is assumed, not proven.** The #626 size probe
    used HL-clock events; alt touch sizes were small there and nothing here remeasures
    them under the earlier clock.
-5. All baseline caveats (one historical week, archive 1000bps fee vs 700bps live,
-   clock skew bounds) carry over.
+5. **Cross-source clock skew hits the sub-second cells hardest.** Bybit rows carry
+   exchange timestamps; pmxt rows carry collector receive timestamps. A systematic
+   offset of a few hundred ms would shift the entire latency grid left or right —
+   immaterial for btc (positive out to 2s) but material for eth, whose firm window is
+   0.25s wide. The no-anticipation pattern (Polymarket books never react *before*
+   spot events) bounds skew well under 1s, but the eth conditional GO should be read
+   as "edge exists in the first few hundred ms," not as a calibrated 250ms cutoff.
+6. **Statistical fine print.** X=10 cells have n≤44 (btc n=15) — directional color
+   only; verdicts rest on the X=5 cells (n≥113). CIs assume independent events;
+   120s de-overlap removes response-window overlap but not shared intraday volatility
+   regimes, so true intervals are somewhat wider than printed.
+7. All baseline caveats (one historical week, archive 1000bps fee vs 700bps live)
+   carry over.
 
 ## 8. Reproduction
 
@@ -181,6 +236,9 @@ Differences vs the Bybit-clock table are therefore clock effects, not window eff
 uv run scripts/leadlag_trades_leader.py extract-leader --dates 2026-04-22:2026-04-25
 uv run scripts/leadlag_trades_leader.py analyze --dates 2026-04-22:2026-04-25 \
     --report /tmp/leadlag-s4/trades_leader.md
+# settlement-marked robustness (section 4.1):
+uv run scripts/leadlag_trades_leader.py analyze --dates 2026-04-22:2026-04-25 \
+    --mark settlement --report /tmp/leadlag-s4/trades_leader_settle.md
 # same-window HL baseline:
 uv run scripts/leadlag_subsecond.py subsecond --dates 2026-04-22:2026-04-25 \
     --report /tmp/leadlag-s4/subsecond_4day.md

@@ -170,11 +170,19 @@ def cmd_analyze(args: argparse.Namespace) -> None:
                     book = books.get(token)
                     if book is None:
                         continue
-                    mark = book.asof(t + MARK_HORIZON_SECS)
                     pre = book.asof(t - 1)
-                    if mark is None or pre is None:
+                    if pre is None:
                         continue
-                    mark_mid = (mark[0] + mark[1]) / 2.0
+                    if args.mark == "settlement":
+                        # mark to the venue's own resolution: bought token pays 1 or 0
+                        if cycle.outcome_up is None:
+                            continue
+                        mark_mid = 1.0 if (cycle.outcome_up == 1) == (direction > 0) else 0.0
+                    else:
+                        mark = book.asof(t + MARK_HORIZON_SECS)
+                        if mark is None:
+                            continue
+                        mark_mid = (mark[0] + mark[1]) / 2.0
                     fee_pre = s4.taker_fee_dollars(cycle.taker_fee_rate, pre[1])
                     pre_move_net.setdefault((asset, x_bps), []).append(
                         (mark_mid - pre[1] - fee_pre) * 100
@@ -228,8 +236,9 @@ def cmd_analyze(args: argparse.Namespace) -> None:
                 edge_rows.append([asset, f"{x_bps:.0f}", f"+{delta:g}s", f"{len(vals):,}",
                                   f"{mean:+.2f}",
                                   f"[{lo:+.2f}, {hi:+.2f}]" if not math.isnan(lo) else "-"])
+    mark_label = "settlement" if args.mark == "settlement" else f"{MARK_HORIZON_SECS}s"
     edge_table = s4.md_table(
-        ["asset", "X (bps)", "entry at detection", f"n (mark {MARK_HORIZON_SECS}s)",
+        ["asset", "X (bps)", "entry at detection", f"n (mark {mark_label})",
          "mean net (c)", "95% CI"],
         edge_rows,
     )
@@ -262,6 +271,13 @@ def main() -> None:
     p = sub.add_parser("analyze", help="lead-time diagnostic + latency-grid edge table")
     common(p)
     p.add_argument("--report", default=None)
+    p.add_argument(
+        "--mark",
+        choices=("mid", "settlement"),
+        default="mid",
+        help="mark events to book mid at +30s (default) or to the cycle's settlement payout; "
+        "event-set guards are identical so the two tables are row-comparable",
+    )
     p.set_defaults(func=cmd_analyze)
 
     args = parser.parse_args()

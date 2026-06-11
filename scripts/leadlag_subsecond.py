@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import statistics
 import subprocess
 import sys
 import tempfile
@@ -54,6 +53,10 @@ DELTAS_SECS = (0.1, 0.25, 0.5, 0.75, 1.0, 2.0)
 MARK_HORIZON_SECS = 30  # the session-4 best cell horizon
 SIZE_PROBE_DELTA_SECS = 0.25  # fillability probe: size at ask shortly after detection
 SUBSECOND_THRESHOLDS_BPS = (5.0, 10.0)  # X=20 had <=4 events in window; skip
+# Event-clock registry for `fillability --leader`: maps the CLI choice to the
+# leader-parquet subdir under the workdir (same <subdir>/<date>/<COIN>.parquet
+# layout for every clock). Missing keys must raise (fail loud), never default.
+LEADER_SUBDIRS = {"hl": "leader", "trades": "leader_trades"}
 
 
 def sized_tob_path(workdir: Path, date: str, stem: str) -> Path:
@@ -79,6 +82,7 @@ def cmd_subsecond(args: argparse.Namespace) -> None:
         for date in dates:
             leader_file = s4.leader_path(workdir, date, s4.LEADER_COIN_BY_ASSET[asset])
             if not leader_file.exists():
+                print(f"subsecond: SKIPPING {asset} {date}: no leader file {leader_file}", flush=True)
                 continue
             leader = s4.LeaderSeries(pl.read_parquet(leader_file))
             base = s4.day_epoch(date)
@@ -249,8 +253,16 @@ def cmd_fillability(args: argparse.Namespace) -> None:
         del merged
         base = s4.day_epoch(date)
         for asset in assets:
-            leader_file = s4.leader_path(workdir, date, s4.LEADER_COIN_BY_ASSET[asset])
+            # --leader selects the event clock (see LEADER_SUBDIRS): "hl" = HL
+            # book-mid snapshots (#626 baseline), "trades" = tick-trades parquets
+            # built by leadlag_trades_leader.py extract-leader (#631 fast clock).
+            # The clock is a parameter, not an asset- or venue-specific code path.
+            subdir = LEADER_SUBDIRS[args.leader]
+            leader_file = workdir / subdir / date / f"{s4.LEADER_COIN_BY_ASSET[asset]}.parquet"
             if not leader_file.exists():
+                # loud, or a short-coverage clock (bybit lake ends mid-window)
+                # silently shrinks the analyzed window inside a full-window label
+                print(f"fillability: SKIPPING {asset} {date}: no {args.leader} leader file {leader_file}", flush=True)
                 continue
             leader = s4.LeaderSeries(pl.read_parquet(leader_file))
             for x_bps in SUBSECOND_THRESHOLDS_BPS:
@@ -291,7 +303,8 @@ def cmd_fillability(args: argparse.Namespace) -> None:
         rows,
     )
     out = (
-        f"<!-- section:fillability (size at best ask {SIZE_PROBE_DELTA_SECS}s after detection) -->\n"
+        f"<!-- section:fillability (size at best ask {SIZE_PROBE_DELTA_SECS}s after "
+        f"detection, {args.leader} clock) -->\n"
         f"{table}\n"
     )
     if args.report:
@@ -322,6 +335,13 @@ def main() -> None:
 
     p_fill = sub.add_parser("fillability", help="displayed size at the ask at signal time")
     common(p_fill)
+    p_fill.add_argument(
+        "--leader",
+        choices=("hl", "trades"),
+        default="hl",
+        help="event clock: 'hl' = HL book-mid snapshots (#626 baseline), 'trades' = "
+        "tick-trades leader parquets from leadlag_trades_leader.py (#631/#633)",
+    )
     p_fill.set_defaults(func=cmd_fillability)
 
     args = parser.parse_args()

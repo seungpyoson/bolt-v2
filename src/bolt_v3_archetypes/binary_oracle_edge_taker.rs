@@ -1479,7 +1479,7 @@ fn validate_parameter_bounds(
     // serde but makes the runtime sizing path fail soft to a zero size (a
     // silently dead strategy), so each must fail closed at load. Zero stays
     // valid: it is the deliberate caution-off escape hatch (size = cap).
-    if !(parameters.runtime.risk_lambda.is_finite() && parameters.runtime.risk_lambda >= 0.0) {
+    if !crate::bolt_v3_numeric::is_non_negative_finite(parameters.runtime.risk_lambda) {
         errors.push(format!(
             "{context}: parameters.runtime.risk_lambda ({}) must be finite and >= 0 (zero disables risk scaling; negative/nan/inf silently size every order to zero)",
             parameters.runtime.risk_lambda

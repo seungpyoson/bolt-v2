@@ -37,7 +37,7 @@ trade_id_column = "trade_id"
 
 [converter.raw_payload]
 container = "single_csv_zip"
-max_decoded_bytes = 268435456
+max_decoded_bytes = 1073741824
 max_object_bytes = 14053
 zip_member = "ALTTRY-trades-2026-03-01.csv"
 

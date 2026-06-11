@@ -445,6 +445,14 @@ fn committed_binance_source_universe_operator_inputs_track_current_gates_without
         inputs
             .records
             .iter()
+            .filter(|record| record.selected_object_bytes > 30_000_000)
+            .all(|record| record.max_decoded_bytes == 1_073_741_824),
+        "large accepted Binance native-trades objects need the 1 GiB decoded CSV cap used by venue-scale retries"
+    );
+    assert!(
+        inputs
+            .records
+            .iter()
             .filter(|record| record.status == SourceUniverseOperatorInputRecordStatus::Blocked)
             .all(|record| record.blocking_reasons == ["missing_instrument_metadata"]),
         "blocked Binance records must only reflect missing metadata, not converter/gate gaps"

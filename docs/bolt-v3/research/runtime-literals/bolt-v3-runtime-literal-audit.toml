@@ -2695,6 +2695,14 @@ reason = "This is the basis-points denominator for financial unit conversion, no
 [[allowed]]
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
+literal = '''100.0'''
+context = '''pub(crate) const CENTS_PER_SHARE: f64 = 100.0;'''
+classification = "financial_unit_conversion"
+reason = "This is the cents-per-share unit conversion used by executable-cost and binary outcome edge math, not an operator runtime value. Consolidated into the shared numeric module by #625 review cleanup."
+
+[[allowed]]
+path = "src/bolt_v3_numeric.rs"
+kind = "number"
 literal = '''10_000.0'''
 context = '''pub(crate) const NOTIONAL_FLOAT_TOLERANCE_EPSILON_MULTIPLIER: f64 = 10_000.0;'''
 classification = "float_tolerance_multiplier"
@@ -8167,10 +8175,18 @@ reason = '''Repo-relative root path of the shared book-sizing source included in
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
 kind = '''string'''
-literal = '''"src/bolt_v3_executable_edge.rs"'''
-context = '''"src/bolt_v3_executable_edge.rs",'''
+literal = '''"src/bolt_v3_binary_outcome_edge.rs"'''
+context = '''"src/bolt_v3_binary_outcome_edge.rs",'''
 classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared executable-edge source included in the binary-oracle strategy source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+reason = '''Repo-relative root path of the shared binary outcome edge source included in the binary-oracle strategy source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"src/bolt_v3_executable_cost.rs"'''
+context = '''"src/bolt_v3_executable_cost.rs",'''
+classification = '''gated_source_registry_relative_root'''
+reason = '''Repo-relative root path of the shared executable-cost source included in the binary-oracle strategy source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
@@ -9449,73 +9465,105 @@ classification = "strategy_runtime_schema_field"
 reason = "Executable-edge slippage buffer schema field name; the runtime value comes from bolt-v3 TOML."
 
 [[allowed]]
-path = "src/bolt_v3_executable_edge.rs"
-kind = "number"
-literal = '''100.0'''
-context = '''const CENTS_PER_SHARE: f64 = 100.0;'''
-classification = "executable_edge_unit_conversion_constant"
-reason = "Fixed cents-per-share unit conversion used by the executable-edge formula; it is not an operator runtime knob."
-
-[[allowed]]
-path = "src/bolt_v3_executable_edge.rs"
+path = "src/bolt_v3_binary_outcome_edge.rs"
 kind = "string"
 literal = '''"missing_order_book"'''
 context = '''Self::MissingOrderBook => "missing_order_book",'''
-classification = "executable_edge_block_reason_label"
-reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+classification = "binary_outcome_edge_block_reason_label"
+reason = "Stable structured block-reason label for binary outcome edge output; it records decision evidence and does not configure runtime behavior."
 
 [[allowed]]
-path = "src/bolt_v3_executable_edge.rs"
+path = "src/bolt_v3_binary_outcome_edge.rs"
 kind = "string"
 literal = '''"insufficient_depth"'''
 context = '''Self::InsufficientDepth => "insufficient_depth",'''
-classification = "executable_edge_block_reason_label"
-reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+classification = "binary_outcome_edge_block_reason_label"
+reason = "Stable structured block-reason label for binary outcome edge output; it records decision evidence and does not configure runtime behavior."
 
 [[allowed]]
-path = "src/bolt_v3_executable_edge.rs"
+path = "src/bolt_v3_binary_outcome_edge.rs"
 kind = "string"
 literal = '''"fee_unavailable"'''
 context = '''Self::FeeUnavailable => "fee_unavailable",'''
-classification = "executable_edge_block_reason_label"
-reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+classification = "binary_outcome_edge_block_reason_label"
+reason = "Stable structured block-reason label for binary outcome edge output; it records decision evidence and does not configure runtime behavior."
 
 [[allowed]]
-path = "src/bolt_v3_executable_edge.rs"
+path = "src/bolt_v3_binary_outcome_edge.rs"
 kind = "string"
 literal = '''"invalid_probability"'''
 context = '''Self::InvalidProbability => "invalid_probability",'''
-classification = "executable_edge_block_reason_label"
-reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+classification = "binary_outcome_edge_block_reason_label"
+reason = "Stable structured block-reason label for binary outcome edge output; it records decision evidence and does not configure runtime behavior."
 
 [[allowed]]
-path = "src/bolt_v3_executable_edge.rs"
+path = "src/bolt_v3_binary_outcome_edge.rs"
 kind = "string"
 literal = '''"invalid_cost"'''
 context = '''Self::InvalidCost => "invalid_cost",'''
-classification = "executable_edge_block_reason_label"
-reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+classification = "binary_outcome_edge_block_reason_label"
+reason = "Stable structured block-reason label for binary outcome edge output; it records decision evidence and does not configure runtime behavior."
 
 [[allowed]]
-path = "src/bolt_v3_executable_edge.rs"
+path = "src/bolt_v3_binary_outcome_edge.rs"
 kind = "string"
 literal = '''"unsupported_order_shape"'''
 context = '''Self::UnsupportedOrderShape => "unsupported_order_shape",'''
-classification = "executable_edge_block_reason_label"
-reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+classification = "binary_outcome_edge_block_reason_label"
+reason = "Stable structured block-reason label for binary outcome edge output; it records decision evidence and does not configure runtime behavior."
 
 [[allowed]]
-path = "src/bolt_v3_executable_edge.rs"
+path = "src/bolt_v3_binary_outcome_edge.rs"
 kind = "string"
 literal = '''"edge_below_threshold"'''
 context = '''Self::EdgeBelowThreshold => "edge_below_threshold",'''
-classification = "executable_edge_block_reason_label"
-reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+classification = "binary_outcome_edge_block_reason_label"
+reason = "Stable structured block-reason label for binary outcome edge output; it records decision evidence and does not configure runtime behavior."
 
 [[allowed]]
-path = "src/bolt_v3_executable_edge.rs"
+path = "src/bolt_v3_binary_outcome_edge.rs"
 kind = "string"
 literal = '''"spread_or_slippage_wiped_edge"'''
 context = '''Self::SpreadOrSlippageWipedEdge => "spread_or_slippage_wiped_edge",'''
-classification = "executable_edge_block_reason_label"
-reason = "Stable structured block-reason label for executable-edge output; it records decision evidence and does not configure runtime behavior."
+classification = "binary_outcome_edge_block_reason_label"
+reason = "Stable structured block-reason label for binary outcome edge output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_executable_cost.rs"
+kind = "string"
+literal = '''"missing_order_book"'''
+context = '''Self::MissingOrderBook => "missing_order_book",'''
+classification = "executable_cost_block_reason_label"
+reason = "Stable structured block-reason label for executable-cost output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_executable_cost.rs"
+kind = "string"
+literal = '''"insufficient_depth"'''
+context = '''Self::InsufficientDepth => "insufficient_depth",'''
+classification = "executable_cost_block_reason_label"
+reason = "Stable structured block-reason label for executable-cost output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_executable_cost.rs"
+kind = "string"
+literal = '''"fee_unavailable"'''
+context = '''Self::FeeUnavailable => "fee_unavailable",'''
+classification = "executable_cost_block_reason_label"
+reason = "Stable structured block-reason label for executable-cost output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_executable_cost.rs"
+kind = "string"
+literal = '''"invalid_cost"'''
+context = '''Self::InvalidCost => "invalid_cost",'''
+classification = "executable_cost_block_reason_label"
+reason = "Stable structured block-reason label for executable-cost output; it records decision evidence and does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_executable_cost.rs"
+kind = "string"
+literal = '''"unsupported_order_shape"'''
+context = '''Self::UnsupportedOrderShape => "unsupported_order_shape",'''
+classification = "executable_cost_block_reason_label"
+reason = "Stable structured block-reason label for executable-cost output; it records decision evidence and does not configure runtime behavior."

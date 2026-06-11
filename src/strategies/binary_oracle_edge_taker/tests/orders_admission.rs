@@ -1233,11 +1233,11 @@ fn quote_quantity_entry_submission_is_unsupported_executable_shape() {
         vec![
             EntryPricingBlockReason::ExecutableEdgeUnavailable(
                 OutcomeSide::Up,
-                ExecutableEdgeBlockReason::UnsupportedOrderShape
+                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
             ),
             EntryPricingBlockReason::ExecutableEdgeUnavailable(
                 OutcomeSide::Down,
-                ExecutableEdgeBlockReason::UnsupportedOrderShape
+                BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
             ),
         ]
     );

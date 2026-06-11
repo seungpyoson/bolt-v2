@@ -4,6 +4,13 @@ Date: 2026-06-10. Issue: #617. Declared scope: the session-4 brief
 (`session4leadlagmeasurement.md`) only. Produced by `scripts/leadlag_session4.py`
 (section 8 has the exact reproduction commands).
 
+> **Update 2026-06-11 (#631, `leadlag-trades-leader-2026-06-11.md`):** the leader clock
+> used here (Hyperliquid book mid, 0.54s snapshots) fires ~1s late vs a millisecond
+> trades clock. Re-measured on the faster clock: the btc GO is *understated* below, and
+> the eth NO-GO is partially an artifact — eth shows a real edge at ≤0.25s reaction
+> (sol/xrp verdicts unchanged). This report remains the authoritative baseline for
+> method, fees, spreads, and calibration; see the #631 addendum for updated verdicts.
+
 ## 0. Verdict summary
 
 **The lead-lag premise is real and large.** Across 7 full days and four assets, a ≥5 bps

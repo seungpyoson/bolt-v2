@@ -6,6 +6,12 @@ open — sub-second repricing and fillability. Produced by `scripts/leadlag_subs
 over the same 7-day window and caches as session 4. The live shadow test (question 3 of
 #626) remains blocked on production-host authorization and is NOT covered here.
 
+> **Update 2026-06-11 (#631, `leadlag-trades-leader-2026-06-11.md`):** the §1 latency
+> grid below is clocked off Hyperliquid snapshots, which fire ~1s late vs a millisecond
+> trades clock. Under the faster clock the eth NO-GO flips to a conditional GO at
+> ≤0.25s reaction (settlement-mark confirmed); btc strengthens; sol/xrp stay NO-GO.
+> The fillability and live-shadow sections are unaffected.
+
 ## 0. Verdict summary
 
 1. **ETH/SOL/XRP are dead at any realistic reaction latency.** Their +10–17 c/share

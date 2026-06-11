@@ -2,6 +2,7 @@ name: CI Runner Debug
 
 # Manual-only: SSH into an ephemeral Ubicloud runner to debug CI environment issues.
 # Requires repository secret SSH_PUBLIC_KEY (public half of a dedicated debug key pair).
+# Operator setup: `just ci-debug-ssh-bootstrap` (first time) or `just ci-debug-ssh-sync`.
 
 on:
   workflow_dispatch:

@@ -77,8 +77,8 @@ def extract_trades_day(workdir: Path, date: str, coin: str) -> str:
     if not keys:
         return f"{date} {coin}: NO OBJECTS"
     frames = []
-    con = duckdb.connect()  # per-call connection: the module-level one is not thread-safe
-    with tempfile.TemporaryDirectory() as tmp:
+    # per-call connection: the module-level duckdb.sql() one is not thread-safe
+    with duckdb.connect() as con, tempfile.TemporaryDirectory() as tmp:
         for i, key in enumerate(sorted(keys)):
             local = Path(tmp) / f"obj{i}.csv.gz"
             subprocess.run(
@@ -91,8 +91,9 @@ def extract_trades_day(workdir: Path, date: str, coin: str) -> str:
                     f"FROM read_csv_auto('{local}') ORDER BY 1"
                 ).pl()
             )
-    con.close()
     frame = pl.concat(frames).sort("ts_ms")
+    if frame.is_empty():
+        raise SystemExit(f"{date} {coin}: staged objects exist but contain no rows")
     day_lo = s4.day_epoch(date) * 1000
     bounds = frame.select(pl.col("ts_ms").min().alias("lo"), pl.col("ts_ms").max().alias("hi")).row(0)
     if not (day_lo <= bounds[0] and bounds[1] < day_lo + 86_400_000):
@@ -154,12 +155,11 @@ def cmd_analyze(args: argparse.Namespace) -> None:
                 for t, direction in hl_events:
                     hl_by_dir[direction].append(t)
                 for t, direction in bybit_events:
-                    nearest = min(
-                        (abs(th - t), th) for th in hl_by_dir[direction] or [10**12]
-                    )
-                    if nearest[0] <= LEADTIME_MATCH_WINDOW_SECS:
-                        cnt[2] += 1
-                        offsets.setdefault((asset, x_bps), []).append(nearest[1] - t)
+                    if hl_by_dir[direction]:
+                        nearest = min((abs(th - t), th) for th in hl_by_dir[direction])
+                        if nearest[0] <= LEADTIME_MATCH_WINDOW_SECS:
+                            cnt[2] += 1
+                            offsets.setdefault((asset, x_bps), []).append(nearest[1] - t)
 
                     cycle = cycles_by_key.get((asset, (t // s4.CADENCE_SECS) * s4.CADENCE_SECS))
                     if cycle is None or t - cycle.start < s4.MIN_SECS_AFTER_OPEN:

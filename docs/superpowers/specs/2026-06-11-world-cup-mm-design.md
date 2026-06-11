@@ -22,7 +22,7 @@ For static sports events, `fair_probability_up` is not derived from strike/spot 
 
 `src/bolt_v3_maker_quote_plan.rs` composes the existing maker primitives for any market family: reference fair probability, optional book microprice nudge, Glosten-Milgrom reservation bid/ask, inventory skew, and the family-owned quote layout. Static World Cup markets use this through the same `MarketFamilyValidationBinding` quote-target seam as `updown`; no duplicate World Cup maker math exists.
 
-`src/bolt_v3_maker_quote_control.rs` composes the existing quote lifecycle with the existing requote budget so a denied venue budget does not advance lifecycle state. `src/bolt_v3_maker_quote_set.rs` applies family-produced YES/NO quote targets to that control layer and gates new submit actions through the existing per-market reservation helper across both legs before committing lifecycle or budget state.
+`src/bolt_v3_maker_quote_control.rs` composes the existing quote lifecycle with the existing requote budget so a denied venue budget does not advance lifecycle state. `src/bolt_v3_maker_quote_set.rs` applies family-produced YES/NO quote targets to that control layer and gates new submit actions through the existing per-market reservation helper across both legs before committing lifecycle or budget state. `src/bolt_v3_maker_order_plan.rs` binds approved lifecycle actions to caller-supplied instruments and maker order identities, producing explicit submit/cancel/modify intents without fabricating client order IDs.
 
 ## Testing
 
@@ -35,6 +35,7 @@ Implementation uses TDD. The first failing tests prove:
 - Mismatched slugs, duplicate outcomes, expired instruments, and optional condition-ID mismatches fail closed.
 - Polymarket data-client mapping includes static event market slugs in its market-slug filters.
 - Planned YES/NO maker quote targets are budget-gated and reservation-gated before lifecycle state mutates.
+- Approved quote lifecycle actions materialize explicit maker order intents only when the required active or next order identity is present.
 
 ## Follow-On Scope
 

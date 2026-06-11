@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import statistics
 import subprocess
 import sys
 import tempfile
@@ -83,6 +82,7 @@ def cmd_subsecond(args: argparse.Namespace) -> None:
         for date in dates:
             leader_file = s4.leader_path(workdir, date, s4.LEADER_COIN_BY_ASSET[asset])
             if not leader_file.exists():
+                print(f"subsecond: SKIPPING {asset} {date}: no leader file {leader_file}", flush=True)
                 continue
             leader = s4.LeaderSeries(pl.read_parquet(leader_file))
             base = s4.day_epoch(date)
@@ -260,6 +260,9 @@ def cmd_fillability(args: argparse.Namespace) -> None:
             subdir = LEADER_SUBDIRS[args.leader]
             leader_file = workdir / subdir / date / f"{s4.LEADER_COIN_BY_ASSET[asset]}.parquet"
             if not leader_file.exists():
+                # loud, or a short-coverage clock (bybit lake ends mid-window)
+                # silently shrinks the analyzed window inside a full-window label
+                print(f"fillability: SKIPPING {asset} {date}: no {args.leader} leader file {leader_file}", flush=True)
                 continue
             leader = s4.LeaderSeries(pl.read_parquet(leader_file))
             for x_bps in SUBSECOND_THRESHOLDS_BPS:

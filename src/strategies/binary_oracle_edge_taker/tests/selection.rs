@@ -361,6 +361,52 @@ fn strategy_selects_configured_updown_target_from_nt_binary_option_metadata() {
 }
 
 #[test]
+fn strategy_selects_configured_static_binary_event_from_nt_binary_option_metadata() {
+    let mut strategy = test_strategy();
+    strategy.config.target_kind = "static_market".to_string();
+    strategy.config.rotating_market_family =
+        crate::bolt_v3_market_families::static_binary_event::KEY.to_string();
+    strategy.config.underlying_asset = "world_cup_2026".to_string();
+    strategy.config.cadence_seconds = 1;
+    strategy.config.cadence_slug_token = "will-spain-win-the-2026-fifa-world-cup".to_string();
+    strategy.config.market_selection_rule = "configured_static".to_string();
+    strategy.config.static_condition_id = Some("condition-world-cup-spain-outright".to_string());
+    strategy.config.static_yes_outcome = Some("Yes".to_string());
+    strategy.config.static_no_outcome = Some("No".to_string());
+    let instruments = vec![
+        updown_binary_option(
+            "world-cup-spain-no.POLYMARKET",
+            &strategy.config.cadence_slug_token,
+            "world-cup-spain-outright",
+            "No",
+            1_000,
+            30_000,
+        ),
+        updown_binary_option(
+            "world-cup-spain-yes.POLYMARKET",
+            &strategy.config.cadence_slug_token,
+            "world-cup-spain-outright",
+            "Yes",
+            1_000,
+            30_000,
+        ),
+    ];
+
+    let snapshot = selection_snapshot_from_instruments(&strategy.config, &instruments, 10_000);
+
+    let SelectionState::Active { market } = snapshot.decision.state else {
+        panic!("configured static event should select active market: {snapshot:?}");
+    };
+    assert_eq!(market.market_id, "world-cup-spain-outright");
+    assert_eq!(market.up.instrument_id, "world-cup-spain-yes.POLYMARKET");
+    assert_eq!(market.down.instrument_id, "world-cup-spain-no.POLYMARKET");
+    assert_eq!(
+        market.source_identity.condition_id,
+        "condition-world-cup-spain-outright"
+    );
+}
+
+#[test]
 fn strategy_refuses_foreign_venue_market_even_when_slug_matches_the_target() {
     // P5-5 / Codex P5: the shared NT cache can hold instruments from venues OTHER than the
     // execution venue. A foreign-venue binary option that happens to carry the SAME updown slug

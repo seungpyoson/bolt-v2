@@ -63,6 +63,7 @@ use crate::{
     bolt_v3_config::ClientBlock,
     bolt_v3_market_families::{
         MarketIdentityPlan,
+        static_binary_event::{self, StaticBinaryEventTargetPlan},
         updown::{self, UpdownTargetPlan, updown_market_slug, updown_period_pair},
     },
     bolt_v3_providers::{
@@ -796,10 +797,16 @@ fn build_market_slug_filters_for_client(
     client_key: &str,
     clock: BoltV3MarketClockFn,
 ) -> Vec<Arc<dyn InstrumentFilter>> {
-    updown::target_plans(plan)
+    let mut filters = updown::target_plans(plan)
         .filter(|target| target.execution_client_id == client_key)
         .map(|target| build_market_slug_filter(target, clock.clone()))
-        .collect()
+        .collect::<Vec<_>>();
+    filters.extend(
+        static_binary_event::target_plans(plan)
+            .filter(|target| target.execution_client_id == client_key)
+            .map(build_static_market_slug_filter),
+    );
+    filters
 }
 
 fn build_market_slug_filter(
@@ -830,6 +837,14 @@ fn build_market_slug_filter(
             }
         }
     }))
+}
+
+fn build_static_market_slug_filter(
+    target: &StaticBinaryEventTargetPlan,
+) -> Arc<dyn InstrumentFilter> {
+    Arc::new(MarketSlugFilter::from_slugs(vec![
+        target.market_slug.clone(),
+    ]))
 }
 
 fn map_execution(
@@ -874,6 +889,51 @@ fn map_execution(
         ack_timeout_secs: cfg.ack_timeout_secs,
         transport_backend: cfg.transport_backend,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn market_slug_filters_include_static_binary_event_targets_for_matching_client() {
+        let mut plan = MarketIdentityPlan::empty();
+        plan.push_target(StaticBinaryEventTargetPlan {
+            strategy_instance_id: "world-cup-spain".to_string(),
+            configured_target_id: "world-cup-spain-outright".to_string(),
+            execution_client_id: "polymarket_main".to_string(),
+            event_key: "world_cup_2026".to_string(),
+            market_slug: "will-spain-win-the-2026-fifa-world-cup".to_string(),
+            condition_id: Some("condition-world-cup-spain".to_string()),
+            yes_outcome: "Yes".to_string(),
+            no_outcome: "No".to_string(),
+        });
+        plan.push_target(StaticBinaryEventTargetPlan {
+            strategy_instance_id: "world-cup-france".to_string(),
+            configured_target_id: "world-cup-france-outright".to_string(),
+            execution_client_id: "polymarket_secondary".to_string(),
+            event_key: "world_cup_2026".to_string(),
+            market_slug: "will-france-win-the-2026-fifa-world-cup".to_string(),
+            condition_id: Some("condition-world-cup-france".to_string()),
+            yes_outcome: "Yes".to_string(),
+            no_outcome: "No".to_string(),
+        });
+        let filters = build_market_slug_filters_for_client(
+            &plan,
+            "polymarket_main",
+            Arc::new(|| 1_746_000_000),
+        );
+
+        let slugs = filters
+            .iter()
+            .flat_map(|filter| filter.market_slugs().unwrap_or_default())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            slugs,
+            vec!["will-spain-win-the-2026-fifa-world-cup".to_string()]
+        );
+    }
 }
 
 fn secrets_for<'a>(

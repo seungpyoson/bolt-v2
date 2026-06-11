@@ -16,7 +16,7 @@ This slice does not hardcode World Cup teams, tournament names, slugs, condition
 
 `src/bolt_v3_providers/polymarket.rs` extends market-slug filtering to include static event target plans in addition to rotating `updown` target plans. This lets the NT Polymarket adapter load configured World Cup markets into the instrument cache.
 
-The existing `binary_oracle_edge_taker` selection path consumes `rotating_market_family`, `underlying_asset`, `cadence_seconds`, and `cadence_slug_token` from runtime config. Static events preserve that runtime shape by projecting `cadence_seconds = 1`, `cadence_slug_token = market_slug`, and `underlying_asset = event_key`. The market-family implementation ignores cadence for static event selection and matches on the configured static market slug.
+The existing `binary_oracle_edge_taker` selection path consumes `rotating_market_family`, `underlying_asset`, `cadence_seconds`, and `cadence_slug_token` from runtime config. Static events reuse that path by projecting `cadence_slug_token = market_slug` and `underlying_asset = event_key`, and by adding optional runtime fields for `static_condition_id`, `static_yes_outcome`, and `static_no_outcome`. The market-family implementation ignores cadence for static event selection and matches on the configured static market slug, optional condition ID, and configured outcome labels.
 
 ## Testing
 

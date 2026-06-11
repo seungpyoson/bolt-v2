@@ -226,6 +226,9 @@ pub(super) fn select_configured_market_from_instruments(
         underlying_asset: &config.underlying_asset,
         cadence_seconds,
         cadence_slug_token: &config.cadence_slug_token,
+        static_condition_id: config.static_condition_id.as_deref(),
+        static_yes_outcome: config.static_yes_outcome.as_deref(),
+        static_no_outcome: config.static_no_outcome.as_deref(),
     };
     let market = bolt_v3_market_families::select_binary_option_market_from_target(
         target,

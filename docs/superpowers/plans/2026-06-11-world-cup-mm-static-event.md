@@ -4,7 +4,7 @@
 
 **Goal:** Add config-driven static binary-event market selection and Polymarket slug filtering as the first World Cup MM implementation slice.
 
-**Architecture:** Introduce a `static_binary_event` market-family binding parallel to `updown`, reusing the existing `MarketFamilyValidationBinding` registry. Polymarket adapter mapping will collect slug filters from both rotating `updown` targets and static event targets. Existing strategy runtime config shape remains unchanged.
+**Architecture:** Introduce a `static_binary_event` market-family binding parallel to `updown`, reusing the existing `MarketFamilyValidationBinding` registry. Polymarket adapter mapping will collect slug filters from both rotating `updown` targets and static event targets. The strategy runtime config gains optional static-event fields for configured condition and YES/NO outcome labels.
 
 **Tech Stack:** Rust, NautilusTrader model types, TOML config parsing, existing bolt-v3 market-family registry and Polymarket provider mapping.
 
@@ -23,12 +23,15 @@ Add tests proving that a target shaped like this selects matching `BinaryOption`
 
 ```toml
 configured_target_id = "world_cup_fixture"
-kind = "static_binary_event"
+kind = "static_market"
 rotating_market_family = "static_binary_event"
-event_key = "WORLD_CUP"
+event_key = "world_cup"
 market_slug = "configured-world-cup-market"
+condition_id = "configured-condition-id"
 yes_outcome = "Yes"
 no_outcome = "No"
+selection_window_secs = 1
+market_selection_rule = "configured_static"
 retry_interval_secs = 5
 blocked_after_secs = 30
 ```
@@ -130,13 +133,16 @@ Expected before Task 1 GREEN: fail. Expected after Task 1 GREEN: pass or expose 
 If runtime projection is missing, make `static_binary_event::target_runtime_fields` set:
 
 - `configured_target_id` from TOML.
-- `target_kind = "static_binary_event"`.
+- `target_kind = "static_market"`.
 - `rotating_market_family = "static_binary_event"`.
 - `underlying_asset = event_key`.
-- `cadence_seconds = 1`.
-- `cadence_seconds_source_field = "target.static_binary_event"`.
+- `cadence_seconds = selection_window_secs`.
+- `cadence_seconds_source_field = "target.selection_window_secs"`.
 - `cadence_slug_token = market_slug`.
-- `market_selection_rule = "static"`.
+- `market_selection_rule = "configured_static"`.
+- `static_condition_id = condition_id`.
+- `static_yes_outcome = yes_outcome`.
+- `static_no_outcome = no_outcome`.
 - retry and blocked fields from TOML.
 
 - [ ] **Step 5: Verify GREEN**
@@ -163,7 +169,7 @@ Add a test proving Polymarket data config installs a market-slug filter that inc
 Run:
 
 ```bash
-cargo test --lib polymarket_static_binary_event_slug_filter -- --nocapture
+cargo test --lib market_slug_filters_include_static_binary_event_targets_for_matching_client -- --nocapture
 ```
 
 Expected: fail because the provider currently builds filters only from `updown::target_plans`.
@@ -177,7 +183,7 @@ Update `build_market_slug_filters_for_client` to append filters from `static_bin
 Run:
 
 ```bash
-cargo test --lib polymarket_static_binary_event_slug_filter -- --nocapture
+cargo test --lib market_slug_filters_include_static_binary_event_targets_for_matching_client -- --nocapture
 ```
 
 Expected: tests pass.
@@ -213,8 +219,8 @@ Run:
 
 ```bash
 cargo test --lib static_binary_event -- --nocapture
-cargo test --lib polymarket_static_binary_event_slug_filter -- --nocapture
-cargo test --lib builder_accepts_static_binary_event_market_family strategy_selects_configured_static_binary_event_target_from_nt_binary_option_metadata -- --nocapture
+cargo test --lib market_slug_filters_include_static_binary_event_targets_for_matching_client -- --nocapture
+cargo test --lib static_binary_event -- --nocapture
 ```
 
 Expected: pass.

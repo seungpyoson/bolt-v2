@@ -822,6 +822,9 @@ pub fn target_runtime_fields(
         cadence_seconds_source_field: "target.cadence_secs",
         cadence_slug_token: target.cadence_slug_token,
         market_selection_rule: target_runtime_string(target.market_selection_rule)?,
+        static_condition_id: None,
+        static_yes_outcome: None,
+        static_no_outcome: None,
         retry_interval_seconds: target.retry_interval_secs,
         blocked_after_seconds: target.blocked_after_secs,
     })

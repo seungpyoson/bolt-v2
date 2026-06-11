@@ -10465,6 +10465,334 @@ classification = "binary_outcome_edge_block_reason_label"
 reason = "Stable structured block-reason label for binary outcome edge output; it records decision evidence and does not configure runtime behavior."
 
 [[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"static_condition_id"'''
+context = '''"static_condition_id",'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional static binary-event runtime config field populated from the configured TOML target condition ID."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"static_yes_outcome"'''
+context = '''insert_optional_string(&mut table, "static_yes_outcome", target.static_yes_outcome);'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional static binary-event runtime config field populated from the configured TOML YES outcome label."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"static_no_outcome"'''
+context = '''insert_optional_string(&mut table, "static_no_outcome", target.static_no_outcome);'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional static binary-event runtime config field populated from the configured TOML NO outcome label."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"static_binary_event"'''
+context = '''pub const KEY: &str = "static_binary_event";'''
+classification = "market_family_registry_key"
+reason = "Stable market-family discriminator used to route configured static binary-event targets through the registry."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"binary_option"'''
+context = '''const BINARY_OPTION_MARKET_CLASS: &str = "binary_option";'''
+classification = "selected_market_metadata_schema_token"
+reason = "Stable selected-market requirement market_class token for NT BinaryOption instruments."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"nt_instrument_metadata"'''
+context = '''const NT_INSTRUMENT_METADATA_SOURCE_KIND: &str = "nt_instrument_metadata";'''
+classification = "selected_market_metadata_schema_token"
+reason = "Stable provenance token identifying NautilusTrader instrument metadata as the selected-market identity source."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "number"
+literal = '''2'''
+context = '''const REQUIRED_STATIC_OUTCOME_INSTRUMENT_COUNT: usize = 2;'''
+classification = "binary_event_market_shape"
+reason = "A static binary event must have exactly two selected outcome instruments: configured YES and configured NO."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"condition_id"'''
+context = '''const METADATA_CONDITION_ID_FIELD: &str = "condition_id";'''
+classification = "nt_binary_option_metadata_key"
+reason = "Polymarket BinaryOption metadata key read from NT instruments; the configured value still comes from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"family_key"'''
+context = '''const METADATA_FAMILY_KEY_FIELD: &str = "family_key";'''
+classification = "selected_market_metadata_schema_token"
+reason = "Stable provenance field name in selected-market requirement records."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"instrument_ids"'''
+context = '''const METADATA_INSTRUMENT_IDS_FIELD: &str = "instrument_ids";'''
+classification = "selected_market_metadata_schema_token"
+reason = "Stable provenance field name listing selected outcome instrument IDs."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"market_class"'''
+context = '''const METADATA_MARKET_CLASS_FIELD: &str = "market_class";'''
+classification = "selected_market_metadata_schema_token"
+reason = "Stable provenance field name in selected-market requirement records."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"market_id"'''
+context = '''const METADATA_MARKET_ID_FIELD: &str = "market_id";'''
+classification = "nt_binary_option_metadata_key"
+reason = "Polymarket BinaryOption metadata key read from NT instruments to prove selected YES/NO outcomes share one market."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"market_slug"'''
+context = '''const METADATA_MARKET_SLUG_FIELD: &str = "market_slug";'''
+classification = "nt_binary_option_metadata_key"
+reason = "Polymarket BinaryOption metadata key matched against the configured TOML market_slug."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"no_outcome"'''
+context = '''const METADATA_NO_OUTCOME_FIELD: &str = "no_outcome";'''
+classification = "selected_market_metadata_schema_token"
+reason = "Stable provenance field name recording the configured NO outcome label."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"question_id"'''
+context = '''const METADATA_QUESTION_ID_FIELD: &str = "question_id";'''
+classification = "nt_binary_option_metadata_key"
+reason = "Polymarket BinaryOption metadata key read from NT instruments to prove selected outcomes share one question."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"source_kind"'''
+context = '''const METADATA_SOURCE_KIND_FIELD: &str = "source_kind";'''
+classification = "selected_market_metadata_schema_token"
+reason = "Stable provenance field name identifying the selected-market identity source."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"venue"'''
+context = '''const METADATA_VENUE_FIELD: &str = "venue";'''
+classification = "selected_market_metadata_schema_token"
+reason = "Stable provenance field name recording the selected outcome venue."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"yes_outcome"'''
+context = '''const METADATA_YES_OUTCOME_FIELD: &str = "yes_outcome";'''
+classification = "selected_market_metadata_schema_token"
+reason = "Stable provenance field name recording the configured YES outcome label."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"polymarket_condition"'''
+context = '''const STATIC_RESOLUTION_KIND: &str = "polymarket_condition";'''
+classification = "selected_market_requirement_resolution_kind"
+reason = "Stable selected-market requirement resolution_kind token for Polymarket condition identity."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"binary_outcome"'''
+context = '''const STATIC_VALUE_KIND: &str = "binary_outcome";'''
+classification = "selected_market_requirement_value_kind"
+reason = "Stable selected-market requirement value_kind token for binary event outcome settlement."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"target.selection_window_secs"'''
+context = '''cadence_seconds_source_field: "target.selection_window_secs",'''
+classification = "strategy_runtime_schema_source_field"
+reason = "Stable diagnostic source-field path showing the runtime cadence compatibility value came from the static target selection window field."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"target.configured_target_id"'''
+context = '''"target.configured_target_id",'''
+classification = "target_validation_field_path"
+reason = "Stable validation field path; the configured target ID value itself comes from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"target.condition_id"'''
+context = '''"target.condition_id",'''
+classification = "target_validation_field_path"
+reason = "Stable validation field path for the optional static condition ID."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"target.yes_outcome"'''
+context = '''"target.yes_outcome",'''
+classification = "target_validation_field_path"
+reason = "Stable validation field path for the configured YES outcome label."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"target.no_outcome"'''
+context = '''"target.no_outcome",'''
+classification = "target_validation_field_path"
+reason = "Stable validation field path for the configured NO outcome label."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_condition_id"'''
+context = '''| "static_condition_id"'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional static binary-event runtime config field accepted by the strategy parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_yes_outcome"'''
+context = '''| "static_yes_outcome"'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional static binary-event runtime config field accepted by the strategy parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_no_outcome"'''
+context = '''| "static_no_outcome"'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional static binary-event runtime config field accepted by the strategy parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_condition_id"'''
+context = '''Self::validate_optional_string_field(table, field_prefix, "static_condition_id", errors);'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional static binary-event runtime config field type-checked as a string."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_yes_outcome"'''
+context = '''Self::validate_optional_string_field(table, field_prefix, "static_yes_outcome", errors);'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional static binary-event runtime config field type-checked as a string."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_no_outcome"'''
+context = '''Self::validate_optional_string_field(table, field_prefix, "static_no_outcome", errors);'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional static binary-event runtime config field type-checked as a string."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_condition_id"'''
+context = '''"static_condition_id",'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional static binary-event runtime config field included in family-specific validation."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_yes_outcome"'''
+context = '''"static_yes_outcome",'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional static binary-event runtime config field included in family-specific validation."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_no_outcome"'''
+context = '''"static_no_outcome",'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional static binary-event runtime config field included in family-specific validation."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"is only valid when rotating_market_family is `{}`"'''
+context = '''"is only valid when rotating_market_family is `{}`",'''
+classification = "strategy_config_validation_diagnostic"
+reason = "Validation diagnostic explaining that static-only runtime fields are invalid for non-static families; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_yes_outcome"'''
+context = '''("static_yes_outcome", "missing_static_yes_outcome"),'''
+classification = "strategy_runtime_schema_field"
+reason = "Required static binary-event runtime config field checked when the selected family is static_binary_event."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"missing_static_yes_outcome"'''
+context = '''("static_yes_outcome", "missing_static_yes_outcome"),'''
+classification = "strategy_config_validation_error_code"
+reason = "Stable machine-readable validation code for missing static YES outcome label."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_no_outcome"'''
+context = '''("static_no_outcome", "missing_static_no_outcome"),'''
+classification = "strategy_runtime_schema_field"
+reason = "Required static binary-event runtime config field checked when the selected family is static_binary_event."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"missing_static_no_outcome"'''
+context = '''("static_no_outcome", "missing_static_no_outcome"),'''
+classification = "strategy_config_validation_error_code"
+reason = "Stable machine-readable validation code for missing static NO outcome label."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_yes_outcome"'''
+context = '''let yes = table.get("static_yes_outcome").and_then(Value::as_str);'''
+classification = "strategy_runtime_schema_field"
+reason = "Static YES outcome runtime field read during family-specific validation."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_no_outcome"'''
+context = '''let no = table.get("static_no_outcome").and_then(Value::as_str);'''
+classification = "strategy_runtime_schema_field"
+reason = "Static NO outcome runtime field read during family-specific validation."
+
+[[allowed]]
 path = "src/bolt_v3_binary_outcome_edge.rs"
 kind = "string"
 literal = '''"insufficient_depth"'''

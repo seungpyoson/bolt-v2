@@ -5,6 +5,7 @@
 //! construction, and instrument-filter errors.
 
 pub mod hyperliquid_instrument;
+pub mod static_binary_event;
 pub mod updown;
 
 use std::{any::Any, collections::BTreeMap, fmt, sync::Arc};
@@ -109,6 +110,9 @@ pub struct MarketSelectionTarget<'a> {
     pub underlying_asset: &'a str,
     pub cadence_seconds: i64,
     pub cadence_slug_token: &'a str,
+    pub static_condition_id: Option<&'a str>,
+    pub static_yes_outcome: Option<&'a str>,
+    pub static_no_outcome: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +202,9 @@ pub struct TargetRuntimeFields {
     pub cadence_seconds_source_field: &'static str,
     pub cadence_slug_token: String,
     pub market_selection_rule: String,
+    pub static_condition_id: Option<String>,
+    pub static_yes_outcome: Option<String>,
+    pub static_no_outcome: Option<String>,
     pub retry_interval_seconds: u64,
     pub blocked_after_seconds: u64,
 }
@@ -288,6 +295,19 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         maker_binary_fee_curve: updown::maker_binary_fee_curve,
     },
     MarketFamilyValidationBinding {
+        key: static_binary_event::KEY,
+        validate_target: static_binary_event::validate_target_block,
+        plan_strategy_target: static_binary_event::plan_strategy_target,
+        target_runtime_fields: static_binary_event::target_runtime_fields,
+        select_binary_option_market: static_binary_event::select_binary_option_market,
+        market_selection_candidate_windows: static_binary_event::market_selection_candidate_windows,
+        selected_market_requirement: static_binary_event::selected_market_requirement,
+        fair_probability_up: static_binary_event::fair_probability_up,
+        maker_quote_targets: static_binary_event::maker_quote_targets,
+        maker_settlement_payout: static_binary_event::maker_settlement_payout,
+        maker_binary_fee_curve: static_binary_event::maker_binary_fee_curve,
+    },
+    MarketFamilyValidationBinding {
         key: hyperliquid_instrument::KEY,
         validate_target: hyperliquid_instrument::validate_target_block,
         plan_strategy_target: hyperliquid_instrument::plan_strategy_target,
@@ -305,6 +325,10 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
 
 pub fn validation_bindings() -> &'static [MarketFamilyValidationBinding] {
     VALIDATION_BINDINGS
+}
+
+pub fn static_binary_event_family_key() -> &'static str {
+    static_binary_event::KEY
 }
 
 fn unsupported_maker_quote_targets(_inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
@@ -822,6 +846,16 @@ mod tests {
         bolt_v3_quoting::{FamilyQuoteInputs, QuoteSide},
     };
 
+    #[test]
+    fn production_registry_binds_static_binary_event_family() {
+        assert!(
+            validation_bindings()
+                .iter()
+                .any(|binding| binding.key == "static_binary_event"),
+            "World Cup static Polymarket events must be selectable through the production market-family registry"
+        );
+    }
+
     fn fake_validate_target(_context: &str, _target: &toml::Value) -> Vec<String> {
         Vec::new()
     }
@@ -1199,6 +1233,9 @@ mod tests {
             underlying_asset: "FIXTURE",
             cadence_seconds: 60,
             cadence_slug_token: "fixture",
+            static_condition_id: None,
+            static_yes_outcome: None,
+            static_no_outcome: None,
         };
 
         assert!(

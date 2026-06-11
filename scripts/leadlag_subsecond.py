@@ -249,7 +249,14 @@ def cmd_fillability(args: argparse.Namespace) -> None:
         del merged
         base = s4.day_epoch(date)
         for asset in assets:
-            leader_file = s4.leader_path(workdir, date, s4.LEADER_COIN_BY_ASSET[asset])
+            # --leader selects the event clock: "hl" = HL book-mid snapshots (#626
+            # baseline), "trades" = tick-trades parquets built by
+            # leadlag_trades_leader.py extract-leader (#631 fast clock). Identical
+            # layout (<subdir>/<date>/<COIN>.parquet, ts_ms+mid); only the subdir
+            # differs, so the clock is a parameter, not an asset- or venue-specific
+            # code path.
+            subdir = {"hl": "leader", "trades": "leader_trades"}[args.leader]
+            leader_file = workdir / subdir / date / f"{s4.LEADER_COIN_BY_ASSET[asset]}.parquet"
             if not leader_file.exists():
                 continue
             leader = s4.LeaderSeries(pl.read_parquet(leader_file))
@@ -291,7 +298,8 @@ def cmd_fillability(args: argparse.Namespace) -> None:
         rows,
     )
     out = (
-        f"<!-- section:fillability (size at best ask {SIZE_PROBE_DELTA_SECS}s after detection) -->\n"
+        f"<!-- section:fillability (size at best ask {SIZE_PROBE_DELTA_SECS}s after "
+        f"detection, {args.leader} clock) -->\n"
         f"{table}\n"
     )
     if args.report:
@@ -322,6 +330,13 @@ def main() -> None:
 
     p_fill = sub.add_parser("fillability", help="displayed size at the ask at signal time")
     common(p_fill)
+    p_fill.add_argument(
+        "--leader",
+        choices=("hl", "trades"),
+        default="hl",
+        help="event clock: 'hl' = HL book-mid snapshots (#626 baseline), 'trades' = "
+        "tick-trades leader parquets from leadlag_trades_leader.py (#631/#633)",
+    )
     p_fill.set_defaults(func=cmd_fillability)
 
     args = parser.parse_args()

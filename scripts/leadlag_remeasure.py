@@ -82,6 +82,20 @@ def s3_keys(prefix: str) -> list[str]:
     return [parts[3] for line in proc.stdout.splitlines() if len(parts := line.split()) >= 4]
 
 
+def parse_assets(raw: str) -> list[str]:
+    """Validate asset tokens at the harness entry: a malformed token (space, typo,
+    empty) must fail loud HERE, not waste a resolve stage or surface as a bare
+    KeyError mid-pipeline. No silent normalization — fix the invocation instead."""
+    assets = raw.split(",")
+    unknown = [a for a in assets if a not in s4.LEADER_COIN_BY_ASSET]
+    if unknown:
+        raise SystemExit(
+            f"unknown assets: {unknown}; valid: {','.join(sorted(s4.LEADER_COIN_BY_ASSET))} "
+            "(comma-separated, no spaces)"
+        )
+    return assets
+
+
 def coverage(dates: list[str], assets: list[str]) -> tuple[list[str], list[str], list[str]]:
     """Per-date lake coverage. Returns (report_lines, hl_dates, trades_dates)."""
     lines = ["| date | pmxt objects | hl coins covered | bybit symbols covered |", "|---|---|---|---|"]
@@ -108,7 +122,7 @@ def coverage(dates: list[str], assets: list[str]) -> tuple[list[str], list[str],
 
 def cmd_preflight(args: argparse.Namespace) -> None:
     dates = s4.parse_dates(args.dates)
-    assets = args.assets.split(",")
+    assets = parse_assets(args.assets)
     lines, hl_dates, trades_dates = coverage(dates, assets)
     print("\n".join(lines), flush=True)
     print(f"hl-clock window covered: {len(hl_dates)}/{len(dates)} dates", flush=True)
@@ -130,7 +144,7 @@ def run_stage(name: str, script: str, argv: list[str]) -> None:
 
 def cmd_run(args: argparse.Namespace) -> None:
     dates = s4.parse_dates(args.dates)
-    assets = args.assets.split(",")
+    assets = parse_assets(args.assets)
     selected = args.stages.split(",") if args.stages else list(STAGE_NAMES)
     unknown = [s for s in selected if s not in STAGE_NAMES]
     if unknown:

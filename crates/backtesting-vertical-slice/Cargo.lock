@@ -1660,6 +1660,7 @@ dependencies = [
  "nautilus-trading",
  "object_store",
  "parquet",
+ "reqwest 0.13.4",
  "rust_decimal",
  "serde",
  "serde_json",

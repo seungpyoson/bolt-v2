@@ -8,10 +8,10 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, ensure};
-use object_store::{ObjectStoreExt, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -124,32 +124,50 @@ pub struct SourceUniverseBatchExecutionReportArtifact {
 }
 
 pub struct HttpSourceUniverseObjectFetcher {
+    client: reqwest::Client,
     runtime: tokio::runtime::Runtime,
 }
 
 impl HttpSourceUniverseObjectFetcher {
-    pub fn new() -> Result<Self> {
+    pub fn new(fetch_timeout_seconds: Option<u64>, http_user_agent: Option<&str>) -> Result<Self> {
+        let mut client_builder = reqwest::Client::builder();
+        if let Some(fetch_timeout_seconds) = fetch_timeout_seconds {
+            ensure!(
+                fetch_timeout_seconds > 0,
+                "fetch_timeout_seconds must be positive"
+            );
+            client_builder =
+                client_builder.timeout(Duration::from_secs(fetch_timeout_seconds));
+        }
+        if let Some(http_user_agent) = http_user_agent {
+            ensure!(
+                !http_user_agent.trim().is_empty(),
+                "http_user_agent must not be empty"
+            );
+            client_builder = client_builder.user_agent(http_user_agent.to_string());
+        }
+        let client = client_builder.build().context("build HTTP fetch client")?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context("create HTTP fetch runtime")?;
-        Ok(Self { runtime })
+        Ok(Self { client, runtime })
     }
 }
 
 impl SourceUniverseObjectFetcher for HttpSourceUniverseObjectFetcher {
     fn fetch(&mut self, record: &SourceUniverseExecutionPackRecord) -> Result<Vec<u8>> {
-        let (base_url, object_path) = http_base_url_and_object_path(&record.source_url)?;
-        let store = object_store::http::HttpBuilder::new()
-            .with_url(base_url)
-            .build()
-            .with_context(|| format!("open HTTP object store for {}", record.source_url))?;
+        let source_url = validated_http_source_url(&record.source_url)?;
+        let client = self.client.clone();
         let bytes = self.runtime.block_on(async {
-            let result = store
-                .get(&ObjectPath::from(object_path))
+            let response = client
+                .get(source_url)
+                .send()
                 .await
                 .with_context(|| format!("GET {}", record.source_url))?;
-            result
+            response
+                .error_for_status()
+                .with_context(|| format!("HTTP status for {}", record.source_url))?
                 .bytes()
                 .await
                 .with_context(|| format!("read response body {}", record.source_url))
@@ -435,22 +453,27 @@ fn resolve_existing_path(base_dir: &Path, path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-fn http_base_url_and_object_path(source_url: &str) -> Result<(String, String)> {
+fn validated_http_source_url(source_url: &str) -> Result<reqwest::Url> {
+    let parsed_url = reqwest::Url::parse(source_url)
+        .with_context(|| format!("parse source_url for batch execution: {source_url}"))?;
     ensure!(
-        source_url.starts_with("https://"),
+        parsed_url.scheme() == "https",
         "source_url must be HTTPS for batch execution: {source_url}"
     );
-    let without_scheme = source_url
-        .strip_prefix("https://")
-        .expect("checked HTTPS prefix");
-    let (host, path) = without_scheme
-        .split_once('/')
-        .with_context(|| format!("source_url missing object path: {source_url}"))?;
-    ensure!(!host.trim().is_empty(), "source_url host must not be empty");
-    ensure!(!path.trim().is_empty(), "source_url path must not be empty");
     ensure!(
-        !path.contains('?') && !path.contains('#'),
+        parsed_url
+            .host_str()
+            .map(|host| !host.trim().is_empty())
+            .unwrap_or(false),
+        "source_url host must not be empty"
+    );
+    ensure!(
+        !parsed_url.path().trim_start_matches('/').trim().is_empty(),
+        "source_url missing object path: {source_url}"
+    );
+    ensure!(
+        parsed_url.query().is_none() && parsed_url.fragment().is_none(),
         "source_url query and fragment components are not supported: {source_url}"
     );
-    Ok((format!("https://{host}"), path.to_string()))
+    Ok(parsed_url)
 }

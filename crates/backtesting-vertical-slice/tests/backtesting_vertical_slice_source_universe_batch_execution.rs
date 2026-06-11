@@ -1,8 +1,9 @@
 use std::{fs, path::Path};
 
 use backtesting_vertical_slice::source_universe_batch_execution::{
-    SourceUniverseBatchExecutionConfig, SourceUniverseBatchExecutionReportStatus,
-    SourceUniverseBatchExecutionRunOutput, SourceUniverseObjectFetcher,
+    HttpSourceUniverseObjectFetcher, SourceUniverseBatchExecutionConfig,
+    SourceUniverseBatchExecutionReportStatus, SourceUniverseBatchExecutionRunOutput,
+    SourceUniverseObjectFetcher,
     SourceUniverseOperatorRunner, execute_source_universe_batch,
     execute_source_universe_batch_with_config, write_source_universe_batch_execution_report,
 };
@@ -234,6 +235,17 @@ fn source_universe_batch_execution_can_continue_after_record_failure() {
     assert_eq!(report.failures[0].failure_stage, "verify_object");
     assert_eq!(runner.calls.len(), 1);
     assert_eq!(runner.calls[0].operator_run_id, "source-universe-operator-run-synthetic-00001");
+}
+
+#[test]
+fn http_source_universe_fetcher_rejects_zero_timeout() {
+    match HttpSourceUniverseObjectFetcher::new(Some(0), None) {
+        Ok(_) => panic!("zero timeout accepted"),
+        Err(err) => assert!(
+            err.to_string()
+                .contains("fetch_timeout_seconds must be positive")
+        ),
+    }
 }
 
 struct StaticFetcher {

@@ -23,11 +23,16 @@ struct Cli {
     record_limit: Option<u64>,
     #[arg(long)]
     continue_on_error: bool,
+    #[arg(long)]
+    fetch_timeout_seconds: Option<u64>,
+    #[arg(long)]
+    http_user_agent: Option<String>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut fetcher = HttpSourceUniverseObjectFetcher::new()?;
+    let mut fetcher =
+        HttpSourceUniverseObjectFetcher::new(cli.fetch_timeout_seconds, cli.http_user_agent.as_deref())?;
     let mut runner = LocalSourceUniverseOperatorRunner;
     let report = execute_source_universe_batch_with_config(
         &cli.batch_id,

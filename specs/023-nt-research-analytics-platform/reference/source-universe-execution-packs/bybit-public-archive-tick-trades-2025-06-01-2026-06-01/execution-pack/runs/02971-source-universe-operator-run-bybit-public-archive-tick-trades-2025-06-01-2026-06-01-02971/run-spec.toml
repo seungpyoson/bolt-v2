@@ -36,7 +36,7 @@ trade_id_column = "id"
 
 [converter.raw_payload]
 container = "csv_gzip"
-max_decoded_bytes = 268435456
+max_decoded_bytes = 1073741824
 max_object_bytes = 1230822
 
 [identity]

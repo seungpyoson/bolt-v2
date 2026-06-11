@@ -58,6 +58,8 @@ pub struct SourceUniverseOperatorInputsSpec {
     pub default_derivative_multiplier: String,
     pub default_maker_fee: String,
     pub default_taker_fee: String,
+    #[serde(default)]
+    pub overwrite_existing_artifacts: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,11 +224,16 @@ pub fn write_source_universe_operator_inputs(
                 path.display()
             )
         })?;
-        ensure!(
-            existing == bytes,
-            "dirty source-universe operator-inputs {}: existing file content differs",
-            path.display()
-        );
+        if existing != bytes {
+            ensure!(
+                spec.overwrite_existing_artifacts,
+                "dirty source-universe operator-inputs {}: existing file content differs",
+                path.display()
+            );
+            fs::write(&path, &bytes).with_context(|| {
+                format!("write source-universe operator-inputs {}", path.display())
+            })?;
+        }
     } else {
         fs::write(&path, &bytes)
             .with_context(|| format!("write source-universe operator-inputs {}", path.display()))?;

@@ -224,6 +224,162 @@ default_taker_fee = "0"
 }
 
 #[test]
+fn source_universe_operator_inputs_overwrites_existing_artifact_only_when_enabled() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let gates_path = temp_dir.path().join("source-universe-object-gates.json");
+    let run_plan_path = temp_dir
+        .path()
+        .join("source-universe-conversion-run-plan.json");
+    let conversion_plan_path = temp_dir.path().join("conversion-plan.json");
+    let metadata_path = temp_dir.path().join("instrument-metadata.json");
+    let output_dir = temp_dir.path().join("operator-inputs");
+    let spec_path = temp_dir.path().join("source-universe-operator-inputs.toml");
+
+    fs::write(
+        &gates_path,
+        r#"{
+  "schema_version": "source-universe-object-gates.v1",
+  "gate_id": "source-universe-object-gates-bybit-test",
+  "status": "ready",
+  "queue_id": "source-universe-conversion-queue-bybit-test",
+  "manifest_id": "backfill-source-universe-object-manifest-bybit-test",
+  "universe_id": "backfill-source-universe-bybit-test",
+  "venue": "bybit",
+  "source": "public_archive",
+  "family": "tick-trades",
+  "table_family": "trades",
+  "queue_path": "queue.json",
+  "queue_hash": "queue-hash",
+  "work_item_count": 0,
+  "accepted_gate_count": 0,
+  "source_binding_count": 0,
+  "total_accepted_bytes": 0,
+  "source_binding_summaries": [],
+  "artifact_refs": [],
+  "records": []
+}"#,
+    )
+    .expect("write gates");
+    fs::write(
+        &run_plan_path,
+        r#"{
+  "schema_version": "source-universe-conversion-run-plan.v1",
+  "plan_id": "source-universe-conversion-run-plan-bybit-test",
+  "status": "ready",
+  "gate_id": "source-universe-object-gates-bybit-test",
+  "queue_id": "source-universe-conversion-queue-bybit-test",
+  "manifest_id": "backfill-source-universe-object-manifest-bybit-test",
+  "universe_id": "backfill-source-universe-bybit-test",
+  "venue": "bybit",
+  "source": "public_archive",
+  "family": "tick-trades",
+  "table_family": "trades",
+  "object_gates_path": "source-universe-object-gates.json",
+  "object_gates_hash": "gates-hash",
+  "max_objects_per_run": 500,
+  "max_source_bytes_per_run": 1000,
+  "source_binding_count": 0,
+  "object_count": 0,
+  "planned_object_count": 0,
+  "total_source_bytes": 0,
+  "planned_source_bytes": 0,
+  "run_count": 0,
+  "category_summaries": [],
+  "artifact_refs": [],
+  "runs": []
+}"#,
+    )
+    .expect("write run plan");
+    fs::write(&conversion_plan_path, r#"{"category_batches":[]}"#)
+        .expect("write conversion plan");
+    fs::write(&metadata_path, r#"{"records":[]}"#).expect("write metadata");
+    fs::create_dir_all(&output_dir).expect("create output dir");
+    fs::write(
+        output_dir.join("source-universe-operator-inputs.json"),
+        br#"{"stale":true}"#,
+    )
+    .expect("write stale output");
+
+    fs::write(
+        &spec_path,
+        format!(
+            r#"input_id = "source-universe-operator-inputs-bybit-test"
+source_universe_object_gates_path = "{gates_path}"
+source_universe_conversion_run_plan_path = "{run_plan_path}"
+source_universe_conversion_plan_path = "{conversion_plan_path}"
+instrument_metadata_snapshot_path = "{metadata_path}"
+output_dir = "{output_dir}"
+operator_run_id_prefix = "source-universe-operator-run-bybit-test"
+nt_venue = "BYBIT"
+converter_identity = "csv-native-trades-to-canonical-trades.v1"
+converter_version = "1"
+raw_payload_container = "csv_gzip"
+max_decoded_bytes = 268435456
+max_source_rows = 1000000
+max_projected_row_groups = 128
+max_wall_seconds = 1800
+default_spot_max_notional = "1000000000"
+default_derivative_max_notional = "1000000000"
+default_derivative_multiplier = "1"
+default_maker_fee = "0"
+default_taker_fee = "0"
+"#,
+            gates_path = gates_path.display(),
+            run_plan_path = run_plan_path.display(),
+            conversion_plan_path = conversion_plan_path.display(),
+            metadata_path = metadata_path.display(),
+            output_dir = output_dir.display(),
+        ),
+    )
+    .expect("write spec");
+
+    let err = write_source_universe_operator_inputs_from_spec_file(&spec_path)
+        .expect_err("dirty output is protected by default");
+    assert!(err.to_string().contains("dirty source-universe operator-inputs"));
+
+    fs::write(
+        &spec_path,
+        format!(
+            r#"input_id = "source-universe-operator-inputs-bybit-test"
+source_universe_object_gates_path = "{gates_path}"
+source_universe_conversion_run_plan_path = "{run_plan_path}"
+source_universe_conversion_plan_path = "{conversion_plan_path}"
+instrument_metadata_snapshot_path = "{metadata_path}"
+output_dir = "{output_dir}"
+operator_run_id_prefix = "source-universe-operator-run-bybit-test"
+nt_venue = "BYBIT"
+converter_identity = "csv-native-trades-to-canonical-trades.v1"
+converter_version = "1"
+raw_payload_container = "csv_gzip"
+max_decoded_bytes = 268435456
+max_source_rows = 1000000
+max_projected_row_groups = 128
+max_wall_seconds = 1800
+default_spot_max_notional = "1000000000"
+default_derivative_max_notional = "1000000000"
+default_derivative_multiplier = "1"
+default_maker_fee = "0"
+default_taker_fee = "0"
+overwrite_existing_artifacts = true
+"#,
+            gates_path = gates_path.display(),
+            run_plan_path = run_plan_path.display(),
+            conversion_plan_path = conversion_plan_path.display(),
+            metadata_path = metadata_path.display(),
+            output_dir = output_dir.display(),
+        ),
+    )
+    .expect("write overwrite spec");
+
+    let artifact = write_source_universe_operator_inputs_from_spec_file(&spec_path)
+        .expect("overwrite enabled");
+    let inputs: SourceUniverseOperatorInputs =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read inputs"))
+            .expect("inputs parse");
+    assert_eq!(inputs.records.len(), 0);
+}
+
+#[test]
 fn committed_bybit_source_universe_operator_inputs_track_current_gates() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");

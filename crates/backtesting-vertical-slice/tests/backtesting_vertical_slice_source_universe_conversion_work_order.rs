@@ -155,6 +155,101 @@ output_dir = "{output_dir}"
 }
 
 #[test]
+fn source_universe_conversion_work_order_overwrites_existing_artifact_only_when_enabled() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let operator_inputs_path = temp_dir.path().join("source-universe-operator-inputs.json");
+    let output_dir = temp_dir.path().join("work-order");
+    let spec_path = temp_dir
+        .path()
+        .join("source-universe-conversion-work-order.toml");
+
+    fs::write(
+        &operator_inputs_path,
+        r#"{
+  "schema_version": "source-universe-operator-inputs.v1",
+  "input_id": "source-universe-operator-inputs-binance-test",
+  "status": "ready",
+  "gate_id": "source-universe-object-gates-binance-test",
+  "conversion_run_plan_id": "source-universe-conversion-run-plan-binance-test",
+  "universe_id": "backfill-source-universe-binance-test",
+  "venue": "binance",
+  "source": "data_vision",
+  "family": "trades",
+  "table_family": "trades",
+  "operator_run_id_prefix": "source-universe-operator-run-binance-test",
+  "nt_venue": "BINANCE",
+  "converter_identity": "csv-native-trades-to-canonical-trades.v1",
+  "converter_version": "1",
+  "raw_payload_container": "single_csv_zip",
+  "max_decoded_bytes": 268435456,
+  "max_source_rows": 1000000,
+  "max_projected_row_groups": 128,
+  "max_wall_seconds": 1800,
+  "planned_object_count": 0,
+  "planned_source_bytes": 0,
+  "conversion_run_count": 0,
+  "instrument_spec_count": 0,
+  "converter_mapping_count": 0,
+  "ready_input_count": 0,
+  "blocked_input_count": 0,
+  "artifact_refs": [],
+  "converter_mappings": [],
+  "instrument_specs": [],
+  "records": [],
+  "blocking_reasons": []
+}"#,
+    )
+    .expect("write operator inputs");
+    fs::create_dir_all(&output_dir).expect("create output dir");
+    fs::write(
+        output_dir.join("source-universe-conversion-work-order.json"),
+        br#"{"stale":true}"#,
+    )
+    .expect("write stale output");
+
+    fs::write(
+        &spec_path,
+        format!(
+            r#"work_order_id = "source-universe-conversion-work-order-binance-test"
+source_universe_operator_inputs_path = "{operator_inputs_path}"
+output_dir = "{output_dir}"
+"#,
+            operator_inputs_path = operator_inputs_path.display(),
+            output_dir = output_dir.display(),
+        ),
+    )
+    .expect("write spec");
+
+    let err = write_source_universe_conversion_work_order_from_spec_file(&spec_path)
+        .expect_err("dirty output is protected by default");
+    assert!(
+        err.to_string()
+            .contains("dirty source-universe conversion work-order")
+    );
+
+    fs::write(
+        &spec_path,
+        format!(
+            r#"work_order_id = "source-universe-conversion-work-order-binance-test"
+source_universe_operator_inputs_path = "{operator_inputs_path}"
+output_dir = "{output_dir}"
+overwrite_existing_artifacts = true
+"#,
+            operator_inputs_path = operator_inputs_path.display(),
+            output_dir = output_dir.display(),
+        ),
+    )
+    .expect("write overwrite spec");
+
+    let artifact = write_source_universe_conversion_work_order_from_spec_file(&spec_path)
+        .expect("overwrite enabled");
+    let work_order: SourceUniverseConversionWorkOrder =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read work order"))
+            .expect("work order parses");
+    assert_eq!(work_order.records.len(), 0);
+}
+
+#[test]
 fn committed_bybit_and_binance_source_universe_work_orders_track_executable_scope() {
     let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../specs/023-nt-research-analytics-platform/reference");

@@ -33,6 +33,8 @@ pub struct SourceUniverseConversionWorkOrderSpec {
     pub work_order_id: String,
     pub source_universe_operator_inputs_path: PathBuf,
     pub output_dir: PathBuf,
+    #[serde(default)]
+    pub overwrite_existing_artifacts: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,11 +178,19 @@ pub fn write_source_universe_conversion_work_order(
                 path.display()
             )
         })?;
-        ensure!(
-            existing == bytes,
-            "dirty source-universe conversion work-order {}: existing file content differs",
-            path.display()
-        );
+        if existing != bytes {
+            ensure!(
+                spec.overwrite_existing_artifacts,
+                "dirty source-universe conversion work-order {}: existing file content differs",
+                path.display()
+            );
+            fs::write(&path, &bytes).with_context(|| {
+                format!(
+                    "write source-universe conversion work-order {}",
+                    path.display()
+                )
+            })?;
+        }
     } else {
         fs::write(&path, &bytes).with_context(|| {
             format!(

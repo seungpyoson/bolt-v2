@@ -1,7 +1,13 @@
-//! Crate-internal TAKER-ONLY entry-decision math extracted from the
-//! binary-oracle taker strategy (slice A1 of #522): worst-case EV, entry-side
-//! selection, theta scaling, and uncertainty bands. Strategy-agnostic dollar
-//! intent sizing lives in [`crate::bolt_v3_sizing`], not here.
+//! Taker-family entry-decision math for BINARY UP/DOWN markets, extracted from
+//! the binary-oracle taker strategy (slice A1 of #522): worst-case EV,
+//! entry-side selection, theta scaling, and uncertainty bands.
+//!
+//! Scope contract: bound to the up/down market family (sides are
+//! [`OutcomeSide`], worst-case EV is binary-contract arithmetic) and to the
+//! taker role ("cross the spread now? which side?"); NOT bound to any venue,
+//! underlying asset, or concrete strategy. A taker for a different market
+//! family needs its own signal module; strategy-agnostic dollar intent sizing
+//! lives in [`crate::bolt_v3_sizing`], not here.
 
 use crate::bolt_v3_market_families::OutcomeSide;
 use crate::bolt_v3_numeric::{

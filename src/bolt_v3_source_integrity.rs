@@ -247,9 +247,11 @@ mod tests {
     // instead of reinterpreting the EV fraction as dollars, then once more
     // after merging main's #619 executable-edge follow-up cleanup, then once
     // more after the strategy-agnostic sizing primitive moved out of the
-    // taker-only signal module into `src/bolt_v3_sizing.rs`.
+    // taker-only signal module into `src/bolt_v3_sizing.rs`, then once more
+    // after that signal module was renamed `bolt_v3_taker_updown_signal` to
+    // carry its up/down market-family binding in the name.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "1a8c07d109a928e75b0bf6dbc8c7f34fd0c19cb4559916cd76c457ef1b217afc";
+        "d9c46f3bececf0a9f23dfcbb0f2444d2a29dac61eacec8e96645846b3bc92116";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

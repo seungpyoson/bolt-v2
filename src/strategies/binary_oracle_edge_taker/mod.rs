@@ -71,7 +71,7 @@ use crate::{
         FastSpotObservation, TakerPricingBlockReason, TakerPricingConfig, TakerPricingRequest,
         TakerPricingState as PricingState,
     },
-    bolt_v3_taker_signal::{
+    bolt_v3_taker_updown_signal::{
         SideSelectionInputs, UncertaintyBandInputs, WorstCaseEvInputs, choose_entry_side,
         compute_worst_case_ev_bps, outcome_side_evidence_label, uncertainty_band_probability,
     },
@@ -89,7 +89,7 @@ use crate::{
     bolt_v3_numeric::sanitize_probability,
     bolt_v3_submit_admission::{BoltV3RiskReducingExitProof, BoltV3SubmitIntentKind},
     bolt_v3_taker_pricing::VenueTimingState,
-    bolt_v3_taker_signal::{price_agreement_corr, price_gap_probability},
+    bolt_v3_taker_updown_signal::{price_agreement_corr, price_gap_probability},
 };
 
 mod selection;

@@ -5,7 +5,9 @@
   "universe_id": "backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments",
   "selection": {
     "instrument_universe": "all_staged_category_symbols",
-    "archive_dates": ["2026-03-01"],
+    "archive_dates": [
+      "2026-03-01"
+    ],
     "metadata_query_strategy": "current_exchange_info_with_missing_metadata_blockers"
   },
   "source_universe_summary": {
@@ -25,7 +27,15 @@
       "required_gate_records": 1416,
       "source_uri_template": "https://data.binance.vision/data/spot/daily/trades/{symbol}/{symbol}-trades-{dt}.zip",
       "sample_public_url": "https://data.binance.vision/data/spot/daily/trades/0GTRY/0GTRY-trades-2026-03-01.zip",
-      "schema_columns": ["trade_id", "price", "qty", "quote_qty", "time", "is_buyer_maker", "is_best_match"],
+      "schema_columns": [
+        "trade_id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker",
+        "is_best_match"
+      ],
       "converter_csv": {
         "has_headers": false,
         "trade_id_column": "trade_id",
@@ -34,8 +44,12 @@
         "price_column": "price",
         "size_column": "qty",
         "side_column": "is_buyer_maker",
-        "buyer_side_values": ["False"],
-        "seller_side_values": ["True"]
+        "buyer_side_values": [
+          "False"
+        ],
+        "seller_side_values": [
+          "True"
+        ]
       }
     },
     {
@@ -49,17 +63,28 @@
       "required_gate_records": 593,
       "source_uri_template": "https://data.binance.vision/data/futures/um/daily/trades/{symbol}/{symbol}-trades-{dt}.zip",
       "sample_public_url": "https://data.binance.vision/data/futures/um/daily/trades/0GUSDT/0GUSDT-trades-2026-03-01.zip",
-      "schema_columns": ["trade_id", "price", "qty", "quote_qty", "time", "is_buyer_maker"],
+      "schema_columns": [
+        "id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ],
       "converter_csv": {
-        "has_headers": false,
-        "trade_id_column": "trade_id",
+        "has_headers": true,
+        "trade_id_column": "id",
         "timestamp_column": "time",
-        "timestamp_unit": "microseconds",
+        "timestamp_unit": "milliseconds",
         "price_column": "price",
         "size_column": "qty",
         "side_column": "is_buyer_maker",
-        "buyer_side_values": ["False"],
-        "seller_side_values": ["True"]
+        "buyer_side_values": [
+          "false"
+        ],
+        "seller_side_values": [
+          "true"
+        ]
       }
     },
     {
@@ -73,17 +98,28 @@
       "required_gate_records": 4,
       "source_uri_template": "https://data.binance.vision/data/futures/um/daily/trades/{symbol}/{symbol}-trades-{dt}.zip",
       "sample_public_url": "https://data.binance.vision/data/futures/um/daily/trades/BTCUSDT_260327/BTCUSDT_260327-trades-2026-03-01.zip",
-      "schema_columns": ["trade_id", "price", "qty", "quote_qty", "time", "is_buyer_maker"],
+      "schema_columns": [
+        "id",
+        "price",
+        "qty",
+        "quote_qty",
+        "time",
+        "is_buyer_maker"
+      ],
       "converter_csv": {
-        "has_headers": false,
-        "trade_id_column": "trade_id",
+        "has_headers": true,
+        "trade_id_column": "id",
         "timestamp_column": "time",
-        "timestamp_unit": "microseconds",
+        "timestamp_unit": "milliseconds",
         "price_column": "price",
         "size_column": "qty",
         "side_column": "is_buyer_maker",
-        "buyer_side_values": ["False"],
-        "seller_side_values": ["True"]
+        "buyer_side_values": [
+          "false"
+        ],
+        "seller_side_values": [
+          "true"
+        ]
       }
     },
     {
@@ -97,17 +133,28 @@
       "required_gate_records": 28,
       "source_uri_template": "https://data.binance.vision/data/futures/cm/daily/trades/{symbol}/{symbol}-trades-{dt}.zip",
       "sample_public_url": "https://data.binance.vision/data/futures/cm/daily/trades/AAVEUSD_PERP/AAVEUSD_PERP-trades-2026-03-01.zip",
-      "schema_columns": ["trade_id", "price", "qty", "quote_qty", "time", "is_buyer_maker"],
+      "schema_columns": [
+        "id",
+        "price",
+        "qty",
+        "base_qty",
+        "time",
+        "is_buyer_maker"
+      ],
       "converter_csv": {
-        "has_headers": false,
-        "trade_id_column": "trade_id",
+        "has_headers": true,
+        "trade_id_column": "id",
         "timestamp_column": "time",
-        "timestamp_unit": "microseconds",
+        "timestamp_unit": "milliseconds",
         "price_column": "price",
         "size_column": "qty",
         "side_column": "is_buyer_maker",
-        "buyer_side_values": ["False"],
-        "seller_side_values": ["True"]
+        "buyer_side_values": [
+          "false"
+        ],
+        "seller_side_values": [
+          "true"
+        ]
       }
     },
     {
@@ -121,17 +168,28 @@
       "required_gate_records": 10,
       "source_uri_template": "https://data.binance.vision/data/futures/cm/daily/trades/{symbol}/{symbol}-trades-{dt}.zip",
       "sample_public_url": "https://data.binance.vision/data/futures/cm/daily/trades/BNBUSD_260327/BNBUSD_260327-trades-2026-03-01.zip",
-      "schema_columns": ["trade_id", "price", "qty", "quote_qty", "time", "is_buyer_maker"],
+      "schema_columns": [
+        "id",
+        "price",
+        "qty",
+        "base_qty",
+        "time",
+        "is_buyer_maker"
+      ],
       "converter_csv": {
-        "has_headers": false,
-        "trade_id_column": "trade_id",
+        "has_headers": true,
+        "trade_id_column": "id",
         "timestamp_column": "time",
-        "timestamp_unit": "microseconds",
+        "timestamp_unit": "milliseconds",
         "price_column": "price",
         "size_column": "qty",
         "side_column": "is_buyer_maker",
-        "buyer_side_values": ["False"],
-        "seller_side_values": ["True"]
+        "buyer_side_values": [
+          "false"
+        ],
+        "seller_side_values": [
+          "true"
+        ]
       }
     }
   ]

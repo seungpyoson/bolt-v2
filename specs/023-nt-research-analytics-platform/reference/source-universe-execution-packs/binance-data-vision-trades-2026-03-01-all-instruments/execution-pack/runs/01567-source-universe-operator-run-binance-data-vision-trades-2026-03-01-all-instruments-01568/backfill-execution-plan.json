@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:COTIUSDT:2026-03-01:71316a43d22b7075387e9d5d3107cf7e53891fea0ce8bf11bbc56a3f9add871c:accepted-tranche",
   "accepted_tranche_manifest_hash": "021038f95df8ce81794ee3fa7978844d13a1cfe12e98abfceef284419bee2576",
-  "run_spec_hash": "a761a45c19ddaa7e4578679175c5021adb9cc82f0a1edbe7cfd944d047a6a9e3",
+  "run_spec_hash": "23285eaf89318216ab6ee857f6dd23d6cfa377a88ef90fd59743cbf92908439e",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01568",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=COTIUSDT/dt=2026-03-01/object=71316a43d22b7075387e9d5d3107cf7e53891fea0ce8bf11bbc56a3f9add871c",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

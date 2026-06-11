@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:SIRENUSDT:2026-03-01:474893534ba051a9d80793a18ef9e092c1b2068bbd21f024baa5f712f281a51a:accepted-tranche",
   "accepted_tranche_manifest_hash": "1f6a36eb05e361282dd81c07521fa89b5c3139afb828ee552081473b5f6b0f91",
-  "run_spec_hash": "16fdc27c66292ab20208e6e2991c8bd4df18eb7717d78f4aaf2d51ac8678d53f",
+  "run_spec_hash": "cf54edd63e308df00c6c336046f4cc9e23397998b0b49d12dbbc0b8cbbd3ab93",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01868",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=SIRENUSDT/dt=2026-03-01/object=474893534ba051a9d80793a18ef9e092c1b2068bbd21f024baa5f712f281a51a",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

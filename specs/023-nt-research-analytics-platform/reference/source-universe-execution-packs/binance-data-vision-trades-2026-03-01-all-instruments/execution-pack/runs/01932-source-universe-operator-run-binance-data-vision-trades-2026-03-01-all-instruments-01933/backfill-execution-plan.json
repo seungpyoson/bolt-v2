@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:TSLAUSDT:2026-03-01:0529843803c195103e0b121c7c78e72a0e55bfe7c5acdedfa9d23451f64513e9:accepted-tranche",
   "accepted_tranche_manifest_hash": "5d757bc67fae5ca5f170aa05363bceb7b890a0c2d0b9b5e6addadfa882b5fce6",
-  "run_spec_hash": "2e4d07e1692de7792c7fbd8586e10a2c6c923ec184e0ac4ca23d5ce4dc370d8b",
+  "run_spec_hash": "3c84c793a641eed9a8bd218132a4810c755e5b0e90b40531b348c97406eb1cda",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01933",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=TSLAUSDT/dt=2026-03-01/object=0529843803c195103e0b121c7c78e72a0e55bfe7c5acdedfa9d23451f64513e9",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

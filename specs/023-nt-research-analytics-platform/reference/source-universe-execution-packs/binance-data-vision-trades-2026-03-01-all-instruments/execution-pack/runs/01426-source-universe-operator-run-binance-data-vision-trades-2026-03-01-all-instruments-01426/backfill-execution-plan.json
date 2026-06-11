@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:1000PEPEUSDT:2026-03-01:d6ce1cba9dc3b3c6d43c7f09c7d12e3e7faf1163404b925fd8cfd9e9232d89e1:accepted-tranche",
   "accepted_tranche_manifest_hash": "3ce711c317023f7b32b79dfb098e5b52025623df32eef7658bc5dd8d02c13aef",
-  "run_spec_hash": "dd145da37f55f3b1e9956d8dff12da0bf300b7cf350d5ee909f3cea384b8d9b9",
+  "run_spec_hash": "0de3a9f3d03716e31ab580f31766f64dc5922c740a464b47dd9d9d7c78d5517c",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01426",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=1000PEPEUSDT/dt=2026-03-01/object=d6ce1cba9dc3b3c6d43c7f09c7d12e3e7faf1163404b925fd8cfd9e9232d89e1",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

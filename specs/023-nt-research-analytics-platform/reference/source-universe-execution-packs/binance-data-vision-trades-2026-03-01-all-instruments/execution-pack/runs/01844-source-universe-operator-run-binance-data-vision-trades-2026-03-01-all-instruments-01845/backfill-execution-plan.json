@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:RIVERUSDT:2026-03-01:9a18db1282a9af3c2baf3f5b210c3e3b608f0d90afd9569b705fcc29bd3ebd8e:accepted-tranche",
   "accepted_tranche_manifest_hash": "c6213a13ae84f13e1c9bf27e4f040f55871ce486ad80b0f1a7ae00072e3c02da",
-  "run_spec_hash": "1d1ef0716e70ff10dc2b55ff955610b248f5d747b726eb94d6c9a98da6e2d60d",
+  "run_spec_hash": "70237e251d62c4e529b975abe93a2554eca68007a38075a9dc721283fbdd0df7",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01845",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=RIVERUSDT/dt=2026-03-01/object=9a18db1282a9af3c2baf3f5b210c3e3b608f0d90afd9569b705fcc29bd3ebd8e",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

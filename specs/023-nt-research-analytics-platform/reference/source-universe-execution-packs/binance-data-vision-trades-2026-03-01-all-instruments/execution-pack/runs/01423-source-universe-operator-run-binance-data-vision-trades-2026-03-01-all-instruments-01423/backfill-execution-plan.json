@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:1000FLOKIUSDT:2026-03-01:5e2106e6c9729d0fbdabecb287ef067b16baeb92ae9ecc11ab72ba642ebeb94f:accepted-tranche",
   "accepted_tranche_manifest_hash": "03aa7454fb16e9d41ad3eabbca352b4d78b2d05a37fc3f8c1fe8be1e4cbd5b51",
-  "run_spec_hash": "c6366618f8e5cd6b1b6f07a28a81433e6195a96244b9671d30c2b2417c4a9578",
+  "run_spec_hash": "8b276c5e0ebc86904f0e2f9100671238f4b34fd584648ad6f3cf8a8e9780a00e",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01423",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=1000FLOKIUSDT/dt=2026-03-01/object=5e2106e6c9729d0fbdabecb287ef067b16baeb92ae9ecc11ab72ba642ebeb94f",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

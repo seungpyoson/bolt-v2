@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:SAPIENUSDT:2026-03-01:5ff7af3bc0c136d2122befc8acaba6f2fcf6bbb536a3f7c341d5d7abbaec7ddb:accepted-tranche",
   "accepted_tranche_manifest_hash": "e0d3a41fe8f12820c49d2fe131845720769d45a47272ab90970c2526d252bc5b",
-  "run_spec_hash": "67a2f784cf6499bd2fb129bb792a20f74c7a4df0b23588cb09c553fd24969110",
+  "run_spec_hash": "07f53398b47b89856326231bfb9f36c483497a4df904f6efb6cfd60c4d0c0fa6",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01860",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=SAPIENUSDT/dt=2026-03-01/object=5ff7af3bc0c136d2122befc8acaba6f2fcf6bbb536a3f7c341d5d7abbaec7ddb",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

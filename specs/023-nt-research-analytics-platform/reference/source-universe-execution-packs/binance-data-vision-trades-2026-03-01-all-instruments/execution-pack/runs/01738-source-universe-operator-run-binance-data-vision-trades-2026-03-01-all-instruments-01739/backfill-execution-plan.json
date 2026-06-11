@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:MAGMAUSDT:2026-03-01:7bc694449d0952fa342113664aff546b19755600f11a9e58e17d45d675d54fdf:accepted-tranche",
   "accepted_tranche_manifest_hash": "637be92bd7ad4f54edfd8235c1e321ff17cc8248e5d07b8b0008c4d4dabbbfd7",
-  "run_spec_hash": "fb6e79088f8335a35528b865888fab236e49f776c10d5840a9ad5175aa36d90e",
+  "run_spec_hash": "bc997900802a4a83d872782d4c24b5867622d53aa7e4b3af7aa734173075b623",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01739",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=MAGMAUSDT/dt=2026-03-01/object=7bc694449d0952fa342113664aff546b19755600f11a9e58e17d45d675d54fdf",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

@@ -9,7 +9,7 @@ archive_date = "2026-03-01"
 bytes = 3894735
 s3_uri = "s3://bolt-parquet/backfill-staging/2026-03-01/binance/raw/v1/source=data-vision/family=native_trades/category=usd_m_perpetual/dt=2026-03-01/symbol=AVAXUSDT/object=5ce9b10ca305b3e00d48de10c7a4a36b6b9914549f4c4eba2263d659cfd96162.zip"
 schema_columns = [
-    "trade_id",
+    "id",
     "price",
     "qty",
     "quote_qty",
@@ -24,15 +24,15 @@ identity = "csv-native-trades-to-canonical-trades.v1"
 version = "1"
 
 [converter.csv]
-buyer_side_values = ["False"]
-has_headers = false
+buyer_side_values = ["false"]
+has_headers = true
 price_column = "price"
-seller_side_values = ["True"]
+seller_side_values = ["true"]
 side_column = "is_buyer_maker"
 size_column = "qty"
 timestamp_column = "time"
-timestamp_unit = "microseconds"
-trade_id_column = "trade_id"
+timestamp_unit = "milliseconds"
+trade_id_column = "id"
 
 [converter.raw_payload]
 container = "single_csv_zip"

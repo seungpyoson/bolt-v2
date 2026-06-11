@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:ALCHUSDT:2026-03-01:d2c2e23ad0cdaaff408f5319b3d5a88c25e084177163bf38183bb8aa1509ed3d:accepted-tranche",
   "accepted_tranche_manifest_hash": "2ceb2c43e29c949772fd510d2ef817b8c3656a82e7466070e48c484d2863c1c3",
-  "run_spec_hash": "a01da337e5a3ad78506df13b2cb57c8069d42599a20be306d72c87953b78956b",
+  "run_spec_hash": "505a2c22b6b72d95e1ba6bc76305f6baa2288637473396ed300c290b20686a19",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01460",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=ALCHUSDT/dt=2026-03-01/object=d2c2e23ad0cdaaff408f5319b3d5a88c25e084177163bf38183bb8aa1509ed3d",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:ESPORTSUSDT:2026-03-01:45514c7a5f59bcab9a2a00c5ade11f0e8d978f7b60fbd6e60ea635a94471ddd3:accepted-tranche",
   "accepted_tranche_manifest_hash": "4c50789022105f8cf1806fba034a086a9f84f656d4b706d640e6b10d058e3c22",
-  "run_spec_hash": "2d6c0bde4a5e370b6f46612ae64c801c86ab79da3af15a60d7f6ded60c7ff458",
+  "run_spec_hash": "8a84c45b7ff943f43dc6ae61a319ae40619f911f36e89159c8748ee1c742c123",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01613",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=ESPORTSUSDT/dt=2026-03-01/object=45514c7a5f59bcab9a2a00c5ade11f0e8d978f7b60fbd6e60ea635a94471ddd3",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

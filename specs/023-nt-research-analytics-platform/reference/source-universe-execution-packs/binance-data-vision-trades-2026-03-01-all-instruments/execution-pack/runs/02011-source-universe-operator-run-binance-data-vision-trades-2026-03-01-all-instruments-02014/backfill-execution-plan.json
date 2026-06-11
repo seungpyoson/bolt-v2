@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-coin-m-perpetual-native-trades:ADAUSD_PERP:2026-03-01:6595370b5e4d47ae395355238f831ab29437743291695db56a7cb650c34fc1c1:accepted-tranche",
   "accepted_tranche_manifest_hash": "b35704b9852f21851aac469576e547b8f932b47fffca383be0f3eacb760c0a79",
-  "run_spec_hash": "9b686b318fdac639f040a3772753293bc32178c76bd2b596b8be7dd31ab22efe",
+  "run_spec_hash": "6fd7c8196fff610bab58a1b9514b207ede385b96ad10d9ce285aa8b44f62e13b",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-02014",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=coin_m_perpetual/symbol=ADAUSD_PERP/dt=2026-03-01/object=6595370b5e4d47ae395355238f831ab29437743291695db56a7cb650c34fc1c1",
   "source_proof_id": "source-proof-binance-coin-m-perpetual-native-trades-2026-03-01-all-instruments",

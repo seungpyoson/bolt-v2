@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:JELLYJELLYUSDT:2026-03-01:c429753837bf342c8f1579d71506014b496f49b83de67d0bffa4e67f6c19e1f5:accepted-tranche",
   "accepted_tranche_manifest_hash": "8c99232b7b6e0eaf8638208a2863feb80462ad4937bb0d85cfe810fabc1da44b",
-  "run_spec_hash": "8364eca1d2e492d50e2fbc5a052cd6370748ef24046306700cb8e1757ad37633",
+  "run_spec_hash": "1bc30c6fee345dce5f9ddadc18a409af61fade289ab6f1f88411550801e2cf03",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01702",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=JELLYJELLYUSDT/dt=2026-03-01/object=c429753837bf342c8f1579d71506014b496f49b83de67d0bffa4e67f6c19e1f5",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

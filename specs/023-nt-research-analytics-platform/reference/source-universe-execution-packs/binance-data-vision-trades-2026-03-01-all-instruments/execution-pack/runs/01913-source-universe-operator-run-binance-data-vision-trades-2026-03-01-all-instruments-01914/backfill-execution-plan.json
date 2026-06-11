@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:THETAUSDT:2026-03-01:2d48610c1e013a1a1a249e9775685358232e2a98b734944d8f51cb0ad620e103:accepted-tranche",
   "accepted_tranche_manifest_hash": "46511f10fb9b6a6144c20b89381e32e1391d06801d203a4a5e998a81e1cd0356",
-  "run_spec_hash": "522c5e097b666c417277ebfa22474c4b43bbbb51def52a4b49567babf8acdd32",
+  "run_spec_hash": "56af03dc00fd25c5f8b2684dcafbdbb500765181cce9a0e70a81a5e07546d3ec",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01914",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=THETAUSDT/dt=2026-03-01/object=2d48610c1e013a1a1a249e9775685358232e2a98b734944d8f51cb0ad620e103",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

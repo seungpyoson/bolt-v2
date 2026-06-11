@@ -4,7 +4,7 @@
   "status": "ready",
   "accepted_tranche_id": "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments:binance-usd-m-perpetual-native-trades:MAVIAUSDT:2026-03-01:b56a6f9932f7a71f842bdebd93d308ad404b6721f2ad36317c526f83e90277a7:accepted-tranche",
   "accepted_tranche_manifest_hash": "f5e62e3416b033658860be33944dd8a98969225cb153a6bea7f6f0251d9d81cb",
-  "run_spec_hash": "95a013ddac7d54433e271bce5a5fe329741d15f84637521434cbb249ce2ecdec",
+  "run_spec_hash": "49263c4b41cd73eac607f88a875275de720d0e13215d3a2e9d0dd7b52332d2f9",
   "operator_run_id": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments-01743",
   "output_prefix": "s3://bolt-parquet/nt-research-analytics/backtests/source-universe=backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments/category=usd_m_perpetual/symbol=MAVIAUSDT/dt=2026-03-01/object=b56a6f9932f7a71f842bdebd93d308ad404b6721f2ad36317c526f83e90277a7",
   "source_proof_id": "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments",

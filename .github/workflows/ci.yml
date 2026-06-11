@@ -354,7 +354,7 @@ jobs:
     name: nextest shard ${{ matrix.shard }} of 4
     needs: test-archive
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     strategy:
       fail-fast: false
       matrix:

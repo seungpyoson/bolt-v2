@@ -20,6 +20,8 @@ The existing `binary_oracle_edge_taker` selection path consumes `rotating_market
 
 For static sports events, `fair_probability_up` is not derived from strike/spot pricing. Static targets require `fair_probability_source = "reference_current_price"` plus a strategy-owned `[reference_current_price]` source table, which lets the existing PR #606 reference-current-price path provide the configured fair probability. This does not add a standalone World Cup maker strategy and does not fake rotating-market pricing inputs for static event markets.
 
+`src/bolt_v3_maker_quote_plan.rs` composes the existing maker primitives for any market family: reference fair probability, optional book microprice nudge, Glosten-Milgrom reservation bid/ask, inventory skew, and the family-owned quote layout. Static World Cup markets use this through the same `MarketFamilyValidationBinding` quote-target seam as `updown`; no duplicate World Cup maker math exists.
+
 ## Testing
 
 Implementation uses TDD. The first failing tests prove:
@@ -27,9 +29,10 @@ Implementation uses TDD. The first failing tests prove:
 - `static_binary_event` is registered as a known market family.
 - Static event targets select matching YES/NO Polymarket `BinaryOption` instruments by configured market slug and outcome labels.
 - Static event targets require `fair_probability_source = "reference_current_price"` and a `[reference_current_price]` source table, then project the fair-probability source into runtime config.
+- Static event maker quote planning uses the shared maker model and static market-family quote layout.
 - Mismatched slugs, duplicate outcomes, expired instruments, and optional condition-ID mismatches fail closed.
 - Polymarket data-client mapping includes static event market slugs in its market-slug filters.
 
 ## Follow-On Scope
 
-After static event selection and reference-current-price fair-probability sourcing exist, the next slice must wire World Cup targets through the existing maker architecture: `bolt_v3_quote_lifecycle`, `bolt_v3_maker_model`, `bolt_v3_maker_inventory`, `bolt_v3_maker_reservation`, and `venue_contract`. It must not create a second standalone World Cup maker strategy or duplicate maker code.
+After static event selection, reference-current-price fair-probability sourcing, and shared maker quote planning exist, the next slice must wire the planned quotes into the existing maker lifecycle architecture: `bolt_v3_quote_lifecycle`, `bolt_v3_requote_budget`, `bolt_v3_maker_event_fence`, `bolt_v3_maker_reservation`, and `venue_contract`. It must not create a second standalone World Cup maker strategy or duplicate maker math.

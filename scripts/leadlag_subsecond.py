@@ -54,6 +54,10 @@ DELTAS_SECS = (0.1, 0.25, 0.5, 0.75, 1.0, 2.0)
 MARK_HORIZON_SECS = 30  # the session-4 best cell horizon
 SIZE_PROBE_DELTA_SECS = 0.25  # fillability probe: size at ask shortly after detection
 SUBSECOND_THRESHOLDS_BPS = (5.0, 10.0)  # X=20 had <=4 events in window; skip
+# Event-clock registry for `fillability --leader`: maps the CLI choice to the
+# leader-parquet subdir under the workdir (same <subdir>/<date>/<COIN>.parquet
+# layout for every clock). Missing keys must raise (fail loud), never default.
+LEADER_SUBDIRS = {"hl": "leader", "trades": "leader_trades"}
 
 
 def sized_tob_path(workdir: Path, date: str, stem: str) -> Path:
@@ -249,13 +253,11 @@ def cmd_fillability(args: argparse.Namespace) -> None:
         del merged
         base = s4.day_epoch(date)
         for asset in assets:
-            # --leader selects the event clock: "hl" = HL book-mid snapshots (#626
-            # baseline), "trades" = tick-trades parquets built by
-            # leadlag_trades_leader.py extract-leader (#631 fast clock). Identical
-            # layout (<subdir>/<date>/<COIN>.parquet, ts_ms+mid); only the subdir
-            # differs, so the clock is a parameter, not an asset- or venue-specific
-            # code path.
-            subdir = {"hl": "leader", "trades": "leader_trades"}[args.leader]
+            # --leader selects the event clock (see LEADER_SUBDIRS): "hl" = HL
+            # book-mid snapshots (#626 baseline), "trades" = tick-trades parquets
+            # built by leadlag_trades_leader.py extract-leader (#631 fast clock).
+            # The clock is a parameter, not an asset- or venue-specific code path.
+            subdir = LEADER_SUBDIRS[args.leader]
             leader_file = workdir / subdir / date / f"{s4.LEADER_COIN_BY_ASSET[asset]}.parquet"
             if not leader_file.exists():
                 continue

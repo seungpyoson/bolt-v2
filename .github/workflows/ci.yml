@@ -43,12 +43,10 @@ env:
   S3_DEPLOY_PATH: "s3://bolt-deploy-artifacts/artifacts/bolt-v2"
   CARGO_TERM_COLOR: always
   RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
-  # Ubicloud runner split (rollback: revert runs-on to ubuntu-latest):
+  # Ubicloud runner split (rollback: replace ubicloud-standard-* with ubuntu-latest):
   # heavy (4 vCPU / 16 GB): test-archive, build
   # light (2 vCPU / 8 GB): fmt-check, clippy, check-aarch64, source-fence, test-shards
   # GitHub-hosted: detector, deny, test, gate, same-sha-main-evidence, deploy
-  UBICLOUD_RUNNER_HEAVY: ubicloud-standard-4
-  UBICLOUD_RUNNER_LIGHT: ubicloud-standard-2
 
 permissions:
   contents: read
@@ -103,7 +101,7 @@ jobs:
   fmt-check:
     name: fmt-check
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ${{ env.UBICLOUD_RUNNER_LIGHT }}
+    runs-on: ubicloud-standard-2
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -158,7 +156,7 @@ jobs:
     name: clippy
     needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ${{ env.UBICLOUD_RUNNER_LIGHT }}
+    runs-on: ubicloud-standard-2
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -191,7 +189,7 @@ jobs:
   check-aarch64:
     name: check-aarch64
     needs: detector
-    runs-on: ${{ env.UBICLOUD_RUNNER_LIGHT }}
+    runs-on: ubicloud-standard-2
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -244,7 +242,7 @@ jobs:
     name: source-fence
     needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ${{ env.UBICLOUD_RUNNER_LIGHT }}
+    runs-on: ubicloud-standard-2
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -295,7 +293,7 @@ jobs:
     name: nextest archive
     needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ${{ env.UBICLOUD_RUNNER_HEAVY }}
+    runs-on: ubicloud-standard-4
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
     steps:
@@ -359,7 +357,7 @@ jobs:
     name: nextest shard ${{ matrix.shard }} of 4
     needs: test-archive
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ${{ env.UBICLOUD_RUNNER_LIGHT }}
+    runs-on: ubicloud-standard-2
     strategy:
       fail-fast: false
       matrix:
@@ -418,7 +416,7 @@ jobs:
     name: build
     needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}
-    runs-on: ${{ env.UBICLOUD_RUNNER_HEAVY }}
+    runs-on: ubicloud-standard-4
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 

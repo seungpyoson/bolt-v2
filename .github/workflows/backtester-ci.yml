@@ -42,9 +42,6 @@ env:
   # Same single base as ci.yml — one base, two namespaces. The crate's namespace
   # (backtesting-vertical-slice) is selected by --repo, not by a second base.
   RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
-  UBICLOUD_RUNNER_HEAVY: ubicloud-standard-4
-  UBICLOUD_RUNNER_LIGHT: ubicloud-standard-2
-
 permissions:
   contents: read
 
@@ -97,7 +94,7 @@ jobs:
     name: bvs-fmt
     needs: detect
     if: ${{ needs.detect.outputs.bvs_changed == 'true' }}
-    runs-on: ${{ env.UBICLOUD_RUNNER_LIGHT }}
+    runs-on: ubicloud-standard-2
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -115,7 +112,7 @@ jobs:
     name: bvs-clippy
     needs: [detect, fmt]
     if: ${{ needs.detect.outputs.bvs_changed == 'true' }}
-    runs-on: ${{ env.UBICLOUD_RUNNER_LIGHT }}
+    runs-on: ubicloud-standard-2
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -160,7 +157,7 @@ jobs:
     name: bvs-test
     needs: [detect, fmt]
     if: ${{ needs.detect.outputs.bvs_changed == 'true' }}
-    runs-on: ${{ env.UBICLOUD_RUNNER_HEAVY }}
+    runs-on: ubicloud-standard-4
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 

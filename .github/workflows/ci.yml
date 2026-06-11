@@ -43,10 +43,6 @@ env:
   S3_DEPLOY_PATH: "s3://bolt-deploy-artifacts/artifacts/bolt-v2"
   CARGO_TERM_COLOR: always
   RUST_VERIFICATION_ROOT_BASE: ${{ github.workspace }}/.rust-verification
-  # Ubicloud runner split (rollback: replace ubicloud-standard-* with ubuntu-latest):
-  # heavy (4 vCPU / 16 GB): test-archive, build
-  # light (2 vCPU / 8 GB): fmt-check, clippy, check-aarch64, source-fence, test-shards
-  # GitHub-hosted: detector, deny, test, gate, same-sha-main-evidence, deploy
 
 permissions:
   contents: read
@@ -57,7 +53,7 @@ jobs:
     name: detector
     outputs:
       build_required: ${{ steps.build_required.outputs.value }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -77,6 +73,7 @@ jobs:
             rust-toolchain.toml \
             justfile \
             ci/rust-verification.toml \
+            ci/github-actions-runners.toml \
             .github/workflows/ci.yml \
             .github/actions/setup-environment/action.yml \
             scripts/rust_verification.py)"
@@ -101,7 +98,7 @@ jobs:
   fmt-check:
     name: fmt-check
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubicloud-standard-2
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -124,7 +121,7 @@ jobs:
     name: deny
     needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -156,7 +153,7 @@ jobs:
     name: clippy
     needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubicloud-standard-2
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -189,7 +186,7 @@ jobs:
   check-aarch64:
     name: check-aarch64
     needs: detector
-    runs-on: ubicloud-standard-2
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -242,7 +239,7 @@ jobs:
     name: source-fence
     needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubicloud-standard-2
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -293,7 +290,7 @@ jobs:
     name: nextest archive
     needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubicloud-standard-4
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
     steps:
@@ -357,7 +354,7 @@ jobs:
     name: nextest shard ${{ matrix.shard }} of 4
     needs: test-archive
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubicloud-standard-2
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     strategy:
       fail-fast: false
       matrix:
@@ -402,7 +399,7 @@ jobs:
     name: test
     needs: test-shards
     if: ${{ !startsWith(github.ref, 'refs/tags/v') && always() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - name: Check test shards
         shell: bash
@@ -416,7 +413,7 @@ jobs:
     name: build
     needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.detector.outputs.build_required == 'true' }}
-    runs-on: ubicloud-standard-4
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -506,7 +503,7 @@ jobs:
     name: same-sha-main-evidence
     needs: detector
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     outputs:
       source_run_id: ${{ steps.evidence.outputs.source_run_id }}
       check_suite_id: ${{ steps.evidence.outputs.check_suite_id }}
@@ -529,7 +526,7 @@ jobs:
     name: gate
     needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, test, build, same-sha-main-evidence]
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - name: Check required lanes
         shell: bash
@@ -621,7 +618,7 @@ jobs:
     name: deploy
     needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
     if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.gate.result == 'success' && needs.same-sha-main-evidence.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     permissions:
       contents: read
       actions: read

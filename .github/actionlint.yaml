@@ -2,3 +2,9 @@ self-hosted-runner:
   labels:
     - ubicloud-standard-2
     - ubicloud-standard-4
+
+config-variables:
+  - AWS_DEPLOY_ROLE_ARN
+  - CI_RUNNER_GITHUB_HOSTED
+  - CI_RUNNER_MANAGED_HEAVY
+  - CI_RUNNER_MANAGED_LIGHT

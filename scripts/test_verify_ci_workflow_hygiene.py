@@ -5164,6 +5164,20 @@ def main() -> int:
     )
     assert_v6_deploy_artifact_s3_stays_allowed()
     assert_v6_red_workflow_policy_gaps()
+
+    verifier = load_verifier()
+    runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"
+    assert runner_config.exists(), "ci/github-actions-runners.toml must exist"
+    real_ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    runner_errors = verifier.verify_github_actions_runner_contract(
+        {".github/workflows/ci.yml": real_ci}
+    )
+    assert not runner_errors, runner_errors
+    actionlint_errors = verifier.verify_actionlint_runner_contract(
+        verifier.repo_workflow_texts()
+    )
+    assert not actionlint_errors, actionlint_errors
+
     print("OK: CI workflow hygiene verifier self-tests passed.")
     return 0
 

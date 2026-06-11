@@ -37,6 +37,15 @@ DEFAULT_WORKFLOW_GLOBS = ("*.yml", "*.yaml")
 DEFAULT_SETUP_ACTION = REPO_ROOT / ".github" / "actions" / "setup-environment" / "action.yml"
 DEFAULT_NEXTEST_CONFIG = REPO_ROOT / ".config" / "nextest.toml"
 DEFAULT_NO_MISTAKES_CONFIG = REPO_ROOT / ".no-mistakes.yaml"
+DEFAULT_RUNNERS_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
+DEFAULT_ACTIONLINT_CONFIG = REPO_ROOT / ".github" / "actionlint.yaml"
+JOB_RUNS_ON_VAR_RE = re.compile(r"^    runs-on:\s*\$\{\{\s*vars\.([A-Z0-9_]+)\s*\}\}\s*$")
+WORKFLOW_RUNNER_CONFIG_KEYS = {
+    "ci.yml": "ci",
+    ".github/workflows/ci.yml": "ci",
+    "backtester-ci.yml": "backtester_ci",
+    ".github/workflows/backtester-ci.yml": "backtester_ci",
+}
 DEFAULT_REPO_AUTOMATION_FILES = (REPO_ROOT / "justfile",)
 DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / "scripts", "*.sh"),
@@ -6036,6 +6045,142 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
     return errors
 
 
+def load_github_actions_runners_config(
+    path: pathlib.Path = DEFAULT_RUNNERS_CONFIG,
+) -> dict[str, object]:
+    if not path.exists():
+        raise FileNotFoundError(f"managed runner config missing: {path}")
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    runners = data.get("runners")
+    workflows = data.get("workflows")
+    if not isinstance(runners, dict) or not isinstance(workflows, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [runners] and [workflows]")
+    tier_to_var: dict[str, str] = {}
+    managed_labels: list[str] = []
+    for tier, entry in runners.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"runners.{tier} must be a table")
+        variable = entry.get("variable")
+        label = entry.get("label")
+        if not isinstance(variable, str) or not variable:
+            raise ValueError(f"runners.{tier}.variable must be a non-empty string")
+        if not isinstance(label, str) or not label:
+            raise ValueError(f"runners.{tier}.label must be a non-empty string")
+        tier_to_var[tier] = variable
+        if tier != "github_hosted":
+            managed_labels.append(label)
+    return {
+        "tier_to_var": tier_to_var,
+        "managed_labels": sorted(set(managed_labels)),
+        "variables": sorted(tier_to_var.values()),
+        "workflows": workflows,
+    }
+
+
+def extract_job_runs_on_var(job_lines: list[str]) -> str | None:
+    for line in job_lines:
+        match = JOB_RUNS_ON_VAR_RE.match(line)
+        if match is not None:
+            return match.group(1)
+    return None
+
+
+def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str]:
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        return []
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"github-actions runner config invalid: {exc}"]
+
+    tier_to_var = config["tier_to_var"]
+    workflow_tables = config["workflows"]
+    errors: list[str] = []
+
+    for workflow_name, workflow_key in WORKFLOW_RUNNER_CONFIG_KEYS.items():
+        if workflow_name not in workflows:
+            continue
+        job_table = workflow_tables.get(workflow_key)
+        if not isinstance(job_table, dict):
+            errors.append(f"workflows.{workflow_key} missing in ci/github-actions-runners.toml")
+            continue
+        jobs = parse_jobs(workflows[workflow_name])
+        for job, tier in job_table.items():
+            if job not in jobs:
+                continue
+            expected_var = tier_to_var.get(tier)
+            if expected_var is None:
+                errors.append(f"unknown runner tier {tier!r} for {workflow_name} {job}")
+                continue
+            actual_var = extract_job_runs_on_var(jobs[job])
+            if actual_var is None:
+                errors.append(
+                    f"{workflow_name} {job} runs-on must reference vars.{expected_var} "
+                    "(no hardcoded runner labels)"
+                )
+                continue
+            if actual_var != expected_var:
+                errors.append(
+                    f"{workflow_name} {job} runs-on must use vars.{expected_var}, got vars.{actual_var}"
+                )
+    return errors
+
+
+def actionlint_config_variables(actionlint_text: str) -> set[str]:
+    variables: set[str] = set()
+    in_section = False
+    for line in actionlint_text.splitlines():
+        clean = strip_comment(line).strip()
+        if clean == "config-variables:":
+            in_section = True
+            continue
+        if in_section:
+            if clean and not clean.startswith("- "):
+                break
+            if clean.startswith("- "):
+                variables.add(clean[2:].strip())
+    return variables
+
+
+def workflow_repository_variables(workflows: dict[str, str]) -> set[str]:
+    variables: set[str] = set()
+    for workflow_text in workflows.values():
+        for match in re.finditer(r"vars\.([A-Z0-9_]+)", workflow_text):
+            variables.add(match.group(1))
+    return variables
+
+
+def verify_actionlint_runner_contract(
+    workflows: dict[str, str],
+    actionlint_path: pathlib.Path = DEFAULT_ACTIONLINT_CONFIG,
+) -> list[str]:
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        return []
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"github-actions runner config invalid: {exc}"]
+    if not actionlint_path.exists():
+        return [f"actionlint config missing: {actionlint_path}"]
+
+    text = actionlint_path.read_text(encoding="utf-8")
+    allowed_variables = actionlint_config_variables(text)
+    errors: list[str] = []
+    for label in config["managed_labels"]:
+        if f"- {label}" not in text:
+            errors.append(f".github/actionlint.yaml must list managed runner label {label!r}")
+    for variable in config["variables"]:
+        if variable not in allowed_variables:
+            errors.append(f".github/actionlint.yaml must allow config variable {variable!r}")
+    for variable in sorted(workflow_repository_variables(workflows)):
+        if variable not in allowed_variables:
+            errors.append(
+                f".github/actionlint.yaml must allow repository variable {variable!r} "
+                "referenced by workflow vars.* expressions"
+            )
+    return errors
+
+
 def repo_workflow_texts() -> dict[str, str]:
     if not DEFAULT_WORKFLOW_DIR.exists():
         return {}
@@ -6060,6 +6205,8 @@ def main() -> int:
         for path in sorted(directory.glob(pattern)):
             repo_automation_texts[path.relative_to(REPO_ROOT).as_posix()] = path.read_text()
     errors = verify_workflows(workflow_texts, action_text, nextest_config_text)
+    errors.extend(verify_github_actions_runner_contract(workflow_texts))
+    errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     if DEFAULT_NO_MISTAKES_CONFIG.exists():
         errors.extend(verify_no_mistakes_config(DEFAULT_NO_MISTAKES_CONFIG.read_text()))

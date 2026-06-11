@@ -34,7 +34,10 @@ and individually approved. Read-only probes (`ls`/`cat`/log greps via SSM) need 
 - [ ] `just live-check` and `just live-resolve` pass against the operator's
       `config/live.local.toml` (secret completeness, SSM resolution).
 - [ ] Confirm `config/live.local.toml` strategy selection points at the BTC strategy
-      (the Jun-6 smoke already ran `strategy_instance_id=bitcoin_updown_main`).
+      from `config/strategies/binary_oracle_btc.toml` (its `strategy_instance_id` is
+      `binary_oracle_btc`). Historical note: the Jun-6 smoke ran the OLD on-box
+      config's id `bitcoin_updown_main` — expect the instance id (and the evidence
+      directory name derived from it) to CHANGE after this redeploy.
 
 ## Phase 1 — deploy (operator present)
 

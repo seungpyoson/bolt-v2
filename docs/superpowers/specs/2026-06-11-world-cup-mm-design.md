@@ -1,0 +1,32 @@
+# World Cup MM Static Binary Event Design
+
+## Objective
+
+Implement the first production-aligned World Cup market-making slice without reintroducing an evidence/readiness gate. The slice makes Polymarket World Cup-style binary event markets selectable by configuration, so maker quoting can run against real static event markets instead of the rotating `updown` cadence family.
+
+## Approved Scope
+
+The first implementation slice adds a `static_binary_event` market family. It selects a configured Polymarket binary market from NautilusTrader `BinaryOption` instruments using TOML-owned identity fields: `market_slug`, optional `condition_id`, and configured outcome labels. It reuses the existing market-family registry, selected-market requirement contract, and Polymarket data-client filter mechanism.
+
+This slice does not hardcode World Cup teams, tournament names, slugs, condition IDs, or token IDs. All market identity values come from TOML. It also does not add a readiness gate, an evidence gate, a live-submit gate, or a World Cup-specific strategy fork.
+
+## Architecture
+
+`src/bolt_v3_market_families/static_binary_event.rs` owns static event target parsing, validation, target planning, selected-market extraction, and selected-market requirement construction. It exposes the same `MarketFamilyValidationBinding` functions as `updown`, so the existing strategy and market-family registry paths can dispatch without new parent-level branches.
+
+`src/bolt_v3_providers/polymarket.rs` extends market-slug filtering to include static event target plans in addition to rotating `updown` target plans. This lets the NT Polymarket adapter load configured World Cup markets into the instrument cache.
+
+The existing `binary_oracle_edge_taker` selection path consumes `rotating_market_family`, `underlying_asset`, `cadence_seconds`, and `cadence_slug_token` from runtime config. Static events preserve that runtime shape by projecting `cadence_seconds = 1`, `cadence_slug_token = market_slug`, and `underlying_asset = event_key`. The market-family implementation ignores cadence for static event selection and matches on the configured static market slug.
+
+## Testing
+
+Implementation uses TDD. The first failing tests prove:
+
+- `static_binary_event` is registered as a known market family.
+- Static event targets select matching YES/NO Polymarket `BinaryOption` instruments by configured market slug and outcome labels.
+- Mismatched slugs, duplicate outcomes, expired instruments, and optional condition-ID mismatches fail closed.
+- Polymarket data-client mapping includes static event market slugs in its market-slug filters.
+
+## Follow-On Scope
+
+After static event selection exists, the next slice can add a maker strategy/archetype that emits post-only maker quote intents using existing modules: `bolt_v3_quote_lifecycle`, `bolt_v3_maker_model`, `bolt_v3_maker_inventory`, `bolt_v3_maker_reservation`, and `venue_contract`.

@@ -285,6 +285,7 @@ def extract_pm_object(workdir: Path, date: str, key: str, tokens: list[str]) -> 
             raw_tob = con.execute(
                 f"""
                 SELECT asset_id, CAST(epoch_ms(timestamp_received) AS BIGINT) AS ts_ms,
+                       CAST(epoch_ms(timestamp) AS BIGINT) AS ts_venue_ms,
                        CAST(best_bid AS DOUBLE) AS best_bid, CAST(best_ask AS DOUBLE) AS best_ask
                 FROM read_parquet('{local}')
                 WHERE event_type = 'price_change' AND asset_id IN ({token_list})
@@ -294,6 +295,7 @@ def extract_pm_object(workdir: Path, date: str, key: str, tokens: list[str]) -> 
             raw_trades = con.execute(
                 f"""
                 SELECT asset_id, CAST(epoch_ms(timestamp_received) AS BIGINT) AS ts_ms,
+                       CAST(epoch_ms(timestamp) AS BIGINT) AS ts_venue_ms,
                        CAST(price AS DOUBLE) AS price, CAST(size AS DOUBLE) AS size,
                        side, CAST(fee_rate_bps AS INTEGER) AS fee_rate_bps
                 FROM read_parquet('{local}')

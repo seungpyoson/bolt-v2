@@ -160,6 +160,7 @@ def extract_sized_object(workdir: Path, date: str, key: str, tokens: list[str]) 
             frame = con.execute(
                 f"""
                 SELECT asset_id, CAST(epoch_ms(timestamp_received) AS BIGINT) AS ts_ms,
+                       CAST(epoch_ms(timestamp) AS BIGINT) AS ts_venue_ms,
                        CAST(best_bid AS DOUBLE) AS best_bid, CAST(best_ask AS DOUBLE) AS best_ask,
                        CAST(price AS DOUBLE) AS level_price, CAST(size AS DOUBLE) AS level_size,
                        side

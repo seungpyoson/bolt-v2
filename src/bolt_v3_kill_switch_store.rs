@@ -1,9 +1,12 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -26,10 +29,37 @@ pub enum KillSwitchRecoveryState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KillSwitchRecoveryReason {
     MissingEvidence,
+    MissingLossProtectionSnapshot,
     CorruptEvidence,
     OversizedEvidence,
     UnsupportedSchemaVersion,
     UnresolvedHalt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KillSwitchRecoveryRecord {
+    pub recovery_state: KillSwitchRecoveryState,
+    pub loss_protection: Option<KillSwitchLossProtectionSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KillSwitchLossProtectionSnapshot {
+    pub daily_bucket: Option<u64>,
+    pub daily_realized_pnl: Decimal,
+    pub cumulative_position_pnl: BTreeMap<String, KillSwitchCumulativePositionPnlSnapshot>,
+    pub pending_halt_actions: Option<KillSwitchPendingHaltActionsSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KillSwitchCumulativePositionPnlSnapshot {
+    pub realized_pnl: Decimal,
+    pub last_observed_at_unix_nanos: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KillSwitchPendingHaltActionsSnapshot {
+    pub next_retry_at_unix_nanos: u64,
+    pub retry_deadline_unix_nanos: u64,
 }
 
 #[derive(Debug)]
@@ -58,10 +88,44 @@ impl KillSwitchStore {
     }
 
     pub fn write_state(&self, state: &KillSwitchState) -> Result<(), KillSwitchStoreError> {
+        self.write_state_with_loss_snapshot(state, None)
+    }
+
+    pub fn write_state_with_loss_snapshot(
+        &self,
+        state: &KillSwitchState,
+        loss_protection: Option<&KillSwitchLossProtectionSnapshot>,
+    ) -> Result<(), KillSwitchStoreError> {
         let persisted = PersistedKillSwitchState {
             schema_version: KILL_SWITCH_STORE_SCHEMA_VERSION,
             state: state.clone(),
+            loss_protection: loss_protection.map(PersistedKillSwitchLossProtectionSnapshot::from),
         };
+        self.write_persisted_state(&persisted)
+    }
+
+    pub fn invalidate(&self) -> Result<(), KillSwitchStoreError> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).map_err(|source| KillSwitchStoreError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+
+        let temp_path = self.temp_path();
+        write_private_synced_file(&temp_path, b"!")?;
+        fs::rename(&temp_path, &self.path).map_err(|source| KillSwitchStoreError::Io {
+            path: self.path.clone(),
+            source,
+        })?;
+        sync_parent_dir(&self.path)?;
+        Ok(())
+    }
+
+    fn write_persisted_state(
+        &self,
+        persisted: &PersistedKillSwitchState,
+    ) -> Result<(), KillSwitchStoreError> {
         let bytes =
             serde_json::to_vec_pretty(&persisted).map_err(KillSwitchStoreError::Serialize)?;
         if bytes.len() as u64 > self.max_state_file_bytes {
@@ -90,12 +154,20 @@ impl KillSwitchStore {
     }
 
     pub fn load_recovery_state(&self) -> Result<KillSwitchRecoveryState, KillSwitchStoreError> {
+        self.load_recovery_record()
+            .map(|record| record.recovery_state)
+    }
+
+    pub fn load_recovery_record(&self) -> Result<KillSwitchRecoveryRecord, KillSwitchStoreError> {
         let file = match fs::File::open(&self.path) {
             Ok(file) => file,
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
-                return Ok(KillSwitchRecoveryState::FailClosed {
-                    reason: KillSwitchRecoveryReason::MissingEvidence,
-                    state: None,
+                return Ok(KillSwitchRecoveryRecord {
+                    recovery_state: KillSwitchRecoveryState::FailClosed {
+                        reason: KillSwitchRecoveryReason::MissingEvidence,
+                        state: None,
+                    },
+                    loss_protection: None,
                 });
             }
             Err(source) => {
@@ -118,38 +190,67 @@ impl KillSwitchStore {
             }
         };
         if bytes.len() as u64 > self.max_state_file_bytes {
-            return Ok(KillSwitchRecoveryState::FailClosed {
-                reason: KillSwitchRecoveryReason::OversizedEvidence,
-                state: None,
+            return Ok(KillSwitchRecoveryRecord {
+                recovery_state: KillSwitchRecoveryState::FailClosed {
+                    reason: KillSwitchRecoveryReason::OversizedEvidence,
+                    state: None,
+                },
+                loss_protection: None,
             });
         }
 
         let persisted = match serde_json::from_slice::<PersistedKillSwitchState>(&bytes) {
             Ok(persisted) => persisted,
             Err(_) => {
-                return Ok(KillSwitchRecoveryState::FailClosed {
-                    reason: KillSwitchRecoveryReason::CorruptEvidence,
-                    state: None,
+                return Ok(KillSwitchRecoveryRecord {
+                    recovery_state: KillSwitchRecoveryState::FailClosed {
+                        reason: KillSwitchRecoveryReason::CorruptEvidence,
+                        state: None,
+                    },
+                    loss_protection: None,
                 });
             }
         };
 
         if persisted.schema_version != KILL_SWITCH_STORE_SCHEMA_VERSION {
-            return Ok(KillSwitchRecoveryState::FailClosed {
-                reason: KillSwitchRecoveryReason::UnsupportedSchemaVersion,
-                state: Some(persisted.state),
+            return Ok(KillSwitchRecoveryRecord {
+                recovery_state: KillSwitchRecoveryState::FailClosed {
+                    reason: KillSwitchRecoveryReason::UnsupportedSchemaVersion,
+                    state: Some(persisted.state),
+                },
+                loss_protection: None,
             });
         }
 
-        match persisted.state {
+        let loss_protection = match persisted.loss_protection {
+            Some(snapshot) => match KillSwitchLossProtectionSnapshot::try_from(snapshot) {
+                Ok(snapshot) => Some(snapshot),
+                Err(()) => {
+                    return Ok(KillSwitchRecoveryRecord {
+                        recovery_state: KillSwitchRecoveryState::FailClosed {
+                            reason: KillSwitchRecoveryReason::CorruptEvidence,
+                            state: Some(persisted.state),
+                        },
+                        loss_protection: None,
+                    });
+                }
+            },
+            None => None,
+        };
+
+        let recovery_state = match persisted.state {
             KillSwitchState::Halting { .. } | KillSwitchState::FailedManualIntervention { .. } => {
-                Ok(KillSwitchRecoveryState::FailClosed {
+                KillSwitchRecoveryState::FailClosed {
                     reason: KillSwitchRecoveryReason::UnresolvedHalt,
                     state: Some(persisted.state),
-                })
+                }
             }
-            state => Ok(KillSwitchRecoveryState::Recovered(state)),
-        }
+            state => KillSwitchRecoveryState::Recovered(state),
+        };
+        Ok(KillSwitchRecoveryRecord {
+            recovery_state,
+            loss_protection,
+        })
     }
 
     fn temp_path(&self) -> PathBuf {
@@ -163,6 +264,69 @@ impl KillSwitchStore {
 struct PersistedKillSwitchState {
     schema_version: u32,
     state: KillSwitchState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    loss_protection: Option<PersistedKillSwitchLossProtectionSnapshot>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedKillSwitchLossProtectionSnapshot {
+    daily_bucket: Option<u64>,
+    daily_realized_pnl: String,
+    cumulative_position_pnl: BTreeMap<String, PersistedCumulativePositionPnlSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_halt_actions: Option<KillSwitchPendingHaltActionsSnapshot>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedCumulativePositionPnlSnapshot {
+    realized_pnl: String,
+    last_observed_at_unix_nanos: u64,
+}
+
+impl From<&KillSwitchLossProtectionSnapshot> for PersistedKillSwitchLossProtectionSnapshot {
+    fn from(snapshot: &KillSwitchLossProtectionSnapshot) -> Self {
+        Self {
+            daily_bucket: snapshot.daily_bucket,
+            daily_realized_pnl: snapshot.daily_realized_pnl.to_string(),
+            cumulative_position_pnl: snapshot
+                .cumulative_position_pnl
+                .iter()
+                .map(|(position_id, value)| {
+                    (
+                        position_id.clone(),
+                        PersistedCumulativePositionPnlSnapshot {
+                            realized_pnl: value.realized_pnl.to_string(),
+                            last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                        },
+                    )
+                })
+                .collect(),
+            pending_halt_actions: snapshot.pending_halt_actions,
+        }
+    }
+}
+
+impl TryFrom<PersistedKillSwitchLossProtectionSnapshot> for KillSwitchLossProtectionSnapshot {
+    type Error = ();
+
+    fn try_from(snapshot: PersistedKillSwitchLossProtectionSnapshot) -> Result<Self, Self::Error> {
+        let mut cumulative_position_pnl = BTreeMap::new();
+        for (position_id, value) in snapshot.cumulative_position_pnl {
+            cumulative_position_pnl.insert(
+                position_id,
+                KillSwitchCumulativePositionPnlSnapshot {
+                    realized_pnl: Decimal::from_str(&value.realized_pnl).map_err(|_| ())?,
+                    last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                },
+            );
+        }
+        Ok(Self {
+            daily_bucket: snapshot.daily_bucket,
+            daily_realized_pnl: Decimal::from_str(&snapshot.daily_realized_pnl).map_err(|_| ())?,
+            cumulative_position_pnl,
+            pending_halt_actions: snapshot.pending_halt_actions,
+        })
+    }
 }
 
 #[derive(Debug)]

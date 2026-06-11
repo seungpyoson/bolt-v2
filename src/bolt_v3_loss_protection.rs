@@ -10,7 +10,9 @@ use crate::{
         transition_kill_switch_state,
     },
     bolt_v3_kill_switch_store::{
-        KillSwitchRecoveryReason, KillSwitchRecoveryState, KillSwitchStore,
+        KillSwitchCumulativePositionPnlSnapshot, KillSwitchLossProtectionSnapshot,
+        KillSwitchPendingHaltActionsSnapshot, KillSwitchRecoveryReason, KillSwitchRecoveryState,
+        KillSwitchStore,
     },
     bolt_v3_submit_admission::{BoltV3KillSwitchForcedReductionPolicy, BoltV3SubmitAdmissionState},
 };
@@ -20,8 +22,8 @@ const NANOS_PER_MILLISECOND: u64 = 1_000_000;
 const FAIL_CLOSED_RECOVERY_HALT_ID: &str = "kill-switch-recovery-fail-closed";
 const LOSS_TRIGGER_REASON: &str = "daily_realized_loss_limit";
 const HALT_ACTION_RETRY_TIMEOUT_REASON: &str = "halt_action_retry_timeout";
-const CANCEL_ACTION_ID: &str = "cancel-open-orders";
 const FLATTEN_ACTION_ID: &str = "flatten-positions";
+const SNAPSHOT_PERSISTENCE_FAILED_REASON: &str = "loss_protection_snapshot_persistence_failed";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KillSwitchLossProtectionConfig {
@@ -48,11 +50,11 @@ pub struct PositionRealizedPnlObservation {
     pub position_id: String,
     pub observed: RealizedPnlObservation,
     pub cumulative_realized_pnl: bool,
+    pub closes_position: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KillSwitchLossActionKind {
-    CancelOpenOrders,
     FlattenPositions,
 }
 
@@ -77,6 +79,12 @@ struct PendingHaltActions {
     retry_deadline_unix_nanos: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CumulativePositionPnl {
+    realized_pnl: Decimal,
+    last_observed_at_unix_nanos: u64,
+}
+
 pub struct KillSwitchLossProtection {
     config: KillSwitchLossProtectionConfig,
     admission: Arc<BoltV3SubmitAdmissionState>,
@@ -85,7 +93,7 @@ pub struct KillSwitchLossProtection {
     state: KillSwitchState,
     daily_bucket: Option<u64>,
     daily_realized_pnl: Decimal,
-    cumulative_position_pnl: BTreeMap<String, Decimal>,
+    cumulative_position_pnl: BTreeMap<String, CumulativePositionPnl>,
     pending_halt_actions: Option<PendingHaltActions>,
 }
 
@@ -116,9 +124,39 @@ impl KillSwitchLossProtection {
     }
 
     pub fn seed_from_store(&mut self) -> anyhow::Result<KillSwitchState> {
-        let state = seed_admission_from_kill_switch_store(&self.admission, &self.store)?;
+        let record = self
+            .store
+            .load_recovery_record()
+            .map_err(|error| anyhow!("kill switch recovery load failed: {error:?}"))?;
+        let mut state = match record.recovery_state {
+            KillSwitchRecoveryState::Recovered(state) => state,
+            KillSwitchRecoveryState::FailClosed { reason, state } => {
+                fail_closed_recovery_state(reason, state)
+            }
+        };
+        self.state = state.clone();
+        if matches!(state, KillSwitchState::Armed) {
+            let Some(snapshot) = record.loss_protection else {
+                state = fail_closed_recovery_state(
+                    KillSwitchRecoveryReason::MissingLossProtectionSnapshot,
+                    Some(state),
+                );
+                self.admission.replace_kill_switch_state(state.clone());
+                self.state = state.clone();
+                self.persist_failed_state_or_invalidate(&state)?;
+                return Ok(state);
+            };
+            self.apply_loss_snapshot(snapshot);
+        } else if let Some(snapshot) = record.loss_protection {
+            self.apply_loss_snapshot(snapshot);
+        }
+        self.admission.replace_kill_switch_state(state.clone());
         self.state = state.clone();
         Ok(state)
+    }
+
+    pub fn action_retry_interval_ms(&self) -> u64 {
+        self.config.action_retry_interval_ms
     }
 
     pub fn record_position_event(
@@ -142,17 +180,50 @@ impl KillSwitchLossProtection {
             return Ok(None);
         }
         if !matches!(self.state, KillSwitchState::Armed) {
-            return self.record_realized_pnl(observation.observed);
+            self.poll_pending_halt_actions(observation.observed.observed_at_unix_nanos)?;
+            return Ok(None);
         }
-        self.rotate_daily_bucket(observation.observed.observed_at_unix_nanos);
+        if !self.accept_observation_bucket(observation.observed.observed_at_unix_nanos) {
+            return Ok(None);
+        }
         let observed = if observation.cumulative_realized_pnl {
-            let previous = self
+            let previous_record = self
                 .cumulative_position_pnl
-                .insert(
-                    observation.position_id.clone(),
-                    observation.observed.realized_pnl,
-                )
+                .get(&observation.position_id)
+                .cloned();
+            if let Some(previous) = &previous_record {
+                if observation.observed.observed_at_unix_nanos
+                    < previous.last_observed_at_unix_nanos
+                {
+                    return Ok(None);
+                }
+                if observation.observed.observed_at_unix_nanos
+                    == previous.last_observed_at_unix_nanos
+                    && observation.observed.realized_pnl == previous.realized_pnl
+                {
+                    if observation.closes_position {
+                        self.cumulative_position_pnl
+                            .remove(&observation.position_id);
+                        self.persist_runtime_snapshot_or_fail_closed()?;
+                    }
+                    return Ok(None);
+                }
+            }
+            let previous = previous_record
+                .map(|previous| previous.realized_pnl)
                 .unwrap_or(Decimal::ZERO);
+            if observation.closes_position {
+                self.cumulative_position_pnl
+                    .remove(&observation.position_id);
+            } else {
+                self.cumulative_position_pnl.insert(
+                    observation.position_id.clone(),
+                    CumulativePositionPnl {
+                        realized_pnl: observation.observed.realized_pnl,
+                        last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
+                    },
+                );
+            }
             RealizedPnlObservation {
                 realized_pnl: observation.observed.realized_pnl - previous,
                 ..observation.observed
@@ -160,7 +231,7 @@ impl KillSwitchLossProtection {
         } else {
             observation.observed
         };
-        self.record_realized_pnl(observed)
+        self.record_current_bucket_realized_pnl(observed)
     }
 
     pub fn record_realized_pnl(
@@ -168,16 +239,26 @@ impl KillSwitchLossProtection {
         observation: RealizedPnlObservation,
     ) -> anyhow::Result<Option<KillSwitchState>> {
         if !matches!(self.state, KillSwitchState::Armed) {
-            self.retry_pending_halt_actions(observation.observed_at_unix_nanos)?;
+            self.poll_pending_halt_actions(observation.observed_at_unix_nanos)?;
             return Ok(None);
         }
 
-        self.rotate_daily_bucket(observation.observed_at_unix_nanos);
+        if !self.accept_observation_bucket(observation.observed_at_unix_nanos) {
+            return Ok(None);
+        }
+        self.record_current_bucket_realized_pnl(observation)
+    }
+
+    fn record_current_bucket_realized_pnl(
+        &mut self,
+        observation: RealizedPnlObservation,
+    ) -> anyhow::Result<Option<KillSwitchState>> {
         self.daily_realized_pnl += observation.realized_pnl;
 
         if self.daily_realized_pnl >= Decimal::ZERO
             || -self.daily_realized_pnl < self.config.daily_realized_loss_limit
         {
+            self.persist_runtime_snapshot_or_fail_closed()?;
             return Ok(None);
         }
 
@@ -193,7 +274,10 @@ impl KillSwitchLossProtection {
         )
         .map_err(|error| anyhow!("daily realized loss transition failed: {error:?}"))?;
 
-        if let Err(error) = self.store.write_state(&halting) {
+        if let Err(error) = self
+            .store
+            .write_state_with_loss_snapshot(&halting, Some(&self.loss_snapshot()))
+        {
             let reason = format!("daily realized loss halt persistence failed: {error:?}");
             let failed = transition_kill_switch_state(
                 halting,
@@ -206,7 +290,9 @@ impl KillSwitchLossProtection {
                 anyhow!("daily realized loss fail-closed transition failed: {error:?}")
             })?;
             self.admission.replace_kill_switch_state(failed.clone());
-            self.state = failed;
+            self.state = failed.clone();
+            self.persist_failed_state_or_invalidate(&failed)
+                .map_err(|persist_error| anyhow!("{reason}; {persist_error}"))?;
             return Err(anyhow!(reason));
         }
         self.admission.replace_kill_switch_state(halting.clone());
@@ -223,6 +309,7 @@ impl KillSwitchLossProtection {
                     self.config.action_retry_timeout_ms,
                 ),
             });
+            self.persist_runtime_snapshot_or_fail_closed()?;
             return Err(anyhow!(
                 "daily realized loss halt action dispatch failed: {error:?}"
             ));
@@ -230,15 +317,25 @@ impl KillSwitchLossProtection {
         Ok(Some(halting))
     }
 
-    fn rotate_daily_bucket(&mut self, observed_at_unix_nanos: u64) {
+    fn accept_observation_bucket(&mut self, observed_at_unix_nanos: u64) -> bool {
         let bucket = observed_at_unix_nanos / NANOS_PER_UTC_DAY;
-        if self.daily_bucket != Some(bucket) {
-            self.daily_bucket = Some(bucket);
-            self.daily_realized_pnl = Decimal::ZERO;
+        match self.daily_bucket {
+            None => {
+                self.daily_bucket = Some(bucket);
+                self.daily_realized_pnl = Decimal::ZERO;
+                true
+            }
+            Some(current) if bucket > current => {
+                self.daily_bucket = Some(bucket);
+                self.daily_realized_pnl = Decimal::ZERO;
+                true
+            }
+            Some(current) if bucket == current => true,
+            Some(_) => false,
         }
     }
 
-    fn retry_pending_halt_actions(&mut self, observed_at_unix_nanos: u64) -> anyhow::Result<()> {
+    pub fn poll_pending_halt_actions(&mut self, observed_at_unix_nanos: u64) -> anyhow::Result<()> {
         let Some(pending) = self.pending_halt_actions.clone() else {
             return Ok(());
         };
@@ -260,11 +357,13 @@ impl KillSwitchLossProtection {
                 ),
                 retry_deadline_unix_nanos: pending.retry_deadline_unix_nanos,
             });
+            self.persist_runtime_snapshot_or_fail_closed()?;
             return Err(anyhow!(
                 "daily realized loss halt action retry failed: {error:?}"
             ));
         }
         self.pending_halt_actions = None;
+        self.persist_runtime_snapshot_or_fail_closed()?;
         Ok(())
     }
 
@@ -276,7 +375,8 @@ impl KillSwitchLossProtection {
         )
         .map_err(|error| anyhow!("halt action failure transition failed: {error:?}"))?;
         self.admission.replace_kill_switch_state(failed.clone());
-        self.state = failed;
+        self.state = failed.clone();
+        self.persist_failed_state_or_invalidate(&failed)?;
         Ok(())
     }
 
@@ -284,20 +384,97 @@ impl KillSwitchLossProtection {
         let Some(halt_id) = halt_id(state) else {
             return Ok(());
         };
-        for (kind, action_id) in [
-            (KillSwitchLossActionKind::CancelOpenOrders, CANCEL_ACTION_ID),
-            (
-                KillSwitchLossActionKind::FlattenPositions,
-                FLATTEN_ACTION_ID,
-            ),
-        ] {
-            self.action_sink.emit(KillSwitchLossAction {
-                kind,
-                halt_id: halt_id.to_string(),
-                action_id: action_id.to_string(),
-                policy_sha256: self.config.policy_sha256.clone(),
-                account_ids: self.config.account_ids.clone(),
-                instrument_ids: self.config.instrument_ids.clone(),
+        self.action_sink.emit(KillSwitchLossAction {
+            kind: KillSwitchLossActionKind::FlattenPositions,
+            halt_id: halt_id.to_string(),
+            action_id: FLATTEN_ACTION_ID.to_string(),
+            policy_sha256: self.config.policy_sha256.clone(),
+            account_ids: self.config.account_ids.clone(),
+            instrument_ids: self.config.instrument_ids.clone(),
+        })?;
+        Ok(())
+    }
+
+    fn loss_snapshot(&self) -> KillSwitchLossProtectionSnapshot {
+        KillSwitchLossProtectionSnapshot {
+            daily_bucket: self.daily_bucket,
+            daily_realized_pnl: self.daily_realized_pnl,
+            cumulative_position_pnl: self
+                .cumulative_position_pnl
+                .iter()
+                .map(|(position_id, value)| {
+                    (
+                        position_id.clone(),
+                        KillSwitchCumulativePositionPnlSnapshot {
+                            realized_pnl: value.realized_pnl,
+                            last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                        },
+                    )
+                })
+                .collect(),
+            pending_halt_actions: self.pending_halt_actions.as_ref().map(|pending| {
+                KillSwitchPendingHaltActionsSnapshot {
+                    next_retry_at_unix_nanos: pending.next_retry_at_unix_nanos,
+                    retry_deadline_unix_nanos: pending.retry_deadline_unix_nanos,
+                }
+            }),
+        }
+    }
+
+    fn apply_loss_snapshot(&mut self, snapshot: KillSwitchLossProtectionSnapshot) {
+        self.daily_bucket = snapshot.daily_bucket;
+        self.daily_realized_pnl = snapshot.daily_realized_pnl;
+        self.cumulative_position_pnl = snapshot
+            .cumulative_position_pnl
+            .into_iter()
+            .map(|(position_id, value)| {
+                (
+                    position_id,
+                    CumulativePositionPnl {
+                        realized_pnl: value.realized_pnl,
+                        last_observed_at_unix_nanos: value.last_observed_at_unix_nanos,
+                    },
+                )
+            })
+            .collect();
+        self.pending_halt_actions =
+            snapshot
+                .pending_halt_actions
+                .map(|pending| PendingHaltActions {
+                    state: self.state.clone(),
+                    next_retry_at_unix_nanos: pending.next_retry_at_unix_nanos,
+                    retry_deadline_unix_nanos: pending.retry_deadline_unix_nanos,
+                });
+    }
+
+    fn persist_runtime_snapshot_or_fail_closed(&mut self) -> anyhow::Result<()> {
+        if let Err(error) = self
+            .store
+            .write_state_with_loss_snapshot(&self.state, Some(&self.loss_snapshot()))
+        {
+            let reason = format!("{SNAPSHOT_PERSISTENCE_FAILED_REASON}: {error:?}");
+            let failed = KillSwitchState::FailedManualIntervention {
+                halt_id: halt_id(&self.state)
+                    .unwrap_or(FAIL_CLOSED_RECOVERY_HALT_ID)
+                    .to_string(),
+                reason: reason.clone(),
+            };
+            self.pending_halt_actions = None;
+            self.admission.replace_kill_switch_state(failed.clone());
+            self.state = failed.clone();
+            self.persist_failed_state_or_invalidate(&failed)?;
+            return Err(anyhow!(reason));
+        }
+        Ok(())
+    }
+
+    fn persist_failed_state_or_invalidate(&self, failed: &KillSwitchState) -> anyhow::Result<()> {
+        if let Err(write_error) = self.store.write_state(failed) {
+            self.store.invalidate().map_err(|invalidate_error| {
+                anyhow!(
+                    "kill switch failed-state persistence failed: {write_error:?}; \
+                     invalidation failed: {invalidate_error:?}"
+                )
             })?;
         }
         Ok(())
@@ -358,6 +535,9 @@ fn halt_id(state: &KillSwitchState) -> Option<&str> {
 fn recovery_reason_label(reason: KillSwitchRecoveryReason) -> &'static str {
     match reason {
         KillSwitchRecoveryReason::MissingEvidence => "missing_evidence",
+        KillSwitchRecoveryReason::MissingLossProtectionSnapshot => {
+            "missing_loss_protection_snapshot"
+        }
         KillSwitchRecoveryReason::CorruptEvidence => "corrupt_evidence",
         KillSwitchRecoveryReason::OversizedEvidence => "oversized_evidence",
         KillSwitchRecoveryReason::UnsupportedSchemaVersion => "unsupported_schema_version",
@@ -395,6 +575,7 @@ fn position_realized_pnl_observation(
                     realized_pnl,
                 },
                 cumulative_realized_pnl: true,
+                closes_position: false,
             })
         }
         PositionEvent::PositionClosed(closed) => {
@@ -409,6 +590,7 @@ fn position_realized_pnl_observation(
                     realized_pnl,
                 },
                 cumulative_realized_pnl: true,
+                closes_position: true,
             })
         }
         PositionEvent::PositionAdjusted(adjusted) => {
@@ -423,6 +605,7 @@ fn position_realized_pnl_observation(
                     realized_pnl: pnl_change,
                 },
                 cumulative_realized_pnl: false,
+                closes_position: false,
             })
         }
     }

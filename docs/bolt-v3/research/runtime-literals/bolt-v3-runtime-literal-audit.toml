@@ -9531,10 +9531,10 @@ reason = "Stable structured reason code for exhausted TOML-owned halt-action ret
 [[allowed]]
 path = "src/bolt_v3_loss_protection.rs"
 kind = "string"
-literal = '''"cancel-open-orders"'''
-context = '''const CANCEL_ACTION_ID: &str = "cancel-open-orders";'''
-classification = "kill_switch_action_evidence_label"
-reason = "Stable action evidence label emitted after a halt; it records the required reaction step and does not configure runtime behavior."
+literal = '''"loss_protection_snapshot_persistence_failed"'''
+context = '''const SNAPSHOT_PERSISTENCE_FAILED_REASON: &str = "loss_protection_snapshot_persistence_failed";'''
+classification = "kill_switch_trigger_reason_code"
+reason = "Stable structured reason code for failing to persist the loss-protection runtime snapshot; snapshot path and byte ceiling remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_loss_protection.rs"
@@ -9542,7 +9542,7 @@ kind = "string"
 literal = '''"flatten-positions"'''
 context = '''const FLATTEN_ACTION_ID: &str = "flatten-positions";'''
 classification = "kill_switch_action_evidence_label"
-reason = "Stable action evidence label emitted after a halt; it records the required forced-exit step and does not configure runtime behavior."
+reason = "Stable action evidence label emitted after a halt; it records the NT market-exit forced-exit step and does not configure runtime behavior."
 
 [[allowed]]
 path = "src/bolt_v3_loss_protection.rs"
@@ -9551,6 +9551,14 @@ literal = '''"missing_evidence"'''
 context = '''KillSwitchRecoveryReason::MissingEvidence => "missing_evidence",'''
 classification = "kill_switch_recovery_reason_code"
 reason = "Stable recovery reason code for absent durable state evidence; it records fail-closed provenance and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"missing_loss_protection_snapshot"'''
+context = '''"missing_loss_protection_snapshot"'''
+classification = "kill_switch_recovery_reason_code"
+reason = "Stable recovery reason code for durable kill-switch evidence missing the loss-protection runtime snapshot required to recover Armed safely."
 
 [[allowed]]
 path = "src/bolt_v3_loss_protection.rs"
@@ -9615,6 +9623,14 @@ literal = '''1'''
 context = '''let read_limit = self.max_state_file_bytes.saturating_add(1);'''
 classification = "kill_switch_store_bounded_read_sentinel"
 reason = "The store reads one byte past the TOML-owned byte ceiling to detect oversized evidence without an unbounded read; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "string"
+literal = '''b"!"'''
+context = '''write_private_synced_file(&temp_path, b"!")?;'''
+classification = "kill_switch_store_invalidation_sentinel"
+reason = "Single-byte invalidation sentinel used to replace stale permissive evidence when fail-closed state persistence fails; it intentionally parses as corrupt evidence on restart."
 
 [[allowed]]
 path = "src/bolt_v3_loss_protection.rs"

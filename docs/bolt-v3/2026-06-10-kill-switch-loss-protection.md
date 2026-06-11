@@ -9,18 +9,35 @@ When enabled, the live runner subscribes to NT position events and records reali
 - transitions the shared kill-switch state from `Armed` to `Halting`
 - persists the halt evidence to `store_path`
 - replaces submit admission state so new entry orders are rejected
-- emits cancel-open-orders and flatten-positions actions
+- emits the flatten-positions forced-exit action
 - dispatches NT `Trader::market_exit_strategy` once per strategy for the halt
 
 The market-exit command is the forced-exit path: NT sends each strategy an exit command, and the strategy performs its managed cancel and close sequence.
+If one strategy dispatch fails, retry state records the strategies that already accepted the halt so subsequent retries only target the incomplete strategies for that halt.
+
+## Runtime Snapshot
+
+`store_path` contains the kill-switch state and the loss-protection runtime snapshot:
+
+- current UTC day bucket
+- same-day realized PnL accumulator
+- per-position cumulative realized PnL baselines
+- pending halt-action retry schedule, when a forced-exit dispatch failed
+
+The accumulator rotates only when an observed event moves to a later UTC day bucket. Older out-of-order events are ignored for the current bucket so delayed prior-day position events cannot clear same-day losses.
+
+Closed positions remove their cumulative PnL baseline after their final delta is applied.
+
+Pending halt actions are retried from a live timer using `action_retry_interval_ms`, not from position-event arrival. If the retry deadline is exceeded, the controller persists `FailedManualIntervention` and blocks entries.
 
 ## Restart Recovery
 
 Startup loads `store_path` before the NT runner loop starts.
 
-- `Armed`, `Halted`, and `Flat` recover as stored.
+- `Armed` recovers only with a valid loss-protection runtime snapshot.
+- `Halted` and `Flat` recover as stored.
 - `Halting` and `FailedManualIntervention` fail closed and block entries.
-- Missing, corrupt, or unsupported evidence fails closed and blocks entries.
+- Missing, corrupt, incomplete, or unsupported evidence fails closed and blocks entries.
 
 Deleting the store file is not a reset. A missing store is treated as missing evidence and restarts into `FailedManualIntervention`.
 

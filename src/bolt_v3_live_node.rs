@@ -1581,6 +1581,15 @@ fn current_unix_seconds_u64() -> Result<u64, BoltV3LiveNodeError> {
         .as_secs())
 }
 
+fn current_unix_nanos_u64() -> Result<u64> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_nanos()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("system clock timestamp exceeds supported nanos range"))?;
+    Ok(nanos)
+}
+
 pub fn build_bolt_v3_strategy_free_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
@@ -1751,12 +1760,14 @@ pub async fn run_bolt_v3_live_node(
 
 struct BoltV3LossProtectionRuntimeGuards {
     position_events: Option<TypedHandler<PositionEvent>>,
+    retry_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl BoltV3LossProtectionRuntimeGuards {
     fn none() -> Self {
         Self {
             position_events: None,
+            retry_handle: None,
         }
     }
 }
@@ -1765,6 +1776,9 @@ impl Drop for BoltV3LossProtectionRuntimeGuards {
     fn drop(&mut self) {
         if let Some(position_events) = self.position_events.take() {
             unsubscribe_position_events(position_events_pattern(), &position_events);
+        }
+        if let Some(retry_handle) = self.retry_handle.take() {
+            retry_handle.abort();
         }
     }
 }
@@ -1775,6 +1789,28 @@ fn wire_bolt_v3_loss_protection_runtime(
     let Some(loss_protection) = runtime.loss_protection.as_ref() else {
         return BoltV3LossProtectionRuntimeGuards::none();
     };
+    let retry_interval_ms = loss_protection.borrow().action_retry_interval_ms();
+    let retry_loss_protection = Rc::clone(loss_protection);
+    let retry_handle = tokio::task::spawn_local(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(retry_interval_ms));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let now_unix_nanos = match current_unix_nanos_u64() {
+                Ok(now_unix_nanos) => now_unix_nanos,
+                Err(error) => {
+                    log::error!("bolt-v3 kill-switch loss protection retry clock failed: {error}");
+                    continue;
+                }
+            };
+            if let Err(error) = retry_loss_protection
+                .borrow_mut()
+                .poll_pending_halt_actions(now_unix_nanos)
+            {
+                log::error!("bolt-v3 kill-switch loss protection action retry failed: {error}");
+            }
+        }
+    });
     let loss_protection = Rc::clone(loss_protection);
     let position_events = TypedHandler::from(move |event: &PositionEvent| {
         if let Err(error) = loss_protection.borrow_mut().record_position_event(event) {
@@ -1786,6 +1822,7 @@ fn wire_bolt_v3_loss_protection_runtime(
     subscribe_position_events(position_events_pattern(), position_events.clone(), None);
     BoltV3LossProtectionRuntimeGuards {
         position_events: Some(position_events),
+        retry_handle: Some(retry_handle),
     }
 }
 
@@ -2003,6 +2040,7 @@ struct NtMarketExitLossActionSink {
     dispatcher: Rc<dyn MarketExitDispatcher>,
     strategy_ids: Vec<StrategyId>,
     dispatched_halts: RefCell<BTreeSet<String>>,
+    dispatched_strategies_by_halt: RefCell<BTreeMap<String, BTreeSet<String>>>,
 }
 
 impl NtMarketExitLossActionSink {
@@ -2021,6 +2059,7 @@ impl NtMarketExitLossActionSink {
             dispatcher,
             strategy_ids,
             dispatched_halts: RefCell::new(BTreeSet::new()),
+            dispatched_strategies_by_halt: RefCell::new(BTreeMap::new()),
         }
     }
 }
@@ -2034,17 +2073,37 @@ impl KillSwitchLossActionSink for NtMarketExitLossActionSink {
             return Ok(());
         }
         let mut first_error = None;
+        let mut succeeded = self
+            .dispatched_strategies_by_halt
+            .borrow()
+            .get(&action.halt_id)
+            .cloned()
+            .unwrap_or_else(BTreeSet::new);
         for strategy_id in &self.strategy_ids {
+            let strategy_id_value = strategy_id.to_string();
+            if succeeded.contains(&strategy_id_value) {
+                continue;
+            }
             match self.dispatcher.market_exit_strategy(strategy_id) {
-                Ok(()) => {}
+                Ok(()) => {
+                    succeeded.insert(strategy_id_value);
+                }
                 Err(error) if first_error.is_none() => first_error = Some(error),
                 Err(_) => {}
             }
         }
         if let Some(error) = first_error {
+            self.dispatched_strategies_by_halt
+                .borrow_mut()
+                .insert(action.halt_id, succeeded);
             return Err(error);
         }
-        self.dispatched_halts.borrow_mut().insert(action.halt_id);
+        self.dispatched_halts
+            .borrow_mut()
+            .insert(action.halt_id.clone());
+        self.dispatched_strategies_by_halt
+            .borrow_mut()
+            .remove(&action.halt_id);
         Ok(())
     }
 }
@@ -2492,14 +2551,14 @@ mod tests {
             .expect("retry should succeed once every strategy exits");
         assert_eq!(
             dispatcher.attempts(),
-            vec!["strategy-a", "strategy-b", "strategy-a", "strategy-b"]
+            vec!["strategy-a", "strategy-b", "strategy-b"]
         );
 
         sink.emit(action)
             .expect("completed halt should not dispatch again");
         assert_eq!(
             dispatcher.attempts(),
-            vec!["strategy-a", "strategy-b", "strategy-a", "strategy-b"]
+            vec!["strategy-a", "strategy-b", "strategy-b"]
         );
     }
 

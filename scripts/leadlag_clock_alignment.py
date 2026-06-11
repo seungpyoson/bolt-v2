@@ -30,7 +30,10 @@ extracts never used — so the offset is measurable directly over the study wind
    (rotating updown cycle tokens), Bybit spot publicTrade, and Hyperliquid l2Book,
    and measures (NTP-corrected local receive time - venue timestamp) per feed. A
    non-negative tight floor bounds each venue clock's skew from true UTC; the lake
-   offset then decomposes into transit delay vs clock error.
+   offset then decomposes into transit delay vs clock error. The local clock is
+   guarded: per-sample wall-vs-monotonic step detection plus periodic NTP re-anchors.
+   A start-only NTP correction is NOT trusted across the run — a mid-run ~2s macOS
+   wall-clock step contaminated the first 60-minute capture.
 
 Reproduction:
   uv run scripts/leadlag_clock_alignment.py lake --dates 2026-04-22:2026-04-28 --report <file>
@@ -65,6 +68,9 @@ PM_PING_SECS = 10
 BYBIT_PING_SECS = 20
 HL_PING_SECS = 50
 CYCLE_GRACE_SECS = 5  # keep listening past cycle end; book events trail settlement
+STEP_DETECT_MS = 50.0  # wall-vs-monotonic jump beyond this = local clock step
+NTP_REANCHOR_SECS = 300  # periodic NTP re-anchor cadence (also liveness output)
+NTP_REANCHOR_SAMPLES = 3
 
 
 def quantile(sorted_vals: list[float], q: float) -> float:
@@ -187,14 +193,14 @@ def cmd_lake(args: argparse.Namespace) -> None:
 # ----- live-probe: venue clock honesty vs NTP-corrected local clock ----------
 
 
-def ntp_offset_ms() -> tuple[float, float]:
-    """Median (offset, round-trip delay) of NTP_SAMPLES queries, in ms.
+def ntp_offset_ms(n_samples: int = NTP_SAMPLES) -> tuple[float, float]:
+    """Median (offset, round-trip delay) of n_samples queries, in ms.
     offset = ntp_time - local_time; corrected local = local + offset."""
     import ntplib
 
     client = ntplib.NTPClient()
     samples = []
-    for _ in range(NTP_SAMPLES):
+    for _ in range(n_samples):
         resp = client.request(NTP_SERVER, version=3, timeout=5)
         samples.append((resp.offset * 1000.0, resp.delay * 1000.0))
         time.sleep(0.5)
@@ -203,8 +209,66 @@ def ntp_offset_ms() -> tuple[float, float]:
     return mid[0], mid[1]
 
 
-def recv_ms(clock_offset_ms: float) -> float:
-    return time.time_ns() / 1e6 + clock_offset_ms
+class CorrectedClock:
+    """NTP-anchored wall clock guarded against local clock movement mid-run.
+
+    A start-only NTP correction silently breaks if the OS steps the wall clock
+    during the capture (this contaminated the first 60-minute probe: a ~2s macOS
+    step shifted all three venues' offsets identically). Guards: every sample
+    checks the wall-vs-monotonic delta — a jump beyond STEP_DETECT_MS means the
+    wall clock moved, so the anchor is compensated and that sample dropped —
+    and periodic NTP re-anchors bound crystal drift; each re-anchor's residual
+    is the run's live error bar.
+    """
+
+    def __init__(self, initial_offset_ms: float) -> None:
+        self.offset_ms = initial_offset_ms  # corrected = wall + offset
+        self.delta_anchor = time.time_ns() / 1e6 - time.monotonic_ns() / 1e6
+        self.steps: list[tuple[str, float]] = []  # (utc hh:mm:ss, jump_ms)
+        self.residuals: list[float] = []
+
+    def now(self) -> float | None:
+        wall = time.time_ns() / 1e6
+        delta = wall - time.monotonic_ns() / 1e6
+        jump = delta - self.delta_anchor
+        if abs(jump) > STEP_DETECT_MS:
+            self.offset_ms -= jump
+            self.delta_anchor = delta
+            stamp = time.strftime("%H:%M:%SZ", time.gmtime())
+            self.steps.append((stamp, jump))
+            print(
+                f"live-probe: LOCAL CLOCK STEP {jump:+.0f}ms at {stamp}; compensated, sample dropped",
+                flush=True,
+            )
+            return None
+        return wall + self.offset_ms
+
+    def reanchor(self, measured_offset_ms: float) -> float:
+        residual = measured_offset_ms - self.offset_ms
+        self.residuals.append(residual)
+        self.offset_ms = measured_offset_ms
+        self.delta_anchor = time.time_ns() / 1e6 - time.monotonic_ns() / 1e6
+        return residual
+
+
+async def ntp_reanchor(clock: CorrectedClock, deadline: float) -> None:
+    while time.time() < deadline:
+        await asyncio.sleep(min(NTP_REANCHOR_SECS, max(deadline - time.time(), 0.0)))
+        if time.time() >= deadline:
+            return
+        try:
+            measured, delay = await asyncio.to_thread(ntp_offset_ms, NTP_REANCHOR_SAMPLES)
+        except Exception as exc:  # keep guard-projected clock on NTP failure
+            print(
+                f"live-probe: NTP re-anchor failed ({type(exc).__name__}: {exc}); keeping projected clock",
+                flush=True,
+            )
+            continue
+        residual = clock.reanchor(measured)
+        print(
+            f"live-probe: NTP re-anchor offset {measured:+.1f}ms (rtt {delay:.1f}ms), residual {residual:+.1f}ms",
+            flush=True,
+        )
 
 
 async def keepalive(ws, payload: str | None, secs: int) -> None:
@@ -213,7 +277,7 @@ async def keepalive(ws, payload: str | None, secs: int) -> None:
         await ws.send(payload if payload is not None else "PING")
 
 
-async def probe_polymarket(asset: str, deadline: float, offsets: dict[str, list[float]], clock_offset_ms: float) -> None:
+async def probe_polymarket(asset: str, deadline: float, offsets: dict[str, list[float]], clock: CorrectedClock) -> None:
     import websockets
 
     while time.time() < deadline:
@@ -235,8 +299,8 @@ async def probe_polymarket(asset: str, deadline: float, offsets: dict[str, list[
                             raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
                         except TimeoutError:
                             continue  # quiet stream; re-check cycle deadline
-                        now = recv_ms(clock_offset_ms)
-                        if raw == "PONG":
+                        now = clock.now()
+                        if now is None or raw == "PONG":
                             continue
                         msgs = json.loads(raw)
                         for msg in msgs if isinstance(msgs, list) else [msgs]:
@@ -250,7 +314,7 @@ async def probe_polymarket(asset: str, deadline: float, offsets: dict[str, list[
             await asyncio.sleep(2)
 
 
-async def probe_bybit(asset: str, deadline: float, offsets: dict[str, list[float]], clock_offset_ms: float) -> None:
+async def probe_bybit(asset: str, deadline: float, offsets: dict[str, list[float]], clock: CorrectedClock) -> None:
     import websockets
 
     symbol = tl.BYBIT_SYMBOL_BY_COIN[s4.LEADER_COIN_BY_ASSET[asset]]
@@ -265,7 +329,9 @@ async def probe_bybit(asset: str, deadline: float, offsets: dict[str, list[float
                             raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
                         except TimeoutError:
                             continue
-                        now = recv_ms(clock_offset_ms)
+                        now = clock.now()
+                        if now is None:
+                            continue
                         msg = json.loads(raw)
                         for trade in msg.get("data", []) if msg.get("topic", "").startswith("publicTrade.") else []:
                             offsets["bybit_trades"].append(now - int(trade["T"]))
@@ -276,7 +342,7 @@ async def probe_bybit(asset: str, deadline: float, offsets: dict[str, list[float
             await asyncio.sleep(2)
 
 
-async def probe_hyperliquid(asset: str, deadline: float, offsets: dict[str, list[float]], clock_offset_ms: float) -> None:
+async def probe_hyperliquid(asset: str, deadline: float, offsets: dict[str, list[float]], clock: CorrectedClock) -> None:
     import websockets
 
     coin = s4.LEADER_COIN_BY_ASSET[asset]
@@ -292,7 +358,9 @@ async def probe_hyperliquid(asset: str, deadline: float, offsets: dict[str, list
                             raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
                         except TimeoutError:
                             continue
-                        now = recv_ms(clock_offset_ms)
+                        now = clock.now()
+                        if now is None:
+                            continue
                         msg = json.loads(raw)
                         if msg.get("channel") == "l2Book":
                             offsets["hyperliquid_l2book"].append(now - int(msg["data"]["time"]))
@@ -303,13 +371,14 @@ async def probe_hyperliquid(asset: str, deadline: float, offsets: dict[str, list
             await asyncio.sleep(2)
 
 
-async def run_live_probe(asset: str, minutes: float, clock_offset_ms: float) -> dict[str, list[float]]:
+async def run_live_probe(asset: str, minutes: float, clock: CorrectedClock) -> dict[str, list[float]]:
     deadline = time.time() + minutes * 60
     offsets: dict[str, list[float]] = {"polymarket": [], "bybit_trades": [], "hyperliquid_l2book": []}
     tasks = [
-        asyncio.create_task(probe_polymarket(asset, deadline, offsets, clock_offset_ms)),
-        asyncio.create_task(probe_bybit(asset, deadline, offsets, clock_offset_ms)),
-        asyncio.create_task(probe_hyperliquid(asset, deadline, offsets, clock_offset_ms)),
+        asyncio.create_task(probe_polymarket(asset, deadline, offsets, clock)),
+        asyncio.create_task(probe_bybit(asset, deadline, offsets, clock)),
+        asyncio.create_task(probe_hyperliquid(asset, deadline, offsets, clock)),
+        asyncio.create_task(ntp_reanchor(clock, deadline)),
     ]
     await asyncio.gather(*tasks, return_exceptions=True)
     return offsets
@@ -318,14 +387,23 @@ async def run_live_probe(asset: str, minutes: float, clock_offset_ms: float) -> 
 def cmd_live_probe(args: argparse.Namespace) -> None:
     clock_offset, ntp_delay = ntp_offset_ms()
     print(f"live-probe: local clock offset vs {NTP_SERVER}: {clock_offset:+.1f}ms (rtt {ntp_delay:.1f}ms)", flush=True)
+    clock = CorrectedClock(clock_offset)
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    offsets = asyncio.run(run_live_probe(args.asset, args.minutes, clock_offset))
+    offsets = asyncio.run(run_live_probe(args.asset, args.minutes, clock))
+    steps_txt = "; ".join(f"{jump:+.0f}ms @ {stamp}" for stamp, jump in clock.steps) or "none"
+    residual_txt = (
+        f"{len(clock.residuals)} NTP re-anchors, max |residual| {max(abs(r) for r in clock.residuals):.1f}ms"
+        if clock.residuals
+        else "0 NTP re-anchors"
+    )
     lines = [
         "## Live venue-clock probe — NTP-corrected local receive minus venue timestamp",
         "",
         f"Started {started}, duration {args.minutes:.0f}m, asset {args.asset}; "
         f"local clock corrected by {clock_offset:+.1f}ms (NTP rtt {ntp_delay:.1f}ms). "
         "Offsets in ms; a non-negative tight floor bounds venue clock skew from true UTC.",
+        "",
+        f"Local-clock guard: wall-clock steps detected+compensated: {steps_txt}; {residual_txt}.",
         "",
         STATS_HEADER,
     ]

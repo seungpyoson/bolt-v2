@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date as _date
 from pathlib import Path
 
@@ -116,16 +117,28 @@ def coverage(dates: list[str], assets: list[str]) -> tuple[list[str], list[str],
     lines = ["| date | pmxt objects | hl coins covered | bybit symbols covered |", "|---|---|---|---|"]
     hl_dates: list[str] = []
     trades_dates: list[str] = []
-    for date in dates:
-        n_pm = len(s3_keys(f"{s4.PMXT_S3_PREFIX}/dt={date}/"))
-        coins = [s4.LEADER_COIN_BY_ASSET[a] for a in assets]
-        hl_keys = s3_keys(f"{s4.HL_L2BOOK_PREFIX}/date={date.replace('-', '')}/")
-        n_hl = sum(1 for c in coins if any(f"/coin={c}/" in k for k in hl_keys))
-        by_keys = s3_keys(f"{tl.BYBIT_TRADES_PREFIX}/dt={date}/")
+    coins = [s4.LEADER_COIN_BY_ASSET[a] for a in assets]
+    # One `aws s3 ls` per (source, date) — 3*len(dates) independent network
+    # round-trips. Issue them concurrently so a 7-day window costs one batch
+    # (~1 round-trip) instead of ~21 serial calls (~10-20s) before the operator
+    # sees coverage. executor.map preserves input order, so the per-source
+    # slices realign with `dates` by index.
+    prefixes = (
+        [f"{s4.PMXT_S3_PREFIX}/dt={date}/" for date in dates]
+        + [f"{s4.HL_L2BOOK_PREFIX}/date={date.replace('-', '')}/" for date in dates]
+        + [f"{tl.BYBIT_TRADES_PREFIX}/dt={date}/" for date in dates]
+    )
+    with ThreadPoolExecutor(max_workers=min(32, len(prefixes) or 1)) as pool:
+        results = list(pool.map(s3_keys, prefixes))
+    n = len(dates)
+    pm_results, hl_results, by_results = results[:n], results[n : 2 * n], results[2 * n :]
+    for i, date in enumerate(dates):
+        n_pm = len(pm_results[i])
+        n_hl = sum(1 for c in coins if any(f"/coin={c}/" in k for k in hl_results[i]))
         n_by = sum(
             1
             for c in coins
-            if any(f"/symbol={tl.BYBIT_SYMBOL_BY_COIN[c]}/" in k for k in by_keys)
+            if any(f"/symbol={tl.BYBIT_SYMBOL_BY_COIN[c]}/" in k for k in by_results[i])
         )
         lines.append(f"| {date} | {n_pm} | {n_hl}/{len(coins)} | {n_by}/{len(coins)} |")
         if n_pm and n_hl == len(coins):

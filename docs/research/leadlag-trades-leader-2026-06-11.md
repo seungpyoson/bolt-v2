@@ -151,7 +151,10 @@ settlement`:
 | xrp | 5 | +0.25s | 128 | +4.45 | [-2.56, +11.47] |
 
 Binary payouts are far noisier than 30s mid marks, so CIs widen (~±7c at n≈140) —
-that is expected, not a discrepancy. Read against the §4 table:
+that is expected, not a discrepancy. Settlement marking is also horizon-free, which
+answers a second objection: the 30s mark horizon was chosen as the baseline study's
+best-responding cell, so mid-marked levels could carry selection bias — the
+settlement-marked levels cannot. Read against the §4 table:
 
 - **btc: the GO survives marking to actual cash.** +15.9c @0.1s and +10.9c @1s with
   CIs clear of zero. The mid-mark objection is disproven for btc.
@@ -226,8 +229,24 @@ Differences vs the Bybit-clock table are therefore clock effects, not window eff
 6. **Statistical fine print.** X=10 cells have n≤44 (btc n=15) — directional color
    only; verdicts rest on the X=5 cells (n≥113). CIs assume independent events;
    120s de-overlap removes response-window overlap but not shared intraday volatility
-   regimes, so true intervals are somewhat wider than printed.
-7. All baseline caveats (one historical week, archive 1000bps fee vs 700bps live)
+   regimes, so true intervals are somewhat wider than printed. Multiple testing across
+   the grid: btc cells are nowhere near marginal; eth's settlement-marked 0.1s cell
+   (p≈0.001) survives any reasonable correction, the 0.25s cell (p≈0.009) only
+   marginally — a further reason the eth window is stated as "first few hundred ms."
+7. **Reproducibility tolerance ≈0.1c.** ~60% of Polymarket book updates share a
+   millisecond (batched venue messages), and within-ms row order is engine-dependent
+   after extraction's non-stable sort, so as-of lookups landing on a batched
+   millisecond can return different intermediate book states across engines/runs. An
+   independent from-scratch re-derivation (duckdb/pandas/numpy, no pipeline code) of
+   the btc X=5 +1s cells reproduced settlement n exactly (144) with mean +10.82 vs
+   +10.88, and mid-mark n 126 vs 127 with mean +13.21 vs +13.27 — i.e. expect cell
+   means to reproduce to ~±0.1c, not byte-exactly. No verdict cell is within that
+   tolerance of a sign change. Exact within-ms determinism would require re-extracting
+   with a source sequence column; not warranted at ±2–7c CI widths.
+8. **Leader feed composition.** 0.14% of Bybit spot prints are RPI (retail price
+   improvement) executions; their prices sit inside the normal range and cannot move
+   a 5bps/1s detector — immaterial to the leader clock.
+9. All baseline caveats (one historical week, archive 1000bps fee vs 700bps live)
    carry over.
 
 ## 8. Reproduction

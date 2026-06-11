@@ -2,6 +2,12 @@ mod support;
 
 use std::fs;
 
+use bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::{
+    BINARY_ORACLE_ENTRY_ORDER_MARKET_QUOTE_QUANTITY_CODE,
+    BINARY_ORACLE_ENTRY_ORDER_QUOTE_QUANTITY_CODE, BINARY_ORACLE_ENTRY_ORDER_REDUCE_ONLY_CODE,
+    BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE,
+};
+
 const OLD_CHAINLINK_FIXTURE_FEED_ID: &str =
     "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472";
 const CHAINLINK_BTC_TESTNET_FEED_ID: &str =
@@ -44,12 +50,18 @@ const SHIPPED_REFERENCE_PRICE_SOURCES: &[(&str, &str, Option<&str>)] = &[
 
 fn assert_binary_oracle_entry_order_shape_rejected(messages: &[String], case_name: &str) {
     assert!(
-        messages.iter().any(|message| {
-            message.contains("parameters.entry_order")
-                && message.contains("unsupported executable entry shape")
-        }),
+        messages.iter().any(|message| validation_message_has_code(
+            message,
+            BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE
+        )),
         "{case_name} should reject unsupported executable entry shape, got: {messages:#?}"
     );
+}
+
+fn validation_message_has_code(message: &str, code: &str) -> bool {
+    message
+        .split_ascii_whitespace()
+        .any(|token| token.strip_prefix("error_code=") == Some(code))
 }
 
 #[test]
@@ -1370,8 +1382,10 @@ fn bolt_v3_archetype_rejects_market_quote_quantity_entry_order() {
     assert!(
         messages.iter().any(|message| {
             message.contains("parameters.entry_order")
-                && message.contains("order_type=market")
-                && message.contains("is_quote_quantity")
+                && validation_message_has_code(
+                    message,
+                    BINARY_ORACLE_ENTRY_ORDER_MARKET_QUOTE_QUANTITY_CODE,
+                )
         }),
         "market quote-quantity entry must fail closed at load: {messages:#?}"
     );
@@ -1428,10 +1442,20 @@ fn bolt_v3_archetype_rejects_quote_quantity_limit_entry_order() {
     assert!(
         messages.iter().any(|message| {
             message.contains("parameters.entry_order")
-                && message.contains("is_quote_quantity")
+                && validation_message_has_code(
+                    message,
+                    BINARY_ORACLE_ENTRY_ORDER_QUOTE_QUANTITY_CODE,
+                )
                 && !message.contains("order_type=market")
         }),
-        "limit quote-quantity entry must fail closed at load via the base-quantity guard: {messages:#?}"
+        "limit quote-quantity entry must fail closed at load via the base-quantity guard code: {messages:#?}"
+    );
+    assert!(
+        !messages.iter().any(|message| validation_message_has_code(
+            message,
+            BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE
+        )),
+        "limit quote-quantity entry should use the specific quote-quantity error, not the broad executable-shape error: {messages:#?}"
     );
 }
 
@@ -1463,10 +1487,18 @@ fn bolt_v3_archetype_rejects_reduce_only_entry_order() {
 
     let messages = validate_strategies(&stable_root, &loaded);
     assert!(
-        messages
-            .iter()
-            .any(|message| message.contains("entry_order") && message.contains("is_reduce_only")),
-        "reduce-only entry order should be rejected before NT submission: {messages:#?}"
+        messages.iter().any(|message| {
+            message.contains("entry_order")
+                && validation_message_has_code(message, BINARY_ORACLE_ENTRY_ORDER_REDUCE_ONLY_CODE)
+        }),
+        "reduce-only entry order should be rejected before NT submission with a stable code: {messages:#?}"
+    );
+    assert!(
+        !messages.iter().any(|message| validation_message_has_code(
+            message,
+            BINARY_ORACLE_ENTRY_ORDER_UNSUPPORTED_SHAPE_CODE
+        )),
+        "reduce-only entry order should use the specific reduce-only error, not the broad executable-shape error: {messages:#?}"
     );
 }
 

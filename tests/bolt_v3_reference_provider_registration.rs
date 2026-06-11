@@ -140,7 +140,7 @@ api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
         errors
             .iter()
             .any(|message| message.contains("reconnect_max_attempts")
-                && message.contains("must be 0")),
+                && message.contains("must be explicitly set to 0")),
         "enabled Chainlink internal reconnect should fail validation, got: {errors:#?}"
     );
 }

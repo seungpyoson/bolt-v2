@@ -136,6 +136,65 @@ fn build_submit_admission_request_from_order_maps_base_limit_order() {
 }
 
 #[test]
+fn build_submit_admission_request_from_order_preserves_maker_quote_intent() {
+    let price = Price::new(0.50, 2);
+    let quantity = Quantity::new(2.0, 2);
+    let order = OrderAny::Limit(
+        LimitOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            InstrumentId::from("INSTRUMENT.SOURCE"),
+            ClientOrderId::from("O-19700101-000000-001-A9-2"),
+            OrderSide::Buy,
+            quantity,
+            price,
+            TimeInForce::Gtc,
+            None,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+        )
+        .expect("limit order should be valid"),
+    );
+    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        "strategy-a".to_string(),
+        BoltV3OrderIntentKind::MakerQuote,
+        price.to_string(),
+        &order,
+    );
+
+    let request = build_submit_admission_request_from_order(
+        BoltV3SubmitAdmissionRequestInput {
+            execution_client_id: "polymarket_main",
+            intent: &intent,
+            order: &order,
+            instrument: None,
+            quote_quantity_last_price: None,
+            quote_quantity_reference_price: None,
+            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            risk_reducing_exit_position: None,
+        },
+        |_| Ok(Decimal::ZERO),
+    )
+    .expect("maker quote admission request should build in shared admission module");
+
+    assert_eq!(request.intent_kind, BoltV3SubmitIntentKind::MakerQuote);
+}
+
+#[test]
 fn build_submit_admission_request_from_order_checks_fee_before_market_ceiling() {
     let fallback_price = Price::new(0.50, 2);
     let quantity = Quantity::new(2.0, 2);
@@ -817,9 +876,9 @@ fn submit_request_with_kind_policy_and_exit_proof(
 ) -> BoltV3SubmitAdmissionRequest {
     let (order_side, order_quantity) = match intent_kind {
         BoltV3SubmitIntentKind::RiskReducingExit => (OrderSide::Sell, Decimal::new(264, 2)),
-        BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit => {
-            (OrderSide::Buy, Decimal::new(1, 0))
-        }
+        BoltV3SubmitIntentKind::Entry
+        | BoltV3SubmitIntentKind::MakerQuote
+        | BoltV3SubmitIntentKind::ReplaceSubmit => (OrderSide::Buy, Decimal::new(1, 0)),
         BoltV3SubmitIntentKind::KillSwitchForcedReduction => (OrderSide::Sell, Decimal::new(1, 0)),
     };
     BoltV3SubmitAdmissionRequest {

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use super::*;
 use crate::bolt_v3_quote_lifecycle::{Leg, LegState};
+use rust_decimal::Decimal;
 
 #[test]
 fn static_event_maker_runtime_dispatches_two_post_only_limit_submits_through_shared_pipeline() {
@@ -47,12 +48,18 @@ fn static_event_maker_runtime_dispatches_two_post_only_limit_submits_through_sha
         assert_eq!(command.order_init.order_type, OrderType::Limit);
         assert_eq!(command.order_init.time_in_force, TimeInForce::Gtc);
         assert!(command.order_init.price.is_some());
-        assert!(command.order_init.post_only);
-        assert!(!command.order_init.reduce_only);
-        assert!(!command.order_init.quote_quantity);
+        let order = nautilus_model::orders::OrderAny::try_from(command.order_init.clone())
+            .expect("submitted maker order should convert back to NT order");
+        assert!(order.is_post_only());
+        assert!(!order.is_reduce_only());
+        assert!(!order.is_quote_quantity());
         assert_eq!(command.order_init.expire_time, None);
     }
     assert_eq!(harness.submit_admission.admitted_order_count(), 2);
+    assert_eq!(
+        harness.submit_admission.admitted_maker_quote_order_count(),
+        2
+    );
     let maker_intents = harness
         .evidence
         .events()
@@ -222,6 +229,136 @@ fn maker_requote_cancel_confirmation_dispatches_replacement_submit_on_cancel_res
     assert_eq!(maker.market.leg_state(Leg::Yes), LegState::SubmitPending);
 }
 
+#[test]
+fn maker_requote_replacement_submit_failure_clears_local_pending_state() {
+    let mut harness = ready_static_maker_harness_with_submit_cap(2);
+    let strategy = &mut harness.strategy;
+
+    let (risk_handler, risk_messages) =
+        get_typed_into_message_saving_handler::<TradingCommand>(None);
+    msgbus::register_trading_command_endpoint(
+        MessagingSwitchboard::risk_engine_queue_execute(),
+        risk_handler,
+    );
+    let (exec_handler, exec_messages) =
+        get_typed_into_message_saving_handler::<TradingCommand>(None);
+    msgbus::register_trading_command_endpoint(
+        MessagingSwitchboard::exec_engine_queue_execute(),
+        exec_handler,
+    );
+
+    strategy
+        .drive_maker_quotes_at(1_200)
+        .expect("initial maker quote dispatch should succeed");
+    let submitted = submitted_orders(risk_messages.get_messages());
+    assert_eq!(submitted.len(), 2);
+    for order in submitted {
+        strategy.on_order_accepted(order_accepted_event(
+            order.client_order_id,
+            order.instrument_id,
+        ));
+    }
+
+    strategy.pricing.last_reference_current_price = Some(0.70);
+    strategy.pricing.last_reference_current_price_ts_ms = Some(1_900);
+    strategy
+        .drive_maker_quotes_at(1_900)
+        .expect("moved quote should dispatch cancels on Polymarket");
+
+    let yes_cancel = canceled_orders(exec_messages.get_messages())
+        .into_iter()
+        .find(|order| Some(order.instrument_id) == strategy.active.books.up.instrument_id)
+        .expect("YES cancel should be present");
+    strategy
+        .on_order_canceled(&maker_order_canceled_event(
+            yes_cancel.client_order_id,
+            yes_cancel.instrument_id,
+            1_900,
+        ))
+        .expect("cancel confirmation should be handled");
+
+    assert_eq!(submitted_orders(risk_messages.get_messages()).len(), 2);
+    let maker = strategy.maker.as_ref().expect("maker state should exist");
+    assert_eq!(maker.market.leg_state(Leg::Yes), LegState::Idle);
+    assert!(maker.yes_expected.expected().is_none());
+    assert_eq!(maker.market.leg_state(Leg::No), LegState::RequotePending);
+}
+
+#[test]
+fn maker_submit_failure_does_not_advance_lifecycle_or_budget() {
+    let mut harness = ready_static_maker_harness_with_submit_cap(0);
+    let strategy = &mut harness.strategy;
+
+    let (risk_handler, risk_messages) =
+        get_typed_into_message_saving_handler::<TradingCommand>(None);
+    msgbus::register_trading_command_endpoint(
+        MessagingSwitchboard::risk_engine_queue_execute(),
+        risk_handler,
+    );
+
+    let error = strategy
+        .drive_maker_quotes_at(1_200)
+        .expect_err("admission failure should reject the maker submit");
+
+    assert!(
+        error.to_string().contains("order count cap is exhausted"),
+        "unexpected error: {error:#}"
+    );
+    assert!(risk_messages.get_messages().is_empty());
+    let maker = strategy.maker.as_ref().expect("maker state should exist");
+    assert_eq!(maker.market.leg_state(Leg::Yes), LegState::Idle);
+    assert_eq!(maker.market.leg_state(Leg::No), LegState::Idle);
+    assert_eq!(maker.budget.cost_in_window(), 0);
+    assert!(maker.yes_expected.expected().is_none());
+    assert!(maker.no_expected.expected().is_none());
+}
+
+#[test]
+fn maker_reservation_counts_existing_resting_commitment_before_later_submit() {
+    let mut harness = ready_static_maker_harness();
+    let strategy = &mut harness.strategy;
+    let maker_quote = strategy
+        .config
+        .maker_quote
+        .as_mut()
+        .expect("maker quote config should exist");
+    maker_quote.yes_quantity = 10.0;
+    maker_quote.no_quantity = 10.0;
+    maker_quote.collateral_budget = 5.0;
+
+    let (risk_handler, risk_messages) =
+        get_typed_into_message_saving_handler::<TradingCommand>(None);
+    msgbus::register_trading_command_endpoint(
+        MessagingSwitchboard::risk_engine_queue_execute(),
+        risk_handler,
+    );
+
+    strategy
+        .drive_maker_quotes_at(1_200)
+        .expect("first maker tick should submit only the affordable YES leg");
+    let first_submits = submitted_orders(risk_messages.get_messages());
+    assert_eq!(first_submits.len(), 1);
+    let yes_order = first_submits[0];
+    assert_eq!(
+        Some(yes_order.instrument_id),
+        strategy.active.books.up.instrument_id
+    );
+    strategy.on_order_accepted(order_accepted_event(
+        yes_order.client_order_id,
+        yes_order.instrument_id,
+    ));
+
+    let second_step = strategy
+        .drive_maker_quotes_at(1_250)
+        .expect("resting YES commitment should block later NO submit");
+
+    assert!(second_step.dispatched.is_empty());
+    assert_eq!(risk_messages.get_messages().len(), 1);
+    let maker = strategy.maker.as_ref().expect("maker state should exist");
+    assert_eq!(maker.market.leg_state(Leg::Yes), LegState::Resting);
+    assert_eq!(maker.market.leg_state(Leg::No), LegState::Idle);
+}
+
 struct MakerRuntimeHarness {
     strategy: BinaryOracleEdgeTaker,
     evidence: Arc<RecordingSequencedDecisionEvidenceWriter>,
@@ -229,9 +366,24 @@ struct MakerRuntimeHarness {
 }
 
 fn ready_static_maker_harness() -> MakerRuntimeHarness {
+    ready_static_maker_harness_with_submit_cap(100)
+}
+
+fn ready_static_maker_harness_with_submit_cap(max_order_count: u32) -> MakerRuntimeHarness {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let mut live_submit_limits = BTreeMap::new();
+    live_submit_limits.insert(
+        "POLYMARKET".to_string(),
+        crate::bolt_v3_submit_admission::BoltV3LiveSubmitApprovalLimits {
+            max_order_count,
+            max_order_notional: Decimal::new(100, 0),
+        },
+    );
     let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+            evidence.clone(),
+            live_submit_limits,
+        ),
     );
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),

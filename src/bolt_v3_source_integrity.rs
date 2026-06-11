@@ -307,7 +307,7 @@ mod tests {
     // Re-derived after merging the #606 reference provider review follow-ups
     // with the executable-cost split on main.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "b39d36c5d6698291e3a528089a2a8056a6bd1ccd3addda93f9be048f5f402ffc";
+        "cf64f8d181be5a4755cfbb48662f03ce1f637f00bb1e99de702bb2a3e20f2471";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

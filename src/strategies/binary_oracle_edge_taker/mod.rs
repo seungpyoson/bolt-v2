@@ -72,6 +72,7 @@ use crate::{
         MakerQuotePlan, MakerQuotePlanInputs, MakerTopOfBook, plan_maker_quote_targets,
     },
     bolt_v3_maker_quote_set::{QuoteSetDecision, QuoteSetInput, drive_binary_quote_set},
+    bolt_v3_maker_reservation::BuyCommitment,
     bolt_v3_market_families::{
         self, FairProbabilityInputs, MarketSelectionOutcome, OutcomeSide,
         SelectedMarketSourceIdentity,
@@ -86,7 +87,7 @@ use crate::{
         STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
         normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
     },
-    bolt_v3_quote_lifecycle::{Leg, LifecycleAction, MarketAction, MarketQuote},
+    bolt_v3_quote_lifecycle::{Leg, LegEvent, LifecycleAction, MarketAction, MarketQuote},
     bolt_v3_quoting::QuoteSide,
     bolt_v3_reference_price::{
         REFERENCE_PRICE_ASSET_PARAM, REFERENCE_PRICE_INSTRUMENT_ID_PARAM,
@@ -2780,16 +2781,19 @@ impl BinaryOracleEdgeTaker {
 
         let quote_set = {
             let state = self.ensure_maker_state(&config, supports_modify, max_window_cost);
+            let mut candidate_market = state.market;
+            let mut candidate_budget = state.budget.clone();
+            let open_commitments = Self::maker_open_commitments(state);
             drive_binary_quote_set(
-                &mut state.market,
-                &mut state.budget,
+                &mut candidate_market,
+                &mut candidate_budget,
                 QuoteSetInput {
                     targets: quote_plan.targets,
                     yes_quantity: config.yes_quantity,
                     no_quantity: config.no_quantity,
                     yes_resting_price: state.yes_resting_price,
                     no_resting_price: state.no_resting_price,
-                    open_commitments: &[],
+                    open_commitments: &open_commitments,
                     max_fee_bps: yes_fee_bps.max(no_fee_bps),
                     available_collateral: config.collateral_budget,
                     requote_threshold: config.requote_threshold,
@@ -2891,6 +2895,12 @@ impl BinaryOracleEdgeTaker {
                 },
                 self,
             )?;
+            self.commit_maker_quote_control_action(
+                &outcome,
+                &quote_set,
+                now_ms,
+                config.requote_action_cost,
+            )?;
             self.apply_maker_dispatch_outcome(
                 &outcome,
                 yes_next_order.as_ref(),
@@ -2907,6 +2917,113 @@ impl BinaryOracleEdgeTaker {
             dispatched,
             blocked_by: Vec::new(),
         })
+    }
+
+    fn maker_open_commitments(state: &MakerRuntimeState) -> Vec<BuyCommitment> {
+        let mut commitments = Vec::new();
+        Self::push_maker_open_commitment(
+            &mut commitments,
+            state.yes_expected.expected(),
+            state.yes_resting_price,
+            state.yes_working_quantity,
+        );
+        Self::push_maker_open_commitment(
+            &mut commitments,
+            state.no_expected.expected(),
+            state.no_resting_price,
+            state.no_working_quantity,
+        );
+        commitments
+    }
+
+    fn push_maker_open_commitment(
+        commitments: &mut Vec<BuyCommitment>,
+        expected: Option<&OrderIdentity>,
+        price: Option<f64>,
+        quantity: Option<f64>,
+    ) {
+        if expected.is_some()
+            && let (Some(price), Some(quantity)) = (price, quantity)
+        {
+            commitments.push(BuyCommitment::new(price, quantity));
+        }
+    }
+
+    fn commit_maker_quote_control_action(
+        &mut self,
+        outcome: &MakerOrderDispatchOutcome,
+        quote_set: &QuoteSetDecision,
+        now_ms: u64,
+        action_cost: u64,
+    ) -> Result<()> {
+        let leg = Self::maker_dispatch_leg(outcome);
+        let decision = match leg {
+            Leg::Yes => quote_set.yes,
+            Leg::No => quote_set.no,
+        };
+        let Some(expected_action) = decision.control.action else {
+            return Ok(());
+        };
+        let MarketAction::Leg {
+            leg: action_leg,
+            action,
+        } = expected_action
+        else {
+            return Ok(());
+        };
+        anyhow::ensure!(
+            action_leg == leg,
+            "maker quote dispatch outcome leg does not match planned lifecycle action"
+        );
+        anyhow::ensure!(
+            Self::maker_lifecycle_action_matches_outcome(action, outcome),
+            "maker quote dispatch outcome does not match planned lifecycle action"
+        );
+        let Some(state) = self.maker.as_mut() else {
+            anyhow::bail!("maker state missing while committing quote action");
+        };
+        anyhow::ensure!(
+            state.budget.try_acquire(now_ms, action_cost),
+            "maker quote budget desynchronized before quote action commit"
+        );
+        let emitted = state.market.on_leg_event(
+            leg,
+            LegEvent::QuoteTrigger {
+                requote_needed: decision.control.requote_needed,
+            },
+        );
+        anyhow::ensure!(
+            emitted == Some(expected_action),
+            "maker quote lifecycle desynchronized before quote action commit"
+        );
+        Ok(())
+    }
+
+    fn maker_dispatch_leg(outcome: &MakerOrderDispatchOutcome) -> Leg {
+        match outcome {
+            MakerOrderDispatchOutcome::Submitted { leg, .. }
+            | MakerOrderDispatchOutcome::Canceled { leg, .. }
+            | MakerOrderDispatchOutcome::Modified { leg, .. } => *leg,
+        }
+    }
+
+    fn maker_lifecycle_action_matches_outcome(
+        action: LifecycleAction,
+        outcome: &MakerOrderDispatchOutcome,
+    ) -> bool {
+        matches!(
+            (action, outcome),
+            (
+                LifecycleAction::Submit,
+                MakerOrderDispatchOutcome::Submitted { .. }
+            ) | (
+                LifecycleAction::Cancel,
+                MakerOrderDispatchOutcome::Canceled { .. }
+            ) | (
+                LifecycleAction::Modify,
+                MakerOrderDispatchOutcome::Modified { .. }
+            )
+        )
     }
 
     fn apply_maker_dispatch_outcome(
@@ -3223,6 +3340,7 @@ impl BinaryOracleEdgeTaker {
         if let Some(action) = action
             && let Err(error) = self.dispatch_maker_market_action_at(now_ms, action)
         {
+            self.recover_maker_followup_dispatch_failure(action);
             log::error!(
                 "binary_oracle_edge_taker maker lifecycle action dispatch failed: strategy_id={} client_order_id={} error={error:#}",
                 self.config.strategy_id,
@@ -3230,6 +3348,21 @@ impl BinaryOracleEdgeTaker {
             );
         }
         true
+    }
+
+    fn recover_maker_followup_dispatch_failure(&mut self, action: MarketAction) {
+        let MarketAction::Leg {
+            leg,
+            action: LifecycleAction::Submit,
+        } = action
+        else {
+            return;
+        };
+        let Some(state) = self.maker.as_mut() else {
+            return;
+        };
+        state.market.on_leg_event(leg, LegEvent::Rejected);
+        Self::clear_maker_leg_order_state(state, leg);
     }
 
     fn apply_maker_order_fill_report(

@@ -10967,3 +10967,645 @@ literal = '''"reference_instrument_id"'''
 context = '''"reference_instrument_id",'''
 classification = "strategy_runtime_schema_field"
 reason = "Legacy taker strategy config schema field name used only for validation diagnostics while rejecting unsupported runtime fields; runtime values remain supplied by bolt-v3 TOML."
+
+# Maker quote runtime schema and admission classification entries for PR #606.
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"CARGO_MANIFEST_DIR"'''
+context = '''let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))'''
+classification = "compile_time_manifest_root"
+reason = "Compile-time Cargo manifest directory used to resolve shipped venue contract validation files; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"contracts"'''
+context = '''.join("contracts")'''
+classification = "repository_contract_directory"
+reason = "Repository directory containing shipped venue contract TOML files used for validation."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"{}.toml"'''
+context = '''"{}.toml",'''
+classification = "repository_contract_filename_template"
+reason = "Stable shipped contract filename template; the venue key comes from the runtime target config."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"yes_quantity"'''
+context = '''insert_float(&mut maker_table, "yes_quantity", maker_quote.yes_quantity);'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote runtime config schema field name; the quantity value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"no_quantity"'''
+context = '''insert_float(&mut maker_table, "no_quantity", maker_quote.no_quantity);'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote runtime config schema field name; the quantity value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"collateral_budget"'''
+context = '''"collateral_budget",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote runtime config schema field name; the collateral budget value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"informed_fraction"'''
+context = '''"informed_fraction",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote runtime config schema field name; the informed fraction value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"microprice_weight"'''
+context = '''"microprice_weight",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote runtime config schema field name; the microprice weight value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"inventory_skew_gain"'''
+context = '''"inventory_skew_gain",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote runtime config schema field name; the inventory skew gain value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"position_cap"'''
+context = '''insert_float(&mut maker_table, "position_cap", maker_quote.position_cap);'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote runtime config schema field name; the position cap value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"half_spread_floor"'''
+context = '''"half_spread_floor",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote runtime config schema field name; the half-spread floor value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"max_half_spread"'''
+context = '''"max_half_spread",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote runtime config schema field name; the max half-spread value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"epsilon"'''
+context = '''insert_float(&mut maker_table, "epsilon", maker_quote.epsilon);'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote runtime config schema field name; the epsilon value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_tau_secs"'''
+context = '''"reference_tau_secs",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote runtime config schema field name; the reference horizon value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"time_widen_cap"'''
+context = '''"time_widen_cap",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote runtime config schema field name; the time-widen cap value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"requote_threshold"'''
+context = '''"requote_threshold",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote runtime config schema field name; the requote threshold value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"requote_action_cost"'''
+context = '''"requote_action_cost",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote runtime config schema field name; the requote action cost value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"requote_min_interval_ms"'''
+context = '''"requote_min_interval_ms",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote runtime config schema field name; the requote interval value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"order"'''
+context = '''"order",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested order template schema field; order values come from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"maker_quote"'''
+context = '''table.insert("maker_quote".to_string(), Value::Table(maker_table));'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional maker quote strategy config table name populated from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"maker_quote.order"'''
+context = '''let mut errors = check_enabled_order_template(context, "maker_quote.order", order);'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation field path for the maker quote nested order template; values still come from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''0'''
+context = '''admitted_maker_quote_order_count: 0,'''
+classification = "admission_counter_initial_value"
+reason = "Initial in-memory count for separately observed maker quote submit admissions."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''1'''
+context = '''inner.admitted_maker_quote_order_count += 1;'''
+classification = "admission_counter_step"
+reason = "Unit increment applied when one maker quote submit admission is admitted."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote.yes_quantity"'''
+context = '''("maker_quote.yes_quantity", maker.yes_quantity),'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation field path for maker quote YES quantity; value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote.no_quantity"'''
+context = '''("maker_quote.no_quantity", maker.no_quantity),'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation field path for maker quote NO quantity; value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote.collateral_budget"'''
+context = '''("maker_quote.collateral_budget", maker.collateral_budget),'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation field path for maker quote collateral budget; value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote.position_cap"'''
+context = '''("maker_quote.position_cap", maker.position_cap),'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation field path for maker quote position cap; value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote.max_half_spread"'''
+context = '''("maker_quote.max_half_spread", maker.max_half_spread),'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation field path for maker quote max half-spread; value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote.epsilon"'''
+context = '''("maker_quote.epsilon", maker.epsilon),'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation field path for maker quote epsilon; value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote.reference_tau_secs"'''
+context = '''("maker_quote.reference_tau_secs", maker.reference_tau_secs),'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation field path for maker quote reference horizon; value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote.time_widen_cap"'''
+context = '''("maker_quote.time_widen_cap", maker.time_widen_cap),'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation field path for maker quote time-widen cap; value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote.requote_threshold"'''
+context = '''("maker_quote.requote_threshold", maker.requote_threshold),'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation field path for maker quote requote threshold; value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote.informed_fraction"'''
+context = '''("maker_quote.informed_fraction", maker.informed_fraction),'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation field path for maker quote informed fraction; value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote.microprice_weight"'''
+context = '''("maker_quote.microprice_weight", maker.microprice_weight),'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation field path for maker quote microprice weight; value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote.inventory_skew_gain"'''
+context = '''("maker_quote.inventory_skew_gain", maker.inventory_skew_gain),'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation field path for maker quote inventory skew gain; value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote.half_spread_floor"'''
+context = '''("maker_quote.half_spread_floor", maker.half_spread_floor),'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation field path for maker quote half-spread floor; value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote"'''
+context = '''| "maker_quote"'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional maker quote table accepted by the strategy parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote"'''
+context = '''Self::validate_optional_table_field(table, field_prefix, "maker_quote", errors);'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional maker quote table type-checked as a TOML table."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"maker_quote"'''
+context = '''let Some(maker_table) = table.get("maker_quote").and_then(Value::as_table) else {'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional maker quote table read during nested field validation."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"yes_quantity"'''
+context = '''("yes_quantity", BinaryOracleEdgeTakerFieldType::Float),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field name for YES quantity."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"no_quantity"'''
+context = '''("no_quantity", BinaryOracleEdgeTakerFieldType::Float),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field name for NO quantity."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"collateral_budget"'''
+context = '''("collateral_budget", BinaryOracleEdgeTakerFieldType::Float),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field name for collateral budget."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"informed_fraction"'''
+context = '''("informed_fraction", BinaryOracleEdgeTakerFieldType::Float),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field name for informed fraction."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"microprice_weight"'''
+context = '''("microprice_weight", BinaryOracleEdgeTakerFieldType::Float),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field name for microprice weight."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"inventory_skew_gain"'''
+context = '''("inventory_skew_gain", BinaryOracleEdgeTakerFieldType::Float),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field name for inventory skew gain."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"position_cap"'''
+context = '''("position_cap", BinaryOracleEdgeTakerFieldType::Float),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field name for position cap."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"half_spread_floor"'''
+context = '''("half_spread_floor", BinaryOracleEdgeTakerFieldType::Float),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field name for half-spread floor."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"max_half_spread"'''
+context = '''("max_half_spread", BinaryOracleEdgeTakerFieldType::Float),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field name for max half-spread."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"epsilon"'''
+context = '''("epsilon", BinaryOracleEdgeTakerFieldType::Float),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field name for epsilon."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"reference_tau_secs"'''
+context = '''("reference_tau_secs", BinaryOracleEdgeTakerFieldType::Float),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field name for reference horizon."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"time_widen_cap"'''
+context = '''("time_widen_cap", BinaryOracleEdgeTakerFieldType::Float),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field name for time-widen cap."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"requote_threshold"'''
+context = '''("requote_threshold", BinaryOracleEdgeTakerFieldType::Float),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field name for requote threshold."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"requote_action_cost"'''
+context = '''"requote_action_cost",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field name for requote action cost."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"requote_min_interval_ms"'''
+context = '''"requote_min_interval_ms",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field name for requote minimum interval."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"order"'''
+context = '''("order", BinaryOracleEdgeTakerFieldType::Table),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested order template table name."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"missing_maker_quote_field"'''
+context = '''"missing_maker_quote_field",'''
+classification = "strategy_config_validation_error_code"
+reason = "Stable machine-readable validation code for a missing maker quote nested field."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"yes_quantity"'''
+context = '''"yes_quantity"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"no_quantity"'''
+context = '''| "no_quantity"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"collateral_budget"'''
+context = '''| "collateral_budget"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"informed_fraction"'''
+context = '''| "informed_fraction"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"microprice_weight"'''
+context = '''| "microprice_weight"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"inventory_skew_gain"'''
+context = '''| "inventory_skew_gain"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"position_cap"'''
+context = '''| "position_cap"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"half_spread_floor"'''
+context = '''| "half_spread_floor"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"max_half_spread"'''
+context = '''| "max_half_spread"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"epsilon"'''
+context = '''| "epsilon"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"reference_tau_secs"'''
+context = '''| "reference_tau_secs"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"time_widen_cap"'''
+context = '''| "time_widen_cap"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"requote_threshold"'''
+context = '''| "requote_threshold"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"requote_action_cost"'''
+context = '''| "requote_action_cost"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"requote_min_interval_ms"'''
+context = '''| "requote_min_interval_ms"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested schema field accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"order"'''
+context = '''| "order"'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested order table accepted by the parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"order"'''
+context = '''if let Some(order_table) = maker_table.get("order").and_then(Value::as_table) {'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested order table read for order-template validation."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"order"'''
+context = '''"order",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker quote nested order table name used in validation."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"missing_maker_quote_order"'''
+context = '''"missing_maker_quote_order",'''
+classification = "strategy_config_validation_error_code"
+reason = "Stable machine-readable validation code for a missing maker quote order table."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"maker quote budget desynchronized before quote action commit"'''
+context = '''"maker quote budget desynchronized before quote action commit"'''
+classification = "strategy_runtime_invariant_diagnostic"
+reason = "Fail-closed diagnostic for an impossible maker quote budget desynchronization."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"maker quote lifecycle desynchronized before quote action commit"'''
+context = '''"maker quote lifecycle desynchronized before quote action commit"'''
+classification = "strategy_runtime_invariant_diagnostic"
+reason = "Fail-closed diagnostic for an impossible maker quote lifecycle desynchronization."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''let remaining_quantity = (working_quantity - fill_quantity).max(0.0);'''
+classification = "quantity_floor"
+reason = "Zero lower bound used to clamp a maker working quantity remainder after a fill."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "number"
+literal = '''60'''
+context = '''const SECONDS_PER_MINUTE_U64: u64 = 60;'''
+classification = "time_unit_conversion"
+reason = "Fixed seconds-per-minute unit conversion used to derive the maker requote window."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+kind = "string"
+literal = '''"maker_quote"'''
+context = '''const ORDER_CONFIGURATION_PREFIX_MAKER_QUOTE: &str = "maker_quote";'''
+classification = "strategy_runtime_schema_field"
+reason = "Stable maker quote order-template config prefix; the template values come from bolt-v3 TOML."

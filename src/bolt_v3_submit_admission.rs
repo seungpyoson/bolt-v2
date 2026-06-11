@@ -80,6 +80,7 @@ struct BoltV3SubmitAdmissionInner {
     admitted_order_count: u32,
     admitted_order_count_by_execution_client: BTreeMap<String, u32>,
     admitted_entry_order_count: u32,
+    admitted_maker_quote_order_count: u32,
     admitted_risk_reducing_exit_order_count: u32,
     admitted_replace_submit_order_count: u32,
     live_kill_switch_forced_reduction_order_count: u32,
@@ -102,6 +103,7 @@ impl BoltV3SubmitAdmissionState {
                 admitted_order_count: 0,
                 admitted_order_count_by_execution_client: BTreeMap::new(),
                 admitted_entry_order_count: 0,
+                admitted_maker_quote_order_count: 0,
                 admitted_risk_reducing_exit_order_count: 0,
                 admitted_replace_submit_order_count: 0,
                 live_kill_switch_forced_reduction_order_count: 0,
@@ -173,6 +175,9 @@ impl BoltV3SubmitAdmissionState {
                     BoltV3SubmitIntentKind::Entry => {
                         inner.admitted_entry_order_count += 1;
                     }
+                    BoltV3SubmitIntentKind::MakerQuote => {
+                        inner.admitted_maker_quote_order_count += 1;
+                    }
                     BoltV3SubmitIntentKind::RiskReducingExit => {
                         inner.admitted_risk_reducing_exit_order_count += 1;
                     }
@@ -225,7 +230,9 @@ impl BoltV3SubmitAdmissionState {
         }
         if matches!(
             request.intent_kind,
-            BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
+            BoltV3SubmitIntentKind::Entry
+                | BoltV3SubmitIntentKind::MakerQuote
+                | BoltV3SubmitIntentKind::ReplaceSubmit
         ) && inner.kill_switch_state.kind() != KillSwitchStateKind::Armed
         {
             return BoltV3AdmissionOutcome::RejectedKillSwitchLatched;
@@ -254,7 +261,7 @@ impl BoltV3SubmitAdmissionState {
             }
         }
         match request.intent_kind {
-            BoltV3SubmitIntentKind::Entry => {}
+            BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::MakerQuote => {}
             BoltV3SubmitIntentKind::RiskReducingExit => {
                 let Some(proof) = request.risk_reducing_exit_proof.as_ref() else {
                     return BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof;
@@ -304,6 +311,13 @@ impl BoltV3SubmitAdmissionState {
             .lock()
             .expect("submit admission state mutex should not be poisoned")
             .admitted_order_count
+    }
+
+    pub fn admitted_maker_quote_order_count(&self) -> u32 {
+        self.inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned")
+            .admitted_maker_quote_order_count
     }
 }
 
@@ -479,7 +493,9 @@ impl BoltV3SubmitLifecyclePolicy {
 
     fn allows(&self, intent: BoltV3SubmitIntentKind) -> bool {
         match intent {
-            BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit => true,
+            BoltV3SubmitIntentKind::Entry
+            | BoltV3SubmitIntentKind::MakerQuote
+            | BoltV3SubmitIntentKind::RiskReducingExit => true,
             BoltV3SubmitIntentKind::ReplaceSubmit => self.replace_submit,
             BoltV3SubmitIntentKind::KillSwitchForcedReduction => true,
         }
@@ -581,7 +597,7 @@ where
     let notional = fee_inclusive_admission_notional(notional, max_fee_bps);
     let intent_kind = match input.intent.intent_kind {
         BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
-        BoltV3OrderIntentKind::MakerQuote => BoltV3SubmitIntentKind::Entry,
+        BoltV3OrderIntentKind::MakerQuote => BoltV3SubmitIntentKind::MakerQuote,
         BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
     };
     let risk_reducing_exit_proof =

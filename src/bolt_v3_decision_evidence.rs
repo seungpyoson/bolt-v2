@@ -51,6 +51,7 @@ pub enum BoltV3OrderIntentKind {
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3SubmitIntentKind {
     Entry,
+    MakerQuote,
     RiskReducingExit,
     ReplaceSubmit,
     KillSwitchForcedReduction,

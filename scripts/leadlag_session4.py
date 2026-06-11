@@ -494,7 +494,16 @@ def select_pm_clock(frame: pl.DataFrame, pm_clock: str, label: str) -> pl.DataFr
             )
     elif has_venue:
         frame = frame.drop("ts_venue_ms")
-    PM_CLOCK_RESOLVED[label] = "venue" if use_venue else "receive"
+    resolved = "venue" if use_venue else "receive"
+    prev = PM_CLOCK_RESOLVED.get(label)
+    if prev is not None and prev != resolved:
+        # an overwrite would mask the mix from pm_clock_provenance(), which only
+        # sees final dict values — detect the conflict at record time instead
+        raise SystemExit(
+            f"{label}: PM clock changed within one run ({prev} -> {resolved}); "
+            "re-extract the window to one cache generation or pin --pm-clock receive"
+        )
+    PM_CLOCK_RESOLVED[label] = resolved
     print(f"{label}: PM event clock = {'venue (ts_venue_ms)' if use_venue else 'receive (ts_ms)'}", flush=True)
     return frame
 

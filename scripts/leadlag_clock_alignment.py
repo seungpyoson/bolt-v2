@@ -387,7 +387,14 @@ async def run_live_probe(asset: str, minutes: float, clock: CorrectedClock) -> d
         asyncio.create_task(probe_hyperliquid(asset, deadline, offsets, clock)),
         asyncio.create_task(ntp_reanchor(clock, deadline)),
     ]
-    await asyncio.gather(*tasks, return_exceptions=True)
+    names = ("polymarket", "bybit_trades", "hyperliquid_l2book", "ntp_reanchor")
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    dead = {n: r for n, r in zip(names, results) if isinstance(r, BaseException)}
+    if dead:
+        # a task that escaped its reconnect loop (e.g. a pre-loop failure) must
+        # not yield a successful zero-row report for that source
+        details = "; ".join(f"{n}: {type(r).__name__}: {r}" for n, r in dead.items())
+        raise SystemExit(f"live-probe: probe task(s) died: {details}")
     return offsets
 
 
@@ -443,7 +450,7 @@ def main() -> None:
 
     p_live = sub.add_parser("live-probe", help="live venue-clock honesty probe")
     p_live.add_argument("--minutes", type=float, default=LIVE_DEFAULT_MINUTES)
-    p_live.add_argument("--asset", default=LIVE_DEFAULT_ASSET)
+    p_live.add_argument("--asset", default=LIVE_DEFAULT_ASSET, choices=sorted(s4.LEADER_COIN_BY_ASSET))
     p_live.add_argument("--report")
     p_live.set_defaults(func=cmd_live_probe)
 

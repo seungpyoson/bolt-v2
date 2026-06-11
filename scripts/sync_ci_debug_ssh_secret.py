@@ -135,9 +135,8 @@ def sync_public_key_to_github(config: dict[str, str]) -> None:
             config["ssh_public_key_secret"],
             "--repo",
             repo,
-            "--body",
-            public_key,
-        ]
+        ],
+        input_text=public_key,
     )
     print(
         f"OK: synced {config['ssh_public_key_secret']} to {repo} "

@@ -6310,6 +6310,12 @@ def verify_actionlint_runner_contract(
                 f".github/actionlint.yaml must allow repository variable {variable!r} "
                 "referenced by workflow vars.* expressions"
             )
+    expected_variables = set(config["variables"]) | workflow_repository_variables(workflows)
+    for variable in sorted(allowed_variables - expected_variables):
+        errors.append(
+            f".github/actionlint.yaml allows stale config variable {variable!r} "
+            "not referenced by workflows or ci/github-actions-runners.toml"
+        )
     return errors
 
 

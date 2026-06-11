@@ -818,6 +818,38 @@ def assert_sync_errors_redact_command_arguments() -> None:
         raise AssertionError(f"CalledProcessError message must include exit status, got: {message!r}")
 
 
+def assert_sync_public_key_uses_stdin() -> None:
+    sync_script = load_sync_ci_debug_ssh_script()
+    public_key = "ssh-ed25519 AAAATEST operator@example"
+    commands: list[tuple[list[str], str | None]] = []
+
+    def fake_run_checked(
+        command: list[str], *, input_text: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append((command, input_text))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    sync_script.read_onepassword_field = lambda config, field: public_key
+    sync_script.github_repository = lambda: "seungpyoson/bolt-v2"
+    sync_script.run_checked = fake_run_checked
+    config = {
+        "ssh_public_key_secret": "SSH_PUBLIC_KEY",
+        "onepassword_vault": "Private",
+        "onepassword_item_title": "bolt-v2 CI runner debug SSH",
+        "onepassword_public_key_field": "public key",
+    }
+    with contextlib.redirect_stdout(io.StringIO()):
+        sync_script.sync_public_key_to_github(config)
+
+    if len(commands) != 1:
+        raise AssertionError(f"sync must run exactly one gh command, got: {commands}")
+    command, input_text = commands[0]
+    if "--body" in command or public_key in command:
+        raise AssertionError(f"sync must not pass public key on argv, got: {command}")
+    if input_text != public_key:
+        raise AssertionError(f"sync must pass public key on stdin, got: {input_text!r}")
+
+
 def assert_security_key_public_prefix_is_validated() -> None:
     sync_script = load_sync_ci_debug_ssh_script()
     sync_script.validate_public_key("sk-ssh-ed25519@openssh.com AAAATEST")
@@ -844,6 +876,25 @@ def assert_backtester_detect_includes_runner_config() -> None:
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": workflow})
     if any("backtester detect paths must include ci/github-actions-runners.toml" in error for error in good_errors):
         raise AssertionError(f"backtester detector path check must pass when present, got: {good_errors}")
+
+
+def assert_actionlint_rejects_stale_config_variables() -> None:
+    verifier = load_verifier()
+    actionlint = (REPO_ROOT / ".github" / "actionlint.yaml").read_text(encoding="utf-8")
+    stale_actionlint = replace_once(
+        actionlint,
+        "\nconfig-secrets:\n",
+        "\n  - CI_RUNNER_REMOVED\n\nconfig-secrets:\n",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        actionlint_path = pathlib.Path(tmp) / "actionlint.yaml"
+        actionlint_path.write_text(stale_actionlint, encoding="utf-8")
+        errors = verifier.verify_actionlint_runner_contract(
+            verifier.repo_workflow_texts(),
+            actionlint_path=actionlint_path,
+        )
+    if not any("stale config variable 'CI_RUNNER_REMOVED'" in error for error in errors):
+        raise AssertionError(f"actionlint contract must reject stale config variables, got: {errors}")
 
 
 def without_pr_concurrency(workflow: str) -> str:
@@ -5333,8 +5384,10 @@ def main() -> int:
     assert_debug_workflow_checks_each_ssh_runner_step()
     assert_bootstrap_uses_onepassword_key_generation()
     assert_sync_errors_redact_command_arguments()
+    assert_sync_public_key_uses_stdin()
     assert_security_key_public_prefix_is_validated()
     assert_backtester_detect_includes_runner_config()
+    assert_actionlint_rejects_stale_config_variables()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"

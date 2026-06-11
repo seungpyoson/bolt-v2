@@ -7,7 +7,7 @@
   "source_proof_id": "source-proof-binance-spot-native-trades-2026-03-01-all-instruments",
   "source_proof_version": 1,
   "source_binding": "binance-spot-native-trades",
-  "table_family": "native_trades",
+  "table_family": "trades",
   "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-spot",
   "object_level_tranche_required": true,
   "object_count": 1,

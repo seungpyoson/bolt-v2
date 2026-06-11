@@ -111,6 +111,7 @@ fn source_universe_conversion_queue_materializes_every_binance_all_instrument_ma
 queue_id = "source-universe-conversion-queue-binance-data-vision-trades-2026-03-01-all-instruments"
 source_universe_manifest_path = "{manifest_path}"
 output_dir = "{output_dir}"
+table_family = "trades"
 output_prefix_template = "source-universe={universe_id}/category={category}/symbol={symbol}/dt={archive_date}/object={sha256}"
 "#,
             manifest_path = manifest_path.display(),
@@ -143,6 +144,8 @@ output_prefix_template = "source-universe={universe_id}/category={category}/symb
         queue.universe_id,
         "backfill-source-universe-binance-data-vision-trades-2026-03-01-all-instruments"
     );
+    assert_eq!(queue.family, "native_trades");
+    assert_eq!(queue.table_family, "trades");
     assert_eq!(queue.work_item_count, 2_051);
     assert_eq!(queue.total_source_bytes, 1_748_721_970);
     assert_eq!(queue.pending_conversion_items, 2_051);
@@ -168,6 +171,13 @@ output_prefix_template = "source-universe={universe_id}/category={category}/symb
             .iter()
             .all(|item| item.work_state == SourceUniverseConversionWorkState::PendingConversion),
         "every source-universe object must become a pending conversion work item"
+    );
+    assert!(
+        queue
+            .work_items
+            .iter()
+            .all(|item| item.table_family == "trades"),
+        "Binance native-trades source objects must convert into canonical trade table-family records"
     );
 
     let first = queue.work_items.first().expect("first work item");

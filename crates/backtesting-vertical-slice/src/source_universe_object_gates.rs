@@ -30,6 +30,8 @@ pub struct SourceUniverseObjectGateMaterializationSpec {
     pub gate_id: String,
     pub queue_path: PathBuf,
     pub output_dir: PathBuf,
+    #[serde(default)]
+    pub overwrite_existing_artifacts: bool,
     #[serde(rename = "source_binding", default)]
     pub source_bindings: Vec<SourceUniverseObjectGateSourceBindingSpec>,
 }
@@ -250,11 +252,19 @@ pub fn write_source_universe_object_gate_materialization(
                 path.display()
             )
         })?;
-        ensure!(
-            existing == bytes,
-            "dirty source-universe object-gate materialization {}: existing file content differs",
-            path.display()
-        );
+        if existing != bytes {
+            ensure!(
+                spec.overwrite_existing_artifacts,
+                "dirty source-universe object-gate materialization {}: existing file content differs",
+                path.display()
+            );
+            fs::write(&path, &bytes).with_context(|| {
+                format!(
+                    "write source-universe object-gate materialization {}",
+                    path.display()
+                )
+            })?;
+        }
     } else {
         fs::write(&path, &bytes).with_context(|| {
             format!(

@@ -237,3 +237,92 @@ max_source_bytes_per_run = 60
     assert_eq!(plan.runs[2].work_item_ids, vec!["item-4"]);
     assert_eq!(plan.runs[2].source_bytes, 1);
 }
+
+#[test]
+fn source_universe_conversion_run_plan_overwrites_existing_artifact_only_when_enabled() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let gates_path = temp_dir.path().join("source-universe-object-gates.json");
+    let output_dir = temp_dir.path().join("run-plan");
+    let spec_path = temp_dir
+        .path()
+        .join("source-universe-conversion-run-plan.toml");
+
+    fs::write(
+        &gates_path,
+        r#"{
+  "schema_version": "source-universe-object-gates.v1",
+  "gate_id": "synthetic-source-universe-object-gates",
+  "status": "ready",
+  "queue_id": "synthetic-queue",
+  "manifest_id": "synthetic-manifest",
+  "universe_id": "synthetic-universe",
+  "venue": "synthetic-venue",
+  "source": "synthetic-source",
+  "family": "synthetic-family",
+  "table_family": "trades",
+  "queue_path": "synthetic-queue.json",
+  "queue_hash": "queue-hash",
+  "work_item_count": 0,
+  "accepted_gate_count": 0,
+  "source_binding_count": 0,
+  "total_accepted_bytes": 0,
+  "source_binding_summaries": [],
+  "artifact_refs": [],
+  "records": []
+}"#,
+    )
+    .expect("write gates");
+    fs::create_dir_all(&output_dir).expect("create output dir");
+    fs::write(
+        output_dir.join("source-universe-conversion-run-plan.json"),
+        br#"{"stale":true}"#,
+    )
+    .expect("write stale output");
+
+    fs::write(
+        &spec_path,
+        format!(
+            r#"
+plan_id = "synthetic-run-plan"
+source_universe_object_gates_path = "{gates_path}"
+output_dir = "{output_dir}"
+max_objects_per_run = 2
+max_source_bytes_per_run = 60
+"#,
+            gates_path = gates_path.display(),
+            output_dir = output_dir.display(),
+        ),
+    )
+    .expect("write spec");
+
+    let err = write_source_universe_conversion_run_plan_from_spec_file(&spec_path)
+        .expect_err("dirty output is protected by default");
+    assert!(
+        err.to_string()
+            .contains("dirty source-universe conversion run-plan")
+    );
+
+    fs::write(
+        &spec_path,
+        format!(
+            r#"
+plan_id = "synthetic-run-plan"
+source_universe_object_gates_path = "{gates_path}"
+output_dir = "{output_dir}"
+max_objects_per_run = 2
+max_source_bytes_per_run = 60
+overwrite_existing_artifacts = true
+"#,
+            gates_path = gates_path.display(),
+            output_dir = output_dir.display(),
+        ),
+    )
+    .expect("write overwrite spec");
+
+    let artifact = write_source_universe_conversion_run_plan_from_spec_file(&spec_path)
+        .expect("overwrite enabled");
+    let plan: SourceUniverseConversionRunPlan =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read run plan"))
+            .expect("run plan parses");
+    assert_eq!(plan.runs.len(), 0);
+}

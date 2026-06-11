@@ -23,7 +23,11 @@ pub struct SourceUniverseConversionQueueSpec {
     pub queue_id: String,
     pub source_universe_manifest_path: PathBuf,
     pub output_dir: PathBuf,
+    #[serde(default)]
+    pub table_family: Option<String>,
     pub output_prefix_template: String,
+    #[serde(default)]
+    pub overwrite_existing_artifacts: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,11 +201,16 @@ pub fn write_source_universe_conversion_queue(
     if path.exists() {
         let existing = fs::read(&path)
             .with_context(|| format!("read existing conversion queue {}", path.display()))?;
-        ensure!(
-            existing == bytes,
-            "dirty source-universe conversion queue {}: existing file content differs",
-            path.display()
-        );
+        if existing != bytes {
+            ensure!(
+                spec.overwrite_existing_artifacts,
+                "dirty source-universe conversion queue {}: existing file content differs",
+                path.display()
+            );
+            fs::write(&path, &bytes).with_context(|| {
+                format!("write source-universe conversion queue {}", path.display())
+            })?;
+        }
     } else {
         fs::write(&path, &bytes).with_context(|| {
             format!("write source-universe conversion queue {}", path.display())
@@ -240,10 +249,22 @@ pub fn evaluate_source_universe_conversion_queue(
         !manifest.payload_records.is_empty(),
         "source-universe manifest must contain payload records"
     );
+    let table_family = spec
+        .table_family
+        .as_deref()
+        .unwrap_or(manifest.table_family.as_str())
+        .trim()
+        .to_string();
+    ensure!(!table_family.is_empty(), "table_family must not be empty");
 
     let mut work_items = Vec::with_capacity(manifest.payload_records.len());
     for record in &manifest.payload_records {
-        work_items.push(work_item(&manifest, record, &spec.output_prefix_template)?);
+        work_items.push(work_item(
+            &manifest,
+            &table_family,
+            record,
+            &spec.output_prefix_template,
+        )?);
     }
 
     let total_source_bytes = work_items.iter().map(|item| item.source_bytes).sum::<u64>();
@@ -263,7 +284,7 @@ pub fn evaluate_source_universe_conversion_queue(
         venue: manifest.venue,
         source: manifest.source,
         family: manifest.family,
-        table_family: manifest.table_family,
+        table_family,
         source_manifest_path: source_manifest_path.clone(),
         source_manifest_hash,
         output_prefix_template: spec.output_prefix_template.clone(),
@@ -285,6 +306,7 @@ pub fn evaluate_source_universe_conversion_queue(
 
 fn work_item(
     manifest: &SourceUniverseManifest,
+    table_family: &str,
     record: &SourceUniverseManifestPayloadRecord,
     output_prefix_template: &str,
 ) -> Result<SourceUniverseConversionWorkItem> {
@@ -293,6 +315,7 @@ fn work_item(
     let source_sha256 = source_sha256(record, &source_hash_algorithm, &source_hash)?;
     let output_prefix = render_output_prefix(
         manifest,
+        table_family,
         record,
         &source_hash_algorithm,
         &source_hash,
@@ -303,7 +326,7 @@ fn work_item(
         work_item_id: work_item_id(record, &source_hash),
         work_state: SourceUniverseConversionWorkState::PendingConversion,
         source_binding: record.source_binding.clone(),
-        table_family: manifest.table_family.clone(),
+        table_family: table_family.to_string(),
         category: record.category.clone(),
         symbol: record.symbol.clone(),
         archive_date: record.archive_date.clone(),
@@ -327,6 +350,7 @@ fn work_item_id(record: &SourceUniverseManifestPayloadRecord, source_hash: &str)
 
 fn render_output_prefix(
     manifest: &SourceUniverseManifest,
+    table_family: &str,
     record: &SourceUniverseManifestPayloadRecord,
     source_hash_algorithm: &str,
     source_hash: &str,
@@ -341,7 +365,7 @@ fn render_output_prefix(
         ("{venue}", manifest.venue.as_str()),
         ("{source}", manifest.source.as_str()),
         ("{family}", manifest.family.as_str()),
-        ("{table_family}", manifest.table_family.as_str()),
+        ("{table_family}", table_family),
         ("{category}", record.category.as_str()),
         ("{symbol}", record.symbol.as_str()),
         ("{archive_date}", record.archive_date.as_str()),

@@ -31,6 +31,8 @@ pub struct SourceUniverseConversionRunPlanSpec {
     pub output_dir: PathBuf,
     pub max_objects_per_run: u64,
     pub max_source_bytes_per_run: u64,
+    #[serde(default)]
+    pub overwrite_existing_artifacts: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,11 +240,19 @@ pub fn write_source_universe_conversion_run_plan(
                 path.display()
             )
         })?;
-        ensure!(
-            existing == bytes,
-            "dirty source-universe conversion run-plan {}: existing file content differs",
-            path.display()
-        );
+        if existing != bytes {
+            ensure!(
+                spec.overwrite_existing_artifacts,
+                "dirty source-universe conversion run-plan {}: existing file content differs",
+                path.display()
+            );
+            fs::write(&path, &bytes).with_context(|| {
+                format!(
+                    "write source-universe conversion run-plan {}",
+                    path.display()
+                )
+            })?;
+        }
     } else {
         fs::write(&path, &bytes).with_context(|| {
             format!(

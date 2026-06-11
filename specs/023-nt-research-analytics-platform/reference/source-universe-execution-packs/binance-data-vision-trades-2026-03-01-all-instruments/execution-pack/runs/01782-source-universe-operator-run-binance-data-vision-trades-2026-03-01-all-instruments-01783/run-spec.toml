@@ -172,7 +172,7 @@ source_proof_id = "source-proof-binance-usd-m-perpetual-native-trades-2026-03-01
 source_proof_version = 1
 source_selection_status = "ACCEPTED_LOWER_FIDELITY"
 status = "accepted"
-table_family = "native_trades"
+table_family = "trades"
 usage_scope = "canonical_backfill_input"
 venue = "binance"
 

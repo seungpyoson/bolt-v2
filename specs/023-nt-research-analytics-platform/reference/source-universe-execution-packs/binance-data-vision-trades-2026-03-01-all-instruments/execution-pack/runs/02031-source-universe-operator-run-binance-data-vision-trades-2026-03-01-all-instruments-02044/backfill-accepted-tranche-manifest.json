@@ -7,7 +7,7 @@
   "source_proof_id": "source-proof-binance-coin-m-delivery-native-trades-2026-03-01-all-instruments",
   "source_proof_version": 1,
   "source_binding": "binance-coin-m-delivery-native-trades",
-  "table_family": "native_trades",
+  "table_family": "trades",
   "parent_manifest_id": "backfill-source-universe-object-manifest-binance-data-vision-trades-2026-03-01-all-instruments-category-coin_m_delivery",
   "object_level_tranche_required": true,
   "object_count": 1,

@@ -3,3 +3,4 @@ source_universe_object_gates_path = "specs/023-nt-research-analytics-platform/re
 output_dir = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-run-plans/binance-data-vision-trades-2026-03-01-all-instruments/run-plan"
 max_objects_per_run = 500
 max_source_bytes_per_run = 2000000000
+overwrite_existing_artifacts = true

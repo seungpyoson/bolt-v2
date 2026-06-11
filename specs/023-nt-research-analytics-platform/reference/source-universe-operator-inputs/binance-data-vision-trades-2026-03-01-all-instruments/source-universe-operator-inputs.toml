@@ -18,3 +18,4 @@ default_derivative_max_notional = "1000000000"
 default_derivative_multiplier = "1"
 default_maker_fee = "0"
 default_taker_fee = "0"
+overwrite_existing_artifacts = true

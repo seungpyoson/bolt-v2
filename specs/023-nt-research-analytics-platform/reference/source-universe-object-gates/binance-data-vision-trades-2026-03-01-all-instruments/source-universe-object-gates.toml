@@ -1,6 +1,7 @@
 gate_id = "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments"
 queue_path = "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/binance-data-vision-trades-2026-03-01-all-instruments/queue/source-universe-conversion-queue.json"
 output_dir = "specs/023-nt-research-analytics-platform/reference/source-universe-object-gates/binance-data-vision-trades-2026-03-01-all-instruments/gates"
+overwrite_existing_artifacts = true
 
 [[source_binding]]
 source_binding = "binance-spot-native-trades"

@@ -122,6 +122,100 @@ category_manifest_path = "{inverse_manifest}"
 }
 
 #[test]
+fn committed_binance_source_universe_object_gates_use_canonical_trade_table_family() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let output_dir = temp_dir.path().join("object-gates");
+    let spec_path = temp_dir.path().join("source-universe-object-gates.toml");
+
+    fs::write(
+        &spec_path,
+        format!(
+            r#"
+gate_id = "source-universe-object-gates-binance-data-vision-trades-2026-03-01-all-instruments"
+queue_path = "{queue_path}"
+output_dir = "{output_dir}"
+
+[[source_binding]]
+source_binding = "binance-spot-native-trades"
+source_proof_path = "{spot_proof}"
+category_manifest_path = "{spot_manifest}"
+
+[[source_binding]]
+source_binding = "binance-usd-m-perpetual-native-trades"
+source_proof_path = "{usd_m_perpetual_proof}"
+category_manifest_path = "{usd_m_perpetual_manifest}"
+
+[[source_binding]]
+source_binding = "binance-usd-m-delivery-native-trades"
+source_proof_path = "{usd_m_delivery_proof}"
+category_manifest_path = "{usd_m_delivery_manifest}"
+
+[[source_binding]]
+source_binding = "binance-coin-m-perpetual-native-trades"
+source_proof_path = "{coin_m_perpetual_proof}"
+category_manifest_path = "{coin_m_perpetual_manifest}"
+
+[[source_binding]]
+source_binding = "binance-coin-m-delivery-native-trades"
+source_proof_path = "{coin_m_delivery_proof}"
+category_manifest_path = "{coin_m_delivery_manifest}"
+"#,
+            output_dir = output_dir.display(),
+            queue_path = reference_root
+                .join("source-universe-conversion-queues/binance-data-vision-trades-2026-03-01-all-instruments/queue/source-universe-conversion-queue.json")
+                .display(),
+            spot_proof = reference_root
+                .join("backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments/source-proof-binance-spot-native-trades-2026-03-01-all-instruments.json")
+                .display(),
+            spot_manifest = reference_root
+                .join("backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/category-manifests/binance-data-vision-trades-object-manifest-spot.json")
+                .display(),
+            usd_m_perpetual_proof = reference_root
+                .join("backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments/source-proof-binance-usd-m-perpetual-native-trades-2026-03-01-all-instruments.json")
+                .display(),
+            usd_m_perpetual_manifest = reference_root
+                .join("backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/category-manifests/binance-data-vision-trades-object-manifest-usd_m_perpetual.json")
+                .display(),
+            usd_m_delivery_proof = reference_root
+                .join("backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments/source-proof-binance-usd-m-delivery-native-trades-2026-03-01-all-instruments.json")
+                .display(),
+            usd_m_delivery_manifest = reference_root
+                .join("backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/category-manifests/binance-data-vision-trades-object-manifest-usd_m_delivery.json")
+                .display(),
+            coin_m_perpetual_proof = reference_root
+                .join("backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments/source-proof-binance-coin-m-perpetual-native-trades-2026-03-01-all-instruments.json")
+                .display(),
+            coin_m_perpetual_manifest = reference_root
+                .join("backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/category-manifests/binance-data-vision-trades-object-manifest-coin_m_perpetual.json")
+                .display(),
+            coin_m_delivery_proof = reference_root
+                .join("backfill-source-proofs/binance-data-vision-trades-2026-03-01-all-instruments/source-proof-binance-coin-m-delivery-native-trades-2026-03-01-all-instruments.json")
+                .display(),
+            coin_m_delivery_manifest = reference_root
+                .join("backfill-source-universe-object-manifests/binance-data-vision-trades-2026-03-01-all-instruments/category-manifests/binance-data-vision-trades-object-manifest-coin_m_delivery.json")
+                .display(),
+        ),
+    )
+    .expect("write spec");
+
+    let artifact = write_source_universe_object_gate_materialization_from_spec_file(&spec_path)
+        .expect("Binance object gates are reproducible");
+    let gates: SourceUniverseObjectGateMaterialization =
+        serde_json::from_slice(&fs::read(&artifact.path).expect("read Binance object gates"))
+            .expect("Binance object gates parse");
+
+    assert_eq!(gates.table_family, "trades");
+    assert!(
+        gates
+            .records
+            .iter()
+            .all(|record| record.table_family == "trades")
+    );
+}
+
+#[test]
 fn source_universe_object_gates_accept_non_sha_source_hashes_without_faking_payload_sha256() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let proof_path = temp_dir.path().join("source-proof.json");

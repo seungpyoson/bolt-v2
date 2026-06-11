@@ -9,7 +9,7 @@
   "venue": "binance",
   "source": "data-vision",
   "family": "native_trades",
-  "table_family": "native_trades",
+  "table_family": "trades",
   "operator_run_id_prefix": "source-universe-operator-run-binance-data-vision-trades-2026-03-01-all-instruments",
   "planned_object_count": 2051,
   "planned_source_bytes": 1748721970,
@@ -25,7 +25,7 @@
     {
       "role": "source_universe_operator_inputs",
       "path": "specs/023-nt-research-analytics-platform/reference/source-universe-operator-inputs/binance-data-vision-trades-2026-03-01-all-instruments/operator-inputs/source-universe-operator-inputs.json",
-      "sha256": "9c3ac79793f49c7a50a0d2c6b34857486ac79f925ef893fb1559147c09c28264"
+      "sha256": "762288986092af9028df6873df0fdf98172802e63ab41b496e491defd1463e73"
     }
   ],
   "records": [

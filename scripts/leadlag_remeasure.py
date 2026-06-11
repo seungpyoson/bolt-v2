@@ -32,10 +32,10 @@ backfill_hyperliquid_core_to_s3.py, backfill_bybit_to_s3.py) live on branch
 feat/023-venue-data-backfill, not on main.
 
 Stage caches: the underlying scripts cache extracts under --workdir keyed by date; a
-re-run of an already-extracted window skips downloads. Extracts created before the
-dual-clock change (no ts_venue_ms column) cannot be mixed with newer ones inside one
-window — polars concat fails loudly on the schema; delete that window's cache dirs and
-re-extract.
+re-run of an already-extracted window skips downloads. Cache-generation compatibility
+(e.g. extracts predating PR #640's dual-clock columns) is owned and enforced by the
+analysis scripts themselves — they fail loud on mixed or unusable caches; the operator
+remedy is to delete that window's cache dirs and re-extract.
 
 Reproduction:
   uv run scripts/leadlag_remeasure.py preflight --dates <start>:<end>
@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from datetime import date as _date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -55,6 +56,20 @@ import leadlag_trades_leader as tl  # noqa: E402
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 BACKFILL_BRANCH = "feat/023-venue-data-backfill"
+MIN_WINDOW_DAYS = 4  # cadence policy (module docstring): the #631 minimum
+
+
+def window_policy_violation(dates: list[str]) -> str | None:
+    """Cadence policy check: a verdict-bearing window is >= MIN_WINDOW_DAYS
+    CONSECUTIVE days. Returns a human-readable violation, or None if compliant.
+    The policy lives in the module docstring; this is its enforcement."""
+    if len(dates) < MIN_WINDOW_DAYS:
+        return f"{len(dates)} day(s) < {MIN_WINDOW_DAYS}"
+    ordered = sorted(_date.fromisoformat(d) for d in dates)
+    for prev, cur in zip(ordered, ordered[1:]):
+        if (cur - prev).days != 1:
+            return f"non-consecutive: gap between {prev} and {cur}"
+    return None
 
 # (stage name, script, subcommand, extra argv, needs_trades_window, report filename)
 STAGES = (
@@ -147,6 +162,12 @@ def run_stage(name: str, script: str, argv: list[str]) -> None:
 
 def cmd_run(args: argparse.Namespace) -> None:
     dates = s4.parse_dates(args.dates)
+    viol = window_policy_violation(dates)
+    if viol:
+        raise SystemExit(
+            f"--dates violates the re-measurement cadence policy "
+            f">= {MIN_WINDOW_DAYS} consecutive days ({viol}); see module docstring"
+        )
     assets = parse_assets(args.assets)
     selected = args.stages.split(",") if args.stages else list(STAGE_NAMES)
     unknown = [s for s in selected if s not in STAGE_NAMES]
@@ -173,6 +194,23 @@ def cmd_run(args: argparse.Namespace) -> None:
         elif len(trades_dates) < len(dates):
             missing = sorted(set(dates) - set(trades_dates))
             print(f"RESTRICTING trades-clock stages to {len(trades_dates)} covered dates; missing: {missing}", flush=True)
+        # coverage restriction must not quietly shrink a window below the cadence
+        # policy the requested --dates already passed
+        viol = window_policy_violation(hl_dates)
+        if viol:
+            raise SystemExit(
+                f"effective hl window violates the cadence policy ({viol}); "
+                f"backfill the missing dates first (branch {BACKFILL_BRANCH})"
+            )
+        if trades_dates:
+            viol = window_policy_violation(trades_dates)
+            if viol:
+                print(
+                    f"effective trades window violates the cadence policy ({viol}); "
+                    "trades stages will be SKIPPED",
+                    flush=True,
+                )
+                trades_dates = []
 
     skipped: list[str] = []
     for name, script, subcommand, extra, needs_trades, report_name in STAGES:

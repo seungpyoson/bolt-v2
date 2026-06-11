@@ -373,3 +373,11 @@ setup:
     echo "Zig {{zig_version}} already installed"
 
     echo "Setup complete."
+
+# Create the CI runner debug SSH key in 1Password and publish SSH_PUBLIC_KEY to GitHub.
+ci-debug-ssh-bootstrap:
+    python3 scripts/sync_ci_debug_ssh_secret.py bootstrap
+
+# Publish the CI runner debug SSH public key from 1Password to GitHub Actions.
+ci-debug-ssh-sync:
+    python3 scripts/sync_ci_debug_ssh_secret.py sync

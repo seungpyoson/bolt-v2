@@ -65,7 +65,11 @@ fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
             SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
         .expect("ungated admission should reach NT submit");
-    assert_eq!(submit_admission.admitted_order_count(), 1);
+    assert_eq!(
+        submit_admission.admitted_order_count(),
+        1,
+        "ungated admission should consume live submit capacity"
+    );
 }
 
 #[test]
@@ -135,7 +139,11 @@ fn submit_orders_false_records_evidence_and_admission_without_nt_submit() {
             SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
         .expect("shadow submission should still pass evidence and admission");
-    assert_eq!(submit_admission.admitted_order_count(), 1);
+    assert_eq!(
+        submit_admission.admitted_order_count(),
+        0,
+        "submit_orders=false records observed admission without consuming live capacity"
+    );
     assert!(
         risk_messages.get_messages().is_empty(),
         "submit_orders=false must not emit an NT SubmitOrder command"

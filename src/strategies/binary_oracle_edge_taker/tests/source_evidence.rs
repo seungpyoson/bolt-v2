@@ -795,7 +795,11 @@ fn submit_orders_false_does_not_leave_pending_entry_between_would_be_entries() {
         .expect("second shadow entry should not be blocked by stale pending exposure")
         .expect("second shadow entry should produce a would-be client order id");
     assert_ne!(first_client_order_id, second_client_order_id);
-    assert_eq!(submit_admission.admitted_order_count(), 2);
+    assert_eq!(
+        submit_admission.admitted_order_count(),
+        0,
+        "shadow entries must record admission evidence without consuming live submit capacity"
+    );
     assert_eq!(
         evidence
             .events()
@@ -804,6 +808,51 @@ fn submit_orders_false_does_not_leave_pending_entry_between_would_be_entries() {
             .count(),
         2,
         "each shadow entry should still record order-intent evidence"
+    );
+}
+
+#[test]
+fn submit_orders_false_entries_do_not_exhaust_live_admission_count_cap() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission =
+        submit_admission_with_provider_cap(Decimal::new(10_000, 0), evidence.clone());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission.clone(),
+    );
+    strategy.config.submit_orders = false;
+    register_test_strategy_with_active_instruments(&mut strategy);
+
+    let first_client_order_id = strategy
+        .try_submit_entry_order(1_200)
+        .expect("first shadow entry should record observed admission")
+        .expect("first shadow entry should produce a would-be client order id");
+    let second_client_order_id = strategy
+        .try_submit_entry_order(1_201)
+        .expect("shadow entry should not consume the live count cap")
+        .expect("second shadow entry should produce a would-be client order id");
+
+    assert_ne!(first_client_order_id, second_client_order_id);
+    assert_eq!(
+        submit_admission.admitted_order_count(),
+        0,
+        "shadow entries must not consume live submit admission capacity"
+    );
+    let admission_outcomes = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::AdmissionDecision(admission) => Some(admission.outcome),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        admission_outcomes,
+        vec![
+            crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::Admitted,
+            crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::Admitted,
+        ],
+        "shadow mode should still record admitted decisions for each would-be entry"
     );
 }
 
@@ -859,7 +908,11 @@ fn submit_orders_false_exit_keeps_pending_exit_between_would_be_exits() {
         None,
         "latched shadow exit should block repeated would-be exits"
     );
-    assert_eq!(submit_admission.admitted_order_count(), 1);
+    assert_eq!(
+        submit_admission.admitted_order_count(),
+        0,
+        "shadow exits must record admission evidence without consuming live submit capacity"
+    );
     assert_eq!(
         evidence
             .events()

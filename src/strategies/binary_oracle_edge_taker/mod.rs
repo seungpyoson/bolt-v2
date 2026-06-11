@@ -3434,8 +3434,10 @@ impl BinaryOracleEdgeTaker {
         self.context
             .decision_evidence()
             .record_order_intent(&intent)?;
-        let _permit = self.context.submit_admission().admit(&request)?;
         if !self.config.submit_orders {
+            self.context
+                .submit_admission()
+                .evaluate_and_record_without_consuming_capacity(&request)?;
             log::info!(
                 "binary_oracle_edge_taker submit skipped by config: strategy_id={} client_order_id={}",
                 self.config.strategy_id,
@@ -3443,6 +3445,7 @@ impl BinaryOracleEdgeTaker {
             );
             return Ok(SubmitOrderOutcome::SkippedByConfig);
         }
+        let _permit = self.context.submit_admission().admit(&request)?;
         self.submit_order(
             order,
             submit_context.position_id,

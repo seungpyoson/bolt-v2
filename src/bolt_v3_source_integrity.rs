@@ -249,8 +249,10 @@ mod tests {
     // Re-derived after shadow skipped submits stopped retaining pending
     // strategy exposure without an NT order.
     // Re-derived after skipped shadow exits retained the exit-pending latch.
+    // Re-derived after shadow skipped submits stopped consuming live admission
+    // capacity while still recording admission evidence.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "84f7e49ffae49870f72e03f339cf5f2470ef2d76f2a981b847192cc06d5d4000";
+        "38c6703c997d928bfd2d2106c4aa1686ee9232e49799a15ed3c903e590397d40";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.
@@ -259,8 +261,10 @@ mod tests {
     // Re-derived again after removing vestigial retired gate arming constructor
     // terminology from submit-admission construction.
     // Re-derived again after adding checked fee-inclusive admission arithmetic.
+    // Re-derived again after adding observed admission decisions for shadow
+    // submit skips that must not consume live capacity.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "986e4e99c865a9b742cdaa8d0a34cc8cadfcb6633012b4915042a0ac5c9d506a";
+        "a599017321ab11710d598bde5b3da95f5a43f861744f3ff9f0c8a6f78d30ef96";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

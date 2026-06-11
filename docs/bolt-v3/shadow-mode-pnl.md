@@ -1,6 +1,6 @@
 # Shadow Mode PnL
 
-Shadow mode measures would-be taker PnL from live data without sending venue orders.
+Shadow mode reports admitted entry-intent PnL from live data without sending venue orders.
 
 ## 1. Run The Live Strategy Without Submitting
 
@@ -20,9 +20,9 @@ Run the normal bolt-v3 live process. Evaluation, sizing, order-intent evidence, 
 <catalog_directory>/<persistence.decision_evidence.order_intents_relative_path>
 ```
 
-Submit admission still runs before the final submit gate. Shadow mode therefore consumes admission count
-and notional capacity the same way live submit attempts do; this keeps the evidence realistic for the
-configured risk envelope.
+Submit admission still evaluates before the final submit gate and records admission evidence. Shadow
+mode does not consume live submit admission capacity, so repeated would-be entries remain observable
+instead of exhausting the live order-count cap.
 
 ## 2. Join Evidence To Settlement
 
@@ -53,3 +53,8 @@ day,asset,would_be_trades,win_rate,gross_pnl,fees,net_pnl,avg_edge_claimed_bps,a
 
 `would_be_trades` counts admitted entry intents, not deduplicated portfolio positions. Repeated admitted
 signals in one market window remain separate would-be trades in the report.
+
+If shadow mode is run with a bootstrapped open position, a skipped exit keeps the live-mode
+`ExitPending` latch so the same exit intent is not emitted repeatedly. Without NT terminal events, that
+exposure stays latched until restart or reconciliation; the PnL report is optimized for admitted entry
+intents rather than full position lifecycle simulation.

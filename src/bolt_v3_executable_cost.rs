@@ -3,11 +3,9 @@ use std::collections::BTreeMap;
 use nautilus_model::{enums::OrderSide, types::Price};
 
 use crate::bolt_v3_numeric::{
-    BPS_DENOMINATOR, UNIT_F64, ZERO_F64, is_non_negative_finite, is_positive_finite,
-    notional_float_tolerance,
+    BPS_DENOMINATOR, CENTS_PER_SHARE, UNIT_F64, ZERO_F64, is_non_negative_finite,
+    is_positive_finite, notional_float_tolerance,
 };
-
-const CENTS_PER_SHARE: f64 = 100.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExecutableCostBlockReason {
@@ -390,11 +388,76 @@ mod tests {
     }
 
     #[test]
+    fn executable_cost_breakdown_blocks_invalid_fee_bps() {
+        let vwap = super::ExactSizeVwap {
+            vwap_price: 0.50,
+            vwap_quantity: 10.0,
+            limit_price: 0.50,
+            exact_size_filled: true,
+        };
+
+        for fee_bps in [f64::NAN, -1.0, f64::INFINITY] {
+            let reason = super::executable_cost_breakdown(vwap, fee_bps, 0)
+                .expect_err("invalid fee inputs must fail closed");
+
+            assert_eq!(reason, super::ExecutableCostBlockReason::FeeUnavailable);
+        }
+    }
+
+    #[test]
+    fn executable_cost_breakdown_pins_multi_level_partial_fill_arithmetic() {
+        let book = priced_book(&[(0.50, 5.0), (0.60, 100.0)]);
+        let vwap = super::price_exact_size_vwap(&book.quote(), OrderSide::Buy, 5.0, 2_000)
+            .expect("exact notional should fill inside the depth limit");
+
+        let breakdown =
+            super::executable_cost_breakdown(vwap, 100.0, 100).expect("cost should be valid");
+
+        let expected_vwap_price = 6.0 / 11.0;
+        let expected_gross_cost_cents = 600.0 / 11.0;
+        let expected_fee_cost_cents = 6.0 / 11.0;
+        let expected_slippage_buffer_cents = 6.0 / 11.0;
+        let expected_total_adjusted_cost_cents = 612.0 / 11.0;
+        assert!(
+            breakdown
+                .vwap_price
+                .is_some_and(|value| (value - expected_vwap_price).abs() < EPSILON)
+        );
+        assert!((breakdown.gross_cost_cents - expected_gross_cost_cents).abs() < EPSILON);
+        assert!((breakdown.fee_cost_cents - expected_fee_cost_cents).abs() < EPSILON);
+        assert!((breakdown.slippage_buffer_cents - expected_slippage_buffer_cents).abs() < EPSILON);
+        assert!(
+            (breakdown.total_adjusted_cost_cents - expected_total_adjusted_cost_cents).abs()
+                < EPSILON
+        );
+    }
+
+    #[test]
     fn exact_size_vwap_blocks_insufficient_depth() {
         let book = priced_book(&[(0.50, 5.0)]);
 
         let reason = super::price_exact_size_vwap(&book.quote(), OrderSide::Buy, 5.0, 2_000)
             .expect_err("not enough allowed depth must fail closed");
+
+        assert_eq!(reason, super::ExecutableCostBlockReason::InsufficientDepth);
+    }
+
+    #[test]
+    fn exact_size_vwap_blocks_when_buy_limit_price_exceeds_depth_limit() {
+        let book = priced_book(&[(0.50, 5.0), (0.60, 100.0)]);
+
+        let reason = super::price_exact_size_vwap(&book.quote(), OrderSide::Buy, 5.0, 1_000)
+            .expect_err("last consumed buy level outside the depth limit must fail closed");
+
+        assert_eq!(reason, super::ExecutableCostBlockReason::InsufficientDepth);
+    }
+
+    #[test]
+    fn exact_size_vwap_blocks_when_sell_limit_price_exceeds_depth_limit() {
+        let book = priced_book_with_levels(&[(0.50, 100.0), (0.12, 100.0)], &[(1.0, 100.0)]);
+
+        let reason = super::price_exact_size_vwap(&book.quote(), OrderSide::Sell, 100.0, 5_000)
+            .expect_err("last consumed sell level outside the depth limit must fail closed");
 
         assert_eq!(reason, super::ExecutableCostBlockReason::InsufficientDepth);
     }

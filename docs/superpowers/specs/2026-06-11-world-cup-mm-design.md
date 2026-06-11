@@ -22,7 +22,7 @@ For static sports events, `fair_probability_up` is not derived from strike/spot 
 
 `src/bolt_v3_maker_quote_plan.rs` composes the existing maker primitives for any market family: reference fair probability, optional book microprice nudge, Glosten-Milgrom reservation bid/ask, inventory skew, and the family-owned quote layout. Static World Cup markets use this through the same `MarketFamilyValidationBinding` quote-target seam as `updown`; no duplicate World Cup maker math exists.
 
-`src/bolt_v3_maker_quote_control.rs` composes the existing quote lifecycle with the existing requote budget so a denied venue budget does not advance lifecycle state. `src/bolt_v3_maker_quote_set.rs` applies family-produced YES/NO quote targets to that control layer and gates new submit actions through the existing per-market reservation helper across both legs before committing lifecycle or budget state. `src/bolt_v3_maker_order_plan.rs` binds approved lifecycle actions to caller-supplied instruments and maker order identities, producing explicit submit/cancel/modify intents without fabricating client order IDs.
+`src/bolt_v3_maker_quote_control.rs` composes the existing quote lifecycle with the existing requote budget so a denied venue budget does not advance lifecycle state. `src/bolt_v3_maker_quote_set.rs` applies family-produced YES/NO quote targets to that control layer and gates new submit actions through the existing per-market reservation helper across both legs before committing lifecycle or budget state. `src/bolt_v3_maker_order_plan.rs` binds approved lifecycle actions to caller-supplied instruments and maker order identities, producing explicit submit/cancel/modify intents without fabricating client order IDs. `src/bolt_v3_maker_order_compile.rs` compiles those approved maker order intents into the existing `NtOrderTemplate` and `NtOrderBuildInputs` path, preserving one NT order-construction seam instead of adding a World Cup-specific submit path.
 
 ## Testing
 
@@ -36,7 +36,8 @@ Implementation uses TDD. The first failing tests prove:
 - Polymarket data-client mapping includes static event market slugs in its market-slug filters.
 - Planned YES/NO maker quote targets are budget-gated and reservation-gated before lifecycle state mutates.
 - Approved quote lifecycle actions materialize explicit maker order intents only when the required active or next order identity is present.
+- Maker submit intents compile into post-only GTC limit order build inputs through the existing NT order template path, while cancel/modify intents preserve the active maker client-order identity.
 
 ## Follow-On Scope
 
-After static event selection, reference-current-price fair-probability sourcing, and shared maker quote planning exist, the next slice must wire the planned quotes into the existing maker lifecycle architecture: `bolt_v3_quote_lifecycle`, `bolt_v3_requote_budget`, `bolt_v3_maker_event_fence`, `bolt_v3_maker_reservation`, and `venue_contract`. It must not create a second standalone World Cup maker strategy or duplicate maker math.
+After static event selection, reference-current-price fair-probability sourcing, shared maker quote planning, quote lifecycle control, reservation gating, order-intent planning, and NT order-input compilation exist, the next slice must bind the compiled maker commands into the existing runtime strategy shell and venue command paths. It must not create a second standalone World Cup maker strategy, duplicate maker math, or add a parallel NT order-construction path.

@@ -8,9 +8,9 @@ use crate::{
     bolt_v3_maker_event_fence::OrderIdentity,
     bolt_v3_maker_quote_set::{QuoteSetDecision, QuoteSetLegDecision},
     bolt_v3_quote_lifecycle::{Leg, LifecycleAction, MarketAction},
-    bolt_v3_quoting::QuoteTargets,
+    bolt_v3_quoting::{QuoteSide, QuoteTargets},
 };
-use nautilus_model::identifiers::InstrumentId;
+use nautilus_model::{enums::OrderSide, identifiers::InstrumentId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MakerLegBinding {
@@ -34,6 +34,7 @@ pub enum MakerOrderIntent {
     Submit {
         leg: Leg,
         instrument_id: InstrumentId,
+        order_side: OrderSide,
         order_identity: OrderIdentity,
         price: f64,
         quantity: f64,
@@ -77,6 +78,7 @@ pub fn maker_order_intents_from_quote_set(input: MakerOrderPlanInput<'_>) -> Mak
         yes: maker_leg_order_intent(MakerLegOrderInput {
             expected_leg: Leg::Yes,
             quote_leg: input.quote_set.yes,
+            quote_side: input.targets.leg_a.side,
             price: input.targets.leg_a.price,
             quantity: input.yes_quantity,
             binding: input.yes,
@@ -84,6 +86,7 @@ pub fn maker_order_intents_from_quote_set(input: MakerOrderPlanInput<'_>) -> Mak
         no: maker_leg_order_intent(MakerLegOrderInput {
             expected_leg: Leg::No,
             quote_leg: input.quote_set.no,
+            quote_side: input.targets.leg_b.side,
             price: input.targets.leg_b.price,
             quantity: input.no_quantity,
             binding: input.no,
@@ -95,6 +98,7 @@ pub fn maker_order_intents_from_quote_set(input: MakerOrderPlanInput<'_>) -> Mak
 struct MakerLegOrderInput {
     expected_leg: Leg,
     quote_leg: QuoteSetLegDecision,
+    quote_side: QuoteSide,
     price: f64,
     quantity: f64,
     binding: MakerLegBinding,
@@ -127,6 +131,7 @@ fn submit_intent(input: MakerLegOrderInput) -> MakerLegOrderPlan {
         intent: Some(MakerOrderIntent::Submit {
             leg: input.expected_leg,
             instrument_id: input.binding.instrument_id,
+            order_side: order_side_from_quote_side(input.quote_side),
             order_identity,
             price: input.price,
             quantity: input.quantity,
@@ -176,5 +181,12 @@ fn blocked(reason: MakerOrderPlanBlockReason) -> MakerLegOrderPlan {
     MakerLegOrderPlan {
         intent: None,
         blocked_by: Some(reason),
+    }
+}
+
+fn order_side_from_quote_side(side: QuoteSide) -> OrderSide {
+    match side {
+        QuoteSide::Buy => OrderSide::Buy,
+        QuoteSide::Sell => OrderSide::Sell,
     }
 }

@@ -11,7 +11,7 @@ use bolt_v2::{
     bolt_v3_quoting::{QuoteSide, QuoteTargetLeg, QuoteTargets},
     bolt_v3_requote_budget::RequoteBudget,
 };
-use nautilus_model::identifiers::InstrumentId;
+use nautilus_model::{enums::OrderSide, identifiers::InstrumentId};
 
 const EPSILON: f64 = 0.001;
 
@@ -28,6 +28,7 @@ fn quote_set_submit_actions_materialize_submit_intents_with_next_identities() {
         Some(MakerOrderIntent::Submit {
             leg: Leg::Yes,
             instrument_id: yes_instrument(),
+            order_side: OrderSide::Buy,
             order_identity: identity("yes-next", 2),
             price: 0.40,
             quantity: 10.0,
@@ -38,6 +39,7 @@ fn quote_set_submit_actions_materialize_submit_intents_with_next_identities() {
         Some(MakerOrderIntent::Submit {
             leg: Leg::No,
             instrument_id: no_instrument(),
+            order_side: OrderSide::Buy,
             order_identity: identity("no-next", 2),
             price: 0.30,
             quantity: 10.0,

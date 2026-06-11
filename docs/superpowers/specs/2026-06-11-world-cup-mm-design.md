@@ -22,6 +22,8 @@ For static sports events, `fair_probability_up` is not derived from strike/spot 
 
 `src/bolt_v3_maker_quote_plan.rs` composes the existing maker primitives for any market family: reference fair probability, optional book microprice nudge, Glosten-Milgrom reservation bid/ask, inventory skew, and the family-owned quote layout. Static World Cup markets use this through the same `MarketFamilyValidationBinding` quote-target seam as `updown`; no duplicate World Cup maker math exists.
 
+`src/bolt_v3_maker_quote_control.rs` composes the existing quote lifecycle with the existing requote budget so a denied venue budget does not advance lifecycle state. `src/bolt_v3_maker_quote_set.rs` applies family-produced YES/NO quote targets to that control layer and gates new submit actions through the existing per-market reservation helper across both legs before committing lifecycle or budget state.
+
 ## Testing
 
 Implementation uses TDD. The first failing tests prove:
@@ -32,6 +34,7 @@ Implementation uses TDD. The first failing tests prove:
 - Static event maker quote planning uses the shared maker model and static market-family quote layout.
 - Mismatched slugs, duplicate outcomes, expired instruments, and optional condition-ID mismatches fail closed.
 - Polymarket data-client mapping includes static event market slugs in its market-slug filters.
+- Planned YES/NO maker quote targets are budget-gated and reservation-gated before lifecycle state mutates.
 
 ## Follow-On Scope
 

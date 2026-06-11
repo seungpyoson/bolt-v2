@@ -243,7 +243,7 @@ mod tests {
     // evidence, probed executable fees at VWAP, coupled slippage/depth config,
     // labeled executable-edge Debug output, and named notional tolerance.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "be7654f04e853a692daf5ef3a04d8ff24afdc5233f1882a8b5c4c04891a59c20";
+        "64c49655d34754974e171f9104060322039ba36dd37dc73ecdc0c853d2e8066a";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

@@ -4,7 +4,8 @@ use crate::{
     bolt_v3_executable_cost::{ExecutableCostBlockReason, ExecutableCostBreakdown},
     bolt_v3_market_families::OutcomeSide,
     bolt_v3_numeric::{
-        BPS_DENOMINATOR, UNIT_F64, ZERO_F64, is_non_negative_finite, sanitize_probability,
+        BPS_DENOMINATOR, UNIT_F64, ZERO_F64, is_non_negative_finite, is_positive_finite,
+        sanitize_probability,
     },
 };
 
@@ -183,6 +184,13 @@ pub(crate) fn evaluate_binary_outcome_edge(
         fair_success_probability * CENTS_PER_SHARE - inputs.cost_breakdown.gross_cost_cents;
     let edge_cents_per_share =
         success_probability * CENTS_PER_SHARE - inputs.cost_breakdown.total_adjusted_cost_cents;
+    if !is_positive_finite(inputs.cost_breakdown.total_adjusted_cost_cents) {
+        return BinaryOutcomeEdgeResult::blocked_with_cost(
+            inputs.side,
+            inputs.cost_breakdown,
+            BinaryOutcomeEdgeBlockReason::InvalidCost,
+        );
+    }
     let edge_bps =
         edge_cents_per_share / inputs.cost_breakdown.total_adjusted_cost_cents * BPS_DENOMINATOR;
     if !edge_bps.is_finite() || !edge_cents_per_share.is_finite() {
@@ -292,6 +300,22 @@ mod tests {
             Some(super::BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge)
         );
         assert!(!result.trade_allowed);
+    }
+
+    #[test]
+    fn non_positive_or_non_finite_adjusted_cost_fails_closed_before_edge_bps() {
+        for total_adjusted_cost_cents in [0.0, -1.0, f64::INFINITY] {
+            let mut cost_breakdown = cost_breakdown(0.50, 0.0, 0);
+            cost_breakdown.total_adjusted_cost_cents = total_adjusted_cost_cents;
+            let result =
+                super::evaluate_binary_outcome_edge(&inputs(OutcomeSide::Up, cost_breakdown));
+
+            assert_eq!(
+                result.block_reason,
+                Some(super::BinaryOutcomeEdgeBlockReason::InvalidCost)
+            );
+            assert!(!result.trade_allowed);
+        }
     }
 
     #[test]

@@ -282,7 +282,14 @@ async def probe_polymarket(asset: str, deadline: float, offsets: dict[str, list[
 
     while time.time() < deadline:
         cycle_start = int(time.time()) // s4.CADENCE_SECS * s4.CADENCE_SECS
-        cycle = await asyncio.to_thread(s4.fetch_cycle, asset, cycle_start)
+        try:
+            cycle = await asyncio.to_thread(s4.fetch_cycle, asset, cycle_start)
+        except Exception as exc:
+            # fetch_cycle raises after its internal retries; a sustained Gamma outage
+            # must not silently kill PM collection while the other probes continue
+            print(f"pm: cycle fetch failed ({type(exc).__name__}: {exc}); retrying in 10s", flush=True)
+            await asyncio.sleep(10)
+            continue
         if cycle.get("missing"):
             print(f"pm: cycle {cycle_start} missing on Gamma; retrying in 10s", flush=True)
             await asyncio.sleep(10)

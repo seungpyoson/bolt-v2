@@ -467,6 +467,12 @@ def select_pm_clock(frame: pl.DataFrame, pm_clock: str, label: str) -> pl.DataFr
         raise SystemExit(f"{label}: pm-clock=venue but extracts lack ts_venue_ms; re-extract this window")
     if use_venue:
         frame = frame.drop("ts_ms").rename({"ts_venue_ms": "ts_ms"})
+        n_null = frame["ts_ms"].null_count()
+        if n_null:
+            raise SystemExit(
+                f"{label}: {n_null} null venue timestamps under pm-clock=venue; "
+                "re-extract this window or pass --pm-clock receive explicitly"
+            )
     elif has_venue:
         frame = frame.drop("ts_venue_ms")
     print(f"{label}: PM event clock = {'venue (ts_venue_ms)' if use_venue else 'receive (ts_ms)'}", flush=True)

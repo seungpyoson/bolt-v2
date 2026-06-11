@@ -36,3 +36,12 @@ fmt = "managed_light"
 clippy = "managed_light"
 test = "managed_heavy"
 gate = "github_hosted"
+
+[workflows.ci_runner_debug]
+debug-heavy = "managed_heavy"
+debug-light = "managed_light"
+
+[ci_runner_debug]
+ssh_wait_minutes_variable = "CI_DEBUG_SSH_WAIT_MINUTES"
+ssh_public_key_secret = "SSH_PUBLIC_KEY"
+ssh_runner_action = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a828"

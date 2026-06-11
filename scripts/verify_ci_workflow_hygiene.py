@@ -45,6 +45,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/ci.yml": "ci",
     "backtester-ci.yml": "backtester_ci",
     ".github/workflows/backtester-ci.yml": "backtester_ci",
+    "ci-runner-debug.yml": "ci_runner_debug",
+    ".github/workflows/ci-runner-debug.yml": "ci_runner_debug",
 }
 DEFAULT_REPO_AUTOMATION_FILES = (REPO_ROOT / "justfile",)
 DEFAULT_REPO_AUTOMATION_GLOBS = (
@@ -6085,6 +6087,54 @@ def extract_job_runs_on_var(job_lines: list[str]) -> str | None:
     return None
 
 
+def load_ci_runner_debug_config(path: pathlib.Path = DEFAULT_RUNNERS_CONFIG) -> dict[str, str]:
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    section = data.get("ci_runner_debug")
+    if not isinstance(section, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [ci_runner_debug]")
+    required = ("ssh_wait_minutes_variable", "ssh_public_key_secret", "ssh_runner_action")
+    config: dict[str, str] = {}
+    for key in required:
+        value = section.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"ci_runner_debug.{key} must be a non-empty string")
+        config[key] = value
+    return config
+
+
+def verify_ci_runner_debug_workflow(workflows: dict[str, str]) -> list[str]:
+    workflow_name = ".github/workflows/ci-runner-debug.yml"
+    if workflow_name not in workflows:
+        return []
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        return []
+    try:
+        debug_config = load_ci_runner_debug_config()
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"ci runner debug config invalid: {exc}"]
+
+    workflow_text = workflows[workflow_name]
+    errors: list[str] = []
+    expected_action = f"uses: {debug_config['ssh_runner_action']}"
+    expected_secret = f"secrets.{debug_config['ssh_public_key_secret']}"
+    expected_wait = f"vars.{debug_config['ssh_wait_minutes_variable']}"
+    if expected_action not in workflow_text:
+        errors.append(
+            f"{workflow_name} must reference {expected_action!r} for ubicloud/ssh-runner"
+        )
+    if expected_secret not in workflow_text:
+        errors.append(
+            f"{workflow_name} must reference {expected_secret!r} for SSH public key"
+        )
+    if expected_wait not in workflow_text:
+        errors.append(
+            f"{workflow_name} must reference {expected_wait!r} for SSH wait minutes"
+        )
+    if "workflow_dispatch:" not in workflow_text:
+        errors.append(f"{workflow_name} must be manual-only (workflow_dispatch)")
+    return errors
+
+
 def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str]:
     if not DEFAULT_RUNNERS_CONFIG.exists():
         return []
@@ -6206,6 +6256,7 @@ def main() -> int:
             repo_automation_texts[path.relative_to(REPO_ROOT).as_posix()] = path.read_text()
     errors = verify_workflows(workflow_texts, action_text, nextest_config_text)
     errors.extend(verify_github_actions_runner_contract(workflow_texts))
+    errors.extend(verify_ci_runner_debug_workflow(workflow_texts))
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     if DEFAULT_NO_MISTAKES_CONFIG.exists():

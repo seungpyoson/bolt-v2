@@ -802,6 +802,50 @@ def assert_bootstrap_uses_onepassword_key_generation() -> None:
         raise AssertionError(f"bootstrap must not pass private key material on argv, got: {commands}")
 
 
+def assert_sync_errors_redact_command_arguments() -> None:
+    sync_script = load_sync_ci_debug_ssh_script()
+    secret_arg = "-----BEGIN OPENSSH PRIVATE KEY-----private-----END OPENSSH PRIVATE KEY-----"
+    exc = subprocess.CalledProcessError(
+        1,
+        ["op", "item", "create", f"private key[password]={secret_arg}"],
+        output="",
+        stderr="",
+    )
+    message = sync_script.called_process_error_message(exc)
+    if secret_arg in message or "private key[password]" in message or "op item create" in message:
+        raise AssertionError(f"CalledProcessError message must redact command arguments, got: {message!r}")
+    if "exit 1" not in message:
+        raise AssertionError(f"CalledProcessError message must include exit status, got: {message!r}")
+
+
+def assert_security_key_public_prefix_is_validated() -> None:
+    sync_script = load_sync_ci_debug_ssh_script()
+    sync_script.validate_public_key("sk-ssh-ed25519@openssh.com AAAATEST")
+    try:
+        sync_script.validate_public_key("ssh-ed25519-sk@openssh.com AAAATEST")
+    except RuntimeError:
+        return
+    raise AssertionError("validate_public_key must reject the invalid ssh-ed25519-sk@ prefix")
+
+
+def assert_backtester_detect_includes_runner_config() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    if "            ci/github-actions-runners.toml \\\n" not in workflow:
+        workflow = replace_once(
+            workflow,
+            "            rust-toolchain.toml \\\n",
+            "            rust-toolchain.toml \\\n            ci/github-actions-runners.toml \\\n",
+        )
+    bad = workflow.replace("            ci/github-actions-runners.toml \\\n", "")
+    bad_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
+    if not any("backtester detect paths must include ci/github-actions-runners.toml" in error for error in bad_errors):
+        raise AssertionError(f"backtester detector must reject missing runner config path, got: {bad_errors}")
+    good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": workflow})
+    if any("backtester detect paths must include ci/github-actions-runners.toml" in error for error in good_errors):
+        raise AssertionError(f"backtester detector path check must pass when present, got: {good_errors}")
+
+
 def without_pr_concurrency(workflow: str) -> str:
     return replace_once(
         workflow,
@@ -5288,6 +5332,9 @@ def main() -> int:
     assert_debug_workflow_rejects_non_manual_trigger()
     assert_debug_workflow_checks_each_ssh_runner_step()
     assert_bootstrap_uses_onepassword_key_generation()
+    assert_sync_errors_redact_command_arguments()
+    assert_security_key_public_prefix_is_validated()
+    assert_backtester_detect_includes_runner_config()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"

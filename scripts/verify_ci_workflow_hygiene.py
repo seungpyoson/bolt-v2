@@ -5960,6 +5960,15 @@ def backtester_gate_detect_result_errors(file_name: str, text: str) -> list[str]
     return ["backtester-gate must check needs.detect.result and exit 1 when detect fails"]
 
 
+def backtester_detect_path_errors(file_name: str, text: str) -> list[str]:
+    if not file_name.endswith("backtester-ci.yml"):
+        return []
+    detect_job = parse_jobs(text).get("detect", [])
+    if any("ci/github-actions-runners.toml" in line for line in detect_job):
+        return []
+    return ["backtester detect paths must include ci/github-actions-runners.toml"]
+
+
 def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
     errors: list[str] = []
     for file_name, text in texts.items():
@@ -5971,6 +5980,10 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
         add_unique_errors(
             errors,
             (f"{file_name}: {error}" for error in backtester_gate_detect_result_errors(file_name, text)),
+        )
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in backtester_detect_path_errors(file_name, text)),
         )
         automation_texts = [text, *yaml_run_shell_texts(uncommented_text(text.splitlines()))]
         for automation_text in automation_texts:

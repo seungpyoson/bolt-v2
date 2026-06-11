@@ -12,7 +12,12 @@ import tomllib
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_RUNNERS_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
-SSH_PUBLIC_KEY_PREFIXES = ("ssh-ed25519 ", "ssh-rsa ", "ecdsa-sha2-", "ssh-ed25519-sk@")
+SSH_PUBLIC_KEY_PREFIXES = (
+    "ssh-ed25519 ",
+    "ssh-rsa ",
+    "ecdsa-sha2-",
+    "sk-ssh-ed25519@openssh.com ",
+)
 
 
 def load_ci_runner_debug_config(path: pathlib.Path = DEFAULT_RUNNERS_CONFIG) -> dict[str, str]:
@@ -50,6 +55,19 @@ def run_checked(command: list[str], *, input_text: str | None = None) -> subproc
         capture_output=True,
         input=input_text,
     )
+
+
+def called_process_error_message(exc: subprocess.CalledProcessError) -> str:
+    detail = (exc.stderr or exc.stdout or "").strip()
+    if detail:
+        return detail
+    if isinstance(exc.cmd, (list, tuple)) and exc.cmd:
+        command_name = pathlib.Path(str(exc.cmd[0])).name
+    elif isinstance(exc.cmd, str) and exc.cmd.strip():
+        command_name = pathlib.Path(exc.cmd.strip().split()[0]).name
+    else:
+        command_name = "command"
+    return f"{command_name} failed with exit {exc.returncode}"
 
 
 def github_repository() -> str:
@@ -188,8 +206,7 @@ def main(argv: list[str] | None = None) -> int:
         sync_public_key_to_github(config)
     except (RuntimeError, subprocess.CalledProcessError) as exc:
         if isinstance(exc, subprocess.CalledProcessError):
-            detail = (exc.stderr or exc.stdout or "").strip()
-            message = detail or str(exc)
+            message = called_process_error_message(exc)
         else:
             message = str(exc)
         print(f"ERROR: {message}", file=sys.stderr)

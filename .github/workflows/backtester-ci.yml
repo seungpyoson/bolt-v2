@@ -76,6 +76,7 @@ jobs:
             scripts/rust_verification.py \
             scripts/command_understanding.py \
             rust-toolchain.toml \
+            ci/github-actions-runners.toml \
             '.github/actions/setup-environment/**' \
             .github/workflows/backtester-ci.yml)"
           if [[ -n "$changed" ]]; then

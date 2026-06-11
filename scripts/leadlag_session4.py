@@ -81,6 +81,8 @@ CAL_PROBE_TTES_SECS = (120, 60, 30)
 MAKER_MARK_HORIZONS_SECS = (10, 30, 60)
 LEADER_COIN_BY_ASSET = {"btc": "BTC", "eth": "ETH", "sol": "SOL", "xrp": "XRP"}
 ENTRY_FEE_BPS_SCALE = 10_000
+PM_CLOCK_CHOICES = ("auto", "receive", "venue")
+DEFAULT_PM_CLOCK = "auto"
 
 
 def run_pool(label: str, workers: int, thunks: list) -> None:
@@ -451,7 +453,29 @@ def md_table(headers: list[str], rows: list[list[str]]) -> str:
     return "\n".join(out)
 
 
-def load_token_books(workdir: Path, dates: list[str], tokens: set[str]) -> dict[str, TokenBook]:
+def select_pm_clock(frame: pl.DataFrame, pm_clock: str, label: str) -> pl.DataFrame:
+    """Substitute the PM event clock ONCE at load time (#633 item 3): downstream code
+    always reads `ts_ms`. `venue` uses the Polymarket-stamped ts_venue_ms (offset-free
+    vs leader exchange clocks); `receive` keeps the pmxt collector clock (the published
+    studies' clock, ~120ms median behind venue); `auto` = venue when the extract carries
+    it, else receive (old caches reproduce published numbers unchanged)."""
+    if pm_clock not in PM_CLOCK_CHOICES:
+        raise SystemExit(f"unknown pm-clock {pm_clock!r}; valid: {','.join(PM_CLOCK_CHOICES)}")
+    has_venue = "ts_venue_ms" in frame.columns
+    use_venue = pm_clock == "venue" or (pm_clock == "auto" and has_venue)
+    if use_venue and not has_venue:
+        raise SystemExit(f"{label}: pm-clock=venue but extracts lack ts_venue_ms; re-extract this window")
+    if use_venue:
+        frame = frame.drop("ts_ms").rename({"ts_venue_ms": "ts_ms"})
+    elif has_venue:
+        frame = frame.drop("ts_venue_ms")
+    print(f"{label}: PM event clock = {'venue (ts_venue_ms)' if use_venue else 'receive (ts_ms)'}", flush=True)
+    return frame
+
+
+def load_token_books(
+    workdir: Path, dates: list[str], tokens: set[str], pm_clock: str = DEFAULT_PM_CLOCK
+) -> dict[str, TokenBook]:
     frames = []
     for date in dates:
         directory = workdir / "pm_tob" / date
@@ -459,11 +483,13 @@ def load_token_books(workdir: Path, dates: list[str], tokens: set[str]) -> dict[
             frames.append(pl.read_parquet(path).filter(pl.col("asset_id").is_in(list(tokens))))
     if not frames:
         return {}
-    merged = pl.concat(frames).sort("asset_id", "ts_ms")
+    merged = select_pm_clock(pl.concat(frames), pm_clock, "pm_tob").sort("asset_id", "ts_ms")
     return {key[0]: TokenBook(f) for key, f in merged.partition_by("asset_id", as_dict=True).items()}
 
 
-def load_trades(workdir: Path, dates: list[str], tokens: set[str]) -> pl.DataFrame:
+def load_trades(
+    workdir: Path, dates: list[str], tokens: set[str], pm_clock: str = DEFAULT_PM_CLOCK
+) -> pl.DataFrame:
     frames = []
     for date in dates:
         directory = workdir / "pm_trades" / date
@@ -471,7 +497,7 @@ def load_trades(workdir: Path, dates: list[str], tokens: set[str]) -> pl.DataFra
             frames.append(pl.read_parquet(path).filter(pl.col("asset_id").is_in(list(tokens))))
     if not frames:
         raise SystemExit("no pm_trades extracts found; run `extract-pm` first")
-    return pl.concat(frames).sort("asset_id", "ts_ms")
+    return select_pm_clock(pl.concat(frames), pm_clock, "pm_trades").sort("asset_id", "ts_ms")
 
 
 def detect_events(leader: LeaderSeries, day_start: int, threshold_bps: float) -> list[tuple[int, int]]:
@@ -502,8 +528,8 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     all_tokens = {c.up_token for c in cycles} | {c.down_token for c in cycles}
 
     print(f"analyze: {len(cycles)} cycles, {len(all_tokens)} tokens; loading extracts ...", flush=True)
-    books = load_token_books(workdir, dates, all_tokens)
-    trades = load_trades(workdir, dates, all_tokens)
+    books = load_token_books(workdir, dates, all_tokens, pm_clock=args.pm_clock)
+    trades = load_trades(workdir, dates, all_tokens, pm_clock=args.pm_clock)
     leaders: dict[tuple[str, str], LeaderSeries] = {}
     for date in dates:
         for asset in assets:
@@ -825,6 +851,12 @@ def main() -> None:
     p_an.add_argument("--spread-sample-step", type=int, default=5, help="seconds between spread samples")
     p_an.add_argument("--min-events", type=int, default=30, help="min events for a verdict cell")
     p_an.add_argument("--maker-sample-cap", type=int, default=400_000, help="max fills for maker mark-outs")
+    p_an.add_argument(
+        "--pm-clock",
+        choices=PM_CLOCK_CHOICES,
+        default=DEFAULT_PM_CLOCK,
+        help="PM event clock: venue (offset-free), receive (published studies), auto=venue when extracted",
+    )
     p_an.set_defaults(func=cmd_analyze)
 
     args = parser.parse_args()

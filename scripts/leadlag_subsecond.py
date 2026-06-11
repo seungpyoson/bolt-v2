@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import statistics
 import subprocess
 import sys
 import tempfile
@@ -71,7 +70,7 @@ def cmd_subsecond(args: argparse.Namespace) -> None:
     cycles_by_key = {(c.asset, c.start): c for c in cycles}
     all_tokens = {c.up_token for c in cycles} | {c.down_token for c in cycles}
     print(f"subsecond: {len(cycles)} cycles; loading extracts ...", flush=True)
-    books = s4.load_token_books(workdir, dates, all_tokens)
+    books = s4.load_token_books(workdir, dates, all_tokens, pm_clock=args.pm_clock)
 
     net: dict[tuple[str, float, float], list[float]] = {}
     pre_move_net: dict[tuple[str, float], list[float]] = {}
@@ -242,10 +241,11 @@ def cmd_fillability(args: argparse.Namespace) -> None:
         if not paths:
             raise SystemExit(f"no pm_tob_sized extracts for {date}; run `extract-sizes` first")
         print(f"fillability: {date} loading {len(paths)} sized extracts ...", flush=True)
-        merged = (
-            pl.concat([pl.read_parquet(p).filter(pl.col("asset_id").is_in(list(token_set))) for p in paths])
-            .sort("asset_id", "ts_ms")
-        )
+        merged = s4.select_pm_clock(
+            pl.concat([pl.read_parquet(p).filter(pl.col("asset_id").is_in(list(token_set))) for p in paths]),
+            args.pm_clock,
+            f"pm_tob_sized/{date}",
+        ).sort("asset_id", "ts_ms")
         sized = {key[0]: SizedBook(f) for key, f in merged.partition_by("asset_id", as_dict=True).items()}
         del merged
         base = s4.day_epoch(date)
@@ -312,8 +312,17 @@ def main() -> None:
         p.add_argument("--workdir", default=str(s4.DEFAULT_WORKDIR))
         p.add_argument("--report", default="", help="write tables to this file instead of stdout")
 
+    def pm_clock_flag(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--pm-clock",
+            choices=s4.PM_CLOCK_CHOICES,
+            default=s4.DEFAULT_PM_CLOCK,
+            help="PM event clock: venue (offset-free), receive (published studies), auto=venue when extracted",
+        )
+
     p_sub = sub.add_parser("subsecond", help="net edge vs reaction latency (sub-second)")
     common(p_sub)
+    pm_clock_flag(p_sub)
     p_sub.set_defaults(func=cmd_subsecond)
 
     p_ext = sub.add_parser("extract-sizes", help="re-extract tob with level size columns")
@@ -323,6 +332,7 @@ def main() -> None:
 
     p_fill = sub.add_parser("fillability", help="displayed size at the ask at signal time")
     common(p_fill)
+    pm_clock_flag(p_fill)
     p_fill.set_defaults(func=cmd_fillability)
 
     args = parser.parse_args()

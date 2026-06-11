@@ -101,11 +101,64 @@ def lake_connect() -> duckdb.DuckDBPyConnection:
     return con
 
 
-def cmd_lake(args: argparse.Namespace) -> None:
-    dates = s4.parse_dates(args.dates)
-    con = lake_connect()
+def lake_scan_date(con: duckdb.DuckDBPyConnection, date: str) -> dict:
+    glob = f"{s4.PMXT_S3_PREFIX}/dt={date}/*.parquet"
     event_list = ", ".join(f"'{e}'" for e in OFFSET_EVENT_TYPES)
     q_list = ", ".join(str(q) for q in OFFSET_PERCENTILES)
+    rows = con.execute(
+        f"""
+        WITH src AS (
+            SELECT event_type,
+                   epoch_ms(timestamp_received) - epoch_ms(timestamp) AS off_ms
+            FROM read_parquet('{glob}')
+            WHERE event_type IN ({event_list})
+        )
+        SELECT event_type, COUNT(off_ms) AS n,
+               COUNT(*) - COUNT(off_ms) AS n_null,
+               MIN(off_ms), quantile_cont(off_ms, [{q_list}]), MAX(off_ms)
+        FROM src GROUP BY event_type ORDER BY n DESC
+        """
+    ).fetchall()
+    hourly = con.execute(
+        f"""
+        SELECT hour(timestamp_received) AS hr,
+               median(epoch_ms(timestamp_received) - epoch_ms(timestamp)) AS med
+        FROM read_parquet('{glob}')
+        WHERE event_type = 'price_change' AND timestamp IS NOT NULL
+        GROUP BY hr ORDER BY hr
+        """
+    ).fetchall()
+    meds = [float(m) for _, m in hourly]
+    return {
+        "rows": [
+            [event_type, int(n), int(n_null), float(mn), [float(v) for v in qs], float(mx)]
+            for event_type, n, n_null, mn, qs, mx in rows
+        ],
+        "hourly_med_min": min(meds) if meds else None,
+        "hourly_med_max": max(meds) if meds else None,
+    }
+
+
+def cmd_lake(args: argparse.Namespace) -> None:
+    dates = s4.parse_dates(args.dates)
+    ckdir = Path(args.workdir) / "clock_offsets"
+    ckdir.mkdir(parents=True, exist_ok=True)
+    con: duckdb.DuckDBPyConnection | None = None
+    # One date per checkpoint: a whole-window scan is hours of S3 reads and gets killed
+    # by command timeouts; per-date JSON makes any rerun resume where it died.
+    for date in dates:
+        ck = ckdir / f"{date}.json"
+        if ck.exists():
+            print(f"lake: {date} checkpoint exists, skipping", flush=True)
+            continue
+        if con is None:
+            con = lake_connect()
+        print(f"lake: scanning {date} ...", flush=True)
+        payload = lake_scan_date(con, date)
+        tmp = ck.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload))
+        tmp.rename(ck)
+
     lines = [
         "## Cross-source clock offset — pmxt collector receive vs Polymarket venue timestamp",
         "",
@@ -117,34 +170,12 @@ def cmd_lake(args: argparse.Namespace) -> None:
         "|---|---|---|---|---|" + "---|" * len(OFFSET_PERCENTILES) + "---|---|",
     ]
     for date in dates:
-        glob = f"{s4.PMXT_S3_PREFIX}/dt={date}/*.parquet"
-        print(f"lake: scanning {date} ...", flush=True)
-        rows = con.execute(
-            f"""
-            WITH src AS (
-                SELECT event_type,
-                       epoch_ms(timestamp_received) - epoch_ms(timestamp) AS off_ms
-                FROM read_parquet('{glob}')
-                WHERE event_type IN ({event_list})
-            )
-            SELECT event_type, COUNT(off_ms) AS n,
-                   COUNT(*) - COUNT(off_ms) AS n_null,
-                   MIN(off_ms), quantile_cont(off_ms, [{q_list}]), MAX(off_ms)
-            FROM src GROUP BY event_type ORDER BY n DESC
-            """
-        ).fetchall()
-        hourly = con.execute(
-            f"""
-            SELECT hour(timestamp_received) AS hr,
-                   median(epoch_ms(timestamp_received) - epoch_ms(timestamp)) AS med
-            FROM read_parquet('{glob}')
-            WHERE event_type = 'price_change' AND timestamp IS NOT NULL
-            GROUP BY hr ORDER BY hr
-            """
-        ).fetchall()
-        meds = [m for _, m in hourly]
-        hourly_range = f"{min(meds):.0f}..{max(meds):.0f}" if meds else "n/a"
-        for event_type, n, n_null, mn, qs, mx in rows:
+        payload = json.loads((ckdir / f"{date}.json").read_text())
+        if payload["hourly_med_min"] is not None:
+            hourly_range = f"{payload['hourly_med_min']:.0f}..{payload['hourly_med_max']:.0f}"
+        else:
+            hourly_range = "n/a"
+        for event_type, n, n_null, mn, qs, mx in payload["rows"]:
             qcells = " | ".join(f"{v:.0f}" for v in qs)
             rng = hourly_range if event_type == "price_change" else ""
             lines.append(
@@ -321,6 +352,7 @@ def main() -> None:
 
     p_lake = sub.add_parser("lake", help="offset distribution over the historical window")
     p_lake.add_argument("--dates", required=True)
+    p_lake.add_argument("--workdir", default=str(s4.DEFAULT_WORKDIR))
     p_lake.add_argument("--report")
     p_lake.set_defaults(func=cmd_lake)
 

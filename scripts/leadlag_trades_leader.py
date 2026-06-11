@@ -244,6 +244,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     )
 
     out = (
+        f"<!-- pm-clock: {s4.pm_clock_provenance()} -->\n"
         f"<!-- section:leadtime (Bybit trades clock vs HL book clock) -->\n{lead_table}\n\n"
         f"<!-- section:tradesleader (net edge, Bybit trades clock) -->\n{edge_table}\n"
     )

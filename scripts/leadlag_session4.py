@@ -453,6 +453,25 @@ def md_table(headers: list[str], rows: list[list[str]]) -> str:
     return "\n".join(out)
 
 
+PM_CLOCK_RESOLVED: dict[str, str] = {}  # load label -> "venue" | "receive", this process
+
+
+def pm_clock_provenance() -> str:
+    """The resolved PM clock for stamping into report artifacts. Fails loud if
+    loads within this run disagreed — e.g. the per-date sized loader under
+    `auto` mixing a re-extracted (venue) date with an old-cache (receive) date,
+    a mix no concat schema check can catch because selection is per date."""
+    if not PM_CLOCK_RESOLVED:
+        raise SystemExit("pm_clock_provenance: no PM extracts loaded in this run")
+    resolved = set(PM_CLOCK_RESOLVED.values())
+    if len(resolved) > 1:
+        raise SystemExit(
+            f"mixed PM clocks within one run: {PM_CLOCK_RESOLVED}; "
+            "re-extract the window to one cache generation or pin --pm-clock receive"
+        )
+    return resolved.pop()
+
+
 def select_pm_clock(frame: pl.DataFrame, pm_clock: str, label: str) -> pl.DataFrame:
     """Substitute the PM event clock ONCE at load time (#633 item 3): downstream code
     always reads `ts_ms`. `venue` uses the Polymarket-stamped ts_venue_ms (offset-free
@@ -475,6 +494,7 @@ def select_pm_clock(frame: pl.DataFrame, pm_clock: str, label: str) -> pl.DataFr
             )
     elif has_venue:
         frame = frame.drop("ts_venue_ms")
+    PM_CLOCK_RESOLVED[label] = "venue" if use_venue else "receive"
     print(f"{label}: PM event clock = {'venue (ts_venue_ms)' if use_venue else 'receive (ts_ms)'}", flush=True)
     return frame
 
@@ -819,7 +839,9 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         ),
         "tte_breakdown": "\n".join(tte_lines),
     }
-    payload = "\n".join(f"<!-- section:{name} -->\n{content}\n" for name, content in sections.items())
+    payload = f"<!-- pm-clock: {pm_clock_provenance()} -->\n" + "\n".join(
+        f"<!-- section:{name} -->\n{content}\n" for name, content in sections.items()
+    )
     if args.report:
         Path(args.report).write_text(payload)
         print(f"analyze: wrote section tables to {args.report}")

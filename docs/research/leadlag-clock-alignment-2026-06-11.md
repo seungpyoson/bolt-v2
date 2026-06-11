@@ -112,9 +112,13 @@ order must reach the venue within δ − offset to capture the published edge.
 Extraction now captures both clocks (`ts_ms` = receive, `ts_venue_ms` = venue) and
 analysis selects one at load time through a single choke point
 (`leadlag_session4.select_pm_clock`, `--pm-clock auto|receive|venue`, default `auto` =
-venue when present). Old caches without `ts_venue_ms` keep producing byte-identical
-output under `auto`/`receive` (regression-verified); requesting `venue` on an old cache
-fails loud and tells the operator to re-extract. The next harness window
+venue when present). Every report artifact now opens with a `<!-- pm-clock: ... -->`
+provenance line; with that one declared line set aside, old caches without
+`ts_venue_ms` reproduce the published tables byte-identically under `auto`/`receive`
+(regression-verified). Requesting `venue` on an old cache fails loud, as does any run
+whose loads resolve to different clocks (e.g. per-date sized extracts spanning two
+cache generations under `auto` — a mix the per-date selection would otherwise pass
+silently). The next harness window
 (`scripts/leadlag_remeasure.py`, PR #639) therefore measures offset-free by default —
 no re-extract of the April window is needed for the published verdicts, because the
 offset correction below is uniform and the verdict directions are unchanged.

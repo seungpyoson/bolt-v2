@@ -130,7 +130,7 @@ def cmd_subsecond(args: argparse.Namespace) -> None:
          "mean net (c)", "95% CI"],
         rows,
     )
-    out = f"<!-- section:subsecond -->\n{table}\n"
+    out = f"<!-- pm-clock: {s4.pm_clock_provenance()} -->\n<!-- section:subsecond -->\n{table}\n"
     if args.report:
         Path(args.report).write_text(out)
         print(f"subsecond: wrote {args.report}")
@@ -292,6 +292,7 @@ def cmd_fillability(args: argparse.Namespace) -> None:
         rows,
     )
     out = (
+        f"<!-- pm-clock: {s4.pm_clock_provenance()} -->\n"
         f"<!-- section:fillability (size at best ask {SIZE_PROBE_DELTA_SECS}s after detection) -->\n"
         f"{table}\n"
     )

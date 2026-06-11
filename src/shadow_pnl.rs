@@ -21,7 +21,7 @@ use crate::bolt_v3_decision_evidence::{
 
 const SHADOW_PNL_COUNT_INCREMENT: u64 = 1;
 const SHADOW_PNL_LINE_NUMBER_BASE: usize = 1;
-const SHADOW_PNL_BASIS_POINTS_DENOMINATOR: u64 = 10_000;
+const SHADOW_PNL_BASIS_POINTS_DENOMINATOR: u64 = crate::bolt_v3_numeric::BPS_DENOMINATOR as u64;
 const SHADOW_PNL_DECIMAL_SCALE: u32 = 6;
 const SHADOW_PNL_CSV_SEPARATOR: char = ',';
 const SHADOW_PNL_CSV_QUOTE: char = '"';
@@ -160,8 +160,7 @@ pub fn build_shadow_pnl_report(
     let mut accumulators = BTreeMap::<(NaiveDate, String), TradeAccumulator>::new();
 
     for trade in chains {
-        let settlement = settlement_for_trade(&settlements, &trade)
-            .with_context(|| format!("missing settlement for {}", trade.intent.client_order_id))?;
+        let settlement = settlement_for_trade(&settlements, &trade)?;
         let selected_side =
             trade.snapshot.selected_side.as_deref().ok_or_else(|| {
                 anyhow!("missing selected_side for {}", trade.intent.client_order_id)
@@ -347,21 +346,50 @@ fn validate_evidence_header(envelope: &EvidenceEnvelope, line_number: usize) -> 
 fn settlement_for_trade<'a>(
     settlements: &'a [ShadowSettlementEvidence],
     trade: &TradeEvidence,
-) -> Option<&'a ShadowSettlementEvidence> {
-    settlements
+) -> Result<&'a ShadowSettlementEvidence> {
+    let instrument_matches = settlements
         .iter()
-        .find(|settlement| settlement_matches_trade(settlement, trade))
+        .filter(|settlement| settlement.instrument_id == trade.intent.instrument_id)
+        .collect::<Vec<_>>();
+    let client_order_id = trade.intent.client_order_id.as_str();
+    let Some(market_id) = trade.snapshot.market_id.as_ref() else {
+        return single_settlement_match(
+            instrument_matches,
+            format!("ambiguous settlement for {client_order_id}: missing trade market_id"),
+        )?
+        .ok_or_else(|| anyhow!("missing settlement for {client_order_id}"));
+    };
+    let exact_matches = instrument_matches
+        .iter()
+        .copied()
+        .filter(|settlement| settlement.market_id.as_ref() == Some(market_id))
+        .collect::<Vec<_>>();
+    if let Some(settlement) = single_settlement_match(
+        exact_matches,
+        format!("ambiguous settlement for {client_order_id}: duplicate market_id match"),
+    )? {
+        return Ok(settlement);
+    }
+    let wildcard_matches = instrument_matches
+        .into_iter()
+        .filter(|settlement| settlement.market_id.is_none())
+        .collect::<Vec<_>>();
+    single_settlement_match(
+        wildcard_matches,
+        format!("ambiguous settlement for {client_order_id}: duplicate instrument-only match"),
+    )?
+    .ok_or_else(|| anyhow!("missing settlement for {client_order_id}"))
 }
 
-fn settlement_matches_trade(settlement: &ShadowSettlementEvidence, trade: &TradeEvidence) -> bool {
-    if settlement.instrument_id != trade.intent.instrument_id {
-        return false;
+fn single_settlement_match<'a>(
+    settlements: Vec<&'a ShadowSettlementEvidence>,
+    ambiguous_message: String,
+) -> Result<Option<&'a ShadowSettlementEvidence>> {
+    match settlements.len() {
+        0 => Ok(None),
+        1 => Ok(Some(settlements[0])),
+        _ => Err(anyhow!(ambiguous_message)),
     }
-    trade
-        .snapshot
-        .market_id
-        .as_ref()
-        .is_none_or(|market_id| settlement.market_id.as_ref() == Some(market_id))
 }
 
 fn report_row(day: NaiveDate, asset: String, accumulator: TradeAccumulator) -> ShadowPnlReportRow {

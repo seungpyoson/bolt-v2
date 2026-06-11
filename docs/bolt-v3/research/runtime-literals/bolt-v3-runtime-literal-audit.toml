@@ -775,18 +775,34 @@ reason = "This converts zero-based JSONL iterator indexes to one-based operator 
 [[allowed]]
 path = "src/shadow_pnl.rs"
 kind = "number"
-literal = '''10_000'''
-context = '''const SHADOW_PNL_BASIS_POINTS_DENOMINATOR: u64 = 10_000;'''
-classification = "shadow_pnl_basis_points_denominator"
-reason = "This is the mathematical basis-points denominator used to convert fee and realized-edge basis points in the report."
-
-[[allowed]]
-path = "src/shadow_pnl.rs"
-kind = "number"
 literal = '''6'''
 context = '''const SHADOW_PNL_DECIMAL_SCALE: u32 = 6;'''
 classification = "shadow_pnl_report_display_precision"
 reason = "This controls CSV decimal display precision for the shadow PnL report only; no strategy or execution behavior reads it."
+
+[[allowed]]
+path = "src/shadow_pnl.rs"
+kind = "number"
+literal = '''0'''
+context = '''0 => Ok(None),'''
+classification = "shadow_pnl_settlement_cardinality"
+reason = "This is the zero-match arm in the settlement selector; it is structural match-cardinality logic, not an operator runtime value."
+
+[[allowed]]
+path = "src/shadow_pnl.rs"
+kind = "number"
+literal = '''1'''
+context = '''1 => Ok(Some(settlements[0])),'''
+classification = "shadow_pnl_settlement_cardinality"
+reason = "This is the single-match arm in the settlement selector; it is structural match-cardinality logic, not an operator runtime value."
+
+[[allowed]]
+path = "src/shadow_pnl.rs"
+kind = "number"
+literal = '''0'''
+context = '''1 => Ok(Some(settlements[0])),'''
+classification = "shadow_pnl_settlement_single_match_index"
+reason = "This selects the sole settlement row after the cardinality check has proven exactly one match; it is collection indexing structure, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"

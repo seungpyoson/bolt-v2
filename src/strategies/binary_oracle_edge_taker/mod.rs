@@ -4214,9 +4214,7 @@ impl BinaryOracleEdgeTaker {
             ),
         ) {
             Ok(SubmitOrderOutcome::Submitted) => {}
-            Ok(SubmitOrderOutcome::SkippedByConfig) => {
-                self.exposure = ExposureState::Managed(managed_position);
-            }
+            Ok(SubmitOrderOutcome::SkippedByConfig) => {}
             Err(error) => {
                 self.exposure = ExposureState::Managed(managed_position);
                 return Err(error);

@@ -248,8 +248,9 @@ mod tests {
     // instruments before asserting no NT submit command is emitted.
     // Re-derived after shadow skipped submits stopped retaining pending
     // strategy exposure without an NT order.
+    // Re-derived after skipped shadow exits retained the exit-pending latch.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "cf71070836f6b1de3919d3d10b88bae6529a2feeb9c78d8694f449608cae4d7f";
+        "84f7e49ffae49870f72e03f339cf5f2470ef2d76f2a981b847192cc06d5d4000";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

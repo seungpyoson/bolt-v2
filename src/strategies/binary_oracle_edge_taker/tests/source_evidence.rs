@@ -808,6 +808,70 @@ fn submit_orders_false_does_not_leave_pending_entry_between_would_be_entries() {
 }
 
 #[test]
+fn submit_orders_false_exit_keeps_pending_exit_between_would_be_exits() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission.clone(),
+    );
+    strategy.config.submit_orders = false;
+    strategy.active.phase = SelectionPhase::Freeze;
+    register_test_strategy_with_active_instruments(&mut strategy);
+    let instrument_id = configured_outcome_instruments(&strategy)
+        .into_iter()
+        .next()
+        .expect("ready-to-trade fixture should expose an outcome instrument");
+    let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-SHADOW-EXIT-001"),
+        position_quantity,
+        0.45,
+    );
+    set_managed_position(
+        &mut strategy,
+        position,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    let first_client_order_id = strategy
+        .try_submit_exit_order(1_200)
+        .expect("first shadow exit should pass evidence and admission")
+        .expect("first shadow exit should produce a would-be client order id");
+    assert_eq!(
+        strategy.exposure_occupancy(),
+        Some(ExposureOccupancy::ExitPending),
+        "shadow exit must keep the live-mode pending-exit latch"
+    );
+    assert_eq!(
+        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
+        Some(first_client_order_id)
+    );
+
+    assert_eq!(
+        strategy
+            .try_submit_exit_order(1_201)
+            .expect("latched shadow exit should not fail"),
+        None,
+        "latched shadow exit should block repeated would-be exits"
+    );
+    assert_eq!(submit_admission.admitted_order_count(), 1);
+    assert_eq!(
+        evidence
+            .events()
+            .iter()
+            .filter(|event| matches!(event, RecordedDecisionEvidenceEvent::OrderIntent(_)))
+            .count(),
+        1,
+        "latched shadow exit should record one order-intent"
+    );
+}
+
+#[test]
 fn strategy_input_evidence_records_realized_volatility_unknown_source_rejections() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());

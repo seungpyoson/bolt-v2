@@ -35,6 +35,8 @@ def disk_bytes(path: pathlib.Path) -> int:
 
 
 def run_owner(args: list[str], *, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    env = env.copy()
+    env.setdefault("BOLT_ALLOW_LOCAL_RUST", "1")
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         cwd=REPO_ROOT,
@@ -65,9 +67,16 @@ def write_policy(repo: pathlib.Path) -> None:
     (repo / "ci" / "rust-verification.toml").write_text(
         textwrap.dedent(
             """\
-            schema_version = 1
+            schema_version = 2
             project_id = "bolt-v2"
             target_namespace = "bolt-v2"
+
+            [local_compile_policy]
+            enabled = true
+            allowed_ci_env = "GITHUB_ACTIONS"
+            break_glass_env = "BOLT_ALLOW_LOCAL_RUST"
+            refused_managed_commands = ["test", "clippy", "build"]
+            refused_cargo_subcommands = ["bench", "build", "check", "clippy", "doc", "fetch", "install", "nextest", "run", "rustc", "test", "zigbuild"]
 
             [commands]
 
@@ -1090,6 +1099,7 @@ exit 0
         env["DEBUG_PARENT"] = str(debug_dir)
         env["MARKER"] = str(marker)
         env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["BOLT_ALLOW_LOCAL_RUST"] = "1"
         env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
 
         cargo_proc = subprocess.Popen(
@@ -1168,6 +1178,7 @@ exit 0
         env["DEBUG_PARENT"] = str(debug_dir)
         env["MARKER"] = str(marker)
         env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+        env["BOLT_ALLOW_LOCAL_RUST"] = "1"
         env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
 
         run_proc = subprocess.Popen(
@@ -2010,13 +2021,19 @@ def assert_managed_cargo_preflight_errors_are_structured() -> None:
         args = type("Args", (), {"repo": str(repo), "args": ["build"]})()
         stderr = io.StringIO()
         owner.cache_status_payload = failing_cache_status
+        old_break_glass = os.environ.get("BOLT_ALLOW_LOCAL_RUST")
         try:
+            os.environ["BOLT_ALLOW_LOCAL_RUST"] = "1"
             with contextlib.redirect_stderr(stderr):
                 result = owner.cmd_cargo(args)
         except OSError as exc:
             raise AssertionError(f"managed cargo preflight leaked exception: {exc}") from exc
         finally:
             owner.cache_status_payload = original_cache_status_payload
+            if old_break_glass is None:
+                os.environ.pop("BOLT_ALLOW_LOCAL_RUST", None)
+            else:
+                os.environ["BOLT_ALLOW_LOCAL_RUST"] = old_break_glass
 
     if result != 2:
         raise AssertionError(f"preflight error should refuse with exit 2, got {result}")
@@ -2340,6 +2357,7 @@ def assert_managed_env_scrubs_build_target_dir_and_routes_target_dir() -> None:
         write_policy(repo)
         root_base = tmp_path / "rust-root"
         leaky_env = {
+            "BOLT_ALLOW_LOCAL_RUST": "1",
             "BOLT_MANAGED_JUST": "1",
             "CARGO_BUILD_TARGET_DIR": str(tmp_path / "leaked-build-target"),
             "CARGO_BUILD_RUSTFLAGS": "--out-dir /tmp/raw-out",
@@ -2588,77 +2606,85 @@ def assert_v6_red_nextest_archive_extraction_uses_exclusive_cache_lock() -> None
                 "count:1/4",
             ],
         )
-        archive_result = owner.cmd_cargo(archive_args)
-        normal_args = types.SimpleNamespace(repo=str(repo), args=["nextest", "run", "--locked"])
-        normal_result = owner.cmd_cargo(normal_args)
-        configured_archive_args = types.SimpleNamespace(
-            repo=str(repo),
-            args=[
-                "nextest",
-                "--config-file",
-                ".config/nextest.toml",
-                "run",
-                "--archive-file",
-                ".nextest-archive/nextest-archive.tar.zst",
-                "--extract-to",
-                str(tmp_path / "configured-managed-target-parent"),
-            ],
-        )
-        configured_archive_result = owner.cmd_cargo(configured_archive_args)
-        manifest_archive_args = types.SimpleNamespace(
-            repo=str(repo),
-            args=[
-                "nextest",
-                "--manifest-path",
-                "Cargo.toml",
-                "run",
-                "--archive-file",
-                ".nextest-archive/nextest-archive.tar.zst",
-                "--extract-to",
-                str(tmp_path / "manifest-managed-target-parent"),
-            ],
-        )
-        manifest_archive_result = owner.cmd_cargo(manifest_archive_args)
-        separator_args = types.SimpleNamespace(
-            repo=str(repo),
-            args=[
-                "nextest",
-                "run",
-                "--",
-                "--archive-file",
-                ".nextest-archive/nextest-archive.tar.zst",
-                "--extract-to",
-                str(tmp_path / "test-binary-output"),
-            ],
-        )
-        separator_result = owner.cmd_cargo(separator_args)
-        managed_run_archive_args = types.SimpleNamespace(
-            repo=str(repo),
-            command="test",
-            args=[
-                "--archive-file",
-                ".nextest-archive/nextest-archive.tar.zst",
-                "--extract-to",
-                str(tmp_path / "managed-target-parent"),
-                "--extract-overwrite",
-                "--partition",
-                "count:1/4",
-            ],
-            args_separator=False,
-        )
-        managed_run_archive_result = owner.cmd_run(managed_run_archive_args)
-        managed_run_separator_args = types.SimpleNamespace(
-            repo=str(repo),
-            command="test",
-            args=[
-                "--archive-file",
-                ".nextest-archive/nextest-archive.tar.zst",
-                "--extract-to",
-                str(tmp_path / "test-binary-output"),
-            ],
-            args_separator=True,
-        )
-        managed_run_separator_result = owner.cmd_run(managed_run_separator_args)
+        old_break_glass = os.environ.get("BOLT_ALLOW_LOCAL_RUST")
+        try:
+            os.environ["BOLT_ALLOW_LOCAL_RUST"] = "1"
+            archive_result = owner.cmd_cargo(archive_args)
+            normal_args = types.SimpleNamespace(repo=str(repo), args=["nextest", "run", "--locked"])
+            normal_result = owner.cmd_cargo(normal_args)
+            configured_archive_args = types.SimpleNamespace(
+                repo=str(repo),
+                args=[
+                    "nextest",
+                    "--config-file",
+                    ".config/nextest.toml",
+                    "run",
+                    "--archive-file",
+                    ".nextest-archive/nextest-archive.tar.zst",
+                    "--extract-to",
+                    str(tmp_path / "configured-managed-target-parent"),
+                ],
+            )
+            configured_archive_result = owner.cmd_cargo(configured_archive_args)
+            manifest_archive_args = types.SimpleNamespace(
+                repo=str(repo),
+                args=[
+                    "nextest",
+                    "--manifest-path",
+                    "Cargo.toml",
+                    "run",
+                    "--archive-file",
+                    ".nextest-archive/nextest-archive.tar.zst",
+                    "--extract-to",
+                    str(tmp_path / "manifest-managed-target-parent"),
+                ],
+            )
+            manifest_archive_result = owner.cmd_cargo(manifest_archive_args)
+            separator_args = types.SimpleNamespace(
+                repo=str(repo),
+                args=[
+                    "nextest",
+                    "run",
+                    "--",
+                    "--archive-file",
+                    ".nextest-archive/nextest-archive.tar.zst",
+                    "--extract-to",
+                    str(tmp_path / "test-binary-output"),
+                ],
+            )
+            separator_result = owner.cmd_cargo(separator_args)
+            managed_run_archive_args = types.SimpleNamespace(
+                repo=str(repo),
+                command="test",
+                args=[
+                    "--archive-file",
+                    ".nextest-archive/nextest-archive.tar.zst",
+                    "--extract-to",
+                    str(tmp_path / "managed-target-parent"),
+                    "--extract-overwrite",
+                    "--partition",
+                    "count:1/4",
+                ],
+                args_separator=False,
+            )
+            managed_run_archive_result = owner.cmd_run(managed_run_archive_args)
+            managed_run_separator_args = types.SimpleNamespace(
+                repo=str(repo),
+                command="test",
+                args=[
+                    "--archive-file",
+                    ".nextest-archive/nextest-archive.tar.zst",
+                    "--extract-to",
+                    str(tmp_path / "test-binary-output"),
+                ],
+                args_separator=True,
+            )
+            managed_run_separator_result = owner.cmd_run(managed_run_separator_args)
+        finally:
+            if old_break_glass is None:
+                os.environ.pop("BOLT_ALLOW_LOCAL_RUST", None)
+            else:
+                os.environ["BOLT_ALLOW_LOCAL_RUST"] = old_break_glass
         if (
             archive_result != 0
             or normal_result != 0

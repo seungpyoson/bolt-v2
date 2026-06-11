@@ -10,7 +10,7 @@
 # local), NOT a cross-compile to the EC2 trading target — the backtester never ships to the trading
 # instance. `test`/`clippy` (the verification path CI runs) build for the host default and are
 # host-agnostic; only `build.target` is pinned, and it changes in one place if a research box is chosen.
-schema_version = 1
+schema_version = 2
 project_id = "backtesting-vertical-slice"
 target_namespace = "backtesting-vertical-slice"
 
@@ -27,6 +27,13 @@ recipe = "managed-build"
 artifact_layout = "cargo"
 profile = "release"
 target = "aarch64-apple-darwin"
+
+[local_compile_policy]
+enabled = true
+allowed_ci_env = "GITHUB_ACTIONS"
+break_glass_env = "BOLT_ALLOW_LOCAL_RUST"
+refused_managed_commands = ["test", "clippy", "build"]
+refused_cargo_subcommands = ["bench", "build", "check", "clippy", "doc", "fetch", "install", "nextest", "run", "rustc", "test", "zigbuild"]
 
 [cache]
 min_free_bytes = 10737418240

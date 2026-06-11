@@ -49,6 +49,7 @@ POLICY_RELATIVE_PATH = pathlib.Path("ci/rust-verification.toml")
 MAX_POLICY_BYTES = 1024 * 1024
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SCRUB_ENV_KEYS = (
+    "BOLT_ALLOW_LOCAL_RUST",
     "BOLT_MANAGED_JUST",
     "BOLT_RUST_VERIFICATION_ROOT",
     "CARGO_BUILD_RUSTFLAGS",
@@ -201,8 +202,8 @@ def load_policy(repo: pathlib.Path) -> dict[str, Any]:
 
 
 def validate_policy_data(data: dict[str, Any]) -> None:
-    if data.get("schema_version") != 1:
-        raise PolicyError("schema_version must be 1")
+    if data.get("schema_version") != 2:
+        raise PolicyError("schema_version must be 2")
     project_id = data.get("project_id")
     namespace = data.get("target_namespace")
     if not isinstance(project_id, str) or not SAFE_IDENTIFIER_RE.match(project_id):
@@ -226,8 +227,55 @@ def validate_policy_data(data: dict[str, Any]) -> None:
             raise PolicyError(f"commands.build.{key} must be a safe identifier")
     if build.get("artifact_layout") != "cargo":
         raise PolicyError("commands.build.artifact_layout must be 'cargo'")
+    validate_local_compile_policy(data)
+    if "remote_verification" in data:
+        validate_remote_verification_policy(data)
     if "cache" in data:
         validate_cache_policy(data)
+
+
+def string_array_policy_value(table: dict[str, Any], key: str) -> list[str]:
+    value = table.get(key)
+    if not isinstance(value, list) or not value or not all(isinstance(item, str) for item in value):
+        raise PolicyError(f"{key} must be a non-empty string array")
+    for item in value:
+        if not SAFE_IDENTIFIER_RE.match(item):
+            raise PolicyError(f"{key} entries must be safe identifiers")
+    return value
+
+
+def validate_local_compile_policy(data: dict[str, Any]) -> None:
+    policy = data.get("local_compile_policy")
+    if not isinstance(policy, dict):
+        raise PolicyError("local_compile_policy table is required")
+    if policy.get("enabled") is not True:
+        raise PolicyError("local_compile_policy.enabled must be true")
+    allowed_ci_env = policy.get("allowed_ci_env")
+    break_glass_env = policy.get("break_glass_env")
+    if allowed_ci_env != "GITHUB_ACTIONS":
+        raise PolicyError("local_compile_policy.allowed_ci_env must be 'GITHUB_ACTIONS'")
+    if break_glass_env != "BOLT_ALLOW_LOCAL_RUST":
+        raise PolicyError("local_compile_policy.break_glass_env must be 'BOLT_ALLOW_LOCAL_RUST'")
+    refused_managed = set(string_array_policy_value(policy, "refused_managed_commands"))
+    if refused_managed != {"test", "clippy", "build"}:
+        raise PolicyError("local_compile_policy.refused_managed_commands must be test/clippy/build")
+    refused_cargo = set(string_array_policy_value(policy, "refused_cargo_subcommands"))
+    if refused_cargo != CARGO_DISK_PREFLIGHT_SUBCOMMANDS:
+        raise PolicyError("local_compile_policy.refused_cargo_subcommands must match disk-preflight subcommands")
+
+
+def validate_remote_verification_policy(data: dict[str, Any]) -> None:
+    policy = data.get("remote_verification")
+    if not isinstance(policy, dict):
+        raise PolicyError("remote_verification table must be a table")
+    values: dict[str, int] = {}
+    for key in ("poll_interval_seconds", "checks_appear_timeout_seconds", "overall_timeout_seconds"):
+        value = policy.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise PolicyError(f"remote_verification.{key} must be a positive integer")
+        values[key] = value
+    if values["checks_appear_timeout_seconds"] >= values["overall_timeout_seconds"]:
+        raise PolicyError("remote_verification.checks_appear_timeout_seconds must be less than overall_timeout_seconds")
 
 
 def status_for_repo(repo: pathlib.Path) -> str:
@@ -2118,7 +2166,7 @@ def print_refusal(payload: dict[str, Any]) -> int:
 
 
 CARGO_DISK_PREFLIGHT_SUBCOMMANDS = frozenset(
-    {"bench", "build", "check", "clippy", "doc", "fetch", "install", "nextest", "run", "rustc", "test"}
+    {"bench", "build", "check", "clippy", "doc", "fetch", "install", "nextest", "run", "rustc", "test", "zigbuild"}
 )
 CARGO_PROCESS_SUBCOMMANDS = CARGO_DISK_PREFLIGHT_SUBCOMMANDS | {"clean", "fmt"}
 CARGO_ALIAS_SUBCOMMANDS = {"b", "c", "d", "r", "t"}
@@ -2128,6 +2176,70 @@ CARGO_HOME_CONFIG_NAMES = ("config.toml", "config")
 
 def cargo_args_need_disk_preflight(cargo_args: list[str]) -> bool:
     return cargo_subcommand(cargo_args) in CARGO_DISK_PREFLIGHT_SUBCOMMANDS
+
+
+def local_compile_allowed(policy: dict[str, Any]) -> bool:
+    local_policy = policy["local_compile_policy"]
+    allowed_ci_env = local_policy["allowed_ci_env"]
+    break_glass_env = local_policy["break_glass_env"]
+    return os.environ.get(allowed_ci_env) == "true" or os.environ.get(break_glass_env) == "1"
+
+
+def local_compile_refusal_payload(
+    repo: pathlib.Path,
+    policy: dict[str, Any],
+    *,
+    command_kind: str,
+    command_name: str,
+) -> dict[str, Any] | None:
+    if local_compile_allowed(policy):
+        return None
+    return {
+        "break_glass": "BOLT_ALLOW_LOCAL_RUST=1 is operator-only and still runs disk preflight",
+        "candidates": [],
+        "command_kind": command_kind,
+        "command_name": command_name,
+        "dry_run": False,
+        "next_steps": [
+            "commit local changes",
+            "push the branch",
+            "ensure a draft or open pull request exists",
+            "run: just verify-remote",
+        ],
+        "reclaimable_bytes": 0,
+        "refusal_code": "local_compile_disabled",
+        "refusal_reason": (
+            "local compile-heavy Rust verification is disabled by default because concurrent "
+            "agent sessions share the local managed Cargo target/cache"
+        ),
+        "refused": True,
+        "target_dir": str(target_dir(repo, policy)),
+    }
+
+
+def local_compile_refusal_for_cargo_args(
+    repo: pathlib.Path,
+    policy: dict[str, Any],
+    cargo_args: list[str],
+) -> dict[str, Any] | None:
+    subcommand = cargo_subcommand(cargo_args)
+    if subcommand is None:
+        return None
+    refused = set(policy["local_compile_policy"]["refused_cargo_subcommands"])
+    if subcommand not in refused:
+        return None
+    return local_compile_refusal_payload(repo, policy, command_kind="cargo", command_name=subcommand)
+
+
+def local_compile_refusal_for_managed_command(
+    repo: pathlib.Path,
+    policy: dict[str, Any],
+    command: str,
+) -> dict[str, Any] | None:
+    refused = set(policy["local_compile_policy"]["refused_managed_commands"])
+    if command not in refused:
+        return None
+    return local_compile_refusal_payload(repo, policy, command_kind="managed", command_name=command)
 
 
 def cargo_args_need_exclusive_cache_lock(cargo_args: list[str]) -> bool:
@@ -2279,6 +2391,193 @@ def run_process(argv: list[str], *, repo: pathlib.Path, env: dict[str, str]) -> 
     return subprocess.run(argv, cwd=repo, env=env, check=False).returncode
 
 
+def run_capture(argv: list[str], *, repo: pathlib.Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def command_error(argv: list[str], result: subprocess.CompletedProcess[str]) -> str:
+    stderr = result.stderr.strip()
+    if stderr:
+        return stderr
+    stdout = result.stdout.strip()
+    if stdout:
+        return stdout
+    return f"{pathlib.Path(argv[0]).name} exited {result.returncode}"
+
+
+def load_json_command(argv: list[str], *, repo: pathlib.Path) -> tuple[Any | None, str | None]:
+    try:
+        result = run_capture(argv, repo=repo)
+    except FileNotFoundError:
+        return None, f"{pathlib.Path(argv[0]).name} is required for remote verification"
+    if result.returncode != 0:
+        return None, command_error(argv, result)
+    try:
+        return json.loads(result.stdout), None
+    except json.JSONDecodeError as exc:
+        return None, f"{pathlib.Path(argv[0]).name} returned invalid JSON: {exc}"
+
+
+def remote_verification_policy(policy: dict[str, Any]) -> dict[str, int]:
+    raw = policy.get("remote_verification")
+    if not isinstance(raw, dict):
+        raise PolicyError("remote_verification table is required for verify-remote")
+    validate_remote_verification_policy(policy)
+    return {
+        "poll_interval_seconds": int(raw["poll_interval_seconds"]),
+        "checks_appear_timeout_seconds": int(raw["checks_appear_timeout_seconds"]),
+        "overall_timeout_seconds": int(raw["overall_timeout_seconds"]),
+    }
+
+
+def verify_remote_fail(message: str) -> int:
+    print(f"ERROR: {message}", file=sys.stderr)
+    return 2
+
+
+def git_output(repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
+    argv = ["git", *args]
+    try:
+        result = run_capture(argv, repo=repo)
+    except FileNotFoundError:
+        return None, "git is required for remote verification"
+    if result.returncode != 0:
+        return None, command_error(argv, result)
+    return result.stdout.strip(), None
+
+
+def current_branch(repo: pathlib.Path) -> tuple[str | None, str | None]:
+    return git_output(repo, "branch", "--show-current")
+
+
+def ensure_verify_remote_preconditions(repo: pathlib.Path) -> tuple[str | None, str | None, str | None]:
+    status, error = git_output(repo, "status", "--porcelain", "--untracked-files=normal")
+    if error is not None:
+        return None, None, error
+    if status:
+        return None, None, "verify-remote requires a clean worktree, including untracked files"
+    head, error = git_output(repo, "rev-parse", "HEAD")
+    if error is not None:
+        return None, None, error
+    upstream, error = git_output(repo, "rev-parse", "@{u}")
+    if error is not None:
+        branch, _branch_error = current_branch(repo)
+        hint = "git push -u origin HEAD" if branch else "push this branch and set an upstream"
+        return None, None, f"verify-remote requires pushed HEAD with an upstream; run: {hint}"
+    if upstream != head:
+        return None, None, "verify-remote requires HEAD to be pushed to the upstream branch"
+    branch, error = current_branch(repo)
+    if error is not None:
+        return None, None, error
+    if not branch:
+        return None, None, "verify-remote requires a named branch"
+    return head, branch, None
+
+
+def pr_create_hint(branch: str) -> str:
+    return f"gh pr create --draft --fill --head {shlex.quote(branch)}"
+
+
+def pr_for_current_branch(repo: pathlib.Path, branch: str) -> tuple[dict[str, Any] | None, str | None]:
+    payload, error = load_json_command(
+        ["gh", "pr", "view", "--json", "number,url,headRefOid,headRefName,state,isDraft"],
+        repo=repo,
+    )
+    if error is not None:
+        return None, f"verify-remote requires an open or draft PR for this branch; run: {pr_create_hint(branch)}"
+    if not isinstance(payload, dict):
+        return None, "gh pr view returned an unexpected payload"
+    return payload, None
+
+
+def pr_checks(repo: pathlib.Path) -> tuple[list[dict[str, Any]] | None, str | None]:
+    argv = ["gh", "pr", "checks", "--json", "name,bucket,state,link,workflow"]
+    try:
+        result = run_capture(argv, repo=repo)
+    except FileNotFoundError:
+        return None, "gh is required for remote verification"
+    if result.returncode not in {0, 8}:
+        return None, command_error(argv, result)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return None, f"gh returned invalid PR checks JSON: {exc}"
+    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+        return None, "gh pr checks returned an unexpected payload"
+    return payload, None
+
+
+def check_summary(check: dict[str, Any]) -> str:
+    name = str(check.get("name") or "<unnamed>")
+    bucket = str(check.get("bucket") or check.get("state") or "unknown")
+    link = str(check.get("link") or "")
+    return f"{name} [{bucket}]" + (f" {link}" if link else "")
+
+
+def cmd_verify_remote(args: argparse.Namespace) -> int:
+    repo = repo_path(args.repo)
+    try:
+        policy = load_policy(repo)
+        remote_policy = remote_verification_policy(policy)
+    except (OSError, PolicyError, FileNotFoundError) as exc:
+        return verify_remote_fail(str(exc))
+    head, branch, error = ensure_verify_remote_preconditions(repo)
+    if error is not None or head is None or branch is None:
+        return verify_remote_fail(error or "unable to inspect git state")
+    pr, error = pr_for_current_branch(repo, branch)
+    if error is not None or pr is None:
+        return verify_remote_fail(error or "unable to inspect pull request")
+    if pr.get("headRefOid") != head:
+        return verify_remote_fail(
+            f"PR headRefOid {pr.get('headRefOid')} does not match local HEAD {head}; push the current branch"
+        )
+    pr_url = pr.get("url") or f"PR #{pr.get('number')}"
+    checks_deadline = time.monotonic() + remote_policy["checks_appear_timeout_seconds"]
+    overall_deadline = time.monotonic() + remote_policy["overall_timeout_seconds"]
+    interval = remote_policy["poll_interval_seconds"]
+    saw_checks = False
+    while True:
+        now = time.monotonic()
+        if now >= overall_deadline:
+            return verify_remote_fail(f"timed out waiting for remote checks on {pr_url}")
+        checks, error = pr_checks(repo)
+        if error is not None:
+            return verify_remote_fail(error)
+        if not checks:
+            if now >= checks_deadline:
+                return verify_remote_fail(
+                    f"no PR checks appeared for {head} on {pr_url}; CI may be path-ignored or not started"
+                )
+            time.sleep(interval)
+            continue
+        saw_checks = True
+        failing = [check for check in checks if check.get("bucket") in {"fail", "cancel"}]
+        if failing:
+            print(f"Remote checks failed for {head} on {pr_url}:", file=sys.stderr)
+            for check in failing:
+                print(f"- {check_summary(check)}", file=sys.stderr)
+            return 1
+        pending = [check for check in checks if check.get("bucket") == "pending"]
+        unknown = [
+            check
+            for check in checks
+            if check.get("bucket") not in {"pass", "skipping", "pending", "fail", "cancel"}
+        ]
+        if not pending and not unknown:
+            print(f"OK: remote checks passed for {head} on {pr_url}")
+            return 0
+        if saw_checks and now >= overall_deadline:
+            return verify_remote_fail(f"timed out waiting for pending remote checks on {pr_url}")
+        time.sleep(interval)
+
+
 def cmd_repo_status(args: argparse.Namespace) -> int:
     print(status_for_repo(repo_path(args.repo)))
     return 0
@@ -2362,6 +2661,9 @@ def cmd_cargo(args: argparse.Namespace) -> int:
     override = cargo_target_routing_override(cargo_args)
     if override is not None:
         return print_refusal(target_routing_refusal_payload(repo, policy, override))
+    local_refusal = local_compile_refusal_for_cargo_args(repo, policy, cargo_args)
+    if local_refusal is not None:
+        return print_refusal(local_refusal)
     if cargo_subcommand(cargo_args) == "clean":
         target, refusal = clean_preflight_refusal_payload(repo, policy)
         if refusal is not None:
@@ -2406,6 +2708,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     override = cargo_target_routing_override(override_args)
     if override is not None:
         return print_refusal(target_routing_refusal_payload(repo, policy, override))
+    local_refusal = local_compile_refusal_for_managed_command(repo, policy, args.command)
+    if local_refusal is not None:
+        return print_refusal(local_refusal)
     if args.command in {"build", "clippy", "test"}:
         refusal = disk_preflight_refusal_payload(repo, policy)
         if refusal is not None:
@@ -2521,6 +2826,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("command", choices=("test", "clippy", "build"))
     run.add_argument("args", nargs=argparse.REMAINDER)
     run.set_defaults(func=cmd_run)
+
+    verify_remote = subparsers.add_parser("verify-remote")
+    verify_remote.add_argument("--repo", required=True)
+    verify_remote.set_defaults(func=cmd_verify_remote)
 
     scrub = subparsers.add_parser("scrub-env-keys")
     scrub.set_defaults(func=cmd_scrub_env_keys)

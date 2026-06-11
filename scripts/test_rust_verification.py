@@ -38,9 +38,16 @@ def write_policy(repo: pathlib.Path) -> None:
     (repo / "ci" / "rust-verification.toml").write_text(
         textwrap.dedent(
             """\
-            schema_version = 1
+            schema_version = 2
             project_id = "bolt-v2"
             target_namespace = "bolt-v2"
+
+            [local_compile_policy]
+            enabled = true
+            allowed_ci_env = "GITHUB_ACTIONS"
+            break_glass_env = "BOLT_ALLOW_LOCAL_RUST"
+            refused_managed_commands = ["test", "clippy", "build"]
+            refused_cargo_subcommands = ["bench", "build", "check", "clippy", "doc", "fetch", "install", "nextest", "run", "rustc", "test", "zigbuild"]
 
             [commands]
 
@@ -107,6 +114,8 @@ printf 'args=%s\\n' "$*" >> {just_log}
 
         root_base = tmp_path / "rust-root"
         env = os.environ.copy()
+        env.pop("GITHUB_ACTIONS", None)
+        env.pop("BOLT_ALLOW_LOCAL_RUST", None)
         env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
         env["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
 
@@ -136,6 +145,17 @@ printf 'args=%s\\n' "$*" >> {just_log}
             raise AssertionError(cargo_values)
 
         result = run_owner(["run", "--repo", str(repo), "build", "--flag"], env=env)
+        if result.returncode != 2:
+            raise AssertionError((result.returncode, result.stdout, result.stderr))
+        refusal = json.loads(result.stderr)
+        if refusal.get("refusal_code") != "local_compile_disabled" or "verify-remote" not in "\n".join(
+            refusal.get("next_steps", [])
+        ):
+            raise AssertionError(refusal)
+
+        allowed_env = env.copy()
+        allowed_env["GITHUB_ACTIONS"] = "true"
+        result = run_owner(["run", "--repo", str(repo), "build", "--flag"], env=allowed_env)
         if result.returncode != 0:
             raise AssertionError(result.stderr)
         just_values = parse_log(just_log)

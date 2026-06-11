@@ -634,6 +634,45 @@ filter = 'binary(=bolt_v3_adapter_mapping) | binary(=bolt_v3_client_registration
 test-group = 'live-node'
 """
 
+LOCAL_COMPILE_POLICY_TOML = """
+[local_compile_policy]
+enabled = true
+allowed_ci_env = "GITHUB_ACTIONS"
+break_glass_env = "BOLT_ALLOW_LOCAL_RUST"
+refused_managed_commands = ["test", "clippy", "build"]
+refused_cargo_subcommands = ["bench", "build", "check", "clippy", "doc", "fetch", "install", "nextest", "run", "rustc", "test", "zigbuild"]
+"""
+
+BASE_RUST_VERIFICATION_POLICY = f"""
+schema_version = 2
+project_id = "bolt-v2"
+target_namespace = "bolt-v2"
+
+{LOCAL_COMPILE_POLICY_TOML}
+
+[remote_verification]
+poll_interval_seconds = 15
+checks_appear_timeout_seconds = 300
+overall_timeout_seconds = 3600
+"""
+
+BASE_BVS_RUST_VERIFICATION_POLICY = f"""
+schema_version = 2
+project_id = "backtesting-vertical-slice"
+target_namespace = "backtesting-vertical-slice"
+
+{LOCAL_COMPILE_POLICY_TOML}
+"""
+
+
+def write_rust_verification_policy_fixtures(root: pathlib.Path) -> None:
+    root_policy = root / "ci" / "rust-verification.toml"
+    root_policy.parent.mkdir(parents=True, exist_ok=True)
+    root_policy.write_text(BASE_RUST_VERIFICATION_POLICY, encoding="utf-8")
+    bvs_policy = root / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml"
+    bvs_policy.parent.mkdir(parents=True, exist_ok=True)
+    bvs_policy.write_text(BASE_BVS_RUST_VERIFICATION_POLICY, encoding="utf-8")
+
 
 def assert_clean(
     workflow: str = BASE_WORKFLOW,
@@ -2722,6 +2761,7 @@ def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
 
         (tmp_path / ".no-mistakes.yaml").write_text(no_mistakes_text)
+        write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_no_mistakes_entrypoint")
         stdout = io.StringIO()
@@ -2753,6 +2793,7 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
         nextest_path = tmp_path / ".config" / "nextest.toml"
         nextest_path.parent.mkdir(parents=True)
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
+        write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_action_entrypoint")
         stdout = io.StringIO()
@@ -2781,6 +2822,7 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         nextest_path = tmp_path / ".config" / "nextest.toml"
         nextest_path.parent.mkdir(parents=True)
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
+        write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_workflow_entrypoint")
         stdout = io.StringIO()
@@ -3027,11 +3069,9 @@ commands:
 """
     allowed_fixture = """
 commands:
-  test: python3 scripts/rust_verification.py cargo --repo . -- test
-  lint: python3 scripts/rust_verification.py cargo --repo . -- clippy --all-targets -- -D warnings
+  test: just source-fence-static
+  lint: just fmt-check
   format: python3 scripts/rust_verification.py cargo --repo . -- fmt --check
-  test-binary-arg: python3 scripts/rust_verification.py cargo --repo . -- test -- --target-dir /tmp/test-binary-arg
-  run-test-binary-arg: python3 scripts/rust_verification.py run --repo . test -- --target-dir /tmp/test-binary-arg
   exact-head-ci: gh run view --repo seungpyoson/bolt-v2 --commit "$GITHUB_SHA" --json conclusion
   sudouserarg: timeout 30 sudo -u cargo echo hello
 """
@@ -3425,6 +3465,13 @@ def assert_ci_lint_runs_rust_verification_cache_retention_tests() -> None:
         raise AssertionError("ci-lint-workflow must run rust verification cache retention self-tests")
 
 
+def assert_ci_lint_runs_verify_remote_tests() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    expected = "python3 scripts/test_verify_remote.py"
+    if expected not in justfile:
+        raise AssertionError("ci-lint-workflow must run remote verification watcher self-tests")
+
+
 def assert_ci_lint_runs_command_understanding_tests() -> None:
     justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     expected = "python3 scripts/test_command_understanding.py"
@@ -3441,6 +3488,7 @@ def assert_cargo_zigbuild_probe_has_no_redundant_true() -> None:
 
 def main() -> int:
     assert_ci_lint_runs_rust_verification_cache_retention_tests()
+    assert_ci_lint_runs_verify_remote_tests()
     assert_ci_lint_runs_command_understanding_tests()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
     assert_clean()

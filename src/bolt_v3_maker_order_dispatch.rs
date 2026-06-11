@@ -29,6 +29,8 @@ pub enum MakerOrderDispatchOutcome {
         leg: Leg,
         instrument_id: InstrumentId,
         client_order_id: ClientOrderId,
+        price: Price,
+        quantity: Quantity,
     },
     Canceled {
         leg: Leg,
@@ -75,7 +77,7 @@ pub fn dispatch_maker_order_command(
             leg,
             template,
             inputs,
-            ..
+            fallback_price,
         } => {
             let order = build_nt_order(
                 sink.order_factory(),
@@ -85,11 +87,15 @@ pub fn dispatch_maker_order_command(
             )?;
             let client_order_id = order.client_order_id();
             let instrument_id = order.instrument_id();
+            let price = order.price().unwrap_or(*fallback_price);
+            let quantity = order.quantity();
             sink.submit_maker_order(order)?;
             Ok(MakerOrderDispatchOutcome::Submitted {
                 leg: *leg,
                 instrument_id,
                 client_order_id,
+                price,
+                quantity,
             })
         }
         MakerCompiledOrderCommand::Cancel {

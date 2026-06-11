@@ -45,6 +45,8 @@ fn submit_command_builds_nt_order_before_calling_submit_sink() {
             leg: Leg::Yes,
             instrument_id: instrument_id(),
             client_order_id: ClientOrderId::from("O-19700101-000000-001-201-1"),
+            price: Price::new(0.41, 2),
+            quantity: Quantity::new(18.0, 2),
         }
     );
     assert!(sink.cancels.is_empty());

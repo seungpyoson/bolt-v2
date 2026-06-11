@@ -33,7 +33,7 @@
 //! future archetype can introduce its own message contract without
 //! reaching back into core validation.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::{Deserialize, Deserializer};
@@ -111,6 +111,28 @@ pub struct ParametersBlock {
     pub entry_order: OrderParams,
     pub exit_order: OrderParams,
     pub forced_exit_order: OrderParams,
+    pub maker_quote: Option<MakerQuoteParams>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MakerQuoteParams {
+    pub yes_quantity: f64,
+    pub no_quantity: f64,
+    pub collateral_budget: f64,
+    pub informed_fraction: f64,
+    pub microprice_weight: f64,
+    pub inventory_skew_gain: f64,
+    pub position_cap: f64,
+    pub half_spread_floor: f64,
+    pub max_half_spread: f64,
+    pub epsilon: f64,
+    pub reference_tau_secs: f64,
+    pub time_widen_cap: f64,
+    pub requote_threshold: f64,
+    pub requote_action_cost: u64,
+    pub requote_min_interval_ms: u64,
+    pub order: OrderParams,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -284,6 +306,12 @@ pub fn validate_strategy(
         &parameters.exit_order,
         &parameters.forced_exit_order,
     ));
+    if let Some(maker_quote) = parameters.maker_quote.as_ref() {
+        errors.extend(check_maker_quote_order_combination(
+            context,
+            &maker_quote.order,
+        ));
+    }
     errors.extend(validate_parameter_bounds(
         context,
         &parameters,
@@ -423,13 +451,22 @@ pub fn register_runtime_strategy(
                 ),
             )
         })?;
-    let build_context = StrategyBuildContext::new(
+    let maker_quote_enabled = parameters_block(context.strategy)
+        .map(|parameters| parameters.maker_quote.is_some())
+        .map_err(|error| binding_error(&context, error))?;
+    let mut build_context = StrategyBuildContext::new(
         fee_provider,
         context.decision_evidence.clone(),
         context.submit_admission.clone(),
         execution_venue,
     )
     .with_realized_volatility_runtime(context.realized_volatility_runtime.clone());
+    if maker_quote_enabled {
+        build_context = build_context.with_venue_contract(Arc::new(
+            load_execution_venue_contract(execution_venue)
+                .map_err(|error| binding_message(&context, error.to_string()))?,
+        ));
+    }
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry
@@ -440,6 +477,18 @@ pub fn register_runtime_strategy(
             node.kernel().trader(),
         )
         .map_err(|error| binding_message(&context, error.to_string()))
+}
+
+fn load_execution_venue_contract(
+    execution_venue: nautilus_model::identifiers::Venue,
+) -> anyhow::Result<crate::venue_contract::VenueContract> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("contracts")
+        .join(format!(
+            "{}.toml",
+            execution_venue.to_string().to_ascii_lowercase()
+        ));
+    crate::venue_contract::VenueContract::load_and_validate(&path)
 }
 
 pub fn raw_taker_config(
@@ -707,6 +756,9 @@ pub fn raw_taker_config(
         "forced_exit_order",
         &parameters.forced_exit_order,
     )?;
+    if let Some(maker_quote) = parameters.maker_quote.as_ref() {
+        insert_maker_quote_config(&mut table, strategy_instance_id, maker_quote)?;
+    }
     insert_u64(
         &mut table,
         strategy_instance_id,
@@ -811,6 +863,83 @@ pub fn raw_taker_config(
     )?;
 
     Ok(Value::Table(table))
+}
+
+fn insert_maker_quote_config(
+    table: &mut Map<String, Value>,
+    strategy_instance_id: &str,
+    maker_quote: &MakerQuoteParams,
+) -> Result<(), BinaryOracleEdgeTakerRuntimeConfigError> {
+    let mut maker_table = Map::new();
+    insert_float(&mut maker_table, "yes_quantity", maker_quote.yes_quantity);
+    insert_float(&mut maker_table, "no_quantity", maker_quote.no_quantity);
+    insert_float(
+        &mut maker_table,
+        "collateral_budget",
+        maker_quote.collateral_budget,
+    );
+    insert_float(
+        &mut maker_table,
+        "informed_fraction",
+        maker_quote.informed_fraction,
+    );
+    insert_float(
+        &mut maker_table,
+        "microprice_weight",
+        maker_quote.microprice_weight,
+    );
+    insert_float(
+        &mut maker_table,
+        "inventory_skew_gain",
+        maker_quote.inventory_skew_gain,
+    );
+    insert_float(&mut maker_table, "position_cap", maker_quote.position_cap);
+    insert_float(
+        &mut maker_table,
+        "half_spread_floor",
+        maker_quote.half_spread_floor,
+    );
+    insert_float(
+        &mut maker_table,
+        "max_half_spread",
+        maker_quote.max_half_spread,
+    );
+    insert_float(&mut maker_table, "epsilon", maker_quote.epsilon);
+    insert_float(
+        &mut maker_table,
+        "reference_tau_secs",
+        maker_quote.reference_tau_secs,
+    );
+    insert_float(
+        &mut maker_table,
+        "time_widen_cap",
+        maker_quote.time_widen_cap,
+    );
+    insert_float(
+        &mut maker_table,
+        "requote_threshold",
+        maker_quote.requote_threshold,
+    );
+    insert_u64(
+        &mut maker_table,
+        strategy_instance_id,
+        "requote_action_cost",
+        maker_quote.requote_action_cost,
+    )?;
+    insert_u64(
+        &mut maker_table,
+        strategy_instance_id,
+        "requote_min_interval_ms",
+        maker_quote.requote_min_interval_ms,
+    )?;
+    insert_order_config(
+        &mut maker_table,
+        strategy_instance_id,
+        "order",
+        &maker_quote.order,
+    )?;
+    table.insert("maker_quote".to_string(), Value::Table(maker_table));
+    Ok(())
 }
 
 fn parameters_block(
@@ -1690,6 +1819,33 @@ fn executable_entry_order_shape_supported(entry: &OrderParams) -> bool {
         && entry.trigger_instrument_id.is_none()
         && entry.trailing_offset.is_none()
         && entry.trailing_offset_type.is_none()
+}
+
+fn check_maker_quote_order_combination(context: &str, order: &OrderParams) -> Vec<String> {
+    let mut errors = check_enabled_order_template(context, "maker_quote.order", order);
+    if !maker_quote_order_shape_supported(order) {
+        errors.push(format!(
+            "{context}: parameters.maker_quote.order unsupported maker quote shape: must be buy/long limit GTC post-only without reduce-only, quote-quantity, expiry, trigger, or trailing fields"
+        ));
+    }
+    errors
+}
+
+fn maker_quote_order_shape_supported(order: &OrderParams) -> bool {
+    order.side == OrderSide::Buy
+        && order.position_side == PositionSide::Long
+        && order.order_type == OrderType::Limit
+        && order.time_in_force == TimeInForce::Gtc
+        && order.expire_time_unix_nanos.is_none()
+        && order.is_post_only
+        && !order.is_reduce_only
+        && !order.is_quote_quantity
+        && order.trigger_price.is_none()
+        && order.activation_price.is_none()
+        && order.trigger_type.is_none()
+        && order.trigger_instrument_id.is_none()
+        && order.trailing_offset.is_none()
+        && order.trailing_offset_type.is_none()
 }
 
 fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {

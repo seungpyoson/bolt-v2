@@ -44,6 +44,7 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
 pub enum BoltV3OrderIntentKind {
     Entry,
     Exit,
+    MakerQuote,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

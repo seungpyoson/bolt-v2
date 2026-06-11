@@ -17,7 +17,7 @@ use toml::Value;
 use crate::{
     bolt_v3_config::ReferencePriceBlock,
     bolt_v3_market_families,
-    bolt_v3_numeric::{BPS_DENOMINATOR, is_positive_finite},
+    bolt_v3_numeric::{BPS_DENOMINATOR, UNIT_F64, is_non_negative_finite, is_positive_finite},
     strategies::registry::ValidationError,
 };
 
@@ -103,6 +103,27 @@ pub(super) struct BinaryOracleEdgeTakerOrderConfig {
     pub(super) is_quote_quantity: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BinaryOracleEdgeTakerMakerQuoteConfig {
+    pub(super) yes_quantity: f64,
+    pub(super) no_quantity: f64,
+    pub(super) collateral_budget: f64,
+    pub(super) informed_fraction: f64,
+    pub(super) microprice_weight: f64,
+    pub(super) inventory_skew_gain: f64,
+    pub(super) position_cap: f64,
+    pub(super) half_spread_floor: f64,
+    pub(super) max_half_spread: f64,
+    pub(super) epsilon: f64,
+    pub(super) reference_tau_secs: f64,
+    pub(super) time_widen_cap: f64,
+    pub(super) requote_threshold: f64,
+    pub(super) requote_action_cost: u64,
+    pub(super) requote_min_interval_ms: u64,
+    pub(super) order: BinaryOracleEdgeTakerOrderConfig,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BinaryOracleEdgeTakerFieldType {
     String,
@@ -163,6 +184,7 @@ macro_rules! define_config_struct {
             pub(super) entry_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) exit_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
+            pub(super) maker_quote: Option<BinaryOracleEdgeTakerMakerQuoteConfig>,
         }
     };
 }
@@ -304,6 +326,7 @@ impl BinaryOracleEdgeTakerBuilder {
         }
         Self::ensure_bps_runtime_knobs_within_full_scale(&config)?;
         Self::ensure_executable_entry_order_shape(&config)?;
+        Self::ensure_maker_quote_config(&config)?;
         Self::ensure_configured_instrument_id_fields_parse(&config)?;
         Ok(config)
     }
@@ -345,6 +368,76 @@ impl BinaryOracleEdgeTakerBuilder {
             && order.order_type == OrderType::Limit
             && order.time_in_force == TimeInForce::Fok
             && !order.is_post_only
+            && !order.is_reduce_only
+            && !order.is_quote_quantity
+            && order.trigger_price.is_none()
+            && order.activation_price.is_none()
+            && order.trigger_type.is_none()
+            && order.trigger_instrument_id.is_none()
+            && order.trailing_offset.is_none()
+            && order.trailing_offset_type.is_none()
+    }
+
+    fn ensure_maker_quote_config(config: &BinaryOracleEdgeTakerConfig) -> Result<()> {
+        let Some(maker) = config.maker_quote.as_ref() else {
+            return Ok(());
+        };
+        for (field, value) in [
+            ("maker_quote.yes_quantity", maker.yes_quantity),
+            ("maker_quote.no_quantity", maker.no_quantity),
+            ("maker_quote.collateral_budget", maker.collateral_budget),
+            ("maker_quote.position_cap", maker.position_cap),
+            ("maker_quote.max_half_spread", maker.max_half_spread),
+            ("maker_quote.epsilon", maker.epsilon),
+            ("maker_quote.reference_tau_secs", maker.reference_tau_secs),
+            ("maker_quote.time_widen_cap", maker.time_widen_cap),
+            ("maker_quote.requote_threshold", maker.requote_threshold),
+        ] {
+            anyhow::ensure!(
+                is_positive_finite(value),
+                "{field} must be positive and finite"
+            );
+        }
+        for (field, value) in [
+            ("maker_quote.informed_fraction", maker.informed_fraction),
+            ("maker_quote.microprice_weight", maker.microprice_weight),
+        ] {
+            anyhow::ensure!(
+                is_non_negative_finite(value) && value <= UNIT_F64,
+                "{field} must be between 0.0 and 1.0"
+            );
+        }
+        for (field, value) in [
+            ("maker_quote.inventory_skew_gain", maker.inventory_skew_gain),
+            ("maker_quote.half_spread_floor", maker.half_spread_floor),
+        ] {
+            anyhow::ensure!(
+                is_non_negative_finite(value),
+                "{field} must be non-negative and finite"
+            );
+        }
+        anyhow::ensure!(
+            maker.max_half_spread >= maker.half_spread_floor,
+            "maker_quote.max_half_spread must be greater than or equal to maker_quote.half_spread_floor"
+        );
+        anyhow::ensure!(
+            maker.requote_action_cost > u64::MIN,
+            "maker_quote.requote_action_cost must be positive"
+        );
+        anyhow::ensure!(
+            Self::maker_order_shape_supported(&maker.order),
+            "maker_quote.order must be buy/long limit GTC post-only without reduce-only, quote-quantity, expiry, trigger, or trailing fields"
+        );
+        Ok(())
+    }
+
+    pub(super) fn maker_order_shape_supported(order: &BinaryOracleEdgeTakerOrderConfig) -> bool {
+        order.side == ORDER_SIDE_BUY_VALUE
+            && order.position_side == POSITION_SIDE_LONG_VALUE
+            && order.order_type == OrderType::Limit
+            && order.time_in_force == TimeInForce::Gtc
+            && order.expire_time_unix_nanos.is_none()
+            && order.is_post_only
             && !order.is_reduce_only
             && !order.is_quote_quantity
             && order.trigger_price.is_none()
@@ -429,6 +522,7 @@ impl BinaryOracleEdgeTakerBuilder {
                 ENTRY_ORDER_FIELD
                     | EXIT_ORDER_FIELD
                     | FORCED_EXIT_ORDER_FIELD
+                    | "maker_quote"
                     | "signal_venue"
                     | "signal_instrument_id"
                     | "resolution_client_id"
@@ -474,6 +568,7 @@ impl BinaryOracleEdgeTakerBuilder {
             errors,
         );
         Self::validate_optional_table_field(table, field_prefix, "reference_current_price", errors);
+        Self::validate_optional_table_field(table, field_prefix, "maker_quote", errors);
         Self::validate_optional_string_field(
             table,
             field_prefix,
@@ -559,10 +654,128 @@ impl BinaryOracleEdgeTakerBuilder {
             concat!(stringify!(missing_), stringify!(forced_exit_order)),
             errors,
         );
+        Self::validate_maker_quote_table(table, field_prefix, errors);
         Self::validate_executable_entry_order_shape(table, field_prefix, errors);
         Self::validate_slippage_buffer_covers_vwap_depth(table, field_prefix, errors);
         Self::validate_rotating_market_family(table, field_prefix, errors);
         Self::validate_static_binary_event_runtime_fields(table, field_prefix, errors);
+    }
+
+    fn validate_maker_quote_table(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let Some(maker_table) = table.get("maker_quote").and_then(Value::as_table) else {
+            return;
+        };
+        for (field_name, field_type) in [
+            ("yes_quantity", BinaryOracleEdgeTakerFieldType::Float),
+            ("no_quantity", BinaryOracleEdgeTakerFieldType::Float),
+            ("collateral_budget", BinaryOracleEdgeTakerFieldType::Float),
+            ("informed_fraction", BinaryOracleEdgeTakerFieldType::Float),
+            ("microprice_weight", BinaryOracleEdgeTakerFieldType::Float),
+            ("inventory_skew_gain", BinaryOracleEdgeTakerFieldType::Float),
+            ("position_cap", BinaryOracleEdgeTakerFieldType::Float),
+            ("half_spread_floor", BinaryOracleEdgeTakerFieldType::Float),
+            ("max_half_spread", BinaryOracleEdgeTakerFieldType::Float),
+            ("epsilon", BinaryOracleEdgeTakerFieldType::Float),
+            ("reference_tau_secs", BinaryOracleEdgeTakerFieldType::Float),
+            ("time_widen_cap", BinaryOracleEdgeTakerFieldType::Float),
+            ("requote_threshold", BinaryOracleEdgeTakerFieldType::Float),
+            (
+                "requote_action_cost",
+                BinaryOracleEdgeTakerFieldType::Integer,
+            ),
+            (
+                "requote_min_interval_ms",
+                BinaryOracleEdgeTakerFieldType::Integer,
+            ),
+            ("order", BinaryOracleEdgeTakerFieldType::Table),
+        ] {
+            Self::validate_order_field(
+                maker_table,
+                &format!("{field_prefix}.maker_quote"),
+                field_name,
+                "missing_maker_quote_field",
+                field_type,
+                errors,
+            );
+        }
+        for key in maker_table.keys() {
+            if !matches!(
+                key.as_str(),
+                "yes_quantity"
+                    | "no_quantity"
+                    | "collateral_budget"
+                    | "informed_fraction"
+                    | "microprice_weight"
+                    | "inventory_skew_gain"
+                    | "position_cap"
+                    | "half_spread_floor"
+                    | "max_half_spread"
+                    | "epsilon"
+                    | "reference_tau_secs"
+                    | "time_widen_cap"
+                    | "requote_threshold"
+                    | "requote_action_cost"
+                    | "requote_min_interval_ms"
+                    | "order"
+            ) {
+                Self::push_unknown_field(errors, format!("{field_prefix}.maker_quote.{key}"), key);
+            }
+        }
+        if let Some(order_table) = maker_table.get("order").and_then(Value::as_table) {
+            Self::validate_order_table(
+                maker_table,
+                &format!("{field_prefix}.maker_quote"),
+                "order",
+                "missing_maker_quote_order",
+                errors,
+            );
+            let supported = order_table
+                .get(stringify!(side))
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == ORDER_SIDE_BUY_VALUE)
+                && order_table
+                    .get(stringify!(position_side))
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == POSITION_SIDE_LONG_VALUE)
+                && order_table
+                    .get(stringify!(order_type))
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == stringify!(limit))
+                && order_table
+                    .get(stringify!(time_in_force))
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == stringify!(gtc))
+                && order_table
+                    .get(stringify!(is_post_only))
+                    .and_then(Value::as_bool)
+                    .is_some_and(|value| value)
+                && order_table
+                    .get(stringify!(is_reduce_only))
+                    .and_then(Value::as_bool)
+                    .is_some_and(|value| !value)
+                && order_table
+                    .get(stringify!(is_quote_quantity))
+                    .and_then(Value::as_bool)
+                    .is_some_and(|value| !value)
+                && !order_table.contains_key(ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD)
+                && !order_table.contains_key(ORDER_TRIGGER_PRICE_FIELD)
+                && !order_table.contains_key(ORDER_ACTIVATION_PRICE_FIELD)
+                && !order_table.contains_key(ORDER_TRIGGER_TYPE_FIELD)
+                && !order_table.contains_key(ORDER_TRIGGER_INSTRUMENT_ID_FIELD)
+                && !order_table.contains_key(ORDER_TRAILING_OFFSET_FIELD)
+                && !order_table.contains_key(ORDER_TRAILING_OFFSET_TYPE_FIELD);
+            if !supported {
+                errors.push(ValidationError {
+                    field: format!("{field_prefix}.maker_quote.order"),
+                    code: stringify!(unsupported_maker_quote_order_shape),
+                    message: "must be buy/long limit GTC post-only without reduce-only, quote-quantity, expiry, trigger, or trailing fields".to_string(),
+                });
+            }
+        }
     }
 
     fn validate_executable_entry_order_shape(

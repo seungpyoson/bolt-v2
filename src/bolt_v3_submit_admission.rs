@@ -581,6 +581,7 @@ where
     let notional = fee_inclusive_admission_notional(notional, max_fee_bps);
     let intent_kind = match input.intent.intent_kind {
         BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
+        BoltV3OrderIntentKind::MakerQuote => BoltV3SubmitIntentKind::Entry,
         BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
     };
     let risk_reducing_exit_proof =

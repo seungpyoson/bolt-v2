@@ -52,6 +52,26 @@ use crate::{
         ExactSizeVwap, ExecutableBookQuote, ExecutableCostBreakdown, executable_cost_breakdown,
         price_exact_size_vwap,
     },
+    bolt_v3_maker_event_fence::{
+        ClientOrderId as MakerClientOrderId, ExpectedIdentity, OrderIdentity, VenueReport,
+        VenueReportKind,
+    },
+    bolt_v3_maker_inventory::MakerInventory,
+    bolt_v3_maker_order_compile::{
+        MakerOrderCompileDecision, MakerOrderCompileInput, compile_maker_order_intent,
+    },
+    bolt_v3_maker_order_dispatch::{
+        MakerOrderCommandSink, MakerOrderDispatchInput, MakerOrderDispatchOutcome,
+        dispatch_maker_order_command,
+    },
+    bolt_v3_maker_order_plan::{
+        MakerLegBinding, MakerOrderIntent, MakerOrderPlan, MakerOrderPlanInput,
+        maker_order_intents_from_quote_set,
+    },
+    bolt_v3_maker_quote_plan::{
+        MakerQuotePlan, MakerQuotePlanInputs, MakerTopOfBook, plan_maker_quote_targets,
+    },
+    bolt_v3_maker_quote_set::{QuoteSetDecision, QuoteSetInput, drive_binary_quote_set},
     bolt_v3_market_families::{
         self, FairProbabilityInputs, MarketSelectionOutcome, OutcomeSide,
         SelectedMarketSourceIdentity,
@@ -66,6 +86,8 @@ use crate::{
         STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
         normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
     },
+    bolt_v3_quote_lifecycle::{Leg, LifecycleAction, MarketAction, MarketQuote},
+    bolt_v3_quoting::QuoteSide,
     bolt_v3_reference_price::{
         REFERENCE_PRICE_ASSET_PARAM, REFERENCE_PRICE_INSTRUMENT_ID_PARAM,
         REFERENCE_PRICE_PROVIDER_PARAM, REFERENCE_PRICE_SOURCE_KEY_PARAM,
@@ -74,6 +96,7 @@ use crate::{
         ReferencePriceUpdate, ReferenceQuote, reference_price_source_is_runtime_available,
         reference_price_source_is_unsupported,
     },
+    bolt_v3_requote_budget::RequoteBudget,
     bolt_v3_submit_admission::{
         BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionRequest,
         BoltV3SubmitAdmissionRequestInput, BoltV3SubmitLifecyclePolicy,
@@ -117,7 +140,8 @@ mod config;
 
 pub use self::config::BinaryOracleEdgeTakerBuilder;
 use self::config::{
-    BinaryOracleEdgeTakerConfig, BinaryOracleEdgeTakerFieldType, BinaryOracleEdgeTakerOrderConfig,
+    BinaryOracleEdgeTakerConfig, BinaryOracleEdgeTakerFieldType,
+    BinaryOracleEdgeTakerMakerQuoteConfig, BinaryOracleEdgeTakerOrderConfig,
 };
 
 mod exposure;
@@ -322,6 +346,93 @@ struct ActiveMarketState {
     trade_flow: BTreeMap<InstrumentId, SignedTradeFlow>,
     fast_venue_incoherent: bool,
     forced_flat: bool,
+}
+
+#[derive(Debug, Clone)]
+struct MakerRuntimeState {
+    market_id: Option<String>,
+    market: MarketQuote,
+    budget: RequoteBudget,
+    inventory: MakerInventory,
+    yes_expected: ExpectedIdentity,
+    no_expected: ExpectedIdentity,
+    next_generation: u64,
+    yes_resting_price: Option<f64>,
+    no_resting_price: Option<f64>,
+    yes_working_quantity: Option<f64>,
+    no_working_quantity: Option<f64>,
+}
+
+impl MakerRuntimeState {
+    fn new(
+        market_id: Option<String>,
+        config: &BinaryOracleEdgeTakerMakerQuoteConfig,
+        supports_modify: bool,
+        max_window_cost: u64,
+    ) -> Self {
+        Self {
+            market_id,
+            market: MarketQuote::new(supports_modify),
+            budget: RequoteBudget::new(
+                max_window_cost,
+                MAKER_REQUOTE_WINDOW_MS,
+                config.requote_min_interval_ms,
+            ),
+            inventory: MakerInventory::flat(),
+            yes_expected: ExpectedIdentity::idle(),
+            no_expected: ExpectedIdentity::idle(),
+            next_generation: INITIAL_COUNTER_U64,
+            yes_resting_price: None,
+            no_resting_price: None,
+            yes_working_quantity: None,
+            no_working_quantity: None,
+        }
+    }
+
+    fn next_order_identity(&mut self, client_order_id: ClientOrderId) -> OrderIdentity {
+        self.next_generation = self.next_generation.saturating_add(COUNTER_INCREMENT_U64);
+        OrderIdentity::new(
+            MakerClientOrderId::new(client_order_id.to_string()),
+            self.next_generation,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct MakerRuntimeStep {
+    quote_plan: Option<MakerQuotePlan>,
+    quote_set: Option<QuoteSetDecision>,
+    order_plan: Option<MakerOrderPlan>,
+    compiled: Vec<MakerOrderCompileDecision>,
+    dispatched: Vec<MakerOrderDispatchOutcome>,
+    blocked_by: Vec<MakerRuntimeBlockReason>,
+}
+
+impl MakerRuntimeStep {
+    fn blocked(reason: MakerRuntimeBlockReason) -> Self {
+        Self {
+            quote_plan: None,
+            quote_set: None,
+            order_plan: None,
+            compiled: Vec::new(),
+            dispatched: Vec::new(),
+            blocked_by: vec![reason],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MakerRuntimeBlockReason {
+    NotConfigured,
+    GateBlocked,
+    VenueContractMissing,
+    FairProbabilityUnavailable,
+    SecondsToExpiryUnavailable,
+    TopOfBookUnavailable,
+    QuotePlanUnavailable,
+    FeeUnavailable,
+    ActiveInstrumentMissing,
+    CompileBlocked,
 }
 
 /// Project the strategy's trade-flow TOML knobs into the buffer's runtime config
@@ -1019,6 +1130,7 @@ pub struct BinaryOracleEdgeTaker {
     exposure: ExposureState,
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
     pricing: PricingState,
+    maker: Option<MakerRuntimeState>,
     selection_missing_since_ms: Option<u64>,
     #[cfg(test)]
     book_subscription_events: Vec<BookSubscriptionEvent>,
@@ -1081,6 +1193,7 @@ impl BinaryOracleEdgeTaker {
             exposure: ExposureState::Flat,
             last_reported_exposure_occupancy: Cell::new(None),
             pricing,
+            maker: None,
             selection_missing_since_ms: None,
             #[cfg(test)]
             book_subscription_events: Vec::new(),
@@ -2546,6 +2659,639 @@ impl BinaryOracleEdgeTaker {
             )
             .ok()
             .map(|result| result.fair_probability_up)
+    }
+
+    fn ensure_maker_state(
+        &mut self,
+        config: &BinaryOracleEdgeTakerMakerQuoteConfig,
+        supports_modify: bool,
+        max_window_cost: u64,
+    ) -> &mut MakerRuntimeState {
+        let market_id = self.active.market_id.clone();
+        let reset = self
+            .maker
+            .as_ref()
+            .is_none_or(|maker| maker.market_id != market_id);
+        if reset {
+            self.maker = Some(MakerRuntimeState::new(
+                market_id,
+                config,
+                supports_modify,
+                max_window_cost,
+            ));
+        }
+        self.maker
+            .as_mut()
+            .expect("maker state is initialized before access")
+    }
+
+    fn active_maker_top_of_book(&self) -> Option<MakerTopOfBook> {
+        let book = &self.active.books.up;
+        Some(MakerTopOfBook {
+            best_bid: book.best_bid?,
+            best_ask: book.best_ask?,
+            bid_size: book.bid_levels.last_key_value().map(|(_, size)| *size)?,
+            ask_size: book.ask_levels.first_key_value().map(|(_, size)| *size)?,
+        })
+    }
+
+    fn maker_quote_leg_submits(leg: &crate::bolt_v3_maker_quote_set::QuoteSetLegDecision) -> bool {
+        matches!(
+            leg.control.action,
+            Some(MarketAction::Leg {
+                action: LifecycleAction::Submit,
+                ..
+            })
+        )
+    }
+
+    fn maker_intent_instrument_id(intent: &MakerOrderIntent) -> InstrumentId {
+        match intent {
+            MakerOrderIntent::Submit { instrument_id, .. }
+            | MakerOrderIntent::Cancel { instrument_id, .. }
+            | MakerOrderIntent::Modify { instrument_id, .. } => *instrument_id,
+        }
+    }
+
+    fn drive_maker_quotes_at(&mut self, now_ms: u64) -> Result<MakerRuntimeStep> {
+        let Some(config) = self.config.maker_quote.clone() else {
+            return Ok(MakerRuntimeStep::blocked(
+                MakerRuntimeBlockReason::NotConfigured,
+            ));
+        };
+        let Some(contract) = self.context.venue_contract() else {
+            return Ok(MakerRuntimeStep::blocked(
+                MakerRuntimeBlockReason::VenueContractMissing,
+            ));
+        };
+        let supports_modify = contract.execution.supports_modify;
+        let max_window_cost = u64::from(contract.rate_budget.clob_per_minute);
+
+        let Some(yes_instrument_id) = self.active.books.up.instrument_id else {
+            return Ok(MakerRuntimeStep::blocked(
+                MakerRuntimeBlockReason::ActiveInstrumentMissing,
+            ));
+        };
+        let Some(no_instrument_id) = self.active.books.down.instrument_id else {
+            return Ok(MakerRuntimeStep::blocked(
+                MakerRuntimeBlockReason::ActiveInstrumentMissing,
+            ));
+        };
+        let Some(yes_instrument) = self.current_instrument(yes_instrument_id) else {
+            return Ok(MakerRuntimeStep::blocked(
+                MakerRuntimeBlockReason::ActiveInstrumentMissing,
+            ));
+        };
+        let Some(no_instrument) = self.current_instrument(no_instrument_id) else {
+            return Ok(MakerRuntimeStep::blocked(
+                MakerRuntimeBlockReason::ActiveInstrumentMissing,
+            ));
+        };
+        let Some(yes_fee_bps) = self
+            .context
+            .fee_provider()
+            .fee_bps(yes_instrument_id)
+            .and_then(|fee| fee.to_f64())
+        else {
+            return Ok(MakerRuntimeStep::blocked(
+                MakerRuntimeBlockReason::FeeUnavailable,
+            ));
+        };
+        let Some(no_fee_bps) = self
+            .context
+            .fee_provider()
+            .fee_bps(no_instrument_id)
+            .and_then(|fee| fee.to_f64())
+        else {
+            return Ok(MakerRuntimeStep::blocked(
+                MakerRuntimeBlockReason::FeeUnavailable,
+            ));
+        };
+
+        let quote_plan = match self.current_maker_quote_plan_at(
+            now_ms,
+            &config,
+            supports_modify,
+            max_window_cost,
+        ) {
+            Ok(quote_plan) => quote_plan,
+            Err(reason) => return Ok(MakerRuntimeStep::blocked(reason)),
+        };
+
+        let quote_set = {
+            let state = self.ensure_maker_state(&config, supports_modify, max_window_cost);
+            drive_binary_quote_set(
+                &mut state.market,
+                &mut state.budget,
+                QuoteSetInput {
+                    targets: quote_plan.targets,
+                    yes_quantity: config.yes_quantity,
+                    no_quantity: config.no_quantity,
+                    yes_resting_price: state.yes_resting_price,
+                    no_resting_price: state.no_resting_price,
+                    open_commitments: &[],
+                    max_fee_bps: yes_fee_bps.max(no_fee_bps),
+                    available_collateral: config.collateral_budget,
+                    requote_threshold: config.requote_threshold,
+                    eps: config.epsilon,
+                    now_ms,
+                    action_cost: config.requote_action_cost,
+                },
+            )
+        };
+
+        let yes_generated_client_order_id = Self::maker_quote_leg_submits(&quote_set.yes)
+            .then(|| self.core.order_factory().generate_client_order_id());
+        let no_generated_client_order_id = Self::maker_quote_leg_submits(&quote_set.no)
+            .then(|| self.core.order_factory().generate_client_order_id());
+        let (yes_active_order, no_active_order, yes_next_order, no_next_order) = {
+            let state = self.ensure_maker_state(&config, supports_modify, max_window_cost);
+            let yes_active_order = state.yes_expected.expected().cloned();
+            let no_active_order = state.no_expected.expected().cloned();
+            let yes_next_order = yes_generated_client_order_id
+                .map(|client_order_id| state.next_order_identity(client_order_id));
+            let no_next_order = no_generated_client_order_id
+                .map(|client_order_id| state.next_order_identity(client_order_id));
+            (
+                yes_active_order,
+                no_active_order,
+                yes_next_order,
+                no_next_order,
+            )
+        };
+
+        let order_plan = maker_order_intents_from_quote_set(MakerOrderPlanInput {
+            quote_set: &quote_set,
+            targets: quote_plan.targets,
+            yes_quantity: config.yes_quantity,
+            no_quantity: config.no_quantity,
+            yes: MakerLegBinding {
+                instrument_id: yes_instrument_id,
+                active_order: yes_active_order,
+                next_order: yes_next_order.clone(),
+            },
+            no: MakerLegBinding {
+                instrument_id: no_instrument_id,
+                active_order: no_active_order,
+                next_order: no_next_order.clone(),
+            },
+        });
+
+        let maker_order_template = config.order.nt_order_template(
+            ORDER_CONFIGURATION_PREFIX_MAKER_QUOTE,
+            yes_instrument.price_precision(),
+        )?;
+        let mut compiled = Vec::new();
+        let mut commands = Vec::new();
+        for intent in [&order_plan.yes.intent, &order_plan.no.intent]
+            .into_iter()
+            .flatten()
+        {
+            let instrument_id = Self::maker_intent_instrument_id(intent);
+            let instrument = if instrument_id == yes_instrument_id {
+                &yes_instrument
+            } else if instrument_id == no_instrument_id {
+                &no_instrument
+            } else {
+                return Ok(MakerRuntimeStep::blocked(
+                    MakerRuntimeBlockReason::ActiveInstrumentMissing,
+                ));
+            };
+            let decision = compile_maker_order_intent(MakerOrderCompileInput {
+                intent,
+                submit_template: &maker_order_template,
+                price_precision: instrument.price_precision(),
+                quantity_precision: instrument.size_precision(),
+            });
+            if let Some(command) = decision.command.clone() {
+                commands.push(command);
+            }
+            compiled.push(decision);
+        }
+        if compiled
+            .iter()
+            .any(|decision| decision.blocked_by.is_some())
+        {
+            return Ok(MakerRuntimeStep {
+                quote_plan: Some(quote_plan),
+                quote_set: Some(quote_set),
+                order_plan: Some(order_plan),
+                compiled,
+                dispatched: Vec::new(),
+                blocked_by: vec![MakerRuntimeBlockReason::CompileBlocked],
+            });
+        }
+
+        let mut dispatched = Vec::new();
+        for command in commands {
+            let outcome = dispatch_maker_order_command(
+                MakerOrderDispatchInput {
+                    command: &command,
+                    submit_order_prefix: ORDER_CONFIGURATION_PREFIX_MAKER_QUOTE,
+                },
+                self,
+            )?;
+            self.apply_maker_dispatch_outcome(
+                &outcome,
+                yes_next_order.as_ref(),
+                no_next_order.as_ref(),
+            );
+            dispatched.push(outcome);
+        }
+
+        Ok(MakerRuntimeStep {
+            quote_plan: Some(quote_plan),
+            quote_set: Some(quote_set),
+            order_plan: Some(order_plan),
+            compiled,
+            dispatched,
+            blocked_by: Vec::new(),
+        })
+    }
+
+    fn apply_maker_dispatch_outcome(
+        &mut self,
+        outcome: &MakerOrderDispatchOutcome,
+        yes_next_order: Option<&OrderIdentity>,
+        no_next_order: Option<&OrderIdentity>,
+    ) {
+        let Some(state) = self.maker.as_mut() else {
+            return;
+        };
+        match outcome {
+            MakerOrderDispatchOutcome::Submitted {
+                leg: Leg::Yes,
+                price,
+                quantity,
+                ..
+            } => {
+                if let Some(identity) = yes_next_order {
+                    state.yes_expected.requote_to(identity.clone());
+                }
+                state.yes_resting_price = Some(price.as_f64());
+                state.yes_working_quantity = Some(quantity.as_f64());
+            }
+            MakerOrderDispatchOutcome::Submitted {
+                leg: Leg::No,
+                price,
+                quantity,
+                ..
+            } => {
+                if let Some(identity) = no_next_order {
+                    state.no_expected.requote_to(identity.clone());
+                }
+                state.no_resting_price = Some(price.as_f64());
+                state.no_working_quantity = Some(quantity.as_f64());
+            }
+            MakerOrderDispatchOutcome::Modified {
+                leg,
+                price,
+                quantity,
+                ..
+            } => {
+                *Self::maker_resting_price_mut(state, *leg) = Some(price.as_f64());
+                *Self::maker_working_quantity_mut(state, *leg) = Some(quantity.as_f64());
+            }
+            MakerOrderDispatchOutcome::Canceled { .. } => {}
+        }
+    }
+
+    fn dispatch_maker_market_action_at(
+        &mut self,
+        now_ms: u64,
+        market_action: MarketAction,
+    ) -> Result<Vec<MakerOrderDispatchOutcome>> {
+        let MarketAction::Leg { leg, action } = market_action else {
+            return Ok(Vec::new());
+        };
+        let Some(config) = self.config.maker_quote.clone() else {
+            return Ok(Vec::new());
+        };
+        let Some(contract) = self.context.venue_contract() else {
+            return Ok(Vec::new());
+        };
+        let supports_modify = contract.execution.supports_modify;
+        let max_window_cost = u64::from(contract.rate_budget.clob_per_minute);
+        let Some(instrument_id) = self.maker_instrument_id_for_leg(leg) else {
+            return Ok(Vec::new());
+        };
+        let Some(instrument) = self.current_instrument(instrument_id) else {
+            return Ok(Vec::new());
+        };
+        let quote_plan = if matches!(action, LifecycleAction::Submit | LifecycleAction::Modify) {
+            let Ok(quote_plan) =
+                self.current_maker_quote_plan_at(now_ms, &config, supports_modify, max_window_cost)
+            else {
+                return Ok(Vec::new());
+            };
+            Some(quote_plan)
+        } else {
+            None
+        };
+
+        let mut yes_next_order = None;
+        let mut no_next_order = None;
+        let intent = match action {
+            LifecycleAction::Submit => {
+                let order_identity = {
+                    let client_order_id = self.core.order_factory().generate_client_order_id();
+                    let state = self.ensure_maker_state(&config, supports_modify, max_window_cost);
+                    state.next_order_identity(client_order_id)
+                };
+                match leg {
+                    Leg::Yes => yes_next_order = Some(order_identity.clone()),
+                    Leg::No => no_next_order = Some(order_identity.clone()),
+                }
+                let quote_plan = quote_plan.expect("submit action should require quote plan");
+                MakerOrderIntent::Submit {
+                    leg,
+                    instrument_id,
+                    order_side: OrderSide::Buy,
+                    order_identity,
+                    price: Self::maker_quote_price_for_leg(&quote_plan, leg),
+                    quantity: Self::maker_quote_quantity_for_leg(&config, leg),
+                }
+            }
+            LifecycleAction::Cancel => {
+                let Some(order_identity) = self
+                    .maker
+                    .as_ref()
+                    .and_then(|state| Self::maker_expected_identity(state, leg).expected())
+                    .cloned()
+                else {
+                    return Ok(Vec::new());
+                };
+                MakerOrderIntent::Cancel {
+                    leg,
+                    instrument_id,
+                    order_identity,
+                }
+            }
+            LifecycleAction::Modify => {
+                let Some(order_identity) = self
+                    .maker
+                    .as_ref()
+                    .and_then(|state| Self::maker_expected_identity(state, leg).expected())
+                    .cloned()
+                else {
+                    return Ok(Vec::new());
+                };
+                let quote_plan = quote_plan.expect("modify action should require quote plan");
+                MakerOrderIntent::Modify {
+                    leg,
+                    instrument_id,
+                    order_identity,
+                    price: Self::maker_quote_price_for_leg(&quote_plan, leg),
+                    quantity: Self::maker_quote_quantity_for_leg(&config, leg),
+                }
+            }
+        };
+
+        let maker_order_template = config.order.nt_order_template(
+            ORDER_CONFIGURATION_PREFIX_MAKER_QUOTE,
+            instrument.price_precision(),
+        )?;
+        let decision = compile_maker_order_intent(MakerOrderCompileInput {
+            intent: &intent,
+            submit_template: &maker_order_template,
+            price_precision: instrument.price_precision(),
+            quantity_precision: instrument.size_precision(),
+        });
+        let Some(command) = decision.command else {
+            return Ok(Vec::new());
+        };
+        let outcome = dispatch_maker_order_command(
+            MakerOrderDispatchInput {
+                command: &command,
+                submit_order_prefix: ORDER_CONFIGURATION_PREFIX_MAKER_QUOTE,
+            },
+            self,
+        )?;
+        self.apply_maker_dispatch_outcome(
+            &outcome,
+            yes_next_order.as_ref(),
+            no_next_order.as_ref(),
+        );
+        Ok(vec![outcome])
+    }
+
+    fn current_maker_quote_plan_at(
+        &mut self,
+        now_ms: u64,
+        config: &BinaryOracleEdgeTakerMakerQuoteConfig,
+        supports_modify: bool,
+        max_window_cost: u64,
+    ) -> std::result::Result<MakerQuotePlan, MakerRuntimeBlockReason> {
+        let gate = self.entry_gate_decision_at(now_ms);
+        if !gate.blocked_by.is_empty() {
+            return Err(MakerRuntimeBlockReason::GateBlocked);
+        }
+        let fair_probability_up = self
+            .current_fair_probability_up_at(now_ms)
+            .ok_or(MakerRuntimeBlockReason::FairProbabilityUnavailable)?;
+        let seconds_to_expiry = self
+            .current_seconds_to_expiry_at(now_ms)
+            .ok_or(MakerRuntimeBlockReason::SecondsToExpiryUnavailable)?;
+        let top_of_book = self
+            .active_maker_top_of_book()
+            .ok_or(MakerRuntimeBlockReason::TopOfBookUnavailable)?;
+        let net_position = {
+            let state = self.ensure_maker_state(config, supports_modify, max_window_cost);
+            state.inventory.net_position()
+        };
+        plan_maker_quote_targets(MakerQuotePlanInputs {
+            family_key: self.config.rotating_market_family.as_str(),
+            oracle_fair_probability_up: fair_probability_up,
+            informed_fraction: config.informed_fraction,
+            top_of_book: Some(top_of_book),
+            microprice_weight: config.microprice_weight,
+            net_position,
+            inventory_skew_gain: config.inventory_skew_gain,
+            position_cap: config.position_cap,
+            half_spread_floor: config.half_spread_floor,
+            max_half_spread: config.max_half_spread,
+            eps: config.epsilon,
+            tau: seconds_to_expiry as f64,
+            reference_tau: config.reference_tau_secs,
+            time_widen_cap: config.time_widen_cap,
+        })
+        .ok_or(MakerRuntimeBlockReason::QuotePlanUnavailable)
+    }
+
+    fn maker_instrument_id_for_leg(&self, leg: Leg) -> Option<InstrumentId> {
+        match leg {
+            Leg::Yes => self.active.books.up.instrument_id,
+            Leg::No => self.active.books.down.instrument_id,
+        }
+    }
+
+    fn maker_quote_price_for_leg(quote_plan: &MakerQuotePlan, leg: Leg) -> f64 {
+        match leg {
+            Leg::Yes => quote_plan.targets.leg_a.price,
+            Leg::No => quote_plan.targets.leg_b.price,
+        }
+    }
+
+    fn maker_quote_quantity_for_leg(
+        config: &BinaryOracleEdgeTakerMakerQuoteConfig,
+        leg: Leg,
+    ) -> f64 {
+        match leg {
+            Leg::Yes => config.yes_quantity,
+            Leg::No => config.no_quantity,
+        }
+    }
+
+    fn maker_expected_identity(state: &MakerRuntimeState, leg: Leg) -> &ExpectedIdentity {
+        match leg {
+            Leg::Yes => &state.yes_expected,
+            Leg::No => &state.no_expected,
+        }
+    }
+
+    fn maker_resting_price_mut(state: &mut MakerRuntimeState, leg: Leg) -> &mut Option<f64> {
+        match leg {
+            Leg::Yes => &mut state.yes_resting_price,
+            Leg::No => &mut state.no_resting_price,
+        }
+    }
+
+    fn maker_working_quantity_mut(state: &mut MakerRuntimeState, leg: Leg) -> &mut Option<f64> {
+        match leg {
+            Leg::Yes => &mut state.yes_working_quantity,
+            Leg::No => &mut state.no_working_quantity,
+        }
+    }
+
+    fn clear_maker_leg_order_state(state: &mut MakerRuntimeState, leg: Leg) {
+        match leg {
+            Leg::Yes => state.yes_expected.clear(),
+            Leg::No => state.no_expected.clear(),
+        }
+        *Self::maker_resting_price_mut(state, leg) = None;
+        *Self::maker_working_quantity_mut(state, leg) = None;
+    }
+
+    fn maker_venue_report_for_client_order(
+        &self,
+        client_order_id: ClientOrderId,
+        kind: VenueReportKind,
+    ) -> Option<(Leg, VenueReport)> {
+        let state = self.maker.as_ref()?;
+        let client_order_id_text = client_order_id.to_string();
+        for leg in [Leg::Yes, Leg::No] {
+            let Some(expected) = Self::maker_expected_identity(state, leg).expected() else {
+                continue;
+            };
+            if expected.client_order_id().as_str() == client_order_id_text {
+                return Some((
+                    leg,
+                    VenueReport {
+                        client_order_id: MakerClientOrderId::new(client_order_id_text),
+                        generation: expected.generation(),
+                        kind,
+                    },
+                ));
+            }
+        }
+        None
+    }
+
+    fn apply_maker_order_report(
+        &mut self,
+        client_order_id: ClientOrderId,
+        kind: VenueReportKind,
+        now_ms: u64,
+    ) -> bool {
+        let Some((leg, report)) = self.maker_venue_report_for_client_order(client_order_id, kind)
+        else {
+            return false;
+        };
+        let Some(state) = self.maker.as_mut() else {
+            return false;
+        };
+        let Ok(event) = Self::maker_expected_identity(state, leg).admit(&report) else {
+            return false;
+        };
+        let action = state.market.on_leg_event(leg, event);
+        if matches!(
+            kind,
+            VenueReportKind::Rejected | VenueReportKind::Canceled | VenueReportKind::Filled
+        ) {
+            Self::clear_maker_leg_order_state(state, leg);
+        }
+        if let Some(action) = action
+            && let Err(error) = self.dispatch_maker_market_action_at(now_ms, action)
+        {
+            log::error!(
+                "binary_oracle_edge_taker maker lifecycle action dispatch failed: strategy_id={} client_order_id={} error={error:#}",
+                self.config.strategy_id,
+                client_order_id,
+            );
+        }
+        true
+    }
+
+    fn apply_maker_order_fill_report(
+        &mut self,
+        event: &nautilus_model::events::OrderFilled,
+    ) -> bool {
+        let Some((leg, report)) = self
+            .maker_venue_report_for_client_order(event.client_order_id, VenueReportKind::Filled)
+        else {
+            return false;
+        };
+        let fill_quantity = event.last_qty.as_f64();
+        if !is_positive_finite(fill_quantity) {
+            return false;
+        }
+        let Some(state) = self.maker.as_mut() else {
+            return false;
+        };
+        let Ok(leg_event) = Self::maker_expected_identity(state, leg).admit(&report) else {
+            return false;
+        };
+        if !state
+            .inventory
+            .apply_fill(leg, QuoteSide::Buy, fill_quantity)
+        {
+            return false;
+        }
+        let Some(working_quantity) = *Self::maker_working_quantity_mut(state, leg) else {
+            return true;
+        };
+        let remaining_quantity = (working_quantity - fill_quantity).max(0.0);
+        if remaining_quantity > notional_float_tolerance(working_quantity) {
+            *Self::maker_working_quantity_mut(state, leg) = Some(remaining_quantity);
+            return true;
+        }
+        state.market.on_leg_event(leg, leg_event);
+        Self::clear_maker_leg_order_state(state, leg);
+        true
+    }
+
+    fn apply_maker_order_updated_report(
+        &mut self,
+        event: &nautilus_model::events::OrderUpdated,
+    ) -> bool {
+        let Some((leg, _)) = self
+            .maker_venue_report_for_client_order(event.client_order_id, VenueReportKind::Modified)
+        else {
+            return false;
+        };
+        let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        if !self.apply_maker_order_report(event.client_order_id, VenueReportKind::Modified, now_ms)
+        {
+            return false;
+        }
+        let Some(state) = self.maker.as_mut() else {
+            return true;
+        };
+        if let Some(price) = event.price {
+            *Self::maker_resting_price_mut(state, leg) = Some(price.as_f64());
+        }
+        *Self::maker_working_quantity_mut(state, leg) = Some(event.quantity.as_f64());
+        true
     }
 
     fn current_position_fast_spot(&self) -> Option<&FastSpotObservation> {
@@ -5492,6 +6238,60 @@ impl std::fmt::Debug for BinaryOracleEdgeTaker {
     }
 }
 
+impl MakerOrderCommandSink for BinaryOracleEdgeTaker {
+    fn order_factory(&mut self) -> &mut nautilus_common::factories::OrderFactory {
+        self.core.order_factory()
+    }
+
+    fn submit_maker_order(&mut self, order: OrderAny) -> Result<()> {
+        let price = order
+            .price()
+            .ok_or_else(|| anyhow::anyhow!("maker quote submit requires a limit price"))?;
+        let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+            self.config.strategy_id.clone(),
+            BoltV3OrderIntentKind::MakerQuote,
+            price.to_string(),
+            &order,
+        );
+        self.submit_order_with_decision_evidence(
+            intent,
+            order,
+            SubmitContext::with_client_id(ClientId::from(self.config.client_id.as_str())),
+        )
+    }
+
+    fn cancel_maker_order(
+        &mut self,
+        _leg: Leg,
+        _instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+    ) -> Result<()> {
+        self.cancel_order(
+            client_order_id,
+            Some(ClientId::from(self.config.client_id.as_str())),
+            None,
+        )
+    }
+
+    fn modify_maker_order(
+        &mut self,
+        _leg: Leg,
+        _instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        price: Price,
+        quantity: Quantity,
+    ) -> Result<()> {
+        self.modify_order(
+            client_order_id,
+            Some(quantity),
+            Some(price),
+            None,
+            Some(ClientId::from(self.config.client_id.as_str())),
+            None,
+        )
+    }
+}
+
 impl DataActor for BinaryOracleEdgeTaker {
     fn on_start(&mut self) -> Result<()> {
         self.bootstrap_recovery_from_cache();
@@ -5603,7 +6403,16 @@ impl DataActor for BinaryOracleEdgeTaker {
                 error
             );
         }
-        if self.exposure_occupancy().is_none()
+        if self.config.maker_quote.is_some() {
+            if let Err(error) = self.drive_maker_quotes_at(now_ms) {
+                log::error!(
+                    "binary_oracle_edge_taker maker quote drive failed on book delta: strategy_id={} instrument_id={} error={:#}",
+                    self.config.strategy_id,
+                    deltas.instrument_id,
+                    error
+                );
+            }
+        } else if self.exposure_occupancy().is_none()
             && let Err(error) = self.try_submit_entry_order(now_ms)
         {
             log::error!(
@@ -5631,6 +6440,10 @@ impl DataActor for BinaryOracleEdgeTaker {
         event: &nautilus_model::events::OrderFilled,
     ) -> anyhow::Result<()> {
         let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        if self.apply_maker_order_fill_report(event) {
+            self.prune_market_lifecycle(now_ms);
+            return Ok(());
+        }
         let entry_fill = self
             .pending_entry()
             .is_some_and(|pending| pending.client_order_id == event.client_order_id);
@@ -5759,24 +6572,71 @@ impl DataActor for BinaryOracleEdgeTaker {
         &mut self,
         event: &nautilus_model::events::OrderCanceled,
     ) -> anyhow::Result<()> {
+        let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        if self.apply_maker_order_report(event.client_order_id, VenueReportKind::Canceled, now_ms) {
+            self.prune_market_lifecycle(now_ms);
+            return Ok(());
+        }
         self.clear_pending_entry_for_client_order(event.client_order_id, event.instrument_id);
         self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
-        self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
+        self.prune_market_lifecycle(now_ms);
         Ok(())
     }
 }
 
 nautilus_strategy!(BinaryOracleEdgeTaker, {
+    fn on_order_accepted(&mut self, event: nautilus_model::events::OrderAccepted) {
+        let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        self.apply_maker_order_report(event.client_order_id, VenueReportKind::Accepted, now_ms);
+        self.prune_market_lifecycle(now_ms);
+    }
+
     fn on_order_rejected(&mut self, event: nautilus_model::events::OrderRejected) {
+        let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        if self.apply_maker_order_report(event.client_order_id, VenueReportKind::Rejected, now_ms) {
+            self.prune_market_lifecycle(now_ms);
+            return;
+        }
         self.clear_pending_entry_for_client_order(event.client_order_id, event.instrument_id);
         self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
-        self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
+        self.prune_market_lifecycle(now_ms);
     }
 
     fn on_order_expired(&mut self, event: nautilus_model::events::OrderExpired) {
+        let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        if self.apply_maker_order_report(event.client_order_id, VenueReportKind::Canceled, now_ms) {
+            self.prune_market_lifecycle(now_ms);
+            return;
+        }
         self.clear_pending_entry_for_client_order(event.client_order_id, event.instrument_id);
         self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
-        self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
+        self.prune_market_lifecycle(now_ms);
+    }
+
+    fn on_order_cancel_rejected(&mut self, event: nautilus_model::events::OrderCancelRejected) {
+        let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        self.apply_maker_order_report(
+            event.client_order_id,
+            VenueReportKind::CancelRejected,
+            now_ms,
+        );
+        self.prune_market_lifecycle(now_ms);
+    }
+
+    fn on_order_modify_rejected(&mut self, event: nautilus_model::events::OrderModifyRejected) {
+        let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        self.apply_maker_order_report(
+            event.client_order_id,
+            VenueReportKind::ModifyRejected,
+            now_ms,
+        );
+        self.prune_market_lifecycle(now_ms);
+    }
+
+    fn on_order_updated(&mut self, event: nautilus_model::events::OrderUpdated) {
+        let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        self.apply_maker_order_updated_report(&event);
+        self.prune_market_lifecycle(now_ms);
     }
 
     fn on_position_opened(&mut self, _event: nautilus_model::events::PositionOpened) {
@@ -6239,6 +7099,8 @@ fn refresh_fee_readiness_for_active(
 
 const INITIAL_COUNTER_U64: u64 = 0;
 const COUNTER_INCREMENT_U64: u64 = 1;
+const SECONDS_PER_MINUTE_U64: u64 = 60;
+const MAKER_REQUOTE_WINDOW_MS: u64 = SECONDS_PER_MINUTE_U64 * MILLIS_PER_SECOND_U64;
 const NANOS_PER_MILLI_U64: u64 = 1_000_000;
 const NANOS_PER_SECOND_U64: u64 = 1_000_000_000;
 const CONFIG_FIELD_OMS_TYPE: &str = "oms_type";
@@ -6250,6 +7112,7 @@ const CONFIG_FIELD_FORCED_EXIT_ORDER_SIDE: &str = "forced_exit_order_side";
 const CONFIG_FIELD_FORCED_EXIT_ORDER_POSITION_SIDE: &str = "forced_exit_order_position_side";
 const ORDER_CONFIGURATION_PREFIX_ENTRY: &str = "entry";
 const ORDER_CONFIGURATION_PREFIX_EXIT: &str = "exit";
+const ORDER_CONFIGURATION_PREFIX_MAKER_QUOTE: &str = "maker_quote";
 const SELECTION_BLOCK_REASON_TARGET_SELECTION_BLOCKED: &str = "target_selection_blocked";
 const EVIDENCE_REASON_DERIVED_FROM_LEAD_GAP_JITTER_TIME_AND_FEE: &str =
     "derived_from_lead_gap_jitter_time_and_fee";

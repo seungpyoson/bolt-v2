@@ -43,6 +43,7 @@ mod book_sizing;
 mod config;
 mod core_glue;
 mod exposure;
+mod maker_runtime;
 mod orders_admission;
 mod pricing;
 mod reference_price;

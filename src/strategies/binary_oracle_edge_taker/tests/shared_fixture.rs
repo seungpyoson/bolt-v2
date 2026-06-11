@@ -514,6 +514,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
                 is_reduce_only: false,
                 is_quote_quantity: false,
             },
+            maker_quote: None,
             warmup_tick_count: 20,
             reentry_cooldown_secs: 30,
             order_notional_target: 1000.0,

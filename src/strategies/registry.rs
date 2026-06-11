@@ -22,7 +22,7 @@ use crate::{
     bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
-    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState, venue_contract::VenueContract,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -66,6 +66,7 @@ pub struct StrategyBuildContext {
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     execution_venue: Venue,
     realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
+    venue_contract: Option<Arc<VenueContract>>,
 }
 
 impl StrategyBuildContext {
@@ -87,6 +88,7 @@ impl StrategyBuildContext {
             submit_admission,
             execution_venue,
             realized_volatility_runtime: Arc::new(Mutex::new(RealizedVolSurfaceRuntime::empty())),
+            venue_contract: None,
         }
     }
 
@@ -110,6 +112,11 @@ impl StrategyBuildContext {
         runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
     ) -> Self {
         self.realized_volatility_runtime = runtime;
+        self
+    }
+
+    pub fn with_venue_contract(mut self, contract: Arc<VenueContract>) -> Self {
+        self.venue_contract = Some(contract);
         self
     }
 
@@ -137,6 +144,10 @@ impl StrategyBuildContext {
     /// real order can only ever fire against an instrument on the venue it routes to.
     pub fn execution_venue(&self) -> Venue {
         self.execution_venue
+    }
+
+    pub fn venue_contract(&self) -> Option<&VenueContract> {
+        self.venue_contract.as_deref()
     }
 
     pub fn realized_volatility_quote_subscription_requests(

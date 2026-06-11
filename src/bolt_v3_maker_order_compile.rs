@@ -115,7 +115,7 @@ fn compile_submit(
     price: f64,
     quantity: f64,
 ) -> MakerOrderCompileDecision {
-    if !is_supported_submit_template(input.submit_template) {
+    if !maker_submit_template_is_supported(input.submit_template) {
         return blocked(MakerOrderCompileBlockReason::UnsupportedSubmitTemplate);
     }
     if !is_positive_finite(price) {
@@ -165,7 +165,7 @@ fn compile_modify(
     })
 }
 
-fn is_supported_submit_template(template: &NtOrderTemplate) -> bool {
+pub fn maker_submit_template_is_supported(template: &NtOrderTemplate) -> bool {
     template.order_type == OrderType::Limit
         && template.time_in_force == TimeInForce::Gtc
         && template.expire_time.is_none()

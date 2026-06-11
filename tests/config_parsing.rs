@@ -1378,6 +1378,60 @@ fn bolt_v3_archetype_rejects_zero_sizing_ev_reference_bps() {
 }
 
 #[test]
+fn bolt_v3_archetype_rejects_negative_or_non_finite_risk_lambda() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+
+    // TOML floats legally admit negative, nan, and inf values. Each loads
+    // through serde but makes the runtime sizing path fail soft to a zero
+    // size (a silently dead strategy), so each must fail closed at load.
+    for bad_risk_lambda in [-0.5, f64::NAN, f64::INFINITY] {
+        let mut strategy: BoltV3StrategyConfig = toml::from_str(
+            &fs::read_to_string(support::repo_path(
+                "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+            ))
+            .expect("strategy fixture should be readable"),
+        )
+        .expect("strategy fixture should parse");
+        let parameters = strategy
+            .parameters
+            .as_table_mut()
+            .expect("strategy parameters should be a table");
+        let runtime = parameters
+            .get_mut("runtime")
+            .and_then(|value| value.as_table_mut())
+            .expect("strategy runtime parameters should be a table");
+        runtime.insert(
+            "risk_lambda".to_string(),
+            toml::Value::Float(bad_risk_lambda),
+        );
+
+        let loaded = vec![LoadedStrategy {
+            config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+            relative_path: "strategies/binary_oracle.toml".to_string(),
+            config: strategy,
+        }];
+
+        let messages = validate_strategies(&stable_root, &loaded);
+        assert!(
+            messages.iter().any(|message| {
+                message.contains("parameters.runtime.risk_lambda")
+                    && message.contains("finite and >= 0")
+            }),
+            "risk_lambda {bad_risk_lambda} must fail closed at load: {messages:#?}"
+        );
+    }
+}
+
+#[test]
 fn bolt_v3_archetype_rejects_market_quote_quantity_entry_order() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},

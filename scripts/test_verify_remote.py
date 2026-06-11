@@ -147,6 +147,28 @@ def assert_verify_remote_pr_errors() -> None:
             owner.pr_for_current_branch = original_pr
 
 
+def assert_pr_lookup_preserves_gh_errors() -> None:
+    owner = load_owner_module()
+    original_load_json_command = owner.load_json_command
+    try:
+        owner.load_json_command = lambda _argv, repo: (None, 'no pull requests found for branch "feature"')
+        _pr, no_pr_error = owner.pr_for_current_branch(REPO_ROOT, "feature")
+        if no_pr_error is None or "gh pr create --draft" not in no_pr_error:
+            raise AssertionError(no_pr_error)
+
+        owner.load_json_command = lambda _argv, repo: (None, "HTTP 401: Bad credentials")
+        _pr, auth_error = owner.pr_for_current_branch(REPO_ROOT, "feature")
+        if auth_error is None or "Bad credentials" not in auth_error or "gh pr create --draft" in auth_error:
+            raise AssertionError(auth_error)
+
+        owner.load_json_command = lambda _argv, repo: (None, "gh is required for remote verification")
+        _pr, missing_gh_error = owner.pr_for_current_branch(REPO_ROOT, "feature")
+        if missing_gh_error is None or "gh is required" not in missing_gh_error:
+            raise AssertionError(missing_gh_error)
+    finally:
+        owner.load_json_command = original_load_json_command
+
+
 def assert_pr_checks_allows_pending_exit_code_with_json() -> None:
     owner = load_owner_module()
     original_run_capture = owner.run_capture
@@ -239,6 +261,7 @@ def assert_verify_remote_no_checks_times_out() -> None:
 def main() -> int:
     assert_verify_remote_precondition_errors()
     assert_verify_remote_pr_errors()
+    assert_pr_lookup_preserves_gh_errors()
     assert_pr_checks_allows_pending_exit_code_with_json()
     assert_verify_remote_waits_then_passes()
     assert_verify_remote_no_checks_times_out()

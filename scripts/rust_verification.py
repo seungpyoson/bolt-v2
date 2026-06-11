@@ -327,6 +327,13 @@ def managed_env(repo: pathlib.Path, policy: dict[str, Any] | None = None) -> dic
     return env
 
 
+def scrubbed_local_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in SCRUB_ENV_KEYS:
+        env.pop(key, None)
+    return env
+
+
 def classify_cache_subtree(relative_path: str) -> str:
     if relative_path in ("debug", "release", "tmp"):
         return relative_path
@@ -2491,7 +2498,10 @@ def pr_for_current_branch(repo: pathlib.Path, branch: str) -> tuple[dict[str, An
         repo=repo,
     )
     if error is not None:
-        return None, f"verify-remote requires an open or draft PR for this branch; run: {pr_create_hint(branch)}"
+        lowered = error.lower()
+        if "no pull requests found" in lowered or "no pull request found" in lowered:
+            return None, f"verify-remote requires an open or draft PR for this branch; run: {pr_create_hint(branch)}"
+        return None, f"verify-remote could not inspect pull request state: {error}"
     if not isinstance(payload, dict):
         return None, "gh pr view returned an unexpected payload"
     return payload, None
@@ -2681,6 +2691,8 @@ def cmd_cargo(args: argparse.Namespace) -> int:
             if refusal is not None:
                 return print_refusal(refusal)
             return run_process([cargo, *cargo_args], repo=repo, env=managed_env(repo, policy))
+    if cargo_subcommand(cargo_args) == "fmt":
+        return run_process([cargo, *cargo_args], repo=repo, env=scrubbed_local_env())
     if cargo_args_need_disk_preflight(cargo_args):
         refusal = disk_preflight_refusal_payload(repo, policy)
         if refusal is not None:

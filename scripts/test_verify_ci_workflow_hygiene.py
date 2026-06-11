@@ -3040,6 +3040,7 @@ commands:
   sudoshell: sudo bash -lc 'cargo test --all'
   envshell: env -i bash -lc 'cargo test --all'
   hyphenated: cargo-clippy --workspace
+  zigbuild: cargo zigbuild --release
   rustup: rustup run stable cargo test
   pyinline: python -c 'import os; os.system("cargo test")'
   timeout: timeout 30 cargo test
@@ -3062,6 +3063,10 @@ commands:
   managedencodedrustflags: CARGO_ENCODED_RUSTFLAGS='--out-dir\\x1f/tmp/raw-out' python3 scripts/rust_verification.py cargo --repo . -- check
   managedinstallroot: python3 scripts/rust_verification.py cargo --repo . -- install ripgrep --root /tmp/install-root
   managedrustcwrapper: RUSTC_WRAPPER=/tmp/wrapper python3 scripts/rust_verification.py cargo --repo . -- test
+  managedtimeout: timeout 30 python3 scripts/rust_verification.py cargo --repo . -- test
+  managedenvci: GITHUB_ACTIONS=true python3 scripts/rust_verification.py cargo --repo . -- test
+  managedenvcmdci: env GITHUB_ACTIONS=true python3 scripts/rust_verification.py cargo --repo . -- test
+  managedpythonflag: python3 -W ignore scripts/rust_verification.py cargo --repo . -- test
   no-mistakes-clippy-command: no-mistakes run -- clippy
   no-mistakes-nextest-command: no-mistakes run -- nextest run
   s3cache: aws s3 sync target s3://bolt-v2-active-cache/target
@@ -3153,6 +3158,7 @@ commands: { test: "cargo test" }
         "sudoshell",
         "envshell",
         "hyphenated",
+        "zigbuild",
         "rustup",
         "pyinline",
         "timeout",
@@ -3182,10 +3188,19 @@ commands: { test: "cargo test" }
     expected_s3 = ".no-mistakes.yaml commands.s3cache S3 active mutable target cache must be rejected"
     expected_storage = [
         ".no-mistakes.yaml commands.managedrustcwrapper RUSTC_WRAPPER raw compiler wrapper must be classified",
+        ".no-mistakes.yaml commands.managedenvci GITHUB_ACTIONS local CI spoof must not be checked in",
+        ".no-mistakes.yaml commands.managedenvcmdci GITHUB_ACTIONS local CI spoof must not be checked in",
+    ]
+    expected_wrapper = [
+        ".no-mistakes.yaml commands.managedtimeout wrapper-routed local compile-heavy Rust must be remote-first",
+        ".no-mistakes.yaml commands.managedenvci wrapper-routed local compile-heavy Rust must be remote-first",
+        ".no-mistakes.yaml commands.managedenvcmdci wrapper-routed local compile-heavy Rust must be remote-first",
+        ".no-mistakes.yaml commands.managedpythonflag wrapper-routed local compile-heavy Rust must be remote-first",
     ]
     fixture_result, fixture_errors = run_verifier_main_with_no_mistakes(raw_fixture)
     missing_fixture = [fragment for fragment in expected if fragment not in fixture_errors]
     missing_storage = [fragment for fragment in expected_storage if fragment not in fixture_errors]
+    missing_wrapper = [fragment for fragment in expected_wrapper if fragment not in fixture_errors]
     false_fixture = ".no-mistakes.yaml commands.docs raw Cargo drift must be classified" in fixture_errors
     allowed_result, allowed_errors = run_verifier_main_with_no_mistakes(allowed_fixture)
     false_allowed = [
@@ -3201,6 +3216,7 @@ commands: { test: "cargo test" }
         fixture_result == 0
         or missing_fixture
         or missing_storage
+        or missing_wrapper
         or expected_s3 not in fixture_errors
         or false_fixture
         or allowed_result != 0
@@ -3214,7 +3230,7 @@ commands: { test: "cargo test" }
             "no-mistakes raw-Cargo drift must fail through verifier main() while managed-wrapper "
             "and exact-head CI evidence commands stay allowed: "
             f"fixture_result={fixture_result} missing_fixture={missing_fixture!r} "
-            f"missing_storage={missing_storage!r} "
+            f"missing_storage={missing_storage!r} missing_wrapper={missing_wrapper!r} "
             f"expected_s3={expected_s3!r} false_fixture={false_fixture} fixture_errors={fixture_errors!r} "
             f"fixture_expected_raw_keys={fixture_expected_raw_keys!r} "
             f"allowed_result={allowed_result} false_allowed={false_allowed!r} "

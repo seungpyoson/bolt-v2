@@ -1087,6 +1087,7 @@ CARGO_PROCESS_SUBCOMMANDS = {
     "run",
     "rustc",
     "test",
+    "zigbuild",
 }
 
 
@@ -1674,13 +1675,54 @@ def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
     return tools
 
 
+def python_rust_verification_script_index(tokens: list[str]) -> int | None:
+    if not tokens or not pathlib.Path(tokens[0]).name.startswith("python"):
+        return None
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"-B", "-E", "-I", "-O", "-OO", "-S", "-s", "-u"}:
+            index += 1
+            continue
+        if token in {"-W", "-X"} and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("-W", "-X")) and token not in {"-W", "-X"}:
+            index += 1
+            continue
+        break
+    if index < len(tokens) and pathlib.Path(tokens[index]).name == "rust_verification.py":
+        return index
+    return None
+
+
+def managed_rust_verification_command_tokens(tokens: list[str], *, depth: int = 0) -> list[str] | None:
+    if depth > 6:
+        return None
+    tokens = strip_shell_redirections(tokens)
+    if not tokens:
+        return None
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index:
+        return managed_rust_verification_command_tokens(tokens[assignment_index:], depth=depth + 1)
+    executable = pathlib.Path(tokens[0]).name
+    if executable == "env":
+        inner = env_inner_tokens(tokens)
+        return managed_rust_verification_command_tokens(inner, depth=depth + 1) if inner is not None else None
+    if executable in RECURSIVE_WRAPPER_EXECUTABLES:
+        inner = wrapper_inner_tokens(tokens)
+        return managed_rust_verification_command_tokens(inner, depth=depth + 1) if inner is not None else None
+    script_index = python_rust_verification_script_index(tokens)
+    if script_index is None or script_index + 1 >= len(tokens):
+        return None
+    command = tokens[script_index + 1]
+    if command not in {"cargo", "run"}:
+        return None
+    return [tokens[0], tokens[script_index], *tokens[script_index + 1 :]]
+
+
 def managed_rust_verification_tokens(tokens: list[str]) -> bool:
-    return (
-        len(tokens) >= 3
-        and pathlib.Path(tokens[0]).name.startswith("python")
-        and pathlib.Path(tokens[1]).name == "rust_verification.py"
-        and tokens[2] in {"cargo", "run"}
-    )
+    return managed_rust_verification_command_tokens(tokens) is not None
 
 
 def consume_rust_verification_repo_option(tokens: list[str], index: int) -> int:
@@ -1695,10 +1737,11 @@ def consume_rust_verification_repo_option(tokens: list[str], index: int) -> int:
 
 
 def managed_rust_verification_cargo_args(tokens: list[str]) -> list[str] | None:
-    if not managed_rust_verification_tokens(tokens):
+    normalized_tokens = managed_rust_verification_command_tokens(tokens)
+    if normalized_tokens is None:
         return None
-    command = tokens[2]
-    tail = tokens[3:]
+    command = normalized_tokens[2]
+    tail = normalized_tokens[3:]
     index = 0
     while index < len(tail):
         if tail[index] == "--":
@@ -3424,15 +3467,16 @@ def no_mistakes_command_section_errors(config_text: str, config_name: str) -> li
 def command_has_managed_compile_heavy_invocation(command: str) -> bool:
     for raw_line in command.splitlines() or [command]:
         tokens = command_tokens(raw_line)
-        if not managed_rust_verification_tokens(tokens):
+        normalized_tokens = managed_rust_verification_command_tokens(tokens)
+        if normalized_tokens is None:
             continue
         managed_args = managed_rust_verification_cargo_args(tokens)
         if not managed_args:
             continue
         subcommand = cargo_subcommand(managed_args)
-        if tokens[2] == "run" and subcommand in LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS:
+        if normalized_tokens[2] == "run" and subcommand in LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS:
             return True
-        if tokens[2] == "cargo" and subcommand in LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS:
+        if normalized_tokens[2] == "cargo" and subcommand in LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS:
             return True
     return False
 
@@ -4651,6 +4695,7 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
         "CARGO_TARGET_TMPDIR": "CARGO_TARGET_TMPDIR raw target override must be classified",
         "BOLT_ALLOW_LOCAL_RUST": "BOLT_ALLOW_LOCAL_RUST local Rust break-glass must not be checked in",
         "BOLT_MANAGED_JUST": "BOLT_MANAGED_JUST private just recipe bypass must be classified",
+        "GITHUB_ACTIONS": "GITHUB_ACTIONS local CI spoof must not be checked in",
     }
     assignments: dict[str, str] = {}
     for line in shell_logical_lines(text):
@@ -5168,6 +5213,7 @@ def raw_rust_storage_errors(workflow_text: str, *, alias_depth: int = 0) -> list
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTC_WORKSPACE_WRAPPER[\"']?\s*(?:=|:)", "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified"),
         (r"(^|[^A-Za-z0-9_$\{])[\"']?BOLT_ALLOW_LOCAL_RUST[\"']?\s*(?:=|:|<<)", "BOLT_ALLOW_LOCAL_RUST local Rust break-glass must not be checked in"),
         (r"(^|[^A-Za-z0-9_$\{])[\"']?BOLT_MANAGED_JUST[\"']?\s*(?:=|:|<<)", "BOLT_MANAGED_JUST private just recipe bypass must be classified"),
+        (r"(^|[^A-Za-z0-9_$\{])[\"']?GITHUB_ACTIONS[\"']?\s*(?:=|:|<<)", "GITHUB_ACTIONS local CI spoof must not be checked in"),
         (r"\bno-mistakes\b[^\n]*\bcargo\b", "no-mistakes raw Cargo drift must be classified"),
         (r"\bno-mistakes\b[^\n]*--worktree[^\n]*(?:--target-dir\s+target|\btarget\b)", "no-mistakes worktree-local target path evidence must be reported"),
         (r"\bcargo\b[^\n|]*\$@[^|]*\|\s*bash\b[^\n;&|]*\s-s\b[^\n;&|]*\s--target-dir\b", "cargo --target-dir raw target override must be classified"),

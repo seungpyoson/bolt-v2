@@ -936,6 +936,45 @@ def assert_actionlint_rejects_stale_config_variables() -> None:
         raise AssertionError(f"actionlint contract must reject stale config variables, got: {errors}")
 
 
+def assert_source_fence_static_ignores_comments() -> None:
+    verifier = load_verifier()
+    justfile_text = """
+source-fence-static:
+    # cargo fetch and scripts/verify_runtime_capture_yaml.py stay in source-fence
+    # python3 scripts/rust_verification.py cargo --repo . -- test stays remote-only
+    python3 scripts/test_verify_runtime_capture_yaml.py
+
+source-fence: source-fence-static
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
+    python3 scripts/verify_runtime_capture_yaml.py
+"""
+    errors = verifier.verify_source_fence_static_recipe(justfile_text)
+    if errors:
+        raise AssertionError(f"source-fence-static comments must not trigger compile-heavy errors, got: {errors}")
+
+    active_bad = justfile_text.replace(
+        "    # python3 scripts/rust_verification.py cargo --repo . -- test stays remote-only",
+        "    python3 scripts/rust_verification.py cargo --repo . -- test",
+    )
+    bad_errors = verifier.verify_source_fence_static_recipe(active_bad)
+    if not any("must not invoke wrapper-routed Cargo" in error for error in bad_errors):
+        raise AssertionError(f"source-fence-static active wrapper cargo must still fail, got: {bad_errors}")
+
+
+def assert_rust_verification_policy_parse_errors_are_domain_specific() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        policy_path = pathlib.Path(tmp) / "rust-verification.toml"
+        policy_path.write_text("schema_version = [\n", encoding="utf-8")
+        try:
+            verifier.load_rust_verification_policy_toml(policy_path, "ci/rust-verification.toml")
+        except verifier.PolicyError as exc:
+            if "ci/rust-verification.toml is invalid TOML" not in str(exc):
+                raise AssertionError(str(exc)) from exc
+            return
+    raise AssertionError("invalid rust-verification TOML must raise PolicyError")
+
+
 def without_pr_concurrency(workflow: str) -> str:
     return replace_once(
         workflow,
@@ -5452,6 +5491,8 @@ def main() -> int:
     assert_security_key_public_prefix_is_validated()
     assert_backtester_detect_includes_runner_config()
     assert_actionlint_rejects_stale_config_variables()
+    assert_source_fence_static_ignores_comments()
+    assert_rust_verification_policy_parse_errors_are_domain_specific()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"

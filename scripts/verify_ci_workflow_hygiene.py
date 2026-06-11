@@ -79,6 +79,10 @@ YAML_FOLDED_RUN_LINE_RE = re.compile(
     rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*>[+-]?\s*(?:#.*)?$"
 )
 
+
+class PolicyError(RuntimeError):
+    pass
+
 REQUIRED_JOBS = (
     "detector",
     "fmt-check",
@@ -3543,7 +3547,9 @@ def verify_source_fence_static_recipe(justfile_text: str) -> list[str]:
     source_fence_dependencies, source_fence_body = recipes["source-fence"]
     if "source-fence-static" not in source_fence_dependencies:
         errors.append("justfile source-fence must depend on source-fence-static")
-    static_body = "\n".join(recipes["source-fence-static"][1])
+    static_body = "\n".join(
+        line for line in (strip_comment(raw_line).strip() for raw_line in recipes["source-fence-static"][1]) if line
+    )
     if command_has_managed_compile_heavy_invocation(static_body) or re.search(r"\brust_verification\.py\b[^\n]*\bcargo\b", static_body):
         errors.append("justfile source-fence-static must not invoke wrapper-routed Cargo")
     if "cargo fetch" in static_body or re.search(r"\bscripts/verify_runtime_capture_yaml\.py\b", static_body):
@@ -3599,14 +3605,25 @@ def remote_verification_policy_errors(data: dict[str, object], display_name: str
     return errors
 
 
+def load_rust_verification_policy_toml(path: pathlib.Path, display_name: str) -> dict[str, object]:
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise
+    except tomllib.TOMLDecodeError as exc:
+        raise PolicyError(f"{display_name} is invalid TOML: {exc}") from exc
+    except OSError as exc:
+        raise PolicyError(f"{display_name} could not be read: {exc}") from exc
+
+
 def verify_rust_verification_policy(path: pathlib.Path, *, require_remote: bool) -> list[str]:
     display_name = path.relative_to(REPO_ROOT).as_posix()
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        data = load_rust_verification_policy_toml(path, display_name)
     except FileNotFoundError:
         return [f"{display_name} is required"]
-    except tomllib.TOMLDecodeError as exc:
-        return [f"{display_name} is invalid TOML: {exc}"]
+    except PolicyError as exc:
+        return [str(exc)]
     errors: list[str] = []
     if data.get("schema_version") != 2:
         errors.append(f"{display_name} schema_version must be 2")

@@ -245,8 +245,14 @@ def assert_verify_remote_no_checks_times_out() -> None:
             )
             owner.pr_checks = lambda _repo: ([], None)
             owner.time.sleep = lambda _seconds: None
-            times = iter([0.0, 0.0, 2.0])
-            owner.time.monotonic = lambda: next(times)
+            current_time = 0.0
+
+            def mock_monotonic() -> float:
+                nonlocal current_time
+                current_time += 1.0
+                return current_time
+
+            owner.time.monotonic = mock_monotonic
             result, output = run_cmd_verify_remote(owner, repo)
         finally:
             owner.ensure_verify_remote_preconditions = original_preconditions

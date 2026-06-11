@@ -115,8 +115,11 @@ def coverage(dates: list[str], assets: list[str]) -> tuple[list[str], list[str],
         lines.append(f"| {date} | {n_pm} | {n_hl}/{len(coins)} | {n_by}/{len(coins)} |")
         if n_pm and n_hl == len(coins):
             hl_dates.append(date)
-        if n_by == len(coins):
-            trades_dates.append(date)
+            # trades stages consume PM extracts produced over the hl window, so a
+            # trades-eligible date must ALSO be hl-eligible — bybit coverage alone
+            # would admit dates whose PM extracts never get created
+            if n_by == len(coins):
+                trades_dates.append(date)
     return lines, hl_dates, trades_dates
 
 

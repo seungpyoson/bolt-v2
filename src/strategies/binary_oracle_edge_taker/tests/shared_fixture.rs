@@ -454,6 +454,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             static_condition_id: None,
             static_yes_outcome: None,
             static_no_outcome: None,
+            static_fair_probability_source: None,
             use_uuid_client_order_ids: true,
             use_hyphens_in_client_order_ids: false,
             external_order_claims: vec!["AUXILIARY.SOURCE".to_string()],

@@ -58,7 +58,7 @@ use crate::{
     },
     bolt_v3_numeric::{
         BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, UNIT_F64, clamp_probability,
-        is_non_negative_finite, is_positive_finite, notional_float_tolerance,
+        is_non_negative_finite, is_positive_finite, notional_float_tolerance, sanitize_probability,
     },
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_position_contract::is_observed_open_side,
@@ -99,7 +99,6 @@ use nautilus_model::enums::{AggressorSide, BookAction};
 
 #[cfg(test)]
 use crate::{
-    bolt_v3_numeric::sanitize_probability,
     bolt_v3_submit_admission::{BoltV3RiskReducingExitProof, BoltV3SubmitIntentKind},
     bolt_v3_taker_pricing::VenueTimingState,
     bolt_v3_taker_signal::{price_agreement_corr, price_gap_probability},
@@ -2503,7 +2502,39 @@ impl BinaryOracleEdgeTaker {
             })
     }
 
+    fn uses_static_reference_fair_probability(&self) -> bool {
+        self.config.rotating_market_family
+            == bolt_v3_market_families::static_binary_event_family_key()
+            && self.config.static_fair_probability_source.as_deref()
+                == Some(
+                    bolt_v3_market_families::static_binary_event_reference_current_price_fair_probability_source(),
+                )
+    }
+
+    fn selected_reference_current_price_is_fresh_at(&self, now_ms: u64) -> bool {
+        let Some(reference_price) = self.config.reference_current_price.as_ref() else {
+            return false;
+        };
+        self.pricing
+            .last_reference_current_price_ts_ms
+            .is_some_and(|ts_ms| {
+                ts_ms <= now_ms && now_ms - ts_ms <= reference_price.max_source_age_ms
+            })
+    }
+
+    fn current_static_reference_fair_probability_up_at(&self, now_ms: u64) -> Option<f64> {
+        if !self.uses_static_reference_fair_probability()
+            || !self.selected_reference_current_price_is_fresh_at(now_ms)
+        {
+            return None;
+        }
+        sanitize_probability(self.pricing.last_reference_current_price?)
+    }
+
     fn current_fair_probability_up_at(&self, now_ms: u64) -> Option<f64> {
+        if self.uses_static_reference_fair_probability() {
+            return self.current_static_reference_fair_probability_up_at(now_ms);
+        }
         self.pricing
             .entry_pricing_at(
                 &taker_pricing_config(&self.config),
@@ -3543,6 +3574,9 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn current_position_fair_probability_up_at(&self, now_ms: u64) -> Option<f64> {
+        if self.uses_static_reference_fair_probability() {
+            return self.current_static_reference_fair_probability_up_at(now_ms);
+        }
         let open_position = &self.managed_position()?.position;
         let spot_price = self.current_position_spot_price()?;
         let strike_price = open_position
@@ -3571,26 +3605,30 @@ impl BinaryOracleEdgeTaker {
 
     fn current_hold_ev_bps_at(&self, now_ms: u64, side: OutcomeSide) -> Option<f64> {
         let open_position = &self.managed_position()?.position;
-        let spot_price = self.current_position_spot_price()?;
-        let strike_price = open_position
-            .interval_open
-            .filter(|value| is_positive_finite(*value))?;
         let seconds_to_expiry = Self::seconds_to_expiry_from_selection(
             open_position.selection_published_at_ms,
             open_position.seconds_to_expiry_at_selection,
             now_ms,
         )?;
-        let realized_vol = self.current_realized_vol_at(now_ms)?;
-        let fair_probability_up = bolt_v3_market_families::fair_probability_up_for_family(
-            &self.config.rotating_market_family,
-            &FairProbabilityInputs {
-                spot_price,
-                strike_price,
-                seconds_to_market_end: seconds_to_expiry,
-                realized_vol,
-                pricing_kurtosis: self.config.pricing_kurtosis,
-            },
-        )?;
+        let fair_probability_up = if self.uses_static_reference_fair_probability() {
+            self.current_static_reference_fair_probability_up_at(now_ms)?
+        } else {
+            let spot_price = self.current_position_spot_price()?;
+            let strike_price = open_position
+                .interval_open
+                .filter(|value| is_positive_finite(*value))?;
+            let realized_vol = self.current_realized_vol_at(now_ms)?;
+            bolt_v3_market_families::fair_probability_up_for_family(
+                &self.config.rotating_market_family,
+                &FairProbabilityInputs {
+                    spot_price,
+                    strike_price,
+                    seconds_to_market_end: seconds_to_expiry,
+                    realized_vol,
+                    pricing_kurtosis: self.config.pricing_kurtosis,
+                },
+            )?
+        };
         let up_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Up)?;
         let down_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Down)?;
         let uncertainty_band_probability = self.uncertainty_band_probability_for_seconds(
@@ -5100,14 +5138,26 @@ impl BinaryOracleEdgeTaker {
             return evaluation;
         }
 
-        let pricing_inputs = match self.current_entry_pricing_inputs_at(now_ms) {
-            Ok(inputs) => inputs,
-            Err(blocked_by) => {
-                evaluation.pricing_blocked_by = blocked_by;
-                return evaluation;
+        let theta_scaled_min_edge_bps = if self.uses_static_reference_fair_probability() {
+            match self.current_scaled_min_edge_bps_at(now_ms) {
+                Some(value) => value,
+                None => {
+                    evaluation
+                        .pricing_blocked_by
+                        .push(EntryPricingBlockReason::ThetaScalerUnavailable);
+                    return evaluation;
+                }
+            }
+        } else {
+            match self.current_entry_pricing_inputs_at(now_ms) {
+                Ok(inputs) => inputs.theta_scaled_min_edge_bps,
+                Err(blocked_by) => {
+                    evaluation.pricing_blocked_by = blocked_by;
+                    return evaluation;
+                }
             }
         };
-        evaluation.min_worst_case_ev_bps = Some(pricing_inputs.theta_scaled_min_edge_bps);
+        evaluation.min_worst_case_ev_bps = Some(theta_scaled_min_edge_bps);
 
         let fair_probability_up = match self.current_fair_probability_up_at(now_ms) {
             Some(value) => value,
@@ -5209,7 +5259,7 @@ impl BinaryOracleEdgeTaker {
                 OutcomeSide::Up,
                 fair_probability_up,
                 up_adjusted_probability_up,
-                pricing_inputs.theta_scaled_min_edge_bps,
+                theta_scaled_min_edge_bps,
                 probe,
             ),
             Err(reason) => BinaryOutcomeEdgeResult::blocked(OutcomeSide::Up, reason),
@@ -5219,7 +5269,7 @@ impl BinaryOracleEdgeTaker {
                 OutcomeSide::Down,
                 fair_probability_up,
                 down_adjusted_probability_up,
-                pricing_inputs.theta_scaled_min_edge_bps,
+                theta_scaled_min_edge_bps,
                 probe,
             ),
             Err(reason) => BinaryOutcomeEdgeResult::blocked(OutcomeSide::Down, reason),
@@ -5234,7 +5284,7 @@ impl BinaryOracleEdgeTaker {
         evaluation.selected_side = choose_entry_side(&SideSelectionInputs {
             up_worst_ev_bps: executable_edge_selectable_bps(evaluation.up_executable_edge),
             down_worst_ev_bps: executable_edge_selectable_bps(evaluation.down_executable_edge),
-            min_worst_case_ev_bps: pricing_inputs.theta_scaled_min_edge_bps,
+            min_worst_case_ev_bps: theta_scaled_min_edge_bps,
         });
         if evaluation.selected_side.is_none() {
             push_executable_edge_pricing_block(
@@ -5322,7 +5372,7 @@ impl BinaryOracleEdgeTaker {
                     selected_side,
                     fair_probability_up,
                     selected_adjusted_probability_up,
-                    pricing_inputs.theta_scaled_min_edge_bps,
+                    theta_scaled_min_edge_bps,
                     selected_sized_probe,
                 );
                 evaluation.sized_worst_case_ev_bps =
@@ -5397,7 +5447,7 @@ impl BinaryOracleEdgeTaker {
                             selected_side,
                             fair_probability_up,
                             resized_adjusted_probability_up,
-                            pricing_inputs.theta_scaled_min_edge_bps,
+                            theta_scaled_min_edge_bps,
                             resized_probe,
                         );
                         evaluation.sized_worst_case_ev_bps =

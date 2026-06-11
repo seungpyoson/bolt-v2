@@ -9319,6 +9319,14 @@ classification = "strategy_runtime_schema_field"
 reason = "Strategy config schema table name for optional reference-current-price settings."
 
 [[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"reference_current_price"'''
+context = '''} else if !table.contains_key("reference_current_price") {'''
+classification = "strategy_runtime_schema_field"
+reason = "Strategy config schema table name required when static binary-event fair probability is sourced from reference-current-price settings."
+
+[[allowed]]
 path = "src/bolt_v3_reference_price_health.rs"
 kind = "string"
 literal = '''", "'''
@@ -10489,12 +10497,28 @@ classification = "strategy_runtime_schema_field"
 reason = "Optional static binary-event runtime config field populated from the configured TOML NO outcome label."
 
 [[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"static_fair_probability_source"'''
+context = '''"static_fair_probability_source",'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional static binary-event runtime config field populated from the configured TOML fair-probability source selector."
+
+[[allowed]]
 path = "src/bolt_v3_market_families/static_binary_event.rs"
 kind = "string"
 literal = '''"static_binary_event"'''
 context = '''pub const KEY: &str = "static_binary_event";'''
 classification = "market_family_registry_key"
 reason = "Stable market-family discriminator used to route configured static binary-event targets through the registry."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"reference_current_price"'''
+context = '''pub const REFERENCE_CURRENT_PRICE_FAIR_PROBABILITY_SOURCE: &str = "reference_current_price";'''
+classification = "static_event_fair_probability_source_key"
+reason = "Stable config wire value selecting the existing reference-current-price path as the fair-probability source for static binary events."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/static_binary_event.rs"
@@ -10691,6 +10715,14 @@ reason = "Optional static binary-event runtime config field accepted by the stra
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
+literal = '''"static_fair_probability_source"'''
+context = '''| "static_fair_probability_source"'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional static binary-event runtime config field accepted by the strategy parser."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
 literal = '''"static_condition_id"'''
 context = '''Self::validate_optional_string_field(table, field_prefix, "static_condition_id", errors);'''
 classification = "strategy_runtime_schema_field"
@@ -10739,6 +10771,14 @@ reason = "Optional static binary-event runtime config field included in family-s
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
+literal = '''"static_fair_probability_source"'''
+context = '''"static_fair_probability_source",'''
+classification = "strategy_runtime_schema_field"
+reason = "Optional static binary-event runtime config field included in family-specific validation and required for static binary-event families."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
 literal = '''"is only valid when rotating_market_family is `{}`"'''
 context = '''"is only valid when rotating_market_family is `{}`",'''
 classification = "strategy_config_validation_diagnostic"
@@ -10779,6 +10819,14 @@ reason = "Stable machine-readable validation code for missing static NO outcome 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
+literal = '''"missing_static_fair_probability_source"'''
+context = '''"missing_static_fair_probability_source",'''
+classification = "strategy_config_validation_error_code"
+reason = "Stable machine-readable validation code for missing static binary-event fair-probability source selector."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
 literal = '''"static_yes_outcome"'''
 context = '''let yes = table.get("static_yes_outcome").and_then(Value::as_str);'''
 classification = "strategy_runtime_schema_field"
@@ -10791,6 +10839,14 @@ literal = '''"static_no_outcome"'''
 context = '''let no = table.get("static_no_outcome").and_then(Value::as_str);'''
 classification = "strategy_runtime_schema_field"
 reason = "Static NO outcome runtime field read during family-specific validation."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_fair_probability_source"'''
+context = '''.get("static_fair_probability_source")'''
+classification = "strategy_runtime_schema_field"
+reason = "Static fair-probability source runtime field read during family-specific validation."
 
 [[allowed]]
 path = "src/bolt_v3_binary_outcome_edge.rs"

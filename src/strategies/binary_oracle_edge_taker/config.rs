@@ -159,6 +159,7 @@ macro_rules! define_config_struct {
             pub(super) static_condition_id: Option<String>,
             pub(super) static_yes_outcome: Option<String>,
             pub(super) static_no_outcome: Option<String>,
+            pub(super) static_fair_probability_source: Option<String>,
             pub(super) entry_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) exit_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
@@ -437,6 +438,7 @@ impl BinaryOracleEdgeTakerBuilder {
                     | "static_condition_id"
                     | "static_yes_outcome"
                     | "static_no_outcome"
+                    | "static_fair_probability_source"
                     | binary_oracle_edge_taker_config_fields!(match_config_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field_prefix}.{key}"), key);
@@ -481,6 +483,12 @@ impl BinaryOracleEdgeTakerBuilder {
         Self::validate_optional_string_field(table, field_prefix, "static_condition_id", errors);
         Self::validate_optional_string_field(table, field_prefix, "static_yes_outcome", errors);
         Self::validate_optional_string_field(table, field_prefix, "static_no_outcome", errors);
+        Self::validate_optional_string_field(
+            table,
+            field_prefix,
+            "static_fair_probability_source",
+            errors,
+        );
         Self::validate_required_realized_volatility_surface_id(table, field_prefix, errors);
         Self::validate_optional_instrument_id_field(
             table,
@@ -718,6 +726,7 @@ impl BinaryOracleEdgeTakerBuilder {
             "static_condition_id",
             "static_yes_outcome",
             "static_no_outcome",
+            "static_fair_probability_source",
         ];
         if family != bolt_v3_market_families::static_binary_event_family_key() {
             for field_name in static_fields {
@@ -738,6 +747,10 @@ impl BinaryOracleEdgeTakerBuilder {
         for (field_name, code) in [
             ("static_yes_outcome", "missing_static_yes_outcome"),
             ("static_no_outcome", "missing_static_no_outcome"),
+            (
+                "static_fair_probability_source",
+                "missing_static_fair_probability_source",
+            ),
         ] {
             if !table.contains_key(field_name) {
                 Self::push_missing(
@@ -758,6 +771,30 @@ impl BinaryOracleEdgeTakerBuilder {
                 code: stringify!(static_outcomes_not_distinct),
                 message: "must be distinct from static_yes_outcome".to_string(),
             });
+        }
+        if let Some(source) = table
+            .get("static_fair_probability_source")
+            .and_then(Value::as_str)
+        {
+            if source
+                != bolt_v3_market_families::static_binary_event_reference_current_price_fair_probability_source()
+            {
+                errors.push(ValidationError {
+                    field: format!("{field_prefix}.static_fair_probability_source"),
+                    code: stringify!(unsupported_static_fair_probability_source),
+                    message: format!(
+                        "must be `{}`",
+                        bolt_v3_market_families::static_binary_event_reference_current_price_fair_probability_source()
+                    ),
+                });
+            } else if !table.contains_key("reference_current_price") {
+                Self::push_missing(
+                    errors,
+                    format!("{field_prefix}.reference_current_price"),
+                    stringify!(missing_reference_current_price_for_static_fair_probability_source),
+                    BinaryOracleEdgeTakerFieldType::Table,
+                );
+            }
         }
     }
 

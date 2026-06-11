@@ -639,6 +639,11 @@ pub fn raw_taker_config(
     );
     insert_optional_string(&mut table, "static_yes_outcome", target.static_yes_outcome);
     insert_optional_string(&mut table, "static_no_outcome", target.static_no_outcome);
+    insert_optional_string(
+        &mut table,
+        "static_fair_probability_source",
+        target.static_fair_probability_source,
+    );
     insert_u64(
         &mut table,
         strategy_instance_id,

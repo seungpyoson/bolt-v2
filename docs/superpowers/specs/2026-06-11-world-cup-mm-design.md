@@ -6,7 +6,7 @@ Implement the first production-aligned World Cup market-making slice without rei
 
 ## Approved Scope
 
-The first implementation slice adds a `static_binary_event` market family. It selects a configured Polymarket binary market from NautilusTrader `BinaryOption` instruments using TOML-owned identity fields: `market_slug`, optional `condition_id`, and configured outcome labels. It reuses the existing market-family registry, selected-market requirement contract, and Polymarket data-client filter mechanism.
+The first implementation slice adds a `static_binary_event` market family. It selects a configured Polymarket binary market from NautilusTrader `BinaryOption` instruments using TOML-owned identity fields: `market_slug`, optional `condition_id`, configured outcome labels, and configured `fair_probability_source`. It reuses the existing market-family registry, selected-market requirement contract, and Polymarket data-client filter mechanism.
 
 This slice does not hardcode World Cup teams, tournament names, slugs, condition IDs, or token IDs. All market identity values come from TOML. It also does not add a readiness gate, an evidence gate, a live-submit gate, or a World Cup-specific strategy fork.
 
@@ -16,7 +16,9 @@ This slice does not hardcode World Cup teams, tournament names, slugs, condition
 
 `src/bolt_v3_providers/polymarket.rs` extends market-slug filtering to include static event target plans in addition to rotating `updown` target plans. This lets the NT Polymarket adapter load configured World Cup markets into the instrument cache.
 
-The existing `binary_oracle_edge_taker` selection path consumes `rotating_market_family`, `underlying_asset`, `cadence_seconds`, and `cadence_slug_token` from runtime config. Static events reuse that path by projecting `cadence_slug_token = market_slug` and `underlying_asset = event_key`, and by adding optional runtime fields for `static_condition_id`, `static_yes_outcome`, and `static_no_outcome`. The market-family implementation ignores cadence for static event selection and matches on the configured static market slug, optional condition ID, and configured outcome labels.
+The existing `binary_oracle_edge_taker` selection path consumes `rotating_market_family`, `underlying_asset`, `cadence_seconds`, and `cadence_slug_token` from runtime config. Static events reuse that path by projecting `cadence_slug_token = market_slug` and `underlying_asset = event_key`, and by adding optional runtime fields for `static_condition_id`, `static_yes_outcome`, `static_no_outcome`, and `static_fair_probability_source`. The market-family implementation ignores cadence for static event selection and matches on the configured static market slug, optional condition ID, and configured outcome labels.
+
+For static sports events, `fair_probability_up` is not derived from strike/spot pricing. Static targets require `fair_probability_source = "reference_current_price"` plus a strategy-owned `[reference_current_price]` source table, which lets the existing PR #606 reference-current-price path provide the configured fair probability. This does not add a standalone World Cup maker strategy and does not fake rotating-market pricing inputs for static event markets.
 
 ## Testing
 
@@ -24,9 +26,10 @@ Implementation uses TDD. The first failing tests prove:
 
 - `static_binary_event` is registered as a known market family.
 - Static event targets select matching YES/NO Polymarket `BinaryOption` instruments by configured market slug and outcome labels.
+- Static event targets require `fair_probability_source = "reference_current_price"` and a `[reference_current_price]` source table, then project the fair-probability source into runtime config.
 - Mismatched slugs, duplicate outcomes, expired instruments, and optional condition-ID mismatches fail closed.
 - Polymarket data-client mapping includes static event market slugs in its market-slug filters.
 
 ## Follow-On Scope
 
-After static event selection exists, the next slice can add a maker strategy/archetype that emits post-only maker quote intents using existing modules: `bolt_v3_quote_lifecycle`, `bolt_v3_maker_model`, `bolt_v3_maker_inventory`, `bolt_v3_maker_reservation`, and `venue_contract`.
+After static event selection and reference-current-price fair-probability sourcing exist, the next slice must wire World Cup targets through the existing maker architecture: `bolt_v3_quote_lifecycle`, `bolt_v3_maker_model`, `bolt_v3_maker_inventory`, `bolt_v3_maker_reservation`, and `venue_contract`. It must not create a second standalone World Cup maker strategy or duplicate maker code.

@@ -385,6 +385,48 @@ fn live_fair_probability_is_computed_from_strategy_state_once_vol_warms() {
 }
 
 #[test]
+fn static_binary_event_uses_reference_current_price_as_configured_fair_probability() {
+    let mut strategy = test_strategy();
+    strategy.config.rotating_market_family =
+        crate::bolt_v3_market_families::static_binary_event::KEY.to_string();
+    strategy.config.static_fair_probability_source = Some("reference_current_price".to_string());
+    strategy.config.reference_current_price =
+        Some(reference_price_block_with_max_source_age_ms(100));
+    strategy.pricing.last_reference_current_price = Some(0.64);
+    strategy.pricing.last_reference_current_price_ts_ms = Some(4_000);
+
+    assert_eq!(strategy.current_fair_probability_up_at(4_000), Some(0.64));
+
+    strategy.pricing.last_reference_current_price = Some(1.01);
+    assert_eq!(strategy.current_fair_probability_up_at(4_000), None);
+
+    strategy.pricing.last_reference_current_price = Some(0.64);
+    strategy.pricing.last_reference_current_price_ts_ms = Some(3_899);
+    assert_eq!(strategy.current_fair_probability_up_at(4_000), None);
+
+    strategy.config.reference_current_price = None;
+    strategy.pricing.last_reference_current_price_ts_ms = Some(4_000);
+    assert_eq!(strategy.current_fair_probability_up_at(4_000), None);
+}
+
+fn reference_price_block_with_max_source_age_ms(
+    max_source_age_ms: u64,
+) -> crate::bolt_v3_config::ReferencePriceBlock {
+    crate::bolt_v3_config::ReferencePriceBlock {
+        asset: "WORLD_CUP_STATIC_FAIR".to_string(),
+        source_order: Vec::new(),
+        min_valid_sources: 0,
+        selection_policy:
+            crate::bolt_v3_config::ReferencePriceSelectionPolicy::FirstValidPerInterval,
+        max_source_age_ms,
+        max_source_drift_bps: 0,
+        drift_policy: crate::bolt_v3_config::ReferencePriceDriftPolicy::Observe,
+        stale_policy: crate::bolt_v3_config::ReferencePriceStalePolicy::Block,
+        sources: std::collections::BTreeMap::new(),
+    }
+}
+
+#[test]
 fn live_scaled_min_edge_uses_theta_scaler_near_expiry() {
     let mut strategy = ready_to_trade_strategy();
     strategy.config.edge_threshold_basis_points = 10;

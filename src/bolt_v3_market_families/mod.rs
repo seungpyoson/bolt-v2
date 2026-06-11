@@ -205,6 +205,7 @@ pub struct TargetRuntimeFields {
     pub static_condition_id: Option<String>,
     pub static_yes_outcome: Option<String>,
     pub static_no_outcome: Option<String>,
+    pub static_fair_probability_source: Option<String>,
     pub retry_interval_seconds: u64,
     pub blocked_after_seconds: u64,
 }
@@ -329,6 +330,10 @@ pub fn validation_bindings() -> &'static [MarketFamilyValidationBinding] {
 
 pub fn static_binary_event_family_key() -> &'static str {
     static_binary_event::KEY
+}
+
+pub fn static_binary_event_reference_current_price_fair_probability_source() -> &'static str {
+    static_binary_event::REFERENCE_CURRENT_PRICE_FAIR_PROBABILITY_SOURCE
 }
 
 fn unsupported_maker_quote_targets(_inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {

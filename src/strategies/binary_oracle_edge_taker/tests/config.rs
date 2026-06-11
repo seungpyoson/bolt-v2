@@ -718,6 +718,10 @@ fn builder_accepts_static_binary_event_market_family_with_configured_outcomes() 
     );
     assert_eq!(config.static_yes_outcome.as_deref(), Some("Yes"));
     assert_eq!(config.static_no_outcome.as_deref(), Some("No"));
+    assert_eq!(
+        config.static_fair_probability_source.as_deref(),
+        Some("reference_current_price")
+    );
 }
 
 #[test]
@@ -739,6 +743,38 @@ fn builder_rejects_static_binary_event_without_configured_outcomes() {
         &errors,
         "strategies[0].config.static_no_outcome",
         "missing_static_no_outcome",
+    );
+}
+
+#[test]
+fn builder_rejects_static_binary_event_without_fair_probability_source() {
+    let mut raw = static_binary_event_raw_config();
+    let table = raw.as_table_mut().expect("valid config must be a table");
+    table.remove("static_fair_probability_source");
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    find_error(
+        &errors,
+        "strategies[0].config.static_fair_probability_source",
+        "missing_static_fair_probability_source",
+    );
+}
+
+#[test]
+fn builder_rejects_static_binary_event_without_reference_current_price_config() {
+    let mut raw = static_binary_event_raw_config();
+    let table = raw.as_table_mut().expect("valid config must be a table");
+    table.remove("reference_current_price");
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    find_error(
+        &errors,
+        "strategies[0].config.reference_current_price",
+        "missing_reference_current_price_for_static_fair_probability_source",
     );
 }
 
@@ -808,7 +844,36 @@ fn static_binary_event_raw_config() -> Value {
         "static_no_outcome".to_string(),
         Value::String("No".to_string()),
     );
+    table.insert(
+        "static_fair_probability_source".to_string(),
+        Value::String("reference_current_price".to_string()),
+    );
+    table.insert(
+        "reference_current_price".to_string(),
+        reference_current_price_raw_config(),
+    );
     raw
+}
+
+fn reference_current_price_raw_config() -> Value {
+    toml::toml! {
+        asset = "WORLD_CUP_STATIC_FAIR"
+        sources = ["chainlink_primary"]
+        min_valid_sources = 1
+        selection_policy = "first_valid_per_interval"
+        max_source_age_ms = 1000
+        max_source_drift_bps = 50
+        drift_policy = "observe"
+        stale_policy = "block"
+
+        [source.chainlink_primary]
+        provider = "chainlink_ws"
+        enabled = true
+        required = true
+        client_id = "chainlink_reference"
+        instrument_id = "WORLD-CUP-FAIR.CHAINLINK"
+    }
+    .into()
 }
 
 #[test]

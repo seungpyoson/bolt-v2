@@ -30,6 +30,7 @@ market_slug = "configured-world-cup-market"
 condition_id = "configured-condition-id"
 yes_outcome = "Yes"
 no_outcome = "No"
+fair_probability_source = "reference_current_price"
 selection_window_secs = 1
 market_selection_rule = "configured_static"
 retry_interval_secs = 5
@@ -37,6 +38,8 @@ blocked_after_secs = 30
 ```
 
 The positive test must assert selected `market_id`, `up_instrument_id`, `down_instrument_id`, `source_identity.market_slug`, and `seconds_to_end`.
+
+When `fair_probability_source = "reference_current_price"` is configured, the strategy config must also include a strategy-owned `[reference_current_price]` source table so the fair probability comes from the existing reference-price path.
 
 - [ ] **Step 2: Run the focused test and verify RED**
 
@@ -143,6 +146,7 @@ If runtime projection is missing, make `static_binary_event::target_runtime_fiel
 - `static_condition_id = condition_id`.
 - `static_yes_outcome = yes_outcome`.
 - `static_no_outcome = no_outcome`.
+- `static_fair_probability_source = fair_probability_source`.
 - retry and blocked fields from TOML.
 
 - [ ] **Step 5: Verify GREEN**

@@ -21,6 +21,7 @@ use super::{
 };
 
 pub const KEY: &str = "static_binary_event";
+pub const REFERENCE_CURRENT_PRICE_FAIR_PROBABILITY_SOURCE: &str = "reference_current_price";
 const BINARY_OPTION_MARKET_CLASS: &str = "binary_option";
 const NT_INSTRUMENT_METADATA_SOURCE_KIND: &str = "nt_instrument_metadata";
 const REQUIRED_STATIC_OUTCOME_INSTRUMENT_COUNT: usize = 2;
@@ -51,6 +52,7 @@ pub struct TargetBlock {
     pub condition_id: Option<String>,
     pub yes_outcome: String,
     pub no_outcome: String,
+    pub fair_probability_source: FairProbabilitySource,
     pub selection_window_secs: i64,
     pub market_selection_rule: MarketSelectionRule,
     pub retry_interval_secs: u64,
@@ -73,6 +75,12 @@ pub enum RotatingMarketFamily {
 #[serde(rename_all = "snake_case")]
 pub enum MarketSelectionRule {
     ConfiguredStatic,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FairProbabilitySource {
+    ReferenceCurrentPrice,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,6 +223,9 @@ pub fn target_runtime_fields(
         static_condition_id: target.condition_id,
         static_yes_outcome: Some(target.yes_outcome),
         static_no_outcome: Some(target.no_outcome),
+        static_fair_probability_source: Some(target_runtime_string(
+            target.fair_probability_source,
+        )?),
         retry_interval_seconds: target.retry_interval_secs,
         blocked_after_seconds: target.blocked_after_secs,
     })
@@ -412,6 +423,7 @@ fn validate_static_target_block(context: &str, block: &TargetBlock) -> Vec<Strin
     let TargetKind::StaticMarket = block.kind;
     let RotatingMarketFamily::StaticBinaryEvent = block.rotating_market_family;
     let MarketSelectionRule::ConfiguredStatic = block.market_selection_rule;
+    let FairProbabilitySource::ReferenceCurrentPrice = block.fair_probability_source;
 
     errors
 }
@@ -610,6 +622,7 @@ mod tests {
             condition_id = "condition-world-cup-spain"
             yes_outcome = "Yes"
             no_outcome = "No"
+            fair_probability_source = "reference_current_price"
             selection_window_secs = 1
             market_selection_rule = "configured_static"
             retry_interval_secs = 5
@@ -635,6 +648,10 @@ mod tests {
             Some(TEST_YES_OUTCOME)
         );
         assert_eq!(runtime.static_no_outcome.as_deref(), Some(TEST_NO_OUTCOME));
+        assert_eq!(
+            runtime.static_fair_probability_source.as_deref(),
+            Some("reference_current_price")
+        );
     }
 
     #[test]

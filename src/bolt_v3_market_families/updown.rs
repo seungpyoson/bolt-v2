@@ -825,6 +825,7 @@ pub fn target_runtime_fields(
         static_condition_id: None,
         static_yes_outcome: None,
         static_no_outcome: None,
+        static_fair_probability_source: None,
         retry_interval_seconds: target.retry_interval_secs,
         blocked_after_seconds: target.blocked_after_secs,
     })

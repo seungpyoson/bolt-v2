@@ -763,6 +763,9 @@ printf '123 cargo test\\n'
         write_executable(
             bin_dir / "lsof",
             f"""#!/usr/bin/env bash
+if [ "$3" != '123' ] && [ -x /usr/sbin/lsof ]; then
+  exec /usr/sbin/lsof "$@"
+fi
 if [ "$1|$2|$3|$4|$5|$6" != '-a|-p|123|-d|cwd|-Fn' ]; then
   exit 1
 fi

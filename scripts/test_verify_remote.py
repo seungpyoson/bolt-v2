@@ -169,7 +169,7 @@ def assert_pr_lookup_preserves_gh_errors() -> None:
 
         owner.load_json_command = lambda _argv, repo: ({"headRefOid": "abc", "state": "MERGED"}, None)
         _pr, merged_error = owner.pr_for_current_branch(REPO_ROOT, "feature")
-        if merged_error is None or "open or draft PR" not in merged_error:
+        if merged_error is None or "stale branch" not in merged_error:
             raise AssertionError(merged_error)
     finally:
         owner.load_json_command = original_load_json_command

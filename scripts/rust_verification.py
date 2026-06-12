@@ -2505,7 +2505,7 @@ def pr_for_current_branch(repo: pathlib.Path, branch: str) -> tuple[dict[str, An
     if not isinstance(payload, dict):
         return None, "gh pr view returned an unexpected payload"
     if payload.get("state") != "OPEN":
-        return None, f"verify-remote requires an open or draft PR for this branch; run: {pr_create_hint(branch)}"
+        return None, f"PR for this branch is {payload.get('state') or 'not open'}; start from main instead of stale branch"
     return payload, None
 
 

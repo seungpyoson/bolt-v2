@@ -21,7 +21,8 @@
       "crates/persistence/src/parquet.rs: create_object_store_location_from_path -> normalize_path_to_uri converts plain local paths to file:// URIs unconditionally"
     ],
     "upstream_status": "defect still present on nautechsystems/nautilus_trader master as of 2026-06-12 (resolve_path_for_datafusion unchanged); no config knob avoids it: optimize_file_loading already false, protocol choice cannot prevent file:// normalization, BacktestDataConfig has no explicit-files field",
-    "fixed_in_this_repo": "projection read-back and logical catalog hashing were fixed for encoded directories on branch fix/cjk-non-ascii-catalog (commit 7d8b6b7b6) via explicit file lists; the failure documented here is the later, NT-internal BacktestNode load stage, which this repo cannot reach without replacing NT's data loading or patching NT"
+    "fixed_in_this_repo": "projection read-back and logical catalog hashing were fixed for encoded directories on branch fix/cjk-non-ascii-catalog (commit 7d8b6b7b6) via explicit file lists; the failure documented here is the later, NT-internal BacktestNode load stage, which this repo cannot reach without replacing NT's data loading or patching NT",
+    "upstream_issue": "https://github.com/nautechsystems/nautilus_trader/issues/4259"
   },
   "evidence_runs": {
     "binary": "source_universe_batch_execution release build from fix/cjk-non-ascii-catalog commit 7d8b6b7b6 (includes the projection-layer fix)",

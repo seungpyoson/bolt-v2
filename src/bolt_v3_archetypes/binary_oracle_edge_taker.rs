@@ -1483,6 +1483,13 @@ fn validate_parameter_bounds(
             "{context}: parameters.runtime.sizing_ev_reference_bps must be > 0 (worst-case EV in bps at which sizing saturates at order_notional_target)"
         ));
     }
+    if (parameters.runtime.sizing_ev_reference_bps as f64) > crate::bolt_v3_numeric::BPS_DENOMINATOR
+    {
+        errors.push(format!(
+            "{context}: parameters.runtime.sizing_ev_reference_bps must be at most {} bps",
+            crate::bolt_v3_numeric::BPS_DENOMINATOR
+        ));
+    }
     // TOML floats legally admit negative, nan, and inf. Each loads through
     // serde but makes the runtime sizing path fail soft to a zero size (a
     // silently dead strategy), so each must fail closed at load. Zero stays

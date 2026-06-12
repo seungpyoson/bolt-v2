@@ -643,12 +643,23 @@ refused_managed_commands = ["test", "clippy", "build"]
 refused_cargo_subcommands = ["bench", "build", "check", "clippy", "doc", "fetch", "install", "nextest", "run", "rustc", "test", "zigbuild"]
 """
 
+LOCAL_LANE_POLICY_TOML = """
+[local_lane_policy]
+enabled = true
+allowed_ci_env = "GITHUB_ACTIONS"
+lock_dir = "/tmp/rust-verification-lanes"
+acquire_timeout_seconds = 1800
+heartbeat_seconds = 15
+poll_interval_seconds = 1
+"""
+
 BASE_RUST_VERIFICATION_POLICY = f"""
 schema_version = 2
 project_id = "bolt-v2"
 target_namespace = "bolt-v2"
 
 {LOCAL_COMPILE_POLICY_TOML}
+{LOCAL_LANE_POLICY_TOML}
 
 [remote_verification]
 poll_interval_seconds = 15
@@ -662,6 +673,7 @@ project_id = "backtesting-vertical-slice"
 target_namespace = "backtesting-vertical-slice"
 
 {LOCAL_COMPILE_POLICY_TOML}
+{LOCAL_LANE_POLICY_TOML}
 """
 
 

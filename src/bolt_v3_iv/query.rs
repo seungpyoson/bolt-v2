@@ -31,6 +31,7 @@ use super::{
 
 const INITIAL_REJECT_COUNT: u64 = 0;
 const REJECT_COUNT_INCREMENT: u64 = 1;
+const EMPTY_RETENTION_START: usize = usize::MIN;
 const RETENTION_MISS_INDEXED_PRODUCT_KINDS: &[IvProductKind] =
     &[IvProductKind::IvPoint, IvProductKind::IvGreeksPoint];
 
@@ -107,6 +108,7 @@ pub struct IvQueryState {
     source_health: Vec<IvSourceHealth>,
     retention_misses: BTreeSet<IvRetainedProductKey>,
     query_rejections: Vec<IvPolicyDecision>,
+    query_rejections_start: usize,
     projection_policies: Vec<IvProjectionPolicy>,
     interpolation_policies: Vec<IvInterpolationPolicy>,
     fallback_policies: Vec<IvFallbackPolicy>,
@@ -115,6 +117,7 @@ pub struct IvQueryState {
     derived_input_policies: Vec<IvDerivedInputPolicy>,
     derived_inputs: Vec<IvDerivedInputSet>,
     derived_outputs: Vec<IvDerivedOutput>,
+    derived_outputs_start: usize,
     current_subscription_generations: BTreeMap<String, u64>,
 }
 
@@ -133,12 +136,12 @@ pub struct IvQueryHandle {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 struct IvRetainedProductKey {
+    ts_event_ns: UnixNanos,
+    subscription_generation: u64,
     profile_id: String,
     source_id: String,
-    subscription_generation: u64,
     instrument_id: String,
     basis: IvBasis,
-    ts_event_ns: UnixNanos,
     product_kind: IvProductKind,
 }
 
@@ -149,6 +152,7 @@ impl IvQueryState {
             source_health: Vec::new(),
             retention_misses: BTreeSet::new(),
             query_rejections: Vec::new(),
+            query_rejections_start: EMPTY_RETENTION_START,
             projection_policies: Vec::new(),
             interpolation_policies: Vec::new(),
             fallback_policies: Vec::new(),
@@ -157,6 +161,7 @@ impl IvQueryState {
             derived_input_policies: Vec::new(),
             derived_inputs: Vec::new(),
             derived_outputs: Vec::new(),
+            derived_outputs_start: EMPTY_RETENTION_START,
             current_subscription_generations: BTreeMap::new(),
         }
     }
@@ -409,8 +414,16 @@ impl IvQueryStateHandle {
         record_retention_misses(&mut state, policy);
         retain_retention_misses(&mut state, policy);
         state.store.enforce_retention(policy);
-        truncate_front(&mut state.derived_outputs, policy.max_derived_points);
-        truncate_front(&mut state.query_rejections, policy.max_source_health_events);
+        retain_with_logical_start(
+            &mut state.derived_outputs,
+            &mut state.derived_outputs_start,
+            policy.max_derived_points,
+        );
+        retain_with_logical_start(
+            &mut state.query_rejections,
+            &mut state.query_rejections_start,
+            policy.max_source_health_events,
+        );
         let current_subscription_generations = state.current_subscription_generations.clone();
         retain_source_health_events(
             &mut state.source_health,
@@ -420,7 +433,8 @@ impl IvQueryStateHandle {
     }
 
     pub fn derived_outputs(&self) -> Vec<IvDerivedOutput> {
-        self.read_state().derived_outputs.clone()
+        let state = self.read_state();
+        active_slice(&state.derived_outputs, state.derived_outputs_start).to_vec()
     }
 
     pub fn derived_inputs(&self) -> Vec<IvDerivedInputSet> {
@@ -428,13 +442,15 @@ impl IvQueryStateHandle {
     }
 
     pub fn query_rejections(&self) -> Vec<IvPolicyDecision> {
-        self.read_state().query_rejections.clone()
+        let state = self.read_state();
+        active_slice(&state.query_rejections, state.query_rejections_start).to_vec()
     }
 
     pub fn record_derived_output(&self, output: IvDerivedOutput) {
         let mut state = self.write_state();
-        if let Some(existing) = state
-            .derived_outputs
+        let derived_outputs_start = state.derived_outputs_start.min(state.derived_outputs.len());
+        let derived_outputs = &mut state.derived_outputs[derived_outputs_start..];
+        if let Some(existing) = derived_outputs
             .iter_mut()
             .find(|existing| same_derived_output_cache_slot(existing, &output))
         {
@@ -1263,8 +1279,7 @@ impl IvQueryHandle {
             return self.find_product(query, state).map(|product| vec![product]);
         }
 
-        let mut outputs = state
-            .derived_outputs
+        let mut outputs = active_slice(&state.derived_outputs, state.derived_outputs_start)
             .iter()
             .filter(|derived| {
                 derived_output_matches_query(
@@ -2212,32 +2227,19 @@ fn retain_retention_misses(state: &mut IvQueryState, policy: &IvRetentionPolicy)
         return;
     }
 
-    let mut retained = state.retention_misses.iter().cloned().collect::<Vec<_>>();
-    retained.sort_by(|left, right| {
-        left.ts_event_ns
-            .cmp(&right.ts_event_ns)
-            .then_with(|| {
-                left.subscription_generation
-                    .cmp(&right.subscription_generation)
-            })
-            .then_with(|| left.profile_id.cmp(&right.profile_id))
-            .then_with(|| left.source_id.cmp(&right.source_id))
-            .then_with(|| left.instrument_id.cmp(&right.instrument_id))
-            .then_with(|| left.basis.cmp(&right.basis))
-            .then_with(|| left.product_kind.cmp(&right.product_kind))
-    });
-    let retained_start = retained.len() - max_len;
-    state.retention_misses = retained.split_off(retained_start).into_iter().collect();
+    while state.retention_misses.len() > max_len {
+        state.retention_misses.pop_first();
+    }
 }
 
 fn retained_iv_point_key(point: &IvPoint, product_kind: IvProductKind) -> IvRetainedProductKey {
     IvRetainedProductKey {
+        ts_event_ns: point.ts_event_ns,
+        subscription_generation: point.provenance.subscription_generation,
         profile_id: point.profile_id.clone(),
         source_id: point.source_id.clone(),
-        subscription_generation: point.provenance.subscription_generation,
         instrument_id: point.instrument_id.clone(),
         basis: point.basis,
-        ts_event_ns: point.ts_event_ns,
         product_kind,
     }
 }
@@ -2362,10 +2364,19 @@ fn rejection_health_state(reject_reason: IvRejectReason) -> IvSourceHealthState 
     }
 }
 
-fn truncate_front<T>(values: &mut Vec<T>, max_len: usize) {
-    if values.len() > max_len {
-        let retained_start = values.len() - max_len;
-        values.drain(..retained_start);
+fn active_slice<T>(values: &[T], start: usize) -> &[T] {
+    &values[start.min(values.len())..]
+}
+
+fn retain_with_logical_start<T>(values: &mut Vec<T>, start: &mut usize, max_len: usize) {
+    *start = (*start).min(values.len());
+    let active_len = values.len().saturating_sub(*start);
+    if active_len > max_len {
+        *start += active_len - max_len;
+    }
+    if *start > 0 && (max_len == 0 || *start > max_len) {
+        values.drain(..*start);
+        *start = EMPTY_RETENTION_START;
     }
 }
 
@@ -2417,10 +2428,6 @@ fn retain_source_health_events(
     if source_health.len() <= max_events {
         return;
     }
-    if max_events == 0 {
-        source_health.clear();
-        return;
-    }
 
     let mut current = Vec::new();
     let mut historical = Vec::new();
@@ -2435,9 +2442,8 @@ fn retain_source_health_events(
         }
     }
 
-    if current.len() >= max_events {
-        let retained_start = current.len() - max_events;
-        *source_health = current.split_off(retained_start);
+    if max_events == 0 || current.len() >= max_events {
+        *source_health = current;
         return;
     }
 
@@ -2481,6 +2487,61 @@ mod tests {
     }
 
     #[test]
+    fn retained_product_keys_iterate_by_event_time_for_btree_retention() {
+        let keys = BTreeSet::from([
+            retained_key("test-profile-a", "test-source-a", 1, 30),
+            retained_key("test-profile-z", "test-source-z", 1, 10),
+            retained_key("test-profile-m", "test-source-m", 1, 20),
+        ]);
+
+        let timestamps = keys.iter().map(|key| key.ts_event_ns).collect::<Vec<_>>();
+
+        assert_eq!(
+            timestamps,
+            vec![UnixNanos::new(10), UnixNanos::new(20), UnixNanos::new(30)]
+        );
+    }
+
+    #[test]
+    fn query_retention_does_not_front_move_retained_rejections() {
+        let handle = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+        let dropped = rejection_decision(IvRejectReason::SelectorNotAuthorized, 1);
+        let retained = rejection_decision(IvRejectReason::InvalidIvValue, 2);
+        let retained_before = {
+            let mut state = handle.write_state();
+            state.query_rejections.push(dropped);
+            state.query_rejections.push(retained.clone());
+            state
+                .query_rejections
+                .iter()
+                .find(|decision| **decision == retained)
+                .map(std::ptr::from_ref)
+                .expect("retained rejection should be recorded before retention")
+        };
+
+        handle.enforce_retention(&IvRetentionPolicy {
+            max_raw_events: 1,
+            max_indexed_points: 1,
+            max_smiles: 1,
+            max_surfaces: 1,
+            max_derived_points: 1,
+            max_source_health_events: 1,
+        });
+
+        let retained_after = {
+            let state = handle.read_state();
+            state
+                .query_rejections
+                .iter()
+                .find(|decision| **decision == retained)
+                .map(std::ptr::from_ref)
+                .expect("retained rejection should remain after retention")
+        };
+        assert_eq!(handle.query_rejections(), vec![retained]);
+        assert_eq!(retained_before, retained_after);
+    }
+
+    #[test]
     fn fallback_policy_rejects_inputs_exceeding_maximum_timestamp_skew() {
         let projection_policy = IvProjectionPolicy {
             policy_id: "test_projection_policy".to_string(),
@@ -2514,6 +2575,36 @@ mod tests {
             fallback_only(&projection_policy, &state, &products, &inputs),
             Err(IvQueryError::ProjectionRejected)
         ));
+    }
+
+    fn retained_key(
+        profile_id: &str,
+        source_id: &str,
+        subscription_generation: u64,
+        ts_event_ns: u64,
+    ) -> IvRetainedProductKey {
+        IvRetainedProductKey {
+            profile_id: profile_id.to_string(),
+            source_id: source_id.to_string(),
+            subscription_generation,
+            instrument_id: "test_instrument".to_string(),
+            basis: IvBasis::Mark,
+            ts_event_ns: UnixNanos::new(ts_event_ns),
+            product_kind: IvProductKind::IvPoint,
+        }
+    }
+
+    fn rejection_decision(
+        reject_reason: IvRejectReason,
+        subscription_generation: u64,
+    ) -> IvPolicyDecision {
+        IvPolicyDecision::RejectionDecision {
+            reject_reason,
+            failed_field: None,
+            policy_id: None,
+            source_health_state: IvSourceHealthState::Active,
+            subscription_generation,
+        }
     }
 
     fn test_point(source_id: &str, ts_event_ns: u64) -> IvPoint {

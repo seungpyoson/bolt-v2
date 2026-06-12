@@ -9707,14 +9707,6 @@ reason = "IV store uses internal sequence and drain-index sentinels for bounded 
 [[allowed]]
 path = "src/bolt_v3_iv/store.rs"
 kind = "number"
-literal = '''0'''
-context = '''items.drain(0..remove_count);'''
-classification = "iv_store_counter_literal"
-reason = "IV store uses internal sequence and drain-index sentinels for bounded in-memory retention; retention limits come from config."
-
-[[allowed]]
-path = "src/bolt_v3_iv/store.rs"
-kind = "number"
 literal = '''0.0'''
 context = '''value.is_finite() && value > 0.0'''
 classification = "iv_validation_zero_boundary"

@@ -165,6 +165,37 @@ fn raw_payload_access_enforces_audit_retention_window() {
 }
 
 #[test]
+fn store_retention_does_not_front_move_retained_indexed_products() {
+    let mut store = IvStore::empty();
+    store.ingest_event(greeks_event_at(1_000)).unwrap();
+    store.ingest_event(greeks_event_at(2_000)).unwrap();
+    let retained_before = store
+        .iv_points()
+        .iter()
+        .find(|point| point.ts_event_ns == UnixNanos::new(2_000))
+        .map(std::ptr::from_ref)
+        .expect("second point should be indexed before retention");
+
+    store.enforce_retention(&bolt_v2::bolt_v3_iv::store::IvRetentionPolicy {
+        max_raw_events: 1,
+        max_indexed_points: 1,
+        max_smiles: 1,
+        max_surfaces: 1,
+        max_derived_points: 1,
+        max_source_health_events: 1,
+    });
+
+    let retained_after = store
+        .iv_points()
+        .iter()
+        .find(|point| point.ts_event_ns == UnixNanos::new(2_000))
+        .map(std::ptr::from_ref)
+        .expect("second point should remain active after retention");
+    assert_eq!(store.iv_points().len(), 1);
+    assert_eq!(retained_before, retained_after);
+}
+
+#[test]
 fn raw_payload_access_rejects_audit_as_of_before_event_receipt() {
     let mut store = IvStore::empty();
     let raw = store.ingest_event(greeks_event()).unwrap();

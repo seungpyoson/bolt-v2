@@ -16,6 +16,7 @@ use super::{
 
 const OPTION_CHAIN_CALL_SIDE_LABEL: &str = "call";
 const OPTION_CHAIN_PUT_SIDE_LABEL: &str = "put";
+const EMPTY_RETENTION_START: usize = usize::MIN;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IvPoint {
@@ -115,11 +116,17 @@ pub enum IvStoreError {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IvStore {
     raw_events: Vec<IvRawEvent>,
+    raw_events_start: usize,
     iv_points: Vec<IvPoint>,
+    iv_points_start: usize,
     greeks_points: Vec<IvGreeksPoint>,
+    greeks_points_start: usize,
     smiles: Vec<IvSmile>,
+    smiles_start: usize,
     aggregate_greeks: Vec<IvAggregateGreeks>,
+    aggregate_greeks_start: usize,
     iv_evidence: Vec<IvEvidence>,
+    iv_evidence_start: usize,
     next_ingest_sequence: u64,
 }
 
@@ -136,11 +143,17 @@ impl IvStore {
     pub fn empty() -> Self {
         Self {
             raw_events: Vec::new(),
+            raw_events_start: EMPTY_RETENTION_START,
             iv_points: Vec::new(),
+            iv_points_start: EMPTY_RETENTION_START,
             greeks_points: Vec::new(),
+            greeks_points_start: EMPTY_RETENTION_START,
             smiles: Vec::new(),
+            smiles_start: EMPTY_RETENTION_START,
             aggregate_greeks: Vec::new(),
+            aggregate_greeks_start: EMPTY_RETENTION_START,
             iv_evidence: Vec::new(),
+            iv_evidence_start: EMPTY_RETENTION_START,
             next_ingest_sequence: u64::MIN,
         }
     }
@@ -165,33 +178,33 @@ impl IvStore {
     }
 
     pub fn raw_events(&self) -> &[IvRawEvent] {
-        &self.raw_events
+        active_slice(&self.raw_events, self.raw_events_start)
     }
 
     pub fn raw_event(&self, raw_event_id: &str) -> Option<&IvRawEvent> {
-        self.raw_events
+        self.raw_events()
             .iter()
             .find(|event| event.raw_event_id == raw_event_id)
     }
 
     pub fn iv_points(&self) -> &[IvPoint] {
-        &self.iv_points
+        active_slice(&self.iv_points, self.iv_points_start)
     }
 
     pub fn greeks_points(&self) -> &[IvGreeksPoint] {
-        &self.greeks_points
+        active_slice(&self.greeks_points, self.greeks_points_start)
     }
 
     pub fn smiles(&self) -> &[IvSmile] {
-        &self.smiles
+        active_slice(&self.smiles, self.smiles_start)
     }
 
     pub fn aggregate_greeks(&self) -> &[IvAggregateGreeks] {
-        &self.aggregate_greeks
+        active_slice(&self.aggregate_greeks, self.aggregate_greeks_start)
     }
 
     pub fn iv_evidence(&self) -> &[IvEvidence] {
-        &self.iv_evidence
+        active_slice(&self.iv_evidence, self.iv_evidence_start)
     }
 
     pub fn surface(
@@ -202,7 +215,7 @@ impl IvStore {
         as_of_ns: UnixNanos,
     ) -> Option<IvSurface> {
         let smiles = self
-            .smiles
+            .smiles()
             .iter()
             .filter(|smile| {
                 smile.surface_selector == surface_selector
@@ -227,29 +240,53 @@ impl IvStore {
 
     pub fn all_product_provenance(&self) -> Vec<&IvProvenance> {
         let mut provenance = Vec::new();
-        provenance.extend(self.iv_points.iter().map(|point| &point.provenance));
+        provenance.extend(self.iv_points().iter().map(|point| &point.provenance));
         provenance.extend(
-            self.greeks_points
+            self.greeks_points()
                 .iter()
                 .map(|point| &point.point.provenance),
         );
-        provenance.extend(self.smiles.iter().map(|smile| &smile.provenance));
+        provenance.extend(self.smiles().iter().map(|smile| &smile.provenance));
         provenance.extend(
-            self.aggregate_greeks
+            self.aggregate_greeks()
                 .iter()
                 .map(|aggregate| &aggregate.provenance),
         );
-        provenance.extend(self.iv_evidence.iter().map(|evidence| &evidence.provenance));
+        provenance.extend(
+            self.iv_evidence()
+                .iter()
+                .map(|evidence| &evidence.provenance),
+        );
         provenance
     }
 
     pub fn enforce_retention(&mut self, policy: &IvRetentionPolicy) {
-        truncate_front(&mut self.raw_events, policy.max_raw_events);
-        truncate_front(&mut self.iv_points, policy.max_indexed_points);
-        truncate_front(&mut self.greeks_points, policy.max_indexed_points);
-        truncate_front(&mut self.smiles, policy.max_smiles);
-        truncate_front(&mut self.aggregate_greeks, policy.max_indexed_points);
-        truncate_front(&mut self.iv_evidence, policy.max_indexed_points);
+        retain_with_logical_start(
+            &mut self.raw_events,
+            &mut self.raw_events_start,
+            policy.max_raw_events,
+        );
+        retain_with_logical_start(
+            &mut self.iv_points,
+            &mut self.iv_points_start,
+            policy.max_indexed_points,
+        );
+        retain_with_logical_start(
+            &mut self.greeks_points,
+            &mut self.greeks_points_start,
+            policy.max_indexed_points,
+        );
+        retain_with_logical_start(&mut self.smiles, &mut self.smiles_start, policy.max_smiles);
+        retain_with_logical_start(
+            &mut self.aggregate_greeks,
+            &mut self.aggregate_greeks_start,
+            policy.max_indexed_points,
+        );
+        retain_with_logical_start(
+            &mut self.iv_evidence,
+            &mut self.iv_evidence_start,
+            policy.max_indexed_points,
+        );
     }
 
     fn index_raw_event(&mut self, raw_event: &IvRawEvent) -> Result<(), IvStoreError> {
@@ -472,10 +509,19 @@ fn empty_iv_smile_points() -> Vec<IvSmilePoint> {
     Vec::new()
 }
 
-fn truncate_front<T>(items: &mut Vec<T>, max_len: usize) {
-    if items.len() > max_len {
-        let remove_count = items.len() - max_len;
-        items.drain(0..remove_count);
+fn active_slice<T>(items: &[T], start: usize) -> &[T] {
+    &items[start.min(items.len())..]
+}
+
+fn retain_with_logical_start<T>(items: &mut Vec<T>, start: &mut usize, max_len: usize) {
+    *start = (*start).min(items.len());
+    let active_len = items.len().saturating_sub(*start);
+    if active_len > max_len {
+        *start += active_len - max_len;
+    }
+    if *start > 0 && (max_len == 0 || *start > max_len) {
+        items.drain(..*start);
+        *start = EMPTY_RETENTION_START;
     }
 }
 

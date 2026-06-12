@@ -2182,13 +2182,15 @@ impl BoltV3LiveNodeRuntime {
         let node_handle = self.node.handle();
         let start_plans = lifecycle.start_plans;
         let external_clients = root.nautilus.data_engine.external_clients.clone();
+        let start_poll_interval =
+            Duration::from_millis(root.persistence.runtime_capture_start_poll_interval_ms);
         Ok(Some(tokio::task::spawn_local(async move {
             loop {
                 match node_handle.state() {
                     NodeState::Running => break,
                     NodeState::ShuttingDown | NodeState::Stopped => return,
                     NodeState::Idle | NodeState::Starting => {
-                        tokio::task::yield_now().await;
+                        tokio::time::sleep(start_poll_interval).await;
                     }
                 }
             }

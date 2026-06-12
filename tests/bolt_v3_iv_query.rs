@@ -2616,6 +2616,51 @@ fn source_health_retention_keeps_current_generation_entries() {
 }
 
 #[test]
+fn source_health_retention_keeps_all_current_generation_entries_when_current_exceeds_limit() {
+    let mut current_generations = BTreeMap::new();
+    current_generations.insert("configured-source-a".to_string(), 2);
+    current_generations.insert("configured-source-b".to_string(), 2);
+    current_generations.insert("configured-source-c".to_string(), 2);
+    let state = IvQueryStateHandle::new(IvQueryState::new(IvStore::empty()));
+    let handle = IvQueryHandle::from_state(
+        "configured-profile",
+        profile_wide_authorization(),
+        state.clone(),
+    )
+    .with_current_subscription_generations(current_generations)
+    .with_source_health(vec![
+        source_health_with_generation("configured-old-source", IvSourceHealthState::Removed, 1),
+        source_health_with_generation("configured-source-a", IvSourceHealthState::Active, 2),
+        source_health_with_generation("configured-source-b", IvSourceHealthState::Active, 2),
+        source_health_with_generation("configured-source-c", IvSourceHealthState::Active, 2),
+    ]);
+
+    state.enforce_retention(&IvRetentionPolicy {
+        max_raw_events: 2,
+        max_indexed_points: 2,
+        max_smiles: 2,
+        max_surfaces: 2,
+        max_derived_points: 2,
+        max_source_health_events: 2,
+    });
+
+    for source_id in [
+        "configured-source-a",
+        "configured-source-b",
+        "configured-source-c",
+    ] {
+        let retained_current = handle
+            .source_health_for("configured-profile", source_id)
+            .expect("current source health must survive retention");
+        assert_eq!(retained_current.subscription_generation, 2);
+        assert_eq!(
+            retained_current.subscription_state,
+            IvSourceHealthState::Active
+        );
+    }
+}
+
+#[test]
 fn projected_scalar_query_uses_configured_projection_policy() {
     let mut store = IvStore::empty();
     store

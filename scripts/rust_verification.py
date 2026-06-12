@@ -2590,6 +2590,9 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
             continue
         failing = [check for check in checks if check.get("bucket") in {"fail", "cancel"}]
         if failing:
+            _pr, error = pr_for_exact_head(repo, branch, head, during_watch=True)
+            if error is not None:
+                return verify_remote_fail(error)
             print(f"Remote checks failed for {head} on {pr_url}:", file=sys.stderr)
             for check in failing:
                 print(f"- {check_summary(check)}", file=sys.stderr)
@@ -2601,6 +2604,9 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
             if check.get("bucket") not in {"pass", "skipping", "pending", "fail", "cancel"}
         ]
         if unknown:
+            _pr, error = pr_for_exact_head(repo, branch, head, during_watch=True)
+            if error is not None:
+                return verify_remote_fail(error)
             print(f"ERROR: unknown PR check bucket for {head} on {pr_url}:", file=sys.stderr)
             for check in unknown:
                 print(f"- {check_summary(check)}", file=sys.stderr)

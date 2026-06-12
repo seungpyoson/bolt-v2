@@ -294,6 +294,41 @@ def assert_verify_remote_reports_failing_checks() -> None:
         raise AssertionError((result, output))
 
 
+def assert_verify_remote_rechecks_head_before_reporting_failed_checks() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        original_preconditions = owner.ensure_verify_remote_preconditions
+        original_pr = owner.pr_for_current_branch
+        original_checks = owner.pr_checks
+        original_sleep = owner.time.sleep
+        try:
+            owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
+            pr_calls = iter(
+                [
+                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
+                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
+                    ({"headRefOid": "def", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
+                ]
+            )
+            owner.pr_for_current_branch = lambda _repo, _branch: next(pr_calls)
+            owner.pr_checks = lambda _repo: (
+                [{"name": "source-fence", "bucket": "fail", "link": "https://example.invalid/run"}],
+                None,
+            )
+            owner.time.sleep = lambda _seconds: None
+            result, output = run_cmd_verify_remote(owner, repo)
+        finally:
+            owner.ensure_verify_remote_preconditions = original_preconditions
+            owner.pr_for_current_branch = original_pr
+            owner.pr_checks = original_checks
+            owner.time.sleep = original_sleep
+    if result != 2 or "advanced during watch" not in output or "Remote checks failed" in output:
+        raise AssertionError((result, output))
+
+
 def assert_verify_remote_fails_unknown_check_bucket() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -319,6 +354,38 @@ def assert_verify_remote_fails_unknown_check_bucket() -> None:
             owner.pr_checks = original_checks
             owner.time.sleep = original_sleep
     if result != 2 or "unknown PR check bucket" not in output or "future-check [mystery]" not in output:
+        raise AssertionError((result, output))
+
+
+def assert_verify_remote_rechecks_head_before_reporting_unknown_checks() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo, checks_timeout=1, overall_timeout=3)
+        original_preconditions = owner.ensure_verify_remote_preconditions
+        original_pr = owner.pr_for_current_branch
+        original_checks = owner.pr_checks
+        original_sleep = owner.time.sleep
+        try:
+            owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
+            pr_calls = iter(
+                [
+                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
+                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
+                    ({"headRefOid": "def", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
+                ]
+            )
+            owner.pr_for_current_branch = lambda _repo, _branch: next(pr_calls)
+            owner.pr_checks = lambda _repo: ([{"name": "future-check", "bucket": "mystery"}], None)
+            owner.time.sleep = lambda _seconds: None
+            result, output = run_cmd_verify_remote(owner, repo)
+        finally:
+            owner.ensure_verify_remote_preconditions = original_preconditions
+            owner.pr_for_current_branch = original_pr
+            owner.pr_checks = original_checks
+            owner.time.sleep = original_sleep
+    if result != 2 or "advanced during watch" not in output or "unknown PR check bucket" in output:
         raise AssertionError((result, output))
 
 
@@ -399,7 +466,9 @@ def main() -> int:
     assert_verify_remote_waits_then_passes()
     assert_verify_remote_rejects_branch_advance_during_watch()
     assert_verify_remote_reports_failing_checks()
+    assert_verify_remote_rechecks_head_before_reporting_failed_checks()
     assert_verify_remote_fails_unknown_check_bucket()
+    assert_verify_remote_rechecks_head_before_reporting_unknown_checks()
     assert_verify_remote_allows_skipping_checks()
     assert_verify_remote_no_checks_times_out()
     print("OK: remote verification watcher self-tests passed.")

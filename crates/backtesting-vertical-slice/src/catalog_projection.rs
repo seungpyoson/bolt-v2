@@ -23,8 +23,11 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use nautilus_core::{Params, UnixNanos, string::urlencoding};
 use nautilus_model::{
-    data::{CatalogPathPrefix, OrderBookDelta, TradeTick},
-    enums::AggressorSide,
+    data::{
+        Bar, BarSpecification, BarType, CatalogPathPrefix, OrderBookDelta, TradeTick,
+        order::BookOrder,
+    },
+    enums::{AggregationSource, AggressorSide, BookAction, OrderSide, PriceType},
     identifiers::{InstrumentId, Symbol, TradeId},
     instruments::{
         BinaryOption, CryptoFuture, CryptoPerpetual, CurrencyPair, Instrument, InstrumentAny,
@@ -37,12 +40,22 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
+    canonical_market_data::{
+        CanonicalBarRow, CanonicalBarsTable, CanonicalOrderBookDeltaRow,
+        CanonicalOrderBookDeltasTable, DeltaAction, DeltaSide,
+    },
     canonical_trades::{CanonicalTradesTable, TradeAggressorSide},
     source_proof::SourceProofFidelityClass,
 };
 
 /// NautilusTrader data type written for this projection.
 pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
+
+/// NautilusTrader data type written for the order-book-delta projection.
+pub const NT_DATA_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
+
+/// NautilusTrader data type written for the bar projection.
+pub const NT_DATA_TYPE_BAR: &str = "Bar";
 
 /// Accepted spot instrument metadata needed to build the NautilusTrader
 /// `CurrencyPair`. Built from the accepted instrument-universe payload.
@@ -566,6 +579,65 @@ fn widened_size_increment(increment: Quantity, scale: u32) -> Result<Quantity> {
     Ok(widened)
 }
 
+/// Read-only view over a canonical table's price-bearing and size-bearing
+/// columns, used to derive the accepted data's actual decimal scale.
+///
+/// Each canonical family exposes its own column layout (one price/size per row
+/// for trades and deltas; open/high/low/close prices plus volume for bars), so
+/// the precision-widening logic depends on this view rather than on a single
+/// concrete table type. Empty string cells (such as `CLEAR` delta rows) are
+/// skipped by the iterator implementations so they never count toward scale.
+pub(crate) trait CanonicalPriceSizeView {
+    /// Iterate every non-empty price-bearing decimal string in the table.
+    fn price_values(&self) -> Box<dyn Iterator<Item = &str> + '_>;
+    /// Iterate every non-empty size-bearing decimal string in the table.
+    fn size_values(&self) -> Box<dyn Iterator<Item = &str> + '_>;
+}
+
+impl CanonicalPriceSizeView for CanonicalTradesTable {
+    fn price_values(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        Box::new(self.rows.iter().map(|row| row.price.as_str()))
+    }
+    fn size_values(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        Box::new(self.rows.iter().map(|row| row.size.as_str()))
+    }
+}
+
+impl CanonicalPriceSizeView for CanonicalOrderBookDeltasTable {
+    fn price_values(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        Box::new(
+            self.rows
+                .iter()
+                .map(|row| row.price.as_str())
+                .filter(|value| !value.is_empty()),
+        )
+    }
+    fn size_values(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        Box::new(
+            self.rows
+                .iter()
+                .map(|row| row.size.as_str())
+                .filter(|value| !value.is_empty()),
+        )
+    }
+}
+
+impl CanonicalPriceSizeView for CanonicalBarsTable {
+    fn price_values(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        Box::new(self.rows.iter().flat_map(|row| {
+            [
+                row.open.as_str(),
+                row.high.as_str(),
+                row.low.as_str(),
+                row.close.as_str(),
+            ]
+        }))
+    }
+    fn size_values(&self) -> Box<dyn Iterator<Item = &str> + '_> {
+        Box::new(self.rows.iter().map(|row| row.volume.as_str()))
+    }
+}
+
 /// Widen the catalog instrument's price/size precision to the accepted
 /// data's actual maximum decimal scale.
 ///
@@ -585,12 +657,10 @@ fn widened_size_increment(increment: Quantity, scale: u32) -> Result<Quantity> {
 /// support widening.
 fn widen_instrument_precision_for_data(
     mut instrument: InstrumentAny,
-    table: &CanonicalTradesTable,
+    table: &dyn CanonicalPriceSizeView,
 ) -> Result<InstrumentAny> {
-    let data_price_scale =
-        max_normalized_scale(table.rows.iter().map(|row| row.price.as_str()), "price")?;
-    let data_size_scale =
-        max_normalized_scale(table.rows.iter().map(|row| row.size.as_str()), "size")?;
+    let data_price_scale = max_normalized_scale(table.price_values(), "price")?;
+    let data_size_scale = max_normalized_scale(table.size_values(), "size")?;
     let price_scale = data_price_scale.max(u32::from(instrument.price_precision()));
     let size_scale = data_size_scale.max(u32::from(instrument.size_precision()));
     if price_scale == u32::from(instrument.price_precision())
@@ -707,22 +777,7 @@ pub fn project_canonical_trades_to_catalog<S: CatalogInstrumentSpecSource + ?Siz
     let ticks = canonical_rows_to_trade_ticks(table, &instrument)?;
     let trade_count = ticks.len();
 
-    // Fail closed on a dirty catalog root. NautilusTrader's `write_to_parquet`
-    // skips writing when a file for the same instrument/interval already exists,
-    // so projecting into a non-empty root could silently read back stale data
-    // under this run's source proof and a stale catalog hash. The caller owns
-    // the output lifecycle and must hand us a clean (absent or empty) root.
-    if catalog_root.exists() {
-        let mut entries = fs::read_dir(catalog_root)
-            .with_context(|| format!("read catalog root {}", catalog_root.display()))?;
-        ensure!(
-            entries.next().is_none(),
-            "catalog root {} is not empty; refusing to project into a dirty catalog",
-            catalog_root.display()
-        );
-    }
-    fs::create_dir_all(catalog_root)
-        .with_context(|| format!("create catalog root {}", catalog_root.display()))?;
+    ensure_clean_catalog_root(catalog_root)?;
     let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
     catalog
         .write_instruments(vec![instrument])
@@ -761,6 +816,322 @@ pub fn read_back_trade_ticks(
     catalog
         .query_typed_data::<TradeTick>(None, None, None, None, Some(files), false)
         .context("query trade ticks from catalog")
+}
+
+/// Fail closed on a dirty catalog root. NautilusTrader's `write_to_parquet`
+/// skips writing when a file for the same instrument/interval already exists,
+/// so projecting into a non-empty root could silently read back stale data
+/// under this run's source proof and a stale catalog hash. The caller owns
+/// the output lifecycle and must hand us a clean (absent or empty) root.
+///
+/// # Errors
+///
+/// Returns an error if the root exists and is non-empty, or cannot be read.
+fn ensure_clean_catalog_root(catalog_root: &Path) -> Result<()> {
+    if catalog_root.exists() {
+        let mut entries = fs::read_dir(catalog_root)
+            .with_context(|| format!("read catalog root {}", catalog_root.display()))?;
+        ensure!(
+            entries.next().is_none(),
+            "catalog root {} is not empty; refusing to project into a dirty catalog",
+            catalog_root.display()
+        );
+    }
+    fs::create_dir_all(catalog_root)
+        .with_context(|| format!("create catalog root {}", catalog_root.display()))?;
+    Ok(())
+}
+
+/// Convert canonical order-book-delta rows into NautilusTrader `OrderBookDelta`s
+/// at the instrument's price/size precision.
+///
+/// `CLEAR` rows become `OrderBookDelta::clear` deltas carrying the row's flags;
+/// `ADD`/`UPDATE`/`DELETE` rows build a price-keyed `BookOrder` (order_id from
+/// the row, `0` for L2/MBP levels) under the matching `BookAction`. Flags,
+/// sequence, and timestamps are carried verbatim from the canonical rows, which
+/// the table's `validate()` has already proven dense and well-formed.
+///
+/// # Errors
+///
+/// Returns an error if a price/size cannot be represented at the instrument
+/// precision, a side/action token is unknown, or an event time is negative.
+pub fn canonical_rows_to_order_book_deltas<I: Instrument + ?Sized>(
+    table: &CanonicalOrderBookDeltasTable,
+    instrument: &I,
+) -> Result<Vec<OrderBookDelta>> {
+    let instrument_id = instrument.id();
+    let price_precision = instrument.price_precision();
+    let size_precision = instrument.size_precision();
+    table
+        .rows
+        .iter()
+        .map(|row| {
+            canonical_row_to_order_book_delta(instrument_id, row, price_precision, size_precision)
+        })
+        .collect()
+}
+
+fn canonical_row_to_order_book_delta(
+    instrument_id: InstrumentId,
+    row: &CanonicalOrderBookDeltaRow,
+    price_precision: u8,
+    size_precision: u8,
+) -> Result<OrderBookDelta> {
+    let ts = UnixNanos::from(u64::try_from(row.event_time).context("negative event_time")?);
+    if row.action == DeltaAction::Clear.as_str() {
+        // NautilusTrader's `clear` sets F_SNAPSHOT only; carry the canonical
+        // row's full flag bitmask (F_SNAPSHOT|F_MBP, plus F_LAST when the row
+        // closes a snapshot expansion), which validate() has already enforced.
+        let mut clear = OrderBookDelta::clear(instrument_id, row.sequence, ts, ts);
+        clear.flags = row.flags;
+        return Ok(clear);
+    }
+    let action = match row.action.as_str() {
+        a if a == DeltaAction::Add.as_str() => BookAction::Add,
+        a if a == DeltaAction::Update.as_str() => BookAction::Update,
+        a if a == DeltaAction::Delete.as_str() => BookAction::Delete,
+        other => anyhow::bail!("unknown delta action {other:?}"),
+    };
+    let side = match row.side.as_str() {
+        s if s == DeltaSide::Buy.as_str() => OrderSide::Buy,
+        s if s == DeltaSide::Sell.as_str() => OrderSide::Sell,
+        other => anyhow::bail!("unknown delta side {other:?}"),
+    };
+    let price_str = rescaled(&row.price, price_precision)?;
+    let price = Price::from_str(&price_str)
+        .map_err(|error| anyhow::anyhow!("invalid rescaled price {price_str:?}: {error}"))?;
+    let size_str = rescaled(&row.size, size_precision)?;
+    let size = Quantity::from_str(&size_str)
+        .map_err(|error| anyhow::anyhow!("invalid rescaled size {size_str:?}: {error}"))?;
+    let order = BookOrder::new(side, price, size, row.order_id);
+    OrderBookDelta::new_checked(
+        instrument_id,
+        action,
+        order,
+        row.flags,
+        row.sequence,
+        ts,
+        ts,
+    )
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "invalid order book delta at sequence {}: {error}",
+            row.sequence
+        )
+    })
+}
+
+/// Project a canonical order-book-delta table into a NautilusTrader
+/// `ParquetDataCatalog`.
+///
+/// Mirrors [`project_canonical_trades_to_catalog`]: validate, build the
+/// instrument, widen precision to the accepted data, assert the instrument id
+/// matches the canonical rows, convert, refuse a dirty root, then write the
+/// instrument and the `OrderBookDelta` projection. NautilusTrader writes its
+/// native `data/order_book_deltas/<instrument_id>/...` tree below `catalog_root`.
+///
+/// # Errors
+///
+/// Returns an error if instrument construction, conversion, or catalog writes
+/// fail, or if `catalog_root` is a non-empty (dirty) directory.
+pub fn project_canonical_order_book_deltas_to_catalog<S: CatalogInstrumentSpecSource + ?Sized>(
+    table: &CanonicalOrderBookDeltasTable,
+    spec: &S,
+    catalog_root: &Path,
+) -> Result<CatalogProjection> {
+    table.validate()?;
+    let instrument = spec.build_instrument_any()?;
+    // Venue instrument metadata can be coarser than the accepted archive's
+    // actual prints; widen precision to the data before binding and writing.
+    let instrument = widen_instrument_precision_for_data(instrument, table)?;
+    let instrument_id = instrument.id();
+    let row_instrument_id = table.rows[0]
+        .nt_instrument_id
+        .as_deref()
+        .context("canonical row missing nt_instrument_id")?;
+    ensure!(
+        instrument_id.to_string() == row_instrument_id,
+        "instrument id {instrument_id} does not match canonical rows {}",
+        row_instrument_id
+    );
+    let deltas = canonical_rows_to_order_book_deltas(table, &instrument)?;
+    let delta_count = deltas.len();
+
+    ensure_clean_catalog_root(catalog_root)?;
+    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .write_instruments(vec![instrument])
+        .context("write instrument to catalog")?;
+    catalog
+        .write_to_parquet(deltas, None, None, None)
+        .context("write order book deltas to catalog")?;
+
+    Ok(CatalogProjection {
+        catalog_root: catalog_root.to_path_buf(),
+        nt_instrument_id: instrument_id.to_string(),
+        data_type: NT_DATA_TYPE_ORDER_BOOK_DELTA.to_string(),
+        trade_count: delta_count,
+        catalog_hash: logical_catalog_hash(catalog_root)?,
+        fidelity_class: table.fidelity_class,
+    })
+}
+
+/// Prove the resolved NautilusTrader dependency can read the projected
+/// `OrderBookDelta` data back from `catalog_root`.
+///
+/// # Errors
+///
+/// Returns an error if the catalog query fails.
+pub fn read_back_order_book_deltas(
+    catalog_root: &Path,
+    nt_instrument_id: &str,
+) -> Result<Vec<OrderBookDelta>> {
+    let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    let instrument_ids = vec![nt_instrument_id.to_string()];
+    let files =
+        catalog_files_for_instruments::<OrderBookDelta>(&catalog, catalog_root, &instrument_ids)?;
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    catalog
+        .query_typed_data::<OrderBookDelta>(None, None, None, None, Some(files), false)
+        .context("query order book deltas from catalog")
+}
+
+/// Convert canonical bar rows into NautilusTrader `Bar`s under the table's
+/// externally-aggregated bar type, at the instrument's price/size precision.
+///
+/// Each row's OHLC is parsed at the instrument's price precision and the volume
+/// at its size precision; `ts_event` and `ts_init` are both the row's
+/// `close_time` (the canonical close is the bar's event instant). The OHLC
+/// ordering invariant the table's `validate()` already enforces is re-checked by
+/// NautilusTrader's `Bar::new_checked`, so any residual precision-rescale edge
+/// fails loud rather than panicking.
+///
+/// # Errors
+///
+/// Returns an error if an OHLCV value cannot be represented at the instrument
+/// precision, the bar specification is invalid, or a close time is negative.
+pub fn canonical_rows_to_bars<I: Instrument + ?Sized>(
+    table: &CanonicalBarsTable,
+    instrument: &I,
+) -> Result<Vec<Bar>> {
+    let instrument_id = instrument.id();
+    let spec = BarSpecification::new_checked(
+        table.bar_spec.step,
+        table.bar_spec.aggregation,
+        PriceType::Last,
+    )
+    .map_err(|error| anyhow::anyhow!("invalid bar specification: {error}"))?;
+    let bar_type = BarType::new(instrument_id, spec, AggregationSource::External);
+    let price_precision = instrument.price_precision();
+    let size_precision = instrument.size_precision();
+    table
+        .rows
+        .iter()
+        .map(|row| canonical_row_to_bar(bar_type, row, price_precision, size_precision))
+        .collect()
+}
+
+fn canonical_row_to_bar(
+    bar_type: BarType,
+    row: &CanonicalBarRow,
+    price_precision: u8,
+    size_precision: u8,
+) -> Result<Bar> {
+    let price_at = |value: &str, label: &str| -> Result<Price> {
+        let rescaled = rescaled(value, price_precision)?;
+        Price::from_str(&rescaled)
+            .map_err(|error| anyhow::anyhow!("invalid rescaled {label} {rescaled:?}: {error}"))
+    };
+    let open = price_at(&row.open, "open")?;
+    let high = price_at(&row.high, "high")?;
+    let low = price_at(&row.low, "low")?;
+    let close = price_at(&row.close, "close")?;
+    let volume_str = rescaled(&row.volume, size_precision)?;
+    let volume = Quantity::from_str(&volume_str)
+        .map_err(|error| anyhow::anyhow!("invalid rescaled volume {volume_str:?}: {error}"))?;
+    let ts = UnixNanos::from(u64::try_from(row.close_time).context("negative close_time")?);
+    Bar::new_checked(bar_type, open, high, low, close, volume, ts, ts).context("build bar")
+}
+
+/// Project a canonical bar table into a NautilusTrader `ParquetDataCatalog`.
+///
+/// Mirrors [`project_canonical_trades_to_catalog`]: validate, build the
+/// instrument, widen precision to the accepted data, assert the instrument id
+/// matches the canonical rows, convert, refuse a dirty root, then write the
+/// instrument and the `Bar` projection. NautilusTrader writes its native
+/// `data/bars/<bar_type>/...` tree below `catalog_root`.
+///
+/// # Errors
+///
+/// Returns an error if instrument construction, conversion, or catalog writes
+/// fail, or if `catalog_root` is a non-empty (dirty) directory.
+pub fn project_canonical_bars_to_catalog<S: CatalogInstrumentSpecSource + ?Sized>(
+    table: &CanonicalBarsTable,
+    spec: &S,
+    catalog_root: &Path,
+) -> Result<CatalogProjection> {
+    table.validate()?;
+    let instrument = spec.build_instrument_any()?;
+    // Venue instrument metadata can be coarser than the accepted archive's
+    // actual prints; widen precision to the data before binding and writing.
+    let instrument = widen_instrument_precision_for_data(instrument, table)?;
+    let instrument_id = instrument.id();
+    let row_instrument_id = table.rows[0]
+        .nt_instrument_id
+        .as_deref()
+        .context("canonical row missing nt_instrument_id")?;
+    ensure!(
+        instrument_id.to_string() == row_instrument_id,
+        "instrument id {instrument_id} does not match canonical rows {}",
+        row_instrument_id
+    );
+    let bars = canonical_rows_to_bars(table, &instrument)?;
+    let bar_count = bars.len();
+
+    ensure_clean_catalog_root(catalog_root)?;
+    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .write_instruments(vec![instrument])
+        .context("write instrument to catalog")?;
+    catalog
+        .write_to_parquet(bars, None, None, None)
+        .context("write bars to catalog")?;
+
+    Ok(CatalogProjection {
+        catalog_root: catalog_root.to_path_buf(),
+        nt_instrument_id: instrument_id.to_string(),
+        data_type: NT_DATA_TYPE_BAR.to_string(),
+        trade_count: bar_count,
+        catalog_hash: logical_catalog_hash(catalog_root)?,
+        fidelity_class: table.fidelity_class,
+    })
+}
+
+/// Prove the resolved NautilusTrader dependency can read the projected `Bar`
+/// data back from `catalog_root`.
+///
+/// NautilusTrader keys the bar catalog directory by the full bar type (not the
+/// bare instrument id), so this resolves files through NautilusTrader's own
+/// identifier filtering (`query_typed_data` with the instrument id) rather than
+/// the instrument-directory file filter used for trades and deltas.
+///
+/// # Errors
+///
+/// Returns an error if the catalog query fails.
+pub fn read_back_bars(catalog_root: &Path, nt_instrument_id: &str) -> Result<Vec<Bar>> {
+    let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .query_typed_data::<Bar>(
+            Some(vec![nt_instrument_id.to_string()]),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .context("query bars from catalog")
 }
 
 /// Deterministic SHA-256 hex over the logical NT catalog contents.
@@ -814,6 +1185,28 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
             delta.order.order_id,
         )
     });
+    // NautilusTrader keys the bar catalog directory by the full bar type, not by
+    // the bare instrument id, so bars are resolved through NautilusTrader's own
+    // identifier filtering (instrument ids passed to `query_typed_data`) rather
+    // than the instrument-directory file filter used for trades and deltas.
+    let mut bars = if instrument_ids.is_empty() {
+        Vec::new()
+    } else {
+        catalog
+            .query_typed_data::<Bar>(Some(instrument_ids.clone()), None, None, None, None, true)
+            .context("query bars from catalog for logical hash")?
+    };
+    bars.sort_by_key(|bar| {
+        (
+            bar.ts_event.as_u64(),
+            bar.bar_type.to_string(),
+            bar.open.as_decimal().to_string(),
+            bar.high.as_decimal().to_string(),
+            bar.low.as_decimal().to_string(),
+            bar.close.as_decimal().to_string(),
+            bar.volume.as_decimal().to_string(),
+        )
+    });
 
     let mut hasher = Sha256::new();
     hasher.update(b"nautilus-logical-catalog.v1");
@@ -858,6 +1251,24 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update(delta.ts_event.as_u64().to_string().as_bytes());
         hasher.update([18u8]);
         hasher.update(delta.ts_init.as_u64().to_string().as_bytes());
+    }
+    for bar in bars {
+        hasher.update([19u8]);
+        hasher.update(bar.bar_type.to_string().as_bytes());
+        hasher.update([20u8]);
+        hasher.update(bar.open.as_decimal().to_string().as_bytes());
+        hasher.update([21u8]);
+        hasher.update(bar.high.as_decimal().to_string().as_bytes());
+        hasher.update([22u8]);
+        hasher.update(bar.low.as_decimal().to_string().as_bytes());
+        hasher.update([23u8]);
+        hasher.update(bar.close.as_decimal().to_string().as_bytes());
+        hasher.update([24u8]);
+        hasher.update(bar.volume.as_decimal().to_string().as_bytes());
+        hasher.update([25u8]);
+        hasher.update(bar.ts_event.as_u64().to_string().as_bytes());
+        hasher.update([26u8]);
+        hasher.update(bar.ts_init.as_u64().to_string().as_bytes());
     }
     Ok(hex::encode(hasher.finalize()))
 }

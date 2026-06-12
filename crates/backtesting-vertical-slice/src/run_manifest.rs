@@ -1694,6 +1694,7 @@ fn catalog_input_to_nt_data_config(
     let data_type = match input.data_type.as_str() {
         "TradeTick" => NautilusDataType::TradeTick,
         "OrderBookDelta" => NautilusDataType::OrderBookDelta,
+        "Bar" => NautilusDataType::Bar,
         "InstrumentStatus" => NautilusDataType::InstrumentStatus,
         "InstrumentClose" => NautilusDataType::InstrumentClose,
         other => {
@@ -2029,7 +2030,7 @@ fn ensure_unsupported_nt_catalog_query_surfaces_absent(
 
 fn ensure_supported_data_type(value: &str) -> Result<(), ManifestError> {
     match value {
-        "TradeTick" | "OrderBookDelta" | "InstrumentStatus" | "InstrumentClose" => Ok(()),
+        "TradeTick" | "OrderBookDelta" | "Bar" | "InstrumentStatus" | "InstrumentClose" => Ok(()),
         other => Err(ManifestError::UnsupportedDataType {
             data_type: other.to_string(),
         }),
@@ -2259,6 +2260,7 @@ fn ensure_data_type_matches_fidelity(
     match (data_type, fidelity_class) {
         ("TradeTick", SourceProofFidelityClass::TradeReplay) => Ok(()),
         ("OrderBookDelta", SourceProofFidelityClass::L2Replay) => Ok(()),
+        ("Bar", SourceProofFidelityClass::TradeBarReplay) => Ok(()),
         ("InstrumentStatus" | "InstrumentClose", SourceProofFidelityClass::TradeReplay)
         | ("InstrumentStatus" | "InstrumentClose", SourceProofFidelityClass::L2Replay) => Ok(()),
         (data_type, fidelity_class) => Err(ManifestError::DataTypeFidelityMismatch {
@@ -2304,6 +2306,29 @@ fn ensure_catalog_inputs_match_fidelity(
             for input in inputs {
                 match input.data_type.as_str() {
                     "OrderBookDelta" | "TradeTick" | "InstrumentStatus" | "InstrumentClose" => {}
+                    other => {
+                        return Err(ManifestError::DataTypeFidelityMismatch {
+                            data_type: other.to_string(),
+                            fidelity_class,
+                        });
+                    }
+                }
+            }
+            Ok(())
+        }
+        SourceProofFidelityClass::TradeBarReplay => {
+            if !inputs.iter().any(|input| input.data_type == "Bar") {
+                return Err(ManifestError::DataTypeFidelityMismatch {
+                    data_type: inputs
+                        .first()
+                        .map(|input| input.data_type.clone())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                    fidelity_class,
+                });
+            }
+            for input in inputs {
+                match input.data_type.as_str() {
+                    "Bar" | "TradeTick" | "InstrumentStatus" | "InstrumentClose" => {}
                     other => {
                         return Err(ManifestError::DataTypeFidelityMismatch {
                             data_type: other.to_string(),
@@ -3915,6 +3940,53 @@ mod tests {
         let data = manifest.to_nt_data_config().expect("data config");
 
         assert_eq!(data.data_type(), NautilusDataType::OrderBookDelta);
+    }
+
+    #[test]
+    fn trade_bar_replay_accepts_bar_data_config() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "Bar".to_string();
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::TradeBarReplay;
+
+        manifest
+            .validate(&accepted)
+            .expect("TradeBarReplay source proof should allow Bar catalog input");
+        let data = manifest.to_nt_data_config().expect("data config");
+
+        assert_eq!(data.data_type(), NautilusDataType::Bar);
+    }
+
+    #[test]
+    fn bar_data_type_rejected_under_trade_replay() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "Bar".to_string();
+        // accepted_dataset() is TradeReplay; a Bar input must not be admissible.
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::DataTypeFidelityMismatch {
+                data_type: "Bar".to_string(),
+                fidelity_class: SourceProofFidelityClass::TradeReplay,
+            }
+        );
+    }
+
+    #[test]
+    fn trade_bar_replay_rejects_when_no_bar() {
+        // A TradeBarReplay source proof requires at least one Bar input; a
+        // manifest carrying only TradeTick inputs must fail closed.
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "TradeTick".to_string();
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::TradeBarReplay;
+
+        assert_eq!(
+            manifest.validate(&accepted).unwrap_err(),
+            ManifestError::DataTypeFidelityMismatch {
+                data_type: "TradeTick".to_string(),
+                fidelity_class: SourceProofFidelityClass::TradeBarReplay,
+            }
+        );
     }
 
     #[test]

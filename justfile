@@ -185,6 +185,9 @@ source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/test_verify_runtime_capture_yaml.py
+    python3 scripts/test_lane_governor.py
+    python3 scripts/test_verify_lane_governance.py
+    python3 scripts/verify_lane_governance.py
 
 source-fence: source-fence-static
     git fetch -q origin main 2>/dev/null

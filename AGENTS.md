@@ -36,6 +36,7 @@ These repo-level rules are in addition to any higher-level agent instructions.
 - `just verify-remote` waits for all reported PR checks on the exact head SHA, not a local subset of workflow jobs.
 - Human operator break-glass exists for exceptional local repro and live/operator lanes only. Agents must not use it as a normal verification path.
 - Enforcement boundary: repo tooling gates cooperative paths through `just`, `scripts/rust_verification.py`, and `.no-mistakes.yaml`; raw shell `cargo ...` remains outside this repo's control until external agent hooks intercept it.
+- CPU-heavy local verifier lanes self-serialize: every `scripts/verify_*.py` / `scripts/test_*.py` entry point acquires the per-repo machine-level lane lock declared in `ci/rust-verification.toml` `[local_lane_policy]` before doing work. Concurrent local runs queue with stderr heartbeats and fail loud at the policy timeout; CI (`allowed_ci_env`) bypasses the lock; a holder that is a process ancestor passes through. Coverage drift is a CI failure via `scripts/verify_lane_governance.py` in `source-fence-static`.
 
 ## Review Bar
 

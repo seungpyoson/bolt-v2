@@ -223,7 +223,16 @@ def assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs() -> None:
     states = module.resolve_pr_states(
         client,
         "example/repo",
-        {"workflow_runs": [run_payload(31, created_at="2026-06-12T00:00:00Z", pull_requests=[])]},
+        {
+            "workflow_runs": [
+                run_payload(
+                    31,
+                    created_at="2026-06-12T00:00:00Z",
+                    pull_requests=[],
+                    head_repository={"owner": {"login": "example"}, "full_name": "example/repo"},
+                )
+            ]
+        },
     )
     assert client.api_calls == [
         ("pulls", {"head": "example:feature/cost", "state": "all", "per_page": "20"}, False)
@@ -232,6 +241,24 @@ def assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs() -> None:
     assert states["31"]["number"] == 654, states
     assert states["31"]["draft_at_run"] is True, states
     assert states["31"]["ready_at"] == "2026-06-12T00:05:00Z", states
+
+
+def assert_resolve_pr_states_abstains_without_pr_refs_or_head_owner() -> None:
+    module = load_script()
+
+    class FakeClient:
+        def api(self, path: str, *, params=None, paginate: bool = False):
+            raise AssertionError("fallback should not query pulls without a head owner")
+
+        def graphql(self, query: str, fields: dict[str, str | int]):
+            raise AssertionError("fallback should not query timeline without a PR")
+
+    states = module.resolve_pr_states(
+        FakeClient(),
+        "example/repo",
+        {"workflow_runs": [run_payload(35, pull_requests=[])]},
+    )
+    assert states == {}, states
 
 
 def assert_resolve_pr_states_fallback_uses_head_repository_owner() -> None:
@@ -338,8 +365,18 @@ def assert_resolve_pr_states_fallback_selects_by_run_time() -> None:
         "example/repo",
         {
             "workflow_runs": [
-                run_payload(32, created_at="2026-06-10T12:00:00Z", pull_requests=[]),
-                run_payload(33, created_at="2026-06-12T12:00:00Z", pull_requests=[]),
+                run_payload(
+                    32,
+                    created_at="2026-06-10T12:00:00Z",
+                    pull_requests=[],
+                    head_repository={"owner": {"login": "example"}, "full_name": "example/repo"},
+                ),
+                run_payload(
+                    33,
+                    created_at="2026-06-12T12:00:00Z",
+                    pull_requests=[],
+                    head_repository={"owner": {"login": "example"}, "full_name": "example/repo"},
+                ),
             ]
         },
     )
@@ -348,6 +385,57 @@ def assert_resolve_pr_states_fallback_selects_by_run_time() -> None:
     ], client.api_calls
     assert states["32"]["number"] == 700, states
     assert states["33"]["number"] == 701, states
+
+
+def assert_resolve_pr_states_fallback_abstains_when_no_pr_lifetime_matches() -> None:
+    module = load_script()
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.api_calls = []
+
+        def api(self, path: str, *, params=None, paginate: bool = False):
+            self.api_calls.append((path, params, paginate))
+            assert path == "pulls", path
+            assert params == {"head": "example:feature/cost", "state": "all", "per_page": "20"}, params
+            assert not paginate, paginate
+            return [
+                {
+                    "number": 710,
+                    "draft": False,
+                    "state": "closed",
+                    "created_at": "2026-06-10T00:00:00Z",
+                    "closed_at": "2026-06-11T00:00:00Z",
+                    "updated_at": "2026-06-12T00:00:00Z",
+                },
+                {
+                    "number": 711,
+                    "draft": False,
+                    "state": "open",
+                    "created_at": "2026-06-13T00:00:00Z",
+                    "closed_at": None,
+                    "updated_at": "2026-06-13T01:00:00Z",
+                },
+            ]
+
+        def graphql(self, query: str, fields: dict[str, str | int]):
+            raise AssertionError("fallback should not query timeline when no PR lifetime matches")
+
+    states = module.resolve_pr_states(
+        FakeClient(),
+        "example/repo",
+        {
+            "workflow_runs": [
+                run_payload(
+                    36,
+                    created_at="2026-06-12T12:00:00Z",
+                    pull_requests=[],
+                    head_repository={"owner": {"login": "example"}, "full_name": "example/repo"},
+                )
+            ]
+        },
+    )
+    assert states == {}, states
 
 
 def assert_cancelled_superseded_requires_pull_request_pr_match_and_overlap() -> None:
@@ -564,8 +652,10 @@ def main() -> int:
     assert_configured_workflow_paths_paginates_workflow_list()
     assert_resolve_pr_states_uses_workflow_run_pr_number()
     assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs()
+    assert_resolve_pr_states_abstains_without_pr_refs_or_head_owner()
     assert_resolve_pr_states_fallback_uses_head_repository_owner()
     assert_resolve_pr_states_fallback_selects_by_run_time()
+    assert_resolve_pr_states_fallback_abstains_when_no_pr_lifetime_matches()
     assert_cancelled_superseded_requires_pull_request_pr_match_and_overlap()
     assert_build_report_classifies_runs_and_totals_minutes()
     assert_unknown_labels_are_reported_without_crashing()

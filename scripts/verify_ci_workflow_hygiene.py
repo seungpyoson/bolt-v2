@@ -304,6 +304,7 @@ TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hi
 TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"
 TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae"
 TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+UPLOAD_ARTIFACT_SHA_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*([\"']?)actions/upload-artifact@[0-9a-fA-F]{40}\1\s*$")
 CACHE_KEY_RE = re.compile(r"^\s+(?:key|shared-key):\s*\S+.*$")
 SHARED_REGISTRY_CACHE_KEY = "cargo-registry-git-v1"
 SHARED_REGISTRY_SAVE_IF = "${{ github.job == 'test-archive' }}"
@@ -664,6 +665,13 @@ def setup_action_blocks(job_lines: list[str]) -> list[list[str]]:
 
 def action_blocks(job_lines: list[str], action: str) -> list[list[str]]:
     return [block for block in step_blocks(job_lines) if any(action in strip_comment(line) for line in block)]
+
+
+def upload_artifact_pin_errors(job_lines: list[str]) -> list[str]:
+    for block in action_blocks(job_lines, "actions/upload-artifact@"):
+        if not any(UPLOAD_ARTIFACT_SHA_RE.match(strip_comment(line)) for line in block):
+            return ["actions/upload-artifact must be pinned to a 40-character SHA"]
+    return []
 
 
 def rust_cache_blocks(job_lines: list[str]) -> list[list[str]]:
@@ -5921,6 +5929,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must save nextest archive cache")
         if not archive_upload_blocks:
             errors.append("test-archive must upload nextest archive artifact")
+        errors.extend(upload_artifact_pin_errors(archive_lines))
         if "restore-keys:" in archive_text:
             errors.append("test-archive cache must not use restore-keys")
         if archive_text.count(TEST_ARCHIVE_CACHE_PATH) < 2:

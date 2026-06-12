@@ -4112,6 +4112,37 @@ def main() -> int:
         ),
     )
     assert_error(
+        "actions/upload-artifact must be pinned to a 40-character SHA",
+        replace_once(
+            BASE_WORKFLOW,
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "uses: actions/upload-artifact@v7",
+        ),
+    )
+    assert_error(
+        "actions/upload-artifact must be pinned to a 40-character SHA",
+        replace_once(
+            BASE_WORKFLOW,
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "uses: actions/upload-artifact@v7",
+        )
+        .replace(
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            "PINNED_UPLOAD_ARTIFACT_PLACEHOLDER",
+            1,
+        )
+        .replace(
+            "uses: actions/upload-artifact@v7",
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            1,
+        )
+        .replace(
+            "PINNED_UPLOAD_ARTIFACT_PLACEHOLDER",
+            "uses: actions/upload-artifact@v7",
+            1,
+        ),
+    )
+    assert_error(
         "test-archive must publish nextest archive fingerprint",
         replace_once(
             BASE_WORKFLOW,

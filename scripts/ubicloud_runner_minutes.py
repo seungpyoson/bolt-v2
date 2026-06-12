@@ -338,7 +338,7 @@ def build_report(
         "notes": [
             "Runner-minutes are wall-clock job durations from GitHub Actions job timestamps.",
             "Fingerprint-identical classification is only available for runs with a fingerprint artifact.",
-            "Cancelled-superseded is inferred from newer same-branch same-workflow pull_request runs.",
+            "Cancelled-superseded is inferred from fetched newer same-PR same-workflow pull_request runs created before the cancelled run finished.",
         ],
     }
 
@@ -478,10 +478,10 @@ def pull_number_from_run(run: dict[str, object]) -> int | None:
     return None
 
 
-def head_owner_for_run(run: dict[str, object], default_owner: str) -> str:
+def head_owner_for_run(run: dict[str, object]) -> str | None:
     head_repository = run.get("head_repository")
     if not isinstance(head_repository, dict):
-        return default_owner
+        return None
     owner = head_repository.get("owner")
     if isinstance(owner, dict):
         login = as_text(owner.get("login"))
@@ -490,13 +490,13 @@ def head_owner_for_run(run: dict[str, object], default_owner: str) -> str:
     full_name = as_text(head_repository.get("full_name"))
     if "/" in full_name:
         return full_name.split("/", 1)[0]
-    return default_owner
+    return None
 
 
 def select_pull_request_for_run(run: dict[str, object], pulls_payload: list[dict[str, object]]) -> dict[str, object] | None:
     run_created = parse_time(run.get("created_at"))
     if run_created is None:
-        return pulls_payload[0] if pulls_payload else None
+        return None
     candidates: list[dict[str, object]] = []
     for pull in pulls_payload:
         if not isinstance(pull, dict):
@@ -508,7 +508,7 @@ def select_pull_request_for_run(run: dict[str, object], pulls_payload: list[dict
         if closed and run_created > closed:
             continue
         candidates.append(pull)
-    return sorted(candidates or pulls_payload, key=lambda pull: as_text(pull.get("updated_at")), reverse=True)[0] if pulls_payload else None
+    return sorted(candidates, key=lambda pull: as_text(pull.get("updated_at")), reverse=True)[0] if candidates else None
 
 
 def draft_state_at_run(run_time: dt.datetime, pull: dict[str, object], timeline_nodes: list[dict[str, object]]) -> bool | None:
@@ -580,7 +580,10 @@ query($owner:String!,$repo:String!,$number:Int!){
             branch = as_text(run.get("head_branch"))
             if not branch:
                 continue
-            head = f"{head_owner_for_run(run, owner)}:{branch}"
+            head_owner = head_owner_for_run(run)
+            if head_owner is None:
+                continue
+            head = f"{head_owner}:{branch}"
             if head not in branch_pull_cache:
                 pulls = client.api(
                     "pulls",

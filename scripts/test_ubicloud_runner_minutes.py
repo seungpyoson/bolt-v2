@@ -399,6 +399,31 @@ def assert_resolve_pr_states_direct_pr_lookup_errors_are_fatal() -> None:
         raise AssertionError("direct PR lookup failures must fail the meter")
 
 
+def assert_resolve_pr_states_direct_pr_lookup_rejects_malformed_payloads() -> None:
+    module = load_script()
+    config = load_test_config(module)
+
+    class FakeClient:
+        def api(self, path: str, *, params=None, paginate: bool = False):
+            assert path == "pulls/321", path
+            return []
+
+        def graphql(self, query: str, fields: dict[str, str | int]):
+            raise AssertionError("malformed direct PR payload should fail before timeline lookup")
+
+    try:
+        module.resolve_pr_states(
+            FakeClient(),
+            "example/repo",
+            {"workflow_runs": [run_payload(40, pull_requests=[{"number": 321}])]},
+            config,
+        )
+    except module.MeterError as exc:
+        assert "pulls/321 payload is malformed" in str(exc), exc
+    else:
+        raise AssertionError("malformed direct PR payloads must fail the meter")
+
+
 def assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs() -> None:
     module = load_script()
     config = load_test_config(module)
@@ -733,8 +758,28 @@ def assert_resolve_pr_states_handles_null_graphql_payloads() -> None:
         {"workflow_runs": [run_payload(38, pull_requests=[{"number": 321}])]},
         config,
     )
-    assert states["38"]["draft_at_run"] is True, states
-    assert states["38"]["draft_timeline_truncated"] is False, states
+    assert states["38"]["draft_at_run"] is None, states
+    assert states["38"]["draft_timeline_unavailable"] is True, states
+
+    runs_payload = {"workflow_runs": [run_payload(38, pull_requests=[{"number": 321}])]}
+    report = module.build_report(
+        repo="example/repo",
+        runs_payload=runs_payload,
+        jobs_payload_by_run_id={
+            38: {
+                "jobs": [
+                    job_payload("nextest shard 1 of 4", "ubicloud-standard-4", "2026-06-12T00:00:00Z", "2026-06-12T00:01:00Z")
+                ]
+            }
+        },
+        artifacts_payload_by_run_id={38: {"artifacts": []}},
+        pr_state_by_run_id=states,
+        runner_config=config,
+        generated_at="2026-06-12T02:00:00Z",
+    )
+    assert "draft-timeline-unavailable" in report["runs"][0]["classifications"], report["runs"][0]
+    assert "draft-stage" not in report["runs"][0]["classifications"], report["runs"][0]
+    assert report["lever_b_bounds"]["draft_stage"] == {}, report["lever_b_bounds"]
 
 
 def assert_cancelled_superseded_requires_pull_request_pr_match_and_overlap() -> None:
@@ -1010,6 +1055,9 @@ def assert_fingerprint_identity_is_scoped_to_fingerprint_workflow() -> None:
     assert "fingerprint-identical" not in runs_by_id[71]["classifications"], runs_by_id[71]
     assert "fingerprint-identical" not in runs_by_id[72]["classifications"], runs_by_id[72]
     assert "fingerprint-identical" in runs_by_id[73]["classifications"], runs_by_id[73]
+    assert runs_by_id[70]["fingerprint"] is None, runs_by_id[70]
+    assert runs_by_id[71]["fingerprint"] is None, runs_by_id[71]
+    assert runs_by_id[72]["fingerprint"] == "v1-Linux-X64-test-profile-shards-4-inputs-z", runs_by_id[72]
 
 
 def assert_unknown_labels_are_reported_without_crashing() -> None:
@@ -1048,6 +1096,7 @@ def main() -> int:
     assert_fetch_runs_sorts_before_limit()
     assert_resolve_pr_states_uses_workflow_run_pr_number()
     assert_resolve_pr_states_direct_pr_lookup_errors_are_fatal()
+    assert_resolve_pr_states_direct_pr_lookup_rejects_malformed_payloads()
     assert_resolve_pr_states_falls_back_when_run_has_no_pr_refs()
     assert_resolve_pr_states_abstains_without_pr_refs_or_head_owner()
     assert_resolve_pr_states_fallback_uses_head_repository_owner()

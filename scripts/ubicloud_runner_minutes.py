@@ -263,6 +263,8 @@ def base_classifications(
         classifications.append("draft-stage")
     if pr_state and pr_state.get("draft_timeline_truncated") is True:
         classifications.append("draft-timeline-truncated")
+    if pr_state and pr_state.get("draft_timeline_unavailable") is True:
+        classifications.append("draft-timeline-unavailable")
     is_fingerprint_workflow = workflow_key_for_path(run.get("path")) == fingerprint_workflow_key
     if is_fingerprint_workflow and fingerprint and fingerprint in prior_green_fingerprints:
         classifications.append("fingerprint-identical")
@@ -320,7 +322,9 @@ def build_report(
         if not isinstance(jobs, list):
             raise MeterError(f"run {run_id} jobs payload is malformed")
         fingerprint_evidence = extract_fingerprint_evidence(artifacts_payload, runner_config.fingerprint_artifact_prefix)
-        fingerprint = fingerprint_evidence.value
+        is_fingerprint_workflow = workflow_key == runner_config.fingerprint_workflow_key
+        fingerprint = fingerprint_evidence.value if is_fingerprint_workflow else None
+        fingerprint_ambiguous = fingerprint_evidence.ambiguous if is_fingerprint_workflow else False
         pr_state = lookup_by_run_id(pr_state_by_run_id, run_id)
         classifications = base_classifications(
             run,
@@ -328,7 +332,7 @@ def build_report(
             pr_state if isinstance(pr_state, dict) else None,
             pr_state_by_run_id,
             fingerprint,
-            fingerprint_evidence.ambiguous,
+            fingerprint_ambiguous,
             prior_green_fingerprints,
             runner_config.fingerprint_workflow_key,
         )
@@ -637,6 +641,7 @@ def resolve_pr_states(
     branch_pull_cache: dict[str, list[dict[str, object]]] = {}
     timeline_cache: dict[int, list[dict[str, object]]] = {}
     timeline_truncated_cache: dict[int, bool] = {}
+    timeline_unavailable_cache: dict[int, bool] = {}
     query = """
 query($owner:String!,$repo:String!,$number:Int!,$timelineLimit:Int!){
   repository(owner:$owner,name:$repo){
@@ -661,7 +666,9 @@ query($owner:String!,$repo:String!,$number:Int!,$timelineLimit:Int!){
         if number is not None:
             if number not in pr_cache:
                 pull_payload = client.api(f"pulls/{number}")
-                pr_cache[number] = pull_payload if isinstance(pull_payload, dict) else None
+                if not isinstance(pull_payload, dict):
+                    raise MeterError(f"pulls/{number} payload is malformed")
+                pr_cache[number] = pull_payload
             pull = pr_cache[number]
         else:
             branch = as_text(run.get("head_branch"))
@@ -705,16 +712,23 @@ query($owner:String!,$repo:String!,$number:Int!,$timelineLimit:Int!){
                 },
             )
             data = payload.get("data") or {}
-            repository = data.get("repository") if isinstance(data, dict) else {}
-            pull_request = repository.get("pullRequest") if isinstance(repository, dict) else {}
-            timeline_items = pull_request.get("timelineItems") if isinstance(pull_request, dict) else {}
-            nodes = timeline_items.get("nodes", []) if isinstance(timeline_items, dict) else []
-            timeline_cache[number] = nodes if isinstance(nodes, list) else []
-            page_info = timeline_items.get("pageInfo", {}) if isinstance(timeline_items, dict) else {}
-            timeline_truncated_cache[number] = bool(page_info.get("hasNextPage")) if isinstance(page_info, dict) else False
+            repository = data.get("repository") if isinstance(data, dict) else None
+            pull_request = repository.get("pullRequest") if isinstance(repository, dict) else None
+            timeline_items = pull_request.get("timelineItems") if isinstance(pull_request, dict) else None
+            if isinstance(timeline_items, dict):
+                nodes = timeline_items.get("nodes", [])
+                timeline_cache[number] = nodes if isinstance(nodes, list) else []
+                page_info = timeline_items.get("pageInfo", {})
+                timeline_truncated_cache[number] = bool(page_info.get("hasNextPage")) if isinstance(page_info, dict) else False
+                timeline_unavailable_cache[number] = not isinstance(nodes, list)
+            else:
+                timeline_cache[number] = []
+                timeline_truncated_cache[number] = False
+                timeline_unavailable_cache[number] = True
         timeline_truncated = timeline_truncated_cache.get(number, False)
+        timeline_unavailable = timeline_unavailable_cache.get(number, False)
         run_time = parse_time(run.get("created_at"))
-        if timeline_truncated or run_time is None:
+        if timeline_truncated or timeline_unavailable or run_time is None:
             draft_at_run = None
         else:
             draft_at_run = draft_state_at_run(run_time, pull, timeline_cache[number])
@@ -729,6 +743,7 @@ query($owner:String!,$repo:String!,$number:Int!,$timelineLimit:Int!){
             "ready_at": sorted(ready_events)[0] if ready_events else None,
             "state": as_text(pull.get("state")),
             "draft_timeline_truncated": timeline_truncated,
+            "draft_timeline_unavailable": timeline_unavailable,
         }
     return states
 

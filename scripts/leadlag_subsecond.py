@@ -74,7 +74,7 @@ def cmd_subsecond(args: argparse.Namespace) -> None:
     cycles_by_key = {(c.asset, c.start): c for c in cycles}
     all_tokens = {c.up_token for c in cycles} | {c.down_token for c in cycles}
     print(f"subsecond: {len(cycles)} cycles; loading extracts ...", flush=True)
-    books = s4.load_token_books(workdir, dates, all_tokens)
+    books = s4.load_token_books(workdir, dates, all_tokens, pm_clock=args.pm_clock)
 
     net: dict[tuple[str, float, float], list[float]] = {}
     pre_move_net: dict[tuple[str, float], list[float]] = {}
@@ -135,7 +135,7 @@ def cmd_subsecond(args: argparse.Namespace) -> None:
          "mean net (c)", "95% CI"],
         rows,
     )
-    out = f"<!-- section:subsecond -->\n{table}\n"
+    out = f"<!-- pm-clock: {s4.pm_clock_provenance()} -->\n<!-- section:subsecond -->\n{table}\n"
     if args.report:
         Path(args.report).write_text(out)
         print(f"subsecond: wrote {args.report}")
@@ -164,6 +164,7 @@ def extract_sized_object(workdir: Path, date: str, key: str, tokens: list[str]) 
             frame = con.execute(
                 f"""
                 SELECT asset_id, CAST(epoch_ms(timestamp_received) AS BIGINT) AS ts_ms,
+                       CAST(epoch_ms(timestamp) AS BIGINT) AS ts_venue_ms,
                        CAST(best_bid AS DOUBLE) AS best_bid, CAST(best_ask AS DOUBLE) AS best_ask,
                        CAST(price AS DOUBLE) AS level_price, CAST(size AS DOUBLE) AS level_size,
                        side
@@ -245,10 +246,12 @@ def cmd_fillability(args: argparse.Namespace) -> None:
         if not paths:
             raise SystemExit(f"no pm_tob_sized extracts for {date}; run `extract-sizes` first")
         print(f"fillability: {date} loading {len(paths)} sized extracts ...", flush=True)
-        merged = (
-            pl.concat([pl.read_parquet(p).filter(pl.col("asset_id").is_in(list(token_set))) for p in paths])
-            .sort("asset_id", "ts_ms")
-        )
+        frames = [pl.read_parquet(p).filter(pl.col("asset_id").is_in(list(token_set))) for p in paths]
+        merged = s4.select_pm_clock(
+            s4.concat_pm_extract_frames(frames, args.pm_clock, f"pm_tob_sized/{date}"),
+            args.pm_clock,
+            f"pm_tob_sized/{date}",
+        ).sort("asset_id", "ts_ms")
         sized = {key[0]: SizedBook(f) for key, f in merged.partition_by("asset_id", as_dict=True).items()}
         del merged
         base = s4.day_epoch(date)
@@ -303,6 +306,7 @@ def cmd_fillability(args: argparse.Namespace) -> None:
         rows,
     )
     out = (
+        f"<!-- pm-clock: {s4.pm_clock_provenance()} -->\n"
         f"<!-- section:fillability (size at best ask {SIZE_PROBE_DELTA_SECS}s after "
         f"detection, {args.leader} clock) -->\n"
         f"{table}\n"
@@ -324,8 +328,17 @@ def main() -> None:
         p.add_argument("--workdir", default=str(s4.DEFAULT_WORKDIR))
         p.add_argument("--report", default="", help="write tables to this file instead of stdout")
 
+    def pm_clock_flag(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--pm-clock",
+            choices=s4.PM_CLOCK_CHOICES,
+            default=s4.DEFAULT_PM_CLOCK,
+            help="PM event clock: venue (offset-free), receive (published studies), auto=venue when extracted",
+        )
+
     p_sub = sub.add_parser("subsecond", help="net edge vs reaction latency (sub-second)")
     common(p_sub)
+    pm_clock_flag(p_sub)
     p_sub.set_defaults(func=cmd_subsecond)
 
     p_ext = sub.add_parser("extract-sizes", help="re-extract tob with level size columns")
@@ -335,6 +348,7 @@ def main() -> None:
 
     p_fill = sub.add_parser("fillability", help="displayed size at the ask at signal time")
     common(p_fill)
+    pm_clock_flag(p_fill)
     p_fill.add_argument(
         "--leader",
         choices=("hl", "trades"),

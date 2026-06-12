@@ -131,7 +131,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     cycles_by_key = {(c.asset, c.start): c for c in cycles}
     all_tokens = {c.up_token for c in cycles} | {c.down_token for c in cycles}
     print(f"analyze: {len(cycles)} cycles; loading extracts ...", flush=True)
-    books = s4.load_token_books(workdir, dates, all_tokens)
+    books = s4.load_token_books(workdir, dates, all_tokens, pm_clock=args.pm_clock)
 
     offsets: dict[tuple[str, float], list[float]] = {}
     counts: dict[tuple[str, float], list[int]] = {}  # [bybit_events, hl_events, matched]
@@ -244,6 +244,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     )
 
     out = (
+        f"<!-- pm-clock: {s4.pm_clock_provenance()} -->\n"
         f"<!-- section:leadtime (Bybit trades clock vs HL book clock) -->\n{lead_table}\n\n"
         f"<!-- section:tradesleader (net edge, Bybit trades clock) -->\n{edge_table}\n"
     )
@@ -277,6 +278,12 @@ def main() -> None:
         default="mid",
         help="mark events to book mid at +30s (default) or to the cycle's settlement payout; "
         "event-set guards are identical so the two tables are row-comparable",
+    )
+    p.add_argument(
+        "--pm-clock",
+        choices=s4.PM_CLOCK_CHOICES,
+        default=s4.DEFAULT_PM_CLOCK,
+        help="PM event clock: venue (offset-free), receive (published studies), auto=venue when extracted",
     )
     p.set_defaults(func=cmd_analyze)
 

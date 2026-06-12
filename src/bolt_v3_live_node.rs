@@ -2302,13 +2302,17 @@ impl BoltV3LiveNodeRuntime {
         let Some(iv_runtime) = self.iv_runtime.take() else {
             return Ok(());
         };
-        let lifecycle = plan_iv_engine_lifecycle(root).map_err(|error| {
-            BoltV3LiveNodeError::StrategyRegistration(
-                BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
-                    message: format!("bolt-v3 IV lifecycle stop planning failed: {error:?}"),
-                },
-            )
-        })?;
+        let lifecycle = match plan_iv_engine_lifecycle(root) {
+            Ok(lifecycle) => lifecycle,
+            Err(error) => {
+                self.iv_runtime = Some(iv_runtime);
+                return Err(BoltV3LiveNodeError::StrategyRegistration(
+                    BoltV3StrategyRegistrationError::IvQueryHandleRegistration {
+                        message: format!("bolt-v3 IV lifecycle stop planning failed: {error:?}"),
+                    },
+                ));
+            }
+        };
         self.iv_event_bindings = None;
         let outcomes = {
             let mut adapter = NtIvRuntimeBindingAdapter::new(
@@ -4577,6 +4581,79 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         }
     }
 
+    fn fixture_loaded_config_with_external_option_greeks_iv() -> LoadedBoltV3Config {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.clients.clear();
+        loaded.root.nautilus.data_engine.external_clients =
+            vec![ClientId::from("configured-client")];
+        loaded.root.iv = Some(
+            toml::from_str(
+                r#"
+schema_version = 1
+
+[[profiles]]
+profile_id = "configured-profile"
+enabled_products = ["source_health"]
+max_raw_events = 2
+max_indexed_points = 2
+max_smiles = 2
+max_surfaces = 2
+max_derived_points = 2
+max_source_health_events = 2
+projection_policies = []
+interpolation_policies = []
+fallback_policies = []
+quorum_policies = []
+helper_policies = []
+derived_inputs = []
+derived_input_policies = []
+
+[profiles.audit_policy]
+enabled_raw_products = ["option_greeks"]
+authorized_audit_handles = ["configured-audit-handle"]
+access_purposes = ["configured-replay-purpose"]
+eligible_sources = ["configured-greeks-source"]
+
+[profiles.audit_policy.audit_retention]
+max_events = 2
+max_age_ns = 10000
+
+[[profiles.strategy_authorizations]]
+strategy_id = "configured-strategy"
+authorization_mode = "profile_wide"
+allowed_product_kinds = ["source_health"]
+allowed_selector_fingerprints = []
+allowed_source_ids = []
+
+[[profiles.sources]]
+source_id = "configured-greeks-source"
+selector_fingerprint = "configured-greeks-selector"
+source_kind = "option_greeks"
+client_id = "configured-client"
+subscription_generation = 7
+accepted_conventions = ["configured-convention"]
+
+[profiles.sources.nt_provenance]
+nt_revision = "configured-nt-revision"
+nt_evidence_path = "configured/nt/evidence/path.rs"
+nt_symbol = "ConfiguredOptionGreeks"
+
+[profiles.sources.selector]
+selector_kind = "source_option_greeks"
+instrument_ids = ["BTC-20240101-50000-C.DERIBIT"]
+
+[profiles.sources.selector.nt_params]
+configured_nt_param = "configured-value"
+
+[profiles.sources.params]
+configured_source_param = "configured-value"
+"#,
+            )
+            .expect("configured IV profile should parse"),
+        );
+        loaded
+    }
+
     #[test]
     fn live_node_startup_applies_iv_subscription_plans_to_runtime_source_health() {
         let mut loaded = fixture_loaded_config();
@@ -5152,75 +5229,7 @@ configured_source_param = "configured-value"
 
     #[test]
     fn live_node_runtime_stop_applies_iv_unsubscribe_lifecycle() {
-        let mut loaded = fixture_loaded_config();
-        loaded.root.clients.clear();
-        loaded.root.nautilus.data_engine.external_clients =
-            vec![ClientId::from("configured-client")];
-        loaded.root.iv = Some(
-            toml::from_str(
-                r#"
-schema_version = 1
-
-[[profiles]]
-profile_id = "configured-profile"
-enabled_products = ["source_health"]
-max_raw_events = 2
-max_indexed_points = 2
-max_smiles = 2
-max_surfaces = 2
-max_derived_points = 2
-max_source_health_events = 2
-projection_policies = []
-interpolation_policies = []
-fallback_policies = []
-quorum_policies = []
-helper_policies = []
-derived_inputs = []
-derived_input_policies = []
-
-[profiles.audit_policy]
-enabled_raw_products = ["option_greeks"]
-authorized_audit_handles = ["configured-audit-handle"]
-access_purposes = ["configured-replay-purpose"]
-eligible_sources = ["configured-greeks-source"]
-
-[profiles.audit_policy.audit_retention]
-max_events = 2
-max_age_ns = 10000
-
-[[profiles.strategy_authorizations]]
-strategy_id = "configured-strategy"
-authorization_mode = "profile_wide"
-allowed_product_kinds = ["source_health"]
-allowed_selector_fingerprints = []
-allowed_source_ids = []
-
-[[profiles.sources]]
-source_id = "configured-greeks-source"
-selector_fingerprint = "configured-greeks-selector"
-source_kind = "option_greeks"
-client_id = "configured-client"
-subscription_generation = 7
-accepted_conventions = ["configured-convention"]
-
-[profiles.sources.nt_provenance]
-nt_revision = "configured-nt-revision"
-nt_evidence_path = "configured/nt/evidence/path.rs"
-nt_symbol = "ConfiguredOptionGreeks"
-
-[profiles.sources.selector]
-selector_kind = "source_option_greeks"
-instrument_ids = ["BTC-20240101-50000-C.DERIBIT"]
-
-[profiles.sources.selector.nt_params]
-configured_nt_param = "configured-value"
-
-[profiles.sources.params]
-configured_source_param = "configured-value"
-"#,
-            )
-            .expect("configured IV profile should parse"),
-        );
+        let loaded = fixture_loaded_config_with_external_option_greeks_iv();
         let resolved = ResolvedBoltV3Secrets {
             clients: BTreeMap::new(),
         };
@@ -5256,6 +5265,57 @@ configured_source_param = "configured-value"
                 .iv_source_health("configured-profile", "configured-greeks-source")
                 .is_none(),
             "stopped live node should not expose IV source health through a retained runtime"
+        );
+    }
+
+    #[test]
+    fn live_node_runtime_stop_planning_failure_keeps_iv_runtime() {
+        let loaded = fixture_loaded_config_with_external_option_greeks_iv();
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
+        let adapters = BoltV3AdapterConfigs {
+            clients: BTreeMap::new(),
+        };
+
+        let (mut runtime, _) = build_live_node_with_clients_and_submit_approval_limits(
+            &loaded,
+            &resolved,
+            adapters,
+            BTreeMap::new(),
+        )
+        .expect("configured external IV source should build without live transport");
+        assert!(runtime.has_iv_runtime());
+        assert!(runtime.has_iv_event_bindings());
+
+        let mut invalid_stop_root = loaded.root.clone();
+        let profile = invalid_stop_root
+            .iv
+            .as_mut()
+            .and_then(|iv| iv.profiles.first_mut())
+            .expect("fixture should include one IV profile");
+        let duplicate_source = profile
+            .sources
+            .first()
+            .expect("fixture should include one IV source")
+            .clone();
+        profile.sources.push(duplicate_source);
+
+        let error = runtime
+            .stop_iv_engine_lifecycle(&invalid_stop_root)
+            .expect_err("invalid stop lifecycle planning should fail");
+
+        assert!(
+            error.to_string().contains("DuplicateSourceId"),
+            "failure should identify duplicate-source stop planning: {error}"
+        );
+        assert!(
+            runtime.has_iv_runtime(),
+            "failed stop planning must not drop the IV runtime"
+        );
+        assert!(
+            runtime.has_iv_event_bindings(),
+            "failed stop planning must not drop IV event bindings"
         );
     }
 

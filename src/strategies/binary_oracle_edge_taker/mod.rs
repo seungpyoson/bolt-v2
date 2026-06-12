@@ -4848,6 +4848,9 @@ impl BinaryOracleEdgeTaker {
                             evaluation.pricing_blocked_by.push(
                                 EntryPricingBlockReason::SizedNotionalUnsupported(selected_side),
                             );
+                            // Keep the re-priced edge evidence, but clear the
+                            // executable intent fields so submission stays
+                            // blocked for this unsupported notional.
                             evaluation.selected_side = None;
                             evaluation.sized_notional = None;
                             evaluation.expected_ev_per_notional = None;

@@ -315,6 +315,10 @@ impl BinaryOracleEdgeTakerBuilder {
                 config.vwap_depth_limit_bps,
             ),
             (stringify!(slippage_buffer_bps), config.slippage_buffer_bps),
+            (
+                stringify!(sizing_ev_reference_bps),
+                config.sizing_ev_reference_bps,
+            ),
         ] {
             anyhow::ensure!(
                 (value as f64) <= BPS_DENOMINATOR,
@@ -452,6 +456,7 @@ impl BinaryOracleEdgeTakerBuilder {
             stringify!(book_impact_cap_bps),
             stringify!(vwap_depth_limit_bps),
             stringify!(slippage_buffer_bps),
+            stringify!(sizing_ev_reference_bps),
         ] {
             Self::validate_bps_runtime_knob_upper_bound(table, field_prefix, field_name, errors);
         }

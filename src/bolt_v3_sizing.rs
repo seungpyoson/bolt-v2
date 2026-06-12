@@ -250,4 +250,23 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn robust_sizing_fails_closed_before_ev_reference_on_non_positive_ev() {
+        // Guard-order pin: non-positive EV fails closed before the sizing path
+        // observes otherwise invalid inputs.
+        for expected_ev_per_notional in [0.0, -0.015] {
+            assert_eq!(
+                choose_robust_size(&RobustSizingInputs {
+                    expected_ev_per_notional,
+                    ev_reference_per_notional: f64::NAN,
+                    risk_lambda: 0.0,
+                    order_notional_target: 5.0,
+                    maximum_position_notional: 10.0,
+                    impact_cap_notional: 100.0,
+                }),
+                0.0
+            );
+        }
+    }
 }

@@ -2580,19 +2580,19 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
     interval = remote_policy["poll_interval_seconds"]
     while True:
         now = time.monotonic()
-        head_result = verify_remote_head_current_or_fail(repo, branch, head)
-        if head_result is not None:
-            return head_result
         if now >= overall_deadline:
+            head_result = verify_remote_head_current_or_fail(repo, branch, head)
+            if head_result is not None:
+                return head_result
             return verify_remote_fail(f"timed out waiting for remote checks on {pr_url}")
         checks, error = pr_checks(repo)
         if error is not None:
             return verify_remote_fail(error)
+        head_result = verify_remote_head_current_or_fail(repo, branch, head)
+        if head_result is not None:
+            return head_result
         if not checks:
             if now >= checks_deadline:
-                head_result = verify_remote_head_current_or_fail(repo, branch, head)
-                if head_result is not None:
-                    return head_result
                 return verify_remote_fail(
                     f"no PR checks appeared for {head} on {pr_url}; CI may be path-ignored or not started"
                 )
@@ -2600,9 +2600,6 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
             continue
         failing = [check for check in checks if check.get("bucket") in {"fail", "cancel"}]
         if failing:
-            head_result = verify_remote_head_current_or_fail(repo, branch, head)
-            if head_result is not None:
-                return head_result
             print(f"Remote checks failed for {head} on {pr_url}:", file=sys.stderr)
             for check in failing:
                 print(f"- {check_summary(check)}", file=sys.stderr)
@@ -2614,17 +2611,11 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
             if check.get("bucket") not in {"pass", "skipping", "pending", "fail", "cancel"}
         ]
         if unknown:
-            head_result = verify_remote_head_current_or_fail(repo, branch, head)
-            if head_result is not None:
-                return head_result
             print(f"ERROR: unknown PR check bucket for {head} on {pr_url}:", file=sys.stderr)
             for check in unknown:
                 print(f"- {check_summary(check)}", file=sys.stderr)
             return 2
         if not pending:
-            head_result = verify_remote_head_current_or_fail(repo, branch, head)
-            if head_result is not None:
-                return head_result
             print(f"OK: remote checks passed for {head} on {pr_url}")
             return 0
         time.sleep(interval)

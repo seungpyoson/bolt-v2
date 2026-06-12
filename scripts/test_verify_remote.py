@@ -232,6 +232,48 @@ def assert_verify_remote_waits_then_passes() -> None:
         raise AssertionError((result, output))
 
 
+def assert_verify_remote_fetches_checks_before_watch_recheck() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        original_preconditions = owner.ensure_verify_remote_preconditions
+        original_pr = owner.pr_for_current_branch
+        original_checks = owner.pr_checks
+        original_sleep = owner.time.sleep
+        try:
+            owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
+            pr_calls = 0
+            checks_fetched = False
+
+            def mock_pr(_repo: pathlib.Path, _branch: str) -> tuple[dict[str, object] | None, str | None]:
+                nonlocal pr_calls
+                pr_calls += 1
+                if pr_calls == 1:
+                    return {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None
+                if not checks_fetched:
+                    return None, "watch recheck happened before checks fetch"
+                return {"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None
+
+            def mock_checks(_repo: pathlib.Path) -> tuple[list[dict[str, str]], None]:
+                nonlocal checks_fetched
+                checks_fetched = True
+                return [{"name": "gate", "bucket": "pass"}], None
+
+            owner.pr_for_current_branch = mock_pr
+            owner.pr_checks = mock_checks
+            owner.time.sleep = lambda _seconds: None
+            result, output = run_cmd_verify_remote(owner, repo)
+        finally:
+            owner.ensure_verify_remote_preconditions = original_preconditions
+            owner.pr_for_current_branch = original_pr
+            owner.pr_checks = original_checks
+            owner.time.sleep = original_sleep
+    if result != 0 or "OK: remote checks passed" not in output:
+        raise AssertionError((result, output))
+
+
 def assert_verify_remote_rejects_branch_advance_during_watch() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -309,7 +351,6 @@ def assert_verify_remote_rechecks_head_before_reporting_failed_checks() -> None:
             pr_calls = iter(
                 [
                     ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
-                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
                     ({"headRefOid": "def", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
                 ]
             )
@@ -371,7 +412,6 @@ def assert_verify_remote_rechecks_head_before_reporting_unknown_checks() -> None
             owner.ensure_verify_remote_preconditions = lambda _repo: ("abc", "feature", None)
             pr_calls = iter(
                 [
-                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
                     ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
                     ({"headRefOid": "def", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
                 ]
@@ -474,7 +514,6 @@ def assert_verify_remote_rechecks_head_before_no_checks_timeout() -> None:
             pr_calls = iter(
                 [
                     ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
-                    ({"headRefOid": "abc", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
                     ({"headRefOid": "def", "url": "https://example.invalid/pr/1", "number": 1, "state": "OPEN"}, None),
                 ]
             )
@@ -548,6 +587,7 @@ def main() -> int:
     assert_pr_lookup_preserves_gh_errors()
     assert_pr_checks_allows_pending_exit_code_with_json()
     assert_verify_remote_waits_then_passes()
+    assert_verify_remote_fetches_checks_before_watch_recheck()
     assert_verify_remote_rejects_branch_advance_during_watch()
     assert_verify_remote_reports_failing_checks()
     assert_verify_remote_rechecks_head_before_reporting_failed_checks()

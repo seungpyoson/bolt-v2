@@ -165,6 +165,10 @@ def cmd_lake(args: argparse.Namespace) -> None:
         tmp.write_text(json.dumps(payload))
         tmp.rename(ck)
 
+    for date in dates:
+        if not (ckdir / f"{date}.json").exists():
+            raise SystemExit(f"lake: missing checkpoint for {date}; re-run lake")
+
     lines = [
         "## Cross-source clock offset — pmxt collector receive vs Polymarket venue timestamp",
         "",
@@ -381,20 +385,32 @@ async def probe_hyperliquid(asset: str, deadline: float, offsets: dict[str, list
 async def run_live_probe(asset: str, minutes: float, clock: CorrectedClock) -> dict[str, list[float]]:
     deadline = time.time() + minutes * 60
     offsets: dict[str, list[float]] = {"polymarket": [], "bybit_trades": [], "hyperliquid_l2book": []}
-    tasks = [
-        asyncio.create_task(probe_polymarket(asset, deadline, offsets, clock)),
-        asyncio.create_task(probe_bybit(asset, deadline, offsets, clock)),
-        asyncio.create_task(probe_hyperliquid(asset, deadline, offsets, clock)),
-        asyncio.create_task(ntp_reanchor(clock, deadline)),
-    ]
-    names = ("polymarket", "bybit_trades", "hyperliquid_l2book", "ntp_reanchor")
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    dead = {n: r for n, r in zip(names, results) if isinstance(r, BaseException)}
+    tasks = {
+        asyncio.create_task(probe_polymarket(asset, deadline, offsets, clock)): "polymarket",
+        asyncio.create_task(probe_bybit(asset, deadline, offsets, clock)): "bybit_trades",
+        asyncio.create_task(probe_hyperliquid(asset, deadline, offsets, clock)): "hyperliquid_l2book",
+        asyncio.create_task(ntp_reanchor(clock, deadline)): "ntp_reanchor",
+    }
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+    dead = {}
+    for task in done:
+        exc = task.exception()
+        if isinstance(exc, BaseException):
+            dead[tasks[task]] = exc
     if dead:
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
         # a task that escaped its reconnect loop (e.g. a pre-loop failure) must
         # not yield a successful zero-row report for that source
         details = "; ".join(f"{n}: {type(r).__name__}: {r}" for n, r in dead.items())
         raise SystemExit(f"live-probe: probe task(s) died: {details}")
+    empty = [source for source, vals in offsets.items() if not vals]
+    if empty:
+        raise SystemExit(
+            f"live-probe: captured zero samples for {', '.join(empty)}; "
+            "check subscriptions/event filters or rerun with a longer probe"
+        )
     return offsets
 
 

@@ -246,8 +246,9 @@ def cmd_fillability(args: argparse.Namespace) -> None:
         if not paths:
             raise SystemExit(f"no pm_tob_sized extracts for {date}; run `extract-sizes` first")
         print(f"fillability: {date} loading {len(paths)} sized extracts ...", flush=True)
+        frames = [pl.read_parquet(p).filter(pl.col("asset_id").is_in(list(token_set))) for p in paths]
         merged = s4.select_pm_clock(
-            pl.concat([pl.read_parquet(p).filter(pl.col("asset_id").is_in(list(token_set))) for p in paths]),
+            s4.concat_pm_extract_frames(frames, args.pm_clock, f"pm_tob_sized/{date}"),
             args.pm_clock,
             f"pm_tob_sized/{date}",
         ).sort("asset_id", "ts_ms")

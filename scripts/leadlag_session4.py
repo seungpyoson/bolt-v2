@@ -489,7 +489,7 @@ def select_pm_clock(frame: pl.DataFrame, pm_clock: str, label: str) -> pl.DataFr
         n_null = frame["ts_ms"].null_count()
         if n_null:
             raise SystemExit(
-                f"{label}: {n_null} null venue timestamps under pm-clock=venue; "
+                f"{label}: {n_null} null venue timestamps under pm-clock={pm_clock} (resolved venue); "
                 "re-extract this window or pass --pm-clock receive explicitly"
             )
     elif has_venue:
@@ -508,6 +508,18 @@ def select_pm_clock(frame: pl.DataFrame, pm_clock: str, label: str) -> pl.DataFr
     return frame
 
 
+def concat_pm_extract_frames(frames: list[pl.DataFrame], pm_clock: str, label: str) -> pl.DataFrame:
+    has_venue = ["ts_venue_ms" in frame.columns for frame in frames]
+    if any(has_venue) and not all(has_venue):
+        if pm_clock == "receive":
+            return pl.concat([frame.drop("ts_venue_ms") if has else frame for frame, has in zip(frames, has_venue)])
+        raise SystemExit(
+            f"{label}: mixed ts_venue_ms presence across extracts; "
+            "re-extract the window to one cache generation or pass --pm-clock receive explicitly"
+        )
+    return pl.concat(frames)
+
+
 def load_token_books(
     workdir: Path, dates: list[str], tokens: set[str], pm_clock: str = DEFAULT_PM_CLOCK
 ) -> dict[str, TokenBook]:
@@ -518,7 +530,9 @@ def load_token_books(
             frames.append(pl.read_parquet(path).filter(pl.col("asset_id").is_in(list(tokens))))
     if not frames:
         return {}
-    merged = select_pm_clock(pl.concat(frames), pm_clock, "pm_tob").sort("asset_id", "ts_ms")
+    merged = select_pm_clock(concat_pm_extract_frames(frames, pm_clock, "pm_tob"), pm_clock, "pm_tob").sort(
+        "asset_id", "ts_ms"
+    )
     return {key[0]: TokenBook(f) for key, f in merged.partition_by("asset_id", as_dict=True).items()}
 
 
@@ -532,7 +546,9 @@ def load_trades(
             frames.append(pl.read_parquet(path).filter(pl.col("asset_id").is_in(list(tokens))))
     if not frames:
         raise SystemExit("no pm_trades extracts found; run `extract-pm` first")
-    return select_pm_clock(pl.concat(frames), pm_clock, "pm_trades").sort("asset_id", "ts_ms")
+    return select_pm_clock(concat_pm_extract_frames(frames, pm_clock, "pm_trades"), pm_clock, "pm_trades").sort(
+        "asset_id", "ts_ms"
+    )
 
 
 def detect_events(leader: LeaderSeries, day_start: int, threshold_bps: float) -> list[tuple[int, int]]:

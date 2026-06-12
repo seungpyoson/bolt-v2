@@ -116,6 +116,82 @@ pub struct DeltaMappingConfig {
     pub empty_book_policy: EmptyBookPolicy,
 }
 
+/// Fields for the periodic-full-snapshot wire shape.
+///
+/// Each JSONL line is one full order-book photo: `bids_field` and `asks_field`
+/// each hold an array of level objects keyed by `level_price_field` /
+/// `level_size_field`, and `event_time_field` holds the exchange book time in
+/// `event_time_unit` units.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotMappingFields {
+    pub bids_field: String,
+    pub asks_field: String,
+    pub level_price_field: String,
+    pub level_size_field: String,
+    pub event_time_field: String,
+    pub event_time_unit: CsvTimestampUnit,
+}
+
+/// Fields for the typed-event Parquet stream wire shape.
+///
+/// Each row is one typed event whose kind is the value of `event_type_field`:
+///
+/// - `snapshot_event_value` — a full photo. `bids_field` / `asks_field` each
+///   hold a JSON string of `[price, size]` string pairs (the archive shape:
+///   `"[[\"0.49\",\"10\"]]"`); an empty array string `"[]"` on both sides is
+///   a genuine empty book (a lone CLEAR through the shared expansion rules).
+/// - `level_change_event_value` — a single price-level update on
+///   `side_field`/`price_field`/`size_field`. By the NT level-set convention
+///   (no book state is reconstructed here) a positive size is an `UPDATE` at
+///   the absolute level and a zero size is a `DELETE`; each is its own
+///   self-closing book event carrying `F_LAST`.
+/// - `trade_event_value` — a trade print on
+///   `side_field`/`trade_price_field`/`trade_size_field`, accumulated into the
+///   dual trades table family (see the module's dual-fidelity rule).
+/// - any value in `dropped_event_values` (for example a tick-size change) —
+///   accepted and produces no row.
+///
+/// Any other value bails loud. `side_field` decodes through
+/// `buy_side_values` / `sell_side_values`. Replay ordering uses
+/// `capture_time_field` (the monotonic ingest clock) with a stable row-index
+/// tiebreak; `tiebreak_is_row_index` documents and pins that tiebreak (it is
+/// always `true` — physical row order breaks exact capture-time ties — and is
+/// declared in config so the ordering authority has a single visible owner).
+/// `trade_id_field`, when set, supplies the trade id; otherwise a synthetic
+/// per-instrument ordinal is used (see
+/// [`normalize_parquet_event_stream_deltas`]). `trade_forbidden_claims` is
+/// the non-empty forbidden-claims list stamped onto every emitted trades
+/// table under the dual-fidelity rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventStreamMappingFields {
+    pub event_type_field: String,
+    pub snapshot_event_value: String,
+    pub level_change_event_value: String,
+    pub trade_event_value: String,
+    pub dropped_event_values: Vec<String>,
+    pub side_field: String,
+    pub buy_side_values: Vec<String>,
+    pub sell_side_values: Vec<String>,
+    pub price_field: String,
+    pub size_field: String,
+    pub bids_field: String,
+    pub asks_field: String,
+    pub capture_time_field: String,
+    pub capture_time_unit: CsvTimestampUnit,
+    pub tiebreak_is_row_index: bool,
+    pub trade_price_field: String,
+    pub trade_size_field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trade_id_field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_time_field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_time_unit: Option<CsvTimestampUnit>,
+    pub trade_forbidden_claims: Vec<String>,
+}
+
 /// Wire shape of the accepted L2 archive object.
 ///
 /// [`DeltaSourceFormat::Snapshot`] is the periodic-full-snapshot family — one
@@ -126,76 +202,18 @@ pub struct DeltaMappingConfig {
 /// are mutually exclusive: the snapshot entry points reject an `EventStream`
 /// mapping and the event-stream entry point rejects a `Snapshot` mapping, both
 /// failing loud (mirroring the per-kind dispatcher fences).
+///
+/// Internally-tagged newtype variants: serde serializes the inner struct's
+/// fields flat next to the `"kind"` tag, preserving the existing TOML/JSON
+/// wire shape for both variants.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DeltaSourceFormat {
-    /// Each JSONL line is one full order-book photo: `bids_field` and
-    /// `asks_field` each hold an array of level objects keyed by
-    /// `level_price_field` / `level_size_field`, and `event_time_field` holds
-    /// the exchange book time in `event_time_unit` units.
-    Snapshot {
-        bids_field: String,
-        asks_field: String,
-        level_price_field: String,
-        level_size_field: String,
-        event_time_field: String,
-        event_time_unit: CsvTimestampUnit,
-    },
-    /// A typed-event Parquet stream. Each row is one typed event whose kind is
-    /// the value of `event_type_field`:
-    ///
-    /// - `snapshot_event_value` — a full photo. `bids_field` / `asks_field` each
-    ///   hold a JSON string of `[price, size]` string pairs (the archive shape:
-    ///   `"[[\"0.49\",\"10\"]]"`); an empty array string `"[]"` on both sides is
-    ///   a genuine empty book (a lone CLEAR through the shared expansion rules).
-    /// - `level_change_event_value` — a single price-level update on
-    ///   `side_field`/`price_field`/`size_field`. By the NT level-set convention
-    ///   (no book state is reconstructed here) a positive size is an `UPDATE` at
-    ///   the absolute level and a zero size is a `DELETE`; each is its own
-    ///   self-closing book event carrying `F_LAST`.
-    /// - `trade_event_value` — a trade print on
-    ///   `side_field`/`trade_price_field`/`trade_size_field`, accumulated into the
-    ///   dual trades table family (see the module's dual-fidelity rule).
-    /// - any value in `dropped_event_values` (for example a tick-size change) —
-    ///   accepted and produces no row.
-    ///
-    /// Any other value bails loud. `side_field` decodes through
-    /// `buy_side_values` / `sell_side_values`. Replay ordering uses
-    /// `capture_time_field` (the monotonic ingest clock) with a stable row-index
-    /// tiebreak; `tiebreak_is_row_index` documents and pins that tiebreak (it is
-    /// always `true` — physical row order breaks exact capture-time ties — and is
-    /// declared in config so the ordering authority has a single visible owner).
-    /// `trade_id_field`, when set, supplies the trade id; otherwise a synthetic
-    /// per-instrument ordinal is used (see
-    /// [`normalize_parquet_event_stream_deltas`]). `trade_forbidden_claims` is
-    /// the non-empty forbidden-claims list stamped onto every emitted trades
-    /// table under the dual-fidelity rule.
-    EventStream {
-        event_type_field: String,
-        snapshot_event_value: String,
-        level_change_event_value: String,
-        trade_event_value: String,
-        dropped_event_values: Vec<String>,
-        side_field: String,
-        buy_side_values: Vec<String>,
-        sell_side_values: Vec<String>,
-        price_field: String,
-        size_field: String,
-        bids_field: String,
-        asks_field: String,
-        capture_time_field: String,
-        capture_time_unit: CsvTimestampUnit,
-        tiebreak_is_row_index: bool,
-        trade_price_field: String,
-        trade_size_field: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        trade_id_field: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        event_time_field: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        event_time_unit: Option<CsvTimestampUnit>,
-        trade_forbidden_claims: Vec<String>,
-    },
+    /// Each JSONL line is one full order-book photo.
+    Snapshot(SnapshotMappingFields),
+    /// A typed-event Parquet stream. Boxed to avoid a large enum variant
+    /// size difference (the struct holds 18 fields vs Snapshot's 6).
+    EventStream(Box<EventStreamMappingFields>),
 }
 
 /// How a row's instrument is keyed in a multi-instrument object.
@@ -545,7 +563,10 @@ struct EventStreamFields<'a> {
 /// Split from [`validate_event_stream_mapping`] so each function stays focused;
 /// the caller owns the L2 precondition and the borrowed-field construction.
 fn check_event_stream_mapping(mapping: &DeltaMappingConfig) -> Result<()> {
-    let DeltaSourceFormat::EventStream {
+    let DeltaSourceFormat::EventStream(fields) = &mapping.format else {
+        bail!("event-stream mapping check requires an EventStream format mapping");
+    };
+    let EventStreamMappingFields {
         event_type_field,
         snapshot_event_value,
         level_change_event_value,
@@ -567,10 +588,7 @@ fn check_event_stream_mapping(mapping: &DeltaMappingConfig) -> Result<()> {
         event_time_field,
         event_time_unit,
         trade_forbidden_claims,
-    } = &mapping.format
-    else {
-        bail!("event-stream mapping check requires an EventStream format mapping");
-    };
+    } = fields.as_ref();
 
     // The row-index tiebreak is the only tie-resolution this family supports and
     // is always on: physical Parquet order breaks exact capture-time ties so the
@@ -701,30 +719,7 @@ fn validate_event_stream_mapping<'a>(
         accepted.fidelity_class
     );
 
-    let DeltaSourceFormat::EventStream {
-        event_type_field,
-        snapshot_event_value,
-        level_change_event_value,
-        trade_event_value,
-        dropped_event_values,
-        side_field,
-        buy_side_values,
-        sell_side_values,
-        price_field,
-        size_field,
-        bids_field,
-        asks_field,
-        capture_time_field,
-        capture_time_unit,
-        tiebreak_is_row_index: _,
-        trade_price_field,
-        trade_size_field,
-        trade_id_field,
-        event_time_field,
-        event_time_unit,
-        trade_forbidden_claims,
-    } = &mapping.format
-    else {
+    let DeltaSourceFormat::EventStream(es) = &mapping.format else {
         bail!(
             "event-stream delta path requires an EventStream format mapping; the \
              Snapshot format must use the JSONL/tar snapshot entry points, not \
@@ -735,28 +730,28 @@ fn validate_event_stream_mapping<'a>(
     check_event_stream_mapping(mapping)?;
 
     Ok(EventStreamFields {
-        event_type_field,
-        snapshot_event_value,
-        level_change_event_value,
-        trade_event_value,
-        dropped_event_values,
-        side_field,
-        buy_side_values,
-        sell_side_values,
-        price_field,
-        size_field,
-        bids_field,
-        asks_field,
-        capture_time_field,
-        capture_time_unit: *capture_time_unit,
-        trade_price_field,
-        trade_size_field,
-        trade_id_field: trade_id_field.as_deref(),
-        event_time_field: event_time_field.as_deref(),
-        event_time_unit: *event_time_unit,
+        event_type_field: &es.event_type_field,
+        snapshot_event_value: &es.snapshot_event_value,
+        level_change_event_value: &es.level_change_event_value,
+        trade_event_value: &es.trade_event_value,
+        dropped_event_values: &es.dropped_event_values,
+        side_field: &es.side_field,
+        buy_side_values: &es.buy_side_values,
+        sell_side_values: &es.sell_side_values,
+        price_field: &es.price_field,
+        size_field: &es.size_field,
+        bids_field: &es.bids_field,
+        asks_field: &es.asks_field,
+        capture_time_field: &es.capture_time_field,
+        capture_time_unit: es.capture_time_unit,
+        trade_price_field: &es.trade_price_field,
+        trade_size_field: &es.trade_size_field,
+        trade_id_field: es.trade_id_field.as_deref(),
+        event_time_field: es.event_time_field.as_deref(),
+        event_time_unit: es.event_time_unit,
         asset_key_field: mapping.instrument_key.key_field.as_deref(),
         exclusion_filter: mapping.instrument_key.exclusion_filter.as_ref(),
-        trade_forbidden_claims: trade_forbidden_claims.clone(),
+        trade_forbidden_claims: es.trade_forbidden_claims.clone(),
     })
 }
 
@@ -1533,15 +1528,7 @@ fn validate_snapshot_mapping<'a>(
         "ingest_run_id must not be empty"
     );
 
-    let DeltaSourceFormat::Snapshot {
-        bids_field,
-        asks_field,
-        level_price_field,
-        level_size_field,
-        event_time_field,
-        event_time_unit,
-    } = &mapping.format
-    else {
+    let DeltaSourceFormat::Snapshot(sn) = &mapping.format else {
         bail!(
             "snapshot delta path requires a Snapshot format mapping; the EventStream \
              format must use normalize_parquet_event_stream_deltas, not the snapshot \
@@ -1549,11 +1536,11 @@ fn validate_snapshot_mapping<'a>(
         );
     };
     for (label, field) in [
-        ("bids_field", bids_field),
-        ("asks_field", asks_field),
-        ("level_price_field", level_price_field),
-        ("level_size_field", level_size_field),
-        ("event_time_field", event_time_field),
+        ("bids_field", sn.bids_field.as_str()),
+        ("asks_field", sn.asks_field.as_str()),
+        ("level_price_field", sn.level_price_field.as_str()),
+        ("level_size_field", sn.level_size_field.as_str()),
+        ("event_time_field", sn.event_time_field.as_str()),
     ] {
         ensure!(
             !field.trim().is_empty(),
@@ -1567,12 +1554,12 @@ fn validate_snapshot_mapping<'a>(
         );
     }
     Ok(SnapshotFields {
-        bids_field,
-        asks_field,
-        level_price_field,
-        level_size_field,
-        event_time_field,
-        event_time_unit: *event_time_unit,
+        bids_field: &sn.bids_field,
+        asks_field: &sn.asks_field,
+        level_price_field: &sn.level_price_field,
+        level_size_field: &sn.level_size_field,
+        event_time_field: &sn.event_time_field,
+        event_time_unit: sn.event_time_unit,
     })
 }
 
@@ -2060,14 +2047,14 @@ table_families = ["order_book_snapshot_deltas"]
 
     fn single_mapping() -> DeltaMappingConfig {
         DeltaMappingConfig {
-            format: DeltaSourceFormat::Snapshot {
+            format: DeltaSourceFormat::Snapshot(SnapshotMappingFields {
                 bids_field: "bids".to_string(),
                 asks_field: "asks".to_string(),
                 level_price_field: "px".to_string(),
                 level_size_field: "sz".to_string(),
                 event_time_field: "time".to_string(),
                 event_time_unit: CsvTimestampUnit::Milliseconds,
-            },
+            }),
             instrument_key: InstrumentKeySpec {
                 key_field: None,
                 exclusion_filter: None,
@@ -2535,7 +2522,7 @@ table_families = ["order_book_snapshot_deltas"]
 
     fn event_stream_mapping(key_field: Option<&str>) -> DeltaMappingConfig {
         DeltaMappingConfig {
-            format: DeltaSourceFormat::EventStream {
+            format: DeltaSourceFormat::EventStream(Box::new(EventStreamMappingFields {
                 event_type_field: "event_type".to_string(),
                 snapshot_event_value: "book".to_string(),
                 level_change_event_value: "price_change".to_string(),
@@ -2559,7 +2546,7 @@ table_families = ["order_book_snapshot_deltas"]
                 trade_forbidden_claims: vec![
                     "No order-book-imbalance claims from trade prints.".to_string(),
                 ],
-            },
+            })),
             instrument_key: InstrumentKeySpec {
                 key_field: key_field.map(str::to_string),
                 exclusion_filter: None,
@@ -2934,12 +2921,8 @@ table_families = ["order_book_snapshot_deltas"]
     fn event_stream_rejects_empty_trade_forbidden_claims() {
         let accepted = accepted_dataset();
         let mut mapping = event_stream_mapping(None);
-        if let DeltaSourceFormat::EventStream {
-            trade_forbidden_claims,
-            ..
-        } = &mut mapping.format
-        {
-            trade_forbidden_claims.clear();
+        if let DeltaSourceFormat::EventStream(fields) = &mut mapping.format {
+            fields.trade_forbidden_claims.clear();
         }
         let rows = vec![snapshot_row(
             "1700000000000",
@@ -2964,12 +2947,8 @@ table_families = ["order_book_snapshot_deltas"]
     fn event_stream_rejects_false_tiebreak_flag() {
         let accepted = accepted_dataset();
         let mut mapping = event_stream_mapping(None);
-        if let DeltaSourceFormat::EventStream {
-            tiebreak_is_row_index,
-            ..
-        } = &mut mapping.format
-        {
-            *tiebreak_is_row_index = false;
+        if let DeltaSourceFormat::EventStream(fields) = &mut mapping.format {
+            fields.tiebreak_is_row_index = false;
         }
         let rows = vec![snapshot_row(
             "1700000000000",

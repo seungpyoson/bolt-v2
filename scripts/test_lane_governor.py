@@ -152,6 +152,32 @@ print(completed.stdout, end="")
 sys.stderr.write(completed.stderr)
 """
 
+CI_RUNNER = """
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+t0 = time.monotonic()
+result = lane_governor.acquire(
+    "ci-runner", lock_dir=sys.argv[2],
+    acquire_timeout_seconds=20, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+print("ci-result", result is None, time.monotonic() - t0)
+"""
+
+HELP_RUNNER = """
+import sys, time
+scripts_dir, lock_dir = sys.argv[1], sys.argv[2]
+sys.path.insert(0, scripts_dir)
+import lane_governor
+sys.argv = ["verify_sample.py", "--help"]
+t0 = time.monotonic()
+result = lane_governor.acquire(
+    "help-runner", lock_dir=lock_dir, honor_ci_env=False,
+    acquire_timeout_seconds=20, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+print("help-result", result is None, time.monotonic() - t0)
+"""
+
 
 def _spawn(snippet: str, *args: str, env: dict | None = None) -> subprocess.Popen:
     return subprocess.Popen(
@@ -232,6 +258,38 @@ def test_scrubbed_env_child_reenters_while_parent_holds() -> None:
         assert elapsed < 5.0, f"child must pass through re-entrantly, took {elapsed:.1f}s"
 
 
+def test_ci_env_bypasses_lock() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(HOLD_RUNNER, tmp, str(sentinel), "10")
+        _wait_for(sentinel)
+        env = dict(os.environ)
+        env["GITHUB_ACTIONS"] = "true"
+        ci = _spawn(CI_RUNNER, tmp, env=env)
+        out, err = ci.communicate(timeout=20)
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert ci.returncode == 0, err
+        flag, elapsed = out.split()[1], float(out.split()[2])
+        assert flag == "True", "CI bypass must return None without locking"
+        assert elapsed < 5.0, "CI bypass must not wait"
+
+
+def test_help_invocation_bypasses_lock() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(HOLD_RUNNER, tmp, str(sentinel), "10")
+        _wait_for(sentinel)
+        helper = _spawn(HELP_RUNNER, tmp)
+        out, err = helper.communicate(timeout=20)
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert helper.returncode == 0, err
+        flag, elapsed = out.split()[1], float(out.split()[2])
+        assert flag == "True", "--help must not take or wait for the lane lock"
+        assert elapsed < 5.0, "--help fast-path must not wait"
+
+
 def main() -> int:
     tests = [
         test_valid_lane_policy_passes,
@@ -247,6 +305,8 @@ def main() -> int:
         test_holder_metadata_written,
         test_timeout_fails_loud_with_holder_info,
         test_scrubbed_env_child_reenters_while_parent_holds,
+        test_ci_env_bypasses_lock,
+        test_help_invocation_bypasses_lock,
     ]
     for test in tests:
         test()

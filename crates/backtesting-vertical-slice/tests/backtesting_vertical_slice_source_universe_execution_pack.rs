@@ -325,7 +325,10 @@ crypto_future = "MARGIN"
     let execution_plan: BackfillExecutionPlan =
         serde_json::from_slice(&fs::read(&record.execution_plan_path).expect("read plan"))
             .expect("execution plan parses");
-    assert_ne!(execution_plan.run_spec_hash, initial_execution_plan.run_spec_hash);
+    assert_ne!(
+        execution_plan.run_spec_hash,
+        initial_execution_plan.run_spec_hash
+    );
     assert_eq!(execution_plan.status, BackfillExecutionPlanStatus::Ready);
     assert_eq!(execution_plan.operator_run_id, record.operator_run_id);
     assert_eq!(execution_plan.objects.len(), 1);

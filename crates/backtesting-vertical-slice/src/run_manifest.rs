@@ -1678,6 +1678,12 @@ fn catalog_input_to_nt_data_config(
             });
         }
     };
+    let nt_instrument_id = input
+        .nt_instrument_id
+        .parse::<InstrumentId>()
+        .map_err(|_| ManifestError::InvalidInstrumentId {
+            instrument_id: input.nt_instrument_id.clone(),
+        })?;
     let instrument_ids = input
         .instrument_ids
         .as_ref()
@@ -1692,17 +1698,17 @@ fn catalog_input_to_nt_data_config(
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()?;
-    let instrument_id = if instrument_ids.is_some() {
+    let requires_unfiltered_catalog_query =
+        catalog_input_requires_unfiltered_nt_query_for_encoded_directory(input);
+    let instrument_ids = if requires_unfiltered_catalog_query {
         None
     } else {
-        Some(
-            input
-                .nt_instrument_id
-                .parse::<InstrumentId>()
-                .map_err(|_| ManifestError::InvalidInstrumentId {
-                    instrument_id: input.nt_instrument_id.clone(),
-                })?,
-        )
+        instrument_ids
+    };
+    let instrument_id = if instrument_ids.is_some() || requires_unfiltered_catalog_query {
+        None
+    } else {
+        Some(nt_instrument_id)
     };
     let catalog_fs_protocol = parse_catalog_fs_protocol(&input.catalog_fs_protocol)?;
     validate_catalog_storage_options(
@@ -1745,6 +1751,16 @@ fn catalog_input_to_nt_data_config(
         .maybe_filter_expr(input.filter_expr.clone())
         .maybe_optimize_file_loading(input.optimize_file_loading)
         .build())
+}
+
+fn catalog_input_requires_unfiltered_nt_query_for_encoded_directory(
+    input: &ManifestCatalogInput,
+) -> bool {
+    !input.nt_instrument_id.is_ascii()
+        || input
+            .instrument_ids
+            .as_ref()
+            .is_some_and(|ids| ids.iter().any(|id| !id.is_ascii()))
 }
 
 impl BacktestingRunManifest {
@@ -2436,6 +2452,22 @@ mod tests {
         assert_eq!(run.id(), TEST_RUN_ID);
         assert_eq!(run.venues().len(), 1);
         assert_eq!(run.data().len(), 1);
+    }
+
+    #[test]
+    fn non_ascii_catalog_input_omits_nt_instrument_filter() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].nt_instrument_id = "币安人生USDC.BINANCE".to_string();
+
+        let data = manifest.to_nt_data_config().expect("data config");
+
+        assert_eq!(
+            manifest.catalog_inputs[0].nt_instrument_id,
+            "币安人生USDC.BINANCE"
+        );
+        assert!(data.instrument_id().is_none());
+        assert!(data.instrument_ids().is_none());
+        assert!(data.query_identifiers().is_none());
     }
 
     #[test]

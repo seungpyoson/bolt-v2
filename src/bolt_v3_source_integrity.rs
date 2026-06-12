@@ -263,7 +263,7 @@ mod tests {
     // Re-derived after adding position-sizer submit admission state and evidence
     // to the shared submit admission module.
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "5ff1f03a3fca0d167a6c18bc536ddcf8af30eeea5335c18cad549d99a9dd16c3";
+        "d522f06088751957b9fad7872f90801ff27500c6a91480bef2b3c1e17ed04e18";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.

@@ -734,13 +734,40 @@ fn custom_data_command(
 }
 
 struct NtIvRuntimeCommandSenderAdapter {
+    allowed_data_client_ids: BTreeSet<ClientId>,
     external_client_ids: BTreeSet<ClientId>,
 }
 
 impl NtIvRuntimeCommandSenderAdapter {
-    fn new(configured_external_clients: &[ClientId]) -> Self {
+    fn new(registered_data_clients: &[ClientId], configured_external_clients: &[ClientId]) -> Self {
+        let mut allowed_data_client_ids = registered_data_clients
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        allowed_data_client_ids.extend(configured_external_clients.iter().cloned());
         Self {
+            allowed_data_client_ids,
             external_client_ids: configured_external_clients.iter().cloned().collect(),
+        }
+    }
+
+    fn is_external_client(&self, plan: &IvSubscriptionPlan) -> bool {
+        self.external_client_ids
+            .contains(&ClientId::from(plan.client_id.as_str()))
+    }
+
+    fn validate_client_id(&self, plan: &IvSubscriptionPlan) -> Result<(), IvRuntimeBindingError> {
+        let client_id = ClientId::from(plan.client_id.as_str());
+        if self.allowed_data_client_ids.contains(&client_id) {
+            Ok(())
+        } else {
+            Err(binding_error(
+                plan,
+                format!(
+                    "IV source client_id {} is not registered as an NT data client or configured external data client",
+                    plan.client_id
+                ),
+            ))
         }
     }
 }
@@ -750,12 +777,10 @@ impl IvRuntimeBindingAdapter for NtIvRuntimeCommandSenderAdapter {
         &mut self,
         plan: &IvSubscriptionPlan,
     ) -> Result<(), IvRuntimeBindingError> {
-        if self
-            .external_client_ids
-            .contains(&ClientId::from(plan.client_id.as_str()))
-        {
+        if self.is_external_client(plan) {
             return Ok(());
         }
+        self.validate_client_id(plan)?;
 
         let sender = get_data_cmd_sender();
         for command in iv_runtime_data_commands_for_plan(plan)? {
@@ -814,6 +839,7 @@ impl IvRuntimeBindingAdapter for NtIvRuntimePlanValidationAdapter {
 struct NtIvRuntimeBindingAdapter<'a> {
     node: &'a mut LiveNode,
     allowed_data_client_ids: BTreeSet<ClientId>,
+    external_client_ids: BTreeSet<ClientId>,
 }
 
 impl<'a> NtIvRuntimeBindingAdapter<'a> {
@@ -829,7 +855,13 @@ impl<'a> NtIvRuntimeBindingAdapter<'a> {
         Self {
             node,
             allowed_data_client_ids,
+            external_client_ids: configured_external_clients.iter().cloned().collect(),
         }
+    }
+
+    fn is_external_client(&self, plan: &IvSubscriptionPlan) -> bool {
+        self.external_client_ids
+            .contains(&ClientId::from(plan.client_id.as_str()))
     }
 
     fn client_id(&self, plan: &IvSubscriptionPlan) -> Result<ClientId, IvRuntimeBindingError> {
@@ -1033,6 +1065,10 @@ impl IvRuntimeBindingAdapter for NtIvRuntimeBindingAdapter<'_> {
         &mut self,
         plan: &IvSubscriptionPlan,
     ) -> Result<(), IvRuntimeBindingError> {
+        if self.is_external_client(plan) {
+            return Ok(());
+        }
+
         match (plan.operation, &plan.selector) {
             (
                 IvRuntimeOperation::SubscribeOptionGreeks
@@ -2181,6 +2217,7 @@ impl BoltV3LiveNodeRuntime {
 
         let node_handle = self.node.handle();
         let start_plans = lifecycle.start_plans;
+        let registered_clients = self.node.kernel().data_engine.borrow().registered_clients();
         let external_clients = root.nautilus.data_engine.external_clients.clone();
         let start_poll_interval =
             Duration::from_millis(root.persistence.runtime_capture_start_poll_interval_ms);
@@ -2195,7 +2232,8 @@ impl BoltV3LiveNodeRuntime {
                 }
             }
 
-            let mut adapter = NtIvRuntimeCommandSenderAdapter::new(&external_clients);
+            let mut adapter =
+                NtIvRuntimeCommandSenderAdapter::new(&registered_clients, &external_clients);
             let outcomes = apply_subscription_plans(&mut adapter, &start_plans);
             if let Err(error) = iv_runtime.apply_plan_outcomes(&outcomes) {
                 log::error!("bolt-v3 IV lifecycle start outcome update failed: {error:?}");
@@ -4882,7 +4920,8 @@ configured_source_param = "configured-value"
             params: toml::Value::Table(toml::map::Map::new()),
             subscription_generation: 7,
         };
-        let mut adapter = NtIvRuntimeCommandSenderAdapter::new(&[]);
+        let mut adapter =
+            NtIvRuntimeCommandSenderAdapter::new(&[ClientId::from("configured-client")], &[]);
 
         adapter
             .apply_subscription_plan(&plan)
@@ -4896,6 +4935,85 @@ configured_source_param = "configured-value"
             &commands[0],
             DataCommand::Subscribe(SubscribeCommand::OptionGreeks(_))
         ));
+    }
+
+    #[test]
+    fn iv_runtime_command_sender_adapter_rejects_unknown_start_client_without_queueing() {
+        let commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        nautilus_common::runner::replace_data_cmd_sender(std::sync::Arc::new(
+            RecordingDataCommandSender {
+                commands: commands.clone(),
+            },
+        ));
+        let _restore_sender = DataCommandSenderRestore;
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-greeks-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeOptionGreeks,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionGreeks,
+            client_id: "missing-client".to_string(),
+            selector: IvSelector::SourceOptionGreeks {
+                instrument_ids: vec!["BTC-20240101-50000-C.DERIBIT".to_string()],
+                nt_params: toml::Value::Table(toml::map::Map::new()),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+        let mut adapter = NtIvRuntimeCommandSenderAdapter::new(&[], &[]);
+
+        let error = adapter
+            .apply_subscription_plan(&plan)
+            .expect_err("unknown runtime start client should reject before queueing");
+
+        assert_eq!(error.reason, IvRejectReason::SubscriptionFailed);
+        assert!(error.message.contains("not registered"));
+        assert!(
+            commands
+                .lock()
+                .expect("recording data command sender lock should not be poisoned")
+                .is_empty(),
+            "invalid start client must not enqueue a data command"
+        );
+    }
+
+    #[test]
+    fn iv_runtime_command_sender_adapter_skips_external_start_client_without_queueing() {
+        let commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        nautilus_common::runner::replace_data_cmd_sender(std::sync::Arc::new(
+            RecordingDataCommandSender {
+                commands: commands.clone(),
+            },
+        ));
+        let _restore_sender = DataCommandSenderRestore;
+        let plan = IvSubscriptionPlan {
+            profile_id: "configured-profile".to_string(),
+            source_id: "configured-greeks-source".to_string(),
+            lifecycle: crate::bolt_v3_iv::subscription::IvSubscriptionLifecycle::Start,
+            operation: IvRuntimeOperation::SubscribeOptionGreeks,
+            nt_source_kind: crate::bolt_v3_iv::subscription::IvNtSubscriptionKind::OptionGreeks,
+            client_id: "configured-client".to_string(),
+            selector: IvSelector::SourceOptionGreeks {
+                instrument_ids: vec!["BTC-20240101-50000-C.DERIBIT".to_string()],
+                nt_params: toml::Value::Table(toml::map::Map::new()),
+            },
+            params: toml::Value::Table(toml::map::Map::new()),
+            subscription_generation: 7,
+        };
+        let mut adapter =
+            NtIvRuntimeCommandSenderAdapter::new(&[], &[ClientId::from("configured-client")]);
+
+        adapter
+            .apply_subscription_plan(&plan)
+            .expect("external start client should be accepted without NT queueing");
+
+        assert!(
+            commands
+                .lock()
+                .expect("recording data command sender lock should not be poisoned")
+                .is_empty(),
+            "external start client is managed outside the runtime sender"
+        );
     }
 
     #[test]

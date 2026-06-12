@@ -43,6 +43,15 @@ pub const TRADE_TABLE_FAMILY: &str = "trades";
 /// Native trade prints only; aggregated prints must never satisfy this table.
 pub const TRADE_SOURCE_TYPE_NATIVE: &str = "native";
 
+/// Stable identity of the config-driven CSV native-bars normalization transform.
+pub const BAR_TRANSFORM_IDENTITY: &str = "csv-native-bars-to-canonical-bars.v1";
+
+/// Version of the registered compiled bar-converter implementation.
+pub const BAR_TRANSFORM_VERSION: &str = "1";
+
+/// Source-proof table family accepted by the native bar converter.
+pub const BAR_TABLE_FAMILY: &str = "bars";
+
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
 /// Expected sample raw header, in order.
@@ -57,6 +66,7 @@ const NANOS_PER_MILLISECOND: i64 = 1_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceAdapterKind {
     CsvNativeTrades,
+    CsvNativeBars,
     #[cfg(test)]
     SyntheticOrderBookDeltas,
 }
@@ -82,6 +92,13 @@ pub struct SourceAdapterDefinition {
 pub type TradeConverterDefinition = SourceAdapterDefinition;
 
 /// Run-spec owned converter config.
+///
+/// `csv` carries the native-trades column mapping (present in every existing
+/// trade run-spec). `bars` is the optional native-bars column mapping, present
+/// only when the registered adapter kind is [`SourceAdapterKind::CsvNativeBars`];
+/// the bar dispatch in [`normalize_registered_bar_converter`] fail-closes when a
+/// bar-kind config omits it. Existing trade run-specs carry no `bars` key and
+/// deserialize unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConverterConfig {
@@ -89,6 +106,8 @@ pub struct ConverterConfig {
     pub version: String,
     pub raw_payload: RawPayloadConfig,
     pub csv: CsvTradeMappingConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bars: Option<super::canonical_bars::BarMappingConfig>,
 }
 
 impl ConverterConfig {
@@ -155,6 +174,15 @@ pub const CSV_NATIVE_TRADES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefi
     nt_data_type: "TradeTick",
 };
 
+pub const CSV_NATIVE_BARS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
+    identity: BAR_TRANSFORM_IDENTITY,
+    version: BAR_TRANSFORM_VERSION,
+    kind: SourceAdapterKind::CsvNativeBars,
+    table_family: BAR_TABLE_FAMILY,
+    normalized_schema_version: NORMALIZED_SCHEMA_VERSION,
+    nt_data_type: crate::catalog_projection::NT_DATA_TYPE_BAR,
+};
+
 #[cfg(test)]
 pub const SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
     identity: "synthetic-order-book-deltas-fixture.v1",
@@ -166,11 +194,13 @@ pub const SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER: SourceAdapterDefinition = SourceA
 };
 
 #[cfg(not(test))]
-pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[CSV_NATIVE_TRADES_ADAPTER];
+pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] =
+    &[CSV_NATIVE_TRADES_ADAPTER, CSV_NATIVE_BARS_ADAPTER];
 
 #[cfg(test)]
 pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     CSV_NATIVE_TRADES_ADAPTER,
+    CSV_NATIVE_BARS_ADAPTER,
     SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER,
 ];
 
@@ -248,6 +278,32 @@ pub fn require_registered_trade_converter_for_table_family(
     ensure!(
         adapter.kind == SourceAdapterKind::CsvNativeTrades,
         "adapter {:?} version {:?} is {:?}, not a CSV native-trades converter",
+        adapter.identity,
+        adapter.version,
+        adapter.kind
+    );
+    Ok(adapter)
+}
+
+#[must_use]
+pub fn registered_bar_converter(
+    identity: &str,
+    version: &str,
+) -> Option<&'static SourceAdapterDefinition> {
+    registered_source_adapter(identity, version)
+        .filter(|adapter| adapter.kind == SourceAdapterKind::CsvNativeBars)
+}
+
+pub fn require_registered_bar_converter_for_table_family(
+    identity: &str,
+    version: &str,
+    table_family: &str,
+) -> Result<&'static SourceAdapterDefinition> {
+    let adapter =
+        require_registered_source_adapter_for_table_family(identity, version, table_family)?;
+    ensure!(
+        adapter.kind == SourceAdapterKind::CsvNativeBars,
+        "adapter {:?} version {:?} is {:?}, not a CSV native-bars converter",
         adapter.identity,
         adapter.version,
         adapter.kind
@@ -785,9 +841,63 @@ pub fn normalize_registered_trade_converter(
             capture_time_nanos,
             ingest_run_id,
         ),
+        SourceAdapterKind::CsvNativeBars => {
+            bail!("CSV native-bars adapter cannot normalize native trades")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize native trades")
+        }
+    }
+}
+
+/// Normalize an accepted CSV bar object through the registered bar converter
+/// selected by the run-spec, fail-closing when the kind/config do not match.
+///
+/// Mirrors [`normalize_registered_trade_converter`]: the adapter kind must be
+/// [`SourceAdapterKind::CsvNativeBars`] for the accepted object's table family,
+/// and the run-spec must carry the `bars` mapping that kind requires.
+///
+/// # Errors
+///
+/// Returns an error if the converter is not a registered bar converter for the
+/// table family, the `bars` mapping is absent, or normalization fails.
+pub fn normalize_registered_bar_converter(
+    converter_config: &ConverterConfig,
+    accepted: &AcceptedDataset,
+    identities: &super::canonical_bars::BarInstrumentIdentities,
+    csv_text: &str,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+) -> Result<Vec<super::canonical_market_data::CanonicalBarsTable>> {
+    let converter = require_registered_bar_converter_for_table_family(
+        &converter_config.identity,
+        &converter_config.version,
+        &accepted.table_family,
+    )?;
+    match converter.kind {
+        SourceAdapterKind::CsvNativeBars => {
+            let mapping = converter_config.bars.as_ref().with_context(|| {
+                format!(
+                    "converter {:?} is a CSV native-bars adapter but carries no [converter.bars] mapping",
+                    converter.identity
+                )
+            })?;
+            super::canonical_bars::normalize_csv_native_bars(
+                accepted,
+                identities,
+                mapping,
+                csv_text,
+                capture_time_nanos,
+                ingest_run_id,
+            )
+        }
+        SourceAdapterKind::CsvNativeTrades => {
+            bail!("CSV native-trades adapter cannot normalize native bars")
+        }
+        #[cfg(test)]
+        SourceAdapterKind::SyntheticOrderBookDeltas => {
+            bail!("test fixture adapter cannot normalize native bars")
         }
     }
 }
@@ -1207,7 +1317,7 @@ fn optional_i64(column: &Int64Array, row: usize) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog_projection::NT_DATA_TYPE_TRADE_TICK;
+    use crate::catalog_projection::{NT_DATA_TYPE_BAR, NT_DATA_TYPE_TRADE_TICK};
     use crate::source_proof::{
         AcceptanceMode, AcceptanceScope, EvidenceState, FixtureType, IngestManifestObjectRecord,
         L2ReplayEvidence, LicenseScope, NtMappingStatus, RequiredCheck, RequiredChecks,
@@ -1240,6 +1350,68 @@ mod tests {
 
         assert!(err.to_string().contains("adapter"), "{err}");
         assert!(err.to_string().contains("table_family"), "{err}");
+    }
+
+    #[test]
+    fn bar_source_adapter_registry_exposes_data_family_metadata() {
+        let adapter =
+            require_registered_source_adapter(BAR_TRANSFORM_IDENTITY, BAR_TRANSFORM_VERSION)
+                .expect("registered bar source adapter");
+
+        assert_eq!(adapter.kind, SourceAdapterKind::CsvNativeBars);
+        assert_eq!(adapter.table_family, BAR_TABLE_FAMILY);
+        assert_eq!(adapter.normalized_schema_version, NORMALIZED_SCHEMA_VERSION);
+        assert_eq!(adapter.nt_data_type, NT_DATA_TYPE_BAR);
+        assert!(REGISTERED_SOURCE_ADAPTERS.contains(&CSV_NATIVE_BARS_ADAPTER));
+        assert_eq!(
+            registered_bar_converter(BAR_TRANSFORM_IDENTITY, BAR_TRANSFORM_VERSION),
+            Some(&CSV_NATIVE_BARS_ADAPTER)
+        );
+    }
+
+    #[test]
+    fn bar_source_adapter_registry_rejects_table_family_mismatch() {
+        let mismatch = format!("{BAR_TABLE_FAMILY}_mismatch");
+        let err = require_registered_bar_converter_for_table_family(
+            BAR_TRANSFORM_IDENTITY,
+            BAR_TRANSFORM_VERSION,
+            &mismatch,
+        )
+        .expect_err("bar adapter table-family mismatch must fail closed");
+
+        assert!(err.to_string().contains("adapter"), "{err}");
+        assert!(err.to_string().contains("table_family"), "{err}");
+    }
+
+    #[test]
+    fn bar_and_trade_converter_guards_reject_each_others_kind() {
+        // The trade guard rejects the bar adapter id, and the bar guard rejects
+        // the trade adapter id, so a run-spec cannot cross-wire the two families.
+        let trade_guard_on_bars = require_registered_trade_converter_for_table_family(
+            BAR_TRANSFORM_IDENTITY,
+            BAR_TRANSFORM_VERSION,
+            BAR_TABLE_FAMILY,
+        )
+        .expect_err("trade guard must reject the bar adapter kind");
+        assert!(
+            trade_guard_on_bars
+                .to_string()
+                .contains("not a CSV native-trades converter"),
+            "{trade_guard_on_bars}"
+        );
+
+        let bar_guard_on_trades = require_registered_bar_converter_for_table_family(
+            TRANSFORM_IDENTITY,
+            TRANSFORM_VERSION,
+            TRADE_TABLE_FAMILY,
+        )
+        .expect_err("bar guard must reject the trade adapter kind");
+        assert!(
+            bar_guard_on_trades
+                .to_string()
+                .contains("not a CSV native-bars converter"),
+            "{bar_guard_on_trades}"
+        );
     }
 
     fn accepted_dataset() -> AcceptedDataset {

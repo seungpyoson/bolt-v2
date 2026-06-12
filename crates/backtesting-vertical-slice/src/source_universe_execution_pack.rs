@@ -602,6 +602,7 @@ fn materialize_run_spec(
                 zip_member: record.zip_member.clone(),
             },
             csv: converter_csv,
+            bars: None,
         })
         .context("serialize converter config to TOML")?,
     )?;

@@ -74,6 +74,23 @@ pub const TAR_DELTAS_TRANSFORM_IDENTITY: &str =
 /// implementation.
 pub const TAR_DELTAS_TRANSFORM_VERSION: &str = "1";
 
+/// Stable identity of the typed-event Parquet stream normalization transform that
+/// dual-emits the order-book-delta AND trades families from one L2 archive
+/// object.
+///
+/// Distinct from the snapshot delta identities because the wire shape differs
+/// (typed interleaved events in a Parquet stream vs full photos), and because
+/// this transform additionally produces the trades family under the
+/// dual-fidelity rule documented in
+/// [`super::canonical_order_book_deltas`]. The delta rows it produces share the
+/// `order_book_snapshot_deltas` table family and the `OrderBookDelta` NT type.
+pub const EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY: &str =
+    "parquet-event-stream-to-canonical-order-book-deltas-and-trades.v1";
+
+/// Version of the registered compiled event-stream dual-emit converter
+/// implementation.
+pub const EVENT_STREAM_DELTAS_TRANSFORM_VERSION: &str = "1";
+
 /// Source-proof table family accepted by the JSONL snapshot-delta converter.
 pub const DELTAS_TABLE_FAMILY: &str = "order_book_snapshot_deltas";
 
@@ -94,6 +111,7 @@ pub enum SourceAdapterKind {
     CsvNativeBars,
     JsonlSnapshotDeltas,
     TarJsonlSnapshotDeltas,
+    ParquetEventStreamDeltas,
     #[cfg(test)]
     SyntheticOrderBookDeltas,
 }
@@ -234,6 +252,21 @@ pub const TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAda
     nt_data_type: crate::catalog_projection::NT_DATA_TYPE_ORDER_BOOK_DELTA,
 };
 
+/// The dual-emit event-stream adapter. Its `table_family` /
+/// `normalized_schema_version` / `nt_data_type` describe the order-book-delta
+/// family it primarily registers under (the same family the snapshot delta
+/// adapters use); the trades family it additionally emits binds its own
+/// fidelity/claims at normalization under the dual-fidelity rule, not through a
+/// second registry row.
+pub const PARQUET_EVENT_STREAM_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
+    identity: EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY,
+    version: EVENT_STREAM_DELTAS_TRANSFORM_VERSION,
+    kind: SourceAdapterKind::ParquetEventStreamDeltas,
+    table_family: DELTAS_TABLE_FAMILY,
+    normalized_schema_version: NORMALIZED_SCHEMA_VERSION,
+    nt_data_type: crate::catalog_projection::NT_DATA_TYPE_ORDER_BOOK_DELTA,
+};
+
 #[cfg(test)]
 pub const SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
     identity: "synthetic-order-book-deltas-fixture.v1",
@@ -250,6 +283,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     CSV_NATIVE_BARS_ADAPTER,
     JSONL_SNAPSHOT_DELTAS_ADAPTER,
     TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
+    PARQUET_EVENT_STREAM_DELTAS_ADAPTER,
 ];
 
 #[cfg(test)]
@@ -258,6 +292,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     CSV_NATIVE_BARS_ADAPTER,
     JSONL_SNAPSHOT_DELTAS_ADAPTER,
     TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
+    PARQUET_EVENT_STREAM_DELTAS_ADAPTER,
     SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER,
 ];
 
@@ -413,6 +448,32 @@ pub fn require_registered_tar_order_book_delta_converter_for_table_family(
     ensure!(
         adapter.kind == SourceAdapterKind::TarJsonlSnapshotDeltas,
         "adapter {:?} version {:?} is {:?}, not a tar JSONL snapshot-delta converter",
+        adapter.identity,
+        adapter.version,
+        adapter.kind
+    );
+    Ok(adapter)
+}
+
+#[must_use]
+pub fn registered_event_stream_delta_converter(
+    identity: &str,
+    version: &str,
+) -> Option<&'static SourceAdapterDefinition> {
+    registered_source_adapter(identity, version)
+        .filter(|adapter| adapter.kind == SourceAdapterKind::ParquetEventStreamDeltas)
+}
+
+pub fn require_registered_event_stream_delta_converter_for_table_family(
+    identity: &str,
+    version: &str,
+    table_family: &str,
+) -> Result<&'static SourceAdapterDefinition> {
+    let adapter =
+        require_registered_source_adapter_for_table_family(identity, version, table_family)?;
+    ensure!(
+        adapter.kind == SourceAdapterKind::ParquetEventStreamDeltas,
+        "adapter {:?} version {:?} is {:?}, not a Parquet event-stream delta converter",
         adapter.identity,
         adapter.version,
         adapter.kind
@@ -959,6 +1020,13 @@ pub fn normalize_registered_trade_converter(
         SourceAdapterKind::TarJsonlSnapshotDeltas => {
             bail!("tar JSONL snapshot-delta adapter cannot normalize native trades")
         }
+        SourceAdapterKind::ParquetEventStreamDeltas => {
+            bail!(
+                "Parquet event-stream delta adapter dual-emits trades alongside \
+                 order-book deltas; call normalize_registered_event_stream_delta_converter \
+                 with the parquet bytes, not the single-object native-trades path"
+            )
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize native trades")
@@ -1016,6 +1084,9 @@ pub fn normalize_registered_bar_converter(
         SourceAdapterKind::TarJsonlSnapshotDeltas => {
             bail!("tar JSONL snapshot-delta adapter cannot normalize native bars")
         }
+        SourceAdapterKind::ParquetEventStreamDeltas => {
+            bail!("Parquet event-stream delta adapter cannot normalize native bars")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize native bars")
@@ -1071,6 +1142,13 @@ pub fn normalize_registered_order_book_delta_converter(
                 "tar JSONL snapshot-delta adapter requires the streaming member \
                  entry point; call normalize_registered_tar_order_book_delta_converter \
                  with the tar member iterator, not the single-object jsonl_text path"
+            )
+        }
+        SourceAdapterKind::ParquetEventStreamDeltas => {
+            bail!(
+                "Parquet event-stream delta adapter requires the dual-emit parquet \
+                 entry point; call normalize_registered_event_stream_delta_converter \
+                 with the parquet bytes, not the single-object jsonl_text path"
             )
         }
         SourceAdapterKind::CsvNativeTrades => {
@@ -1143,6 +1221,13 @@ pub fn normalize_registered_tar_order_book_delta_converter(
                  the decoded jsonl_text, not the tar member iterator"
             )
         }
+        SourceAdapterKind::ParquetEventStreamDeltas => {
+            bail!(
+                "Parquet event-stream delta adapter requires the dual-emit parquet \
+                 entry point; call normalize_registered_event_stream_delta_converter \
+                 with the parquet bytes, not the tar member iterator"
+            )
+        }
         SourceAdapterKind::CsvNativeTrades => {
             bail!("CSV native-trades adapter cannot normalize tar order-book deltas")
         }
@@ -1152,6 +1237,83 @@ pub fn normalize_registered_tar_order_book_delta_converter(
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize tar order-book deltas")
+        }
+    }
+}
+
+/// Normalize an accepted typed-event Parquet stream through the registered
+/// dual-emit converter selected by the run-spec, fail-closing when the kind/config
+/// do not match.
+///
+/// The container concern (decode the accepted object to Parquet bytes) stays with
+/// the caller exactly as the JSONL/tar paths own their decode. The kind must be
+/// [`SourceAdapterKind::ParquetEventStreamDeltas`] for the accepted object's table
+/// family, and the run-spec must carry the `deltas` mapping that kind requires
+/// (an [`super::canonical_order_book_deltas::DeltaSourceFormat::EventStream`]
+/// format). Returns BOTH the order-book-delta family and the trades family under
+/// the dual-fidelity rule.
+///
+/// # Errors
+///
+/// Returns an error if the converter is not a registered event-stream delta
+/// converter for the table family, the `deltas` mapping is absent or not an
+/// `EventStream` format, or normalization fails.
+pub fn normalize_registered_event_stream_delta_converter(
+    converter_config: &ConverterConfig,
+    accepted: &AcceptedDataset,
+    identities: &super::canonical_order_book_deltas::DeltaInstrumentIdentities,
+    parquet_bytes: &[u8],
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+) -> Result<(
+    Vec<super::canonical_market_data::CanonicalOrderBookDeltasTable>,
+    Vec<CanonicalTradesTable>,
+)> {
+    let converter = require_registered_event_stream_delta_converter_for_table_family(
+        &converter_config.identity,
+        &converter_config.version,
+        &accepted.table_family,
+    )?;
+    match converter.kind {
+        SourceAdapterKind::ParquetEventStreamDeltas => {
+            let mapping = converter_config.deltas.as_ref().with_context(|| {
+                format!(
+                    "converter {:?} is a Parquet event-stream delta adapter but carries no [converter.deltas] mapping",
+                    converter.identity
+                )
+            })?;
+            super::canonical_order_book_deltas::normalize_parquet_event_stream_deltas(
+                accepted,
+                identities,
+                mapping,
+                parquet_bytes,
+                capture_time_nanos,
+                ingest_run_id,
+            )
+        }
+        SourceAdapterKind::JsonlSnapshotDeltas => {
+            bail!(
+                "JSONL snapshot-delta adapter requires the single-object entry point; \
+                 call normalize_registered_order_book_delta_converter, not the \
+                 dual-emit parquet path"
+            )
+        }
+        SourceAdapterKind::TarJsonlSnapshotDeltas => {
+            bail!(
+                "tar JSONL snapshot-delta adapter requires the streaming member entry \
+                 point; call normalize_registered_tar_order_book_delta_converter, not \
+                 the dual-emit parquet path"
+            )
+        }
+        SourceAdapterKind::CsvNativeTrades => {
+            bail!("CSV native-trades adapter cannot normalize event-stream deltas")
+        }
+        SourceAdapterKind::CsvNativeBars => {
+            bail!("CSV native-bars adapter cannot normalize event-stream deltas")
+        }
+        #[cfg(test)]
+        SourceAdapterKind::SyntheticOrderBookDeltas => {
+            bail!("test fixture adapter cannot normalize event-stream deltas")
         }
     }
 }
@@ -1810,6 +1972,87 @@ mod tests {
                 .to_string()
                 .contains("not a JSONL snapshot-delta converter"),
             "{jsonl_guard_on_tar}"
+        );
+    }
+
+    #[test]
+    fn event_stream_delta_source_adapter_registry_exposes_data_family_metadata() {
+        let adapter = require_registered_source_adapter(
+            EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY,
+            EVENT_STREAM_DELTAS_TRANSFORM_VERSION,
+        )
+        .expect("registered event-stream delta source adapter");
+
+        assert_eq!(adapter.kind, SourceAdapterKind::ParquetEventStreamDeltas);
+        assert_eq!(adapter.table_family, DELTAS_TABLE_FAMILY);
+        assert_eq!(adapter.normalized_schema_version, NORMALIZED_SCHEMA_VERSION);
+        assert_eq!(adapter.nt_data_type, NT_DATA_TYPE_ORDER_BOOK_DELTA);
+        assert!(REGISTERED_SOURCE_ADAPTERS.contains(&PARQUET_EVENT_STREAM_DELTAS_ADAPTER));
+        assert_eq!(
+            registered_event_stream_delta_converter(
+                EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY,
+                EVENT_STREAM_DELTAS_TRANSFORM_VERSION
+            ),
+            Some(&PARQUET_EVENT_STREAM_DELTAS_ADAPTER)
+        );
+        // The event-stream identity is distinct from every snapshot delta
+        // identity: different wire shape and a dual-emit transform, so the
+        // registry must not collapse it onto a snapshot row.
+        assert_ne!(
+            EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY,
+            DELTAS_TRANSFORM_IDENTITY
+        );
+        assert_ne!(
+            EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY,
+            TAR_DELTAS_TRANSFORM_IDENTITY
+        );
+    }
+
+    #[test]
+    fn event_stream_delta_source_adapter_registry_rejects_table_family_mismatch() {
+        let mismatch = format!("{DELTAS_TABLE_FAMILY}_mismatch");
+        let err = require_registered_event_stream_delta_converter_for_table_family(
+            EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY,
+            EVENT_STREAM_DELTAS_TRANSFORM_VERSION,
+            &mismatch,
+        )
+        .expect_err("event-stream adapter table-family mismatch must fail closed");
+
+        assert!(err.to_string().contains("adapter"), "{err}");
+        assert!(err.to_string().contains("table_family"), "{err}");
+    }
+
+    #[test]
+    fn event_stream_delta_converter_guard_rejects_other_kinds() {
+        // The event-stream guard rejects the JSONL and tar delta adapter ids, so
+        // a run-spec cannot cross-wire the dual-emit parquet container onto a
+        // snapshot adapter kind.
+        let guard_on_jsonl = require_registered_event_stream_delta_converter_for_table_family(
+            DELTAS_TRANSFORM_IDENTITY,
+            DELTAS_TRANSFORM_VERSION,
+            DELTAS_TABLE_FAMILY,
+        )
+        .expect_err("event-stream guard must reject the JSONL delta adapter kind");
+        assert!(
+            guard_on_jsonl
+                .to_string()
+                .contains("not a Parquet event-stream delta converter"),
+            "{guard_on_jsonl}"
+        );
+
+        // And the JSONL/tar delta guards reject the event-stream adapter id.
+        let jsonl_guard_on_event_stream =
+            require_registered_order_book_delta_converter_for_table_family(
+                EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY,
+                EVENT_STREAM_DELTAS_TRANSFORM_VERSION,
+                DELTAS_TABLE_FAMILY,
+            )
+            .expect_err("JSONL delta guard must reject the event-stream adapter kind");
+        assert!(
+            jsonl_guard_on_event_stream
+                .to_string()
+                .contains("not a JSONL snapshot-delta converter"),
+            "{jsonl_guard_on_event_stream}"
         );
     }
 

@@ -147,7 +147,7 @@ struct IvRetainedProductKey {
 
 // Query evaluation holds a read lock; mutations are replayed after the guard
 // drops to avoid cloning the retained store or upgrading the lock.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct IvQuerySideEffects {
     effects: Vec<IvQuerySideEffect>,
 }
@@ -183,6 +183,12 @@ struct IvDerivedQueryKey<'a> {
 }
 
 impl IvQuerySideEffects {
+    fn new() -> Self {
+        Self {
+            effects: Vec::new(),
+        }
+    }
+
     fn record_retention_miss(&mut self, miss: IvRetainedProductKey) {
         self.effects.push(IvQuerySideEffect::RetentionMiss(miss));
     }
@@ -797,7 +803,7 @@ impl IvQueryHandle {
 
         let (result, side_effects) = {
             let state = self.state.read_state();
-            let mut side_effects = IvQuerySideEffects::default();
+            let mut side_effects = IvQuerySideEffects::new();
             let result = match self.query_product_from_state(query, &state, &mut side_effects) {
                 Ok(product) => {
                     if let IvQueryProduct::DerivedIv(derived) = &product

@@ -57,7 +57,7 @@ def write_policy(repo: pathlib.Path) -> None:
             allowed_ci_env = "GITHUB_ACTIONS"
             break_glass_env = "BOLT_ALLOW_LOCAL_RUST"
             refused_managed_commands = ["test", "clippy", "build"]
-            refused_cargo_subcommands = ["bench", "build", "check", "clippy", "doc", "fetch", "install", "nextest", "run", "rustc", "test", "zigbuild"]
+            refused_cargo_subcommands = ["b", "bench", "build", "c", "check", "clippy", "d", "doc", "fetch", "install", "nextest", "r", "run", "rustc", "t", "test", "zigbuild"]
 
             [commands]
 

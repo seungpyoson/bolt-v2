@@ -75,4 +75,5 @@ pub mod source_universe_execution_pack;
 pub mod source_universe_object_gates;
 pub mod source_universe_operator_inputs;
 pub mod source_universe_source_proofs;
+pub mod tar_reader;
 pub mod venue_scale_conversion_acceptance;

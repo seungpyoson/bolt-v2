@@ -60,6 +60,20 @@ pub const DELTAS_TRANSFORM_IDENTITY: &str =
 /// Version of the registered compiled order-book-delta converter implementation.
 pub const DELTAS_TRANSFORM_VERSION: &str = "1";
 
+/// Stable identity of the streaming tar-of-JSONL periodic-full-snapshot
+/// order-book-delta normalization transform.
+///
+/// Distinct from [`DELTAS_TRANSFORM_IDENTITY`] because the container differs (a
+/// streaming gzip-tar of JSONL members vs a single decoded JSONL object); the
+/// table family, normalized schema, and NT data type match the JSONL deltas
+/// adapter because both produce the same `order_book_snapshot_deltas` rows.
+pub const TAR_DELTAS_TRANSFORM_IDENTITY: &str =
+    "tar-jsonl-snapshot-deltas-to-canonical-order-book-deltas.v1";
+
+/// Version of the registered compiled tar-of-JSONL order-book-delta converter
+/// implementation.
+pub const TAR_DELTAS_TRANSFORM_VERSION: &str = "1";
+
 /// Source-proof table family accepted by the JSONL snapshot-delta converter.
 pub const DELTAS_TABLE_FAMILY: &str = "order_book_snapshot_deltas";
 
@@ -79,6 +93,7 @@ pub enum SourceAdapterKind {
     CsvNativeTrades,
     CsvNativeBars,
     JsonlSnapshotDeltas,
+    TarJsonlSnapshotDeltas,
     #[cfg(test)]
     SyntheticOrderBookDeltas,
 }
@@ -210,6 +225,15 @@ pub const JSONL_SNAPSHOT_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAdapter
     nt_data_type: crate::catalog_projection::NT_DATA_TYPE_ORDER_BOOK_DELTA,
 };
 
+pub const TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
+    identity: TAR_DELTAS_TRANSFORM_IDENTITY,
+    version: TAR_DELTAS_TRANSFORM_VERSION,
+    kind: SourceAdapterKind::TarJsonlSnapshotDeltas,
+    table_family: DELTAS_TABLE_FAMILY,
+    normalized_schema_version: NORMALIZED_SCHEMA_VERSION,
+    nt_data_type: crate::catalog_projection::NT_DATA_TYPE_ORDER_BOOK_DELTA,
+};
+
 #[cfg(test)]
 pub const SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
     identity: "synthetic-order-book-deltas-fixture.v1",
@@ -225,6 +249,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     CSV_NATIVE_TRADES_ADAPTER,
     CSV_NATIVE_BARS_ADAPTER,
     JSONL_SNAPSHOT_DELTAS_ADAPTER,
+    TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
 ];
 
 #[cfg(test)]
@@ -232,6 +257,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     CSV_NATIVE_TRADES_ADAPTER,
     CSV_NATIVE_BARS_ADAPTER,
     JSONL_SNAPSHOT_DELTAS_ADAPTER,
+    TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
     SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER,
 ];
 
@@ -361,6 +387,32 @@ pub fn require_registered_order_book_delta_converter_for_table_family(
     ensure!(
         adapter.kind == SourceAdapterKind::JsonlSnapshotDeltas,
         "adapter {:?} version {:?} is {:?}, not a JSONL snapshot-delta converter",
+        adapter.identity,
+        adapter.version,
+        adapter.kind
+    );
+    Ok(adapter)
+}
+
+#[must_use]
+pub fn registered_tar_order_book_delta_converter(
+    identity: &str,
+    version: &str,
+) -> Option<&'static SourceAdapterDefinition> {
+    registered_source_adapter(identity, version)
+        .filter(|adapter| adapter.kind == SourceAdapterKind::TarJsonlSnapshotDeltas)
+}
+
+pub fn require_registered_tar_order_book_delta_converter_for_table_family(
+    identity: &str,
+    version: &str,
+    table_family: &str,
+) -> Result<&'static SourceAdapterDefinition> {
+    let adapter =
+        require_registered_source_adapter_for_table_family(identity, version, table_family)?;
+    ensure!(
+        adapter.kind == SourceAdapterKind::TarJsonlSnapshotDeltas,
+        "adapter {:?} version {:?} is {:?}, not a tar JSONL snapshot-delta converter",
         adapter.identity,
         adapter.version,
         adapter.kind
@@ -904,6 +956,9 @@ pub fn normalize_registered_trade_converter(
         SourceAdapterKind::JsonlSnapshotDeltas => {
             bail!("JSONL snapshot-delta adapter cannot normalize native trades")
         }
+        SourceAdapterKind::TarJsonlSnapshotDeltas => {
+            bail!("tar JSONL snapshot-delta adapter cannot normalize native trades")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize native trades")
@@ -958,6 +1013,9 @@ pub fn normalize_registered_bar_converter(
         SourceAdapterKind::JsonlSnapshotDeltas => {
             bail!("JSONL snapshot-delta adapter cannot normalize native bars")
         }
+        SourceAdapterKind::TarJsonlSnapshotDeltas => {
+            bail!("tar JSONL snapshot-delta adapter cannot normalize native bars")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize native bars")
@@ -1008,6 +1066,13 @@ pub fn normalize_registered_order_book_delta_converter(
                 ingest_run_id,
             )
         }
+        SourceAdapterKind::TarJsonlSnapshotDeltas => {
+            bail!(
+                "tar JSONL snapshot-delta adapter requires the streaming member \
+                 entry point; call normalize_registered_tar_order_book_delta_converter \
+                 with the tar member iterator, not the single-object jsonl_text path"
+            )
+        }
         SourceAdapterKind::CsvNativeTrades => {
             bail!("CSV native-trades adapter cannot normalize order-book deltas")
         }
@@ -1017,6 +1082,76 @@ pub fn normalize_registered_order_book_delta_converter(
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize order-book deltas")
+        }
+    }
+}
+
+/// Normalize an accepted streaming gzip-tar of JSONL periodic-full-snapshot
+/// members through the registered tar order-book-delta converter selected by the
+/// run-spec, fail-closing when the kind/config do not match.
+///
+/// The container concern (decompress the gzip-tar + walk its members) stays with
+/// the caller exactly as the single-object decode does for the JSONL path: the
+/// caller passes the streaming member iterator from
+/// [`super::tar_reader::gzip_tar_members`]. This mirrors how `CsvGzip` vs
+/// `SingleCsvZip` containers are distinguished at the decode boundary rather than
+/// inside the per-kind dispatcher — the dispatcher stays per-kind and never owns
+/// the container. The kind must be [`SourceAdapterKind::TarJsonlSnapshotDeltas`]
+/// for the accepted object's table family, and the run-spec must carry the
+/// `deltas` mapping that kind requires (the wire shape is shared with the JSONL
+/// path; only the container differs).
+///
+/// # Errors
+///
+/// Returns an error if the converter is not a registered tar order-book-delta
+/// converter for the table family, the `deltas` mapping is absent, or
+/// normalization fails.
+pub fn normalize_registered_tar_order_book_delta_converter(
+    converter_config: &ConverterConfig,
+    accepted: &AcceptedDataset,
+    identities: &super::canonical_order_book_deltas::DeltaInstrumentIdentities,
+    members: impl Iterator<Item = Result<super::tar_reader::TarMember>>,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+) -> Result<Vec<super::canonical_market_data::CanonicalOrderBookDeltasTable>> {
+    let converter = require_registered_tar_order_book_delta_converter_for_table_family(
+        &converter_config.identity,
+        &converter_config.version,
+        &accepted.table_family,
+    )?;
+    match converter.kind {
+        SourceAdapterKind::TarJsonlSnapshotDeltas => {
+            let mapping = converter_config.deltas.as_ref().with_context(|| {
+                format!(
+                    "converter {:?} is a tar JSONL snapshot-delta adapter but carries no [converter.deltas] mapping",
+                    converter.identity
+                )
+            })?;
+            super::canonical_order_book_deltas::normalize_tar_jsonl_snapshot_deltas(
+                accepted,
+                identities,
+                mapping,
+                members,
+                capture_time_nanos,
+                ingest_run_id,
+            )
+        }
+        SourceAdapterKind::JsonlSnapshotDeltas => {
+            bail!(
+                "JSONL snapshot-delta adapter requires the single-object entry \
+                 point; call normalize_registered_order_book_delta_converter with \
+                 the decoded jsonl_text, not the tar member iterator"
+            )
+        }
+        SourceAdapterKind::CsvNativeTrades => {
+            bail!("CSV native-trades adapter cannot normalize tar order-book deltas")
+        }
+        SourceAdapterKind::CsvNativeBars => {
+            bail!("CSV native-bars adapter cannot normalize tar order-book deltas")
+        }
+        #[cfg(test)]
+        SourceAdapterKind::SyntheticOrderBookDeltas => {
+            bail!("test fixture adapter cannot normalize tar order-book deltas")
         }
     }
 }
@@ -1597,6 +1732,84 @@ mod tests {
                 .to_string()
                 .contains("not a JSONL snapshot-delta converter"),
             "{delta_guard_on_bars}"
+        );
+    }
+
+    #[test]
+    fn tar_order_book_delta_source_adapter_registry_exposes_data_family_metadata() {
+        let adapter = require_registered_source_adapter(
+            TAR_DELTAS_TRANSFORM_IDENTITY,
+            TAR_DELTAS_TRANSFORM_VERSION,
+        )
+        .expect("registered tar order-book-delta source adapter");
+
+        assert_eq!(adapter.kind, SourceAdapterKind::TarJsonlSnapshotDeltas);
+        assert_eq!(adapter.table_family, DELTAS_TABLE_FAMILY);
+        assert_eq!(adapter.normalized_schema_version, NORMALIZED_SCHEMA_VERSION);
+        assert_eq!(adapter.nt_data_type, NT_DATA_TYPE_ORDER_BOOK_DELTA);
+        assert!(REGISTERED_SOURCE_ADAPTERS.contains(&TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER));
+        assert_eq!(
+            registered_tar_order_book_delta_converter(
+                TAR_DELTAS_TRANSFORM_IDENTITY,
+                TAR_DELTAS_TRANSFORM_VERSION
+            ),
+            Some(&TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER)
+        );
+        // The tar adapter is a distinct identity from the JSONL deltas adapter:
+        // same wire shape, different container, so the registry must not collapse
+        // the two onto one entry.
+        assert_ne!(
+            TAR_DELTAS_TRANSFORM_IDENTITY, DELTAS_TRANSFORM_IDENTITY,
+            "tar and JSONL delta adapters must have distinct identities"
+        );
+    }
+
+    #[test]
+    fn tar_order_book_delta_source_adapter_registry_rejects_table_family_mismatch() {
+        let mismatch = format!("{DELTAS_TABLE_FAMILY}_mismatch");
+        let err = require_registered_tar_order_book_delta_converter_for_table_family(
+            TAR_DELTAS_TRANSFORM_IDENTITY,
+            TAR_DELTAS_TRANSFORM_VERSION,
+            &mismatch,
+        )
+        .expect_err("tar delta adapter table-family mismatch must fail closed");
+
+        assert!(err.to_string().contains("adapter"), "{err}");
+        assert!(err.to_string().contains("table_family"), "{err}");
+    }
+
+    #[test]
+    fn tar_order_book_delta_converter_guard_rejects_other_kinds() {
+        // The tar delta guard rejects the JSONL delta, trade, and bar adapter
+        // ids, so a run-spec cannot cross-wire the tar container onto another
+        // adapter kind.
+        let tar_guard_on_jsonl =
+            require_registered_tar_order_book_delta_converter_for_table_family(
+                DELTAS_TRANSFORM_IDENTITY,
+                DELTAS_TRANSFORM_VERSION,
+                DELTAS_TABLE_FAMILY,
+            )
+            .expect_err("tar delta guard must reject the JSONL delta adapter kind");
+        assert!(
+            tar_guard_on_jsonl
+                .to_string()
+                .contains("not a tar JSONL snapshot-delta converter"),
+            "{tar_guard_on_jsonl}"
+        );
+
+        // And the JSONL delta guard rejects the tar adapter id, so the two
+        // container entry points cannot be swapped at dispatch.
+        let jsonl_guard_on_tar = require_registered_order_book_delta_converter_for_table_family(
+            TAR_DELTAS_TRANSFORM_IDENTITY,
+            TAR_DELTAS_TRANSFORM_VERSION,
+            DELTAS_TABLE_FAMILY,
+        )
+        .expect_err("JSONL delta guard must reject the tar adapter kind");
+        assert!(
+            jsonl_guard_on_tar
+                .to_string()
+                .contains("not a JSONL snapshot-delta converter"),
+            "{jsonl_guard_on_tar}"
         );
     }
 

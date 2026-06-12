@@ -23,9 +23,15 @@
 //! photos collapse onto that single `CLEAR` so the table never carries two
 //! `CLEAR` rows back to back (a shape the contract forbids).
 //!
-//! This slice implements only the periodic-full-snapshot wire shape
-//! ([`DeltaSourceFormat::Snapshot`]); event-stream and tar-bundled L2 families
-//! are separate slices and are deliberately absent from the format enum.
+//! This slice implements the periodic-full-snapshot wire shape
+//! ([`DeltaSourceFormat::Snapshot`]) over two container entry points that share
+//! one group-and-expand core: a single decoded JSONL object
+//! ([`normalize_jsonl_snapshot_deltas`]) and a streaming gzip-tar of JSONL
+//! members ([`normalize_tar_jsonl_snapshot_deltas`]). The tar path accumulates
+//! per-instrument groups across every member of the archive (a single pass, the
+//! same multi-instrument split and exclusion fence as the JSONL path) and then
+//! runs the identical per-group expansion. Event-stream L2 is a separate slice
+//! and is deliberately absent from the format enum.
 //!
 //! Input is only ever an [`AcceptedDataset`] from gate 1 — raw staged data never
 //! reaches this module without first passing source-proof acceptance.
@@ -48,6 +54,7 @@ use super::{
         CanonicalInstrumentIdentity, CsvTimestampUnit, DELTAS_TRANSFORM_IDENTITY, TradesPartition,
     },
     source_proof::AcceptedDataset,
+    tar_reader::TarMember,
 };
 
 /// Run-spec owned JSONL order-book-delta column mapping for the S3 source
@@ -251,6 +258,129 @@ pub fn normalize_jsonl_snapshot_deltas(
     capture_time_nanos: i64,
     ingest_run_id: &str,
 ) -> Result<Vec<CanonicalOrderBookDeltasTable>> {
+    let fields = validate_snapshot_mapping(mapping, ingest_run_id)?;
+    let mut accumulator = PhotoGroups::default();
+    parse_jsonl_into_groups(&fields, mapping, jsonl_text, &mut accumulator)?;
+    expand_groups_into_tables(
+        accepted,
+        identities,
+        mapping,
+        accumulator,
+        capture_time_nanos,
+        ingest_run_id,
+        SnapshotContainer::SingleObject,
+    )
+}
+
+/// Normalize an accepted streaming gzip-tar of JSONL periodic-full-snapshot
+/// members into one [`CanonicalOrderBookDeltasTable`] per instrument.
+///
+/// `members` is the streaming member iterator produced by
+/// [`super::tar_reader::gzip_tar_members`]; the caller owns the container concern
+/// (decompress + walk tar members) exactly as the JSONL path's caller owns
+/// decoding a single object. Each member's text is parsed into the same
+/// per-instrument accumulator the JSONL path uses, so grouping, the
+/// multi-instrument split, and the exclusion fence span the *whole archive* in a
+/// single pass. After accumulation every group's photos are expanded through the
+/// identical [`expand_photos`] core.
+///
+/// Archive member order is not a per-instrument event-time order guarantee:
+/// distinct members can interleave the same instrument with non-monotonic
+/// boundaries (e.g. one member per minute, each carrying all instruments). Each
+/// group's photos are therefore stably sorted by event time before expansion, so
+/// the per-instrument timeline is monotonic regardless of how members were
+/// chunked. The regressing-event-time bail stays *inside* [`expand_photos`] so
+/// exact-tie semantics match the JSONL path.
+///
+/// `capture_time_nanos` is the ingest capture timestamp recorded for the run.
+/// `ingest_run_id` is the stable identifier of the ingest/run that produced this
+/// normalization, recorded for lineage; it is not the source object URL.
+///
+/// # Errors
+///
+/// Returns an error if `members` yields a streaming/tar failure, a member line
+/// is malformed JSON, a configured field is missing, a level price/size is
+/// non-positive, the keyed identity is unknown, the archive carries no in-scope
+/// photo, or a produced table fails its contract.
+pub fn normalize_tar_jsonl_snapshot_deltas(
+    accepted: &AcceptedDataset,
+    identities: &DeltaInstrumentIdentities,
+    mapping: &DeltaMappingConfig,
+    members: impl Iterator<Item = Result<TarMember>>,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+) -> Result<Vec<CanonicalOrderBookDeltasTable>> {
+    let fields = validate_snapshot_mapping(mapping, ingest_run_id)?;
+    let mut accumulator = PhotoGroups::default();
+    for member in members {
+        let member = member.context("read next tar member")?;
+        parse_jsonl_into_groups(&fields, mapping, &member.text, &mut accumulator)
+            .with_context(|| format!("normalize tar member {:?}", member.name))?;
+    }
+    expand_groups_into_tables(
+        accepted,
+        identities,
+        mapping,
+        accumulator,
+        capture_time_nanos,
+        ingest_run_id,
+        SnapshotContainer::TarArchive,
+    )
+}
+
+/// The container the photos were parsed from, used only to fail loud with the
+/// right empty-input message and to decide whether per-group photos need a
+/// stable event-time sort before expansion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotContainer {
+    /// One decoded JSONL object: photos already arrive in a single time-ordered
+    /// stream per instrument, so no re-sort is needed.
+    SingleObject,
+    /// A streaming gzip-tar of JSONL members: archive member order is not a
+    /// per-instrument time order guarantee, so each group is stably sorted by
+    /// event time before expansion.
+    TarArchive,
+}
+
+impl SnapshotContainer {
+    /// Human-readable noun for the empty-input failure.
+    const fn empty_input_noun(self) -> &'static str {
+        match self {
+            Self::SingleObject => "snapshot object",
+            Self::TarArchive => "snapshot tar archive",
+        }
+    }
+}
+
+/// The validated, borrowed snapshot field mapping shared by both container entry
+/// points, resolved once before any line is parsed.
+struct SnapshotFields<'a> {
+    bids_field: &'a str,
+    asks_field: &'a str,
+    level_price_field: &'a str,
+    level_size_field: &'a str,
+    event_time_field: &'a str,
+    event_time_unit: CsvTimestampUnit,
+}
+
+/// Per-instrument parsed-photo accumulator shared across one container's input.
+///
+/// Single-instrument objects use one group keyed by `None`; multi-instrument
+/// objects key groups by the configured `key_field` value. `order` preserves
+/// first-seen group order so produced tables are deterministic, and `groups`
+/// owns the photos. For the tar path this accumulates across every member.
+#[derive(Default)]
+struct PhotoGroups {
+    order: Vec<Option<String>>,
+    groups: BTreeMap<Option<String>, Vec<ParsedPhoto>>,
+}
+
+/// Validate `ingest_run_id` and the snapshot field mapping, returning the
+/// borrowed field set both entry points parse against.
+fn validate_snapshot_mapping<'a>(
+    mapping: &'a DeltaMappingConfig,
+    ingest_run_id: &str,
+) -> Result<SnapshotFields<'a>> {
     ensure!(
         !ingest_run_id.trim().is_empty(),
         "ingest_run_id must not be empty"
@@ -282,12 +412,32 @@ pub fn normalize_jsonl_snapshot_deltas(
             "converter deltas.instrument_key.key_field must not be empty when set"
         );
     }
+    Ok(SnapshotFields {
+        bids_field,
+        asks_field,
+        level_price_field,
+        level_size_field,
+        event_time_field,
+        event_time_unit: *event_time_unit,
+    })
+}
 
-    // Group parsed photos by instrument key (single-instrument objects use one
-    // group keyed by `None`), preserving first-seen group order.
-    let mut group_order: Vec<Option<String>> = Vec::new();
-    let mut groups: BTreeMap<Option<String>, Vec<ParsedPhoto>> = BTreeMap::new();
-
+/// Parse one chunk of JSONL photos into the per-instrument accumulator.
+///
+/// One JSON photo per line; blank lines are skipped. Each line resolves its
+/// instrument key (single-instrument shape keys by `None`), applies the
+/// exclusion fence, parses its event time and both level arrays, and appends a
+/// [`ParsedPhoto`] to its group. Called once for the JSONL path and once per
+/// member for the tar path, so grouping spans the whole container.
+fn parse_jsonl_into_groups(
+    fields: &SnapshotFields<'_>,
+    mapping: &DeltaMappingConfig,
+    jsonl_text: &str,
+    accumulator: &mut PhotoGroups,
+) -> Result<()> {
+    // Borrow the two fields separately so the `or_insert_with` closure pushes to
+    // `order` while `groups.entry` holds its own disjoint mutable borrow.
+    let PhotoGroups { order, groups } = accumulator;
     for (index, line) in jsonl_text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
@@ -314,32 +464,35 @@ pub fn normalize_jsonl_snapshot_deltas(
             None => None,
         };
 
-        let event_time_raw = value.get(event_time_field).with_context(|| {
-            format!("line {index}: missing event time field {event_time_field:?}")
+        let event_time_raw = value.get(fields.event_time_field).with_context(|| {
+            format!(
+                "line {index}: missing event time field {:?}",
+                fields.event_time_field
+            )
         })?;
-        let event_time = parse_event_time(*event_time_unit, event_time_raw)
+        let event_time = parse_event_time(fields.event_time_unit, event_time_raw)
             .with_context(|| format!("line {index}: invalid event time {event_time_raw}"))?;
         ensure!(event_time > 0, "line {index}: non-positive event time");
 
         let bids = parse_levels(
             index,
             &value,
-            bids_field,
-            level_price_field,
-            level_size_field,
+            fields.bids_field,
+            fields.level_price_field,
+            fields.level_size_field,
             mapping.price_sign_policy,
         )?;
         let asks = parse_levels(
             index,
             &value,
-            asks_field,
-            level_price_field,
-            level_size_field,
+            fields.asks_field,
+            fields.level_price_field,
+            fields.level_size_field,
             mapping.price_sign_policy,
         )?;
 
         let group = groups.entry(instrument_key.clone()).or_insert_with(|| {
-            group_order.push(instrument_key.clone());
+            order.push(instrument_key.clone());
             Vec::new()
         });
         group.push(ParsedPhoto {
@@ -348,25 +501,54 @@ pub fn normalize_jsonl_snapshot_deltas(
             asks,
         });
     }
+    Ok(())
+}
 
+/// Expand every accumulated per-instrument group into a validated table.
+///
+/// Shared by both container entry points: the JSONL path passes its single
+/// object's groups, the tar path passes groups accumulated across the whole
+/// archive. For the tar container each group's photos are stably sorted by event
+/// time first (archive member order is not a per-instrument time order), then the
+/// identical [`expand_photos`] core and table assembly run for every group.
+fn expand_groups_into_tables(
+    accepted: &AcceptedDataset,
+    identities: &DeltaInstrumentIdentities,
+    mapping: &DeltaMappingConfig,
+    mut accumulator: PhotoGroups,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+    container: SnapshotContainer,
+) -> Result<Vec<CanonicalOrderBookDeltasTable>> {
     ensure!(
-        !group_order.is_empty(),
-        "snapshot object yielded no in-scope photos"
+        !accumulator.order.is_empty(),
+        "{} yielded no in-scope photos",
+        container.empty_input_noun()
     );
 
     let canonical_instrument_key_prefix = format!("{}/{}", accepted.venue, accepted.product_family);
     let transform_hash = delta_transform_hash();
 
-    let mut tables = Vec::with_capacity(group_order.len());
-    for instrument_key in &group_order {
+    let mut tables = Vec::with_capacity(accumulator.order.len());
+    for instrument_key in &accumulator.order {
         let identity = identities.resolve(instrument_key.as_deref())?;
         let canonical_instrument_key = format!(
             "{canonical_instrument_key_prefix}/{}",
             identity.instrument_id
         );
-        let photos = groups
+        let mut photos = accumulator
+            .groups
             .remove(instrument_key)
             .expect("group order entry has a populated group");
+
+        if container == SnapshotContainer::TarArchive {
+            // Stable sort by event time: members can interleave an instrument
+            // across non-monotonic chunk boundaries, but the per-instrument
+            // timeline must be monotonic for expansion. A stable sort preserves
+            // the in-member order of exact ties so the lone-CLEAR/adds-only
+            // collapse is deterministic.
+            photos.sort_by_key(|photo| photo.event_time);
+        }
 
         let provenance = RowProvenance {
             accepted,
@@ -1096,5 +1278,134 @@ table_families = ["order_book_snapshot_deltas"]
         )
         .expect_err("unknown instrument key must be rejected");
         assert!(err.to_string().contains("no instrument identity"), "{err}");
+    }
+
+    /// Wrap a `[(name, jsonl)]` slice as a fallible tar-member iterator.
+    fn members(members: &[(&str, &str)]) -> Vec<Result<TarMember>> {
+        members
+            .iter()
+            .map(|(name, text)| {
+                Ok(TarMember {
+                    name: (*name).to_string(),
+                    text: (*text).to_string(),
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tar_path_accumulates_one_instrument_across_members() {
+        let accepted = accepted_dataset();
+        // Two members, each one photo, same single instrument: grouping must
+        // span both members into one table with both photos.
+        let member_a = "{\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let member_b = "{\"time\":1700000060000,\"bids\":[{\"px\":\"0.50\",\"sz\":\"11\"}],\"asks\":[{\"px\":\"0.52\",\"sz\":\"13\"}]}\n";
+        let tables = normalize_tar_jsonl_snapshot_deltas(
+            &accepted,
+            &single_identity(),
+            &single_mapping(),
+            members(&[("000.data", member_a), ("001.data", member_b)]).into_iter(),
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize across tar members");
+        assert_eq!(tables.len(), 1);
+        // Two photos, each CLEAR + bid ADD + ask ADD = 6 rows, sequenced 0..6.
+        assert_eq!(tables[0].rows.len(), 6);
+        assert_eq!(tables[0].rows[0].event_time, 1_700_000_000_000_000_000);
+        assert_eq!(tables[0].rows[3].event_time, 1_700_000_060_000_000_000);
+    }
+
+    #[test]
+    fn tar_path_splits_two_instruments_across_members() {
+        let accepted = accepted_dataset();
+        let identities = DeltaInstrumentIdentities::Keyed(BTreeMap::from([
+            ("AAA".to_string(), identity("BASEONE")),
+            ("BBB".to_string(), identity("BASETWO")),
+        ]));
+        // Member 1 carries instrument AAA, member 2 carries BBB: the split must
+        // span members and produce one table per instrument.
+        let member_a = "{\"coin\":\"AAA\",\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let member_b = "{\"coin\":\"BBB\",\"time\":1700000000000,\"bids\":[{\"px\":\"0.30\",\"sz\":\"5\"}],\"asks\":[{\"px\":\"0.33\",\"sz\":\"7\"}]}\n";
+        let mut tables = normalize_tar_jsonl_snapshot_deltas(
+            &accepted,
+            &identities,
+            &keyed_mapping(None),
+            members(&[("000.data", member_a), ("001.data", member_b)]).into_iter(),
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize cross-member split");
+        tables.sort_by(|left, right| {
+            left.partition
+                .instrument_id
+                .cmp(&right.partition.instrument_id)
+        });
+        assert_eq!(tables.len(), 2);
+        assert_eq!(tables[0].partition.instrument_id, "BASEONE");
+        assert_eq!(tables[1].partition.instrument_id, "BASETWO");
+    }
+
+    #[test]
+    fn tar_path_sorts_photos_by_event_time_across_non_monotonic_members() {
+        let accepted = accepted_dataset();
+        // The later-timed photo arrives in the FIRST member and the earlier in
+        // the SECOND: archive member order is not per-instrument time order.
+        // The stable event-time sort must reorder them so expansion sees a
+        // monotonic timeline rather than bailing on a regression.
+        let later = "{\"time\":1700000060000,\"bids\":[{\"px\":\"0.50\",\"sz\":\"11\"}],\"asks\":[{\"px\":\"0.52\",\"sz\":\"13\"}]}\n";
+        let earlier = "{\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let tables = normalize_tar_jsonl_snapshot_deltas(
+            &accepted,
+            &single_identity(),
+            &single_mapping(),
+            members(&[("000.data", later), ("001.data", earlier)]).into_iter(),
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize reorders non-monotonic members");
+        let table = &tables[0];
+        assert_eq!(table.rows.len(), 6);
+        // After the sort the earlier photo's CLEAR leads the table.
+        assert_eq!(table.rows[0].event_time, 1_700_000_000_000_000_000);
+        assert_eq!(table.rows[3].event_time, 1_700_000_060_000_000_000);
+    }
+
+    #[test]
+    fn tar_path_propagates_member_stream_error() {
+        let accepted = accepted_dataset();
+        let failing: Vec<Result<TarMember>> = vec![
+            Ok(TarMember {
+                name: "000.data".to_string(),
+                text: "{\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n".to_string(),
+            }),
+            Err(anyhow::anyhow!("synthetic tar stream failure")),
+        ];
+        let err = normalize_tar_jsonl_snapshot_deltas(
+            &accepted,
+            &single_identity(),
+            &single_mapping(),
+            failing.into_iter(),
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("a tar stream failure must fail loud");
+        assert!(err.to_string().contains("read next tar member"), "{err}");
+    }
+
+    #[test]
+    fn tar_path_rejects_empty_archive() {
+        let accepted = accepted_dataset();
+        let empty: Vec<Result<TarMember>> = Vec::new();
+        let err = normalize_tar_jsonl_snapshot_deltas(
+            &accepted,
+            &single_identity(),
+            &single_mapping(),
+            empty.into_iter(),
+            42,
+            "ingest-run-test",
+        )
+        .expect_err("an archive with no in-scope photos must fail loud");
+        assert!(err.to_string().contains("snapshot tar archive"), "{err}");
     }
 }

@@ -634,6 +634,45 @@ filter = 'binary(=bolt_v3_adapter_mapping) | binary(=bolt_v3_client_registration
 test-group = 'live-node'
 """
 
+LOCAL_COMPILE_POLICY_TOML = """
+[local_compile_policy]
+enabled = true
+allowed_ci_env = "GITHUB_ACTIONS"
+break_glass_env = "BOLT_ALLOW_LOCAL_RUST"
+refused_managed_commands = ["test", "clippy", "build"]
+refused_cargo_subcommands = ["bench", "build", "check", "clippy", "doc", "fetch", "install", "nextest", "run", "rustc", "test", "zigbuild"]
+"""
+
+BASE_RUST_VERIFICATION_POLICY = f"""
+schema_version = 2
+project_id = "bolt-v2"
+target_namespace = "bolt-v2"
+
+{LOCAL_COMPILE_POLICY_TOML}
+
+[remote_verification]
+poll_interval_seconds = 15
+checks_appear_timeout_seconds = 300
+overall_timeout_seconds = 3600
+"""
+
+BASE_BVS_RUST_VERIFICATION_POLICY = f"""
+schema_version = 2
+project_id = "backtesting-vertical-slice"
+target_namespace = "backtesting-vertical-slice"
+
+{LOCAL_COMPILE_POLICY_TOML}
+"""
+
+
+def write_rust_verification_policy_fixtures(root: pathlib.Path) -> None:
+    root_policy = root / "ci" / "rust-verification.toml"
+    root_policy.parent.mkdir(parents=True, exist_ok=True)
+    root_policy.write_text(BASE_RUST_VERIFICATION_POLICY, encoding="utf-8")
+    bvs_policy = root / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml"
+    bvs_policy.parent.mkdir(parents=True, exist_ok=True)
+    bvs_policy.write_text(BASE_BVS_RUST_VERIFICATION_POLICY, encoding="utf-8")
+
 
 def assert_clean(
     workflow: str = BASE_WORKFLOW,
@@ -895,6 +934,45 @@ def assert_actionlint_rejects_stale_config_variables() -> None:
         )
     if not any("stale config variable 'CI_RUNNER_REMOVED'" in error for error in errors):
         raise AssertionError(f"actionlint contract must reject stale config variables, got: {errors}")
+
+
+def assert_source_fence_static_ignores_comments() -> None:
+    verifier = load_verifier()
+    justfile_text = """
+source-fence-static:
+    # cargo fetch and scripts/verify_runtime_capture_yaml.py stay in source-fence
+    # python3 scripts/rust_verification.py cargo --repo . -- test stays remote-only
+    python3 scripts/test_verify_runtime_capture_yaml.py
+
+source-fence: source-fence-static
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
+    python3 scripts/verify_runtime_capture_yaml.py
+"""
+    errors = verifier.verify_source_fence_static_recipe(justfile_text)
+    if errors:
+        raise AssertionError(f"source-fence-static comments must not trigger compile-heavy errors, got: {errors}")
+
+    active_bad = justfile_text.replace(
+        "    # python3 scripts/rust_verification.py cargo --repo . -- test stays remote-only",
+        "    python3 scripts/rust_verification.py cargo --repo . -- test",
+    )
+    bad_errors = verifier.verify_source_fence_static_recipe(active_bad)
+    if not any("must not invoke wrapper-routed Cargo" in error for error in bad_errors):
+        raise AssertionError(f"source-fence-static active wrapper cargo must still fail, got: {bad_errors}")
+
+
+def assert_rust_verification_policy_parse_errors_are_domain_specific() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        policy_path = pathlib.Path(tmp) / "rust-verification.toml"
+        policy_path.write_text("schema_version = [\n", encoding="utf-8")
+        try:
+            verifier.load_rust_verification_policy_toml(policy_path, "ci/rust-verification.toml")
+        except verifier.PolicyError as exc:
+            if "ci/rust-verification.toml is invalid TOML" not in str(exc):
+                raise AssertionError(str(exc)) from exc
+            return
+    raise AssertionError("invalid rust-verification TOML must raise PolicyError")
 
 
 def without_pr_concurrency(workflow: str) -> str:
@@ -2722,6 +2800,7 @@ def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
 
         (tmp_path / ".no-mistakes.yaml").write_text(no_mistakes_text)
+        write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_no_mistakes_entrypoint")
         stdout = io.StringIO()
@@ -2753,6 +2832,7 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
         nextest_path = tmp_path / ".config" / "nextest.toml"
         nextest_path.parent.mkdir(parents=True)
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
+        write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_action_entrypoint")
         stdout = io.StringIO()
@@ -2781,6 +2861,7 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         nextest_path = tmp_path / ".config" / "nextest.toml"
         nextest_path.parent.mkdir(parents=True)
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
+        write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_workflow_entrypoint")
         stdout = io.StringIO()
@@ -2998,6 +3079,7 @@ commands:
   sudoshell: sudo bash -lc 'cargo test --all'
   envshell: env -i bash -lc 'cargo test --all'
   hyphenated: cargo-clippy --workspace
+  zigbuild: cargo zigbuild --release
   rustup: rustup run stable cargo test
   pyinline: python -c 'import os; os.system("cargo test")'
   timeout: timeout 30 cargo test
@@ -3020,6 +3102,10 @@ commands:
   managedencodedrustflags: CARGO_ENCODED_RUSTFLAGS='--out-dir\\x1f/tmp/raw-out' python3 scripts/rust_verification.py cargo --repo . -- check
   managedinstallroot: python3 scripts/rust_verification.py cargo --repo . -- install ripgrep --root /tmp/install-root
   managedrustcwrapper: RUSTC_WRAPPER=/tmp/wrapper python3 scripts/rust_verification.py cargo --repo . -- test
+  managedtimeout: timeout 30 python3 scripts/rust_verification.py cargo --repo . -- test
+  managedenvci: GITHUB_ACTIONS=true python3 scripts/rust_verification.py cargo --repo . -- test
+  managedenvcmdci: env GITHUB_ACTIONS=true python3 scripts/rust_verification.py cargo --repo . -- test
+  managedpythonflag: python3 -W ignore scripts/rust_verification.py cargo --repo . -- test
   no-mistakes-clippy-command: no-mistakes run -- clippy
   no-mistakes-nextest-command: no-mistakes run -- nextest run
   s3cache: aws s3 sync target s3://bolt-v2-active-cache/target
@@ -3027,11 +3113,9 @@ commands:
 """
     allowed_fixture = """
 commands:
-  test: python3 scripts/rust_verification.py cargo --repo . -- test
-  lint: python3 scripts/rust_verification.py cargo --repo . -- clippy --all-targets -- -D warnings
+  test: just source-fence-static
+  lint: just fmt-check
   format: python3 scripts/rust_verification.py cargo --repo . -- fmt --check
-  test-binary-arg: python3 scripts/rust_verification.py cargo --repo . -- test -- --target-dir /tmp/test-binary-arg
-  run-test-binary-arg: python3 scripts/rust_verification.py run --repo . test -- --target-dir /tmp/test-binary-arg
   exact-head-ci: gh run view --repo seungpyoson/bolt-v2 --commit "$GITHUB_SHA" --json conclusion
   sudouserarg: timeout 30 sudo -u cargo echo hello
 """
@@ -3113,6 +3197,7 @@ commands: { test: "cargo test" }
         "sudoshell",
         "envshell",
         "hyphenated",
+        "zigbuild",
         "rustup",
         "pyinline",
         "timeout",
@@ -3142,10 +3227,19 @@ commands: { test: "cargo test" }
     expected_s3 = ".no-mistakes.yaml commands.s3cache S3 active mutable target cache must be rejected"
     expected_storage = [
         ".no-mistakes.yaml commands.managedrustcwrapper RUSTC_WRAPPER raw compiler wrapper must be classified",
+        ".no-mistakes.yaml commands.managedenvci GITHUB_ACTIONS local CI spoof must not be checked in",
+        ".no-mistakes.yaml commands.managedenvcmdci GITHUB_ACTIONS local CI spoof must not be checked in",
+    ]
+    expected_wrapper = [
+        ".no-mistakes.yaml commands.managedtimeout wrapper-routed local compile-heavy Rust must be remote-first",
+        ".no-mistakes.yaml commands.managedenvci wrapper-routed local compile-heavy Rust must be remote-first",
+        ".no-mistakes.yaml commands.managedenvcmdci wrapper-routed local compile-heavy Rust must be remote-first",
+        ".no-mistakes.yaml commands.managedpythonflag wrapper-routed local compile-heavy Rust must be remote-first",
     ]
     fixture_result, fixture_errors = run_verifier_main_with_no_mistakes(raw_fixture)
     missing_fixture = [fragment for fragment in expected if fragment not in fixture_errors]
     missing_storage = [fragment for fragment in expected_storage if fragment not in fixture_errors]
+    missing_wrapper = [fragment for fragment in expected_wrapper if fragment not in fixture_errors]
     false_fixture = ".no-mistakes.yaml commands.docs raw Cargo drift must be classified" in fixture_errors
     allowed_result, allowed_errors = run_verifier_main_with_no_mistakes(allowed_fixture)
     false_allowed = [
@@ -3161,6 +3255,7 @@ commands: { test: "cargo test" }
         fixture_result == 0
         or missing_fixture
         or missing_storage
+        or missing_wrapper
         or expected_s3 not in fixture_errors
         or false_fixture
         or allowed_result != 0
@@ -3174,7 +3269,7 @@ commands: { test: "cargo test" }
             "no-mistakes raw-Cargo drift must fail through verifier main() while managed-wrapper "
             "and exact-head CI evidence commands stay allowed: "
             f"fixture_result={fixture_result} missing_fixture={missing_fixture!r} "
-            f"missing_storage={missing_storage!r} "
+            f"missing_storage={missing_storage!r} missing_wrapper={missing_wrapper!r} "
             f"expected_s3={expected_s3!r} false_fixture={false_fixture} fixture_errors={fixture_errors!r} "
             f"fixture_expected_raw_keys={fixture_expected_raw_keys!r} "
             f"allowed_result={allowed_result} false_allowed={false_allowed!r} "
@@ -3425,6 +3520,13 @@ def assert_ci_lint_runs_rust_verification_cache_retention_tests() -> None:
         raise AssertionError("ci-lint-workflow must run rust verification cache retention self-tests")
 
 
+def assert_ci_lint_runs_verify_remote_tests() -> None:
+    justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+    expected = "python3 scripts/test_verify_remote.py"
+    if expected not in justfile:
+        raise AssertionError("ci-lint-workflow must run remote verification watcher self-tests")
+
+
 def assert_ci_lint_runs_command_understanding_tests() -> None:
     justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
     expected = "python3 scripts/test_command_understanding.py"
@@ -3441,6 +3543,7 @@ def assert_cargo_zigbuild_probe_has_no_redundant_true() -> None:
 
 def main() -> int:
     assert_ci_lint_runs_rust_verification_cache_retention_tests()
+    assert_ci_lint_runs_verify_remote_tests()
     assert_ci_lint_runs_command_understanding_tests()
     assert_cargo_zigbuild_probe_has_no_redundant_true()
     assert_clean()
@@ -5388,6 +5491,8 @@ def main() -> int:
     assert_security_key_public_prefix_is_validated()
     assert_backtester_detect_includes_runner_config()
     assert_actionlint_rejects_stale_config_variables()
+    assert_source_fence_static_ignores_comments()
+    assert_rust_verification_policy_parse_errors_are_domain_specific()
 
     verifier = load_verifier()
     runner_config = REPO_ROOT / "ci" / "github-actions-runners.toml"

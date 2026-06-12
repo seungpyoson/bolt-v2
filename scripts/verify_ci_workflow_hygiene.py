@@ -28,6 +28,7 @@ from command_understanding import (
     python_constant_string,
     python_inline_command_payloads,
 )
+from rust_verification import CARGO_DISK_PREFLIGHT_SUBCOMMANDS
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -39,6 +40,8 @@ DEFAULT_NEXTEST_CONFIG = REPO_ROOT / ".config" / "nextest.toml"
 DEFAULT_NO_MISTAKES_CONFIG = REPO_ROOT / ".no-mistakes.yaml"
 DEFAULT_RUNNERS_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
 DEFAULT_ACTIONLINT_CONFIG = REPO_ROOT / ".github" / "actionlint.yaml"
+DEFAULT_RUST_VERIFICATION_POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
+DEFAULT_BVS_RUST_VERIFICATION_POLICY = REPO_ROOT / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml"
 JOB_RUNS_ON_VAR_RE = re.compile(r"^    runs-on:\s*\$\{\{\s*vars\.([A-Z0-9_]+)\s*\}\}\s*$")
 WORKFLOW_RUNNER_CONFIG_KEYS = {
     "ci.yml": "ci",
@@ -67,12 +70,18 @@ DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / ".github" / "actions", "*/action.yaml"),
 )
 S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejected"
+LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS = {"build", "clippy", "test"}
+LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS = set(CARGO_DISK_PREFLIGHT_SUBCOMMANDS)
 YAML_ANCHOR_PATTERN = r"&[A-Za-z0-9_.-]+"
 YAML_STEP_ITEM_RE = re.compile(rf"^-\s+(?:{YAML_ANCHOR_PATTERN}(?:\s+|$))?")
 YAML_RUN_LINE_RE = re.compile(rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*(.*?)\s*$")
 YAML_FOLDED_RUN_LINE_RE = re.compile(
     rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*>[+-]?\s*(?:#.*)?$"
 )
+
+
+class PolicyError(RuntimeError):
+    pass
 
 REQUIRED_JOBS = (
     "detector",
@@ -1082,6 +1091,7 @@ CARGO_PROCESS_SUBCOMMANDS = {
     "run",
     "rustc",
     "test",
+    "zigbuild",
 }
 
 
@@ -1669,13 +1679,54 @@ def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
     return tools
 
 
+def python_rust_verification_script_index(tokens: list[str]) -> int | None:
+    if not tokens or not pathlib.Path(tokens[0]).name.startswith("python"):
+        return None
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"-B", "-E", "-I", "-O", "-OO", "-S", "-s", "-u"}:
+            index += 1
+            continue
+        if token in {"-W", "-X"} and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("-W", "-X")) and token not in {"-W", "-X"}:
+            index += 1
+            continue
+        break
+    if index < len(tokens) and pathlib.Path(tokens[index]).name == "rust_verification.py":
+        return index
+    return None
+
+
+def managed_rust_verification_command_tokens(tokens: list[str], *, depth: int = 0) -> list[str] | None:
+    if depth > 6:
+        return None
+    tokens = strip_shell_redirections(tokens)
+    if not tokens:
+        return None
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index:
+        return managed_rust_verification_command_tokens(tokens[assignment_index:], depth=depth + 1)
+    executable = pathlib.Path(tokens[0]).name
+    if executable == "env":
+        inner = env_inner_tokens(tokens)
+        return managed_rust_verification_command_tokens(inner, depth=depth + 1) if inner is not None else None
+    if executable in RECURSIVE_WRAPPER_EXECUTABLES:
+        inner = wrapper_inner_tokens(tokens)
+        return managed_rust_verification_command_tokens(inner, depth=depth + 1) if inner is not None else None
+    script_index = python_rust_verification_script_index(tokens)
+    if script_index is None or script_index + 1 >= len(tokens):
+        return None
+    command = tokens[script_index + 1]
+    if command not in {"cargo", "run"}:
+        return None
+    return [tokens[0], tokens[script_index], *tokens[script_index + 1 :]]
+
+
 def managed_rust_verification_tokens(tokens: list[str]) -> bool:
-    return (
-        len(tokens) >= 3
-        and pathlib.Path(tokens[0]).name.startswith("python")
-        and pathlib.Path(tokens[1]).name == "rust_verification.py"
-        and tokens[2] in {"cargo", "run"}
-    )
+    return managed_rust_verification_command_tokens(tokens) is not None
 
 
 def consume_rust_verification_repo_option(tokens: list[str], index: int) -> int:
@@ -1690,10 +1741,11 @@ def consume_rust_verification_repo_option(tokens: list[str], index: int) -> int:
 
 
 def managed_rust_verification_cargo_args(tokens: list[str]) -> list[str] | None:
-    if not managed_rust_verification_tokens(tokens):
+    normalized_tokens = managed_rust_verification_command_tokens(tokens)
+    if normalized_tokens is None:
         return None
-    command = tokens[2]
-    tail = tokens[3:]
+    command = normalized_tokens[2]
+    tail = normalized_tokens[3:]
     index = 0
     while index < len(tail):
         if tail[index] == "--":
@@ -3416,6 +3468,23 @@ def no_mistakes_command_section_errors(config_text: str, config_name: str) -> li
     return errors
 
 
+def command_has_managed_compile_heavy_invocation(command: str) -> bool:
+    for raw_line in command.splitlines() or [command]:
+        tokens = command_tokens(raw_line)
+        normalized_tokens = managed_rust_verification_command_tokens(tokens)
+        if normalized_tokens is None:
+            continue
+        managed_args = managed_rust_verification_cargo_args(tokens)
+        if not managed_args:
+            continue
+        subcommand = cargo_subcommand(managed_args)
+        if normalized_tokens[2] == "run" and subcommand in LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS:
+            return True
+        if normalized_tokens[2] == "cargo" and subcommand in LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS:
+            return True
+    return False
+
+
 def verify_no_mistakes_config(config_text: str, config_name: str = ".no-mistakes.yaml") -> list[str]:
     errors: list[str] = no_mistakes_command_section_errors(config_text, config_name)
     for command_name, command in no_mistakes_commands(config_text).items():
@@ -3425,10 +3494,148 @@ def verify_no_mistakes_config(config_text: str, config_name: str = ".no-mistakes
             "BOLT_MANAGED_JUST private just recipe bypass" in error for error in storage_errors
         ):
             errors.append(f"{config_name} commands.{command_name} raw Cargo drift must be classified")
+        if command_has_managed_compile_heavy_invocation(command):
+            errors.append(f"{config_name} commands.{command_name} wrapper-routed local compile-heavy Rust must be remote-first")
         for storage_error in storage_errors:
             if storage_error == "BOLT_MANAGED_JUST private just recipe bypass must be classified":
                 continue
             errors.append(f"{config_name} commands.{command_name} {storage_error}")
+    return errors
+
+
+def just_recipe_blocks(justfile_text: str) -> dict[str, tuple[list[str], list[str]]]:
+    recipes: dict[str, tuple[list[str], list[str]]] = {}
+    lines = justfile_text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or line[0].isspace() or ":=" in line:
+            index += 1
+            continue
+        header, separator, tail = stripped.partition(":")
+        if not separator:
+            index += 1
+            continue
+        name = header.split()[0]
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name):
+            index += 1
+            continue
+        dependencies = [token for token in tail.split() if token and not token.startswith("#")]
+        body: list[str] = []
+        index += 1
+        while index < len(lines):
+            candidate = lines[index]
+            if candidate.strip() and not candidate[0].isspace():
+                break
+            if candidate.strip():
+                body.append(candidate.strip())
+            index += 1
+        recipes[name] = (dependencies, body)
+    return recipes
+
+
+def verify_source_fence_static_recipe(justfile_text: str) -> list[str]:
+    recipes = just_recipe_blocks(justfile_text)
+    errors: list[str] = []
+    if "source-fence-static" not in recipes:
+        errors.append("justfile source-fence-static recipe is required")
+        return errors
+    if "source-fence" not in recipes:
+        errors.append("justfile source-fence recipe is required")
+        return errors
+    source_fence_dependencies, source_fence_body = recipes["source-fence"]
+    if "source-fence-static" not in source_fence_dependencies:
+        errors.append("justfile source-fence must depend on source-fence-static")
+    static_body = "\n".join(
+        line for line in (strip_comment(raw_line).strip() for raw_line in recipes["source-fence-static"][1]) if line
+    )
+    if command_has_managed_compile_heavy_invocation(static_body) or re.search(r"\brust_verification\.py\b[^\n]*\bcargo\b", static_body):
+        errors.append("justfile source-fence-static must not invoke wrapper-routed Cargo")
+    if "cargo fetch" in static_body or re.search(r"\bscripts/verify_runtime_capture_yaml\.py\b", static_body):
+        errors.append("justfile source-fence-static must stop before cargo fetch and runtime capture verification")
+    full_body = "\n".join(source_fence_body)
+    if "verify_runtime_capture_yaml.py" not in full_body:
+        errors.append("justfile source-fence must keep runtime capture verification in the full recipe")
+    return errors
+
+
+def string_set(table: dict[str, object], key: str) -> set[str] | None:
+    value = table.get(key)
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return None
+    return set(value)
+
+
+def local_compile_policy_errors(data: dict[str, object], display_name: str) -> list[str]:
+    policy = data.get("local_compile_policy")
+    if not isinstance(policy, dict):
+        return [f"{display_name} must define [local_compile_policy]"]
+    errors: list[str] = []
+    if policy.get("enabled") is not True:
+        errors.append(f"{display_name} local_compile_policy.enabled must be true")
+    if policy.get("allowed_ci_env") != "GITHUB_ACTIONS":
+        errors.append(f"{display_name} local_compile_policy.allowed_ci_env must be GITHUB_ACTIONS")
+    if policy.get("break_glass_env") != "BOLT_ALLOW_LOCAL_RUST":
+        errors.append(f"{display_name} local_compile_policy.break_glass_env must be BOLT_ALLOW_LOCAL_RUST")
+    if string_set(policy, "refused_managed_commands") != LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS:
+        errors.append(f"{display_name} local_compile_policy.refused_managed_commands must be build/clippy/test")
+    if string_set(policy, "refused_cargo_subcommands") != LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS:
+        errors.append(f"{display_name} local_compile_policy.refused_cargo_subcommands must match disk preflight")
+    return errors
+
+
+def remote_verification_policy_errors(data: dict[str, object], display_name: str, *, required: bool) -> list[str]:
+    policy = data.get("remote_verification")
+    if policy is None:
+        return [f"{display_name} must define [remote_verification]"] if required else []
+    if not required:
+        return [f"{display_name} must not define [remote_verification]"]
+    if not isinstance(policy, dict):
+        return [f"{display_name} remote_verification must be a table"]
+    expected = {
+        "poll_interval_seconds": 15,
+        "checks_appear_timeout_seconds": 300,
+        "overall_timeout_seconds": 3600,
+    }
+    errors: list[str] = []
+    for key, value in expected.items():
+        if policy.get(key) != value:
+            errors.append(f"{display_name} remote_verification.{key} must be {value}")
+    return errors
+
+
+def load_rust_verification_policy_toml(path: pathlib.Path, display_name: str) -> dict[str, object]:
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise
+    except tomllib.TOMLDecodeError as exc:
+        raise PolicyError(f"{display_name} is invalid TOML: {exc}") from exc
+    except OSError as exc:
+        raise PolicyError(f"{display_name} could not be read: {exc}") from exc
+
+
+def verify_rust_verification_policy(path: pathlib.Path, *, require_remote: bool) -> list[str]:
+    display_name = path.relative_to(REPO_ROOT).as_posix()
+    try:
+        data = load_rust_verification_policy_toml(path, display_name)
+    except FileNotFoundError:
+        return [f"{display_name} is required"]
+    except PolicyError as exc:
+        return [str(exc)]
+    errors: list[str] = []
+    if data.get("schema_version") != 2:
+        errors.append(f"{display_name} schema_version must be 2")
+    errors.extend(local_compile_policy_errors(data, display_name))
+    errors.extend(remote_verification_policy_errors(data, display_name, required=require_remote))
+    return errors
+
+
+def verify_rust_verification_policies() -> list[str]:
+    errors: list[str] = []
+    errors.extend(verify_rust_verification_policy(DEFAULT_RUST_VERIFICATION_POLICY, require_remote=True))
+    errors.extend(verify_rust_verification_policy(DEFAULT_BVS_RUST_VERIFICATION_POLICY, require_remote=False))
     return errors
 
 
@@ -4503,7 +4710,9 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
         "CARGO_TARGET_DIR": "CARGO_TARGET_DIR raw target override must be classified",
         "CARGO_BUILD_TARGET_DIR": "CARGO_BUILD_TARGET_DIR raw target override must be classified",
         "CARGO_TARGET_TMPDIR": "CARGO_TARGET_TMPDIR raw target override must be classified",
+        "BOLT_ALLOW_LOCAL_RUST": "BOLT_ALLOW_LOCAL_RUST local Rust break-glass must not be checked in",
         "BOLT_MANAGED_JUST": "BOLT_MANAGED_JUST private just recipe bypass must be classified",
+        "GITHUB_ACTIONS": "GITHUB_ACTIONS local CI spoof must not be checked in",
     }
     assignments: dict[str, str] = {}
     for line in shell_logical_lines(text):
@@ -5019,7 +5228,9 @@ def raw_rust_storage_errors(workflow_text: str, *, alias_depth: int = 0) -> list
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTFLAGS[\"']?\s*(?:=|:).*(?:--out-dir|--artifact-dir)", "RUSTFLAGS raw output override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTC_WRAPPER[\"']?\s*(?:=|:)", "RUSTC_WRAPPER raw compiler wrapper must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTC_WORKSPACE_WRAPPER[\"']?\s*(?:=|:)", "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified"),
+        (r"(^|[^A-Za-z0-9_$\{])[\"']?BOLT_ALLOW_LOCAL_RUST[\"']?\s*(?:=|:|<<)", "BOLT_ALLOW_LOCAL_RUST local Rust break-glass must not be checked in"),
         (r"(^|[^A-Za-z0-9_$\{])[\"']?BOLT_MANAGED_JUST[\"']?\s*(?:=|:|<<)", "BOLT_MANAGED_JUST private just recipe bypass must be classified"),
+        (r"(^|[^A-Za-z0-9_$\{])[\"']?GITHUB_ACTIONS[\"']?\s*(?:=|:|<<)", "GITHUB_ACTIONS local CI spoof must not be checked in"),
         (r"\bno-mistakes\b[^\n]*\bcargo\b", "no-mistakes raw Cargo drift must be classified"),
         (r"\bno-mistakes\b[^\n]*--worktree[^\n]*(?:--target-dir\s+target|\btarget\b)", "no-mistakes worktree-local target path evidence must be reported"),
         (r"\bcargo\b[^\n|]*\$@[^|]*\|\s*bash\b[^\n;&|]*\s-s\b[^\n;&|]*\s--target-dir\b", "cargo --target-dir raw target override must be classified"),
@@ -6347,6 +6558,9 @@ def main() -> int:
     errors.extend(verify_ci_runner_debug_workflow(workflow_texts))
     errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
+    errors.extend(verify_rust_verification_policies())
+    if "justfile" in repo_automation_texts:
+        errors.extend(verify_source_fence_static_recipe(repo_automation_texts["justfile"]))
     if DEFAULT_NO_MISTAKES_CONFIG.exists():
         errors.extend(verify_no_mistakes_config(DEFAULT_NO_MISTAKES_CONFIG.read_text()))
     if errors:

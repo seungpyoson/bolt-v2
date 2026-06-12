@@ -28,6 +28,15 @@ These repo-level rules are in addition to any higher-level agent instructions.
 8. **DO NOT REFERENCE BOLT V1** — `~/Projects/Claude/bolt/` is the old repo. Do not read from it, import from it, or depend on it. NT source is in the git cache at `~/.cargo/git/checkouts/nautilus_trader-*/` or on GitHub.
 9. **STRATEGIES PRODUCE INTENT ONLY** — strategy files may produce order intent and strategy-local signal state only. Execution admissibility, venue rules, fillability, rounding, minimum order size, fee-adjusted sizing, and submit gating must live in shared execution/admission modules built on NT APIs. Any change under `src/strategies/*` that handles submit mechanics is rejected unless explicitly approved as strategy-local signal logic.
 
+## Remote-First Rust Verification
+
+- Do not run local compile-heavy Rust verification by default: no local `just test`, `just clippy`, `just build`, `just check-aarch64`, full `just source-fence`, `just bte-test`, `just bte-clippy`, `just bte-build`, or raw `cargo build/test/clippy/check/run/nextest/zigbuild`.
+- Use local non-compile gates for fast feedback: `just fmt-check`, `just deny`, `just ci-lint-workflow`, Python verifiers, and `just source-fence-static`.
+- For compile/test/clippy proof: commit, push, ensure the branch has an open or draft PR, then run `just verify-remote` and use exact-head PR CI evidence from Ubicloud/GitHub Actions.
+- `just verify-remote` waits for all reported PR checks on the exact head SHA, not a local subset of workflow jobs.
+- Human operator break-glass exists for exceptional local repro and live/operator lanes only. Agents must not use it as a normal verification path.
+- Enforcement boundary: repo tooling gates cooperative paths through `just`, `scripts/rust_verification.py`, and `.no-mistakes.yaml`; raw shell `cargo ...` remains outside this repo's control until external agent hooks intercept it.
+
 ## Review Bar
 
 - Every unique substantive issue counts as a finding regardless of severity. Do not downgrade real issues into “just notes” or treat “tracked” as “resolved” unless the finding is actually fixed or the user explicitly waives it.

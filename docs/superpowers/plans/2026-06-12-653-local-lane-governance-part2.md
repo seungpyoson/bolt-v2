@@ -238,24 +238,31 @@ Expected: fixture tests pass, but `test_real_scripts_dir_is_clean` FAILS listing
 Run: `python3 scripts/verify_lane_governance.py`
 Expected: exit 1 with one line per unwired file. This list — not this plan — is the source of truth for which files to edit.
 
-- [ ] **Step 2: Apply the identical mechanical edit to every listed file**
+- [ ] **Step 2: Apply the mechanical edit to every listed file**
 
-Every listed file currently ends with:
+(Corrected 2026-06-12 after execution stop: the original step claimed one uniform
+tail shape; the verified inventory at HEAD is three shapes, all single-statement.)
 
-```python
-if __name__ == "__main__":
-    raise SystemExit(main())
-```
-
-Change each to:
+Every listed file's `__main__` block contains exactly one statement, in one of
+three shapes: `raise SystemExit(main())`, `sys.exit(main())`, or
+`unittest.main()`. For each listed file, insert the guard as the first
+statements of the existing block and preserve the existing entry statement
+unchanged:
 
 ```python
 if __name__ == "__main__":
     import lane_governor
 
     lane_governor.acquire()
-    raise SystemExit(main())
+    <existing entry statement, verbatim — e.g. raise SystemExit(main())
+     or sys.exit(main()) or unittest.main()>
 ```
+
+Do not normalize the entry statements to one shape — that is out of scope. The
+meta-check is the arbiter: its AST rule requires only that the first non-import
+statement of the block is `lane_governor.acquire()`, so all three shapes pass
+once the guard is inserted. (`unittest.main()` parses argv itself; `-h`/`--help`
+is already handled before locking by the A4 fast-path.)
 
 The import lives inside the `__main__` branch deliberately: these scripts import one another as modules (e.g. `verify_bolt_v3_runtime_literals` imports from `verify_bolt_v3_provider_leaks`), and module import must never take the lock. Test scripts that load their verifier via `importlib` `exec_module` are also safe — the loaded module's `__name__` is not `"__main__"`.
 

@@ -191,6 +191,7 @@ impl IvQuerySideEffects {
 
     fn record_retention_miss(&mut self, miss: IvRetainedProductKey) {
         self.effects.push(IvQuerySideEffect::RetentionMiss(miss));
+        self.enforce_retention();
     }
 
     fn record_product_query_rejection(
@@ -202,6 +203,7 @@ impl IvQuerySideEffects {
             product: Box::new(product.clone()),
             reject_reason,
         });
+        self.enforce_retention();
     }
 
     fn record_query_rejection(&mut self, provenance: &IvProvenance, reject_reason: IvRejectReason) {
@@ -209,6 +211,7 @@ impl IvQuerySideEffects {
             provenance: Box::new(provenance.clone()),
             reject_reason,
         });
+        self.enforce_retention();
     }
 
     fn record_derived_rejection(
@@ -2618,10 +2621,11 @@ fn retain_source_health_events(
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::BTreeMap,
+        collections::{BTreeMap, BTreeSet},
         panic::{AssertUnwindSafe, catch_unwind},
     };
 
+    use crate::bolt_v3_iv::authz::IvAuthorizationMode;
     use crate::bolt_v3_iv::health::IvSourceHealthState;
     use crate::bolt_v3_iv::policy::{
         IvBasisSelection, IvEvidenceMapping, IvProjectionKind, IvTenorSelection,
@@ -2698,6 +2702,42 @@ mod tests {
         };
         assert_eq!(handle.query_rejections(), vec![retained]);
         assert_eq!(retained_before, retained_after);
+    }
+
+    #[test]
+    fn query_side_effect_rejections_enforce_profile_retention_bounds() {
+        let handle = IvQueryHandle::new(
+            "test_profile",
+            IvSelectorAuthorization {
+                authorization_mode: IvAuthorizationMode::ProfileWide,
+                strategy_id: "test_strategy".to_string(),
+                allowed_product_kinds: BTreeSet::new(),
+                allowed_selector_fingerprints: BTreeSet::new(),
+                allowed_source_ids: BTreeSet::new(),
+            },
+            IvStore::empty(),
+        )
+        .with_retention_policy(IvRetentionPolicy {
+            max_raw_events: 1,
+            max_indexed_points: 1,
+            max_smiles: 1,
+            max_surfaces: 1,
+            max_derived_points: 1,
+            max_source_health_events: 1,
+        });
+
+        for subscription_generation in 1..=3 {
+            let mut provenance = test_point("test_source", subscription_generation).provenance;
+            provenance.subscription_generation = subscription_generation;
+            let mut side_effects = IvQuerySideEffects::new();
+            side_effects.record_query_rejection(&provenance, IvRejectReason::StaleData);
+            side_effects.apply(&handle);
+        }
+
+        assert_eq!(
+            handle.query_rejections(),
+            vec![rejection_decision(IvRejectReason::StaleData, 3)]
+        );
     }
 
     #[test]

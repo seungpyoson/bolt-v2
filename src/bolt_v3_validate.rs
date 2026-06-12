@@ -42,7 +42,7 @@ use std::{
 
 use nautilus_model::{
     enums::{BarAggregation, BarIntervalType},
-    identifiers::{ClientOrderId, InstrumentId, StrategyId},
+    identifiers::{ClientOrderId, InstrumentId},
 };
 use rust_decimal::Decimal;
 
@@ -50,11 +50,14 @@ use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
     ClientBlock, DataClientReadinessProbeQuoteTargetSource, GATE_PROVIDER_CAPABILITIES,
     GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, KillSwitchConfigBlock,
-    LiveCanaryBlock, LiveCanaryProofPolicyBlock, LoadedStrategy, NautilusBlock,
-    PRICE_GATE_VALUE_KIND, PersistenceBlock, RiskBlock, SSM_CREDENTIAL_PARAMETER_FIELD,
-    TEST_DOUBLE_PROVIDER_KIND,
+    LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock,
+    RealizedVolatilityAggregationBlock, RealizedVolatilityJumpPolicyBlock,
+    RealizedVolatilityNoiseMethodBlock, RealizedVolatilityPricingComponentBlock,
+    RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceClassBlock, RiskBlock,
+    SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
+use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 
 #[derive(Debug)]
 pub struct BoltV3ValidationError {
@@ -92,17 +95,23 @@ pub const SUPPORTED_ROOT_SCHEMA_VERSION: u32 = 1;
 pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 2;
 const CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD: &str = "feed_bindings";
 const CHAINLINK_DATA_STREAMS_ENDPOINT_ID_FIELD: &str = "endpoint_id";
-const CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD: &str = "rest_base_url";
-const CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD: &str = "report_endpoint_path";
-const CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD: &str = "http_timeout_secs";
-const CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD: &str = "api_key_ssm_parameter";
-const CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD: &str = "api_secret_ssm_parameter";
+// Shared with the provider-owned F3 client/gate-provider consistency check
+// (`crate::bolt_v3_providers::chainlink::validate_client_gate_provider_consistency`),
+// which reaches them through this single core definition rather than re-declaring
+// the gate-provider field names.
+pub(crate) const CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD: &str = "rest_base_url";
+pub(crate) const CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD: &str = "report_endpoint_path";
+pub(crate) const CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD: &str = "http_timeout_secs";
+pub(crate) const CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD: &str = "api_key_ssm_parameter";
+pub(crate) const CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD: &str =
+    "api_secret_ssm_parameter";
 const CHAINLINK_DATA_STREAMS_OLD_SSM_CREDENTIAL_PARAMETER_FIELD: &str = "ssm_credential_parameter";
 const CHAINLINK_DATA_STREAMS_RESOLUTION_IDENTITY_FIELD: &str = "resolution_identity";
 const CHAINLINK_DATA_STREAMS_VALUE_KIND_FIELD: &str = "value_kind";
 const CHAINLINK_DATA_STREAMS_FEED_ID_FIELD: &str = "feed_id";
 const CHAINLINK_DATA_STREAMS_REPORT_SCHEMA_VERSION_FIELD: &str = "report_schema_version";
 const CHAINLINK_DATA_STREAMS_REPORT_DECIMAL_SCALE_FIELD: &str = "report_decimal_scale";
+const MISSING_REALIZED_VOLATILITY_SUBSAMPLE_COUNT: usize = usize::MIN;
 const CHAINLINK_DATA_STREAMS_OLD_PROVIDER_LEVEL_FEED_FIELDS: &[&str] = &[
     CHAINLINK_DATA_STREAMS_FEED_ID_FIELD,
     CHAINLINK_DATA_STREAMS_REPORT_SCHEMA_VERSION_FIELD,
@@ -124,21 +133,17 @@ const TARGET_RESOLUTION_KIND_FIELD: &str = "resolution_kind";
 const TARGET_PROVIDER_ID_FIELD: &str = "provider_id";
 const TARGET_PROVIDER_PREFERENCE_FIELD: &str = "provider_preference";
 const TARGET_ALLOWED_PROVIDER_IDS_FIELD: &str = "allowed_provider_ids";
-const LIVE_CANARY_PROOF_POLICY_KIND: &str = "least_bad_strategy_candidate";
-const LIVE_CANARY_PROOF_POLICY_CANDIDATE_SCORE_SOURCE: &str = "proof_source";
-const LIVE_CANARY_PROOF_POLICY_NOTIONAL_MODE: &str = "fixed";
-const LIVE_CANARY_PROOF_POLICY_REQUIRED_PROOF_CLAIM: &str = "proof_only";
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
-struct ChainlinkFeedBindingKey {
+struct ResolutionFeedBindingKey {
     provider_id: String,
     resolution_identity: String,
     value_kind: String,
 }
 
 #[derive(Debug, Clone)]
-struct ChainlinkTargetMappingReference {
-    key: ChainlinkFeedBindingKey,
+struct ResolutionFeedMappingReference {
+    key: ResolutionFeedBindingKey,
     context: String,
 }
 
@@ -169,25 +174,334 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_clients_block(&root.clients));
+    errors.extend(validate_realized_volatility_surfaces(root));
     if let Some(gate_providers) = &root.gate_providers {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));
     }
-    if let Some(live_canary) = root.live_canary.as_ref() {
-        // Validate the live-money-gating base fields unconditionally. The
-        // previous code only ran when `proof_policy` was present, so a
-        // `[live_canary]` block without a proof policy skipped all of it — a
-        // zero/negative or over-cap `max_notional_per_order` passed config load.
-        // Operator-evidence integrity (sha256/head_sha shapes, approval window)
-        // is validated by the live-canary gate at run time (single source of
-        // truth) and is intentionally not duplicated here.
-        errors.extend(validate_live_canary_block(
-            live_canary,
-            &root.risk.default_max_notional_per_order,
-        ));
-        if let Some(proof_policy) = live_canary.proof_policy.as_ref() {
-            errors.extend(validate_live_canary_proof_policy(
-                proof_policy,
-                &live_canary.max_notional_per_order,
+    errors.extend(crate::bolt_v3_providers::validate_resolution_oracle_client_consistency(root));
+
+    errors
+}
+
+fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let Some(realized_volatility_surfaces) = root.realized_volatility_surfaces.as_ref() else {
+        return errors;
+    };
+
+    for (surface_id, surface) in realized_volatility_surfaces {
+        let context = format!("realized_volatility_surfaces.{surface_id}");
+        if surface_id.trim().is_empty() {
+            errors.push("realized_volatility_surfaces contains an empty surface id".to_string());
+        }
+        if surface.canonical_base_asset.trim().is_empty() {
+            errors.push(format!("{context}.canonical_base_asset must be non-empty"));
+        }
+        if surface.canonical_quote_asset.trim().is_empty() {
+            errors.push(format!("{context}.canonical_quote_asset must be non-empty"));
+        }
+        if surface.sources.is_empty() {
+            errors.push(format!(
+                "{context}.sources must contain at least one source"
+            ));
+        }
+
+        let policy = &surface.policy;
+        for (field, value) in [
+            (stringify!(window_ms), policy.window_ms),
+            (
+                stringify!(sampling_interval_ms),
+                policy.sampling_interval_ms,
+            ),
+            (
+                stringify!(min_ready_sources),
+                policy.min_ready_sources as u64,
+            ),
+            (stringify!(max_source_age_ms), policy.max_source_age_ms),
+            (
+                stringify!(max_event_receive_lag_ms),
+                policy.max_event_receive_lag_ms,
+            ),
+            (
+                stringify!(max_inter_sample_gap_ms),
+                policy.max_inter_sample_gap_ms,
+            ),
+        ] {
+            if value == u64::MIN {
+                errors.push(format!(
+                    "{context}.policy.{field} must be a positive integer"
+                ));
+            }
+        }
+        if policy.window_ms < policy.sampling_interval_ms {
+            errors.push(format!(
+                "{context}.policy.{} {} must be greater than or equal to policy.{} {}",
+                stringify!(window_ms),
+                policy.window_ms,
+                stringify!(sampling_interval_ms),
+                policy.sampling_interval_ms,
+            ));
+        }
+        if !is_positive_finite(policy.min_coverage_ratio) || policy.min_coverage_ratio > UNIT_F64 {
+            errors.push(format!(
+                "{context}.policy.min_coverage_ratio must be finite and in (0, 1]"
+            ));
+        }
+        if !policy.max_cross_source_dispersion.is_finite()
+            || policy.max_cross_source_dispersion < ZERO_F64
+        {
+            errors.push(format!(
+                "{context}.policy.max_cross_source_dispersion must be finite and non-negative"
+            ));
+        }
+        if !is_positive_finite(policy.seconds_per_annum) {
+            errors.push(format!(
+                "{context}.policy.seconds_per_annum must be positive finite"
+            ));
+        }
+        if !policy.upper_quantile.is_finite()
+            || !(HALF_F64..=UNIT_F64).contains(&policy.upper_quantile)
+        {
+            errors.push(format!(
+                "{context}.policy.upper_quantile must be finite and in [0.5, 1.0]"
+            ));
+        }
+        if matches!(
+            policy.aggregation,
+            RealizedVolatilityAggregationBlock::TrimmedMean
+        ) {
+            match policy.trim_fraction {
+                Some(trim_fraction)
+                    if trim_fraction.is_finite()
+                        && (ZERO_F64..HALF_F64).contains(&trim_fraction) => {}
+                _ => errors.push(format!(
+                    "{context}.policy.trim_fraction must be finite and in [0, 0.5) for trimmed_mean aggregation"
+                )),
+            }
+        }
+        if matches!(
+            policy.aggregation,
+            RealizedVolatilityAggregationBlock::MedianWithUpperQuantileGuard
+        ) {
+            match policy.guard_weight {
+                Some(guard_weight)
+                    if guard_weight.is_finite()
+                        && (ZERO_F64..=UNIT_F64).contains(&guard_weight) => {}
+                _ => errors.push(format!(
+                    "{context}.policy.guard_weight must be finite and in [0, 1] for median_with_upper_quantile_guard aggregation"
+                )),
+            }
+        }
+        if let Some(estimator) = surface.estimator.as_ref() {
+            if estimator.noise_robust_method.is_none() {
+                errors.push(format!(
+                    "{context}.estimator.noise_robust_method must be set when estimator is configured"
+                ));
+            }
+            if estimator.jump_policy.is_none() {
+                errors.push(format!(
+                    "{context}.estimator.jump_policy must be set when estimator is configured"
+                ));
+            }
+            if estimator.pricing_component.is_none() {
+                errors.push(format!(
+                    "{context}.estimator.pricing_component must be set when estimator is configured"
+                ));
+            }
+            if matches!(
+                estimator.noise_robust_method,
+                Some(RealizedVolatilityNoiseMethodBlock::Subsampled)
+            ) {
+                let subsamples = estimator
+                    .subsamples
+                    .unwrap_or(MISSING_REALIZED_VOLATILITY_SUBSAMPLE_COUNT);
+                let min_ready_subsamples = estimator
+                    .min_ready_subsamples
+                    .unwrap_or(MISSING_REALIZED_VOLATILITY_SUBSAMPLE_COUNT);
+                if subsamples == 0 || min_ready_subsamples == 0 {
+                    errors.push(format!(
+                        "{context}.estimator.subsamples and min_ready_subsamples must be positive for subsampled RV"
+                    ));
+                }
+                if min_ready_subsamples > subsamples {
+                    errors.push(format!(
+                        "{context}.estimator.min_ready_subsamples must be less than or equal to subsamples"
+                    ));
+                }
+                if subsamples as u64 > policy.sampling_interval_ms {
+                    errors.push(format!(
+                        "{context}.estimator.subsamples must not exceed policy.sampling_interval_ms unless collision semantics are explicitly supported"
+                    ));
+                }
+            }
+            if matches!(
+                estimator.noise_robust_method,
+                Some(RealizedVolatilityNoiseMethodBlock::CoarserGrid)
+            ) && estimator.coarse_sampling_interval_ms.is_none()
+            {
+                errors.push(format!(
+                    "{context}.estimator.coarse_sampling_interval_ms must be set for coarser_grid RV"
+                ));
+            }
+            if matches!(
+                estimator.noise_robust_method,
+                Some(RealizedVolatilityNoiseMethodBlock::CoarserGrid)
+            ) && estimator.coarser_grid_policy.is_none()
+            {
+                errors.push(format!(
+                    "{context}.estimator.coarser_grid_policy must be set for coarser_grid RV"
+                ));
+            }
+            if matches!(
+                estimator.noise_robust_method,
+                Some(RealizedVolatilityNoiseMethodBlock::CoarserGrid)
+            ) && estimator
+                .coarse_sampling_interval_ms
+                .is_some_and(|interval| interval <= policy.sampling_interval_ms)
+            {
+                errors.push(format!(
+                    "{context}.estimator.coarse_sampling_interval_ms must be greater than policy.sampling_interval_ms"
+                ));
+            }
+            if matches!(
+                estimator.pricing_component,
+                Some(RealizedVolatilityPricingComponentBlock::NoiseRobust)
+            ) && !matches!(
+                estimator.noise_robust_method,
+                Some(RealizedVolatilityNoiseMethodBlock::CoarserGrid)
+                    | Some(RealizedVolatilityNoiseMethodBlock::Subsampled)
+            ) {
+                errors.push(format!(
+                    "{context}.estimator.pricing_component noise_robust requires noise_robust_method other than none"
+                ));
+            }
+            if matches!(
+                estimator.pricing_component,
+                Some(RealizedVolatilityPricingComponentBlock::Forecast)
+            ) {
+                errors.push(format!(
+                    "{context}.estimator.pricing_component forecast is not enabled in this implementation slice"
+                ));
+            }
+            if matches!(
+                estimator.pricing_component,
+                Some(RealizedVolatilityPricingComponentBlock::Continuous)
+            ) && !matches!(
+                estimator.jump_policy,
+                Some(RealizedVolatilityJumpPolicyBlock::Separate)
+            ) {
+                errors.push(format!(
+                    "{context}.estimator.pricing_component continuous requires jump_policy separate"
+                ));
+            }
+        }
+
+        let mut seen_source_ids = BTreeSet::new();
+        let mut seen_source_instrument_clients: BTreeMap<String, (String, String)> =
+            BTreeMap::new();
+        let mut enabled_quorum_sources = 0usize;
+        let mut quorum_source_contract: Option<(
+            RealizedVolatilitySourceClassBlock,
+            RealizedVolatilitySampleKindBlock,
+            String,
+        )> = None;
+        for (index, source) in surface.sources.iter().enumerate() {
+            let source_context = format!("{context}.sources[{index}]");
+            if source.source_id.trim().is_empty() {
+                errors.push(format!("{source_context}.source_id must be non-empty"));
+            } else if !seen_source_ids.insert(source.source_id.as_str()) {
+                errors.push(format!(
+                    "{source_context}.source_id duplicate source_id `{}`",
+                    source.source_id
+                ));
+            }
+
+            match root.clients.get(source.data_client_id.as_str()) {
+                None => errors.push(format!(
+                    "{source_context}.data_client_id `{}` does not match any [clients.<id>] block",
+                    source.data_client_id
+                )),
+                Some(client) => {
+                    if client.data.is_none() {
+                        errors.push(format!(
+                            "{source_context}.data_client_id `{}` must reference a data-capable client (the referenced client has no [data] block)",
+                            source.data_client_id
+                        ));
+                    }
+                }
+            }
+
+            let source_base_asset = instrument_base_asset(&source.instrument_id);
+            if source_base_asset != surface.canonical_base_asset {
+                errors.push(format!(
+                    "{source_context}.instrument_id `{}` resolves to base asset `{source_base_asset}`, which must match {context}.canonical_base_asset `{}`",
+                    source.instrument_id, surface.canonical_base_asset,
+                ));
+            }
+            let instrument_key = source.instrument_id.to_string();
+            let data_client_id = source.data_client_id.to_string();
+            match seen_source_instrument_clients.get(&instrument_key) {
+                Some((existing_data_client_id, existing_context))
+                    if existing_data_client_id != &data_client_id =>
+                {
+                    errors.push(format!(
+                        "{source_context}.instrument_id `{}` with data_client_id `{data_client_id}` is also used by {existing_context} with distinct data_client_id `{existing_data_client_id}`; realized_volatility_surfaces source events do not carry data_client_id, so same-instrument RV sources must share one data client",
+                        source.instrument_id,
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    seen_source_instrument_clients
+                        .insert(instrument_key, (data_client_id, source_context.clone()));
+                }
+            }
+
+            if source.canonical_quote_asset != surface.canonical_quote_asset {
+                errors.push(format!(
+                    "{source_context}.canonical_quote_asset `{}` must match {context}.canonical_quote_asset `{}`",
+                    source.canonical_quote_asset, surface.canonical_quote_asset
+                ));
+            }
+            if !realized_volatility_source_pair_supported(source.source_class, source.sample_kind) {
+                errors.push(format!(
+                    "{source_context}.{} {:?} with {} {:?} is not supported by the taker realized-volatility router",
+                    stringify!(source_class),
+                    source.source_class,
+                    stringify!(sample_kind),
+                    source.sample_kind,
+                ));
+            }
+            if source.enabled && source.counts_toward_quorum {
+                enabled_quorum_sources += 1;
+                match quorum_source_contract.as_ref() {
+                    Some((source_class, sample_kind, existing_context))
+                        if source.source_class != *source_class
+                            || source.sample_kind != *sample_kind =>
+                    {
+                        errors.push(format!(
+                            "{source_context}.source_class/sample_kind {:?}/{:?} must match enabled quorum source contract {:?}/{:?} established by {existing_context}",
+                            source.source_class,
+                            source.sample_kind,
+                            source_class,
+                            sample_kind,
+                        ));
+                    }
+                    Some(_) => {}
+                    None => {
+                        quorum_source_contract = Some((
+                            source.source_class,
+                            source.sample_kind,
+                            source_context.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        if policy.min_ready_sources > enabled_quorum_sources {
+            errors.push(format!(
+                "{context}.policy.min_ready_sources {} exceeds enabled quorum source count {}",
+                policy.min_ready_sources, enabled_quorum_sources
             ));
         }
     }
@@ -195,168 +509,28 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors
 }
 
-/// Validates the live-money-gating base fields of a `[live_canary]` block at
-/// config load, independent of whether a `[live_canary.proof_policy]` subtable
-/// is present. The operator-evidence integrity fields (sha256/head_sha shapes,
-/// approval-consumption window) are owned by the live-canary gate at run time
-/// and are intentionally not re-validated here (single source of truth / no
-/// dual paths).
-fn validate_live_canary_block(
-    live_canary: &LiveCanaryBlock,
-    default_max_notional_per_order: &str,
-) -> Vec<String> {
-    let mut errors = Vec::new();
-
-    if live_canary.approval_id.trim().is_empty() {
-        errors.push("live_canary.approval_id must not be blank".to_string());
-    }
-    if live_canary.max_live_order_count == 0 {
-        errors.push("live_canary.max_live_order_count must be a positive integer".to_string());
-    }
-
-    match (
-        parse_decimal_string(&live_canary.max_notional_per_order),
-        parse_decimal_string(default_max_notional_per_order),
-    ) {
-        (Ok(max_notional), _) if max_notional <= Decimal::ZERO => {
-            errors.push(
-                "live_canary.max_notional_per_order must be a positive decimal string".to_string(),
-            );
-        }
-        (Ok(max_notional), Ok(default_max)) if max_notional > default_max => {
-            errors.push(
-                "live_canary.max_notional_per_order must be <= risk.default_max_notional_per_order"
-                    .to_string(),
-            );
-        }
-        (Err(reason), _) => errors.push(format!(
-            "live_canary.max_notional_per_order is not a valid decimal string ({reason}): `{}`",
-            live_canary.max_notional_per_order
-        )),
-        // A positive max_notional with a malformed risk.default_max_notional_per_order
-        // is left to validate_risk_block to report; a positive max_notional within the
-        // cap is valid.
-        _ => {}
-    }
-
-    errors
+fn realized_volatility_source_pair_supported(
+    source_class: RealizedVolatilitySourceClassBlock,
+    sample_kind: RealizedVolatilitySampleKindBlock,
+) -> bool {
+    matches!(
+        (source_class, sample_kind),
+        (
+            RealizedVolatilitySourceClassBlock::SpotQuote,
+            RealizedVolatilitySampleKindBlock::Midpoint,
+        ) | (
+            RealizedVolatilitySourceClassBlock::Trade,
+            RealizedVolatilitySampleKindBlock::Trade,
+        ) | (
+            RealizedVolatilitySourceClassBlock::Index,
+            RealizedVolatilitySampleKindBlock::Index,
+        )
+    )
 }
 
-fn validate_live_canary_proof_policy(
-    policy: &LiveCanaryProofPolicyBlock,
-    max_notional_per_order: &str,
-) -> Vec<String> {
-    let mut errors = Vec::new();
-
-    if policy.enabled && policy.proof_claim.trim() != LIVE_CANARY_PROOF_POLICY_REQUIRED_PROOF_CLAIM
-    {
-        errors.push(format!(
-            "live_canary.proof_policy.proof_claim must be `{}` when enabled",
-            LIVE_CANARY_PROOF_POLICY_REQUIRED_PROOF_CLAIM
-        ));
-    }
-    if policy.enabled && policy.policy_kind.trim() != LIVE_CANARY_PROOF_POLICY_KIND {
-        errors.push(format!(
-            "live_canary.proof_policy.policy_kind must be `{}` when enabled",
-            LIVE_CANARY_PROOF_POLICY_KIND
-        ));
-    }
-    if policy.enabled && policy.notional_mode.trim() != LIVE_CANARY_PROOF_POLICY_NOTIONAL_MODE {
-        errors.push(format!(
-            "live_canary.proof_policy.notional_mode must be `{}` when enabled",
-            LIVE_CANARY_PROOF_POLICY_NOTIONAL_MODE
-        ));
-    }
-    if policy.enabled
-        && policy.candidate_score_source.trim() != LIVE_CANARY_PROOF_POLICY_CANDIDATE_SCORE_SOURCE
-    {
-        errors.push(format!(
-            "live_canary.proof_policy.candidate_score_source must be `{}` when enabled",
-            LIVE_CANARY_PROOF_POLICY_CANDIDATE_SCORE_SOURCE
-        ));
-    }
-    if policy.enabled && policy.strategy_instance_id.trim().is_empty() {
-        errors.push(
-            "live_canary.proof_policy.strategy_instance_id must not be blank when enabled"
-                .to_string(),
-        );
-    }
-    if policy.enabled && policy.executor_strategy_id.trim().is_empty() {
-        errors.push(
-            "live_canary.proof_policy.executor_strategy_id must not be blank when enabled"
-                .to_string(),
-        );
-    } else if policy.enabled
-        && let Err(reason) = StrategyId::new_checked(policy.executor_strategy_id.trim())
-    {
-        errors.push(format!(
-            "live_canary.proof_policy.executor_strategy_id is invalid: {reason}"
-        ));
-    }
-    if policy.enabled && policy.execution_client_id.trim().is_empty() {
-        errors.push(
-            "live_canary.proof_policy.execution_client_id must not be blank when enabled"
-                .to_string(),
-        );
-    }
-    if policy.enabled && policy.book_snapshot_interval_millis == 0 {
-        errors.push(
-            "live_canary.proof_policy.book_snapshot_interval_millis must be positive when enabled"
-                .to_string(),
-        );
-    }
-    if policy.enabled && policy.is_quote_quantity {
-        // The canary proof executor sizes the proof order from a base share quantity. With
-        // is_quote_quantity=true the pinned NT Polymarket adapter would (a) reinterpret that base
-        // share count as a quote-currency (collateral) amount, committing the wrong notional, and
-        // (b) issue an extra pre-submit collateral-balance REST request. Downstream admission fails
-        // closed on the resulting notional, but forbid the mode at load so the canary cannot be
-        // misconfigured into the broken quote-quantity path in the first place.
-        errors.push(
-            "live_canary.proof_policy.is_quote_quantity must be false: the canary proof executor sizes the proof order from a base share quantity, so a quote-quantity order would denominate that base quantity as a quote-currency amount and issue an extra venue collateral-balance REST request"
-                .to_string(),
-        );
-    }
-
-    match (
-        parse_decimal_string(&policy.proof_notional),
-        parse_decimal_string(max_notional_per_order),
-    ) {
-        (Ok(proof_notional), Ok(max_notional)) => {
-            if proof_notional <= Decimal::ZERO {
-                errors.push("live_canary.proof_policy.proof_notional must be positive".to_string());
-            }
-            if proof_notional > max_notional {
-                errors.push(
-                    "live_canary.proof_policy.proof_notional must be <= live_canary.max_notional_per_order"
-                        .to_string(),
-                );
-            }
-        }
-        (Err(reason), _) => errors.push(format!(
-            "live_canary.proof_policy.proof_notional is invalid: {reason}"
-        )),
-        (_, Err(reason)) => errors.push(format!(
-            "live_canary.max_notional_per_order is invalid: {reason}"
-        )),
-    }
-
-    if policy.enabled && policy.rotation_min_distinct_markets == 0 {
-        errors.push(
-            "live_canary.proof_policy.rotation_min_distinct_markets must be positive".to_string(),
-        );
-    }
-    if policy.enabled && policy.rotation_max_attempts == 0 {
-        errors.push("live_canary.proof_policy.rotation_max_attempts must be positive".to_string());
-    }
-    if policy.enabled && policy.rotation_min_distinct_markets > policy.rotation_max_attempts {
-        errors.push(
-            "live_canary.proof_policy.rotation_min_distinct_markets must be <= rotation_max_attempts"
-                .to_string(),
-        );
-    }
-
-    errors
+fn instrument_base_asset(instrument_id: &InstrumentId) -> &str {
+    let symbol = instrument_id.symbol.as_str();
+    symbol.split_once('-').map_or(symbol, |(asset, _)| asset)
 }
 
 fn validate_gate_providers(
@@ -477,6 +651,108 @@ fn validate_gate_providers(
     errors
 }
 
+/// Validates that a Chainlink Data Streams `rest_base_url` parses as a URL and
+/// uses the `https` scheme. The signed Data Streams credentials travel in the
+/// request `Authorization` header, so any non-https (or unparseable) endpoint
+/// fails closed at config load — credentials must never traverse plaintext.
+/// Shared by the live-strike client validator and the resolution-oracle
+/// gate-provider validator so both config blocks that name the same endpoint are
+/// held to one transport standard.
+pub(crate) fn validate_https_rest_base_url(
+    field_path: &str,
+    rest_base_url: &str,
+    errors: &mut Vec<String>,
+) {
+    match url::Url::parse(rest_base_url) {
+        Ok(parsed) if parsed.scheme() != "https" => errors.push(format!(
+            "{field_path} must use the https scheme (got `{scheme}`); \
+             signed credentials must never be sent over an insecure transport",
+            scheme = parsed.scheme()
+        )),
+        Ok(_) => {}
+        Err(_) => errors.push(format!("{field_path} must be a valid absolute URL")),
+    }
+}
+
+/// Resolves a Chainlink Data Streams `report_endpoint_path` against its
+/// `rest_base_url`, failing closed against any value that would redirect the
+/// credential-bearing report request off the configured endpoint. The HMAC-signed
+/// Data Streams credentials travel with this request, so the path must be a rooted
+/// absolute path and the joined URL must keep the base scheme, host, port, and
+/// userinfo (username/password) and introduce no query or fragment of its own.
+/// `url::Url::join` otherwise accepts absolute URLs (`https://other/...`) and
+/// scheme-relative/authority paths (`//other/...`, `//user:pass@host/...`) that
+/// silently swap the host or inject userinfo while still receiving the signed
+/// credentials.
+/// Shared by the live-strike client validator, the resolution-oracle gate-provider
+/// validator, and the request-URL builder so the endpoint can only ever resolve to
+/// the configured host. Returns the safe joined URL so the builder reuses one
+/// resolution rather than re-joining.
+pub(crate) fn resolve_chainlink_report_endpoint_url(
+    rest_base_url: &str,
+    report_endpoint_path: &str,
+) -> Result<url::Url, String> {
+    let base = url::Url::parse(rest_base_url)
+        .map_err(|_| "must resolve against a valid absolute base URL".to_string())?;
+    // Require a single rooted path. `strip_prefix` enforces the leading slash; a
+    // second leading slash or backslash makes the value an authority/scheme-relative
+    // reference (`//host`, `/\host`) that `url::Url::join` resolves into
+    // host/userinfo/port — including same-host `//user:pass@host` forms that would
+    // smuggle credentials into the signed request URL — rather than a path.
+    let after_root = match report_endpoint_path.strip_prefix('/') {
+        Some(after_root) => after_root,
+        None => {
+            return Err("must be a rooted absolute path beginning with a single slash".to_string());
+        }
+    };
+    if after_root.starts_with('/') || after_root.starts_with('\\') {
+        return Err(
+            "must be a single rooted path, not a scheme-relative or authority reference"
+                .to_string(),
+        );
+    }
+    let joined = base
+        .join(report_endpoint_path)
+        .map_err(|_| "must be a path that resolves against the base URL".to_string())?;
+    // Authoritative backstop: resolving the path must change only the path. The
+    // scheme, host, port, and userinfo must match the base, and the path must
+    // introduce no query or fragment of its own.
+    if joined.scheme() != base.scheme()
+        || joined.host_str() != base.host_str()
+        || joined.port_or_known_default() != base.port_or_known_default()
+        || joined.username() != base.username()
+        || joined.password() != base.password()
+        || joined.query().is_some()
+        || joined.fragment().is_some()
+    {
+        return Err(
+            "must not redirect off the base URL host, scheme, port, or credentials, or carry a query or fragment"
+                .to_string(),
+        );
+    }
+    Ok(joined)
+}
+
+/// Validates a Chainlink Data Streams `report_endpoint_path` config field via
+/// [`resolve_chainlink_report_endpoint_url`], pushing a field-scoped error on any
+/// value that would redirect the signed request off the configured host. A
+/// malformed base URL is reported by the `rest_base_url` validator, so this skips
+/// that case to avoid double-reporting.
+pub(crate) fn validate_chainlink_report_endpoint_path(
+    field_path: &str,
+    rest_base_url: &str,
+    report_endpoint_path: &str,
+    errors: &mut Vec<String>,
+) {
+    if url::Url::parse(rest_base_url).is_err() {
+        return;
+    }
+    if let Err(reason) = resolve_chainlink_report_endpoint_url(rest_base_url, report_endpoint_path)
+    {
+        errors.push(format!("{field_path} {reason}"));
+    }
+}
+
 fn validate_chainlink_data_streams_gate_provider(
     context: &str,
     table: &toml::map::Map<String, toml::Value>,
@@ -492,7 +768,7 @@ fn validate_chainlink_data_streams_gate_provider(
             && !is_old_provider_level_feed_field
         {
             errors.push(format!(
-                "{context}.chainlink_data_streams.{field} is not a supported Chainlink Data Streams provider field"
+                "{context}.chainlink_data_streams.{field} is not a supported chainlink_data_streams provider field"
             ));
         }
     }
@@ -508,27 +784,36 @@ fn validate_chainlink_data_streams_gate_provider(
         CHAINLINK_DATA_STREAMS_ENDPOINT_ID_FIELD,
         &mut errors,
     );
-    if let Some(rest_base_url) = required_string_field(
+    let rest_base_url = required_string_field(
         table,
         &format!("{context}.chainlink_data_streams"),
         CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD,
         &mut errors,
-    ) && url::Url::parse(rest_base_url).is_err()
-    {
-        errors.push(format!(
-            "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD} must be an absolute URL"
-        ));
+    );
+    if let Some(rest_base_url) = rest_base_url {
+        validate_https_rest_base_url(
+            &format!(
+                "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD}"
+            ),
+            rest_base_url,
+            &mut errors,
+        );
     }
     if let Some(report_endpoint_path) = required_string_field(
         table,
         &format!("{context}.chainlink_data_streams"),
         CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD,
         &mut errors,
-    ) && (!report_endpoint_path.starts_with('/') || report_endpoint_path.contains('?'))
+    ) && let Some(rest_base_url) = rest_base_url
     {
-        errors.push(format!(
-            "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD} must be an absolute path without query parameters"
-        ));
+        validate_chainlink_report_endpoint_path(
+            &format!(
+                "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD}"
+            ),
+            rest_base_url,
+            report_endpoint_path,
+            &mut errors,
+        );
     }
     required_positive_integer_field(
         table,
@@ -589,7 +874,7 @@ fn validate_chainlink_data_streams_gate_provider(
             && value_kind != PRICE_GATE_VALUE_KIND
         {
             errors.push(format!(
-                "{binding_context}.value_kind `{value_kind}` is not supported for Chainlink Data Streams price reports"
+                "{binding_context}.value_kind `{value_kind}` is not supported for chainlink_data_streams price reports"
             ));
         }
         if let (Some(resolution_identity), Some(value_kind)) = (resolution_identity, value_kind)
@@ -607,7 +892,7 @@ fn validate_chainlink_data_streams_gate_provider(
         ) && !is_lowercase_chainlink_feed_id(feed_id)
         {
             errors.push(format!(
-                "{binding_context}.feed_id must be a lowercase Chainlink feed id"
+                "{binding_context}.feed_id must be a lowercase chainlink_data_streams feed id"
             ));
         }
         required_positive_integer_field(
@@ -1447,7 +1732,7 @@ fn validate_unique_client_readiness_probe_instruments(
                         if existing_client_key != client_key =>
                     {
                         errors.push(format!(
-                            "clients.{client_key}.readiness_probe.quote_targets.{target_id}.instrument_id `{instrument_id}` is also used by clients.{existing_client_key}.readiness_probe.quote_targets.{existing_target_id}.instrument_id; QuoteTick does not carry data_client_id, so no-submit data-client quote probe evidence cannot distinguish data clients for the same instrument"
+                            "clients.{client_key}.readiness_probe.quote_targets.{target_id}.instrument_id `{instrument_id}` is also used by clients.{existing_client_key}.readiness_probe.quote_targets.{existing_target_id}.instrument_id; QuoteTick does not carry data_client_id, so strategy-free data-client quote probe evidence cannot distinguish data clients for the same instrument"
                         ));
                     }
                     None => {
@@ -1526,6 +1811,41 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
             errors.push(format!(
                 "{context}: order_id_tag `{}` is already used by another listed strategy",
                 strategy.order_id_tag
+            ));
+        }
+
+        match &strategy.realized_volatility_surface_id {
+            None => errors.push(format!(
+                "{context}: {} is required",
+                stringify!(realized_volatility_surface_id),
+            )),
+            Some(surface_id)
+                if !root
+                    .realized_volatility_surfaces
+                    .as_ref()
+                    .is_some_and(|surfaces| surfaces.contains_key(surface_id)) =>
+            {
+                errors.push(format!(
+                    "{context}: {} `{surface_id}` references missing {}.{surface_id}",
+                    stringify!(realized_volatility_surface_id),
+                    stringify!(realized_volatility_surfaces),
+                ));
+            }
+            _ => {}
+        }
+
+        if let Some(surface_id) = &strategy.realized_volatility_surface_id
+            && let Some(surface) = root
+                .realized_volatility_surfaces
+                .as_ref()
+                .and_then(|surfaces| surfaces.get(surface_id))
+            && let Ok(target) =
+                crate::bolt_v3_market_families::target_runtime_fields_from_target(&strategy.target)
+            && target.underlying_asset != surface.canonical_base_asset
+        {
+            errors.push(format!(
+                "{context}: realized_volatility_surface_id `{surface_id}` references realized_volatility_surfaces.{surface_id}.canonical_base_asset `{}`, but target.underlying_asset is `{}`",
+                surface.canonical_base_asset, target.underlying_asset,
             ));
         }
 
@@ -1697,7 +2017,7 @@ fn validate_chainlink_feed_binding_coverage(
         match binding_count {
             1 => {}
             0 => errors.push(format!(
-                "{}: Chainlink Data Streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has no matching gate_providers.{}.chainlink_data_streams.feed_bindings entry",
+                "{}: chainlink_data_streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has no matching gate_providers.{}.chainlink_data_streams.feed_bindings entry",
                 reference.context,
                 reference.key.provider_id,
                 reference.key.resolution_identity,
@@ -1705,7 +2025,7 @@ fn validate_chainlink_feed_binding_coverage(
                 reference.key.provider_id
             )),
             count => errors.push(format!(
-                "{}: Chainlink Data Streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has {count} matching gate_providers.{}.chainlink_data_streams.feed_bindings entries; expected exactly one",
+                "{}: chainlink_data_streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has {count} matching gate_providers.{}.chainlink_data_streams.feed_bindings entries; expected exactly one",
                 reference.context,
                 reference.key.provider_id,
                 reference.key.resolution_identity,
@@ -1719,7 +2039,7 @@ fn validate_chainlink_feed_binding_coverage(
         if !target_keys.contains(key) {
             for context in contexts {
                 errors.push(format!(
-                    "{context} resolution_identity `{}` value_kind `{}` is not referenced by any loaded strategy Chainlink mapping",
+                    "{context} resolution_identity `{}` value_kind `{}` is not referenced by any loaded strategy chainlink_data_streams mapping",
                     key.resolution_identity, key.value_kind
                 ));
             }
@@ -1732,7 +2052,7 @@ fn validate_chainlink_feed_binding_coverage(
 fn collect_chainlink_target_mapping_references(
     strategies: &[LoadedStrategy],
     errors: &mut Vec<String>,
-) -> Vec<ChainlinkTargetMappingReference> {
+) -> Vec<ResolutionFeedMappingReference> {
     let mut references = Vec::new();
 
     for loaded in strategies {
@@ -1774,12 +2094,12 @@ fn collect_chainlink_target_mapping_references(
                 let Some(provider_id) = selected_chainlink_provider_id(subscription, mapping)
                 else {
                     errors.push(format!(
-                        "{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]: Chainlink Data Streams mapping resolution_identity `{resolution_identity}` value_kind `{value_kind}` cannot resolve provider_id from mapping provider_id, provider_preference, or a single allowed_provider_ids entry"
+                        "{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]: chainlink_data_streams mapping resolution_identity `{resolution_identity}` value_kind `{value_kind}` cannot resolve provider_id from mapping provider_id, provider_preference, or a single allowed_provider_ids entry"
                     ));
                     continue;
                 };
-                references.push(ChainlinkTargetMappingReference {
-                    key: ChainlinkFeedBindingKey {
+                references.push(ResolutionFeedMappingReference {
+                    key: ResolutionFeedBindingKey {
                         provider_id,
                         resolution_identity,
                         value_kind,
@@ -1806,8 +2126,8 @@ fn selected_chainlink_provider_id(
 
 fn collect_chainlink_feed_bindings(
     root: &BoltV3RootConfig,
-) -> BTreeMap<ChainlinkFeedBindingKey, Vec<String>> {
-    let mut bindings: BTreeMap<ChainlinkFeedBindingKey, Vec<String>> = BTreeMap::new();
+) -> BTreeMap<ResolutionFeedBindingKey, Vec<String>> {
+    let mut bindings: BTreeMap<ResolutionFeedBindingKey, Vec<String>> = BTreeMap::new();
     let Some(gate_providers) = &root.gate_providers else {
         return bindings;
     };
@@ -1841,7 +2161,7 @@ fn collect_chainlink_feed_bindings(
             ) else {
                 continue;
             };
-            let key = ChainlinkFeedBindingKey {
+            let key = ResolutionFeedBindingKey {
                 provider_id: provider_id.clone(),
                 resolution_identity,
                 value_kind,
@@ -1926,7 +2246,7 @@ fn validate_reference_quote_probe_sources(strategies: &[LoadedStrategy]) -> Vec<
                     if *existing_data_client_id != data_client_id =>
                 {
                     errors.push(format!(
-                        "{context}: reference_data.{role}.instrument_id `{instrument_id}` with data_client_id `{data_client_id}` is also used by {existing_context}: reference_data.{existing_role}.instrument_id with data_client_id `{existing_data_client_id}`; QuoteTick does not carry data_client_id, so no-submit reference quote evidence cannot distinguish data clients for the same instrument"
+                        "{context}: reference_data.{role}.instrument_id `{instrument_id}` with data_client_id `{data_client_id}` is also used by {existing_context}: reference_data.{existing_role}.instrument_id with data_client_id `{existing_data_client_id}`; QuoteTick does not carry data_client_id, so strategy-free reference quote evidence cannot distinguish data clients for the same instrument"
                     ));
                 }
                 None => {

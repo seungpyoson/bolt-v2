@@ -20,10 +20,22 @@ use nautilus_model::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
+use crate::{
+    bolt_v3_realized_volatility::{
+        RealizedVolAggregation, RealizedVolCoarserGridPolicy, RealizedVolEngineConfig,
+        RealizedVolEstimatorConfig, RealizedVolJumpConfig, RealizedVolJumpPolicy,
+        RealizedVolNoiseConfig, RealizedVolNoiseMethod, RealizedVolPricingComponent,
+        RealizedVolSampleKind, RealizedVolSourceClass, RealizedVolSourceConfig,
+    },
+    bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies},
+};
 
 pub const TEST_DOUBLE_PROVIDER_KIND: &str = "test_double";
-pub const CHAINLINK_DATA_STREAMS_PROVIDER_KIND: &str = "chainlink_data_streams";
+// The `chainlink_data_streams` provider-kind literal is owned by the provider
+// binding (`crate::bolt_v3_providers::chainlink`) and re-exported here under its
+// legacy core name, so core config keeps a single import site without declaring
+// the provider-key literal itself.
+pub use crate::bolt_v3_providers::RESOLUTION_ORACLE_PROVIDER_KIND as CHAINLINK_DATA_STREAMS_PROVIDER_KIND;
 pub const NO_RESOLUTION_KIND: &str = "no_resolution";
 pub const NO_RESOLUTION_VALUE_KIND: &str = "none";
 pub const RESOLUTION_GATE_ROLE: &str = "resolution";
@@ -62,9 +74,9 @@ pub struct BoltV3RootConfig {
     pub risk: RiskBlock,
     pub logging: LoggingBlock,
     pub persistence: PersistenceBlock,
-    pub live_canary: Option<LiveCanaryBlock>,
     pub aws: AwsBlock,
     pub clients: BTreeMap<String, ClientBlock>,
+    pub realized_volatility_surfaces: Option<BTreeMap<String, RealizedVolatilitySurfaceBlock>>,
     pub gate_providers: Option<BTreeMap<String, GateProviderBlock>>,
 }
 
@@ -220,101 +232,6 @@ pub struct DecisionEvidenceBlock {
     pub order_intents_relative_path: String,
 }
 
-/// Operator approval and canary bounds required by the bolt-v3 live
-/// canary gate before `run_bolt_v3_live_node` may enter NT's runner
-/// loop. Field semantics are defined by the `[live_canary]` schema
-/// section.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct LiveCanaryBlock {
-    pub approval_id: String,
-    pub no_submit_readiness_report_path: String,
-    pub max_no_submit_readiness_report_bytes: u64,
-    pub readiness_report_max_age_seconds: u64,
-    pub reference_quote_max_age_seconds: u64,
-    pub reference_quote_wait_timeout_seconds: u64,
-    pub reference_quote_probe_actor_id: String,
-    pub reference_quote_probe_log_events: bool,
-    pub reference_quote_probe_log_commands: bool,
-    pub max_live_order_count: u32,
-    pub max_notional_per_order: String,
-    pub egress_identity_observed_path: Option<String>,
-    pub egress_identity_observed_max_bytes: Option<u64>,
-    pub approved_egress_identity_sha256: Option<String>,
-    pub proof_policy: Option<LiveCanaryProofPolicyBlock>,
-    pub operator_evidence: Option<LiveCanaryOperatorEvidenceBlock>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct LiveCanaryProofPolicyBlock {
-    pub enabled: bool,
-    pub policy_kind: String,
-    pub proof_claim: String,
-    pub executor_strategy_id: String,
-    pub strategy_instance_id: String,
-    pub execution_client_id: String,
-    pub book_type: DataClientReadinessProbeBookType,
-    pub book_snapshot_interval_millis: u64,
-    pub time_in_force: LiveCanaryProofTimeInForce,
-    pub is_post_only: bool,
-    pub is_reduce_only: bool,
-    pub is_quote_quantity: bool,
-    pub notional_mode: String,
-    pub proof_notional: String,
-    pub candidate_score_source: String,
-    pub allow_negative_expected_ev: bool,
-    pub rotation_observation_enabled: bool,
-    pub rotation_min_distinct_markets: u32,
-    pub rotation_max_attempts: u32,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct LiveCanaryOperatorEvidenceBlock {
-    pub head_sha: String,
-    pub max_operator_evidence_file_bytes: u64,
-    pub approval_consumption_max_age_seconds: u64,
-    pub approval_envelope_path: String,
-    pub approval_envelope_sha256: String,
-    pub ssm_manifest_path: String,
-    pub ssm_manifest_sha256: String,
-    pub strategy_input_evidence_path: String,
-    pub strategy_input_evidence_sha256: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gate_session_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expected_gate_session_sha256: Option<String>,
-    pub financial_envelope_path: String,
-    pub financial_envelope_sha256: String,
-    pub pre_run_state_path: String,
-    pub pre_run_state_sha256: String,
-    pub abort_plan_path: String,
-    pub abort_plan_sha256: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canary_proof_candidate_source_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canary_proof_candidate_source_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canary_proof_order_intent_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canary_proof_order_intent_sha256: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub no_submit_readiness_report_sha256: Option<String>,
-    pub canary_evidence_path: String,
-    pub approval_not_before_unix_seconds: i64,
-    pub approval_not_after_unix_seconds: i64,
-    pub approval_nonce_path: String,
-    pub approval_nonce_sha256: String,
-    pub approval_consumption_path: String,
-    pub decision_evidence_path: String,
-    pub nt_submit_event_path: String,
-    pub venue_order_state_path: String,
-    pub strategy_cancel_path: Option<String>,
-    pub restart_reconciliation_path: String,
-    pub post_run_hygiene_path: String,
-}
-
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct StreamingBlock {
@@ -357,6 +274,117 @@ pub struct GateProviderBlock {
 pub struct GateProviderFreshnessBlock {
     pub max_age_ms: Option<u64>,
     pub max_clock_skew_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RealizedVolatilitySurfaceBlock {
+    pub canonical_base_asset: String,
+    pub canonical_quote_asset: String,
+    pub policy: RealizedVolatilityPolicyBlock,
+    pub estimator: Option<RealizedVolatilityEstimatorBlock>,
+    pub sources: Vec<RealizedVolatilitySourceBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RealizedVolatilityPolicyBlock {
+    pub window_ms: u64,
+    pub sampling_interval_ms: u64,
+    pub min_ready_sources: usize,
+    pub max_source_age_ms: u64,
+    pub max_event_receive_lag_ms: u64,
+    pub max_inter_sample_gap_ms: u64,
+    pub min_coverage_ratio: f64,
+    pub max_cross_source_dispersion: f64,
+    pub seconds_per_annum: f64,
+    pub aggregation: RealizedVolatilityAggregationBlock,
+    pub upper_quantile: f64,
+    pub trim_fraction: Option<f64>,
+    pub guard_weight: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RealizedVolatilityAggregationBlock {
+    UpperQuantile,
+    Median,
+    TrimmedMean,
+    MedianWithUpperQuantileGuard,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RealizedVolatilityEstimatorBlock {
+    pub noise_robust_method: Option<RealizedVolatilityNoiseMethodBlock>,
+    pub subsamples: Option<usize>,
+    pub min_ready_subsamples: Option<usize>,
+    pub coarse_sampling_interval_ms: Option<u64>,
+    pub coarser_grid_policy: Option<RealizedVolatilityCoarserGridPolicyBlock>,
+    pub jump_policy: Option<RealizedVolatilityJumpPolicyBlock>,
+    pub pricing_component: Option<RealizedVolatilityPricingComponentBlock>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RealizedVolatilityNoiseMethodBlock {
+    None,
+    CoarserGrid,
+    Subsampled,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RealizedVolatilityCoarserGridPolicyBlock {
+    CoarseOnly,
+    MinBaseCoarse,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RealizedVolatilityJumpPolicyBlock {
+    None,
+    Separate,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RealizedVolatilityPricingComponentBlock {
+    Measured,
+    NoiseRobust,
+    Continuous,
+    Forecast,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RealizedVolatilitySourceBlock {
+    pub source_id: String,
+    pub data_client_id: ClientId,
+    pub instrument_id: InstrumentId,
+    pub source_class: RealizedVolatilitySourceClassBlock,
+    pub sample_kind: RealizedVolatilitySampleKindBlock,
+    pub enabled: bool,
+    pub counts_toward_quorum: bool,
+    pub canonical_quote_asset: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RealizedVolatilitySourceClassBlock {
+    SpotQuote,
+    Trade,
+    Mark,
+    Index,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RealizedVolatilitySampleKindBlock {
+    Midpoint,
+    Trade,
+    Mark,
+    Index,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -420,14 +448,6 @@ pub enum DataClientReadinessProbeBookType {
     L3Mbo,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum LiveCanaryProofTimeInForce {
-    Fok,
-    Gtc,
-    Ioc,
-}
-
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DataClientReadinessProbeQuoteTargetSource {
@@ -469,8 +489,15 @@ pub struct BoltV3StrategyConfig {
     /// matching family validator and inside the family planner; the
     /// strategy envelope itself is target-shape-neutral.
     pub target: toml::Value,
+    pub realized_volatility_surface_id: Option<String>,
     pub reference_data: BTreeMap<String, ReferenceDataBlock>,
     pub signal_data: BTreeMap<String, ReferenceDataBlock>,
+    /// Optional live resolution-strike (price-to-beat) data source. Mirrors the
+    /// `[reference_data]` block shape (`data_client_id` + `instrument_id`) but is
+    /// a single block rather than a role-keyed map, matching the strategy's
+    /// singular `resolution_client_id` / `resolution_instrument_id` runtime
+    /// fields. When absent, the live strike simply does not subscribe.
+    pub resolution_data: Option<ReferenceDataBlock>,
     pub parameters: toml::Value,
 }
 
@@ -489,6 +516,151 @@ impl StrategyArchetypeKey {
 pub struct ReferenceDataBlock {
     pub data_client_id: ClientId,
     pub instrument_id: InstrumentId,
+}
+
+pub fn realized_volatility_engine_config(
+    surface_id: &str,
+    surface: &RealizedVolatilitySurfaceBlock,
+) -> Result<RealizedVolEngineConfig, String> {
+    let aggregation = realized_volatility_aggregation(surface)?;
+    Ok(RealizedVolEngineConfig {
+        surface_id: surface_id.to_string(),
+        window_ms: surface.policy.window_ms,
+        sampling_interval_ms: surface.policy.sampling_interval_ms,
+        min_ready_sources: surface.policy.min_ready_sources,
+        max_source_age_ms: surface.policy.max_source_age_ms,
+        max_event_receive_lag_ms: surface.policy.max_event_receive_lag_ms,
+        max_inter_sample_gap_ms: surface.policy.max_inter_sample_gap_ms,
+        min_coverage_ratio: surface.policy.min_coverage_ratio,
+        max_cross_source_dispersion: surface.policy.max_cross_source_dispersion,
+        seconds_per_annum: surface.policy.seconds_per_annum,
+        aggregation,
+        estimator: realized_volatility_estimator_config(surface)?,
+        sources: surface
+            .sources
+            .iter()
+            .map(|source| RealizedVolSourceConfig {
+                source_id: source.source_id.clone(),
+                data_client_id: source.data_client_id.to_string(),
+                instrument_id: source.instrument_id.to_string(),
+                source_class: match source.source_class {
+                    RealizedVolatilitySourceClassBlock::SpotQuote => {
+                        RealizedVolSourceClass::SpotQuote
+                    }
+                    RealizedVolatilitySourceClassBlock::Trade => RealizedVolSourceClass::Trade,
+                    RealizedVolatilitySourceClassBlock::Mark => RealizedVolSourceClass::Mark,
+                    RealizedVolatilitySourceClassBlock::Index => RealizedVolSourceClass::Index,
+                },
+                sample_kind: match source.sample_kind {
+                    RealizedVolatilitySampleKindBlock::Midpoint => RealizedVolSampleKind::Midpoint,
+                    RealizedVolatilitySampleKindBlock::Trade => RealizedVolSampleKind::Trade,
+                    RealizedVolatilitySampleKindBlock::Mark => RealizedVolSampleKind::Mark,
+                    RealizedVolatilitySampleKindBlock::Index => RealizedVolSampleKind::Index,
+                },
+                enabled: source.enabled,
+                counts_toward_quorum: source.counts_toward_quorum,
+                canonical_quote_asset: source.canonical_quote_asset.clone(),
+            })
+            .collect(),
+    })
+}
+
+fn realized_volatility_aggregation(
+    surface: &RealizedVolatilitySurfaceBlock,
+) -> Result<RealizedVolAggregation, String> {
+    Ok(match surface.policy.aggregation {
+        RealizedVolatilityAggregationBlock::UpperQuantile => {
+            RealizedVolAggregation::UpperQuantile {
+                quantile: surface.policy.upper_quantile,
+            }
+        }
+        RealizedVolatilityAggregationBlock::Median => RealizedVolAggregation::Median,
+        RealizedVolatilityAggregationBlock::TrimmedMean => RealizedVolAggregation::TrimmedMean {
+            trim_fraction: surface
+                .policy
+                .trim_fraction
+                .ok_or_else(|| "trimmed_mean aggregation requires trim_fraction".to_string())?,
+        },
+        RealizedVolatilityAggregationBlock::MedianWithUpperQuantileGuard => {
+            RealizedVolAggregation::MedianWithUpperQuantileGuard {
+                upper_quantile: surface.policy.upper_quantile,
+                guard_weight: surface.policy.guard_weight.ok_or_else(|| {
+                    "median_with_upper_quantile_guard aggregation requires guard_weight".to_string()
+                })?,
+            }
+        }
+    })
+}
+
+fn realized_volatility_estimator_config(
+    surface: &RealizedVolatilitySurfaceBlock,
+) -> Result<RealizedVolEstimatorConfig, String> {
+    let Some(estimator) = surface.estimator.as_ref() else {
+        return Ok(RealizedVolEstimatorConfig::measured());
+    };
+    let noise_method = match estimator.noise_robust_method.ok_or_else(|| {
+        "estimator.noise_robust_method must be set when estimator is configured".to_string()
+    })? {
+        RealizedVolatilityNoiseMethodBlock::None => RealizedVolNoiseMethod::None,
+        RealizedVolatilityNoiseMethodBlock::CoarserGrid => RealizedVolNoiseMethod::CoarserGrid {
+            coarse_sampling_interval_ms: estimator.coarse_sampling_interval_ms.ok_or_else(
+                || {
+                    "estimator.coarse_sampling_interval_ms must be set for coarser_grid RV"
+                        .to_string()
+                },
+            )?,
+            policy: match estimator.coarser_grid_policy.ok_or_else(|| {
+                "estimator.coarser_grid_policy must be set for coarser_grid RV".to_string()
+            })? {
+                RealizedVolatilityCoarserGridPolicyBlock::CoarseOnly => {
+                    RealizedVolCoarserGridPolicy::CoarseOnly
+                }
+                RealizedVolatilityCoarserGridPolicyBlock::MinBaseCoarse => {
+                    RealizedVolCoarserGridPolicy::MinBaseCoarse
+                }
+            },
+        },
+        RealizedVolatilityNoiseMethodBlock::Subsampled => RealizedVolNoiseMethod::Subsampled {
+            subsamples: estimator
+                .subsamples
+                .ok_or_else(|| "estimator.subsamples must be set for subsampled RV".to_string())?,
+            min_ready_subsamples: estimator.min_ready_subsamples.ok_or_else(|| {
+                "estimator.min_ready_subsamples must be set for subsampled RV".to_string()
+            })?,
+        },
+    };
+    Ok(RealizedVolEstimatorConfig {
+        horizons: Vec::new(),
+        horizon_policy: crate::bolt_v3_realized_volatility::RealizedVolHorizonPolicy::Measured,
+        noise: RealizedVolNoiseConfig {
+            method: noise_method,
+        },
+        jump: RealizedVolJumpConfig {
+            policy: match estimator.jump_policy.ok_or_else(|| {
+                "estimator.jump_policy must be set when estimator is configured".to_string()
+            })? {
+                RealizedVolatilityJumpPolicyBlock::None => RealizedVolJumpPolicy::None,
+                RealizedVolatilityJumpPolicyBlock::Separate => RealizedVolJumpPolicy::Separate,
+            },
+        },
+        pricing_component: match estimator.pricing_component.ok_or_else(|| {
+            "estimator.pricing_component must be set when estimator is configured".to_string()
+        })? {
+            RealizedVolatilityPricingComponentBlock::Measured => {
+                RealizedVolPricingComponent::Measured
+            }
+            RealizedVolatilityPricingComponentBlock::NoiseRobust => {
+                RealizedVolPricingComponent::NoiseRobust
+            }
+            RealizedVolatilityPricingComponentBlock::Continuous => {
+                RealizedVolPricingComponent::Continuous
+            }
+            RealizedVolatilityPricingComponentBlock::Forecast => {
+                RealizedVolPricingComponent::Forecast
+            }
+        },
+        forecast: crate::bolt_v3_realized_volatility::RealizedVolForecastConfig::none(),
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -664,6 +836,46 @@ mod tests {
         include_str!("../tests/fixtures/bolt_v3/strategies/binary_oracle.toml")
     }
 
+    fn root_toml_with_realized_volatility_surface(upper_quantile: f64) -> String {
+        format!(
+            r#"{}
+
+[clients."<DATA_CLIENT_ID>"]
+venue = "<DATA_CLIENT_VENUE>"
+
+[clients."<DATA_CLIENT_ID>".data]
+
+[realized_volatility_surfaces."<surface_id>"]
+canonical_base_asset = "<BASE_ASSET>"
+canonical_quote_asset = "<QUOTE_ASSET>"
+
+[realized_volatility_surfaces."<surface_id>".policy]
+window_ms = 4000
+sampling_interval_ms = 1000
+min_ready_sources = 1
+max_source_age_ms = 500
+max_event_receive_lag_ms = 250
+max_inter_sample_gap_ms = 2000
+min_coverage_ratio = 0.75
+max_cross_source_dispersion = 0.50
+seconds_per_annum = 31536000.0
+aggregation = "upper_quantile"
+upper_quantile = {upper_quantile}
+
+[[realized_volatility_surfaces."<surface_id>".sources]]
+source_id = "<SOURCE_ID_A>"
+data_client_id = "<DATA_CLIENT_ID>"
+instrument_id = "<INSTRUMENT_ID_A>.<DATA_CLIENT_ID>"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "<QUOTE_ASSET>"
+"#,
+            minimal_root_toml()
+        )
+    }
+
     #[test]
     fn parses_minimal_root_block() {
         let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
@@ -678,6 +890,77 @@ mod tests {
     }
 
     #[test]
+    fn parses_realized_volatility_surfaces_from_root_config() {
+        let raw = root_toml_with_realized_volatility_surface(1.0);
+
+        let config: BoltV3RootConfig = toml::from_str(&raw).expect("root config should parse");
+        let surface = config
+            .realized_volatility_surfaces
+            .as_ref()
+            .and_then(|surfaces| surfaces.get("<surface_id>"))
+            .unwrap();
+        assert_eq!(
+            surface.policy.aggregation,
+            RealizedVolatilityAggregationBlock::UpperQuantile
+        );
+        assert_eq!(surface.sources[0].source_id, "<SOURCE_ID_A>");
+    }
+
+    #[test]
+    fn realized_volatility_engine_config_carries_toml_upper_quantile() {
+        let raw = root_toml_with_realized_volatility_surface(0.75);
+        let config: BoltV3RootConfig = toml::from_str(&raw).expect("root config should parse");
+        let surface = config
+            .realized_volatility_surfaces
+            .as_ref()
+            .and_then(|surfaces| surfaces.get("<surface_id>"))
+            .unwrap();
+
+        let engine_config = realized_volatility_engine_config("<surface_id>", surface)
+            .expect("validated surface should map to engine config");
+
+        assert_eq!(
+            engine_config.aggregation,
+            crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
+                quantile: 0.75
+            }
+        );
+    }
+
+    #[test]
+    fn realized_volatility_engine_config_carries_source_binding_fields() {
+        let raw = root_toml_with_realized_volatility_surface(1.0);
+        let config: BoltV3RootConfig = toml::from_str(&raw).expect("root config should parse");
+        let surface = config
+            .realized_volatility_surfaces
+            .as_ref()
+            .and_then(|surfaces| surfaces.get("<surface_id>"))
+            .unwrap();
+
+        let engine_config = realized_volatility_engine_config("<surface_id>", surface)
+            .expect("validated surface should map to engine config");
+
+        let source = engine_config
+            .sources
+            .first()
+            .expect("fixture should include source");
+        let parsed_source = &surface.sources[0];
+        assert_eq!(source.source_id, parsed_source.source_id);
+        assert_eq!(
+            source.data_client_id,
+            parsed_source.data_client_id.to_string()
+        );
+        assert_eq!(
+            source.instrument_id,
+            parsed_source.instrument_id.to_string()
+        );
+        assert_eq!(
+            source.canonical_quote_asset,
+            parsed_source.canonical_quote_asset
+        );
+    }
+
+    #[test]
     fn parses_minimal_strategy_block() {
         let strategy: BoltV3StrategyConfig = toml::from_str(minimal_strategy_toml()).unwrap();
         assert!(!strategy.strategy_archetype.as_str().is_empty());
@@ -689,30 +972,6 @@ mod tests {
             .expect("[target] should parse into a table");
         assert!(!target_table.is_empty());
         assert!(strategy.reference_data.is_empty());
-    }
-
-    /// A `[live_canary]` block with a configurable per-order cap and no
-    /// `proof_policy` / `operator_evidence` (both optional), used to exercise
-    /// the unconditional base-field validation in `validate_live_canary_block`.
-    fn live_canary_block_with_cap(max_notional_per_order: &str) -> LiveCanaryBlock {
-        LiveCanaryBlock {
-            approval_id: "approval-1".to_string(),
-            no_submit_readiness_report_path: "/tmp/readiness.json".to_string(),
-            max_no_submit_readiness_report_bytes: 1024,
-            readiness_report_max_age_seconds: 60,
-            reference_quote_max_age_seconds: 10,
-            reference_quote_wait_timeout_seconds: 20,
-            reference_quote_probe_actor_id: "probe-1".to_string(),
-            reference_quote_probe_log_events: false,
-            reference_quote_probe_log_commands: false,
-            max_live_order_count: 1,
-            max_notional_per_order: max_notional_per_order.to_string(),
-            egress_identity_observed_path: None,
-            egress_identity_observed_max_bytes: None,
-            approved_egress_identity_sha256: None,
-            proof_policy: None,
-            operator_evidence: None,
-        }
     }
 
     #[test]
@@ -738,64 +997,6 @@ mod tests {
                 .any(|e| e
                     .contains("risk.default_max_notional_per_order is not a valid decimal string")),
             "malformed default_max_notional must keep the syntax error; got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn live_canary_max_notional_validated_without_proof_policy() {
-        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
-        // No proof_policy: the cap must still be range-validated at config load.
-        root.live_canary = Some(live_canary_block_with_cap("0.00"));
-        let errors = crate::bolt_v3_validate::validate_root_only(&root);
-        assert!(
-            errors.iter().any(|e| e
-                .contains("live_canary.max_notional_per_order must be a positive decimal string")),
-            "a non-positive canary cap must fail even without proof_policy; got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn live_canary_max_notional_must_not_exceed_default_max() {
-        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
-        root.risk.default_max_notional_per_order = "1.00".to_string();
-        root.live_canary = Some(live_canary_block_with_cap("1000.00"));
-        let errors = crate::bolt_v3_validate::validate_root_only(&root);
-        assert!(
-            errors.iter().any(|e| e.contains(
-                "live_canary.max_notional_per_order must be <= risk.default_max_notional_per_order"
-            )),
-            "a canary cap above the entity cap must fail; got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn live_canary_max_live_order_count_must_be_positive() {
-        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
-        let mut block = live_canary_block_with_cap("1.00");
-        block.max_live_order_count = 0;
-        root.live_canary = Some(block);
-        let errors = crate::bolt_v3_validate::validate_root_only(&root);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("live_canary.max_live_order_count must be a positive integer")),
-            "a zero max_live_order_count must fail; got: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn live_canary_valid_block_passes_base_field_checks() {
-        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
-        root.risk.default_max_notional_per_order = "100.00".to_string();
-        root.live_canary = Some(live_canary_block_with_cap("10.00"));
-        let errors = crate::bolt_v3_validate::validate_root_only(&root);
-        assert!(
-            !errors
-                .iter()
-                .any(|e| e.contains("live_canary.max_notional_per_order")
-                    || e.contains("live_canary.max_live_order_count")
-                    || e.contains("live_canary.approval_id")),
-            "a valid canary block must not produce base-field errors; got: {errors:?}"
         );
     }
 }

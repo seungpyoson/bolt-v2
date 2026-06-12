@@ -1,10 +1,10 @@
 # T038 Binance Runner Guide
 
 Date: 2026-05-22
-Scope: T038 no-submit readiness only.
+Scope: T038 strategy-free connectivity readiness only.
 
-This is not canary approval and not production trading approval. T038 is now
-satisfied by the EC2/EIP no-submit proof below. T046 remains unchecked.
+This is not live-submit approval and not production trading approval. T038 is now
+satisfied by the EC2/EIP strategy-free proof below. T046 remains unchecked.
 
 ## Current Answer
 
@@ -15,13 +15,13 @@ Evidence:
 - Local reruns used public IP `58.232.146.158`.
 - Operator attested the Binance API key allowed EC2 EIP `34.248.143.2`.
 - AWS showed EIP `34.248.143.2` attached to EC2 instance `i-0b68843392a62e359`.
-- The local no-submit rerun failed Binance SBE with `Invalid X-MBX-APIKEY header`.
-- The EC2 rerun from EIP `34.248.143.2`, using the same approved config hash and resolved SSM secrets, connected Binance SBE and satisfied every no-submit readiness stage.
+- The local strategy-free rerun failed Binance SBE with `Invalid X-MBX-APIKEY header`.
+- The EC2 rerun from EIP `34.248.143.2`, using the same approved config hash and resolved SSM secrets, connected Binance SBE and satisfied every strategy-free readiness stage.
 
-This proves the local failure cause for T038. It does not prove tiny canary
+This proves the local failure cause for T038. It does not prove first live-order
 safety or production live trading readiness.
 
-## EC2 No-Submit Proof
+## EC2 Strategy-Free Proof
 
 Runner:
 
@@ -47,10 +47,8 @@ Secret prechecks:
 
 Command:
 
-```sh
-cd /tmp
-/tmp/bolt-v2-t038-1245264f no-submit-readiness --config /tmp/config/live.local.toml
-```
+The EC2 run used the retired T038 readiness command with the checked local
+config under `/tmp/config/live.local.toml`.
 
 Runtime evidence:
 
@@ -59,14 +57,14 @@ Runtime evidence:
 - Polymarket execution connected.
 - Reference readiness stage was satisfied.
 - Controlled disconnect completed.
-- The no-submit run wrote the readiness report.
+- The strategy-free run wrote the readiness report.
 
 Report:
 
-- Path on EC2: `/Users/spson/Projects/Claude/bolt-v2/var/bolt-v3-live/reports/no-submit-readiness.json`
+- Path on EC2: readiness report under `/Users/spson/Projects/Claude/bolt-v2/var/bolt-v3-live/reports/`
 - Mode/size: `0644`, `935`
 - SHA-256: `53b945f92a2c747345ff65fb551ebf337cc4a5b5ab5f9552a92a4c6f68fb4126`
-- Schema: `bolt-v3.no-submit-readiness.v2`
+- Schema: retired T038 readiness schema v2
 - Generated timestamp: `1779377947` (`2026-05-22 00:39:07 KST`)
 - Config bundle checksum: `a6f0f1d1e472c88d848b8505dc138e136a55314ec89d80dbb6be926ab7b88639`
 - Executable identity: `7ef548c74688fc96ef3f06726df1838fb0742fe59176d386211ba3d680eccdc7`
@@ -77,7 +75,7 @@ T038 is satisfied by this evidence only.
 ## Pre-Existing EC2 Service Finding
 
 Starting EC2 also auto-started a pre-existing service that was not part of the
-T038 current-head no-submit run.
+T038 current-head strategy-free run.
 
 Evidence:
 
@@ -91,8 +89,8 @@ Evidence:
 
 Classification:
 
-- This was a pre-existing `bolt-v2` live service, not the current-head T038 no-submit runner.
-- It is a production control-surface blocker before any T046 canary or production trading.
+- This was a pre-existing `bolt-v2` live service, not the current-head T038 strategy-free runner.
+- It is a production control-surface blocker before any T046 first live-order run or production trading.
 - The service was stopped and disabled during the EC2 session.
 - Follow-up process check showed no `bolt-v2` process.
 - Targeted journal review for the final auto-start window showed `Not starting trader: engine client(s) not connected` after a Binance SBE schema mismatch in the stale service.
@@ -100,9 +98,9 @@ Classification:
 ## Remaining Gate
 
 Do not run T046 until there is separate explicit operator approval for the
-tiny-capital canary and the live canary gate is evaluated against this fresh
-T038 report, current executable identity, config checksum, approval evidence,
-and report freshness.
+tiny-capital live-order attempt and the current live-submit admission path is
+checked against this fresh T038 report, current executable identity, config
+checksum, approval evidence, and report freshness.
 
 ## Binance References
 

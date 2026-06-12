@@ -12,7 +12,7 @@ Build the smallest Bolt-owned order intent layer that converts TOML-derived NT o
 **Language/Version**: Rust, repository toolchain
 **Primary Dependencies**: NautilusTrader Rust crates pinned in `Cargo.toml` at rev `7c2aafb30fb143069c915a3f2057bb12174405f6`
 **Storage**: TOML config, JSONL evidence, Spec Kit docs
-**Testing**: `cargo test`, `cargo fmt -- --check`, `git diff --check`, focused no-submit checks where available
+**Testing**: `cargo test`, `cargo fmt -- --check`, `git diff --check`, focused strategy-free checks where available
 **Target Platform**: bolt-v3 pure Rust LiveNode path
 **Project Type**: Rust trading runtime and config parser
 **Performance Goals**: No new hot-path adapter simulation or polling; order template compilation is per-order and bounded

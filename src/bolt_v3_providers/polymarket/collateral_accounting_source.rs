@@ -50,15 +50,6 @@ pub async fn materialize_clob_v2_collateral_accounting_source_from_configured_ba
     .await
 }
 
-pub(crate) async fn materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once(
-    request: ClobV2CollateralAccountingSourceMaterializationRequest<'_>,
-) -> Result<ClobV2CollateralAccountingSourceMaterialization, BoltV3OperatorArtifactError> {
-    materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_with_policy(
-        request, false,
-    )
-    .await
-}
-
 async fn materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_with_policy(
     request: ClobV2CollateralAccountingSourceMaterializationRequest<'_>,
     retry_initial_fetch: bool,
@@ -206,7 +197,6 @@ async fn materialize_clob_v2_collateral_accounting_source_from_configured_balanc
         p_usd_balance,
         p_usd_allowance,
         collateral_accounting_source_sha256,
-        confirmation_policy,
     })
 }
 
@@ -236,7 +226,6 @@ async fn materialize_clob_v2_collateral_accounting_source_from_on_chain_pusd_all
         p_usd_balance: proof.p_usd_balance,
         p_usd_allowance: proof.effective_p_usd_allowance,
         collateral_accounting_source_sha256,
-        confirmation_policy,
     })
 }
 

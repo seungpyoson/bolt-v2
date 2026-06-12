@@ -5,6 +5,33 @@ strategy_files = [
   "strategies/binary_oracle.toml",
 ]
 
+[realized_volatility_surfaces.configured_rv_surface]
+canonical_base_asset = "CONFIGURED_ASSET"
+canonical_quote_asset = "USDT"
+
+[realized_volatility_surfaces.configured_rv_surface.policy]
+window_ms = 600000
+sampling_interval_ms = 1000
+min_ready_sources = 1
+max_source_age_ms = 60000
+max_event_receive_lag_ms = 1000
+max_inter_sample_gap_ms = 60000
+min_coverage_ratio = 0.5
+max_cross_source_dispersion = 1.0
+seconds_per_annum = 31536000.0
+aggregation = "upper_quantile"
+upper_quantile = 1.0
+
+[[realized_volatility_surfaces.configured_rv_surface.sources]]
+source_id = "configured_rv_okx_midpoint"
+data_client_id = "okx_data"
+instrument_id = "CONFIGURED_ASSET-USDT.OKX"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
 [runtime]
 mode = "Live"
 
@@ -105,7 +132,7 @@ replace_existing = false
 rotation_kind = "none"
 
 [aws]
-region = "eu-west-1"
+region = "eu-west-2"
 
 [gate_providers.resolution_oracle_primary]
 provider_kind = "chainlink_data_streams"
@@ -166,10 +193,10 @@ fee_cache_ttl_secs = 300
 transport_backend = "sockudo"
 
 [clients.polymarket_main.secrets]
-private_key_ssm_path = "/bolt/polymarket_main/private_key"
-api_key_ssm_path = "/bolt/polymarket_main/api_key"
-api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
-passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
+private_key_ssm_path = "/bolt/polymarket/private-key"
+api_key_ssm_path = "/bolt/polymarket/api-key"
+api_secret_ssm_path = "/bolt/polymarket/api-secret"
+passphrase_ssm_path = "/bolt/polymarket/api-passphrase"
 
 [clients.okx_data]
 venue = "OKX"
@@ -180,3 +207,24 @@ contract_types = ["linear", "inverse"]
 load_spreads = false
 environment = "live"
 transport_backend = "sockudo"
+
+# Live Chainlink Data Streams resolution-strike source. Routes to
+# chainlink::map_adapters via venue = "CHAINLINK_DATA_STREAMS" (chainlink::KEY).
+[clients.chainlink_strike]
+venue = "CHAINLINK_DATA_STREAMS"
+
+[clients.chainlink_strike.data]
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+
+[[clients.chainlink_strike.data.feed_bindings]]
+feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+instrument_id = "BTC-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
+[clients.chainlink_strike.secrets]
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"

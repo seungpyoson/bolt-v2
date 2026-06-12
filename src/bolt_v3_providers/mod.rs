@@ -16,12 +16,24 @@
 //! stay in core and are called from the per-provider modules.
 
 pub mod binance;
+pub mod chainlink;
 pub mod hyperliquid;
 pub mod hyperliquid_artifacts;
 pub mod market_data;
 pub mod polymarket;
+pub mod polyresearch;
 
-use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, pin::Pin, sync::Arc};
+// Neutral resolution-oracle seam. Core config resolution
+// (`crate::bolt_v3_config`), core validation (`crate::bolt_v3_validate`), the
+// binary-oracle archetype, and the binary-oracle strategy reach the live
+// Chainlink Data Streams strike provider through these provider-agnostic
+// re-exports and delegators, so no core module names the concrete provider
+// module path, provider type, or provider-key literal.
+pub use chainlink::KEY as RESOLUTION_ORACLE_VENUE_KEY;
+pub use chainlink::PROVIDER_KIND as RESOLUTION_ORACLE_PROVIDER_KIND;
+pub(crate) use chainlink::STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM;
+
+use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, sync::Arc};
 
 use nautilus_model::identifiers::Venue;
 use rust_decimal::Decimal;
@@ -34,11 +46,7 @@ use crate::{
     bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3MarketClockFn},
     bolt_v3_config::{BoltV3RootConfig, ClientBlock, LoadedBoltV3Config},
     bolt_v3_market_families::MarketIdentityPlan,
-    bolt_v3_operator_artifacts::{
-        BoltV3OperatorArtifactError, CanaryProofArtifactsCollectionRequest,
-        CanaryProofArtifactsWritten, EntryDecisionSourceCollectionRequest,
-        EntryDecisionSourceInputsWritten, WrittenOperatorArtifact,
-    },
+    bolt_v3_operator_artifacts::{BoltV3OperatorArtifactError, WrittenOperatorArtifact},
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     strategies::registry::FeeProvider,
 };
@@ -89,64 +97,6 @@ pub struct ProviderSecretResolveContext<'a> {
 pub struct ProviderSsmPathReference {
     pub field_name: &'static str,
     pub ssm_path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GateProviderEvidenceBinding {
-    pub provider_id: String,
-    pub provider_kind: String,
-    pub capabilities: Vec<String>,
-    pub max_age_ms: u64,
-    pub max_clock_skew_ms: u64,
-}
-
-pub fn gate_provider_evidence_binding(
-    loaded: &LoadedBoltV3Config,
-    provider_id: &str,
-) -> Result<GateProviderEvidenceBinding, BoltV3OperatorArtifactError> {
-    let provider = loaded
-        .root
-        .gate_providers
-        .as_ref()
-        .and_then(|providers| providers.get(provider_id))
-        .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
-            field: "provider_id",
-        })?;
-    let provider_kind = provider.provider_kind.as_deref().ok_or(
-        BoltV3OperatorArtifactError::GateEvidenceInvalid {
-            field: "provider_kind",
-        },
-    )?;
-    let capabilities =
-        provider
-            .capabilities
-            .as_ref()
-            .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
-                field: "capabilities",
-            })?;
-    let freshness = provider
-        .freshness
-        .as_ref()
-        .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid { field: "freshness" })?;
-    let max_age_ms =
-        freshness
-            .max_age_ms
-            .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
-                field: "freshness.max_age_ms",
-            })?;
-    let max_clock_skew_ms =
-        freshness
-            .max_clock_skew_ms
-            .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
-                field: "freshness.max_clock_skew_ms",
-            })?;
-    Ok(GateProviderEvidenceBinding {
-        provider_id: provider_id.to_string(),
-        provider_kind: provider_kind.to_string(),
-        capabilities: capabilities.clone(),
-        max_age_ms,
-        max_clock_skew_ms,
-    })
 }
 
 pub struct ProviderAdapterMapContext<'a> {
@@ -309,33 +259,6 @@ type ProductSubmitProofArtifactWriter =
         ProviderProductSubmitProofArtifactRequest<'a>,
     ) -> Result<WrittenOperatorArtifact, anyhow::Error>;
 
-pub struct EntryDecisionSourceProviderContext<'a> {
-    pub loaded: &'a LoadedBoltV3Config,
-    pub strategy_instance_id: &'a str,
-    pub request: EntryDecisionSourceCollectionRequest<'a>,
-}
-
-pub struct CanaryProofArtifactsProviderContext<'a> {
-    pub loaded: &'a LoadedBoltV3Config,
-    pub strategy_instance_id: &'a str,
-    pub request: CanaryProofArtifactsCollectionRequest<'a>,
-}
-
-pub type EntryDecisionSourceInputCollector = for<'a> fn(
-    EntryDecisionSourceProviderContext<'a>,
-) -> Pin<
-    Box<
-        dyn Future<Output = Result<EntryDecisionSourceInputsWritten, BoltV3OperatorArtifactError>>
-            + 'a,
-    >,
->;
-
-pub type CanaryProofArtifactsCollector = for<'a> fn(
-    CanaryProofArtifactsProviderContext<'a>,
-) -> Pin<
-    Box<dyn Future<Output = Result<CanaryProofArtifactsWritten, BoltV3OperatorArtifactError>> + 'a>,
->;
-
 // PROVIDER-SPECIFIC (Polymarket CLOB v2) — DEFER (P3-F3). Every `ClobV2*` type and
 // `*_clob_v2_*` fn below materializes Polymarket CLOB v2 signing / fee / collateral
 // evidence from NT `nautilus_polymarket` sources — they are NOT venue-agnostic despite
@@ -393,7 +316,6 @@ pub struct ClobV2CollateralAccountingSourceMaterialization {
     pub p_usd_balance: String,
     pub p_usd_allowance: String,
     pub collateral_accounting_source_sha256: String,
-    pub(crate) confirmation_policy: ExternalSnapshotConfirmationPolicy,
 }
 
 pub struct ClobV2BalanceAllowanceCacheSyncRequest<'a> {
@@ -607,8 +529,6 @@ pub struct ProviderBinding {
     pub write_live_submit_approval_artifact: Option<LiveSubmitApprovalArtifactWriter>,
     pub write_product_submit_proof_artifact: Option<ProductSubmitProofArtifactWriter>,
     pub build_fee_provider: Option<FeeProviderBuilder>,
-    pub collect_entry_decision_source_inputs: Option<EntryDecisionSourceInputCollector>,
-    pub collect_canary_proof_artifacts: Option<CanaryProofArtifactsCollector>,
 }
 
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
@@ -628,10 +548,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: Some(polymarket::build_fee_provider),
-        collect_entry_decision_source_inputs: Some(
-            polymarket::collect_entry_decision_source_inputs,
-        ),
-        collect_canary_proof_artifacts: Some(polymarket::collect_canary_proof_artifacts),
     },
     ProviderBinding {
         key: binance::KEY,
@@ -649,8 +565,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
-        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: hyperliquid::KEY,
@@ -670,8 +584,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         ),
         write_product_submit_proof_artifact: Some(hyperliquid::write_product_submit_proof_artifact),
         build_fee_provider: Some(hyperliquid::build_fee_provider),
-        collect_entry_decision_source_inputs: None,
-        collect_canary_proof_artifacts: Some(hyperliquid::collect_canary_proof_artifacts),
     },
     ProviderBinding {
         key: market_data::BITMEX_KEY,
@@ -689,8 +601,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
-        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::BYBIT_KEY,
@@ -708,8 +618,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
-        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::COINBASE_KEY,
@@ -727,8 +635,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
-        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::DERIBIT_KEY,
@@ -746,8 +652,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
-        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::OKX_KEY,
@@ -765,8 +669,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
-        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::KRAKEN_KEY,
@@ -784,8 +686,23 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
-        collect_canary_proof_artifacts: None,
+    },
+    ProviderBinding {
+        key: chainlink::KEY,
+        validate_client: chainlink::validate_client,
+        supported_market_families: chainlink::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: chainlink::REQUIRED_SECRET_BLOCKS,
+        secret_field_names: chainlink::SECRET_FIELD_NAMES,
+        credential_log_modules: chainlink::CREDENTIAL_LOG_MODULES,
+        forbidden_env_vars: chainlink::FORBIDDEN_ENV_VARS,
+        resolve_secrets: chainlink::resolve_secrets,
+        configured_secret_paths: chainlink::configured_secret_paths,
+        map_adapters: chainlink::map_adapters,
+        load_live_submit_approval: None,
+        preflight_live_submit_arming: None,
+        write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
+        build_fee_provider: None,
     },
 ];
 
@@ -864,15 +781,6 @@ pub async fn materialize_clob_v2_collateral_accounting_source_from_configured_ba
     .await
 }
 
-pub(crate) async fn materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once(
-    request: ClobV2CollateralAccountingSourceMaterializationRequest<'_>,
-) -> Result<ClobV2CollateralAccountingSourceMaterialization, BoltV3OperatorArtifactError> {
-    polymarket::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once(
-        request,
-    )
-    .await
-}
-
 pub async fn sync_clob_v2_balance_allowance_cache_from_configured_account(
     request: ClobV2BalanceAllowanceCacheSyncRequest<'_>,
 ) -> Result<ClobV2BalanceAllowanceCacheSync, BoltV3OperatorArtifactError> {
@@ -894,6 +802,15 @@ pub fn credential_log_modules() -> impl Iterator<Item = &'static str> {
     provider_bindings()
         .iter()
         .flat_map(|binding| binding.credential_log_modules.iter().copied())
+}
+
+/// Provider-neutral seam read by core startup validation: cross-checks any
+/// configured live resolution-oracle strike client against the matching gate
+/// provider so the live strike path and the offline-evidence path cannot drift
+/// onto different endpoints/credentials. Delegates to the owning provider
+/// binding, which deserializes the concrete client config block shape.
+pub fn validate_resolution_oracle_client_consistency(root: &BoltV3RootConfig) -> Vec<String> {
+    chainlink::validate_client_gate_provider_consistency(root)
 }
 
 /// Family-agnostic surface read by core startup validation. Routes
@@ -1106,12 +1023,12 @@ mod tests {
 
     fn fake_secret_value(path: &str) -> String {
         match path {
-            "/bolt/polymarket_main/private_key" => {
+            "/bolt/polymarket/private-key" => {
                 "0x1111111111111111111111111111111111111111111111111111111111111111".to_string()
             }
-            "/bolt/polymarket_main/api_key" => "poly-api-key".to_string(),
-            "/bolt/polymarket_main/api_secret" => "YWJj".to_string(),
-            "/bolt/polymarket_main/passphrase" => "poly-passphrase".to_string(),
+            "/bolt/polymarket/api-key" => "poly-api-key".to_string(),
+            "/bolt/polymarket/api-secret" => "YWJj".to_string(),
+            "/bolt/polymarket/api-passphrase" => "poly-passphrase".to_string(),
             _ => panic!("unexpected test SSM path {path}"),
         }
     }

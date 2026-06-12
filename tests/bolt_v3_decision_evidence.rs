@@ -9,9 +9,14 @@ use bolt_v2::{
         BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
         BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
         BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
-        BoltV3DecisionEvidenceWriter, BoltV3GateEvidenceIdentity, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3SubmitIntentKind, decision_evidence_path, read_latest_entry_decision_evidence_chain,
+        BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+        BoltV3OrderIntentOrderFields, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
+        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind, decision_evidence_path,
+        read_latest_entry_decision_evidence_chain,
+    },
+    bolt_v3_realized_volatility::{
+        RealizedVolBlockReason, RealizedVolSampleKind, RealizedVolSourceClass,
+        RealizedVolSourceDiagnostic, RealizedVolSourceRejectReason, RealizedVolSourceStatus,
     },
     strategies::registry::FeeProvider,
     strategies::registry::StrategyBuildContext,
@@ -30,6 +35,115 @@ impl FeeProvider for NoopFeeProvider {
 
     fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
         async { Ok(()) }.boxed()
+    }
+}
+
+#[test]
+fn strategy_input_evidence_records_realized_volatility_snapshot_provenance() {
+    let snapshot = strategy_input_snapshot_with_realized_volatility_snapshot();
+
+    assert_eq!(snapshot.realized_volatility_surface_id, "<surface_id>");
+    assert_eq!(snapshot.realized_volatility_annualized_decimal, "2.5");
+    assert_eq!(snapshot.realized_volatility_aggregation, "upper_quantile");
+    assert_eq!(
+        snapshot.realized_volatility_sources_used,
+        vec!["<SOURCE_ID_A>".to_string()]
+    );
+    assert!(snapshot.realized_volatility_blockers.is_empty());
+}
+
+#[test]
+fn realized_volatility_source_diagnostic_evidence_exports_config_participation() {
+    let diagnostic = RealizedVolSourceDiagnostic {
+        source_id: "<SOURCE_ID_B>".to_string(),
+        source_class: RealizedVolSourceClass::SpotQuote,
+        sample_kind: RealizedVolSampleKind::Midpoint,
+        enabled: false,
+        counts_toward_quorum: false,
+        status: RealizedVolSourceStatus::DiagnosticOnly,
+        annualized_realized_vol_decimal: None,
+        measured_annualized_realized_vol_decimal: None,
+        noise_robust_annualized_realized_vol_decimal: None,
+        continuous_annualized_realized_vol_decimal: None,
+        jump_annualized_realized_vol_decimal: None,
+        first_sample_ts_ms: None,
+        last_sample_ts_ms: None,
+        raw_sample_count: 0,
+        grid_sample_count: 0,
+        coverage_ratio: 0.0,
+        max_inter_sample_gap_ms: None,
+        last_rejected_reason: Some(RealizedVolSourceRejectReason::DisabledSource),
+        rejection_counters: BTreeMap::from([(RealizedVolSourceRejectReason::DisabledSource, 2)]),
+        block_reason: Some(RealizedVolBlockReason::NotWarm),
+    };
+
+    let evidence =
+        BoltV3RealizedVolatilitySourceDiagnosticEvidence::from_realized_vol_diagnostic(&diagnostic);
+
+    assert_eq!(evidence.source_id, "<SOURCE_ID_B>");
+    assert!(!evidence.enabled);
+    assert!(!evidence.counts_toward_quorum);
+    assert_eq!(evidence.status, "diagnostic_only");
+    assert_eq!(
+        evidence.rejection_counters.get("disabled_source").copied(),
+        Some(2)
+    );
+}
+
+fn strategy_input_snapshot_with_realized_volatility_snapshot() -> BoltV3StrategyInputEvidenceSnapshot
+{
+    BoltV3StrategyInputEvidenceSnapshot {
+        strategy_id: "strategy-one".to_string(),
+        configured_target_id: "target-one".to_string(),
+        market_selection_ruleset_id: "target-one".to_string(),
+        market_selection_outcome: "current".to_string(),
+        market_id: Some("market-one".to_string()),
+        polymarket_condition_id: Some("condition-one".to_string()),
+        polymarket_market_slug: Some("market-slug-one".to_string()),
+        polymarket_question_id: Some("question-one".to_string()),
+        up_instrument_id: Some("instrument-up".to_string()),
+        down_instrument_id: Some("instrument-down".to_string()),
+        market_selection_timestamp_ms: Some(1000),
+        selected_market_observed_timestamp_ms: Some(1000),
+        polymarket_market_start_timestamp_ms: Some(1000),
+        polymarket_market_end_timestamp_ms: Some(301000),
+        price_to_beat_source: "source-one".to_string(),
+        price_to_beat_value: "3100".to_string(),
+        reference_quote_ts_event: 1200,
+        spot_price: "3100.5".to_string(),
+        reference_fair_value: Some("3100.5".to_string()),
+        realized_volatility: "2.5".to_string(),
+        realized_volatility_surface_id: "<surface_id>".to_string(),
+        realized_volatility_as_of_ms: Some(1200),
+        realized_volatility_annualized_decimal: "2.5".to_string(),
+        realized_volatility_measured_annualized_decimal: "2.5".to_string(),
+        realized_volatility_noise_robust_annualized_decimal: "2.4".to_string(),
+        realized_volatility_continuous_annualized_decimal: "2.3".to_string(),
+        realized_volatility_jump_annualized_decimal: "0.1".to_string(),
+        realized_volatility_forecast_annualized_decimal: String::new(),
+        realized_volatility_pricing_component: "noise_robust".to_string(),
+        realized_volatility_seconds_per_annum: "31536000".to_string(),
+        realized_volatility_aggregation: "upper_quantile".to_string(),
+        realized_volatility_sources_used: vec!["<SOURCE_ID_A>".to_string()],
+        realized_volatility_source_diagnostics: Vec::new(),
+        realized_volatility_unknown_source_rejections: BTreeMap::new(),
+        realized_volatility_blockers: Vec::new(),
+        realized_volatility_config_fingerprint: "<config_fingerprint>".to_string(),
+        seconds_to_market_end: 300,
+        pricing_kurtosis: "0".to_string(),
+        theta_decay_factor: "0".to_string(),
+        theta_scaled_min_edge_bps: "10".to_string(),
+        fair_probability_up: "0.6".to_string(),
+        uncertainty_band_probability: "0.01".to_string(),
+        expected_edge_basis_points: "10".to_string(),
+        worst_case_edge_basis_points: "10".to_string(),
+        fee_rate_basis_points: "0".to_string(),
+        selected_side: Some("up".to_string()),
+        submission_instrument_id: "instrument-up".to_string(),
+        submission_order_side: OrderSide::Buy.to_string(),
+        submission_price: "0.50".to_string(),
+        submission_quantity: "1".to_string(),
+        client_order_id: "client-order-one".to_string(),
     }
 }
 
@@ -226,51 +340,8 @@ fn latest_entry_decision_evidence_chain_rejects_stale_v5_before_admission_payloa
     );
     assert!(
         !rendered.contains("execution_client_id"),
-        "stale v5 should not reach v6 admission payload parsing, got: {rendered}"
+        "stale v5 should not reach current admission payload parsing, got: {rendered}"
     );
-}
-
-#[test]
-fn latest_entry_decision_evidence_chain_rejects_missing_readiness_gate_identity() {
-    type DecisionEvidenceMutation = fn(&mut [serde_json::Value; 3]);
-    let cases: [(&str, DecisionEvidenceMutation); 6] = [
-        ("gate_session_hash", |lines| {
-            lines[0]["snapshot"]["gate_session_hash"] = serde_json::json!("");
-        }),
-        ("selected_market_key", |lines| {
-            lines[0]["snapshot"]["selected_market_key"] = serde_json::json!("");
-        }),
-        ("gate_evidence", |lines| {
-            lines[0]["snapshot"]["gate_evidence"] = serde_json::json!({});
-        }),
-        ("normalized_value_sha256", |lines| {
-            lines[0]["snapshot"]["gate_evidence"]["resolution_price"]["normalized_value_sha256"] =
-                serde_json::json!("");
-        }),
-        ("provider_provenance_sha256", |lines| {
-            lines[0]["snapshot"]["gate_evidence"]["resolution_price"]["provider_provenance_sha256"] =
-                serde_json::json!("");
-        }),
-        ("artifact_sha256s", |lines| {
-            lines[0]["snapshot"]["gate_evidence"]["resolution_price"]["artifact_sha256s"] =
-                serde_json::json!([]);
-        }),
-    ];
-
-    for (field, mutate) in cases {
-        let temp = tempfile::tempdir().expect("tempdir should create");
-        let evidence_path = temp.path().join("decision-evidence.jsonl");
-        let mut lines = sample_entry_decision_evidence_lines();
-        mutate(&mut lines);
-        write_decision_evidence_lines(&evidence_path, &lines);
-
-        let error =
-            read_latest_entry_decision_evidence_chain(&evidence_path, 100_000).expect_err(field);
-        assert!(
-            error.to_string().contains(field),
-            "{field} readiness gap should be diagnostic: {error:#}"
-        );
-    }
 }
 
 fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
@@ -278,22 +349,6 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         strategy_id: "strategy-one".to_string(),
         configured_target_id: "target-one".to_string(),
         market_selection_ruleset_id: "target-one".to_string(),
-        gate_session_hash: "gate-session-hash-one".to_string(),
-        selected_market_key: "selected-market-key-one".to_string(),
-        gate_evidence: BTreeMap::from([(
-            "resolution_price".to_string(),
-            BoltV3GateEvidenceIdentity {
-                satisfaction_kind: "evidence".to_string(),
-                selected_market_key: "selected-market-key-one".to_string(),
-                provider_id: Some("provider-one".to_string()),
-                provider_kind: Some("chainlink_data_streams".to_string()),
-                value_kind: Some("price".to_string()),
-                normalized_value_sha256: Some("normalized-value-sha-one".to_string()),
-                provider_provenance_sha256: Some("provider-provenance-sha-one".to_string()),
-                artifact_sha256s: vec!["artifact-sha-one".to_string()],
-                resolution_identity: None,
-            },
-        )]),
         market_selection_outcome: "current".to_string(),
         market_id: Some("market-one".to_string()),
         polymarket_condition_id: Some("condition-one".to_string()),
@@ -311,6 +366,22 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         spot_price: "3100.5".to_string(),
         reference_fair_value: Some("3100.5".to_string()),
         realized_volatility: "1.5".to_string(),
+        realized_volatility_surface_id: String::new(),
+        realized_volatility_as_of_ms: None,
+        realized_volatility_annualized_decimal: "1.5".to_string(),
+        realized_volatility_measured_annualized_decimal: String::new(),
+        realized_volatility_noise_robust_annualized_decimal: String::new(),
+        realized_volatility_continuous_annualized_decimal: String::new(),
+        realized_volatility_jump_annualized_decimal: String::new(),
+        realized_volatility_forecast_annualized_decimal: String::new(),
+        realized_volatility_pricing_component: String::new(),
+        realized_volatility_seconds_per_annum: String::new(),
+        realized_volatility_aggregation: String::new(),
+        realized_volatility_sources_used: Vec::new(),
+        realized_volatility_source_diagnostics: Vec::new(),
+        realized_volatility_unknown_source_rejections: BTreeMap::new(),
+        realized_volatility_blockers: Vec::new(),
+        realized_volatility_config_fingerprint: String::new(),
         seconds_to_market_end: 300,
         pricing_kurtosis: "0".to_string(),
         theta_decay_factor: "0".to_string(),
@@ -335,7 +406,6 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         order_side: snapshot.submission_order_side.clone(),
         price: snapshot.submission_price.clone(),
         quantity: snapshot.submission_quantity.clone(),
-        canary_proof_claim: None,
         order_fields: BoltV3OrderIntentOrderFields {
             order_type: OrderType::Limit.to_string(),
             time_in_force: TimeInForce::Gtc.to_string(),
@@ -359,7 +429,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         instrument_id: snapshot.submission_instrument_id.clone(),
         notional: "0.50".to_string(),
         intent_kind: BoltV3SubmitIntentKind::Entry,
-        outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+        outcome: BoltV3AdmissionOutcome::Admitted,
     };
     [
         serde_json::json!({
@@ -519,7 +589,7 @@ fn strategy_build_context_requires_decision_evidence_value() {
         Arc::new(NoopFeeProvider),
         Arc::new(NoopDecisionEvidenceWriter),
         Arc::new(
-            bolt_v2::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            bolt_v2::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(Arc::new(
                 NoopDecisionEvidenceWriter,
             )),
         ),
@@ -537,7 +607,6 @@ fn strategy_build_context_requires_decision_evidence_value() {
                 order_side: OrderSide::Buy.to_string(),
                 price: "0.50".to_string(),
                 quantity: "1".to_string(),
-                canary_proof_claim: None,
                 order_fields: BoltV3OrderIntentOrderFields {
                     order_type: OrderType::Limit.to_string(),
                     time_in_force: TimeInForce::Gtc.to_string(),

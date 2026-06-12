@@ -315,7 +315,7 @@ fn validate_binance_websocket_endpoint(
 
     if configured.host_str() == json_endpoint.host_str() {
         errors.push(format!(
-            "clients.{key}.data.base_url_ws must not use the Binance Spot JSON WebSocket host for NT subscribe_quotes (<symbol>@bestBidAsk); configure a Binance Spot SBE WebSocket endpoint or compatible SBE proxy so no-submit reference quote readiness can observe QuoteTick data"
+            "clients.{key}.data.base_url_ws must not use the Binance Spot JSON WebSocket host for NT subscribe_quotes (<symbol>@bestBidAsk); configure a Binance Spot SBE WebSocket endpoint or compatible SBE proxy so strategy-free reference quote readiness can observe QuoteTick data"
         ));
     }
     errors

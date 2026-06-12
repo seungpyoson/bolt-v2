@@ -23,6 +23,7 @@ use bolt_v2::{
     bolt_v3_providers::{
         ProviderRuntimeApprovals,
         binance::ResolvedBoltV3BinanceSecrets,
+        chainlink::ResolvedBoltV3ChainlinkSecrets,
         hyperliquid::{HyperliquidProductSurface, ResolvedBoltV3HyperliquidSecrets},
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     },
@@ -73,6 +74,13 @@ fn fixture_hyperliquid_secrets() -> ResolvedBoltV3HyperliquidSecrets {
     }
 }
 
+fn fixture_chainlink_secrets() -> ResolvedBoltV3ChainlinkSecrets {
+    ResolvedBoltV3ChainlinkSecrets {
+        api_key: zeroize::Zeroizing::new("regression-chainlink-api-key".to_string()),
+        api_secret: zeroize::Zeroizing::new("regression-chainlink-api-secret".to_string()),
+    }
+}
+
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
     clients.insert(
@@ -82,6 +90,10 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     clients.insert(
         "binance_reference".to_string(),
         Arc::new(fixture_binance_secrets()),
+    );
+    clients.insert(
+        "chainlink_strike".to_string(),
+        Arc::new(fixture_chainlink_secrets()),
     );
     ResolvedBoltV3Secrets { clients }
 }
@@ -1116,7 +1128,7 @@ replace_existing = false
 rotation_kind = "none"
 
 [aws]
-region = "eu-west-1"
+region = "eu-west-2"
 
 [clients.polymarket_main]
 venue = "POLYMARKET"
@@ -1215,7 +1227,7 @@ fn live_node_build_path_propagates_adapter_mapping_failures() {
     // is an unbound broad-readiness probe client and is not resolved by the
     // scoped path, so failing its secret would surface nothing here.)
     let bad_resolver = |region: &str, path: &str| -> Result<String, &'static str> {
-        if path == "/bolt/polymarket_main/api_secret" {
+        if path == "/bolt/polymarket/api-secret" {
             Err("simulated SSM permissions denied")
         } else {
             support::fake_bolt_v3_resolver(region, path)

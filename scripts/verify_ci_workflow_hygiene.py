@@ -28,6 +28,7 @@ from command_understanding import (
     python_constant_string,
     python_inline_command_payloads,
 )
+from rust_verification import CARGO_DISK_PREFLIGHT_SUBCOMMANDS
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -37,6 +38,30 @@ DEFAULT_WORKFLOW_GLOBS = ("*.yml", "*.yaml")
 DEFAULT_SETUP_ACTION = REPO_ROOT / ".github" / "actions" / "setup-environment" / "action.yml"
 DEFAULT_NEXTEST_CONFIG = REPO_ROOT / ".config" / "nextest.toml"
 DEFAULT_NO_MISTAKES_CONFIG = REPO_ROOT / ".no-mistakes.yaml"
+DEFAULT_RUNNERS_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
+DEFAULT_ACTIONLINT_CONFIG = REPO_ROOT / ".github" / "actionlint.yaml"
+DEFAULT_RUST_VERIFICATION_POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
+DEFAULT_BVS_RUST_VERIFICATION_POLICY = REPO_ROOT / "crates" / "backtesting-vertical-slice" / "ci" / "rust-verification.toml"
+JOB_RUNS_ON_VAR_RE = re.compile(r"^    runs-on:\s*\$\{\{\s*vars\.([A-Z0-9_]+)\s*\}\}\s*$")
+WORKFLOW_RUNNER_CONFIG_KEYS = {
+    "ci.yml": "ci",
+    ".github/workflows/ci.yml": "ci",
+    "backtester-ci.yml": "backtester_ci",
+    ".github/workflows/backtester-ci.yml": "backtester_ci",
+    "ci-runner-debug.yml": "ci_runner_debug",
+    ".github/workflows/ci-runner-debug.yml": "ci_runner_debug",
+    "actionlint.yml": "actionlint",
+    ".github/workflows/actionlint.yml": "actionlint",
+    "advisory.yml": "advisory",
+    ".github/workflows/advisory.yml": "advisory",
+    "summary.yml": "summary",
+    ".github/workflows/summary.yml": "summary",
+    "stale.yml": "stale",
+    ".github/workflows/stale.yml": "stale",
+    "ci-docs-pass-stub.yml": "ci_docs_pass_stub",
+    ".github/workflows/ci-docs-pass-stub.yml": "ci_docs_pass_stub",
+}
+SSH_RUNNER_ACTION_RE = re.compile(r"^ubicloud/ssh-runner@[0-9a-f]{40}$")
 DEFAULT_REPO_AUTOMATION_FILES = (REPO_ROOT / "justfile",)
 DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / "scripts", "*.sh"),
@@ -45,12 +70,18 @@ DEFAULT_REPO_AUTOMATION_GLOBS = (
     (REPO_ROOT / ".github" / "actions", "*/action.yaml"),
 )
 S3_ACTIVE_TARGET_CACHE_MESSAGE = "S3 active mutable target cache must be rejected"
+LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS = {"build", "clippy", "test"}
+LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS = set(CARGO_DISK_PREFLIGHT_SUBCOMMANDS)
 YAML_ANCHOR_PATTERN = r"&[A-Za-z0-9_.-]+"
 YAML_STEP_ITEM_RE = re.compile(rf"^-\s+(?:{YAML_ANCHOR_PATTERN}(?:\s+|$))?")
 YAML_RUN_LINE_RE = re.compile(rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*(.*?)\s*$")
 YAML_FOLDED_RUN_LINE_RE = re.compile(
     rf"^(\s*)(?:-\s*(?:{YAML_ANCHOR_PATTERN}\s+)?)?run:\s*>[+-]?\s*(?:#.*)?$"
 )
+
+
+class PolicyError(RuntimeError):
+    pass
 
 REQUIRED_JOBS = (
     "detector",
@@ -126,11 +157,9 @@ LIVE_NODE_NEXTEST_BINARIES = (
     "bolt_v3_client_registration",
     "bolt_v3_controlled_connect",
     "bolt_v3_credential_log_suppression",
-    "bolt_v3_live_canary_gate",
     "bolt_v3_readiness",
     "bolt_v3_strategy_registration",
     "bolt_v3_submit_admission",
-    "bolt_v3_tiny_canary_operator",
     "config_parsing",
     "lake_batch",
     "nt_runtime_capture",
@@ -1062,6 +1091,7 @@ CARGO_PROCESS_SUBCOMMANDS = {
     "run",
     "rustc",
     "test",
+    "zigbuild",
 }
 
 
@@ -1649,13 +1679,54 @@ def cargo_install_source_build_tools_in_text(text: str) -> set[str]:
     return tools
 
 
+def python_rust_verification_script_index(tokens: list[str]) -> int | None:
+    if not tokens or not pathlib.Path(tokens[0]).name.startswith("python"):
+        return None
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"-B", "-E", "-I", "-O", "-OO", "-S", "-s", "-u"}:
+            index += 1
+            continue
+        if token in {"-W", "-X"} and index + 1 < len(tokens):
+            index += 2
+            continue
+        if token.startswith(("-W", "-X")) and token not in {"-W", "-X"}:
+            index += 1
+            continue
+        break
+    if index < len(tokens) and pathlib.Path(tokens[index]).name == "rust_verification.py":
+        return index
+    return None
+
+
+def managed_rust_verification_command_tokens(tokens: list[str], *, depth: int = 0) -> list[str] | None:
+    if depth > 6:
+        return None
+    tokens = strip_shell_redirections(tokens)
+    if not tokens:
+        return None
+    assignment_index = consume_assignment_words(tokens, 0)
+    if assignment_index:
+        return managed_rust_verification_command_tokens(tokens[assignment_index:], depth=depth + 1)
+    executable = pathlib.Path(tokens[0]).name
+    if executable == "env":
+        inner = env_inner_tokens(tokens)
+        return managed_rust_verification_command_tokens(inner, depth=depth + 1) if inner is not None else None
+    if executable in RECURSIVE_WRAPPER_EXECUTABLES:
+        inner = wrapper_inner_tokens(tokens)
+        return managed_rust_verification_command_tokens(inner, depth=depth + 1) if inner is not None else None
+    script_index = python_rust_verification_script_index(tokens)
+    if script_index is None or script_index + 1 >= len(tokens):
+        return None
+    command = tokens[script_index + 1]
+    if command not in {"cargo", "run"}:
+        return None
+    return [tokens[0], tokens[script_index], *tokens[script_index + 1 :]]
+
+
 def managed_rust_verification_tokens(tokens: list[str]) -> bool:
-    return (
-        len(tokens) >= 3
-        and pathlib.Path(tokens[0]).name.startswith("python")
-        and pathlib.Path(tokens[1]).name == "rust_verification.py"
-        and tokens[2] in {"cargo", "run"}
-    )
+    return managed_rust_verification_command_tokens(tokens) is not None
 
 
 def consume_rust_verification_repo_option(tokens: list[str], index: int) -> int:
@@ -1670,10 +1741,11 @@ def consume_rust_verification_repo_option(tokens: list[str], index: int) -> int:
 
 
 def managed_rust_verification_cargo_args(tokens: list[str]) -> list[str] | None:
-    if not managed_rust_verification_tokens(tokens):
+    normalized_tokens = managed_rust_verification_command_tokens(tokens)
+    if normalized_tokens is None:
         return None
-    command = tokens[2]
-    tail = tokens[3:]
+    command = normalized_tokens[2]
+    tail = normalized_tokens[3:]
     index = 0
     while index < len(tail):
         if tail[index] == "--":
@@ -3396,6 +3468,23 @@ def no_mistakes_command_section_errors(config_text: str, config_name: str) -> li
     return errors
 
 
+def command_has_managed_compile_heavy_invocation(command: str) -> bool:
+    for raw_line in command.splitlines() or [command]:
+        tokens = command_tokens(raw_line)
+        normalized_tokens = managed_rust_verification_command_tokens(tokens)
+        if normalized_tokens is None:
+            continue
+        managed_args = managed_rust_verification_cargo_args(tokens)
+        if not managed_args:
+            continue
+        subcommand = cargo_subcommand(managed_args)
+        if normalized_tokens[2] == "run" and subcommand in LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS:
+            return True
+        if normalized_tokens[2] == "cargo" and subcommand in LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS:
+            return True
+    return False
+
+
 def verify_no_mistakes_config(config_text: str, config_name: str = ".no-mistakes.yaml") -> list[str]:
     errors: list[str] = no_mistakes_command_section_errors(config_text, config_name)
     for command_name, command in no_mistakes_commands(config_text).items():
@@ -3405,10 +3494,148 @@ def verify_no_mistakes_config(config_text: str, config_name: str = ".no-mistakes
             "BOLT_MANAGED_JUST private just recipe bypass" in error for error in storage_errors
         ):
             errors.append(f"{config_name} commands.{command_name} raw Cargo drift must be classified")
+        if command_has_managed_compile_heavy_invocation(command):
+            errors.append(f"{config_name} commands.{command_name} wrapper-routed local compile-heavy Rust must be remote-first")
         for storage_error in storage_errors:
             if storage_error == "BOLT_MANAGED_JUST private just recipe bypass must be classified":
                 continue
             errors.append(f"{config_name} commands.{command_name} {storage_error}")
+    return errors
+
+
+def just_recipe_blocks(justfile_text: str) -> dict[str, tuple[list[str], list[str]]]:
+    recipes: dict[str, tuple[list[str], list[str]]] = {}
+    lines = justfile_text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or line[0].isspace() or ":=" in line:
+            index += 1
+            continue
+        header, separator, tail = stripped.partition(":")
+        if not separator:
+            index += 1
+            continue
+        name = header.split()[0]
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name):
+            index += 1
+            continue
+        dependencies = [token for token in tail.split() if token and not token.startswith("#")]
+        body: list[str] = []
+        index += 1
+        while index < len(lines):
+            candidate = lines[index]
+            if candidate.strip() and not candidate[0].isspace():
+                break
+            if candidate.strip():
+                body.append(candidate.strip())
+            index += 1
+        recipes[name] = (dependencies, body)
+    return recipes
+
+
+def verify_source_fence_static_recipe(justfile_text: str) -> list[str]:
+    recipes = just_recipe_blocks(justfile_text)
+    errors: list[str] = []
+    if "source-fence-static" not in recipes:
+        errors.append("justfile source-fence-static recipe is required")
+        return errors
+    if "source-fence" not in recipes:
+        errors.append("justfile source-fence recipe is required")
+        return errors
+    source_fence_dependencies, source_fence_body = recipes["source-fence"]
+    if "source-fence-static" not in source_fence_dependencies:
+        errors.append("justfile source-fence must depend on source-fence-static")
+    static_body = "\n".join(
+        line for line in (strip_comment(raw_line).strip() for raw_line in recipes["source-fence-static"][1]) if line
+    )
+    if command_has_managed_compile_heavy_invocation(static_body) or re.search(r"\brust_verification\.py\b[^\n]*\bcargo\b", static_body):
+        errors.append("justfile source-fence-static must not invoke wrapper-routed Cargo")
+    if "cargo fetch" in static_body or re.search(r"\bscripts/verify_runtime_capture_yaml\.py\b", static_body):
+        errors.append("justfile source-fence-static must stop before cargo fetch and runtime capture verification")
+    full_body = "\n".join(source_fence_body)
+    if "verify_runtime_capture_yaml.py" not in full_body:
+        errors.append("justfile source-fence must keep runtime capture verification in the full recipe")
+    return errors
+
+
+def string_set(table: dict[str, object], key: str) -> set[str] | None:
+    value = table.get(key)
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return None
+    return set(value)
+
+
+def local_compile_policy_errors(data: dict[str, object], display_name: str) -> list[str]:
+    policy = data.get("local_compile_policy")
+    if not isinstance(policy, dict):
+        return [f"{display_name} must define [local_compile_policy]"]
+    errors: list[str] = []
+    if policy.get("enabled") is not True:
+        errors.append(f"{display_name} local_compile_policy.enabled must be true")
+    if policy.get("allowed_ci_env") != "GITHUB_ACTIONS":
+        errors.append(f"{display_name} local_compile_policy.allowed_ci_env must be GITHUB_ACTIONS")
+    if policy.get("break_glass_env") != "BOLT_ALLOW_LOCAL_RUST":
+        errors.append(f"{display_name} local_compile_policy.break_glass_env must be BOLT_ALLOW_LOCAL_RUST")
+    if string_set(policy, "refused_managed_commands") != LOCAL_COMPILE_REFUSED_MANAGED_COMMANDS:
+        errors.append(f"{display_name} local_compile_policy.refused_managed_commands must be build/clippy/test")
+    if string_set(policy, "refused_cargo_subcommands") != LOCAL_COMPILE_REFUSED_CARGO_SUBCOMMANDS:
+        errors.append(f"{display_name} local_compile_policy.refused_cargo_subcommands must match disk preflight")
+    return errors
+
+
+def remote_verification_policy_errors(data: dict[str, object], display_name: str, *, required: bool) -> list[str]:
+    policy = data.get("remote_verification")
+    if policy is None:
+        return [f"{display_name} must define [remote_verification]"] if required else []
+    if not required:
+        return [f"{display_name} must not define [remote_verification]"]
+    if not isinstance(policy, dict):
+        return [f"{display_name} remote_verification must be a table"]
+    expected = {
+        "poll_interval_seconds": 15,
+        "checks_appear_timeout_seconds": 300,
+        "overall_timeout_seconds": 3600,
+    }
+    errors: list[str] = []
+    for key, value in expected.items():
+        if policy.get(key) != value:
+            errors.append(f"{display_name} remote_verification.{key} must be {value}")
+    return errors
+
+
+def load_rust_verification_policy_toml(path: pathlib.Path, display_name: str) -> dict[str, object]:
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise
+    except tomllib.TOMLDecodeError as exc:
+        raise PolicyError(f"{display_name} is invalid TOML: {exc}") from exc
+    except OSError as exc:
+        raise PolicyError(f"{display_name} could not be read: {exc}") from exc
+
+
+def verify_rust_verification_policy(path: pathlib.Path, *, require_remote: bool) -> list[str]:
+    display_name = path.relative_to(REPO_ROOT).as_posix()
+    try:
+        data = load_rust_verification_policy_toml(path, display_name)
+    except FileNotFoundError:
+        return [f"{display_name} is required"]
+    except PolicyError as exc:
+        return [str(exc)]
+    errors: list[str] = []
+    if data.get("schema_version") != 2:
+        errors.append(f"{display_name} schema_version must be 2")
+    errors.extend(local_compile_policy_errors(data, display_name))
+    errors.extend(remote_verification_policy_errors(data, display_name, required=require_remote))
+    return errors
+
+
+def verify_rust_verification_policies() -> list[str]:
+    errors: list[str] = []
+    errors.extend(verify_rust_verification_policy(DEFAULT_RUST_VERIFICATION_POLICY, require_remote=True))
+    errors.extend(verify_rust_verification_policy(DEFAULT_BVS_RUST_VERIFICATION_POLICY, require_remote=False))
     return errors
 
 
@@ -4483,7 +4710,9 @@ def dynamic_env_target_override_messages(text: str) -> set[str]:
         "CARGO_TARGET_DIR": "CARGO_TARGET_DIR raw target override must be classified",
         "CARGO_BUILD_TARGET_DIR": "CARGO_BUILD_TARGET_DIR raw target override must be classified",
         "CARGO_TARGET_TMPDIR": "CARGO_TARGET_TMPDIR raw target override must be classified",
+        "BOLT_ALLOW_LOCAL_RUST": "BOLT_ALLOW_LOCAL_RUST local Rust break-glass must not be checked in",
         "BOLT_MANAGED_JUST": "BOLT_MANAGED_JUST private just recipe bypass must be classified",
+        "GITHUB_ACTIONS": "GITHUB_ACTIONS local CI spoof must not be checked in",
     }
     assignments: dict[str, str] = {}
     for line in shell_logical_lines(text):
@@ -4999,7 +5228,9 @@ def raw_rust_storage_errors(workflow_text: str, *, alias_depth: int = 0) -> list
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTFLAGS[\"']?\s*(?:=|:).*(?:--out-dir|--artifact-dir)", "RUSTFLAGS raw output override must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTC_WRAPPER[\"']?\s*(?:=|:)", "RUSTC_WRAPPER raw compiler wrapper must be classified"),
         (r"(^|[^A-Za-z0-9_])[\"']?RUSTC_WORKSPACE_WRAPPER[\"']?\s*(?:=|:)", "RUSTC_WORKSPACE_WRAPPER raw compiler wrapper must be classified"),
+        (r"(^|[^A-Za-z0-9_$\{])[\"']?BOLT_ALLOW_LOCAL_RUST[\"']?\s*(?:=|:|<<)", "BOLT_ALLOW_LOCAL_RUST local Rust break-glass must not be checked in"),
         (r"(^|[^A-Za-z0-9_$\{])[\"']?BOLT_MANAGED_JUST[\"']?\s*(?:=|:|<<)", "BOLT_MANAGED_JUST private just recipe bypass must be classified"),
+        (r"(^|[^A-Za-z0-9_$\{])[\"']?GITHUB_ACTIONS[\"']?\s*(?:=|:|<<)", "GITHUB_ACTIONS local CI spoof must not be checked in"),
         (r"\bno-mistakes\b[^\n]*\bcargo\b", "no-mistakes raw Cargo drift must be classified"),
         (r"\bno-mistakes\b[^\n]*--worktree[^\n]*(?:--target-dir\s+target|\btarget\b)", "no-mistakes worktree-local target path evidence must be reported"),
         (r"\bcargo\b[^\n|]*\$@[^|]*\|\s*bash\b[^\n;&|]*\s-s\b[^\n;&|]*\s--target-dir\b", "cargo --target-dir raw target override must be classified"),
@@ -5899,10 +6130,72 @@ def repo_automation_source_build_errors(text: str) -> list[str]:
     ]
 
 
+def backtester_managed_target_cache_errors(file_name: str, text: str) -> list[str]:
+    if not file_name.endswith("backtester-ci.yml"):
+        return []
+    errors: list[str] = []
+    for line in text.splitlines():
+        if "managed-target-bvs-v1-" not in line or "hashFiles(" not in line:
+            continue
+        for required in [
+            "crates/backtesting-vertical-slice/src/**",
+            "crates/backtesting-vertical-slice/tests/**",
+        ]:
+            if required not in line:
+                errors.append(f"backtester managed-target cache key must include {required}")
+    return errors
+
+
+def backtester_gate_detect_result_errors(file_name: str, text: str) -> list[str]:
+    if not file_name.endswith("backtester-ci.yml"):
+        return []
+    jobs = parse_jobs(text)
+    gate = jobs.get("gate")
+    if gate is None:
+        return []
+    gate_text = uncommented_text(gate)
+    if "backtester-gate" not in gate_text:
+        return []
+    if "detect" not in extract_needs(gate):
+        return ["backtester-gate must need detect"]
+    lines = gate_text.splitlines()
+    for index, line in enumerate(lines):
+        if "needs.detect.result" not in line or "!=" not in line or "success" not in line:
+            continue
+        for nested in lines[index + 1 : index + 8]:
+            stripped = nested.strip()
+            if stripped == "fi":
+                break
+            if stripped == "exit 1":
+                return []
+    return ["backtester-gate must check needs.detect.result and exit 1 when detect fails"]
+
+
+def backtester_detect_path_errors(file_name: str, text: str) -> list[str]:
+    if not file_name.endswith("backtester-ci.yml"):
+        return []
+    detect_job = parse_jobs(text).get("detect", [])
+    if any("ci/github-actions-runners.toml" in line for line in detect_job):
+        return []
+    return ["backtester detect paths must include ci/github-actions-runners.toml"]
+
+
 def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
     errors: list[str] = []
     for file_name, text in texts.items():
         errors.extend(f"{file_name}: {error}" for error in raw_rust_storage_errors(text))
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in backtester_managed_target_cache_errors(file_name, text)),
+        )
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in backtester_gate_detect_result_errors(file_name, text)),
+        )
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in backtester_detect_path_errors(file_name, text)),
+        )
         automation_texts = [text, *yaml_run_shell_texts(uncommented_text(text.splitlines()))]
         for automation_text in automation_texts:
             add_unique_errors(
@@ -5989,6 +6282,254 @@ def verify_install_action_pin_consistency(workflows: dict[str, str]) -> list[str
     return errors
 
 
+def load_github_actions_runners_config(
+    path: pathlib.Path = DEFAULT_RUNNERS_CONFIG,
+) -> dict[str, object]:
+    if not path.exists():
+        raise FileNotFoundError(f"managed runner config missing: {path}")
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    runners = data.get("runners")
+    workflows = data.get("workflows")
+    if not isinstance(runners, dict) or not isinstance(workflows, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [runners] and [workflows]")
+    tier_to_var: dict[str, str] = {}
+    managed_labels: list[str] = []
+    for tier, entry in runners.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"runners.{tier} must be a table")
+        variable = entry.get("variable")
+        label = entry.get("label")
+        if not isinstance(variable, str) or not variable:
+            raise ValueError(f"runners.{tier}.variable must be a non-empty string")
+        if not isinstance(label, str) or not label:
+            raise ValueError(f"runners.{tier}.label must be a non-empty string")
+        tier_to_var[tier] = variable
+        if tier != "github_hosted":
+            managed_labels.append(label)
+    for workflow_key, job_table in workflows.items():
+        if not isinstance(job_table, dict):
+            raise ValueError(f"workflows.{workflow_key} must be a table")
+        for job, tier in job_table.items():
+            if not isinstance(tier, str) or not tier:
+                raise ValueError(f"workflows.{workflow_key}.{job} must name a runner tier")
+    return {
+        "tier_to_var": tier_to_var,
+        "managed_labels": sorted(set(managed_labels)),
+        "variables": sorted(tier_to_var.values()),
+        "workflows": workflows,
+    }
+
+
+def extract_job_runs_on_var(job_lines: list[str]) -> str | None:
+    for line in job_lines:
+        match = JOB_RUNS_ON_VAR_RE.match(line)
+        if match is not None:
+            return match.group(1)
+    return None
+
+
+def workflow_trigger_keys(workflow_text: str) -> set[str]:
+    lines = [strip_comment(line).rstrip() for line in workflow_text.splitlines()]
+    for index, line in enumerate(lines):
+        if line == "on:":
+            triggers: set[str] = set()
+            for child in lines[index + 1 :]:
+                if child and not child.startswith((" ", "\t")):
+                    break
+                match = re.match(r"^  ([^ \t:#][^:#]*):", child)
+                if match:
+                    triggers.add(match.group(1).strip().strip("'\""))
+            return triggers
+        if line.startswith("on:"):
+            inline = line[len("on:") :].strip()
+            if inline.startswith("[") and inline.endswith("]"):
+                return {
+                    item.strip().strip("'\"")
+                    for item in inline[1:-1].split(",")
+                    if item.strip()
+                }
+            if inline:
+                return {inline.strip().strip("'\"")}
+    return set()
+
+
+def load_ci_runner_debug_config(path: pathlib.Path = DEFAULT_RUNNERS_CONFIG) -> dict[str, str]:
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    section = data.get("ci_runner_debug")
+    if not isinstance(section, dict):
+        raise ValueError("ci/github-actions-runners.toml must define [ci_runner_debug]")
+    required = ("ssh_wait_minutes_variable", "ssh_public_key_secret", "ssh_runner_action")
+    config: dict[str, str] = {}
+    for key in required:
+        value = section.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"ci_runner_debug.{key} must be a non-empty string")
+        config[key] = value
+    if not SSH_RUNNER_ACTION_RE.fullmatch(config["ssh_runner_action"]):
+        raise ValueError(
+            "ci_runner_debug.ssh_runner_action must pin ubicloud/ssh-runner to a 40-character SHA"
+        )
+    return config
+
+
+def verify_ci_runner_debug_workflow(workflows: dict[str, str]) -> list[str]:
+    workflow_name = ".github/workflows/ci-runner-debug.yml"
+    if workflow_name not in workflows:
+        return []
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        return []
+    try:
+        debug_config = load_ci_runner_debug_config()
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"ci runner debug config invalid: {exc}"]
+
+    workflow_text = workflows[workflow_name]
+    errors: list[str] = []
+    expected_action = f"uses: {debug_config['ssh_runner_action']}"
+    expected_secret = f"secrets.{debug_config['ssh_public_key_secret']}"
+    expected_wait = f"vars.{debug_config['ssh_wait_minutes_variable']}"
+    triggers = workflow_trigger_keys(workflow_text)
+    if triggers != {"workflow_dispatch"}:
+        errors.append(
+            f"{workflow_name} must be manual-only with only workflow_dispatch, got {sorted(triggers)!r}"
+        )
+    jobs = parse_jobs(workflow_text)
+    for job in ("debug-heavy", "debug-light"):
+        job_lines = jobs.get(job)
+        if job_lines is None:
+            continue
+        if not any(expected_action in line for line in job_lines):
+            errors.append(f"{workflow_name} {job} must reference {expected_action!r}")
+        if not any(expected_secret in line for line in job_lines):
+            errors.append(f"{workflow_name} {job} must reference {expected_secret!r}")
+        if not any(expected_wait in line for line in job_lines):
+            errors.append(f"{workflow_name} {job} must reference {expected_wait!r}")
+    return errors
+
+
+def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str]:
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        return []
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"github-actions runner config invalid: {exc}"]
+
+    tier_to_var = config["tier_to_var"]
+    workflow_tables = config["workflows"]
+    errors: list[str] = []
+    known_workflow_keys = set(WORKFLOW_RUNNER_CONFIG_KEYS.values())
+    for workflow_key in sorted(workflow_tables):
+        if workflow_key not in known_workflow_keys:
+            errors.append(
+                f"workflows.{workflow_key} in ci/github-actions-runners.toml has no workflow contract"
+            )
+
+    for workflow_name, workflow_text in sorted(workflows.items()):
+        jobs = parse_jobs(workflow_text)
+        if not jobs:
+            continue
+        workflow_key = WORKFLOW_RUNNER_CONFIG_KEYS.get(workflow_name)
+        if workflow_key is None:
+            errors.append(
+                f"{workflow_name} must be mapped in ci/github-actions-runners.toml"
+            )
+            continue
+        job_table = workflow_tables.get(workflow_key)
+        if not isinstance(job_table, dict):
+            errors.append(f"workflows.{workflow_key} missing in ci/github-actions-runners.toml")
+            continue
+        configured_jobs = set(job_table)
+        actual_jobs = set(jobs)
+        for job in sorted(configured_jobs - actual_jobs):
+            errors.append(
+                f"{workflow_name} configured runner job {job} missing from workflow"
+            )
+        for job in sorted(actual_jobs - configured_jobs):
+            errors.append(
+                f"{workflow_name} job {job} missing from ci/github-actions-runners.toml"
+            )
+        for job in sorted(configured_jobs & actual_jobs):
+            tier = job_table[job]
+            expected_var = tier_to_var.get(tier)
+            if expected_var is None:
+                errors.append(f"unknown runner tier {tier!r} for {workflow_name} {job}")
+                continue
+            actual_var = extract_job_runs_on_var(jobs[job])
+            if actual_var is None:
+                errors.append(
+                    f"{workflow_name} {job} runs-on must reference vars.{expected_var} "
+                    "(no hardcoded runner labels)"
+                )
+                continue
+            if actual_var != expected_var:
+                errors.append(
+                    f"{workflow_name} {job} runs-on must use vars.{expected_var}, got vars.{actual_var}"
+                )
+    return errors
+
+
+def actionlint_config_variables(actionlint_text: str) -> set[str]:
+    variables: set[str] = set()
+    in_section = False
+    for line in actionlint_text.splitlines():
+        clean = strip_comment(line).strip()
+        if clean == "config-variables:":
+            in_section = True
+            continue
+        if in_section:
+            if clean and not clean.startswith("- "):
+                break
+            if clean.startswith("- "):
+                variables.add(clean[2:].strip())
+    return variables
+
+
+def workflow_repository_variables(workflows: dict[str, str]) -> set[str]:
+    variables: set[str] = set()
+    for workflow_text in workflows.values():
+        for match in re.finditer(r"vars\.([A-Z0-9_]+)", workflow_text):
+            variables.add(match.group(1))
+    return variables
+
+
+def verify_actionlint_runner_contract(
+    workflows: dict[str, str],
+    actionlint_path: pathlib.Path = DEFAULT_ACTIONLINT_CONFIG,
+) -> list[str]:
+    if not DEFAULT_RUNNERS_CONFIG.exists():
+        return []
+    try:
+        config = load_github_actions_runners_config()
+    except (ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"github-actions runner config invalid: {exc}"]
+    if not actionlint_path.exists():
+        return [f"actionlint config missing: {actionlint_path}"]
+
+    text = actionlint_path.read_text(encoding="utf-8")
+    allowed_variables = actionlint_config_variables(text)
+    errors: list[str] = []
+    for label in config["managed_labels"]:
+        if f"- {label}" not in text:
+            errors.append(f".github/actionlint.yaml must list managed runner label {label!r}")
+    for variable in config["variables"]:
+        if variable not in allowed_variables:
+            errors.append(f".github/actionlint.yaml must allow config variable {variable!r}")
+    for variable in sorted(workflow_repository_variables(workflows)):
+        if variable not in allowed_variables:
+            errors.append(
+                f".github/actionlint.yaml must allow repository variable {variable!r} "
+                "referenced by workflow vars.* expressions"
+            )
+    expected_variables = set(config["variables"]) | workflow_repository_variables(workflows)
+    for variable in sorted(allowed_variables - expected_variables):
+        errors.append(
+            f".github/actionlint.yaml allows stale config variable {variable!r} "
+            "not referenced by workflows or ci/github-actions-runners.toml"
+        )
+    return errors
+
+
 def repo_workflow_texts() -> dict[str, str]:
     if not DEFAULT_WORKFLOW_DIR.exists():
         return {}
@@ -6013,7 +6554,13 @@ def main() -> int:
         for path in sorted(directory.glob(pattern)):
             repo_automation_texts[path.relative_to(REPO_ROOT).as_posix()] = path.read_text()
     errors = verify_workflows(workflow_texts, action_text, nextest_config_text)
+    errors.extend(verify_github_actions_runner_contract(workflow_texts))
+    errors.extend(verify_ci_runner_debug_workflow(workflow_texts))
+    errors.extend(verify_actionlint_runner_contract(workflow_texts))
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
+    errors.extend(verify_rust_verification_policies())
+    if "justfile" in repo_automation_texts:
+        errors.extend(verify_source_fence_static_recipe(repo_automation_texts["justfile"]))
     if DEFAULT_NO_MISTAKES_CONFIG.exists():
         errors.extend(verify_no_mistakes_config(DEFAULT_NO_MISTAKES_CONFIG.read_text()))
     if errors:

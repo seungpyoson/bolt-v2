@@ -36,8 +36,8 @@ Per-target destination + layer (Track A):
 | `selection` -> `strategies/binary_oracle_edge_taker/selection.rs` | strategy-local concern module: candidate/selection snapshot construction and venue-routing predicates move out of the single file. This completes the planned A3 monolith shrink, not a shared/family generalization. Family-owned identity/target validation remains in `bolt_v3_market_families/*`; route-by-instrument-identity and any shared/family split of `CandidateMarket` are separate future work, not hidden in A3. |
 | `book_sizing` → `bolt_v3_book_sizing.rs` | shared execution (book state, VWAP/slippage sizing, **rounding + fee-adjustment**) |
 | `taker_pricing` → `bolt_v3_taker_pricing.rs` | shared pricing-state |
-| `exposure` → `bolt_v3_exposure.rs` | shared **position/exposure accounting**. If the monolith mixes *signal-intent* exposure (a strategy concern) with *position accounting* (shared), **split them** — accounting goes shared, signal-intent stays strategy. |
-| `source_proof` → `bolt_v3_source_proof.rs` | shared evidence/replay |
+| `exposure` → `strategies/binary_oracle_edge_taker/exposure.rs` | strategy-local concern module: exposure/recovery state moved out of the single file in A6. Any later shared position-accounting split must be a separate named slice because the accepted A6 scope was a behavior-preserving monolith shrink, not a shared-layer generalization. |
+| `source_proof` → `strategies/binary_oracle_edge_taker/source_proof.rs` | strategy-local concern module: source-proof / replay / evidence derivation moves out of the single file in A7. The replay path instantiates `BinaryOracleEdgeTaker` and uses strategy-local state, so moving it into shared code would require signature/boundary changes outside a pure move. Any shared evidence/replay generalization is separate future scope. |
 | `config` -> `strategies/binary_oracle_edge_taker/config.rs` (or an explicitly approved archetype module) | strategy-local config schema + parse/validate. Root/global config machinery stays in `bolt_v3_config.rs`; do not move strategy-specific TOML schema into shared core just to shrink the monolith. |
 | `submit_admission` → `bolt_v3_submit_admission.rs` | shared execution/admission — **owns order construction, quantity-normalization, admission-request construction + valuation, and the submit wrapper. None of these may remain strategy-resident.** |
 
@@ -92,9 +92,10 @@ Track B targets land in `bolt_v3_operator_artifacts/` (see §6).
 - **Visibility minimality:** widen visibility only as far as the new boundary requires —
   prefer `pub(crate)`; add `pub`/re-export only where an external caller or test needs it.
   Gratuitous `pub`-widening is a finding.
-- **Real shrink, not gamed:** the original monolith's logic and public interface are
-  preserved AND its line count strictly drops — line count alone is insufficient (no
-  moving comments/whitespace to fake a drop).
+- **Boundary actually moves:** the declared symbol cluster leaves the original
+  monolith, exists exactly once in its declared owner module, and preserves the
+  original callable surface. Size deltas may be reported as telemetry, but are not
+  acceptance proof.
 - **Dependency check passes:** the §2 dependency-direction fence is green. It lands before
   A3/A8 merge (with its frozen pre-existing allowlist); no later slice merges without it.
 - **Tests:** carried to the new home (RED→GREEN); CI green at exact head; all fences +

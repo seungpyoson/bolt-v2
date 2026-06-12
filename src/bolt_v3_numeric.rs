@@ -7,6 +7,8 @@
 
 pub(crate) const ZERO_F64: f64 = 0.0;
 pub(crate) const UNIT_F64: f64 = 1.0;
+pub(crate) const TWO_F64: f64 = 2.0;
+pub(crate) const HALF_F64: f64 = UNIT_F64 / TWO_F64;
 pub(crate) const POWER_OF_TWO: i32 = 2;
 pub(crate) const DAYS_PER_YEAR_F64: f64 = 365.25;
 pub(crate) const HOURS_PER_DAY_F64: f64 = 24.0;
@@ -15,10 +17,13 @@ pub(crate) const SECONDS_PER_MINUTE_F64: f64 = 60.0;
 pub(crate) const SECONDS_PER_YEAR_F64: f64 =
     DAYS_PER_YEAR_F64 * HOURS_PER_DAY_F64 * MINUTES_PER_HOUR_F64 * SECONDS_PER_MINUTE_F64;
 pub(crate) const MILLIS_PER_SECOND_U64: u64 = 1_000;
+pub(crate) const NANOS_PER_MILLI_U64: u64 = MILLIS_PER_SECOND_U64 * MILLIS_PER_SECOND_U64;
 pub(crate) const MILLIS_PER_SECOND_F64: f64 = MILLIS_PER_SECOND_U64 as f64;
 pub(crate) const BPS_DENOMINATOR: f64 = 10_000.0;
+pub(crate) const CENTS_PER_SHARE: f64 = 100.0;
 pub(crate) const MIDPOINT_DIVISOR_F64: f64 = 2.0;
 pub(crate) const QUADRATIC_RISK_DIVISOR: f64 = 2.0;
+pub(crate) const NOTIONAL_FLOAT_TOLERANCE_EPSILON_MULTIPLIER: f64 = 10_000.0;
 
 pub(crate) fn is_positive_finite(value: f64) -> bool {
     value.is_finite() && value > ZERO_F64
@@ -28,12 +33,30 @@ pub(crate) fn is_non_negative_finite(value: f64) -> bool {
     value.is_finite() && value >= ZERO_F64
 }
 
+pub(crate) fn notional_float_tolerance(reference_notional: f64) -> f64 {
+    reference_notional.abs() * f64::EPSILON * NOTIONAL_FLOAT_TOLERANCE_EPSILON_MULTIPLIER
+}
+
 pub(crate) fn clamp_probability(value: f64) -> f64 {
     value.clamp(ZERO_F64, UNIT_F64)
 }
 
 pub(crate) fn sanitize_probability(value: f64) -> Option<f64> {
     if value.is_finite() && (ZERO_F64..=UNIT_F64).contains(&value) {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn sanitize_open_probability(value: f64, eps: f64) -> Option<f64> {
+    if !value.is_finite() || !eps.is_finite() {
+        return None;
+    }
+    if !(eps > ZERO_F64 && eps < HALF_F64) {
+        return None;
+    }
+    if eps < value && value < UNIT_F64 - eps {
         Some(value)
     } else {
         None
@@ -83,6 +106,29 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_open_probability_accepts_strict_interior_values() {
+        let eps = 0.01;
+
+        assert_eq!(sanitize_open_probability(HALF_F64, eps), Some(HALF_F64));
+        assert_eq!(sanitize_open_probability(0.011, eps), Some(0.011));
+        assert_eq!(sanitize_open_probability(0.989, eps), Some(0.989));
+    }
+
+    #[test]
+    fn sanitize_open_probability_rejects_edges_bad_collar_and_non_finite_inputs() {
+        let eps = 0.01;
+
+        assert_eq!(sanitize_open_probability(eps, eps), None);
+        assert_eq!(sanitize_open_probability(UNIT_F64 - eps, eps), None);
+        assert_eq!(sanitize_open_probability(ZERO_F64, eps), None);
+        assert_eq!(sanitize_open_probability(UNIT_F64, eps), None);
+        assert_eq!(sanitize_open_probability(HALF_F64, ZERO_F64), None);
+        assert_eq!(sanitize_open_probability(HALF_F64, HALF_F64), None);
+        assert_eq!(sanitize_open_probability(f64::NAN, eps), None);
+        assert_eq!(sanitize_open_probability(HALF_F64, f64::INFINITY), None);
+    }
+
+    #[test]
     fn is_non_negative_finite_accepts_zero_and_positive_finite() {
         assert!(is_non_negative_finite(ZERO_F64));
         assert!(is_non_negative_finite(1.0));
@@ -96,6 +142,29 @@ mod tests {
         assert!(!is_non_negative_finite(f64::NAN));
         assert!(!is_non_negative_finite(f64::INFINITY));
         assert!(!is_non_negative_finite(f64::NEG_INFINITY));
+    }
+
+    #[test]
+    fn notional_float_tolerance_scales_with_reference_notional() {
+        assert_eq!(notional_float_tolerance(ZERO_F64), ZERO_F64);
+        assert_eq!(
+            notional_float_tolerance(-BPS_DENOMINATOR),
+            notional_float_tolerance(BPS_DENOMINATOR)
+        );
+        assert!(notional_float_tolerance(BPS_DENOMINATOR) > notional_float_tolerance(UNIT_F64));
+    }
+
+    #[test]
+    fn notional_float_tolerance_uses_named_epsilon_multiplier() {
+        assert_eq!(
+            notional_float_tolerance(BPS_DENOMINATOR),
+            BPS_DENOMINATOR * f64::EPSILON * NOTIONAL_FLOAT_TOLERANCE_EPSILON_MULTIPLIER
+        );
+    }
+
+    #[test]
+    fn cents_per_share_unit_conversion_constant_is_shared() {
+        assert_eq!(CENTS_PER_SHARE, 100.0);
     }
 
     #[test]

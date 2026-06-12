@@ -52,17 +52,17 @@ As an operator, I need order submit evidence and admission to remain explicit wh
 
 ### User Story 4 - Adapter-Proven Capability (Priority: P4)
 
-As a reviewer, I need venue legality claims to come from NT adapter code, no-submit smoke, or canary evidence, not a Bolt-maintained capability table.
+As a reviewer, I need venue legality claims to come from NT adapter code, strategy-free smoke, or live-submit evidence, not a Bolt-maintained capability table.
 
 **Why this priority**: NT adapters encode non-uniform semantics for Polymarket, Binance Spot/Futures, Deribit, OKX, Bybit, and Hyperliquid. A global Bolt table would be stale policy.
 
-**Independent Test**: Capability claims in docs and PRs cite NT adapter source or exact smoke artifacts, and no live readiness claim is made without approved no-submit/canary evidence.
+**Independent Test**: Capability claims in docs and PRs cite NT adapter source or exact smoke artifacts, and no live readiness claim is made without approved strategy-free or live-submit evidence.
 
 **Acceptance Scenarios**:
 
 1. **Given** GTD config, **When** a venue claim is made, **Then** the claim distinguishes NT model validity from adapter-specific venue semantics.
 2. **Given** post-only config, **When** a venue claim is made, **Then** the claim cites how that adapter maps post-only.
-3. **Given** a live execution claim, **When** evidence is reviewed, **Then** exact no-submit/canary artifacts exist for the exact head.
+3. **Given** a live execution claim, **When** evidence is reviewed, **Then** exact strategy-free or live-submit artifacts exist for the exact head.
 
 ## Edge Cases
 
@@ -89,7 +89,7 @@ As a reviewer, I need venue legality claims to come from NT adapter code, no-sub
 - **FR-009**: System MUST preserve the existing NT submit path and must not add a parallel submit path.
 - **FR-010**: System MUST use TDD for each production behavior change: red evidence, minimal green implementation, then verification.
 - **FR-011**: System MUST run intentional multi-agent review before and after substantive implementation slices.
-- **FR-012**: System MUST not claim live exchange support without exact-head no-submit or canary evidence.
+- **FR-012**: System MUST not claim live exchange support without exact-head strategy-free or live-submit evidence.
 - **FR-013**: System MUST not claim support for a factory-supported NT order variant until a positive construction/admission test proves that variant.
 
 ### Key Entities
@@ -110,7 +110,7 @@ As a reviewer, I need venue legality claims to come from NT adapter code, no-sub
 - **SC-003**: The first implementation slice has a failing integration-style test before production code changes and a green verification after.
 - **SC-004**: `tasks.md` remains the working checklist and every completed implementation task has command or source evidence.
 - **SC-005**: Multi-agent review findings are resolved or explicitly recorded before completion is claimed.
-- **SC-006**: Any unsupported order variant, adapter, no-submit, or live/canary proof remains listed as residual scope rather than implied support.
+- **SC-006**: Any unsupported order variant, adapter, strategy-free, or live-submit proof remains listed as residual scope rather than implied support.
 
 ## Assumptions
 

@@ -1,8 +1,10 @@
 use crate::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
+    BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, compiled_order_price_source,
 };
 use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
-use crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport;
+use crate::bolt_v3_numeric::{is_positive_finite, notional_float_tolerance};
+use anyhow::Context;
 use nautilus_model::{
     enums::{OrderSide, PositionSide},
     instruments::{Instrument, InstrumentAny},
@@ -14,7 +16,6 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use crate::bolt_v3_canary_proof_policy::CANARY_PROOF_CLAIM;
 pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
 
 const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
@@ -73,7 +74,6 @@ pub struct BoltV3SubmitAdmissionState {
 
 #[derive(Debug)]
 struct BoltV3SubmitAdmissionInner {
-    gate_report: Option<BoltV3LiveCanaryGateReport>,
     kill_switch_state: KillSwitchState,
     kill_switch_forced_reduction_policy: Option<BoltV3KillSwitchForcedReductionPolicy>,
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
@@ -86,17 +86,16 @@ struct BoltV3SubmitAdmissionInner {
 }
 
 impl BoltV3SubmitAdmissionState {
-    pub fn new_unarmed(decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>) -> Self {
-        Self::new_unarmed_with_live_submit_limits(decision_evidence, BTreeMap::new())
+    pub fn new(decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>) -> Self {
+        Self::new_with_live_submit_limits(decision_evidence, BTreeMap::new())
     }
 
-    pub fn new_unarmed_with_live_submit_limits(
+    pub fn new_with_live_submit_limits(
         decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
         live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
     ) -> Self {
         Self {
             inner: Mutex::new(BoltV3SubmitAdmissionInner {
-                gate_report: None,
                 kill_switch_state: KillSwitchState::Armed,
                 kill_switch_forced_reduction_policy: None,
                 live_submit_approval_limits,
@@ -109,27 +108,6 @@ impl BoltV3SubmitAdmissionState {
             }),
             decision_evidence,
         }
-    }
-
-    pub fn arm(
-        &self,
-        report: BoltV3LiveCanaryGateReport,
-    ) -> Result<(), BoltV3SubmitAdmissionError> {
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("submit admission state mutex should not be poisoned");
-        if inner.gate_report.is_some() {
-            return Err(BoltV3SubmitAdmissionError::AlreadyArmed);
-        }
-        inner.gate_report = Some(report);
-        inner.admitted_order_count = 0;
-        inner.admitted_order_count_by_execution_client.clear();
-        inner.admitted_entry_order_count = 0;
-        inner.admitted_risk_reducing_exit_order_count = 0;
-        inner.admitted_replace_submit_order_count = 0;
-        inner.live_kill_switch_forced_reduction_order_count = 0;
-        Ok(())
     }
 
     pub fn record_kill_switch_forced_reduction_terminal(&self) {
@@ -207,7 +185,6 @@ impl BoltV3SubmitAdmissionState {
                 }
                 Ok(BoltV3SubmitAdmissionPermit(()))
             }
-            BoltV3AdmissionOutcome::RejectedNotArmed => Err(BoltV3SubmitAdmissionError::NotArmed),
             BoltV3AdmissionOutcome::RejectedKillSwitchLatched => {
                 Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
                     state: inner.kill_switch_state.kind(),
@@ -223,9 +200,6 @@ impl BoltV3SubmitAdmissionState {
             }
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => {
                 Err(BoltV3SubmitAdmissionError::NotionalCapExceeded)
-            }
-            BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim => {
-                Err(BoltV3SubmitAdmissionError::InvalidCanaryProofClaim)
             }
             BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof => {
                 Err(BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof)
@@ -279,33 +253,8 @@ impl BoltV3SubmitAdmissionState {
                 return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
             }
         }
-        let Some(report) = inner.gate_report.as_ref() else {
-            if request.canary_proof_claim.is_some() {
-                return BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim;
-            }
-            return BoltV3AdmissionOutcome::Admitted;
-        };
-
-        if matches!(
-            request.intent_kind,
-            BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
-        ) && request.notional > report.max_notional_per_order()
-        {
-            return BoltV3AdmissionOutcome::RejectedNotionalCapExceeded;
-        }
-        if request
-            .canary_proof_claim
-            .as_deref()
-            .is_some_and(|claim| claim != CANARY_PROOF_CLAIM)
-        {
-            return BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim;
-        }
         match request.intent_kind {
-            BoltV3SubmitIntentKind::Entry => {
-                if inner.admitted_entry_order_count >= report.max_live_entry_order_count() {
-                    return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-                }
-            }
+            BoltV3SubmitIntentKind::Entry => {}
             BoltV3SubmitIntentKind::RiskReducingExit => {
                 let Some(proof) = request.risk_reducing_exit_proof.as_ref() else {
                     return BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof;
@@ -313,19 +262,8 @@ impl BoltV3SubmitAdmissionState {
                 if !proof.is_valid_for(request) {
                     return BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof;
                 }
-                if inner.admitted_risk_reducing_exit_order_count
-                    >= report.max_live_risk_reducing_exit_order_count()
-                {
-                    return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-                }
             }
-            BoltV3SubmitIntentKind::ReplaceSubmit => {
-                if inner.admitted_replace_submit_order_count
-                    >= report.max_live_replace_submit_order_count()
-                {
-                    return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-                }
-            }
+            BoltV3SubmitIntentKind::ReplaceSubmit => {}
             BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
                 unreachable!("kill-switch forced reduction is evaluated before normal admission")
             }
@@ -366,21 +304,6 @@ impl BoltV3SubmitAdmissionState {
             .lock()
             .expect("submit admission state mutex should not be poisoned")
             .admitted_order_count
-    }
-
-    /// Gate-approved maximum reference-quote age (seconds) carried by the armed
-    /// gate report, or `None` when the state is not yet armed. This is the single
-    /// authoritative freshness bound when the optional gate is armed (A5): the
-    /// submit / forced-flat stale check plumbs this value in so the gate-validated
-    /// freshness policy — not an independent strategy-config value — governs
-    /// whether a reference quote is fresh enough to keep trading.
-    pub fn reference_quote_max_age_seconds(&self) -> Option<u64> {
-        self.inner
-            .lock()
-            .expect("submit admission state mutex should not be poisoned")
-            .gate_report
-            .as_ref()
-            .map(BoltV3LiveCanaryGateReport::reference_quote_max_age_seconds)
     }
 }
 
@@ -504,6 +427,14 @@ pub struct BoltV3RiskReducingExitProof {
     pub exit_quantity: Decimal,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3RiskReducingExitPositionInput<'a> {
+    pub position_id: &'a str,
+    pub instrument_id: &'a str,
+    pub position_side: PositionSide,
+    pub position_quantity: Decimal,
+}
+
 impl BoltV3RiskReducingExitProof {
     fn is_valid_for(&self, request: &BoltV3SubmitAdmissionRequest) -> bool {
         self.instrument_id == request.instrument_id
@@ -566,9 +497,121 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub order_quantity: Decimal,
     pub intent_kind: BoltV3SubmitIntentKind,
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
-    pub canary_proof_claim: Option<String>,
     pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
     pub kill_switch_forced_reduction: Option<BoltV3KillSwitchForcedReductionClaim>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BoltV3SubmitAdmissionRequestInput<'a> {
+    pub execution_client_id: &'a str,
+    pub intent: &'a BoltV3OrderIntentEvidence,
+    pub order: &'a OrderAny,
+    pub instrument: Option<&'a InstrumentAny>,
+    pub quote_quantity_last_price: Option<Price>,
+    pub quote_quantity_reference_price: Option<Price>,
+    pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+    pub risk_reducing_exit_position: Option<BoltV3RiskReducingExitPositionInput<'a>>,
+}
+
+pub fn build_submit_admission_request_from_order<F>(
+    input: BoltV3SubmitAdmissionRequestInput<'_>,
+    max_fee_bps_for_price: F,
+) -> anyhow::Result<BoltV3SubmitAdmissionRequest>
+where
+    F: FnOnce(Decimal) -> anyhow::Result<Decimal>,
+{
+    let client_order_id = input.order.client_order_id().to_string();
+    let quantity_source = input.order.quantity().to_string();
+    let quantity = Decimal::from_str(quantity_source.trim()).with_context(|| {
+        format!(
+            "bolt-v3 submit admission quantity is not a decimal for client_order_id={}",
+            client_order_id
+        )
+    })?;
+    let price_source = compiled_order_price_source(input.intent.price.clone(), input.order);
+    let price = Decimal::from_str(price_source.trim()).with_context(|| {
+        format!(
+            "bolt-v3 submit admission price is not a decimal for client_order_id={}",
+            client_order_id
+        )
+    })?;
+    let notional = if input.order.is_quote_quantity() {
+        let instrument = input.instrument.with_context(|| {
+            format!(
+                "bolt-v3 submit admission missing instrument context for quote-quantity client_order_id={}",
+                client_order_id
+            )
+        })?;
+        match admission_base_notional_from_order(
+            input.order,
+            instrument,
+            price,
+            quantity,
+            input.quote_quantity_last_price,
+            input.quote_quantity_reference_price,
+        ) {
+            Some(base_notional) => base_notional,
+            None => {
+                anyhow::ensure!(
+                    !instrument.is_inverse(),
+                    "bolt-v3 submit admission cannot value a quote-quantity order on an inverse instrument from the raw quote quantity (client_order_id={})",
+                    client_order_id
+                );
+                quantity
+            }
+        }
+    } else {
+        base_quantity_admission_notional(price, quantity)
+    };
+    let max_fee_bps = max_fee_bps_for_price(price)?;
+    let notional = if input.order.price().is_none() && !input.order.is_quote_quantity() {
+        let price_ceiling = input
+            .instrument
+            .and_then(|instrument| instrument.max_price())
+            .map(|ceiling| ceiling.as_decimal());
+        market_style_admission_ceiling_notional(price_ceiling, quantity).with_context(|| {
+            format!(
+                "bolt-v3 submit admission refuses a market-style order without a structural price ceiling for client_order_id={}",
+                client_order_id
+            )
+        })?
+    } else {
+        notional
+    };
+    let notional = fee_inclusive_admission_notional(notional, max_fee_bps);
+    let intent_kind = match input.intent.intent_kind {
+        BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
+        BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
+    };
+    let risk_reducing_exit_proof =
+        if matches!(intent_kind, BoltV3SubmitIntentKind::RiskReducingExit) {
+            input
+                .risk_reducing_exit_position
+                .map(|position| BoltV3RiskReducingExitProof {
+                    position_id: position.position_id.to_string(),
+                    instrument_id: position.instrument_id.to_string(),
+                    position_side: position.position_side,
+                    exit_order_side: input.order.order_side(),
+                    position_quantity: position.position_quantity,
+                    exit_quantity: quantity,
+                })
+        } else {
+            None
+        };
+
+    Ok(BoltV3SubmitAdmissionRequest {
+        strategy_id: input.intent.strategy_id.clone(),
+        execution_client_id: input.execution_client_id.to_string(),
+        client_order_id,
+        instrument_id: input.order.instrument_id().to_string(),
+        notional,
+        order_side: input.order.order_side(),
+        order_quantity: quantity,
+        intent_kind,
+        lifecycle_policy: input.lifecycle_policy,
+        risk_reducing_exit_proof,
+        kill_switch_forced_reduction: None,
+    })
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -681,9 +724,9 @@ pub fn admission_base_notional_from_order(
     // [`conservative_quote_quantity_admission_notional`] yields a settlement-
     // currency notional the per-order cap can be checked against — both would
     // UNDERSTATE the real cash debit. This is the single, structural rejection
-    // point: returning `None` makes every caller (production strategy, canary
-    // proof executor) treat an inverse quote-quantity order as unvaluable and
-    // refuse it, rather than relying on a per-caller fallback to notice the
+    // point: returning `None` makes the production strategy path treat an
+    // inverse quote-quantity order as unvaluable and refuse it, rather than
+    // relying on a per-caller fallback to notice the
     // inverse case. This system trades only non-inverse binary options; carrying
     // currency-aware settlement notional would be the alternative, but the
     // fail-closed reject is the conservative default until such an instrument is
@@ -745,9 +788,17 @@ fn quote_quantity_effective_price(
 }
 
 pub fn fee_inclusive_admission_notional(notional: Decimal, max_fee_bps: Decimal) -> Decimal {
-    let fee_multiplier =
-        Decimal::ONE + max_fee_bps / Decimal::from(SUBMIT_ADMISSION_BPS_DENOMINATOR);
-    notional * fee_multiplier
+    checked_fee_inclusive_admission_notional(notional, max_fee_bps)
+        .expect("fee-inclusive admission notional should fit Decimal")
+}
+
+pub(crate) fn checked_fee_inclusive_admission_notional(
+    notional: Decimal,
+    max_fee_bps: Decimal,
+) -> Option<Decimal> {
+    let fee_rate = max_fee_bps.checked_div(Decimal::from(SUBMIT_ADMISSION_BPS_DENOMINATOR))?;
+    let fee_multiplier = Decimal::ONE.checked_add(fee_rate)?;
+    notional.checked_mul(fee_multiplier)
 }
 
 /// Cap-bypass-via-rounding guard for submit paths that carry an operator
@@ -766,15 +817,12 @@ pub fn fee_inclusive_admission_notional(notional: Decimal, max_fee_bps: Decimal)
 /// rounded base, so the cap check downstream sees the same cash debit the venue
 /// will incur.
 ///
-/// Scope: this guard is required precisely where the operator approves an
-/// explicit `order_intent.notional` BEFORE the venue-precision order is
-/// constructed — currently the canary proof executor. The production strategy
-/// path does NOT use this guard and structurally does not need it: it builds
-/// the venue-precision order first and derives its admission notional from that
-/// already-rounded order (`binary_oracle_edge_taker::submit_admission_request_from_order`,
-/// whose intent is `BoltV3OrderIntentEvidence::from_compiled_order`), so the
-/// strict-`>` cap check in [`BoltV3SubmitAdmissionState::admit`] already
-/// evaluates the exact order handed to the venue — there is no separate
+/// Scope: this guard is required precisely for any path where the operator
+/// approves an explicit `order_intent.notional` BEFORE the venue-precision order
+/// is constructed. Paths that build the venue-precision order first and derive
+/// admission notional from that already-rounded order structurally do not need
+/// this guard: the strict-`>` cap check in [`BoltV3SubmitAdmissionState::admit`]
+/// already evaluates the exact order handed to the venue — there is no separate
 /// unrounded intent for rounding to bypass. Both paths share the same
 /// fee-inclusive cap arithmetic via [`fee_inclusive_admission_notional`].
 pub fn rounded_order_admission_notional(
@@ -792,6 +840,16 @@ pub fn rounded_order_admission_notional(
         rounded_base_notional,
         max_fee_bps,
     ))
+}
+
+pub(crate) fn limit_notional_exceeds_sized_notional(
+    limit_notional: f64,
+    sized_notional: f64,
+) -> bool {
+    if !is_positive_finite(limit_notional) || !is_positive_finite(sized_notional) {
+        return true;
+    }
+    limit_notional > sized_notional + notional_float_tolerance(sized_notional)
 }
 
 /// Admission notional for a market-style order — one with NO firm limit price
@@ -824,8 +882,6 @@ fn forced_reduction_admissible_halt_id(state: &KillSwitchState) -> Option<&str> 
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum BoltV3SubmitAdmissionError {
-    NotArmed,
-    AlreadyArmed,
     KillSwitchLatched {
         state: KillSwitchStateKind,
     },
@@ -844,7 +900,6 @@ pub enum BoltV3SubmitAdmissionError {
     ExchangeMutationsObserved {
         mutation_count: u64,
     },
-    InvalidCanaryProofClaim,
     InvalidRiskReducingExitProof,
     KillSwitchForcedReductionProofInvalid,
     KillSwitchForcedReductionCapExceeded,
@@ -856,8 +911,6 @@ pub enum BoltV3SubmitAdmissionError {
 impl std::fmt::Display for BoltV3SubmitAdmissionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotArmed => write!(f, "bolt-v3 submit admission is not armed"),
-            Self::AlreadyArmed => write!(f, "bolt-v3 submit admission is already armed"),
             Self::KillSwitchLatched { state } => write!(
                 f,
                 "bolt-v3 submit admission is blocked by kill-switch state {state:?}"
@@ -887,15 +940,14 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
                 "bolt-v3 submit admission rejected: rounded order notional {rounded_base_notional} exceeded operator-intended notional {intended_notional}"
             ),
             Self::ExchangeMutationCountOverflow => {
-                write!(f, "bolt-v3 no-submit exchange mutation counter overflowed")
+                write!(
+                    f,
+                    "bolt-v3 strategy-free exchange mutation counter overflowed"
+                )
             }
             Self::ExchangeMutationsObserved { mutation_count } => write!(
                 f,
-                "bolt-v3 no-submit exchange mutation guard observed {mutation_count} mutating request(s)"
-            ),
-            Self::InvalidCanaryProofClaim => write!(
-                f,
-                "bolt-v3 submit admission canary proof claim must be proof_only"
+                "bolt-v3 strategy-free exchange mutation guard observed {mutation_count} mutating request(s)"
             ),
             Self::InvalidRiskReducingExitProof => write!(
                 f,
@@ -920,3 +972,37 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
 }
 
 impl std::error::Error for BoltV3SubmitAdmissionError {}
+
+#[cfg(test)]
+mod notional_guard_tests {
+    use crate::bolt_v3_numeric::{BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, notional_float_tolerance};
+
+    #[test]
+    fn limit_notional_guard_allows_scaled_float_noise() {
+        let sized_notional = BPS_DENOMINATOR;
+        let tolerance = notional_float_tolerance(sized_notional);
+        let representational_overage = sized_notional + (tolerance / MIDPOINT_DIVISOR_F64);
+        let material_overage = sized_notional + (tolerance * MIDPOINT_DIVISOR_F64);
+
+        assert!(!super::limit_notional_exceeds_sized_notional(
+            representational_overage,
+            sized_notional
+        ));
+        assert!(super::limit_notional_exceeds_sized_notional(
+            material_overage,
+            sized_notional
+        ));
+    }
+
+    #[test]
+    fn limit_notional_guard_blocks_non_finite_inputs() {
+        assert!(super::limit_notional_exceeds_sized_notional(
+            f64::NAN,
+            BPS_DENOMINATOR
+        ));
+        assert!(super::limit_notional_exceeds_sized_notional(
+            BPS_DENOMINATOR,
+            f64::INFINITY
+        ));
+    }
+}

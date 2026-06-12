@@ -110,7 +110,7 @@ notebooks, dashboard UI, provider capture, live trading, or a custom simulator.
 | E-011 | SOURCE_PROVEN + DECISION_NEEDED | Tardis Professional replay is strong but expensive; cost is a review lever after fidelity is explicit. |
 | E-012 | SOURCE_PROVEN | NT Bybit live market data/execution support exists; Bybit is a venue candidate, while historical data-class claims still need proof. |
 | E-013 | SOURCE_PROVEN | NT Polymarket support exists, but public historical coverage can hit API cap/depth limits. |
-| E-014 | SOURCE_PROVEN | Polymarket discovery, data, and CLOB APIs are distinct source families; BTE raw evidence records and lineage must preserve source-family provenance. |
+| E-014 | SOURCE_PROVEN | Polymarket discovery, data, and CLOB APIs are distinct source families; Backtesting Engine raw evidence records and lineage must preserve source-family provenance. |
 | E-015 | SOURCE_PROVEN + DECISION_NEEDED | Telonex is a Polymarket historical-data candidate; Plus is personal-use priced and commercial/team use needs license proof. |
 | E-016 | SOURCE_PROVEN + DECISION_NEEDED | Goldsky can support Polymarket on-chain/provenance indexing, but it is usage-metered and not a free data-lake substitute. |
 | E-021 | SOURCE_PROVEN | Hyperliquid perps live data/trading support exists upstream; historical replay still needs data-source proof. |
@@ -129,7 +129,7 @@ notebooks, dashboard UI, provider capture, live trading, or a custom simulator.
 | E-038 | SOURCE_PROVEN + DECISION_NEEDED | Artifact discovery should use artifact-local manifests, immutable index events, committed snapshots, and generated per-kind latest pointers; event/snapshot serialization remains proof-gated. S3 conditional-write support or an approved commit coordinator must be proved before relying on the index commit path. |
 | E-039 | USER_ASSUMPTION + DECISION_NEEDED | Artifact Index write authority is producer-owned; Backtesting Engine publishes records for artifacts it produces, while Research Analytics and Dashboard consume upstream records read-only. |
 | E-040 | USER_ASSUMPTION + DECISION_NEEDED | `SourceProofReport` is a Bolt-owned thin gate required before source data becomes canonical NT catalog or backtest input; Backtesting Engine/source-proof implementation owns acceptance, automated acceptance is allowed from initial implementation when all robust checks pass, accepted records are immutable/superseded by new versions, normal runs cannot pin non-latest proof, and non-latest proof pins require structured reason fields. |
-| E-041 | SOURCE_PROVEN + DECISION_NEEDED | Backtest result contracts are objective evidence/lookup artifacts; strategy promotion or escalation status belongs to Research Analytics, not the BTE result object. |
+| E-041 | SOURCE_PROVEN + DECISION_NEEDED | Backtest result contracts are objective evidence/lookup artifacts; strategy promotion or escalation status belongs to Research Analytics, not the Backtesting Engine result object. |
 
 ## Data Source And Fidelity Rules
 
@@ -335,10 +335,10 @@ not become a warehouse, query engine, or replacement for NT `ParquetDataCatalog`
   conditional commit path at
   `artifact-index/v1/pointers/kind=<artifact_kind>/latest.json`. It is not
   manually maintained.
-- BTE readers must not independently join two per-kind latest snapshots. To find
+- Backtesting Engine readers must not independently join two per-kind latest snapshots. To find
   the source proof, catalog projection, or raw inputs used by a backtest, follow
   the backtest manifest lineage ids/version/hash and verify `sha256`.
-- Every BTE-produced event and snapshot row must carry parent cross-kind
+- Every Backtesting Engine-produced event and snapshot row must carry parent cross-kind
   lineage ids, versions where applicable, and `sha256` content hashes.
 - Events or artifacts not reachable from the snapshot referenced by
   the latest pointer are staged/orphan audit input, not committed discovery

@@ -563,7 +563,7 @@ fn controlled_disconnect_is_callable_after_connect_timeout_partial_state() {
 }
 
 #[test]
-fn live_node_module_runs_nt_through_bolt_v3_wrapper_without_live_canary_gate() {
+fn live_node_module_runs_nt_through_bolt_v3_wrapper() {
     // Source-level inspection of `src/bolt_v3_live_node.rs`. The module
     // is allowed to reference NT's `connect_data_clients`,
     // `connect_exec_clients`, and `disconnect_clients` (the pinned
@@ -571,7 +571,7 @@ fn live_node_module_runs_nt_through_bolt_v3_wrapper_without_live_canary_gate() {
     // approved NT runner entrypoint inside `run_bolt_v3_live_node`. The
     // runner call must remain inside the bolt-v3 wrapper that wires runtime
     // capture, and this module must still never select a
-    // market, construct an order, or submit one. The no-submit helper
+    // market, construct an order, or submit one. The strategy-free helper
     // may use its dedicated quote-only reference probe; broader
     // market-data subscription APIs stay forbidden. The forbidden token list lives in
     // this integration test (not in the module's own source) so the
@@ -603,7 +603,7 @@ fn live_node_module_runs_nt_through_bolt_v3_wrapper_without_live_canary_gate() {
     assert!(
         !live_run_body.contains("build_bolt_v3_live_submit_admission_report_from_config")
             && !live_run_body.contains(".arm(gate_report)"),
-        "production live run must not block on the no-submit/live-canary admission gate"
+        "production live run must not block on the retired admission gate"
     );
     assert!(
         !live_run_body.contains("consume_bolt_v3_live_runner_approval"),
@@ -611,13 +611,13 @@ fn live_node_module_runs_nt_through_bolt_v3_wrapper_without_live_canary_gate() {
     );
     assert_eq!(
         source.matches("let run_future = node.run();").count(),
-        3,
-        "bolt-v3 live node may reference NT run only in the gated production wrapper and the strategy-free no-submit proof helpers"
+        1,
+        "bolt-v3 live node may reference NT run only in the production wrapper"
     );
     assert_eq!(
         source.matches("let start = node.start();").count(),
         0,
-        "bolt-v3 live node must not use NT start for no-submit because it does not drain execution account events"
+        "bolt-v3 live node must not use NT start for strategy-free because it does not drain execution account events"
     );
 
     for forbidden in [

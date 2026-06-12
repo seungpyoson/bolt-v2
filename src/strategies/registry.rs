@@ -1,10 +1,16 @@
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{Context, Result};
 use futures_util::future::BoxFuture;
 use nautilus_common::{actor::DataActor, component::Component};
 use nautilus_model::{
-    identifiers::{InstrumentId, StrategyId, Venue},
+    data::{IndexPriceUpdate, QuoteTick, TradeTick},
+    identifiers::{ClientId, InstrumentId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},
 };
 use nautilus_system::trader::Trader;
@@ -13,10 +19,9 @@ use rust_decimal::Decimal;
 use toml::Value;
 
 use crate::{
-    bolt_v3_decision_evidence::{
-        BoltV3DecisionEvidenceWriter, BoltV3ReadinessGateEvidenceSnapshot,
-        BoltV3RuntimeReadinessSeed,
-    },
+    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    bolt_v3_realized_volatility::RealizedVolSnapshot,
+    bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 
@@ -60,8 +65,7 @@ pub struct StrategyBuildContext {
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     execution_venue: Venue,
-    readiness_evidence: Option<BoltV3ReadinessGateEvidenceSnapshot>,
-    runtime_readiness_seed: Option<BoltV3RuntimeReadinessSeed>,
+    realized_volatility_runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
 }
 
 impl StrategyBuildContext {
@@ -82,24 +86,30 @@ impl StrategyBuildContext {
             decision_evidence,
             submit_admission,
             execution_venue,
-            readiness_evidence: None,
-            runtime_readiness_seed: None,
+            realized_volatility_runtime: Arc::new(Mutex::new(RealizedVolSurfaceRuntime::empty())),
         }
     }
 
-    pub fn with_readiness_evidence(
+    #[cfg(test)]
+    pub fn with_realized_volatility_surfaces(
         mut self,
-        readiness_evidence: BoltV3ReadinessGateEvidenceSnapshot,
+        surfaces: std::collections::BTreeMap<
+            String,
+            crate::bolt_v3_realized_volatility::RealizedVolEngineConfig,
+        >,
     ) -> Self {
-        self.readiness_evidence = Some(readiness_evidence);
+        self.realized_volatility_runtime = Arc::new(Mutex::new(
+            RealizedVolSurfaceRuntime::from_configs(surfaces)
+                .expect("validated realized-volatility surfaces should build runtime"),
+        ));
         self
     }
 
-    pub fn with_runtime_readiness_seed(
+    pub fn with_realized_volatility_runtime(
         mut self,
-        runtime_readiness_seed: BoltV3RuntimeReadinessSeed,
+        runtime: Arc<Mutex<RealizedVolSurfaceRuntime>>,
     ) -> Self {
-        self.runtime_readiness_seed = Some(runtime_readiness_seed);
+        self.realized_volatility_runtime = runtime;
         self
     }
 
@@ -129,12 +139,66 @@ impl StrategyBuildContext {
         self.execution_venue
     }
 
-    pub fn readiness_evidence(&self) -> Option<&BoltV3ReadinessGateEvidenceSnapshot> {
-        self.readiness_evidence.as_ref()
+    pub fn realized_volatility_quote_subscription_requests(
+        &self,
+    ) -> Vec<(InstrumentId, Option<ClientId>)> {
+        self.realized_volatility_runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .quote_subscription_requests()
     }
 
-    pub fn runtime_readiness_seed(&self) -> Option<&BoltV3RuntimeReadinessSeed> {
-        self.runtime_readiness_seed.as_ref()
+    pub fn realized_volatility_trade_subscription_requests(
+        &self,
+    ) -> Vec<(InstrumentId, Option<ClientId>)> {
+        self.realized_volatility_runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .trade_subscription_requests()
+    }
+
+    pub fn realized_volatility_index_subscription_requests(
+        &self,
+    ) -> Vec<(InstrumentId, Option<ClientId>)> {
+        self.realized_volatility_runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .index_subscription_requests()
+    }
+
+    pub fn observe_realized_volatility_quote(&self, quote: &QuoteTick) -> Vec<RealizedVolSnapshot> {
+        self.realized_volatility_runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .observe_quote(quote)
+    }
+
+    pub fn observe_realized_volatility_trade(&self, trade: &TradeTick) -> Vec<RealizedVolSnapshot> {
+        self.realized_volatility_runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .observe_trade(trade)
+    }
+
+    pub fn observe_realized_volatility_index_price(
+        &self,
+        update: &IndexPriceUpdate,
+    ) -> Vec<RealizedVolSnapshot> {
+        self.realized_volatility_runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .observe_index_price(update)
+    }
+
+    pub fn refresh_realized_volatility_snapshot_at(
+        &self,
+        surface_id: &str,
+        now_ms: u64,
+    ) -> Option<RealizedVolSnapshot> {
+        self.realized_volatility_runtime
+            .lock()
+            .expect("realized-volatility runtime lock should not be poisoned")
+            .refresh_surface_at(surface_id, now_ms)
     }
 }
 
@@ -403,7 +467,7 @@ mod tests {
         StrategyBuildContext::new(
             Arc::new(NoopFeeProvider),
             Arc::new(NoopDecisionEvidenceWriter),
-            Arc::new(BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
                 NoopDecisionEvidenceWriter,
             ))),
             // Fixture venue for registry tests. These exercise strategy registration, not

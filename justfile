@@ -140,10 +140,30 @@ test-archive-run archive extract_root *args: check-workspace require-rust-verifi
 build: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}" build
 
+# backtesting-vertical-slice crate (separate workspace at crates/backtesting-vertical-slice/).
+# Routed through the SAME managed wrapper as bolt-v2; --repo selects the crate's policy +
+# justfile + its own `backtesting-vertical-slice` cache namespace. Used by .github/workflows/
+# backtester-ci.yml and for local dev. bte-build is native (aarch64-apple-darwin), local-only.
+# bte-fmt-check is the fast fail-early gate (no compile) that CI runs before clippy/test.
+bte-fmt-check: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- fmt --check
+
+bte-clippy: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}/crates/backtesting-vertical-slice" clippy
+
+bte-test *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}/crates/backtesting-vertical-slice" test {{args}}
+
+bte-build: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}/crates/backtesting-vertical-slice" build
+
 check-aarch64: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- check --target {{target}} --locked
 
-source-fence: check-workspace require-rust-verification-owner
+verify-remote: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" verify-remote --repo "{{repo_root}}"
+
+source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/test_verify_bolt_v3_runtime_literals.py
     python3 scripts/verify_bolt_v3_runtime_literals.py
     python3 scripts/test_verify_bolt_v3_provider_leaks.py
@@ -154,8 +174,6 @@ source-fence: check-workspace require-rust-verification-owner
     python3 scripts/verify_bolt_v3_naming.py
     python3 scripts/test_verify_bolt_v3_dependency_direction.py
     python3 scripts/verify_bolt_v3_dependency_direction.py
-    git fetch -q origin main 2>/dev/null
-    python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main
     python3 scripts/test_verify_bolt_v3_status_map_current.py
     python3 scripts/verify_bolt_v3_status_map_current.py
     python3 scripts/test_verify_bolt_v3_schema_current.py
@@ -167,6 +185,10 @@ source-fence: check-workspace require-rust-verification-owner
     python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/verify_bolt_v3_strategy_policy_fence.py
     python3 scripts/test_verify_runtime_capture_yaml.py
+
+source-fence: source-fence-static
+    git fetch -q origin main 2>/dev/null
+    python3 scripts/verify_bolt_v3_dependency_direction.py --check-shrink-only-vs-main
     # Fresh CI runners need the pinned NT checkout before source-capture checks.
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- fetch --locked
     python3 scripts/verify_runtime_capture_yaml.py
@@ -208,7 +230,9 @@ ci-lint-workflow:
     [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
 
     github_automation_files=("${workflow_files[@]}" "${action_files[@]}")
-    rust_invocation_files=(justfile scripts/*.sh tests/*.sh "${github_automation_files[@]}")
+    repo_governance_files=()
+    [ -f .no-mistakes.yaml ] && repo_governance_files+=(.no-mistakes.yaml)
+    rust_invocation_files=(justfile "${repo_governance_files[@]}" scripts/*.sh tests/*.sh "${github_automation_files[@]}")
 
     if [ "${#github_automation_files[@]}" -eq 0 ]; then
         echo "No workflow or action files found — skipping"
@@ -232,6 +256,9 @@ ci-lint-workflow:
         failed=1
     fi
     if ! python3 scripts/test_rust_verification.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_verify_remote.py; then
         failed=1
     fi
     if ! python3 scripts/test_command_understanding.py; then
@@ -356,3 +383,11 @@ setup:
     echo "Zig {{zig_version}} already installed"
 
     echo "Setup complete."
+
+# Create the CI runner debug SSH key in 1Password and publish SSH_PUBLIC_KEY to GitHub.
+ci-debug-ssh-bootstrap:
+    python3 scripts/sync_ci_debug_ssh_secret.py bootstrap
+
+# Publish the CI runner debug SSH public key from 1Password to GitHub Actions.
+ci-debug-ssh-sync:
+    python3 scripts/sync_ci_debug_ssh_secret.py sync

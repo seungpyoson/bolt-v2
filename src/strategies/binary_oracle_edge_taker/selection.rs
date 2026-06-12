@@ -13,7 +13,6 @@
 //! `#[cfg(test)] mod tests` block), never outside the strategy. No `pub use`
 //! re-export is added.
 
-use std::collections::BTreeSet;
 use std::str::FromStr;
 
 use nautilus_model::identifiers::{InstrumentId, Venue};
@@ -26,12 +25,8 @@ use crate::bolt_v3_decision_evidence::{
 use crate::bolt_v3_market_families::{
     self, MarketSelectionOutcome, MarketSelectionTarget, SelectedMarketSourceIdentity,
 };
-use crate::bolt_v3_numeric::MILLIS_PER_SECOND_U64;
 
-use super::{
-    ActiveMarketState, BinaryOracleEdgeTakerConfig, BinaryOracleEntryDecisionEvidenceSource,
-    COUNTER_INCREMENT, INITIAL_COUNTER_USIZE, OutcomeBookSubscriptions,
-};
+use super::{ActiveMarketState, BinaryOracleEdgeTakerConfig, OutcomeBookSubscriptions};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SelectionPhase {
@@ -190,66 +185,6 @@ pub(super) fn selection_snapshot_from_instruments(
         return idle_selection_snapshot(config, now_ms, TARGET_MARKET_NOT_FOUND_REASON);
     };
     selection_snapshot_for_state(config, now_ms, SelectionState::Active { market })
-}
-
-pub(super) fn selection_snapshot_from_entry_decision_source(
-    config: &BinaryOracleEdgeTakerConfig,
-    source: &BinaryOracleEntryDecisionEvidenceSource,
-    instruments: &[InstrumentAny],
-) -> RuntimeSelectionSnapshot {
-    let Some(market) = selected_source_market_from_instruments(config, source, instruments) else {
-        return idle_selection_snapshot(
-            config,
-            source.market_selection_timestamp_ms,
-            TARGET_MARKET_NOT_FOUND_REASON,
-        );
-    };
-    selection_snapshot_for_state(
-        config,
-        source.market_selection_timestamp_ms,
-        SelectionState::Active { market },
-    )
-}
-
-pub(super) fn selected_source_market_from_instruments(
-    config: &BinaryOracleEdgeTakerConfig,
-    source: &BinaryOracleEntryDecisionEvidenceSource,
-    instruments: &[InstrumentAny],
-) -> Option<CandidateMarket> {
-    let selected = &source.readiness_session.selected_market;
-    let expected_instrument_ids = selected
-        .instrument_ids
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    if expected_instrument_ids.len() != selected.instrument_ids.len() {
-        return None;
-    }
-    let cadence_milliseconds = config.cadence_seconds.checked_mul(MILLIS_PER_SECOND_U64)?;
-    let max_attempts = instruments.len().max(COUNTER_INCREMENT);
-    for attempt_index in INITIAL_COUNTER_USIZE..max_attempts {
-        let attempt_offset =
-            cadence_milliseconds.checked_mul(u64::try_from(attempt_index).ok()?)?;
-        let attempt_now_ms = source
-            .market_selection_timestamp_ms
-            .checked_add(attempt_offset)?;
-        let Some(market) =
-            select_configured_market_from_instruments(config, instruments, attempt_now_ms)
-        else {
-            continue;
-        };
-        if market.market_id != selected.market_id {
-            continue;
-        }
-        let market_instrument_ids = BTreeSet::from([
-            market.up.instrument_id.clone(),
-            market.down.instrument_id.clone(),
-        ]);
-        if market_instrument_ids == expected_instrument_ids {
-            return Some(market);
-        }
-    }
-    None
 }
 
 pub(super) fn idle_selection_snapshot(

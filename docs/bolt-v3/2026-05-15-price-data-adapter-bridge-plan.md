@@ -52,7 +52,7 @@ Bolt-v3 should reuse existing adapter builders wherever possible. It should not 
 
 The bridge is provider/reference binding work, not adapter implementation work. After Phase 9 hardcode remediation lands, add bolt-v3 provider or reference bindings around existing builders, then register them through the existing `map_bolt_v3_adapters` -> `register_bolt_v3_clients` path.
 
-Data-only wiring lands before any new execution wiring. Execution adapters require separate venue-specific validation, secret contract review, no-submit readiness, and live-canary gating. Execution must not be smuggled into a data-adapter PR.
+Data-only wiring lands before any new execution wiring. Execution adapters require separate venue-specific validation, secret contract review, strategy-free connectivity, and submit-admission evidence. Execution must not be smuggled into a data-adapter PR.
 
 ## Sequencing
 
@@ -74,7 +74,7 @@ Immediately after Phase 9:
 Later execution / trade expansion:
 
 - Add execution only in separate venue-specific slices.
-- For each venue, prove NT adapter capability, SSM secret fields, forbidden env-var blocklist, credential log filters, no-submit readiness, controlled connect/disconnect, and live-canary behavior.
+- For each venue, prove NT adapter capability, SSM secret fields, forbidden env-var blocklist, credential log filters, strategy-free readiness, controlled connect/disconnect, and submit-admission behavior.
 - If NT lacks the needed execution adapter behavior, record a blocker or fix NT; do not implement a Bolt-owned venue adapter.
 
 ## Do Not Do Yet

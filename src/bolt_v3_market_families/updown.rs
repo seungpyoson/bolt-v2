@@ -53,16 +53,20 @@ use crate::{
     },
     bolt_v3_instrument_filters::{InstrumentFilterError, format_target_prefix},
     bolt_v3_market_families::{
-        FairProbabilityInputs, MarketFamilyValidationBinding, MarketIdentityPlan,
-        MarketIdentityTarget, MarketSelectionCandidateWindow, MarketSelectionOutcome,
-        MarketSelectionTarget, SelectedBinaryOptionMarket, SelectedMarketRequirement,
-        SelectedMarketRequirementParts, SelectedMarketSourceIdentity, TargetRuntimeFields,
+        FairProbabilityInputs, MarketIdentityPlan, MarketIdentityTarget,
+        MarketSelectionCandidateWindow, MarketSelectionOutcome, MarketSelectionTarget,
+        SelectedBinaryOptionMarket, SelectedMarketRequirement, SelectedMarketRequirementParts,
+        SelectedMarketSourceIdentity, TargetRuntimeFields,
         selected_market_metadata_provenance_fields, selected_market_requirement_error,
         selected_market_requirement_from_parts,
     },
     bolt_v3_numeric::{
-        POWER_OF_TWO, SECONDS_PER_YEAR_F64, UNIT_F64, ZERO_F64, is_positive_finite,
-        sanitize_probability,
+        HALF_F64, MILLIS_PER_SECOND_U64, POWER_OF_TWO, SECONDS_PER_YEAR_F64, UNIT_F64, ZERO_F64,
+        is_non_negative_finite, is_positive_finite, sanitize_probability,
+    },
+    bolt_v3_quote_lifecycle::Leg,
+    bolt_v3_quoting::{
+        FamilyQuoteInputs, QuoteSide, QuoteTargetLeg, QuoteTargets, compose_binary_legs,
     },
 };
 
@@ -82,16 +86,49 @@ const METADATA_QUESTION_ID_FIELD: &str = "question_id";
 const METADATA_SOURCE_KIND_FIELD: &str = "source_kind";
 const METADATA_VENUE_FIELD: &str = "venue";
 
-pub fn validation_binding() -> MarketFamilyValidationBinding {
-    MarketFamilyValidationBinding {
-        key: KEY,
-        validate_target: validate_target_block,
-        plan_strategy_target,
-        target_runtime_fields,
-        select_binary_option_market,
-        market_selection_candidate_windows,
-        selected_market_requirement,
-        fair_probability_up,
+pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
+    let p_up = sanitize_probability(inputs.fair)?;
+    let legs = compose_binary_legs(
+        p_up,
+        inputs.reservation_bid,
+        inputs.reservation_ask,
+        inputs.half_spread_floor,
+        inputs.max_half_spread,
+        inputs.tau,
+        inputs.reference_tau,
+        inputs.time_widen_cap,
+        inputs.inventory_skew,
+        inputs.eps,
+    )?;
+    Some(QuoteTargets {
+        leg_a: QuoteTargetLeg {
+            side: QuoteSide::Buy,
+            price: legs.yes_price,
+        },
+        leg_b: QuoteTargetLeg {
+            side: QuoteSide::Buy,
+            price: legs.no_price,
+        },
+    })
+}
+
+pub fn maker_settlement_payout(outcome: OutcomeSide, leg: Leg) -> Option<f64> {
+    Some(match (outcome, leg) {
+        (OutcomeSide::Up, Leg::Yes) | (OutcomeSide::Down, Leg::No) => UNIT_F64,
+        (OutcomeSide::Up, Leg::No) | (OutcomeSide::Down, Leg::Yes) => ZERO_F64,
+    })
+}
+
+pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {
+    if !fee_rate.is_finite() || fee_rate < ZERO_F64 {
+        return None;
+    }
+    let price = sanitize_probability(price)?;
+    let fee = fee_rate * price * (UNIT_F64 - price);
+    if fee.is_finite() && fee >= ZERO_F64 {
+        Some(fee)
+    } else {
+        None
     }
 }
 
@@ -1059,21 +1096,15 @@ fn selected_market_resolution_mapping(
 /// `d2 = (ln(S/K) - sigma_eff^2/2 * T) / (sigma_eff * sqrt(T))`. The
 /// realized-volatility estimate is widened by a kurtosis term
 /// (`sigma_eff = realized_vol * (1 + kurtosis / 6)`) so fat-tailed
-/// regimes price wider. Fails closed (returns `None`) on degenerate
-/// inputs so the strategy treats the market as un-priceable rather
-/// than acting on a step-function probability.
+/// regimes price wider. Invalid degenerate inputs fail closed
+/// (return `None`); zero effective volatility returns the deterministic
+/// expiry-limit probability.
 pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
     if !is_positive_finite(inputs.spot_price)
         || !is_positive_finite(inputs.strike_price)
-        || !is_positive_finite(inputs.realized_vol)
+        || !is_non_negative_finite(inputs.realized_vol)
         || !inputs.pricing_kurtosis.is_finite()
     {
-        return None;
-    }
-
-    let sigma_eff =
-        inputs.realized_vol * (UNIT_F64 + inputs.pricing_kurtosis / KURTOSIS_NORMALIZATION);
-    if !is_positive_finite(sigma_eff) {
         return None;
     }
 
@@ -1082,10 +1113,32 @@ pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
         return None;
     }
 
+    let sigma_eff =
+        inputs.realized_vol * (UNIT_F64 + inputs.pricing_kurtosis / KURTOSIS_NORMALIZATION);
+    if !is_non_negative_finite(sigma_eff) {
+        return None;
+    }
+    if sigma_eff == ZERO_F64 {
+        return Some(deterministic_up_probability(
+            inputs.spot_price,
+            inputs.strike_price,
+        ));
+    }
+
     let d2 = ((inputs.spot_price / inputs.strike_price).ln()
         - (sigma_eff.powi(POWER_OF_TWO) / SIGMA_SQUARED_HALF_DIVISOR) * time_to_expiry_years)
         / (sigma_eff * time_to_expiry_years.sqrt());
     sanitize_probability(standard_normal_cdf(d2))
+}
+
+fn deterministic_up_probability(spot_price: f64, strike_price: f64) -> f64 {
+    if spot_price > strike_price {
+        UNIT_F64
+    } else if spot_price < strike_price {
+        ZERO_F64
+    } else {
+        HALF_F64
+    }
 }
 
 fn standard_normal_cdf(x: f64) -> f64 {
@@ -1201,6 +1254,16 @@ fn candidate_market_for_slug(
     let start_timestamp_milliseconds = period_start_milliseconds
         .max(up.activation_milliseconds)
         .max(down.activation_milliseconds);
+    // The live resolution strike is queried at this interval-open boundary in
+    // whole seconds (Chainlink Data Streams reports are second-resolution), and
+    // the strategy requires the returned report's `valid_from` to equal this
+    // millisecond boundary exactly. A boundary carrying a sub-second component
+    // (a non-second-aligned instrument activation surfaced via `.max` above)
+    // could never bind a strike, so reject the candidate fail-closed rather than
+    // select a market that can never trade.
+    if !start_timestamp_milliseconds.is_multiple_of(MILLIS_PER_SECOND_U64) {
+        return None;
+    }
 
     Some(SelectedUpdownMarket {
         market_id: up.market_id,
@@ -1612,6 +1675,60 @@ mod tests {
     }
 
     #[test]
+    fn selected_updown_market_rejects_non_second_aligned_open_boundary() {
+        // F7b regression lock. The live Chainlink resolution strike is queried at
+        // the interval-open boundary in whole seconds (the Data Streams "report at
+        // T" endpoint is second-resolution); the strategy derives that second by
+        // truncating `start_timestamp_milliseconds / 1000` and then requires the
+        // returned report's `valid_from` to equal the original millisecond
+        // boundary. When `start_timestamp_milliseconds` carries a sub-second
+        // component (an instrument activation that is not second-aligned, surfaced
+        // through `.max(activation_milliseconds)`), that ms->s->ms round-trip can
+        // never match and `price_to_beat` is stranded for the market's whole life.
+        // Such a market must be rejected fail-closed at selection, not selected and
+        // then silently never traded.
+        let market_slug = updown_market_slug(TEST_UNDERLYING_ASSET, TEST_CADENCE_SLUG_TOKEN, 600);
+        let instruments = vec![
+            test_binary_option(
+                "configured-condition-up.POLYMARKET",
+                &market_slug,
+                "market-1",
+                TEST_CONDITION_ID,
+                "question-1",
+                "Up",
+                650_000,
+                900_000,
+            ),
+            test_binary_option(
+                "configured-condition-down.POLYMARKET",
+                &market_slug,
+                "market-1",
+                TEST_CONDITION_ID,
+                "question-1",
+                "Down",
+                660_500,
+                900_000,
+            ),
+        ];
+
+        let selected = select_market_from_instruments(
+            UpdownSelectionTarget {
+                underlying_asset: TEST_UNDERLYING_ASSET,
+                cadence_secs: 300,
+                cadence_slug_token: TEST_CADENCE_SLUG_TOKEN,
+            },
+            &instruments,
+            600_001,
+        );
+
+        assert!(
+            selected.is_none(),
+            "a market whose interval-open boundary is not second-aligned (660_500 ms) must be \
+             rejected fail-closed; no second-resolution Chainlink strike can ever bind it",
+        );
+    }
+
+    #[test]
     fn updown_period_pair_floor_examples() {
         assert_eq!(updown_period_pair(60, 119).unwrap(), (60, 120));
         assert_eq!(updown_period_pair(60, 120).unwrap(), (120, 180));
@@ -1737,12 +1854,50 @@ mod tests {
             "below-strike spot should imply <50% up probability"
         );
         assert!(above > below);
-        assert!(
+    }
+
+    #[test]
+    fn fair_probability_accepts_zero_volatility_as_deterministic_limit() {
+        assert_eq!(
+            fair_probability_up(&FairProbabilityInputs {
+                spot_price: 3_101.0,
+                strike_price: 3_100.0,
+                seconds_to_market_end: 60,
+                realized_vol: 0.0,
+                pricing_kurtosis: 0.0,
+            }),
+            Some(UNIT_F64)
+        );
+        assert_eq!(
+            fair_probability_up(&FairProbabilityInputs {
+                spot_price: 3_099.0,
+                strike_price: 3_100.0,
+                seconds_to_market_end: 60,
+                realized_vol: 0.0,
+                pricing_kurtosis: 0.0,
+            }),
+            Some(ZERO_F64)
+        );
+        assert_eq!(
             fair_probability_up(&FairProbabilityInputs {
                 spot_price: 3_100.0,
                 strike_price: 3_100.0,
                 seconds_to_market_end: 60,
                 realized_vol: 0.0,
+                pricing_kurtosis: 0.0,
+            }),
+            Some(HALF_F64)
+        );
+    }
+
+    #[test]
+    fn fair_probability_fails_closed_on_invalid_inputs() {
+        assert!(
+            fair_probability_up(&FairProbabilityInputs {
+                spot_price: 3_100.0,
+                strike_price: 3_100.0,
+                seconds_to_market_end: 60,
+                realized_vol: -0.01,
                 pricing_kurtosis: 0.0,
             })
             .is_none()

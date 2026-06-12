@@ -1,0 +1,41 @@
+# backtesting-vertical-slice — the NautilusTrader backtest proof path (spec 023 `1-backtesting-engine`).
+#
+# ISOLATION (bolt-v2 CLAUDE rule "NO DUAL PATHS"; mirrors tools/catalog-projector): this crate
+# roots its OWN cargo workspace + Cargo.lock, deliberately OUTSIDE the live `bolt-v2` package's
+# dependency-resolution graph. Cargo features are additive-and-unified per resolution graph, so the
+# only mechanism that keeps `nautilus-backtest` and the `nautilus-persistence` cloud/object_store-aws
+# surface out of the live `LiveNode` binary is a separate workspace + lockfile — NOT a feature flag on
+# bolt-v2. The backtest engine + persistence cloud surface are enabled HERE only, never on bolt-v2.
+[workspace]
+
+[package]
+name = "backtesting-vertical-slice"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95.0"
+publish = false
+
+[dependencies]
+anyhow = "1"
+arrow = "58.3.0"
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+csv = "1"
+flate2 = "1.1.9"
+hex = "0.4"
+parquet = "58.3.0"
+rust_decimal = "1.42.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10.9"
+toml = "1.1"
+ustr = "1.1.0"
+
+nautilus-backtest = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c", features = ["streaming", "examples"] }
+nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
+nautilus-model = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
+nautilus-persistence = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c", features = ["cloud"] }
+nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
+
+[dev-dependencies]
+tempfile = "3"

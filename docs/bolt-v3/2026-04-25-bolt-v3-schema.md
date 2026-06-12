@@ -186,49 +186,6 @@ flush_interval_ms = 1000
 replace_existing = false
 rotation_kind = "none"
 
-[live_canary]
-approval_id = "operator-approved-canary-001"
-no_submit_readiness_report_path = "reports/no-submit-readiness.json"
-max_no_submit_readiness_report_bytes = 65536
-readiness_report_max_age_seconds = 300
-reference_quote_max_age_seconds = 10
-reference_quote_wait_timeout_seconds = 20
-reference_quote_probe_actor_id = "no-submit-reference-quote-probe"
-reference_quote_probe_log_events = true
-reference_quote_probe_log_commands = true
-max_live_order_count = 1
-max_notional_per_order = "1.00"
-
-[live_canary.operator_evidence]
-head_sha = "0123456789abcdef0123456789abcdef01234567"
-max_operator_evidence_file_bytes = 65536
-approval_consumption_max_age_seconds = 60
-approval_envelope_path = "operator-evidence/approval-envelope.json"
-approval_envelope_sha256 = "9999999999999999999999999999999999999999999999999999999999999999"
-ssm_manifest_path = "operator-evidence/ssm-manifest.json"
-ssm_manifest_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-strategy_input_evidence_path = "operator-evidence/strategy-input.json"
-strategy_input_evidence_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-financial_envelope_path = "operator-evidence/financial-envelope.json"
-financial_envelope_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-pre_run_state_path = "operator-evidence/pre-run-state.json"
-pre_run_state_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-abort_plan_path = "operator-evidence/abort-plan.json"
-abort_plan_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-canary_evidence_path = "operator-evidence/canary-evidence.json"
-# Set this window immediately before an approved canary run. It must cover two
-# operator-evidence validation rounds plus report read, parse, and validation.
-approval_not_before_unix_seconds = 1893456000
-approval_not_after_unix_seconds = 1893456300
-approval_nonce_path = "operator-evidence/approval-nonce.json"
-approval_nonce_sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-approval_consumption_path = "operator-evidence/approval-consumed.json"
-decision_evidence_path = "operator-evidence/decision-evidence.jsonl"
-nt_submit_event_path = "operator-evidence/nt-submit-event.json"
-venue_order_state_path = "operator-evidence/venue-order-state.json"
-restart_reconciliation_path = "operator-evidence/restart-reconciliation.json"
-post_run_hygiene_path = "operator-evidence/post-run-hygiene.json"
-
 [aws]
 region = "eu-west-1"
 
@@ -666,272 +623,6 @@ The schema does not expose a separate raw-capture backend, rotation policy, or w
   - `none`
 - maps to the local catalog writer no-rotation behavior
 
-### `[live_canary]`
-
-This section is optional for parse/build-only checks and required before `run_bolt_v3_live_node` starts the NT runner. If it is absent, the bolt-v3 runtime gate fails closed before `LiveNode::run`.
-
-#### `approval_id`
-
-- type: non-empty string
-- required: yes when `[live_canary]` is present
-- operator approval identifier for the exact canary launch
-
-#### `no_submit_readiness_report_path`
-
-- type: path string
-- required: yes when `[live_canary]` is present
-- path to a prior no-submit readiness JSON report
-- relative paths resolve from the root TOML directory
-
-#### `max_no_submit_readiness_report_bytes`
-
-- type: positive integer
-- required: yes when `[live_canary]` is present
-- maximum no-submit readiness JSON report size read by the fail-closed gate
-- reports larger than this bound reject before JSON parsing
-
-#### `readiness_report_max_age_seconds`
-
-- type: positive integer
-- required: yes when `[live_canary]` is present
-- maximum accepted age for the referenced no-submit readiness report at late gate evaluation time, after report read and parse
-- reports older than this bound reject before live canary admission can arm
-- operators must leave headroom for report I/O and parse latency; effective headroom is lower than the raw cap by that latency
-
-#### `reference_quote_max_age_seconds`
-
-- type: positive integer
-- required: yes when `[live_canary]` is present
-- maximum accepted age for each configured no-submit reference quote at readiness evaluation time
-- cache-only instrument-ID membership is not accepted as freshness evidence
-
-#### `reference_quote_wait_timeout_seconds`
-
-- type: positive integer
-- required: yes when `[live_canary]` is present
-- maximum time the no-submit readiness runner waits for quote evidence from configured reference-data subscriptions before it stops the runner and fails closed
-- this timeout does not authorize order submission, cancellation, or broader market-data subscriptions
-
-#### `reference_quote_probe_actor_id`
-
-- type: non-empty ASCII actor identifier string without surrounding whitespace
-- required: yes when `[live_canary]` is present
-- NT `DataActorConfig.actor_id` used by the no-submit reference quote probe
-- this is an operator-visible runtime identifier and must be TOML-owned
-
-#### `reference_quote_probe_log_events`
-
-- type: boolean
-- required: yes when `[live_canary]` is present
-- NT `DataActorConfig.log_events` value used by the no-submit reference quote probe
-
-#### `reference_quote_probe_log_commands`
-
-- type: boolean
-- required: yes when `[live_canary]` is present
-- NT `DataActorConfig.log_commands` value used by the no-submit reference quote probe
-
-#### `max_live_order_count`
-
-- type: positive integer
-- required: yes when `[live_canary]` is present
-- approved live canary order-count bound validated before `LiveNode::run`
-- the run gate does not count orders; submit-admission code must consume this bound before any live submit
-
-#### `max_notional_per_order`
-
-- type: positive decimal string
-- required: yes when `[live_canary]` is present
-- approved per-order live canary notional bound validated before `LiveNode::run`
-- must be less than or equal to `risk.default_max_notional_per_order`
-- the run gate does not submit orders; submit-admission code must consume this bound before any live submit
-
-#### Egress-identity fields
-
-These three optional fields bind the approved network egress identity into the live canary gate. They are absent unless the operator pins an egress identity for the run.
-
-- `egress_identity_observed_path`
-  - type: optional path string
-  - path to the observed egress-identity proof the gate reads
-- `egress_identity_observed_max_bytes`
-  - type: optional positive integer
-  - maximum size of the observed egress-identity proof read by the fail-closed gate
-- `approved_egress_identity_sha256`
-  - type: optional sha256 string
-  - approved egress-identity hash the gate compares against the observed proof
-
-### `[live_canary.proof_policy]`
-
-This subtable is optional. When present and `enabled = true`, it configures the least-bad-strategy-candidate proof executor that fires the single tiny-capital canary order; when absent, no proof order is constructed by this path. Config-load validation only enforces the rules below when `enabled = true`.
-
-| Field | Type / Rule | Required |
-|---|---|---|
-| `enabled` | boolean; gates whether the proof policy is active | yes when `[proof_policy]` is present |
-| `policy_kind` | string; must be `least_bad_strategy_candidate` when enabled | yes when `[proof_policy]` is present |
-| `proof_claim` | string; must be `proof_only` when enabled | yes when `[proof_policy]` is present |
-| `executor_strategy_id` | non-blank string; valid NautilusTrader `StrategyId` when enabled | yes when `[proof_policy]` is present |
-| `strategy_instance_id` | non-blank string when enabled | yes when `[proof_policy]` is present |
-| `execution_client_id` | non-blank string when enabled | yes when `[proof_policy]` is present |
-| `book_type` | string enum: `l1_mbp`, `l2_mbp`, or `l3_mbo` | yes when `[proof_policy]` is present |
-| `book_snapshot_interval_millis` | positive integer when enabled | yes when `[proof_policy]` is present |
-| `time_in_force` | string enum: `fok`, `gtc`, or `ioc` | yes when `[proof_policy]` is present |
-| `is_post_only` | boolean | yes when `[proof_policy]` is present |
-| `is_reduce_only` | boolean | yes when `[proof_policy]` is present |
-| `is_quote_quantity` | boolean | yes when `[proof_policy]` is present |
-| `notional_mode` | string; must be `fixed` when enabled | yes when `[proof_policy]` is present |
-| `proof_notional` | positive decimal string; must be `<=` `live_canary.max_notional_per_order` | yes when `[proof_policy]` is present |
-| `candidate_score_source` | string; must be `proof_source` when enabled | yes when `[proof_policy]` is present |
-| `allow_negative_expected_ev` | boolean | yes when `[proof_policy]` is present |
-| `rotation_observation_enabled` | boolean | yes when `[proof_policy]` is present |
-| `rotation_min_distinct_markets` | positive integer when enabled; must be `<=` `rotation_max_attempts` | yes when `[proof_policy]` is present |
-| `rotation_max_attempts` | positive integer when enabled | yes when `[proof_policy]` is present |
-
-### Phase 8 operator-harness evidence envelope
-
-The `[live_canary]` TOML block is necessary but not sufficient for the one tiny-capital canary operator harness. Before live runner entry, the ignored Phase 8 harness also requires an operator-supplied evidence envelope through these environment fields. Values are evidence paths, sha256s, timestamps, or hashed identifiers; do not put secret values in these fields.
-
-These environment names belong to the ignored operator harness, not the production `src/bolt_v3_*` runtime literal audit. The production runtime literal verifier intentionally scans only production bolt-v3 sources.
-
-### `[live_canary.operator_evidence]`
-
-This section is required when `[live_canary]` is present. The production live canary gate treats `approval_envelope_path`, the sha256-bound pre-run artifacts, and `approval_consumption_path` as read-only operator evidence and rejects non-regular files, symlinks, directories, unreadable files, or files larger than `max_operator_evidence_file_bytes` before hashing or parsing. Relative paths resolve from the root TOML directory. Remaining output/result paths are required non-empty binding strings; `strategy_cancel_path` is additionally bound by `strategy_cancel_path_hash` in approval-consumption proof when configured, and later operator evidence validates produced contents.
-
-Required control fields:
-
-- `head_sha`: 40-character lowercase commit SHA for the exact approved head; it must match the build-owned head captured at compile time, and the approval-consumption proof must carry the same `head_sha`
-- `max_operator_evidence_file_bytes`: positive integer cap applied to every operator evidence file read by the gate: `approval_envelope_path`, sha256-bound pre-run artifacts, and `approval_consumption_path`
-- `approval_consumption_max_age_seconds`: positive integer maximum age between `consumed_unix_secs` and gate evaluation time
-
-The static operator-artifact manifest is an input to packet assembly, not the final provenance authority. `assemble_operator_packet_from_static_manifest` refuses a manifest with non-empty `blockers`, a `config_bundle_checksum` that differs from the currently loaded TOML bundle, missing required artifact refs, configured path/hash drift, or artifact-file SHA drift. When those checks pass, the assembler writes `approval-envelope.json` using the same non-circular schema parsed by the live canary gate and writes an `operator-evidence-packet.json` containing the `[live_canary.operator_evidence]` path/SHA fields to copy into TOML. The approval-envelope JSON includes `schema_version = 1`, `record_kind = "phase8_operator_approval_envelope"`, `head_sha`, `ssm_manifest_sha256`, `strategy_input_evidence_sha256`, `financial_envelope_sha256`, `pre_run_state_sha256`, `abort_plan_sha256`, `approval_id_hash`, `approval_nonce_sha256`, `approval_not_before_unix_secs`, `approval_not_after_unix_secs`, `canary_evidence_path_hash`, optional `expected_gate_session_sha256`, optional `canary_proof_order_intent_sha256`, and optional `strategy_cancel_path_hash`. It must not contain `root_toml_sha256`, `approval_envelope_sha256`, `config_bundle_checksum`, raw approval id, raw nonce material, raw SSM paths, or secret values.
-
-`expected_gate_session_sha256` and `canary_proof_order_intent_sha256` seal the file-content SHA-256 of the operator-approved entry-readiness gate-session file and canary proof order-intent file directly into the envelope, binding the approval to the exact order that fires. The live canary gate re-computes each file's SHA-256 at evaluation time and rejects it unless it matches the sealed envelope value, not only the self-declared `[live_canary.operator_evidence]` TOML hash — so a post-approval file swap that updates only the TOML self-hash is rejected because the sealed envelope hash no longer matches. On the proof-policy path (the path that fires the live canary order) both fields are mandatory and the gate fails closed when either is absent. Because the envelope file's own SHA-256 is bound by the approval-consumption record's `approval_envelope_sha256`, these sealed hashes are transitively bound into the consumption record without being duplicated there.
-
-The approval-consumption JSON at `approval_consumption_path` must be a JSON object with `schema_version = 1`, `record_kind = "phase8_operator_approval_consumption"`, `head_sha`, `root_toml_sha256`, all configured evidence sha256 fields including `approval_envelope_sha256`, `approval_id_hash`, `approval_not_before_unix_secs`, `approval_not_after_unix_secs`, `canary_evidence_path_hash`, optional `strategy_cancel_path_hash` when `strategy_cancel_path` is configured, and `consumed_unix_secs`. The gate compares `head_sha` to both TOML operator evidence and the build-owned head captured at compile time. The gate computes `root_toml_sha256` from the loaded root TOML path at evaluation time and compares it to the proof; this value is not configured in TOML because hashing the file into itself would be circular.
-
-#### Approval and preflight fields
-
-- `BOLT_V3_PHASE8_HEAD_SHA`: exact commit SHA approved for the attempt
-- `BOLT_V3_PHASE8_ROOT_TOML_PATH`: approved root TOML path; the harness computes its sha256 from this file and reads `approval_envelope_sha256` from `[live_canary.operator_evidence]`
-- `BOLT_V3_PHASE8_SSM_MANIFEST_PATH`: redacted SSM path manifest evidence
-- `BOLT_V3_PHASE8_SSM_MANIFEST_SHA256`: sha256 of the redacted SSM manifest evidence
-- `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_PATH`: strategy-input safety evidence path
-- `BOLT_V3_PHASE8_STRATEGY_INPUT_EVIDENCE_SHA256`: sha256 of the strategy-input safety evidence
-- When strategy input evidence reports `market_selection_outcome = "next"`, it must also include `market_selection_source_path` and `market_selection_source_sha256` for a `market_selection_result` artifact with `source = "nt_runtime_selection_snapshot"`. The audit derives nearest-next candidates from that source-bound artifact and rejects a self-reported or truncated candidate list.
-- `BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_PATH`: financial-envelope evidence path
-- `BOLT_V3_PHASE8_FINANCIAL_ENVELOPE_SHA256`: sha256 of the financial-envelope evidence
-- `BOLT_V3_PHASE8_PRE_RUN_STATE_PATH`: pre-run host/account/market/funding/runner/egress state evidence path
-- `BOLT_V3_PHASE8_PRE_RUN_STATE_SHA256`: sha256 of the pre-run state evidence
-- The pre-run state evidence JSON must include sha256 bindings for the host clock-skew proof, venue account-state proof, market-state proof, funding/margin proof, single-runner lock proof, egress-identity proof, CLOB V2 signing/collateral/fee proofs, and release-manifest proof.
-- `BOLT_V3_PHASE8_ABORT_PLAN_PATH`: operator abort/panic plan evidence path
-- `BOLT_V3_PHASE8_ABORT_PLAN_SHA256`: sha256 of the abort/panic plan evidence
-- `BOLT_V3_PHASE8_OPERATOR_APPROVAL_ID`: explicit operator approval identifier
-- `BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS`: earliest allowed approval-consumption time
-- `BOLT_V3_PHASE8_APPROVAL_NOT_AFTER_UNIX_SECONDS`: latest allowed approval-consumption time; must be greater than `BOLT_V3_PHASE8_APPROVAL_NOT_BEFORE_UNIX_SECONDS`
-- `BOLT_V3_PHASE8_APPROVAL_NONCE_PATH`: one-shot approval nonce evidence path
-- `BOLT_V3_PHASE8_APPROVAL_NONCE_SHA256`: sha256 of the approval nonce evidence
-- `BOLT_V3_PHASE8_APPROVAL_CONSUMPTION_PATH`: path atomically created when the approval is consumed
-- `BOLT_V3_PHASE8_EVIDENCE_PATH`: redacted canary evidence output path
-- The evidence writer rejects live-order proof serialization if `live_order_ref.strategy_instance_id_hash` no longer matches the approved strategy-instance hash derived from the financial envelope.
-
-#### Live-result fields
-
-- `BOLT_V3_PHASE8_DECISION_EVIDENCE_PATH`: persisted decision evidence proof path under the NT runtime capture spool
-- `BOLT_V3_PHASE8_NT_SUBMIT_EVENT_PATH`: NT submit-event evidence path
-- `BOLT_V3_PHASE8_VENUE_ORDER_STATE_PATH`: venue accept/fill/reject evidence path
-- `BOLT_V3_PHASE8_STRATEGY_CANCEL_PATH`: optional strategy-driven cancel evidence path when an order remains open
-- `BOLT_V3_PHASE8_RESTART_RECONCILIATION_PATH`: restart reconciliation evidence path
-- `BOLT_V3_PHASE8_POST_RUN_HYGIENE_PATH`: post-run raw-secret residue scan and retention/purge evidence path
-- Live client and venue order hashes are derived from post-run proof files, not from pre-run operator-provided values.
-
-#### Phase 8 artifact JSON schemas
-
-All Phase 8 operator JSON artifacts are strict: unknown fields reject before live runner entry. String fields named `*_hash`, `*_sha256`, or `*_id_hash` are lowercase hex sha256 values unless stated otherwise. Decimal values are encoded as strings so operator-approved precision is preserved exactly.
-
-`strategy_input_evidence` fields:
-
-- `realized_volatility`: decimal string, positive
-- `seconds_to_market_end`: integer seconds, positive
-- `spot_price`: decimal string, positive
-- `price_to_beat_value`: decimal string, positive
-- `expected_edge_basis_points`: decimal string, positive and equal to `worst_case_edge_basis_points`
-- `worst_case_edge_basis_points`: decimal string, positive and equal to `expected_edge_basis_points`
-- `fee_rate_basis_points`: decimal string, zero or positive
-- `price_to_beat_source`: string, must equal the approved `[parameters.runtime].price_to_beat_source`
-- `reference_quote_ts_event`: integer timestamp, non-zero
-- `pricing_kurtosis`: decimal string, greater than `-6`
-- `theta_decay_factor`: decimal string, zero or positive
-- `theta_scaled_min_edge_bps`: decimal string, positive
-- `market_selection_timestamp_ms`: integer milliseconds
-- `candidate_market_start_timestamps_ms`: optional integer-millisecond list, retained for evidence but not trusted for nearest-next approval
-- `market_selection_source_path`: required path when `market_selection_outcome = "next"`
-- `market_selection_source_sha256`: required sha256 when `market_selection_outcome = "next"`
-- `market_selection_outcome`: string enum, `current` or `next`
-- `polymarket_condition_id`, `polymarket_market_slug`, `polymarket_question_id`, `up_instrument_id`, `down_instrument_id`: selected-market identifiers
-- `selected_market_observed_timestamp_ms`: integer milliseconds, non-zero
-- `polymarket_market_start_timestamp_ms`, `polymarket_market_end_timestamp_ms`: integer milliseconds, selected start must precede selected end
-
-`market_selection_result` source artifact fields:
-
-- `record_kind`: string, `market_selection_result`
-- `source`: string, `nt_runtime_selection_snapshot`
-- `market_selection_timestamp_ms`: integer milliseconds matching strategy-input evidence
-- `candidate_market_start_timestamps_ms`: non-empty integer-millisecond list used for nearest-next approval
-- `market_selection_outcome`: string enum, must match strategy-input evidence
-- `polymarket_condition_id`, `polymarket_market_slug`, `polymarket_question_id`, `up_instrument_id`, `down_instrument_id`: selected-market identifiers matching strategy-input evidence
-- `selected_market_observed_timestamp_ms`: integer milliseconds matching strategy-input evidence
-- `polymarket_market_start_timestamp_ms`, `polymarket_market_end_timestamp_ms`: integer milliseconds matching strategy-input evidence
-
-`financial_envelope` fields:
-
-- `max_live_order_count`: integer, must equal `1`
-- `max_notional_per_order`: decimal string matching `[live_canary].max_notional_per_order`
-- `strategy_instance_id`, `oms_type`, `execution_client_id`, `configured_target_id`, `target_kind`, `rotating_market_family`, `underlying_asset`, `cadence_slug_token`: strings matching the loaded strategy/TOML
-- `cadence_secs`, `retry_interval_secs`, `blocked_after_secs`: integer seconds matching the loaded target runtime
-- `market_selection_rule`: string matching the loaded target runtime
-- `price_to_beat_source`: string matching `[parameters.runtime].price_to_beat_source`
-- `edge_threshold_basis_points`: integer matching loaded strategy parameters
-- `order_notional_target`, `maximum_position_notional`: decimal strings matching loaded strategy parameters
-- `book_impact_cap_bps`: integer matching `[parameters.runtime].book_impact_cap_bps`
-- `entry_side`, `entry_position_side`, `entry_order_type`, `entry_time_in_force`: strings matching loaded `[parameters.entry_order]` values
-- `entry_expire_time_unix_nanos`, `entry_trigger_price`, `entry_activation_price`, `entry_trigger_type`, `entry_trigger_instrument_id`, `entry_trailing_offset`, `entry_trailing_offset_type`: optional values matching loaded `[parameters.entry_order]` values
-- `entry_is_post_only`, `entry_is_reduce_only`, `entry_is_quote_quantity`: booleans matching loaded `[parameters.entry_order]` values
-- `exit_side`, `exit_position_side`, `exit_order_type`, `exit_time_in_force`: strings matching loaded `[parameters.exit_order]` values
-- `exit_expire_time_unix_nanos`, `exit_trigger_price`, `exit_activation_price`, `exit_trigger_type`, `exit_trigger_instrument_id`, `exit_trailing_offset`, `exit_trailing_offset_type`: optional values matching loaded `[parameters.exit_order]` values
-- `exit_is_post_only`, `exit_is_reduce_only`, `exit_is_quote_quantity`: booleans matching loaded `[parameters.exit_order]` values
-- `forced_exit_side`, `forced_exit_position_side`, `forced_exit_order_type`, `forced_exit_time_in_force`: strings matching loaded `[parameters.forced_exit_order]` values
-- `forced_exit_expire_time_unix_nanos`, `forced_exit_trigger_price`, `forced_exit_activation_price`, `forced_exit_trigger_type`, `forced_exit_trigger_instrument_id`, `forced_exit_trailing_offset`, `forced_exit_trailing_offset_type`: optional values matching loaded `[parameters.forced_exit_order]` values
-- `forced_exit_is_post_only`, `forced_exit_is_reduce_only`, `forced_exit_is_quote_quantity`: booleans matching loaded `[parameters.forced_exit_order]` values
-
-`pre_run_state` fields:
-
-- `execution_client_id`, `configured_target_id`: strings matching the financial envelope
-- `host_clock_skew_within_bound`, `conflicting_open_orders_absent`, `preexisting_position_absent`, `market_state_approved`, `market_window_approved`, `funding_margin_covers_max_notional_plus_fees`, `single_runner_lock_acquired`, `egress_identity_approved`, `clob_v2_adapter_signing_verified`, `clob_v2_collateral_accounting_verified`, `clob_v2_fee_behavior_verified`, `release_manifest_nt_revision_matches_compiled_pin`: booleans, all must be `true`
-- `host_clock_skew_evidence_hash`, `venue_account_state_evidence_hash`, `market_state_evidence_hash`, `funding_margin_evidence_hash`, `single_runner_lock_evidence_hash`, `egress_identity_evidence_hash`, `clob_v2_adapter_signing_evidence_hash`, `clob_v2_collateral_accounting_evidence_hash`, `clob_v2_fee_behavior_evidence_hash`, `release_manifest_evidence_hash`: sha256 bindings to operator-held evidence artifacts
-- `release_manifest_clob_signing_version`: non-empty string for the CLOB V2 signing release proof
-
-`abort_plan` fields:
-
-- `execution_client_id`, `configured_target_id`: strings matching the financial envelope
-- `cancel_if_open_defined`, `nt_accepted_venue_pending_abort_defined`, `partial_fill_abort_defined`, `network_partition_during_submit_abort_defined`, `panic_gate_trip_abort_defined`: booleans, all must be `true`
-- `cancel_if_open_evidence_hash`, `nt_accepted_venue_pending_abort_evidence_hash`, `partial_fill_abort_evidence_hash`, `network_partition_during_submit_abort_evidence_hash`, `panic_gate_trip_abort_evidence_hash`: sha256 bindings to operator-held evidence proving each abort path
-
-Live-result proof JSON files:
-
-- `decision_evidence`, `nt_submit_event`, `venue_order_state`, `strategy_cancel`, and `restart_reconciliation` proofs include `record_kind` set to the matching proof name.
-- `decision_evidence` must include `run_id` and `strategy_instance_id_hash`, and its path must be under the NT runtime capture spool.
-- `nt_submit_event` must include `run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, and `venue_order_id_hash`.
-- `venue_order_state` must include `run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, `venue_order_id_hash`, `venue_order_outcome`, and `order_remains_open`; `venue_order_outcome` is `accepted`, `filled`, or `rejected`, and terminal outcomes require `order_remains_open = false`.
-- `strategy_cancel` is required when `venue_order_state.order_remains_open = true` and includes `run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, and `venue_order_id_hash`.
-- `restart_reconciliation` must include `source_run_id`, `strategy_instance_id_hash`, `client_order_id_hash`, `venue_order_id_hash`, `venue_order_outcome`, and `order_remains_open`; `venue_order_outcome` must be terminal (`filled` or `rejected`), `order_remains_open` must be `false`, and its path must be under the NT runtime capture spool.
-
-`post_run_hygiene` fields:
-
-- `record_kind`: string, `post_run_hygiene`
-- `run_id`: runtime capture run id
-- `strategy_instance_id_hash`, `client_order_id_hash`, `venue_order_id_hash`: approved live-order hashes
-- `raw_secret_residue_absent`: boolean, must be `true`. This is not a hardcoded literal: the post-run writer reads each scanned artifact's bytes once (the same read that produces its `scanned_artifact_hashes` entry) and computes this field as the AND over all scanned artifacts of "none of this run's resolved-secret values appears verbatim in the bytes". The secret-value set is the single secret source of truth — the run's resolved-secret redaction values (`ResolvedBoltV3Secrets::redaction_values`) — so the attestation reflects an actual scan against the exact secret material this run handled. Matched bytes are never logged or surfaced; only the boolean verdict is recorded. An empty resolved-secret set means no secret value can leak.
-- `scanned_artifact_hashes`: non-empty list of sha256 values for scanned artifacts
-- `retention_purge_path_hash`: sha256 binding for the retention/purge path proof
 
 ### `[aws]`
 
@@ -1125,7 +816,7 @@ The current schema also requires these pinned adapter fields to be explicit:
 
 #### `[clients.<identifier>.execution.on_chain_collateral]`
 
-This subtable is optional for a Polymarket `[execution]` block. When present it configures the on-chain collateral-accounting source used by the live canary CLOB V2 collateral proof; when absent the operator artifact path treats on-chain collateral accounting as unconfigured.
+This subtable is optional for a Polymarket `[execution]` block. When present it configures the on-chain collateral-accounting source used by the provider CLOB V2 collateral proof; when absent the operator artifact path treats on-chain collateral accounting as unconfigured.
 
 | Field | Type / Rule | Required |
 |---|---|---|
@@ -1210,7 +901,7 @@ For current Binance reference-data use:
 
 ### `[clients.<identifier>.readiness_probe]`
 
-This subtable is optional. When present it configures the no-submit data-client readiness probe for that client and the client must also declare a `[data]` block. It does not authorize order submission; it only proves the client's market-data path delivers fresh observations.
+This subtable is optional. When present it configures the strategy-free data-client readiness probe for that client and the client must also declare a `[data]` block. It does not authorize order submission; it only proves the client's market-data path delivers fresh observations.
 
 | Field | Type / Rule | Required |
 |---|---|---|
@@ -1230,7 +921,7 @@ A trade chunk-count probe is the combination `market_data_kind = "trade"` with `
 
 - `instrument_id`: string; literal NautilusTrader `InstrumentId`, required. Its venue must match the client's `venue`.
 
-The same `instrument_id` must not appear under more than one client's `readiness_probe.quote_targets`, because NautilusTrader `QuoteTick` does not carry the producing data-client identifier and no-submit quote evidence must stay source-disambiguated.
+The same `instrument_id` must not appear under more than one client's `readiness_probe.quote_targets`, because NautilusTrader `QuoteTick` does not carry the producing data-client identifier and readiness quote evidence must stay source-disambiguated.
 
 ### `[gate_providers.<identifier>]`
 
@@ -1286,6 +977,7 @@ log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true
 execution_client_id = "polymarket_main"
+realized_volatility_surface_id = "configured_rv_surface"
 
 [target]
 configured_target_id = "configured_updown_target"
@@ -1339,10 +1031,6 @@ reentry_cooldown_secs = 30
 book_impact_cap_bps = 50
 risk_lambda = 0.5
 exit_hysteresis_bps = 25
-vol_window_secs = 600
-vol_gap_reset_secs = 60
-vol_min_observations = 5
-vol_bridge_valid_secs = 30
 trade_flow_window_secs = 60
 trade_flow_max_samples = 2000
 spike_guard_return_threshold = 0.02
@@ -1428,6 +1116,12 @@ These fields map directly to pinned NautilusTrader strategy configuration and ar
 - type: keyed reference string (one of the keys under root `[clients.<id>]`)
 - required: yes
 - must reference a root client block that includes `[execution]`
+
+#### `realized_volatility_surface_id`
+
+- type: keyed reference string (one of the keys under root `[realized_volatility_surfaces.<id>]`)
+- required: yes
+- selects the shared TOML-owned realized-volatility surface consumed by taker pricing
 
 ### `[target]`
 
@@ -1527,7 +1221,7 @@ If present:
 
 - each block references a root client that includes `[data]`
 - each block declares the exact NautilusTrader `instrument_id` the strategy subscribes to
-- the same `instrument_id` must not be declared under more than one `data_client_id`, because NautilusTrader `QuoteTick` carries the instrument but not the producing data-client identifier and no-submit quote evidence must remain source-disambiguated
+- the same `instrument_id` must not be declared under more than one `data_client_id`, because NautilusTrader `QuoteTick` carries the instrument but not the producing data-client identifier and readiness quote evidence must remain source-disambiguated
 - for the current `binary_oracle_edge_taker`, the required role name is `primary`
 
 Fields:
@@ -1746,25 +1440,21 @@ For the current `binary_oracle_edge_taker` archetype:
 - required for `binary_oracle_edge_taker`
 - all fields are required and unknown fields are rejected
 - runtime strategy configuration consumed by the Rust strategy registration path
-- `book_impact_cap_bps` is also bound into the Phase 8 financial-envelope evidence and must match the loaded TOML before a tiny-capital canary proof can be written
+- `book_impact_cap_bps` is enforced by strategy runtime configuration and shared submit-admission checks
 
 Runtime fields:
 
 - `reference_publish_topic`: string; reference-data topic consumed by the runtime strategy
 - `warmup_tick_count`: unsigned integer; fresh-reference warmup count before entry is allowed
 - `reentry_cooldown_secs`: unsigned integer; cooldown after an entry attempt
-- `book_impact_cap_bps`: unsigned integer; maximum allowed book-impact basis points for order construction and Phase 8 financial-envelope proof
+- `book_impact_cap_bps`: unsigned integer; maximum allowed book-impact basis points for order construction
 - `risk_lambda`: float; sizing risk coefficient
 - `exit_hysteresis_bps`: integer; exit hysteresis threshold
-- `vol_window_secs`: unsigned integer; realized-volatility window
-- `vol_gap_reset_secs`: unsigned integer; gap that resets volatility history
-- `vol_min_observations`: unsigned integer; minimum observations before volatility is live
-- `vol_bridge_valid_secs`: unsigned integer; maximum bridge age for volatility input
 - `trade_flow_window_secs`: unsigned integer; rolling retention window for signed trade flow
 - `trade_flow_max_samples`: unsigned integer; hard cap on retained signed trades per instrument (memory bound)
 - `spike_guard_return_threshold`: float; single-step reference-spot relative-move threshold that arms the entry spike cooldown
 - `spike_guard_cooldown_secs`: unsigned integer; entry-block cooldown duration after a reference-spot spike
-- `price_to_beat_source`: string; configured source identifier that Phase 8 strategy-input evidence must match through the financial envelope
+- `price_to_beat_source`: string; configured source identifier recorded in strategy-input evidence
 - `pricing_kurtosis`: float; kurtosis input for binary-oracle pricing
 - `theta_decay_factor`: float; non-negative theta decay multiplier
 - `forced_flat_stale_chainlink_ms`: unsigned integer; Chainlink staleness forced-flat threshold
@@ -1925,49 +1615,6 @@ flush_interval_ms = 1000
 replace_existing = false
 rotation_kind = "none"
 
-[live_canary]
-approval_id = "operator-approved-canary-001"
-no_submit_readiness_report_path = "reports/no-submit-readiness.json"
-max_no_submit_readiness_report_bytes = 65536
-readiness_report_max_age_seconds = 300
-reference_quote_max_age_seconds = 10
-reference_quote_wait_timeout_seconds = 20
-reference_quote_probe_actor_id = "no-submit-reference-quote-probe"
-reference_quote_probe_log_events = true
-reference_quote_probe_log_commands = true
-max_live_order_count = 1
-max_notional_per_order = "1.00"
-
-[live_canary.operator_evidence]
-head_sha = "0123456789abcdef0123456789abcdef01234567"
-max_operator_evidence_file_bytes = 65536
-approval_consumption_max_age_seconds = 60
-approval_envelope_path = "operator-evidence/approval-envelope.json"
-approval_envelope_sha256 = "9999999999999999999999999999999999999999999999999999999999999999"
-ssm_manifest_path = "operator-evidence/ssm-manifest.json"
-ssm_manifest_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-strategy_input_evidence_path = "operator-evidence/strategy-input.json"
-strategy_input_evidence_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-financial_envelope_path = "operator-evidence/financial-envelope.json"
-financial_envelope_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-pre_run_state_path = "operator-evidence/pre-run-state.json"
-pre_run_state_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-abort_plan_path = "operator-evidence/abort-plan.json"
-abort_plan_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-canary_evidence_path = "operator-evidence/canary-evidence.json"
-# Set this window immediately before an approved canary run. It must cover two
-# operator-evidence validation rounds plus report read, parse, and validation.
-approval_not_before_unix_seconds = 1893456000
-approval_not_after_unix_seconds = 1893456300
-approval_nonce_path = "operator-evidence/approval-nonce.json"
-approval_nonce_sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-approval_consumption_path = "operator-evidence/approval-consumed.json"
-decision_evidence_path = "operator-evidence/decision-evidence.jsonl"
-nt_submit_event_path = "operator-evidence/nt-submit-event.json"
-venue_order_state_path = "operator-evidence/venue-order-state.json"
-restart_reconciliation_path = "operator-evidence/restart-reconciliation.json"
-post_run_hygiene_path = "operator-evidence/post-run-hygiene.json"
-
 [aws]
 region = "eu-west-1"
 
@@ -2045,6 +1692,7 @@ log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true
 execution_client_id = "polymarket_main"
+realized_volatility_surface_id = "configured_rv_surface"
 
 [target]
 configured_target_id = "configured_updown_target"
@@ -2098,10 +1746,6 @@ reentry_cooldown_secs = 30
 book_impact_cap_bps = 50
 risk_lambda = 0.5
 exit_hysteresis_bps = 25
-vol_window_secs = 600
-vol_gap_reset_secs = 60
-vol_min_observations = 5
-vol_bridge_valid_secs = 30
 trade_flow_window_secs = 60
 trade_flow_max_samples = 2000
 spike_guard_return_threshold = 0.02

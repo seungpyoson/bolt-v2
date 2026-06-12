@@ -420,7 +420,7 @@ IN-SCOPE FILES:
 - tests/bolt_v3_decision_evidence.rs
 - tests/support/stub_runtime_strategy.rs
 
-OUT-OF-SCOPE: provider wiring (P3); market family selection (P5); live-canary/no-submit gates (P6); config parsing (P2).
+OUT-OF-SCOPE: provider wiring (P3); market family selection (P5); retired live evidence gates (P6); config parsing (P2).
 
 CONTEXT: T040 generalized order-shape policy; T063 removed pricing fallback (fast venue → reference); T064 removed outcome-side inference from `-UP.`/`-DOWN.` instrument-id suffixes; T065 removed `.POLYMARKET` pin; T039 moved live-order cap to TOML; T061 added injection seam for strategy validation dispatch.
 
@@ -430,7 +430,7 @@ REQUIRED QUESTIONS:
 3. Pricing fallback (T063): is there ANY code path that prices an entry/position from a venue OR market other than the configured fast venue for the active market? Look for "fallback", "alternate", "reference", or selection-by-priority logic.
 4. Position EV / managed-position pricing: does it require `managed_position.market_id == active_market.id` before using active fast spot, or can it silently price across markets?
 5. src/bolt_v3_archetypes/binary_oracle_edge_taker.rs — any literal trading policy (caps, thresholds, ratios, multipliers, slippage tolerances) not sourced from archetype TOML?
-6. tests/bolt_v3_submit_admission.rs — does it red-test ALL of: unarmed admission, over-count, over-notional, zero notional, negative notional?
+6. tests/bolt_v3_submit_admission.rs — does it red-test ALL of: initial admission, over-count, over-notional, zero notional, negative notional?
 7. tests/bolt_v3_decision_evidence.rs — does it verify that the admission path produces evidence BEFORE the NT submit, and that absent evidence fails closed?
 8. src/bolt_v3_strategy_registration.rs — strategy dispatch: is the injection seam (T061) actually wired up in a test? Or is the production binding the only path?
 9. Any expired/missing fair-probability handling: does it fail closed (T048 = `fair_probability_helper_fails_closed_when_expired`)?
@@ -478,32 +478,24 @@ You are reviewing PR #331 in seungpyoson/bolt-v2 at exact head bcd83f751ca9876bc
 PACKET P6 — verify readiness/canary gates fail closed and have no silent-pass paths; verify caps are TOML-sourced.
 
 IN-SCOPE FILES:
-- src/bolt_v3_no_submit_readiness.rs
-- src/bolt_v3_no_submit_readiness_schema.rs
+- retired live evidence gate modules and tests
 - src/bolt_v3_readiness.rs
-- src/bolt_v3_live_canary_gate.rs
-- src/bolt_v3_tiny_canary_evidence.rs
-- tests/bolt_v3_no_submit_readiness.rs
-- tests/bolt_v3_no_submit_readiness_operator.rs
-- tests/bolt_v3_live_canary_gate.rs
 - tests/bolt_v3_readiness.rs
-- tests/bolt_v3_tiny_canary_operator.rs
-- tests/bolt_v3_tiny_canary_preconditions.rs
 
 OUT-OF-SCOPE: strategy semantics (P4); provider/secret (P3); config parsing (P2).
 
-CONTEXT: T039 — `[live_canary].max_live_order_count` is TOML-sourced; live proof accepts positive admitted-submit count up to the TOML cap and rejects zero or above-cap evidence. T036 — `run_bolt_v3_live_node` capture-failure regression must preserve the live-node run future and avoid false capture-failure logging on closed notification.
+CONTEXT: T039 — live-submit max order count is TOML-sourced; live proof accepts positive admitted-submit count up to the TOML cap and rejects zero or above-cap evidence. T036 — `run_bolt_v3_live_node` capture-failure regression must preserve the live-node run future and avoid false capture-failure logging on closed notification.
 
 REQUIRED QUESTIONS:
-1. Live-canary gate: every threshold/cap from TOML? Any literal cap remaining in code (other than protocol-required minimums)?
-2. tiny_canary_evidence.rs — does it accept a positive admitted submit count up to `max_live_order_count`, and reject zero or above-cap? Cite the test that proves both red sides.
+1. Live-submit admission: every threshold/cap from TOML? Any literal cap remaining in code (other than protocol-required minimums)?
+2. Single-submit evidence — does it accept a positive admitted submit count up to `max_live_order_count`, and reject zero or above-cap? Cite the test that proves both red sides.
 3. Is there any path where an absent or empty evidence artifact silently passes? Any `if let Ok(_)` or `unwrap_or_default()` that turns "missing" into "pass"?
-4. no_submit_readiness.rs — does it require explicit operator config AND evidence? What happens if either is missing?
-5. no_submit_readiness_schema.rs — does the schema reject partial/empty submissions fail-closed, or does it have any optional field that should be required?
-6. live_canary_gate.rs — does the gate run BEFORE `node.run()` and arm submit admission? Is the ordering enforced by a test?
-7. tests/bolt_v3_tiny_canary_preconditions.rs — does it exercise all preconditions (operator config, SSM, evidence hash), or only a subset?
+4. Strategy-free readiness — does it require explicit operator config AND evidence? What happens if either is missing?
+5. Strategy-free schema — does the schema reject partial/empty submissions fail-closed, or does it have any optional field that should be required?
+6. Live-submit admission — does the admission boundary run before exchange submit? Is the ordering enforced by a test?
+7. Retired single-submit preconditions — did they exercise all preconditions (operator config, SSM, evidence hash), or only a subset?
 8. Does any test in this packet set up a fake "live ready" state that production code accepts but should not?
-9. Is there any path that, when run without `[live_canary]` configured, defaults to a permissive state instead of fail-closed?
+9. Is there any path that, when run without live-submit admission configured, defaults to a permissive state instead of fail-closed?
 10. Does run_bolt_v3_live_node correctly propagate capture failures without false-positive logging on closed notification (T036)?
 
 REQUIRED OUTPUT (same format).
@@ -577,12 +569,7 @@ IN-SCOPE FILES:
 - specs/001-thin-live-canary-path/plan.md
 - specs/001-thin-live-canary-path/quickstart.md
 - specs/001-thin-live-canary-path/research.md
-- specs/002-phase7-no-submit-readiness/checklists/phase7-requirements.md
-- specs/002-phase7-no-submit-readiness/checklists/requirements.md
-- specs/002-phase7-no-submit-readiness/external-review-phase7-disposition.md
-- specs/002-phase7-no-submit-readiness/quickstart.md
-- specs/002-phase7-no-submit-readiness/spec.md
-- specs/002-phase7-no-submit-readiness/tasks.md
+- retired Phase 7 strategy-free readiness spec files
 
 OUT-OF-SCOPE: Phase 9 audit artifacts (P0); production code (P1–P7).
 
@@ -868,7 +855,7 @@ Coverage gap (process-level, not code-level): the P3 round-2 prompt cited "619 +
 
 | ID | Source (reviewer + label) | Adjudicated severity | Detail | Status | Resolution |
 |----|---------------------------|----------------------|--------|--------|------------|
-| P4-BLOCK1 | GPT P4-DECISION-EVIDENCE-INCOMPLETE BLOCKING; Claude B1+B2 BLOCKING; Gemini P4-EVIDENCE-MISSING-GATES BLOCKING; Kimi P4-EVIDENCE-001 BLOCKING; GLM P4-B1 BLOCKING; DeepSeek NB1 timestamp NB (substituted route) — **5/6 BLOCKING + 1 NB → BLOCKING by rule 6** | BLOCKING | (a) `BoltV3SubmitAdmissionState::admit` returns admit/reject without writing any decision evidence (5 reject reasons + admit all bypass audit). (b) `BoltV3OrderIntentEvidence` has no timestamp, no gate identity, no gate version. (c) `BoltV3DecisionEvidenceWriter` trait exposes only `record_order_intent`. | **resolved** | Commit `bcd83f75` aligns with the Q4 audit contract: adds `record_admission_decision` trait method + `BoltV3AdmissionOutcome` enum naming every outcome variant + `BoltV3AdmissionDecisionEvidence` record. Every JSONL line now wraps payload in a versioned envelope: `schema_version`, `recorded_at_utc_ns` (writer-stamped via `chrono::Utc::now()`), `gate_id` (`bolt_v3.order_intent` or `bolt_v3.submit_admission`), `gate_version` (`env!("CARGO_PKG_VERSION")`), `kind`, payload. `BoltV3SubmitAdmissionState::new_unarmed` now requires the writer at construction; `admit()` does a 2-phase commit (evaluate → record → mutate) so evidence-write failure surfaces as `BoltV3SubmitAdmissionError::EvidenceWriteFailed { reason }` and does NOT consume an admission slot. Writer construction moves up to `build_live_node_with_clients` so the same `Arc<dyn>` is shared by admission state and strategy registration. Verified: cargo fmt clean; cargo clippy clean; cargo test --locked --lib → 255 passed; cargo test --locked --tests → 605 passed, 0 failed, 2 ignored. |
+| P4-BLOCK1 | GPT P4-DECISION-EVIDENCE-INCOMPLETE BLOCKING; Claude B1+B2 BLOCKING; Gemini P4-EVIDENCE-MISSING-GATES BLOCKING; Kimi P4-EVIDENCE-001 BLOCKING; GLM P4-B1 BLOCKING; DeepSeek NB1 timestamp NB (substituted route) — **5/6 BLOCKING + 1 NB → BLOCKING by rule 6** | BLOCKING | (a) `BoltV3SubmitAdmissionState::admit` returns admit/reject without writing any decision evidence (5 reject reasons + admit all bypass audit). (b) `BoltV3OrderIntentEvidence` has no timestamp, no gate identity, no gate version. (c) `BoltV3DecisionEvidenceWriter` trait exposes only `record_order_intent`. | **resolved** | Commit `bcd83f75` aligns with the Q4 audit contract: adds `record_admission_decision` trait method + `BoltV3AdmissionOutcome` enum naming every outcome variant + `BoltV3AdmissionDecisionEvidence` record. Every JSONL line now wraps payload in a versioned envelope: `schema_version`, `recorded_at_utc_ns` (writer-stamped via `chrono::Utc::now()`), `gate_id` (`bolt_v3.order_intent` or `bolt_v3.submit_admission`), `gate_version` (`env!("CARGO_PKG_VERSION")`), `kind`, payload. `BoltV3SubmitAdmissionState::new` now requires the writer at construction; `admit()` does a 2-phase commit (evaluate → record → mutate) so evidence-write failure surfaces as `BoltV3SubmitAdmissionError::EvidenceWriteFailed { reason }` and does NOT consume an admission slot. Writer construction moves up to `build_live_node_with_clients` so the same `Arc<dyn>` is shared by admission state and strategy registration. Verified: cargo fmt clean; cargo clippy clean; cargo test --locked --lib → 255 passed; cargo test --locked --tests → 605 passed, 0 failed, 2 ignored. |
 | P4-NB1 | Gemini P4-REGISTRATION-DUP-CHECK BLOCKING; Claude NB3 NB; DeepSeek NB2 NB; Kimi caveat — **1 BLOCKING + 3 NB → severity contradiction by rule 6** | NON_BLOCKING — deferred (rule 9) | `register_bolt_v3_strategies_on_node_with_bindings` does not maintain a per-call dedup of `registered_strategy_id` strings. Detection currently relies on upstream `validate_venue_block`/`src/bolt_v3_validate.rs:440-448` plus NT's own `add_strategy()` rejection of duplicate IDs. Defense-in-depth gap, not an active leak — Gemini's BLOCKING is on "defensive dedup" being absent, but the runtime path is correct by composition. | **deferred → #371** | Defense-in-depth, gated upstream. Folded into issue #371 as P4 round-1 leftover. Severity downgraded because (a) upstream validation rejects duplicates at config-parse time, (b) NT's `add_strategy()` rejects duplicate `StrategyId`s, (c) no production path exercises the gap. |
 | P4-NB2 | Claude NB1 NB (mutex panic-on-poison); Kimi P4-MUTEX-SYNC NB; DeepSeek implicitly OK | NON_BLOCKING — deferred | `BoltV3SubmitAdmissionState::{arm,admit}` use `.expect("submit admission state mutex should not be poisoned")` rather than mapping `PoisonError` to a typed `BoltV3SubmitAdmissionError` variant. Fail-closed intent is correct (halts on prior corruption), but the form converts a structured error contract into a process panic. Kimi also notes `std::sync::Mutex` in an async-runtime context could in principle block executor threads; current single-threaded NT runtime makes this benign. | **deferred → #371** | Folded into issue #371; defense-in-depth on the error contract shape, not an active correctness gap. |
 | P4-NB3 | Claude NB4 NB (source-string scanning in tests) | NON_BLOCKING — deferred | `tests/bolt_v3_strategy_registration.rs::binary_oracle_runtime_mapping_uses_market_family_target_projection` and `tests/bolt_v3_decision_evidence.rs::binary_oracle_edge_taker_records_evidence_then_admission_before_only_direct_submit_call` use `include_str!()` + `source.contains()` ordering scans. Brittle against refactors / comment text containing the searched strings. | **deferred → #371** | Folded into issue #371; test-architecture hardening, not behavior. |
@@ -923,7 +910,7 @@ Brief items 1–14 results (uniform across all 5 reviewers):
 - Item 1 — diff stat strictly 11 files: PASS (504 insertions / 60 deletions)
 - Item 2 — trait surface + 5-variant outcome enum + envelope structs with 5 metadata fields + payload: PASS
 - Item 3 — four constants exact (`SCHEMA_VERSION=2`, `env!("CARGO_PKG_VERSION")`, `bolt_v3.order_intent`, `bolt_v3.submit_admission`): PASS
-- Item 4 — `new_unarmed(Arc<dyn Writer>)` + `EvidenceWriteFailed { reason: String }`: PASS
+- Item 4 — `new(Arc<dyn Writer>)` + `EvidenceWriteFailed { reason: String }`: PASS
 - Item 5 — two-phase commit under lock (evaluate pure → record → mutate only on Admitted): PASS
 - Item 6 — single `JsonlBoltV3DecisionEvidenceWriter::from_loaded_config` site at `bolt_v3_live_node.rs:649`, shared `Arc<dyn>` to both consumers: PASS
 - Item 7 — `register_*` takes writer by parameter, no internal construction: PASS

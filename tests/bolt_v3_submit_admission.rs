@@ -3,7 +3,7 @@ mod support;
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
-    BoltV3OrderIntentEvidence, BoltV3StrategyInputEvidenceSnapshot,
+    BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot,
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
@@ -11,16 +11,18 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
     BoltV3LiveSubmitApprovalLimits, BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput,
     BoltV3QuoteQuantityOrderSide, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
-    BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
-    BoltV3SubmitLifecyclePolicy, conservative_quote_quantity_admission_notional,
-    fee_inclusive_admission_notional, market_style_admission_ceiling_notional,
-    rounded_order_admission_notional,
+    BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput, BoltV3SubmitAdmissionState,
+    BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, build_submit_admission_request_from_order,
+    conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
+    market_style_admission_ceiling_notional, rounded_order_admission_notional,
 };
 use bolt_v2::strategies::registry::FeeProvider;
 use bolt_v2::strategies::registry::StrategyBuildContext;
 use futures_util::future::{BoxFuture, FutureExt};
-use nautilus_model::enums::{OrderSide, PositionSide};
-use nautilus_model::identifiers::InstrumentId;
+use nautilus_model::enums::{OrderSide, PositionSide, TimeInForce};
+use nautilus_model::identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId};
+use nautilus_model::orders::{LimitOrder, MarketOrder, OrderAny};
+use nautilus_model::types::{Price, Quantity};
 use rust_decimal::Decimal;
 use std::{
     collections::BTreeMap,
@@ -62,6 +64,139 @@ fn market_style_admission_ceiling_notional_fails_closed_without_a_ceiling() {
 }
 
 #[test]
+fn build_submit_admission_request_from_order_maps_base_limit_order() {
+    let price = Price::new(0.50, 2);
+    let quantity = Quantity::new(2.0, 2);
+    let order = OrderAny::Limit(
+        LimitOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            InstrumentId::from("INSTRUMENT.SOURCE"),
+            ClientOrderId::from("O-19700101-000000-001-A9-1"),
+            OrderSide::Buy,
+            quantity,
+            price,
+            TimeInForce::Gtc,
+            None,
+            false,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+        )
+        .expect("limit order should be valid"),
+    );
+    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        "strategy-a".to_string(),
+        BoltV3OrderIntentKind::Entry,
+        price.to_string(),
+        &order,
+    );
+
+    let request = build_submit_admission_request_from_order(
+        BoltV3SubmitAdmissionRequestInput {
+            execution_client_id: "hyperliquid_perps",
+            intent: &intent,
+            order: &order,
+            instrument: None,
+            quote_quantity_last_price: None,
+            quote_quantity_reference_price: None,
+            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            risk_reducing_exit_position: None,
+        },
+        |_| Ok(Decimal::ZERO),
+    )
+    .expect("base limit admission request should build in shared admission module");
+
+    assert_eq!(request.strategy_id, "strategy-a");
+    assert_eq!(request.execution_client_id, "hyperliquid_perps");
+    assert_eq!(request.client_order_id, "O-19700101-000000-001-A9-1");
+    assert_eq!(request.instrument_id, "INSTRUMENT.SOURCE");
+    assert_eq!(
+        request.notional,
+        Decimal::from_str_exact("1.0000").expect("expected decimal should parse")
+    );
+    assert_eq!(request.order_side, OrderSide::Buy);
+    assert_eq!(
+        request.order_quantity,
+        Decimal::from_str_exact("2.00").expect("expected decimal should parse")
+    );
+    assert_eq!(request.intent_kind, BoltV3SubmitIntentKind::Entry);
+}
+
+#[test]
+fn build_submit_admission_request_from_order_checks_fee_before_market_ceiling() {
+    let fallback_price = Price::new(0.50, 2);
+    let quantity = Quantity::new(2.0, 2);
+    let order = OrderAny::Market(
+        MarketOrder::new_checked(
+            TraderId::from("TRADER-001"),
+            StrategyId::from("strategy-a"),
+            InstrumentId::from("INSTRUMENT.SOURCE"),
+            ClientOrderId::from("O-19700101-000000-001-A9-2"),
+            OrderSide::Buy,
+            quantity,
+            TimeInForce::Gtc,
+            nautilus_core::UUID4::new(),
+            nautilus_core::UnixNanos::from(1_u64),
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("market order should be valid"),
+    );
+    let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+        "strategy-a".to_string(),
+        BoltV3OrderIntentKind::Entry,
+        fallback_price.to_string(),
+        &order,
+    );
+
+    let error = build_submit_admission_request_from_order(
+        BoltV3SubmitAdmissionRequestInput {
+            execution_client_id: "hyperliquid_perps",
+            intent: &intent,
+            order: &order,
+            instrument: None,
+            quote_quantity_last_price: None,
+            quote_quantity_reference_price: None,
+            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            risk_reducing_exit_position: None,
+        },
+        |_| anyhow::bail!("fee lookup failed before ceiling valuation"),
+    )
+    .expect_err("fee lookup should preserve the old strategy error order");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("fee lookup failed before ceiling valuation"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("structural price ceiling"),
+        "market ceiling validation must not run before fee lookup: {message}"
+    );
+}
+
+#[test]
 fn live_node_runtime_does_not_expose_manual_admission_or_raw_run_bypass() {
     let source = support::repo_text("src/bolt_v3_live_node.rs");
 
@@ -80,15 +215,15 @@ fn live_node_runtime_does_not_expose_manual_admission_or_raw_run_bypass() {
 }
 
 #[test]
-fn live_node_runner_does_not_require_live_canary_submit_admission_before_nt_run() {
+fn live_node_runner_does_not_require_evidence_gate_admission_before_nt_run() {
     let source = support::repo_text("src/bolt_v3_live_node.rs");
     let start = source
         .find("pub async fn run_bolt_v3_live_node")
         .expect("live runner entrypoint should exist");
     let end = source[start..]
-        .find("fn run_blocked_before_submit")
+        .find("fn classify_live_node_run_and_capture_shutdown")
         .map(|offset| start + offset)
-        .expect("next helper should bound live runner source");
+        .expect("run classification should bound live runner source");
     let runner = &source[start..end];
 
     let run_index = runner
@@ -105,7 +240,7 @@ fn live_node_runner_does_not_require_live_canary_submit_admission_before_nt_run(
     assert!(
         !runner.contains("build_bolt_v3_live_submit_admission_report_from_config")
             && !runner.contains(".arm("),
-        "live runner must not require the no-submit/live-canary submit-admission gate"
+        "live runner must not require the retired evidence gate before submit admission"
     );
     assert!(
         !runner.contains("consume_bolt_v3_live_runner_approval"),
@@ -115,7 +250,7 @@ fn live_node_runner_does_not_require_live_canary_submit_admission_before_nt_run(
 
 #[test]
 fn ungated_submit_admission_allows_production_submit() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+    let admission = BoltV3SubmitAdmissionState::new(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
     ));
     let request = submit_request(Decimal::new(1, 0));
@@ -129,16 +264,8 @@ fn ungated_submit_admission_allows_production_submit() {
 }
 
 #[test]
-fn armed_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    ));
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+fn limited_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
+    let admission = limited_admission(1, Decimal::new(1, 0));
 
     let request = submit_request(Decimal::new(1, 0));
     let mut nt_submit_calls = 0;
@@ -163,8 +290,8 @@ fn armed_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
 }
 
 #[test]
-fn live_submit_approval_limits_tighten_canary_caps_before_nt_submit() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed_with_live_submit_limits(
+fn live_submit_approval_limits_bound_provider_submit_before_nt_submit() {
+    let admission = BoltV3SubmitAdmissionState::new_with_live_submit_limits(
         Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         BTreeMap::from([(
             "hyperliquid_perps".to_string(),
@@ -174,19 +301,13 @@ fn live_submit_approval_limits_tighten_canary_caps_before_nt_submit() {
             },
         )]),
     );
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            3,
-            Decimal::new(100, 0),
-        ))
-        .expect("wider live canary report should arm admission");
 
     let over_approval_notional = admission.admit(&submit_request_for_execution_client(
         "hyperliquid_perps",
         Decimal::new(26, 0),
     ));
     let error = over_approval_notional
-        .expect_err("provider approval notional must tighten the live canary cap");
+        .expect_err("provider approval notional must bound live submit admission");
     assert!(matches!(
         error,
         BoltV3SubmitAdmissionError::NotionalCapExceeded
@@ -213,40 +334,8 @@ fn live_submit_approval_limits_tighten_canary_caps_before_nt_submit() {
 }
 
 #[test]
-fn submit_admission_rejects_non_proof_only_canary_proof_claim() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    ));
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(5, 0),
-        ))
-        .expect("valid gate report should arm admission");
-    let mut request = submit_request(Decimal::new(1, 0));
-    request.canary_proof_claim = Some("alpha_ready".to_string());
-
-    let error = admission
-        .admit(&request)
-        .expect_err("non-proof-only claim must fail before submit");
-
-    assert!(matches!(
-        error,
-        BoltV3SubmitAdmissionError::InvalidCanaryProofClaim
-    ));
-}
-
-#[test]
 fn over_notional_cap_rejects_before_nt_submit_without_consuming_count() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    ));
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission(1, Decimal::new(1, 0));
 
     let result = admission.admit(&submit_request(Decimal::new(2, 0)));
     let nt_submit_called = result.is_ok();
@@ -262,15 +351,7 @@ fn over_notional_cap_rejects_before_nt_submit_without_consuming_count() {
 
 #[test]
 fn notional_equal_to_cap_is_admitted() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    ));
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission(1, Decimal::new(1, 0));
 
     admission
         .admit(&submit_request(Decimal::new(1, 0)))
@@ -281,21 +362,13 @@ fn notional_equal_to_cap_is_admitted() {
 
 #[test]
 fn fee_inclusive_notional_rejects_when_fee_pushes_cash_debit_over_cap() {
-    // Drive through the SAME production helper the canary proof executor calls
-    // to turn a rounded order into its admission notional. The raw base notional
+    // Drive through the SAME production helper that turns a rounded order into
+    // its admission notional. The raw base notional
     // (4.98) is within the 5.0 cap, but a positive max entry fee (700 bps)
     // scales the admission notional above the cap. If the fee wrapper were
     // deleted from `rounded_order_admission_notional`, this would no longer
     // exceed the cap and the test would fail — it is not tautological.
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    ));
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(5, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission(1, Decimal::new(5, 0));
     let raw_base_notional = Decimal::new(498, 2);
     let intended_notional = raw_base_notional;
     let max_entry_fee_bps = Decimal::new(700, 0);
@@ -320,15 +393,7 @@ fn fee_inclusive_notional_admits_same_base_when_fee_is_zero() {
     // notional (4.98 < cap 5.0) with ZERO fee must be ADMITTED. This proves the
     // rejection above is produced by the fee path, not by the base notional —
     // remove the fee scaling and the over-cap test would collapse into this one.
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    ));
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(5, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission(1, Decimal::new(5, 0));
     let raw_base_notional = Decimal::new(498, 2);
     let intended_notional = raw_base_notional;
     let admission_notional =
@@ -363,12 +428,7 @@ fn fee_inclusive_notional_cannot_exceed_operator_cap() {
         "a positive fee must push the fee-inclusive notional strictly above the cap"
     );
 
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    ));
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(1, cap))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission(1, cap);
 
     let result = admission.admit(&submit_request(fee_inclusive_notional));
     let nt_submit_called = result.is_ok();
@@ -386,7 +446,7 @@ fn fee_inclusive_notional_cannot_exceed_operator_cap() {
 fn rounded_order_admission_notional_fails_closed_when_rounding_grows_past_intent() {
     // FIX #1 regression: banker's rounding to venue precision can round a
     // quantity (or price) UP, so the submitted order's base notional can exceed
-    // the operator-approved intended notional. A canary proof intent of 5.30 USD
+    // the operator-approved intended notional. An intended notional of 5.30 USD
     // (qty 10.6 @ 0.50, cap 5.3053) rounds to qty 11 @ 0.50 = 5.50 base — 3.7%
     // over intent. The shared admission helper must refuse it before any cap or
     // fee scaling so a rounded order can never debit more than approved.
@@ -432,15 +492,7 @@ fn rounded_order_admission_notional_admits_when_rounded_base_equals_intent() {
 
 #[test]
 fn non_positive_notional_rejects_before_nt_submit_without_consuming_count() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    ));
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission(1, Decimal::new(1, 0));
 
     let result = admission.admit(&submit_request(Decimal::ZERO));
     let nt_submit_called = result.is_ok();
@@ -668,38 +720,6 @@ fn quote_quantity_admission_helper_source_fence_blocks_market_tokens() {
 }
 
 #[test]
-fn second_arm_rejects_without_mutating_validated_bounds() {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    ));
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("first valid gate report should arm admission");
-
-    let error = admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            2,
-            Decimal::new(2, 0),
-        ))
-        .expect_err("second arm must reject");
-
-    assert!(matches!(error, BoltV3SubmitAdmissionError::AlreadyArmed));
-
-    let over_original_cap = admission
-        .admit(&submit_request(Decimal::new(2, 0)))
-        .expect_err("second arm must not mutate cap");
-
-    assert!(matches!(
-        over_original_cap,
-        BoltV3SubmitAdmissionError::NotionalCapExceeded
-    ));
-    assert_eq!(admission.admitted_order_count(), 0);
-}
-
-#[test]
 fn fresh_live_node_build_keeps_submit_admission_internal() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -712,7 +732,7 @@ fn fresh_live_node_build_keeps_submit_admission_internal() {
 
 #[test]
 fn strategy_build_context_carries_shared_submit_admission_handle() {
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
     )));
     let context = StrategyBuildContext::new(
@@ -812,7 +832,6 @@ fn submit_request_with_kind_policy_and_exit_proof(
         order_quantity,
         intent_kind,
         lifecycle_policy,
-        canary_proof_claim: None,
         risk_reducing_exit_proof,
         kill_switch_forced_reduction: None,
     }
@@ -829,17 +848,29 @@ fn valid_risk_reducing_exit_proof() -> BoltV3RiskReducingExitProof {
     }
 }
 
-fn armed_admission(max_live_order_count: u32, max_notional: Decimal) -> BoltV3SubmitAdmissionState {
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
-        support::RecordingDecisionEvidenceWriter::default(),
-    ));
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            max_live_order_count,
-            max_notional,
-        ))
-        .expect("valid gate report should arm admission");
-    admission
+fn limited_admission(max_order_count: u32, max_notional: Decimal) -> BoltV3SubmitAdmissionState {
+    limited_admission_with_writer(
+        Arc::new(support::RecordingDecisionEvidenceWriter::default()),
+        max_order_count,
+        max_notional,
+    )
+}
+
+fn limited_admission_with_writer(
+    writer: Arc<dyn BoltV3DecisionEvidenceWriter>,
+    max_order_count: u32,
+    max_notional: Decimal,
+) -> BoltV3SubmitAdmissionState {
+    BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+        writer,
+        BTreeMap::from([(
+            "polymarket_main".to_string(),
+            BoltV3LiveSubmitApprovalLimits {
+                max_order_count,
+                max_order_notional: max_notional,
+            },
+        )]),
+    )
 }
 
 fn halted_kill_switch_state() -> KillSwitchState {
@@ -1030,13 +1061,7 @@ impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
 #[test]
 fn admit_records_admission_decision_evidence_on_admit_outcome() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
 
     let request = submit_request(Decimal::new(1, 0));
     admission
@@ -1098,13 +1123,7 @@ fn submit_lifecycle_policy_source_removes_dead_risk_reducing_exit_flag() {
 #[test]
 fn verified_risk_reducing_exit_after_entry_uses_exit_slot_not_entry_notional_or_entry_slot() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission_with_writer(writer.clone(), 2, Decimal::new(5, 0));
 
     admission
         .admit(&submit_request_with_kind(
@@ -1119,7 +1138,7 @@ fn verified_risk_reducing_exit_after_entry_uses_exit_slot_not_entry_notional_or_
             BoltV3SubmitIntentKind::RiskReducingExit,
             Some(valid_risk_reducing_exit_proof()),
         ))
-        .expect("verified risk-reducing exit should bypass the entry notional cap and use its exit slot");
+        .expect("verified risk-reducing exit should admit within provider limits");
     let outcomes: Vec<BoltV3AdmissionOutcome> = writer
         .admission_decisions()
         .into_iter()
@@ -1138,13 +1157,7 @@ fn verified_risk_reducing_exit_after_entry_uses_exit_slot_not_entry_notional_or_
 #[test]
 fn unproven_risk_reducing_exit_fails_closed_before_notional_bypass() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            2,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission_with_writer(writer.clone(), 2, Decimal::new(5, 0));
 
     admission
         .admit(&submit_request_with_kind(
@@ -1182,13 +1195,7 @@ fn unproven_risk_reducing_exit_fails_closed_before_notional_bypass() {
 #[test]
 fn malformed_risk_reducing_exit_proof_fails_closed() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(5, 0));
 
     let mut proof = valid_risk_reducing_exit_proof();
     proof.exit_order_side = OrderSide::Buy;
@@ -1219,13 +1226,7 @@ fn malformed_risk_reducing_exit_proof_fails_closed() {
 #[test]
 fn risk_reducing_exit_proof_must_match_actual_order_side() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(5, 0));
 
     let mut request = submit_request_with_kind_and_exit_proof(
         Decimal::new(264, 2),
@@ -1248,13 +1249,7 @@ fn risk_reducing_exit_proof_must_match_actual_order_side() {
 #[test]
 fn risk_reducing_exit_proof_must_match_actual_order_quantity() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(5, 0));
 
     let mut request = submit_request_with_kind_and_exit_proof(
         Decimal::new(264, 2),
@@ -1277,13 +1272,7 @@ fn risk_reducing_exit_proof_must_match_actual_order_quantity() {
 #[test]
 fn risk_reducing_exit_proof_rejects_over_position_quantity() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(5, 0));
 
     let mut proof = valid_risk_reducing_exit_proof();
     proof.position_quantity = Decimal::new(1, 0);
@@ -1305,13 +1294,7 @@ fn risk_reducing_exit_proof_rejects_over_position_quantity() {
 #[test]
 fn second_entry_exhausts_entry_slot_even_when_exit_slot_is_unused() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
 
     admission
         .admit(&submit_request_with_kind(
@@ -1349,13 +1332,7 @@ fn second_entry_exhausts_entry_slot_even_when_exit_slot_is_unused() {
 #[test]
 fn second_verified_risk_reducing_exit_exhausts_exit_slot() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission_with_writer(writer.clone(), 2, Decimal::new(5, 0));
 
     admission
         .admit(&submit_request_with_kind(
@@ -1402,13 +1379,7 @@ fn second_verified_risk_reducing_exit_exhausts_exit_slot() {
 #[test]
 fn replace_submit_uses_replace_slot_after_entry_and_exit_slots_are_consumed() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(5, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission_with_writer(writer.clone(), 3, Decimal::new(5, 0));
 
     admission
         .admit(&submit_request_with_kind(
@@ -1437,13 +1408,7 @@ fn replace_submit_uses_replace_slot_after_entry_and_exit_slots_are_consumed() {
 #[test]
 fn replace_submit_rejects_when_lifecycle_policy_disables_replace() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
 
     let replace = admission
         .admit(&submit_request_with_kind_and_policy(
@@ -1474,7 +1439,7 @@ fn replace_submit_rejects_when_lifecycle_policy_disables_replace() {
 
 #[test]
 fn armed_kill_switch_preserves_existing_entry_admission_behavior() {
-    let admission = armed_admission(1, Decimal::new(1, 0));
+    let admission = limited_admission(1, Decimal::new(1, 0));
     admission.replace_kill_switch_state(KillSwitchState::Armed);
 
     admission
@@ -1491,13 +1456,7 @@ fn armed_kill_switch_preserves_existing_entry_admission_behavior() {
 fn latched_kill_switch_states_block_entry_before_nt_submit_without_consuming_count() {
     for state in latched_kill_switch_states() {
         let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-        let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
-        admission
-            .arm(support::validated_bolt_v3_live_canary_gate_report(
-                1,
-                Decimal::new(1, 0),
-            ))
-            .expect("valid gate report should arm admission");
+        let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
         admission.replace_kill_switch_state(state);
 
         let error = admission
@@ -1523,7 +1482,7 @@ fn latched_kill_switch_states_block_entry_before_nt_submit_without_consuming_cou
 
 #[test]
 fn latched_kill_switch_blocks_replace_submit_even_when_lifecycle_policy_allows_replace() {
-    let admission = armed_admission(1, Decimal::new(1, 0));
+    let admission = limited_admission(1, Decimal::new(1, 0));
     admission.replace_kill_switch_state(halted_kill_switch_state());
 
     let error = admission
@@ -1544,13 +1503,7 @@ fn latched_kill_switch_blocks_replace_submit_even_when_lifecycle_policy_allows_r
 #[test]
 fn ordinary_risk_reducing_exit_while_latched_still_obeys_normal_count_cap() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission_with_writer(writer.clone(), 2, Decimal::new(5, 0));
     admission
         .admit(&submit_request_with_kind(
             Decimal::new(1, 1),
@@ -1596,7 +1549,7 @@ fn ordinary_risk_reducing_exit_while_latched_still_obeys_normal_count_cap() {
 
 #[test]
 fn forced_reduction_requires_halt_action_and_policy_proof_before_cap_bypass() {
-    let admission = armed_admission(1, Decimal::new(1, 0));
+    let admission = limited_admission(1, Decimal::new(1, 0));
     admission.replace_kill_switch_state(halted_kill_switch_state());
 
     for request in [
@@ -1619,7 +1572,7 @@ fn forced_reduction_requires_halt_action_and_policy_proof_before_cap_bypass() {
 
 #[test]
 fn forced_reduction_is_only_admissible_while_kill_switch_is_latched() {
-    let admission = armed_admission(1, Decimal::new(1, 0));
+    let admission = limited_admission(1, Decimal::new(1, 0));
     admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
 
     let error = admission
@@ -1638,13 +1591,7 @@ fn forced_reduction_is_only_admissible_while_kill_switch_is_latched() {
 #[test]
 fn valid_forced_reduction_while_latched_bypasses_normal_count_and_notional_caps() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(1, 0));
     admission
         .admit(&submit_request_with_kind(
             Decimal::new(1, 1),
@@ -1675,7 +1622,7 @@ fn valid_forced_reduction_while_latched_bypasses_normal_count_and_notional_caps(
 
 #[test]
 fn forced_reduction_live_count_releases_terminal_order_before_next_admission() {
-    let admission = armed_admission(1, Decimal::new(1, 0));
+    let admission = limited_admission(1, Decimal::new(1, 0));
     admission.replace_kill_switch_state(halted_kill_switch_state());
     admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
 
@@ -1721,17 +1668,11 @@ fn plain_cancel_lifecycle_intent_is_not_a_submit_candidate() {
 #[test]
 fn admit_records_admission_decision_evidence_for_each_rejection_path() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
+    let admission = limited_admission_with_writer(writer.clone(), 2, Decimal::new(1, 0));
 
     admission
         .admit(&submit_request(Decimal::new(1, 0)))
-        .expect("ungated production admission should admit before the optional gate is armed");
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+        .expect("first valid submit should admit");
     admission
         .admit(&submit_request(Decimal::ZERO))
         .expect_err("zero notional must reject");
@@ -1765,14 +1706,11 @@ fn admit_records_admission_decision_evidence_for_each_rejection_path() {
 
 #[test]
 fn admit_surfaces_evidence_write_failure_as_typed_error_and_does_not_consume_count() {
-    let admission =
-        BoltV3SubmitAdmissionState::new_unarmed(Arc::new(FailingDecisionEvidenceWriter));
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = limited_admission_with_writer(
+        Arc::new(FailingDecisionEvidenceWriter),
+        1,
+        Decimal::new(1, 0),
+    );
 
     let error = admission
         .admit(&submit_request(Decimal::new(1, 0)))
@@ -1797,13 +1735,11 @@ fn admit_surfaces_evidence_write_failure_as_typed_error_and_does_not_consume_cou
 #[test]
 fn admit_serializes_while_admission_evidence_is_in_flight() {
     let writer = Arc::new(BlockingFirstAdmissionDecisionWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer.clone()));
-    admission
-        .arm(support::validated_bolt_v3_live_canary_gate_report(
-            1,
-            Decimal::new(1, 0),
-        ))
-        .expect("valid gate report should arm admission");
+    let admission = Arc::new(limited_admission_with_writer(
+        writer.clone(),
+        1,
+        Decimal::new(1, 0),
+    ));
 
     let first_admission = admission.clone();
     let first_handle =

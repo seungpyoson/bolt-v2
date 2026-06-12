@@ -15,16 +15,14 @@ does not propose a decomposition plan or implementation sequence.
 | File | Lines | Observation |
 | --- | ---: | --- |
 | `src/strategies/binary_oracle_edge_taker.rs` | 18,205 | Strategy monolith with config parsing, signal state, market selection, exposure lifecycle, order construction, admission request construction, actual submit, replay/source-proof helpers, and 200+ tests. |
-| `src/bolt_v3_live_node.rs` | 5,229 | Runtime monolith covering secret resolution, adapter mapping orchestration, client registration, build paths, production runner, no-submit runner, and probes. |
+| `src/bolt_v3_live_node.rs` | 5,229 | Runtime monolith covering secret resolution, adapter mapping orchestration, client registration, build paths, production runner, strategy-free runner, and probes. |
 | `src/bolt_v3_adapters.rs` | 970 | Shared adapter mapper, but it derives market identity from loaded strategy config before provider mapping. |
 | `src/bolt_v3_client_registration.rs` | 438 | Focused shared registration seam around NT `add_data_client` and `add_exec_client`. |
-| `src/bolt_v3_no_submit_readiness.rs` | 732 | Focused report/redaction module, but no-submit runtime/probe logic remains mostly in live-node. |
 | `src/bolt_v3_providers/mod.rs` | 1,462 | Provider registry plus provider-specific CLOB v2 proof/artifact request types. |
 | `src/bolt_v3_providers/polymarket.rs` | 896 | Provider config, secret resolution, adapter mapping, fee-provider construction, and provider exports. |
 | `src/bolt_v3_market_families/updown.rs` | 1,770 | Market-family identity, target validation, market selection support, and fair-probability pricing math. |
-| `src/bolt_v3_canary_proof_executor.rs` | 880 | NT strategy-like proof executor with order construction, admission, evidence write, and submit. |
-| `src/bolt_v3_submit_admission.rs` | 537 | Shared admission state, but includes canary-proof-specific claim/outcome handling. |
-| `src/bolt_v3_decision_evidence.rs` | 1,283 | Shared evidence writer and schema with strategy and canary-proof fields. |
+| `src/bolt_v3_submit_admission.rs` | 537 | Shared admission state for live-submit approval limits, kill switch checks, and mutation diagnostics. |
+| `src/bolt_v3_decision_evidence.rs` | 1,283 | Shared evidence writer and schema for strategy order intent and admission outcomes. |
 | `src/bolt_v3_validate.rs` | 1,870 | Shared validation dispatcher for root config, clients, target gate providers, strategy references, feed bindings, and rate bounds. |
 
 The inspected files above total 34,611 lines.
@@ -343,29 +341,27 @@ The inspected files above total 34,611 lines.
       admission, lifecycle, recovery, venue quarantine, fee readiness, source
       evidence, and entry/exit decisions in the same file.
 
-## Live Node, Adapter, and No-submit Findings
+## Live Node, Adapter, and Strategy-Free Findings
 
 ### `src/bolt_v3_live_node.rs`
 
 1. The module documentation itself lists many responsibilities in one module:
    forbidden credential env-var blocklist, SSM resolution, adapter mapping,
    client registration, `LiveNodeBuilder::build`, runtime capture, logger
-   filters, production runner, no-submit readiness, and probes.
+   filters, production runner, strategy-free connectivity, and probes.
 
    Evidence:
    - Module docs start at `src/bolt_v3_live_node.rs:1`.
    - The responsibility list runs through `src/bolt_v3_live_node.rs:39`.
 
-2. Production, no-submit, data-client probe, and all-configured-client build
+2. Production, strategy-free, data-client probe, and all-configured-client build
    variants live in the same module and share overlapping config/adapter/build
    steps.
 
    Evidence:
    - `build_bolt_v3_live_node` starts at `src/bolt_v3_live_node.rs:2013`.
-   - `build_bolt_v3_no_submit_live_node` starts at
-     `src/bolt_v3_live_node.rs:2040`.
-   - `build_bolt_v3_no_submit_data_client_probe_live_node` starts at
-     `src/bolt_v3_live_node.rs:2051`.
+   - The retired strategy-free build helpers shared the same adapter setup as
+     the production builder.
    - `build_bolt_v3_all_configured_client_mapping_live_node` starts at
      `src/bolt_v3_live_node.rs:2063`.
 
@@ -387,59 +383,34 @@ The inspected files above total 34,611 lines.
    - It collects each strategy's `execution_client_id` and each configured
      reference data client id.
 
-5. The no-submit build path maps adapters from a transport config, then clears
+5. The strategy-free build path maps adapters from a transport config, then clears
    strategies for the node build.
 
    Evidence:
-   - `build_bolt_v3_no_submit_live_node` starts at
-     `src/bolt_v3_live_node.rs:2040`.
-   - `no_submit_transport_loaded_config` clears `strategies` at
-     `src/bolt_v3_live_node.rs:2164`.
+   - The retired strategy-free transport helper cleared `strategies` before
+     building the node.
    - `build_bolt_v3_all_configured_client_mapping_live_node` maps adapters from
-     the loaded config and then uses `no_submit_transport_loaded_config` at
-     `src/bolt_v3_live_node.rs:2063`.
+     the loaded config before building the node.
 
-6. Client registration, strategy registration, proof-executor registration,
-   evidence-writer choice, and submit-admission state creation converge in
+6. Client registration, strategy registration, evidence-writer choice, and
+   submit-admission state creation converge in
    `build_live_node_with_clients`.
 
    Evidence:
    - `build_live_node_with_clients` starts at `src/bolt_v3_live_node.rs:3231`.
    - It chooses `NoStrategyDecisionEvidenceWriter` vs
-     `JsonlBoltV3DecisionEvidenceWriter`, creates unarmed
+     `JsonlBoltV3DecisionEvidenceWriter`, creates a fresh
      `BoltV3SubmitAdmissionState`, registers clients, builds the NT node,
-     registers strategies, and conditionally registers the canary proof
-     executor.
+     and registers strategies.
 
-7. No-submit readiness runner/probe orchestration lives mostly in live-node,
-   while report formatting lives in `bolt_v3_no_submit_readiness.rs`.
+7. Retired strategy-free runner/probe orchestration lived mostly in live-node,
+   while report formatting lived in a separate readiness module.
 
    Evidence:
-   - `controlled_no_submit_readiness` starts at
-     `src/bolt_v3_live_node.rs:2367`.
-   - `run_bolt_v3_no_submit_readiness_until_observed` starts at
-     `src/bolt_v3_live_node.rs:2509`.
+   - The retired controlled-connect helper started from live-node.
    - Data-client probe variants start at
      `src/bolt_v3_live_node.rs:2528` and
      `src/bolt_v3_live_node.rs:2549`.
-   - Report-side `run_bolt_v3_no_submit_readiness` starts at
-     `src/bolt_v3_no_submit_readiness.rs:585`.
-
-### `src/bolt_v3_no_submit_readiness.rs`
-
-1. The module has a narrower declared ownership than `bolt_v3_live_node.rs`:
-   report modeling, redaction, and sequencing.
-
-   Evidence:
-   - Module docs state this directly at `src/bolt_v3_no_submit_readiness.rs:1`.
-
-2. The no-submit report path calls back into live-node for controlled connect
-   and reference-readiness behavior.
-
-   Evidence:
-   - `run_bolt_v3_no_submit_readiness_on_runtime` starts at
-     `src/bolt_v3_no_submit_readiness.rs:563`.
-   - It calls `controlled_no_submit_readiness` and then produces the report.
 
 ### `src/bolt_v3_adapters.rs`
 
@@ -634,65 +605,15 @@ The inspected files above total 34,611 lines.
    - The outcome-side match returns `None` for duplicate Up or duplicate Down at
      `src/bolt_v3_market_families/updown.rs:1183`.
 
-## Canary and Admission Findings
-
-### `src/bolt_v3_canary_proof_policy.rs`
-
-1. Canary proof policy defines proof-specific record kinds and the
-   `proof_only` claim string.
-
-   Evidence:
-   - Constants are declared at `src/bolt_v3_canary_proof_policy.rs:4`,
-     including `CANARY_PROOF_CLAIM` at
-     `src/bolt_v3_canary_proof_policy.rs:6`.
-
-2. Canary proof sizing applies instrument constraints and produces notional for
-   submit admission.
-
-   Evidence:
-   - `CanaryProofOrderSizing::notional_for_submit_admission` starts at
-     `src/bolt_v3_canary_proof_policy.rs:99`.
-   - `normalize_order_sizing` starts at
-     `src/bolt_v3_canary_proof_policy.rs:244`.
-
-### `src/bolt_v3_canary_proof_executor.rs`
-
-1. The canary proof executor is an NT strategy-like actor that constructs an
-   order, records order-intent evidence, requests admission, and submits.
-
-   Evidence:
-   - `try_submit_proof_order` starts at
-     `src/bolt_v3_canary_proof_executor.rs:101`.
-   - It records order intent at
-     `src/bolt_v3_canary_proof_executor.rs:223`.
-   - It calls submit admission at
-     `src/bolt_v3_canary_proof_executor.rs:225`.
-   - It calls `self.submit_order(...)` at
-     `src/bolt_v3_canary_proof_executor.rs:235`.
-
-2. The proof executor depends on shared admission and decision evidence.
-
-   Evidence:
-   - `CanaryProofExecutorConfig` carries
-     `submit_admission: Arc<BoltV3SubmitAdmissionState>` at
-     `src/bolt_v3_canary_proof_executor.rs:59`.
-   - `register_canary_proof_executor_on_node` receives
-     `BoltV3SubmitAdmissionState` at
-     `src/bolt_v3_canary_proof_executor.rs:318`.
+## Retired Proof and Admission Findings
 
 ### `src/bolt_v3_submit_admission.rs`
 
-1. Shared admission contains canary-proof-specific claim handling.
+1. Shared admission previously contained retired proof-claim handling.
 
    Evidence:
-   - The module imports `CANARY_PROOF_CLAIM` at
-     `src/bolt_v3_submit_admission.rs:15`.
-   - `BoltV3SubmitAdmissionRequest` has `canary_proof_claim` at
-     `src/bolt_v3_submit_admission.rs:230`.
-   - Admission rejects invalid canary proof claim at
-     `src/bolt_v3_submit_admission.rs:139`.
-   - The display text says the canary proof claim must be `proof_only` at
-     `src/bolt_v3_submit_admission.rs:525`.
+   - The removed fields were part of the retired gate stack and are no longer
+     part of the current submit-admission contract.
 
 2. Shared admission references the production strategy's method by name in its
    comments.
@@ -704,14 +625,11 @@ The inspected files above total 34,611 lines.
 
 ### `src/bolt_v3_decision_evidence.rs`
 
-1. Shared decision evidence includes canary-proof fields and outcomes.
+1. Shared decision evidence previously included retired proof fields and
+   outcomes.
 
    Evidence:
-   - `BoltV3OrderIntentEvidence` includes `canary_proof_claim` at
-     `src/bolt_v3_decision_evidence.rs:167`.
-   - `BoltV3AdmissionOutcome` includes
-     `RejectedInvalidCanaryProofClaim` at
-     `src/bolt_v3_decision_evidence.rs:310`.
+   - Those fields were removed with the retired gate stack.
 
 ## Validation and Runtime-config Findings
 
@@ -772,28 +690,23 @@ The inspected files above total 34,611 lines.
    Evidence:
    - `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`
      contains audited entries for provider constants, operator artifact fields,
-     no-submit readiness fields, and submit-admission diagnostics.
+     strategy-free connectivity fields, and submit-admission diagnostics.
 
-3. Tiny-canary precondition tests inspect docs and source text for operator
+3. Retired single-submit precondition tests inspected docs and source text for operator
    artifact terms and approval fields.
 
    Evidence:
-   - `phase8_required_operator_artifact_terms` starts at
-     `tests/bolt_v3_tiny_canary_preconditions.rs:40`.
-   - Doc term checks start at
-     `tests/bolt_v3_tiny_canary_preconditions.rs:180` and
-     `tests/bolt_v3_tiny_canary_preconditions.rs:196`.
-   - Operator approval environment/source checks start at
-     `tests/bolt_v3_tiny_canary_preconditions.rs:212`.
+   - The removed tests checked required operator artifact terms, schema docs,
+     and approval-field bindings.
 
 ## External Review Signals Recorded During Investigation
 
 1. Claude's live-node/adapters review agreed that the adapter and registration
-   path is mostly shared, and treated no-submit as runner/probe overlay rather
+   path is mostly shared, and treated strategy-free mode as runner/probe overlay rather
    than a separate adapter implementation.
 
 2. Gemini's live-node/adapters review objected that adapter mapping derives
-   `MarketIdentityPlan` from strategy TOML and that no-submit maps adapters
+   `MarketIdentityPlan` from strategy TOML and that strategy-free mode maps adapters
    before clearing strategies.
 
 3. GLM's live-node/adapters review accepted the shared build path as

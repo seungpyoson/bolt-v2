@@ -7,10 +7,9 @@ fn production_readiness_contract_links_issue_369_speckit_artifacts() {
     let contract_words = compact_words(&contract);
 
     for required in [
-        "tiny-canary ready",
         "staged live ready",
         "production live ready",
-        "no-submit readiness, tiny-canary readiness, staged live readiness, and production live readiness",
+        "staged live readiness and production live readiness",
         "Repeated-live operation",
         "Abort",
         "Restart recovery",

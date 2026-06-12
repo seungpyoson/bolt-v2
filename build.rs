@@ -1,5 +1,5 @@
 use std::{
-    env, fs,
+    env, fs, io,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -10,26 +10,29 @@ use std::{
 // the build-time canonical bytes and the runtime digest can never drift. It
 // depends only on `std` + `sha2` + `hex` (declared in `[build-dependencies]`
 // pinned to the same versions as `[dependencies]`).
-// The build script only consumes `GATED_SOURCE_ROOTS` + `canonical_source_bytes`
+// The build script only consumes `GATED_SOURCE_ROOTS` + canonical source-set
+// bytes
 // from this shared module; the digest/text accessors are used by the lib, not
 // here, so `dead_code` is expected in the build-script compilation view.
 #[allow(dead_code)]
 #[path = "src/source_canonicalization.rs"]
 mod source_canonicalization;
 
-// Generous in-build cap. The strategy root is now the directory
-// `src/strategies/binary_oracle_edge_taker/` ({config.rs, mod.rs,
-// selection.rs}), whose framed canonical stream is well under this cap; the
-// runtime digest path applies the operator-configured `max_source_bytes` instead.
-// This only bounds the bytes embedded into the binary at build time.
+// Generous in-build cap. The strategy source set is now the strategy directory
+// plus shared execution sources, whose framed canonical stream is well under this
+// cap; the runtime digest path applies the operator-configured
+// `max_source_bytes` instead. This only bounds the bytes embedded into the
+// binary at build time.
 const BUILD_CANONICAL_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/source_canonicalization.rs");
+    for env_var in build_script_rerun_env_vars() {
+        println!("cargo:rerun-if-env-changed={env_var}");
+    }
 
-    let manifest_dir = PathBuf::from(
-        env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set by Cargo"),
-    );
+    let manifest_dir = build_script_manifest_dir();
     emit_git_head_rerun_paths(&manifest_dir);
     emit_canonical_source_artifacts(&manifest_dir);
 
@@ -62,32 +65,87 @@ fn emit_git_head_rerun_paths(manifest_dir: &Path) {
     }
 }
 
-/// Re-emit the canonical bytes of every gated source root into
+/// Re-emit the canonical bytes of every gated source set into
 /// `$OUT_DIR/<key>.canonical`, using the SAME walk/framing the runtime digest
 /// uses. The verifier embeds these via `include_bytes!(concat!(env!("OUT_DIR"),
 /// "/<key>.canonical"))` and hashes them at runtime — compile-time
-/// tamper-evidence preserved, layout-independent. Emits `rerun-if-changed` per
-/// root so a modify/add/remove (including nested subdirs after a split)
+/// tamper-evidence preserved, layout-independent. Emits `rerun-if-changed` for
+/// every root so a modify/add/remove (including nested subdirs after a split)
 /// re-triggers the build.
 fn emit_canonical_source_artifacts(manifest_dir: &Path) {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
+    for path in canonical_source_rerun_paths(manifest_dir)
+        .expect("canonical source rerun paths should collect")
+    {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
     for entry in source_canonicalization::GATED_SOURCE_ROOTS {
-        let root = manifest_dir.join(entry.relative_root);
-        println!("cargo:rerun-if-changed={}", root.display());
-        let canonical =
-            source_canonicalization::canonical_source_bytes(&root, BUILD_CANONICAL_MAX_BYTES)
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "canonical source bytes for `{}` ({}) should emit: {error}",
-                        entry.key,
-                        root.display()
-                    )
-                });
+        let canonical = source_canonicalization::canonical_source_set_bytes(
+            manifest_dir,
+            entry.relative_roots,
+            BUILD_CANONICAL_MAX_BYTES,
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "canonical source bytes for `{}` ({:?}) should emit: {error}",
+                entry.key, entry.relative_roots
+            )
+        });
         let out_path = out_dir.join(format!("{}.canonical", entry.key));
         fs::write(&out_path, &canonical).unwrap_or_else(|error| {
             panic!("writing {} should succeed: {error}", out_path.display())
         });
     }
+}
+
+pub fn build_script_rerun_env_vars() -> &'static [&'static str] {
+    &["CARGO_MANIFEST_DIR"]
+}
+
+pub fn build_script_manifest_dir() -> PathBuf {
+    PathBuf::from(
+        env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set by Cargo"),
+    )
+}
+
+pub fn canonical_source_rerun_paths(manifest_dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut paths = vec![manifest_dir.join("src/source_canonicalization.rs")];
+    for entry in source_canonicalization::GATED_SOURCE_ROOTS {
+        for relative_root in entry.relative_roots {
+            collect_canonical_source_rerun_paths(&manifest_dir.join(relative_root), &mut paths)?;
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn collect_canonical_source_rerun_paths(path: &Path, paths: &mut Vec<PathBuf>) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    let file_type = metadata.file_type();
+    if file_type.is_dir() {
+        paths.push(path.to_path_buf());
+        let mut entries = fs::read_dir(path)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<io::Result<Vec<_>>>()?;
+        entries.sort();
+        for entry in entries {
+            collect_canonical_source_rerun_paths(&entry, paths)?;
+        }
+    } else if file_type.is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "canonical source rerun path rejects symlink: {}",
+                path.display()
+            ),
+        ));
+    } else if file_type.is_file()
+        && path.extension().and_then(|extension| extension.to_str()) == Some("rs")
+    {
+        paths.push(path.to_path_buf());
+    }
+    Ok(())
 }
 
 pub fn git_head_rerun_paths(manifest_dir: &Path) -> Vec<PathBuf> {

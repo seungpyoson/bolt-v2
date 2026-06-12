@@ -263,7 +263,7 @@ mod tests {
     // Re-derived after merging current main's split executable-cost source set
     // with #623's shared sizing and taker up/down signal source roots.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "736f9b76500b32868f8c43e3955a15d201b79a15b06c90fad0abfd168d444ee5";
+        "637d86530c9b8d6ab537058d504b50667692544ab66ab1f722486d89de4cfc35";
     // GOLDEN_SUBMIT_ADMISSION_DIGEST is re-derived by A9 after moving submit
     // admission request construction and valuation out of the strategy wrapper,
     // then again after borrowing exit-position identifiers through the builder.

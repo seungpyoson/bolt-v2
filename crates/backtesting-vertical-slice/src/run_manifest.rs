@@ -557,6 +557,9 @@ pub enum ManifestError {
     InvalidInstrumentId {
         instrument_id: String,
     },
+    UnsupportedInstrumentIdCharset {
+        instrument_id: String,
+    },
     UnacceptedData {
         manifest_proof: String,
         accepted_proof: String,
@@ -676,6 +679,15 @@ impl std::fmt::Display for ManifestError {
             }
             Self::InvalidInstrumentId { instrument_id } => {
                 write!(f, "invalid instrument id: {instrument_id:?}")
+            }
+            Self::UnsupportedInstrumentIdCharset { instrument_id } => {
+                write!(
+                    f,
+                    "instrument id {instrument_id:?} contains ASCII characters outside the \
+                     catalog-directory-safe set (alphanumeric, '.', '_', '-', '~'); such ids \
+                     corrupt through the object-store percent-encoding layer and cannot be \
+                     queried reliably from an NT catalog"
+                )
             }
             Self::UnacceptedData {
                 manifest_proof,
@@ -1698,6 +1710,12 @@ fn catalog_input_to_nt_data_config(
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()?;
+    validate_catalog_instrument_id_charset(&input.nt_instrument_id)?;
+    if let Some(ids) = input.instrument_ids.as_ref() {
+        for id in ids {
+            validate_catalog_instrument_id_charset(id)?;
+        }
+    }
     let requires_unfiltered_catalog_query =
         catalog_input_requires_unfiltered_nt_query_for_encoded_directory(input);
     let instrument_ids = if requires_unfiltered_catalog_query {
@@ -1761,6 +1779,28 @@ fn catalog_input_requires_unfiltered_nt_query_for_encoded_directory(
             .instrument_ids
             .as_ref()
             .is_some_and(|ids| ids.iter().any(|id| !id.is_ascii()))
+}
+
+/// Reject instrument ids whose catalog directory name would be altered by the
+/// object-store percent-encoding layer in a way no query path can survive.
+///
+/// The catalog directory name is the urisafe form of the id ('/' stripped,
+/// '^' mapped to '_'). Non-ASCII characters in that form are handled by the
+/// unfiltered-query fallback, but ASCII characters outside the RFC 3986
+/// unreserved set (alphanumeric, '.', '_', '-', '~') — e.g. '%' or ' ' —
+/// corrupt through every percent-encode/decode layer, including the fallback,
+/// so they fail loud here instead of producing an empty data feed downstream.
+fn validate_catalog_instrument_id_charset(instrument_id: &str) -> Result<(), ManifestError> {
+    let urisafe = instrument_id.replace('/', "").replace('^', "_");
+    let unsupported_ascii = urisafe
+        .chars()
+        .any(|c| c.is_ascii() && !c.is_ascii_alphanumeric() && !matches!(c, '.' | '_' | '-' | '~'));
+    if unsupported_ascii {
+        return Err(ManifestError::UnsupportedInstrumentIdCharset {
+            instrument_id: instrument_id.to_string(),
+        });
+    }
+    Ok(())
 }
 
 impl BacktestingRunManifest {
@@ -2468,6 +2508,39 @@ mod tests {
         assert!(data.instrument_id().is_none());
         assert!(data.instrument_ids().is_none());
         assert!(data.query_identifiers().is_none());
+    }
+
+    #[test]
+    fn slash_catalog_instrument_id_keeps_nt_instrument_filter() {
+        // urisafe strips '/' before naming the catalog directory, so the
+        // directory is plain ASCII and NT's filtered query path works; the
+        // unfiltered fallback must NOT trigger for slash ids.
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].nt_instrument_id = "BASE/QUOTE.TESTVENUE".to_string();
+
+        let data = manifest.to_nt_data_config().expect("data config");
+
+        assert_eq!(
+            data.instrument_id().map(|id| id.to_string()),
+            Some("BASE/QUOTE.TESTVENUE".to_string())
+        );
+    }
+
+    #[test]
+    fn percent_catalog_instrument_id_fails_loud() {
+        // A literal '%' survives urisafe unchanged and corrupts through every
+        // percent-encode/decode layer (filtered, unfiltered, and node paths),
+        // so the manifest must reject it instead of producing an empty feed.
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].nt_instrument_id = "BASE%QUOTE.TESTVENUE".to_string();
+
+        let error = manifest.to_nt_data_config().expect_err("charset rejected");
+
+        assert!(matches!(
+            error,
+            ManifestError::UnsupportedInstrumentIdCharset { instrument_id }
+                if instrument_id == "BASE%QUOTE.TESTVENUE"
+        ));
     }
 
     #[test]

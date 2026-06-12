@@ -14,6 +14,7 @@
 //! the projection represents the accepted data exactly.
 
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     str::FromStr,
@@ -869,7 +870,7 @@ fn catalog_files_for_instruments<T: CatalogPathPrefix>(
     if instrument_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let safe_instrument_ids: Vec<String> = instrument_ids
+    let safe_instrument_ids: HashSet<String> = instrument_ids
         .iter()
         .map(|id| urisafe_instrument_id(id))
         .collect();
@@ -884,9 +885,7 @@ fn catalog_files_for_instruments<T: CatalogPathPrefix>(
                     .map(|value| value.into_owned())
                     .unwrap_or_else(|_| directory.to_string());
                 let safe_directory = urisafe_instrument_id(&decoded);
-                safe_instrument_ids
-                    .iter()
-                    .any(|safe_id| safe_id == &safe_directory)
+                safe_instrument_ids.contains(&safe_directory)
             })
         })
         .map(|file| datafusion_catalog_file_path(catalog_root, &file))

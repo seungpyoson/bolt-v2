@@ -928,7 +928,7 @@ fn runtime_engine_bounds_unconfigured_nt_option_greeks_source_rejection_health()
 }
 
 #[test]
-fn runtime_engine_bounds_nt_option_greeks_selector_rejection_health() {
+fn runtime_engine_preserves_current_nt_option_greeks_selector_rejection_health() {
     let mut config = configured_runtime_config();
     let template = config.profiles[0].sources[0].clone();
     config.profiles[0].sources = (0..4_u64)
@@ -961,28 +961,16 @@ fn runtime_engine_bounds_nt_option_greeks_selector_rejection_health() {
         ));
     }
 
-    assert!(
-        engine
-            .source_health("iv-profile", "selector-reject-source-0")
-            .is_none()
-    );
-    assert!(
-        engine
-            .source_health("iv-profile", "selector-reject-source-1")
-            .is_none()
-    );
-    let retained = engine
-        .source_health("iv-profile", "selector-reject-source-2")
-        .expect("latest retained selector rejection should be queryable");
-    assert_eq!(
-        retained.last_reject_reason,
-        Some(IvRejectReason::SelectorProductMismatch)
-    );
-    assert!(
-        engine
-            .source_health("iv-profile", "selector-reject-source-3")
-            .is_some()
-    );
+    for index in 0..4_u64 {
+        let source_id = format!("selector-reject-source-{index}");
+        let retained = engine
+            .source_health("iv-profile", &source_id)
+            .expect("current selector rejection health should be queryable");
+        assert_eq!(
+            retained.last_reject_reason,
+            Some(IvRejectReason::SelectorProductMismatch)
+        );
+    }
 }
 
 #[test]

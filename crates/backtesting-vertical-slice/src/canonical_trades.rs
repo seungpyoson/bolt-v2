@@ -358,7 +358,7 @@ impl TradeAggressorSide {
 }
 
 impl CsvTimestampUnit {
-    fn parse_to_nanos(self, raw: &str) -> Result<i64> {
+    pub(crate) fn parse_to_nanos(self, raw: &str) -> Result<i64> {
         if self == Self::DecimalSeconds {
             return decimal_seconds_to_nanos(raw);
         }

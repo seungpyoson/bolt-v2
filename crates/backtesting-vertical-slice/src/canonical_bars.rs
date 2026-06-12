@@ -682,14 +682,22 @@ pub fn normalize_paged_json_bars(
 
     let mut parsed_rows: Vec<ParsedBarRow> = Vec::new();
     let mut object_open_times: Vec<i64> = Vec::new();
-    // Accept either one envelope object or newline-separated envelope objects
-    // (the backfill may concatenate page bodies). Each non-blank line is one
-    // envelope; a single un-split body is the one-line case.
+    // Accept either one envelope object (which may span multiple lines, e.g. a
+    // pretty-printed body) or newline-separated compact envelope objects (the
+    // backfill may concatenate page bodies). The whole text is tried as one
+    // envelope FIRST; only when that parse fails is the text split per line,
+    // because a multi-page concatenation is never itself valid JSON while a
+    // single envelope may legitimately contain newlines.
+    let pages: Vec<String> = match serde_json::from_str::<serde_json::Value>(json_text) {
+        Ok(_) => vec![json_text.to_string()],
+        Err(_) => json_text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_string)
+            .collect(),
+    };
     let mut saw_envelope = false;
-    for (page_index, line) in json_text.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
+    for (page_index, line) in pages.iter().enumerate() {
         saw_envelope = true;
         let envelope: serde_json::Value = serde_json::from_str(line)
             .with_context(|| format!("page {page_index}: invalid JSON envelope"))?;

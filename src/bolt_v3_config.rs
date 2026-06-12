@@ -15,12 +15,15 @@ use std::{
 use nautilus_common::enums::{Environment, LogLevel};
 use nautilus_model::{
     enums::OmsType,
-    identifiers::{ClientId, InstrumentId, TraderId, Venue},
+    identifiers::{AccountId, ClientId, InstrumentId, TraderId, Venue},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    bolt_v3_loss_halt_actions::{
+        LossGovernorMarketExitAction, LossGovernorRecoveryMode, LossGovernorTradingStateAction,
+    },
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolCoarserGridPolicy, RealizedVolEngineConfig,
         RealizedVolEstimatorConfig, RealizedVolJumpConfig, RealizedVolJumpPolicy,
@@ -177,8 +180,67 @@ pub struct NautilusExecEngineBlock {
 #[serde(deny_unknown_fields)]
 pub struct RiskBlock {
     pub default_max_notional_per_order: String,
+    pub loss_governor: Option<LossGovernorBlock>,
+    pub capital_pools: Option<Vec<CapitalPoolBlock>>,
     pub nautilus: NautilusRiskBlock,
     pub kill_switch: Option<KillSwitchConfigBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LossGovernorBlock {
+    pub enabled: bool,
+    pub account_id: AccountId,
+    pub max_snapshot_age_ns: u64,
+    pub rolling_window_ns: u64,
+    pub on_loss_breach_trading_state: Option<LossGovernorTradingStateAction>,
+    pub on_untrusted_snapshot_trading_state: Option<LossGovernorTradingStateAction>,
+    pub on_loss_breach_market_exit: Option<LossGovernorMarketExitAction>,
+    pub on_untrusted_snapshot_market_exit: Option<LossGovernorMarketExitAction>,
+    pub recovery_mode: Option<LossGovernorRecoveryMode>,
+    pub max_per_trade_loss: Option<String>,
+    pub max_daily_loss: Option<String>,
+    pub max_rolling_loss: Option<String>,
+    pub max_drawdown: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CapitalPoolBlock {
+    pub pool_id: String,
+    pub venue_id: String,
+    pub account_id: AccountId,
+    pub collateral_currency: String,
+    pub product_kind: String,
+    pub enforce_submit_admission: bool,
+    pub max_pool_liability: String,
+    pub max_snapshot_age_ns: u64,
+    pub prediction_market_binary: Option<PredictionMarketBinaryProductBlock>,
+    pub sizing_policy: CapitalPoolSizingPolicyBlock,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PredictionMarketBinaryProductBlock {
+    pub yes_instrument_id: InstrumentId,
+    pub no_instrument_id: InstrumentId,
+    pub collateral_coupled_group_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CapitalPoolSizingPolicyBlock {
+    pub mode: String,
+    pub max_order_liability: Option<String>,
+    pub min_remaining_pool_balance: Option<String>,
+    pub fee_slippage: FeeSlippagePolicyBlock,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FeeSlippagePolicyBlock {
+    pub max_fee_liability: String,
+    pub max_slippage_liability: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

@@ -38,14 +38,13 @@
 //! from its own boundary code.
 
 #[cfg(test)]
+use std::cell::Cell;
 use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-};
-use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap},
+    rc::Rc,
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -64,9 +63,11 @@ use nautilus_model::{
     identifiers::InstrumentId,
 };
 use nautilus_model::{
-    enums::BarIntervalType,
+    enums::{BarIntervalType, TradingState},
     identifiers::{ClientId, StrategyId},
 };
+use nautilus_system::trader::Trader;
+use rust_decimal::Decimal;
 use ustr::Ustr;
 use zeroize::Zeroizing;
 
@@ -80,13 +81,34 @@ use crate::{
         BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters,
         map_bolt_v3_adapters_with_runtime_approvals,
     },
+    bolt_v3_capital_reservation::CapitalPoolSnapshot,
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
-    bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_config::{CapitalPoolBlock, CapitalPoolSizingPolicyBlock, LoadedBoltV3Config},
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
-        BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
+        BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+        JsonlBoltV3DecisionEvidenceWriter,
+    },
+    bolt_v3_loss_governor::{LossGovernorPolicy, evaluate_loss_admission},
+    bolt_v3_loss_halt_actions::{
+        LossGovernorHaltActionHandler, LossGovernorHaltActionPolicy, LossGovernorMarketExitAction,
+        LossGovernorMarketExitLatch, LossGovernorRecoveryMode, LossGovernorTradingStateAction,
+        next_loss_governor_halt_action,
+    },
+    bolt_v3_loss_runtime_feed::{
+        LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
+        LossGovernorRuntimeFeedSubscription, subscribe_loss_governor_runtime_feed,
+    },
+    bolt_v3_position_sizer::{
+        FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
+        SizingMode, SizingPolicy,
+    },
+    bolt_v3_position_sizer_runtime_feed::{
+        PositionSizerRuntimeFeed, PositionSizerRuntimeFeedConfig,
+        PositionSizerRuntimeFeedSubscription, subscribe_position_sizer_runtime_feed,
     },
     bolt_v3_providers::{
         self, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
@@ -100,7 +122,10 @@ use crate::{
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, register_bolt_v3_strategies_on_node_with_bindings,
     },
-    bolt_v3_submit_admission::{BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState},
+    bolt_v3_submit_admission::{
+        BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState, BoltV3SubmitPositionSizerConfig,
+    },
+    bolt_v3_validate::parse_decimal_string,
     nt_runtime_capture::{NtRuntimeCaptureGuards, wire_nt_runtime_capture},
     secrets::SsmResolverSession,
 };
@@ -120,6 +145,10 @@ pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     registration_summary: BoltV3RegistrationSummary,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    loss_runtime_feed: Option<Arc<Mutex<LossGovernorRuntimeFeed>>>,
+    loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
+    position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
+    position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -1011,6 +1040,34 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
     fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
         Ok(())
     }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+struct BoltV3LiveNodeRuntimeFeeds {
+    loss_runtime_feed: Option<Arc<Mutex<LossGovernorRuntimeFeed>>>,
+    loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
+    position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
+    position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
 }
 
 impl BoltV3LiveNodeRuntime {
@@ -1018,12 +1075,18 @@ impl BoltV3LiveNodeRuntime {
         node: LiveNode,
         registration_summary: BoltV3RegistrationSummary,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
+        feeds: BoltV3LiveNodeRuntimeFeeds,
         redaction_values: Vec<Zeroizing<String>>,
     ) -> Self {
         Self {
             node,
             registration_summary,
             submit_admission,
+            loss_runtime_feed: feeds.loss_runtime_feed,
+            loss_runtime_feed_subscription: feeds.loss_runtime_feed_subscription,
+            position_sizer_runtime_feed: feeds.position_sizer_runtime_feed,
+            position_sizer_runtime_feed_subscription: feeds
+                .position_sizer_runtime_feed_subscription,
             redaction_values,
         }
     }
@@ -1080,6 +1143,31 @@ impl BoltV3LiveNodeRuntime {
     pub fn admitted_order_count(&self) -> u32 {
         self.submit_admission.admitted_order_count()
     }
+
+    pub fn loss_governor_configured(&self) -> bool {
+        self.submit_admission.loss_governor_configured()
+    }
+
+    pub fn loss_governor_runtime_feed_configured(&self) -> bool {
+        self.loss_runtime_feed.is_some() && self.loss_runtime_feed_subscription.is_some()
+    }
+
+    pub fn nt_risk_trading_state(&self) -> TradingState {
+        self.node.kernel().risk_engine().borrow().trading_state()
+    }
+
+    pub fn position_sizer_configured(&self) -> bool {
+        self.submit_admission.position_sizer_configured()
+    }
+
+    pub fn position_sizer_runtime_feed_configured(&self) -> bool {
+        self.position_sizer_runtime_feed.is_some()
+            && self.position_sizer_runtime_feed_subscription.is_some()
+    }
+
+    pub fn position_sizer_reconciled(&self) -> Option<bool> {
+        self.submit_admission.position_sizer_reconciled()
+    }
 }
 
 impl std::fmt::Debug for BoltV3LiveNodeRuntime {
@@ -1131,6 +1219,7 @@ pub enum BoltV3LiveNodeError {
     BuilderConstruction(BoltV3LiveNodeBuilderError),
     ClientRegistration(BoltV3ClientRegistrationError),
     StrategyRegistration(BoltV3StrategyRegistrationError),
+    RiskPolicy(anyhow::Error),
     Build(anyhow::Error),
     /// Provider-specific live-submit approval loading or consumption failed
     /// while building the adapter bundle. This is intentionally outside the
@@ -1252,6 +1341,9 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::StrategyRegistration(error) => {
                 write!(f, "bolt-v3 strategy registration failed: {error}")
             }
+            BoltV3LiveNodeError::RiskPolicy(error) => {
+                write!(f, "bolt-v3 risk policy mapping failed: {error}")
+            }
             BoltV3LiveNodeError::Build(error) => write!(f, "LiveNode build failed: {error}"),
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => {
                 write!(
@@ -1363,6 +1455,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::BuilderConstruction(error) => Some(error),
             BoltV3LiveNodeError::ClientRegistration(error) => Some(error),
             BoltV3LiveNodeError::StrategyRegistration(error) => Some(error),
+            BoltV3LiveNodeError::RiskPolicy(error) => Some(error.as_ref()),
             BoltV3LiveNodeError::Build(error) => error.source(),
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => Some(error.as_ref()),
             BoltV3LiveNodeError::Run(error) => error.source(),
@@ -1552,6 +1645,11 @@ fn current_unix_seconds_u64() -> Result<u64, BoltV3LiveNodeError> {
             BoltV3LiveNodeError::OperatorApprovalConsumption(anyhow::Error::new(source))
         })?
         .as_secs())
+}
+
+fn current_unix_nanos() -> Result<u64> {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    u64::try_from(nanos).map_err(|_| anyhow::anyhow!("current unix nanoseconds exceed u64"))
 }
 
 pub fn build_bolt_v3_strategy_free_live_node(
@@ -1855,8 +1953,23 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     adapters: BoltV3AdapterConfigs,
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
+    let loss_policy = loss_governor_policy_from_loaded(loaded)?;
+    let loss_halt_action_policy = loss_governor_halt_action_policy_from_loaded(loaded)?;
+    let position_sizer = position_sizer_config_from_loaded(loaded)?;
     let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = if loaded.strategies.is_empty() {
-        Arc::new(NoStrategyDecisionEvidenceWriter)
+        if loss_policy.is_none() && position_sizer.is_none() {
+            Arc::new(NoStrategyDecisionEvidenceWriter)
+        } else {
+            Arc::new(
+                JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
+                    BoltV3LiveNodeError::StrategyRegistration(
+                        BoltV3StrategyRegistrationError::Evidence {
+                            message: error.to_string(),
+                        },
+                    )
+                })?,
+            )
+        }
     } else {
         Arc::new(
             JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
@@ -1868,10 +1981,29 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             })?,
         )
     };
-    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
-        decision_evidence.clone(),
-        live_submit_approval_limits,
-    ));
+    let startup_observed_at_ns = current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
+    let position_sizer_runtime_feed_config =
+        position_sizer_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);
+    let submit_admission = Arc::new(
+        BoltV3SubmitAdmissionState::new_with_live_submit_limits_and_optional_controls(
+            decision_evidence.clone(),
+            live_submit_approval_limits,
+            loss_policy.clone(),
+            position_sizer,
+        ),
+    );
+    let (position_sizer_runtime_feed, position_sizer_runtime_feed_subscription) =
+        match position_sizer_runtime_feed_config {
+            Some(config) => {
+                let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+                    config,
+                    submit_admission.clone(),
+                )));
+                let subscription = subscribe_position_sizer_runtime_feed(feed.clone());
+                (Some(feed), Some(subscription))
+            }
+            None => (None, None),
+        };
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
@@ -1894,15 +2026,318 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             strategy.registered_strategy_id
         );
     }
+    let market_exit_strategy_ids = strategy_summary
+        .registered
+        .iter()
+        .map(|strategy| StrategyId::from(strategy.registered_strategy_id.as_str()))
+        .collect::<Vec<_>>();
+    let loss_halt_action_handler = match (loss_policy.clone(), loss_halt_action_policy.as_ref()) {
+        (Some(policy), Some(action_policy)) => Some(loss_governor_halt_action_handler_from_node(
+            &node,
+            policy,
+            *action_policy,
+            market_exit_strategy_ids,
+        )),
+        _ => None,
+    };
+    if let Some(handler) = loss_halt_action_handler.as_ref() {
+        handler(None, startup_observed_at_ns);
+    }
+    let (loss_runtime_feed, loss_runtime_feed_subscription) =
+        match loss_governor_runtime_feed_config_from_loaded(loaded) {
+            Some(config) => {
+                let feed = LossGovernorRuntimeFeed::new(config, submit_admission.clone());
+                let feed = match loss_halt_action_handler.as_ref() {
+                    Some(handler) => feed.with_halt_action_handler(handler.clone()),
+                    None => feed,
+                };
+                let feed = Arc::new(Mutex::new(feed));
+                let subscription = subscribe_loss_governor_runtime_feed(feed.clone());
+                (Some(feed), Some(subscription))
+            }
+            None => (None, None),
+        };
     Ok((
         BoltV3LiveNodeRuntime::new(
             node,
             summary.clone(),
             submit_admission,
+            BoltV3LiveNodeRuntimeFeeds {
+                loss_runtime_feed,
+                loss_runtime_feed_subscription,
+                position_sizer_runtime_feed,
+                position_sizer_runtime_feed_subscription,
+            },
             resolved.redaction_values(),
         ),
         summary,
     ))
+}
+
+fn loss_governor_runtime_feed_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Option<LossGovernorRuntimeFeedConfig> {
+    let block = loaded.root.risk.loss_governor.as_ref()?;
+    block.enabled.then_some(LossGovernorRuntimeFeedConfig {
+        account_id: block.account_id,
+        rolling_window_ns: block.rolling_window_ns,
+    })
+}
+
+fn position_sizer_runtime_feed_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+    startup_observed_at_ns: u64,
+) -> Option<PositionSizerRuntimeFeedConfig> {
+    let pools = loaded.root.risk.capital_pools.as_ref()?;
+    let pool = pools.iter().find(|pool| pool.enforce_submit_admission)?;
+    let product = pool.prediction_market_binary.as_ref()?;
+    Some(PositionSizerRuntimeFeedConfig {
+        venue_id: pool.venue_id.clone(),
+        account_id: pool.account_id,
+        collateral_currency: pool.collateral_currency.clone(),
+        product_state: ProductSizingSnapshot::PredictionMarketBinary(
+            PredictionMarketSizingSnapshot {
+                source: "bolt_configured_binary_product".to_string(),
+                observed_at_ns: startup_observed_at_ns,
+                yes_instrument_id: product.yes_instrument_id.to_string(),
+                no_instrument_id: product.no_instrument_id.to_string(),
+                yes_position: Decimal::ZERO,
+                no_position: Decimal::ZERO,
+                collateral_allowance: Decimal::ZERO,
+                conditional_token_allowance: Decimal::ZERO,
+                collateral_coupled_group_id: product.collateral_coupled_group_id.clone(),
+            },
+        ),
+        startup_observed_at_ns,
+    })
+}
+
+fn position_sizer_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<BoltV3SubmitPositionSizerConfig>, BoltV3LiveNodeError> {
+    let Some(pools) = loaded.root.risk.capital_pools.as_ref() else {
+        return Ok(None);
+    };
+    let Some(pool) = pools.iter().find(|pool| pool.enforce_submit_admission) else {
+        return Ok(None);
+    };
+    Ok(Some(BoltV3SubmitPositionSizerConfig {
+        venue_id: pool.venue_id.clone(),
+        account_id: pool.account_id.to_string(),
+        product_kind: ProductKind::PredictionMarketBinary,
+        collateral_currency: pool.collateral_currency.clone(),
+        capital_pool: CapitalPoolSnapshot {
+            source: pool.pool_id.clone(),
+            observed_at_ns: 0,
+            pool_id: pool.pool_id.clone(),
+            max_pool_liability: required_pool_decimal(
+                "risk.capital_pools.max_pool_liability",
+                &pool.max_pool_liability,
+            )?,
+            committed_liability: Decimal::ZERO,
+            max_snapshot_age_ns: pool.max_snapshot_age_ns,
+        },
+        policy: sizing_policy_from_pool(pool)?,
+    }))
+}
+
+fn sizing_policy_from_pool(pool: &CapitalPoolBlock) -> Result<SizingPolicy, BoltV3LiveNodeError> {
+    let sizing = &pool.sizing_policy;
+    Ok(SizingPolicy {
+        mode: sizing_mode_from_block(sizing),
+        max_order_liability: optional_pool_decimal(
+            "risk.capital_pools.sizing_policy.max_order_liability",
+            sizing.max_order_liability.as_deref(),
+        )?,
+        min_remaining_pool_balance: optional_pool_decimal(
+            "risk.capital_pools.sizing_policy.min_remaining_pool_balance",
+            sizing.min_remaining_pool_balance.as_deref(),
+        )?,
+        fee_slippage_policy: Some(FeeSlippagePolicy {
+            max_fee_liability: required_pool_decimal(
+                "risk.capital_pools.sizing_policy.fee_slippage.max_fee_liability",
+                &sizing.fee_slippage.max_fee_liability,
+            )?,
+            max_slippage_liability: required_pool_decimal(
+                "risk.capital_pools.sizing_policy.fee_slippage.max_slippage_liability",
+                &sizing.fee_slippage.max_slippage_liability,
+            )?,
+        }),
+    })
+}
+
+fn sizing_mode_from_block(block: &CapitalPoolSizingPolicyBlock) -> SizingMode {
+    match block.mode.as_str() {
+        "explicit_clip_to_available" => SizingMode::ExplicitClipToAvailable,
+        _ => SizingMode::RejectOnly,
+    }
+}
+
+fn required_pool_decimal(label: &str, value: &str) -> Result<Decimal, BoltV3LiveNodeError> {
+    parse_decimal_string(value).map_err(|message| {
+        BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
+            "{label} must be a decimal string: {message}"
+        ))
+    })
+}
+
+fn optional_pool_decimal(
+    label: &str,
+    value: Option<&str>,
+) -> Result<Option<Decimal>, BoltV3LiveNodeError> {
+    value
+        .map(|value| required_pool_decimal(label, value))
+        .transpose()
+}
+
+fn loss_governor_policy_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<LossGovernorPolicy>, BoltV3LiveNodeError> {
+    let Some(block) = loaded.root.risk.loss_governor.as_ref() else {
+        return Ok(None);
+    };
+    if !block.enabled {
+        return Ok(None);
+    }
+    Ok(Some(LossGovernorPolicy {
+        max_snapshot_age_ns: block.max_snapshot_age_ns,
+        max_per_trade_loss: Some(required_loss_governor_decimal(
+            "risk.loss_governor.max_per_trade_loss",
+            block.max_per_trade_loss.as_deref(),
+        )?),
+        max_daily_loss: Some(required_loss_governor_decimal(
+            "risk.loss_governor.max_daily_loss",
+            block.max_daily_loss.as_deref(),
+        )?),
+        max_rolling_loss: Some(required_loss_governor_decimal(
+            "risk.loss_governor.max_rolling_loss",
+            block.max_rolling_loss.as_deref(),
+        )?),
+        max_drawdown: Some(required_loss_governor_decimal(
+            "risk.loss_governor.max_drawdown",
+            block.max_drawdown.as_deref(),
+        )?),
+    }))
+}
+
+fn loss_governor_halt_action_policy_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<LossGovernorHaltActionPolicy>, BoltV3LiveNodeError> {
+    let Some(block) = loaded.root.risk.loss_governor.as_ref() else {
+        return Ok(None);
+    };
+    if !block.enabled {
+        return Ok(None);
+    }
+    Ok(Some(LossGovernorHaltActionPolicy {
+        on_loss_breach_trading_state: required_loss_governor_trading_state_action(
+            "risk.loss_governor.on_loss_breach_trading_state",
+            block.on_loss_breach_trading_state,
+        )?,
+        on_untrusted_snapshot_trading_state: required_loss_governor_trading_state_action(
+            "risk.loss_governor.on_untrusted_snapshot_trading_state",
+            block.on_untrusted_snapshot_trading_state,
+        )?,
+        on_loss_breach_market_exit: required_loss_governor_market_exit_action(
+            "risk.loss_governor.on_loss_breach_market_exit",
+            block.on_loss_breach_market_exit,
+        )?,
+        on_untrusted_snapshot_market_exit: required_loss_governor_market_exit_action(
+            "risk.loss_governor.on_untrusted_snapshot_market_exit",
+            block.on_untrusted_snapshot_market_exit,
+        )?,
+        recovery_mode: required_loss_governor_recovery_mode(
+            "risk.loss_governor.recovery_mode",
+            block.recovery_mode,
+        )?,
+    }))
+}
+
+fn required_loss_governor_trading_state_action(
+    label: &'static str,
+    value: Option<LossGovernorTradingStateAction>,
+) -> Result<LossGovernorTradingStateAction, BoltV3LiveNodeError> {
+    value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))
+}
+
+fn required_loss_governor_market_exit_action(
+    label: &'static str,
+    value: Option<LossGovernorMarketExitAction>,
+) -> Result<LossGovernorMarketExitAction, BoltV3LiveNodeError> {
+    value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))
+}
+
+fn required_loss_governor_recovery_mode(
+    label: &'static str,
+    value: Option<LossGovernorRecoveryMode>,
+) -> Result<LossGovernorRecoveryMode, BoltV3LiveNodeError> {
+    value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))
+}
+
+fn loss_governor_halt_action_handler_from_node(
+    node: &LiveNode,
+    loss_policy: LossGovernorPolicy,
+    action_policy: LossGovernorHaltActionPolicy,
+    market_exit_strategy_ids: Vec<StrategyId>,
+) -> LossGovernorHaltActionHandler {
+    let risk_engine = node.kernel().risk_engine().clone();
+    let trader = node.kernel().trader().clone();
+    let market_exit_latch = Rc::new(RefCell::new(LossGovernorMarketExitLatch::new()));
+    Rc::new(move |snapshot, now_ns| {
+        let decision = evaluate_loss_admission(&loss_policy, snapshot, now_ns);
+        let current_state = risk_engine.borrow().trading_state();
+        if current_state == TradingState::Active {
+            market_exit_latch.borrow_mut().clear();
+            if decision.accepted {
+                return;
+            }
+        }
+
+        let action = next_loss_governor_halt_action(&action_policy, current_state, &decision);
+        if let Some(target_state) = action.target_trading_state {
+            risk_engine.borrow_mut().set_trading_state(target_state);
+        }
+        if action.market_exit_action != LossGovernorMarketExitAction::AllRegisteredStrategies {
+            return;
+        }
+
+        for strategy_id in &market_exit_strategy_ids {
+            if market_exit_latch
+                .borrow()
+                .has_dispatch_succeeded(strategy_id)
+            {
+                continue;
+            }
+            if let Err(error) = Trader::market_exit_strategy(&trader, strategy_id) {
+                log::error!(
+                    "loss-governor NT market exit failed for strategy {strategy_id}: {error}"
+                );
+                continue;
+            }
+            market_exit_latch
+                .borrow_mut()
+                .mark_dispatch_succeeded(strategy_id);
+        }
+    })
+}
+
+fn required_loss_governor_decimal(
+    label: &'static str,
+    value: Option<&str>,
+) -> Result<Decimal, BoltV3LiveNodeError> {
+    let value =
+        value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))?;
+    let decimal = parse_decimal_string(value).map_err(|reason| {
+        BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
+            "{label} must be a valid decimal string ({reason}): `{value}`"
+        ))
+    })?;
+    if decimal <= Decimal::ZERO {
+        return Err(BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
+            "{label} must be positive: `{value}`"
+        )));
+    }
+    Ok(decimal)
 }
 
 /// Translates a validated bolt-v3 config into an NT-native

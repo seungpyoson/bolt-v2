@@ -5359,6 +5359,134 @@ fn replace_in_fixture_section(section_header: &str, replacements: &[(&str, &str)
     rewritten.join("\n")
 }
 
+#[test]
+fn parses_loss_governor_market_exit_actions_from_root_fixture() {
+    use bolt_v2::{
+        bolt_v3_config::BoltV3RootConfig,
+        bolt_v3_loss_halt_actions::{
+            LossGovernorMarketExitAction, LossGovernorRecoveryMode, LossGovernorTradingStateAction,
+        },
+    };
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&fixture).expect("root fixture should parse");
+    let loss_governor = root
+        .risk
+        .loss_governor
+        .as_ref()
+        .expect("root fixture should configure loss governor");
+
+    assert_eq!(
+        loss_governor.on_loss_breach_trading_state,
+        Some(LossGovernorTradingStateAction::Reducing)
+    );
+    assert_eq!(
+        loss_governor.on_untrusted_snapshot_trading_state,
+        Some(LossGovernorTradingStateAction::Reducing)
+    );
+    assert_eq!(
+        loss_governor.on_loss_breach_market_exit,
+        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+    );
+    assert_eq!(
+        loss_governor.on_untrusted_snapshot_market_exit,
+        Some(LossGovernorMarketExitAction::None)
+    );
+    assert_eq!(
+        loss_governor.recovery_mode,
+        Some(LossGovernorRecoveryMode::Manual)
+    );
+}
+
+#[test]
+fn rejects_enabled_loss_governor_missing_halt_action_fields() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "on_loss_breach_market_exit = \"all_registered_strategies\"\n",
+        "",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("missing action fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.loss_governor.on_loss_breach_market_exit")
+                && message.contains("must be configured when enabled")
+        }),
+        "enabled loss governor should require explicit market-exit action: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_loss_governor_market_exit_without_reducing_state() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "on_loss_breach_trading_state = \"reducing\"",
+        "on_loss_breach_trading_state = \"halted\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("halted market exit fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("on_loss_breach_market_exit=all_registered_strategies")
+                && message.contains("on_loss_breach_trading_state=reducing")
+        }),
+        "market exit should require reducing state: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_loss_governor_market_exit_strategy_account_mismatch() {
+    let root_toml = replace_in_fixture_section(
+        "[clients.polymarket_main.execution]",
+        &[(
+            "account_id = \"POLYMARKET-001\"",
+            "account_id = \"POLYMARKET-002\"",
+        )],
+    );
+    let strategy_toml = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    let messages =
+        strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("market_exit=all_registered_strategies")
+                && message.contains("POLYMARKET-002")
+                && message.contains("risk.loss_governor.account_id `POLYMARKET-001`")
+        }),
+        "market exit should reject strategy execution account mismatch: {messages:#?}"
+    );
+}
+
+#[test]
+fn disabled_loss_governor_market_exit_does_not_require_loaded_strategies() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_strategies};
+
+    let root_toml = replace_in_fixture_section(
+        "[risk.loss_governor]",
+        &[("enabled = true", "enabled = false")],
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&root_toml).expect("disabled loss governor fixture should parse");
+    let messages = validate_strategies(&root, &[]);
+
+    assert!(
+        messages
+            .iter()
+            .all(|message| !message.contains("market_exit=all_registered_strategies")),
+        "disabled loss governor should not require market-exit strategy coverage: {messages:#?}"
+    );
+}
+
 fn fixture_root_with_binance_reference_client() -> String {
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");

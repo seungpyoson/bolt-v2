@@ -1,0 +1,1888 @@
+mod support;
+
+use std::sync::{Arc, Mutex};
+
+use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
+use bolt_v2::bolt_v3_position_sizer::{
+    FeeSlippagePolicy, PositionSizingLifecycleAction, PredictionMarketSizingSnapshot, ProductKind,
+    ProductSizingSnapshot, SizingMode, SizingPolicy,
+};
+use bolt_v2::bolt_v3_position_sizer_runtime_feed::{
+    PositionSizerRuntimeFeed, PositionSizerRuntimeFeedConfig, subscribe_position_sizer_runtime_feed,
+};
+use bolt_v2::bolt_v3_sizing_state::{
+    NtDerivedSizingState, OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot,
+    ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
+};
+use bolt_v2::bolt_v3_submit_admission::{
+    BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
+    BoltV3CompiledOrderSizingEvidence, BoltV3CompiledProductKind, BoltV3PositionSizerRejectReason,
+    BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
+    BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, BoltV3SubmitPositionSizerConfig,
+    BoltV3SubmitPositionSizingNtComponents, BoltV3SubmitPositionSizingOpenOrderReservation,
+    PredictionMarketOutcomeSide,
+};
+use nautilus_common::msgbus::{
+    TypedHandler, publish_account_state, publish_order_event, publish_portfolio_snapshot,
+    publish_position_event, subscribe_account_state, subscribe_order_events,
+    subscribe_portfolio_snapshot, subscribe_position_events, switchboard,
+    unsubscribe_account_state, unsubscribe_order_events, unsubscribe_portfolio_snapshot,
+    unsubscribe_position_events,
+};
+use nautilus_core::{UUID4, UnixNanos};
+use nautilus_model::{
+    enums::{
+        AccountType, CurrencyType, LiquiditySide, OrderSide, OrderType, PositionAdjustmentType,
+    },
+    events::{
+        AccountState, OrderAccepted, OrderCanceled, OrderDenied, OrderEventAny, OrderExpired,
+        OrderFilled, OrderRejected, OrderSubmitted, PortfolioSnapshot, PositionAdjusted,
+        PositionEvent,
+    },
+    identifiers::{
+        AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId, TraderId,
+        VenueOrderId,
+    },
+    types::{AccountBalance, Currency, Money, Price, Quantity},
+};
+use rust_decimal::Decimal;
+use ustr::Ustr;
+
+#[test]
+fn runtime_feed_uses_verified_nt_msgbus_symbols() {
+    let _ = subscribe_account_state;
+    let _ = subscribe_order_events;
+    let _ = subscribe_portfolio_snapshot;
+    let _ = subscribe_position_events;
+    let _ = unsubscribe_account_state;
+    let _ = unsubscribe_order_events;
+    let _ = unsubscribe_portfolio_snapshot;
+    let _ = unsubscribe_position_events;
+    let _ = std::any::type_name::<TypedHandler<AccountState>>();
+    let _ = std::any::type_name::<TypedHandler<OrderEventAny>>();
+    let _ = std::any::type_name::<TypedHandler<PortfolioSnapshot>>();
+    let _ = std::any::type_name::<TypedHandler<PositionEvent>>();
+
+    let source = support::repo_text("src/bolt_v3_position_sizer_runtime_feed.rs");
+    for needle in [
+        "subscribe_account_state",
+        "subscribe_order_events",
+        "subscribe_portfolio_snapshot",
+        "subscribe_position_events",
+        "unsubscribe_account_state",
+        "unsubscribe_order_events",
+        "unsubscribe_portfolio_snapshot",
+        "unsubscribe_position_events",
+    ] {
+        assert!(source.contains(needle), "runtime feed must use `{needle}`");
+    }
+}
+
+#[test]
+fn subscribed_account_and_portfolio_events_wait_for_spendability() {
+    let admission = Arc::new(position_sized_admission());
+    let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+        runtime_feed_config(),
+        admission.clone(),
+    )));
+    let mut subscription = subscribe_position_sizer_runtime_feed(feed);
+
+    publish_account_state(
+        "events.account.ACCOUNT-001".into(),
+        &account_state(AccountId::from("ACCOUNT-001"), "USD", 1_000, 45.0),
+    );
+    publish_portfolio_snapshot(
+        "events.portfolio.ACCOUNT-001".into(),
+        &portfolio_snapshot(AccountId::from("ACCOUNT-001"), "USD", 1_100, 50.0),
+    );
+    subscription.unsubscribe_all();
+
+    assert_eq!(admission.position_sizer_state_snapshot(), None);
+    assert_eq!(admission.position_sizer_state_observed_at_ns(), None);
+}
+
+#[test]
+fn position_sizer_runtime_subscription_drop_unsubscribes_all_handlers() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state should admit")
+        .commit_submitted();
+
+    let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+        runtime_feed_config(),
+        admission.clone(),
+    )));
+    let mut subscription = subscribe_position_sizer_runtime_feed(feed.clone());
+    subscription.unsubscribe_all();
+
+    publish_account_state(
+        "events.account.ACCOUNT-001".into(),
+        &account_state(AccountId::from("ACCOUNT-001"), "USD", 2_000, 80.0),
+    );
+    publish_portfolio_snapshot(
+        "events.portfolio.ACCOUNT-001".into(),
+        &portfolio_snapshot(AccountId::from("ACCOUNT-001"), "USD", 2_100, 90.0),
+    );
+    publish_position_event(
+        "events.position.ACCOUNT-001".into(),
+        &adjusted_position_event(AccountId::from("ACCOUNT-001"), 2_200),
+    );
+    publish_order_event(
+        switchboard::get_event_orders_topic(StrategyId::from("strategy-a")),
+        &OrderEventAny::Canceled(order_canceled_event("client-order-1", 2_300)),
+    );
+
+    assert_eq!(admission.position_sizer_state_observed_at_ns(), Some(1_000));
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    assert_eq!(
+        feed.lock()
+            .expect("feed mutex should not be poisoned")
+            .latest_terminal_observed_at_ns(),
+        None
+    );
+}
+
+#[test]
+fn feed_waits_for_matching_account_and_portfolio_before_publish() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    assert_eq!(admission.position_sizer_state_snapshot(), None);
+
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            50.0
+        ))
+        .is_none()
+    );
+    assert_eq!(admission.position_sizer_state_snapshot(), None);
+
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("OTHER-ACCOUNT"),
+            "USD",
+            1_200,
+            45.0
+        ))
+        .is_none()
+    );
+    assert_eq!(admission.position_sizer_state_snapshot(), None);
+
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_300,
+            45.0
+        ))
+        .is_none()
+    );
+    assert_eq!(admission.position_sizer_state_snapshot(), None);
+
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_400,
+            50.0
+        ))
+        .is_none()
+    );
+    assert_eq!(admission.position_sizer_state_snapshot(), None);
+}
+
+#[test]
+fn feed_derives_default_venue_spendability_from_nt_account_free_collateral() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    let components = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            50.0,
+        ))
+        .expect("NT account plus portfolio state should publish default spendability");
+
+    assert_eq!(
+        components.venue_spendability.source,
+        "nt_account_free_collateral"
+    );
+    assert_eq!(
+        components.venue_spendability.spendable_collateral,
+        Decimal::new(45, 0)
+    );
+    assert_eq!(
+        components.venue_spendability.collateral_allowance,
+        Decimal::new(45, 0)
+    );
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(product.collateral_allowance, Decimal::new(45, 0));
+}
+
+#[test]
+fn feed_derives_collateral_allowance_from_venue_spendability_minimum() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(950, 30, 25))
+            .is_none()
+    );
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            100.0
+        ))
+        .is_none()
+    );
+    let components = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            110.0,
+        ))
+        .expect("account, portfolio, and spendability should publish components");
+
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(product.collateral_allowance, Decimal::new(25, 0));
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("published components should update admission sizing state");
+    assert_eq!(
+        state.venue_spendability.spendable_collateral,
+        Decimal::new(30, 0)
+    );
+    assert_eq!(
+        state.venue_spendability.collateral_allowance,
+        Decimal::new(25, 0)
+    );
+}
+
+#[test]
+fn feed_uses_spendable_collateral_when_it_binds_before_allowance() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(950, 25, 30))
+            .is_none()
+    );
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            100.0
+        ))
+        .is_none()
+    );
+    let components = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            110.0,
+        ))
+        .expect("complete spendability/account/portfolio state should publish");
+
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(product.collateral_allowance, Decimal::new(25, 0));
+}
+
+#[test]
+fn feed_ignores_spendability_identity_mismatch_until_matching_snapshot_arrives() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(900, 100, 100))
+            .is_none()
+    );
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            100.0
+        ))
+        .is_some()
+    );
+
+    let mut mismatched = venue_spendability_snapshot(1_100, 100, 100);
+    mismatched.venue_id = "VENUE-B".to_string();
+    let components = feed
+        .on_venue_spendability_snapshot(mismatched)
+        .expect("mismatched spendability must not clear the last valid state");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(product.collateral_allowance, Decimal::new(100, 0));
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_200,
+            100.0
+        ))
+        .is_some()
+    );
+
+    assert!(
+        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(1_300, 50, 50))
+            .is_some()
+    );
+}
+
+#[test]
+fn feed_ignores_older_spendability_snapshot_after_newer_one() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(1_000, 100, 40))
+            .is_none()
+    );
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_050,
+            100.0
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            100.0
+        ))
+        .is_some()
+    );
+
+    let components = feed
+        .on_venue_spendability_snapshot(venue_spendability_snapshot(900, 100, 5))
+        .expect("older spendability should not clear or regress the latest snapshot");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(product.collateral_allowance, Decimal::new(40, 0));
+}
+
+#[test]
+fn feed_ignores_account_state_for_other_collateral_currency() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            50.0
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "EUR",
+            1_100,
+            45.0
+        ))
+        .is_none()
+    );
+    assert_eq!(admission.position_sizer_state_snapshot(), None);
+}
+
+#[test]
+fn position_sizer_cache_seed_updates_open_order_lifecycle_and_rebuilds_empty() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    seed_venue_spendability(&mut feed, 1_050);
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            50.0
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_open_order_cache(Vec::<String>::new(), 1_200)
+            .is_some()
+    );
+
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_200);
+
+    assert!(rebuild.accepted);
+    assert_eq!(admission.position_sizer_reconciled(), Some(true));
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("cache seed should publish sizing components");
+    assert_eq!(state.order_lifecycle.source, "nt_open_order_cache");
+    assert_eq!(state.order_lifecycle.observed_at_ns, 1_200);
+    assert_eq!(state.order_lifecycle.open_order_count, 0);
+    assert!(state.order_lifecycle.all_open_orders_attributed);
+}
+
+#[test]
+fn position_sizer_cache_seed_updates_configured_yes_no_inventory() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    seed_venue_spendability(&mut feed, 1_050);
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            50.0
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_cache_snapshot(
+            Vec::<String>::new(),
+            Decimal::new(7, 0),
+            Decimal::new(2, 0),
+            1_200
+        )
+        .is_some()
+    );
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("cache seed should publish configured product inventory");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "nt_position_cache");
+    assert_eq!(product.observed_at_ns, 1_200);
+    assert_eq!(product.yes_position, Decimal::new(7, 0));
+    assert_eq!(product.no_position, Decimal::new(2, 0));
+}
+
+#[test]
+fn cache_seed_and_concurrent_order_event_do_not_double_count() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    seed_venue_spendability(&mut feed, 1_050);
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            50.0
+        ))
+        .is_some()
+    );
+
+    let _ = feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "client-order-A",
+        1_200,
+        AccountId::from("ACCOUNT-001"),
+    )));
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("live order event should publish lifecycle state");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+
+    assert!(
+        feed.seed_open_order_cache(vec!["client-order-A".to_string()], 1_300)
+            .is_some()
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("cache seed should keep lifecycle state");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+
+    let _ = feed.on_order_event(&OrderEventAny::Canceled(order_canceled_event(
+        "client-order-A",
+        1_400,
+    )));
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("terminal event should publish lifecycle state");
+    assert_eq!(state.order_lifecycle.open_order_count, 0);
+
+    assert!(
+        feed.seed_open_order_cache(vec!["client-order-A".to_string()], 1_500)
+            .is_some()
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("stale cache seed should not resurrect terminal order");
+    assert_eq!(state.order_lifecycle.open_order_count, 0);
+}
+
+#[test]
+fn account_bound_live_order_events_update_open_order_count() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    seed_venue_spendability(&mut feed, 1_050);
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            50.0
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_open_order_cache(Vec::<String>::new(), 1_120)
+            .is_some()
+    );
+    rebuild_empty_position_sizer(&admission);
+    let mut request = sized_submit_request("client-order-1");
+    request.instrument_id = "instrument-yes.VENUE-A".to_string();
+    admission
+        .admit_at(&request, 1_150)
+        .expect("fresh sizing state should admit")
+        .commit_submitted();
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+
+    let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
+        "client-order-1",
+        1_200,
+        AccountId::from("ACCOUNT-001"),
+    )));
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("submitted event should publish lifecycle state");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+
+    let decision = feed
+        .on_order_event(&OrderEventAny::Canceled(order_canceled_event(
+            "client-order-1",
+            1_300,
+        )))
+        .expect("terminal event should release matching reservation");
+
+    assert!(decision.accepted);
+    assert!(!decision.unknown_reservation);
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("terminal event should publish lifecycle state");
+    assert_eq!(state.order_lifecycle.open_order_count, 0);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+}
+
+#[test]
+fn live_order_event_for_submit_owned_reservation_keeps_second_submit_open() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    seed_venue_spendability(&mut feed, 1_050);
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            50.0
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_open_order_cache(Vec::<String>::new(), 1_120)
+            .is_some()
+    );
+    rebuild_empty_position_sizer(&admission);
+
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_150)
+        .expect("first fresh submit should admit")
+        .commit_submitted();
+    let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
+        "client-order-1",
+        1_200,
+        AccountId::from("ACCOUNT-001"),
+    )));
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("submitted event should publish lifecycle state");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+    assert!(state.order_lifecycle.all_open_orders_attributed);
+
+    admission
+        .admit_at(&sized_submit_request("client-order-2"), 1_250)
+        .expect("submit-owned live order must not close admission for the next order")
+        .commit_submitted();
+
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(86, 1))
+    );
+}
+
+#[test]
+fn partial_fill_event_revalues_residual_reservation() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "client-order-1",
+        1_050,
+        AccountId::from("ACCOUNT-001"),
+    )));
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("accepted order should publish lifecycle");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(4),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("matching fill should update residual liability");
+
+    assert!(decision.accepted);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Revalued);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(27, 1))
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("partial fill should keep live lifecycle");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "nt_order_fill");
+    assert_eq!(product.observed_at_ns, 1_100);
+    assert_eq!(product.yes_position, Decimal::new(4, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::new(4, 0));
+}
+
+#[test]
+fn full_fill_event_releases_reservation_and_closes_live_order_count() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "client-order-1",
+        1_050,
+        AccountId::from("ACCOUNT-001"),
+    )));
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("accepted order should publish lifecycle");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(10),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("matching full fill should release reservation");
+
+    assert!(decision.accepted);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Released);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("full fill should publish lifecycle");
+    assert_eq!(state.order_lifecycle.open_order_count, 0);
+    assert_eq!(feed.latest_terminal_observed_at_ns(), Some(1_100));
+}
+
+#[test]
+fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut config = runtime_feed_config();
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
+    product.conditional_token_allowance = Decimal::new(10, 0);
+    let mut feed = PositionSizerRuntimeFeed::new(config, admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            900,
+            100.0,
+        ))
+        .is_none()
+    );
+    seed_venue_spendability(&mut feed, 925);
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_cache_snapshot(
+            Vec::<String>::new(),
+            Decimal::new(10, 0),
+            Decimal::ZERO,
+            1_000
+        )
+        .is_some()
+    );
+    rebuild_empty_position_sizer(&admission);
+
+    admission
+        .admit_at(&sized_sell_submit_request("client-order-1"), 1_010)
+        .expect("sell within seeded YES inventory should admit")
+        .commit_submitted();
+    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "client-order-1",
+        1_050,
+        AccountId::from("ACCOUNT-001"),
+    )));
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(10),
+            OrderSide::Sell,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("matching sell fill should release the first order");
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Released);
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("sell fill should publish updated inventory");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "nt_order_fill");
+    assert_eq!(product.observed_at_ns, 1_100);
+    assert_eq!(product.yes_position, Decimal::ZERO);
+    assert_eq!(product.conditional_token_allowance, Decimal::ZERO);
+
+    let second = admission
+        .admit_at(&sized_sell_submit_request("client-order-2"), 1_150)
+        .expect_err("sell above post-fill inventory should reject");
+    assert_eq!(
+        second,
+        BoltV3SubmitAdmissionError::PositionSizingRejected {
+            reason: BoltV3PositionSizerRejectReason::SizingRejected,
+        }
+    );
+}
+
+#[test]
+fn fill_event_account_or_instrument_mismatch_is_non_mutating() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("OTHER-001"),
+            Quantity::from(4),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-2",
+            1_200,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(4),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-other.VENUE-A"),
+        )))
+        .is_none()
+    );
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+}
+
+#[test]
+fn fill_event_for_rebuilt_reservation_revalues_residual() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            900,
+            100.0,
+        ))
+        .is_none()
+    );
+    seed_venue_spendability(&mut feed, 925);
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+        vec![open_order_reservation(
+            "client-order-1",
+            "client-order-1#rebuilt",
+            Decimal::new(43, 1),
+        )],
+        1_000,
+    );
+    assert!(rebuild.accepted);
+
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(4),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("rebuilt reservation metadata should support residual revalue");
+    assert!(decision.accepted);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Revalued);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(27, 1))
+    );
+    assert_eq!(feed.latest_terminal_observed_at_ns(), None);
+}
+
+#[test]
+fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            900,
+            100.0,
+        ))
+        .is_none()
+    );
+    seed_venue_spendability(&mut feed, 925);
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_open_order_cache(vec!["client-order-1".to_string()], 1_000)
+            .is_some()
+    );
+
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+        vec![open_order_reservation(
+            "client-order-1",
+            "client-order-1#rebuilt",
+            Decimal::new(43, 1),
+        )],
+        1_000,
+    );
+    assert!(rebuild.accepted);
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("attributed rebuild should retain NT state");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+    assert!(state.order_lifecycle.all_open_orders_attributed);
+
+    admission
+        .admit_at(&sized_submit_request("client-order-2"), 1_100)
+        .expect("attributed startup order should not close later submits")
+        .commit_submitted();
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(86, 1))
+    );
+}
+
+#[test]
+fn account_refresh_after_attributed_rebuild_preserves_order_lifecycle_attribution() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            900,
+            100.0,
+        ))
+        .is_none()
+    );
+    seed_venue_spendability(&mut feed, 925);
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_open_order_cache(vec!["client-order-1".to_string()], 1_000)
+            .is_some()
+    );
+
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+        vec![open_order_reservation(
+            "client-order-1",
+            "client-order-1#rebuilt",
+            Decimal::new(43, 1),
+        )],
+        1_000,
+    );
+    assert!(rebuild.accepted);
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_050,
+            100.0,
+        ))
+        .is_some()
+    );
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("account refresh should preserve rebuilt NT state");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+    assert!(state.order_lifecycle.all_open_orders_attributed);
+
+    admission
+        .admit_at(&sized_submit_request("client-order-2"), 1_100)
+        .expect("account refresh should not erase attributed startup rebuild")
+        .commit_submitted();
+    let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
+        "client-order-2",
+        1_150,
+        AccountId::from("ACCOUNT-001"),
+    )));
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("second submit event should preserve rebuilt NT state");
+    assert_eq!(state.order_lifecycle.open_order_count, 2);
+    assert!(state.order_lifecycle.all_open_orders_attributed);
+
+    let mut third_request = sized_submit_request("client-order-3");
+    third_request.notional = Decimal::new(4, 1);
+    third_request
+        .position_sizing
+        .as_mut()
+        .expect("third request should carry sizing evidence")
+        .quantity = Decimal::new(1, 0);
+    admission
+        .admit_at(&third_request, 1_200)
+        .expect("submitted event should not erase attributed startup rebuild")
+        .commit_submitted();
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(930, 2))
+    );
+}
+
+#[test]
+fn full_fill_event_for_rebuilt_reservation_releases_and_closes_live_order_count() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            900,
+            100.0,
+        ))
+        .is_none()
+    );
+    seed_venue_spendability(&mut feed, 925);
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_open_order_cache(vec!["client-order-1".to_string()], 1_000)
+            .is_some()
+    );
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+        vec![open_order_reservation(
+            "client-order-1",
+            "client-order-1#rebuilt",
+            Decimal::new(43, 1),
+        )],
+        1_000,
+    );
+    assert!(rebuild.accepted);
+
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(10),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("rebuilt reservation full fill should release");
+
+    assert!(decision.accepted);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Released);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    assert_eq!(feed.latest_terminal_observed_at_ns(), Some(1_100));
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("fill release should publish updated lifecycle state");
+    assert_eq!(state.order_lifecycle.open_order_count, 0);
+    assert!(state.order_lifecycle.all_open_orders_attributed);
+}
+
+#[test]
+fn duplicate_fill_trade_id_with_different_runtime_instrument_is_non_mutating() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(4),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_some()
+    );
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_200,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(4),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-no.VENUE-A"),
+        )))
+        .is_none()
+    );
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(27, 1))
+    );
+}
+
+#[test]
+fn terminal_event_after_partial_fill_releases_residual_reservation() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "client-order-1",
+        1_050,
+        AccountId::from("ACCOUNT-001"),
+    )));
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(4),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_some()
+    );
+
+    let terminal = feed
+        .on_order_event(&OrderEventAny::Canceled(order_canceled_event(
+            "client-order-1",
+            1_200,
+        )))
+        .expect("terminal after partial fill should release residual");
+
+    assert_eq!(terminal.action, PositionSizingLifecycleAction::Released);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("terminal should publish lifecycle");
+    assert_eq!(state.order_lifecycle.open_order_count, 0);
+}
+
+#[test]
+fn terminal_nt_order_event_releases_committed_submit_reservation() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state should admit")
+        .commit_submitted();
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let decision = feed
+        .on_order_event(&OrderEventAny::Canceled(order_canceled_event(
+            "client-order-1",
+            1_100,
+        )))
+        .expect("terminal event for configured account should produce lifecycle decision");
+
+    assert!(decision.accepted);
+    assert!(!decision.unknown_reservation);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    assert_eq!(
+        feed.latest_terminal_observed_at_ns(),
+        Some(1_100),
+        "feed should expose latest accepted terminal NT event timestamp"
+    );
+}
+
+#[test]
+fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state should admit")
+        .commit_submitted();
+
+    let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+        runtime_feed_config(),
+        admission.clone(),
+    )));
+    let mut subscription = subscribe_position_sizer_runtime_feed(feed.clone());
+
+    publish_order_event(
+        switchboard::get_event_orders_topic(StrategyId::from("strategy-a")),
+        &OrderEventAny::Canceled(order_canceled_event("client-order-1", 1_100)),
+    );
+    subscription.unsubscribe_all();
+
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    assert_eq!(
+        feed.lock()
+            .expect("feed mutex should not be poisoned")
+            .latest_terminal_observed_at_ns(),
+        Some(1_100)
+    );
+}
+
+#[test]
+fn denied_nt_order_event_without_account_releases_matching_committed_submit_reservation() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state should admit")
+        .commit_submitted();
+
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let decision = feed
+        .on_order_event(&OrderEventAny::Denied(order_denied_event(
+            "client-order-1",
+            1_100,
+        )))
+        .expect("account-less denied event should be matched by committed reservation id");
+
+    assert!(decision.accepted);
+    assert!(!decision.unknown_reservation);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    assert_eq!(feed.latest_terminal_observed_at_ns(), Some(1_100));
+}
+
+#[test]
+fn rejected_and_expired_nt_order_events_release_matching_committed_submit_reservations() {
+    assert_terminal_event_releases(
+        "client-order-rejected",
+        OrderEventAny::Rejected(order_rejected_event(
+            "client-order-rejected",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+        )),
+    );
+    assert_terminal_event_releases(
+        "client-order-expired",
+        OrderEventAny::Expired(order_expired_event(
+            "client-order-expired",
+            1_200,
+            Some(AccountId::from("ACCOUNT-001")),
+        )),
+    );
+}
+
+#[test]
+fn account_bound_terminal_nt_order_event_for_other_account_is_ignored() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state should admit")
+        .commit_submitted();
+
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
+            "client-order-1",
+            1_100,
+            AccountId::from("OTHER-ACCOUNT"),
+        )))
+        .is_none()
+    );
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    assert_eq!(feed.latest_terminal_observed_at_ns(), None);
+}
+
+#[test]
+fn account_less_non_denied_terminal_nt_order_event_is_ignored() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state should admit")
+        .commit_submitted();
+
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Expired(order_expired_event(
+            "client-order-1",
+            1_100,
+            None,
+        )))
+        .is_none()
+    );
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    assert_eq!(feed.latest_terminal_observed_at_ns(), None);
+}
+
+fn assert_terminal_event_releases(client_order_id: &str, event: OrderEventAny) {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request(client_order_id), 1_000)
+        .expect("fresh sizing state should admit")
+        .commit_submitted();
+
+    let observed_at_ns = event.ts_event().as_u64();
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let decision = feed
+        .on_order_event(&event)
+        .expect("terminal event should release matching committed reservation");
+
+    assert!(decision.accepted);
+    assert!(!decision.unknown_reservation);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    assert_eq!(feed.latest_terminal_observed_at_ns(), Some(observed_at_ns));
+}
+
+fn runtime_feed_config() -> PositionSizerRuntimeFeedConfig {
+    PositionSizerRuntimeFeedConfig {
+        venue_id: "VENUE-A".to_string(),
+        account_id: AccountId::from("ACCOUNT-001"),
+        collateral_currency: "USD".to_string(),
+        product_state: ProductSizingSnapshot::PredictionMarketBinary(
+            PredictionMarketSizingSnapshot {
+                source: "bolt_configured_binary_product".to_string(),
+                observed_at_ns: 900,
+                yes_instrument_id: "instrument-yes.VENUE-A".to_string(),
+                no_instrument_id: "instrument-no.VENUE-A".to_string(),
+                yes_position: Decimal::ZERO,
+                no_position: Decimal::ZERO,
+                collateral_allowance: Decimal::ZERO,
+                conditional_token_allowance: Decimal::ZERO,
+                collateral_coupled_group_id: "group-1".to_string(),
+            },
+        ),
+        startup_observed_at_ns: 900,
+    }
+}
+
+fn account_state(
+    account_id: AccountId,
+    currency_code: &str,
+    ts_event: u64,
+    free_collateral: f64,
+) -> AccountState {
+    let currency = test_currency(currency_code);
+    AccountState::new(
+        account_id,
+        AccountType::Cash,
+        vec![AccountBalance::new(
+            Money::new(free_collateral, currency),
+            Money::new(0.0, currency),
+            Money::new(free_collateral, currency),
+        )],
+        vec![],
+        true,
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+        Some(currency),
+    )
+}
+
+fn portfolio_snapshot(
+    account_id: AccountId,
+    currency_code: &str,
+    ts_event: u64,
+    total_equity: f64,
+) -> PortfolioSnapshot {
+    let currency = test_currency(currency_code);
+    PortfolioSnapshot::new(
+        account_id,
+        AccountType::Cash,
+        Some(currency),
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![Money::new(total_equity, currency)],
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+    )
+}
+
+fn adjusted_position_event(account_id: AccountId, ts_event: u64) -> PositionEvent {
+    PositionEvent::PositionAdjusted(PositionAdjusted::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from("instrument-yes.VENUE-A"),
+        PositionId::from("position-1"),
+        account_id,
+        PositionAdjustmentType::Commission,
+        None,
+        Some(Money::new(0.0, test_currency("USD"))),
+        None,
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+    ))
+}
+
+fn test_currency(currency_code: &str) -> Currency {
+    if currency_code == "USD" {
+        return Currency::new("USD", 2, 0, "Test USD", CurrencyType::Fiat);
+    }
+    Currency::from(currency_code)
+}
+
+fn position_sized_admission() -> BoltV3SubmitAdmissionState {
+    BoltV3SubmitAdmissionState::new_unarmed_with_position_sizer(
+        Arc::new(support::RecordingDecisionEvidenceWriter::default()),
+        BoltV3SubmitPositionSizerConfig {
+            venue_id: "VENUE-A".to_string(),
+            account_id: "ACCOUNT-001".to_string(),
+            product_kind: ProductKind::PredictionMarketBinary,
+            collateral_currency: "USD".to_string(),
+            capital_pool: CapitalPoolSnapshot {
+                source: "bolt_submit_sizer_bootstrap".to_string(),
+                observed_at_ns: 900,
+                pool_id: "pool-1".to_string(),
+                max_pool_liability: Decimal::new(10, 0),
+                committed_liability: Decimal::ZERO,
+                max_snapshot_age_ns: 500,
+            },
+            policy: SizingPolicy {
+                mode: SizingMode::RejectOnly,
+                max_order_liability: Some(Decimal::new(10, 0)),
+                min_remaining_pool_balance: None,
+                fee_slippage_policy: Some(FeeSlippagePolicy {
+                    max_fee_liability: Decimal::new(10, 2),
+                    max_slippage_liability: Decimal::new(20, 2),
+                }),
+            },
+        },
+    )
+}
+
+fn arm_default(_admission: &BoltV3SubmitAdmissionState) {}
+
+fn rebuild_empty_position_sizer(admission: &BoltV3SubmitAdmissionState) {
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+    assert!(
+        rebuild.accepted,
+        "test startup rebuild should open submit admission"
+    );
+    assert_eq!(admission.position_sizer_reconciled(), Some(true));
+}
+
+fn open_order_reservation(
+    client_order_id: &str,
+    submit_reservation_id: &str,
+    liability: Decimal,
+) -> BoltV3SubmitPositionSizingOpenOrderReservation {
+    BoltV3SubmitPositionSizingOpenOrderReservation {
+        client_order_id: client_order_id.to_string(),
+        submit_reservation_id: submit_reservation_id.to_string(),
+        collateral_group_id: "group-1".to_string(),
+        liability,
+        instrument_id: "instrument-yes.VENUE-A".to_string(),
+        side: BoltV3CompiledOrderSide::Buy,
+        open_quantity: Decimal::new(10, 0),
+        original_quantity: Decimal::new(10, 0),
+        filled_quantity: Decimal::ZERO,
+        liability_factor: Decimal::new(4, 1),
+        additive_liability: Decimal::new(3, 1),
+        seen_trade_ids: Default::default(),
+        recovered_from_startup: false,
+        observed_at_ns: 1_000,
+        evidence_label: "nt_open_order_cache".to_string(),
+    }
+}
+
+fn committed_submit_runtime_feed() -> (Arc<BoltV3SubmitAdmissionState>, PositionSizerRuntimeFeed) {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            900,
+            100.0,
+        ))
+        .is_none()
+    );
+    seed_venue_spendability(&mut feed, 925);
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_open_order_cache(Vec::<String>::new(), 1_000)
+            .is_some()
+    );
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit")
+        .commit_submitted();
+    (admission, feed)
+}
+
+fn sized_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
+    BoltV3SubmitAdmissionRequest {
+        strategy_id: "strategy-a".to_string(),
+        execution_client_id: "execution-client-a".to_string(),
+        client_order_id: client_order_id.to_string(),
+        instrument_id: "instrument-yes.VENUE-A".to_string(),
+        notional: Decimal::new(4, 0),
+        order_side: OrderSide::Buy,
+        order_quantity: Decimal::new(10, 0),
+        intent_kind: BoltV3SubmitIntentKind::Entry,
+        lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+        risk_reducing_exit_proof: None,
+        kill_switch_forced_reduction: None,
+        position_sizing: Some(BoltV3CompiledOrderSizingEvidence {
+            venue_id: "VENUE-A".to_string(),
+            product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
+            side: BoltV3CompiledOrderSide::Buy,
+            quantity: Decimal::new(10, 0),
+            effective_price: Decimal::new(40, 2),
+            order_kind: BoltV3CompiledOrderKind::Limit,
+            liquidity: BoltV3CompiledOrderLiquidity::Taker,
+            quote_set_id: None,
+            prediction_market_outcome: Some(PredictionMarketOutcomeSide::Yes),
+        }),
+    }
+}
+
+fn sized_sell_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
+    let mut request = sized_submit_request(client_order_id);
+    request
+        .position_sizing
+        .as_mut()
+        .expect("sized request should carry evidence")
+        .side = BoltV3CompiledOrderSide::Sell;
+    request
+}
+
+fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {
+    NtDerivedSizingState {
+        source: "nt_sizing_state".to_string(),
+        observed_at_ns,
+        portfolio: PortfolioSizingSnapshot {
+            source: "nt_portfolio_snapshot".to_string(),
+            observed_at_ns,
+            venue_id: "VENUE-A".to_string(),
+            account_id: "ACCOUNT-001".to_string(),
+            collateral_currency: "USD".to_string(),
+            free_collateral: Decimal::new(100, 0),
+            total_equity: Decimal::new(100, 0),
+        },
+        venue_spendability: venue_spendability_snapshot(observed_at_ns, 100, 100),
+        order_lifecycle: OrderLifecycleSizingSnapshot {
+            source: "nt_open_order_cache".to_string(),
+            observed_at_ns,
+            open_order_count: 0,
+            all_open_orders_attributed: true,
+        },
+        product_state: ProductSizingSnapshot::PredictionMarketBinary(
+            PredictionMarketSizingSnapshot {
+                source: "nt_prediction_market_snapshot".to_string(),
+                observed_at_ns,
+                yes_instrument_id: "instrument-yes.VENUE-A".to_string(),
+                no_instrument_id: "instrument-no.VENUE-A".to_string(),
+                yes_position: Decimal::new(10, 0),
+                no_position: Decimal::ZERO,
+                collateral_allowance: Decimal::new(100, 0),
+                conditional_token_allowance: Decimal::new(10, 0),
+                collateral_coupled_group_id: "group-1".to_string(),
+            },
+        ),
+        reservation_snapshot: ReservationLedgerSnapshot {
+            source: "bolt_reservation_ledger".to_string(),
+            observed_at_ns,
+            all_live_reservations_attributed: true,
+        },
+        loss_snapshot: None,
+    }
+}
+
+fn fresh_components(observed_at_ns: u64) -> BoltV3SubmitPositionSizingNtComponents {
+    let state = fresh_sizing_state(observed_at_ns);
+    BoltV3SubmitPositionSizingNtComponents {
+        source: state.source,
+        observed_at_ns: state.observed_at_ns,
+        portfolio: state.portfolio,
+        venue_spendability: state.venue_spendability,
+        order_lifecycle: state.order_lifecycle,
+        product_state: state.product_state,
+        loss_snapshot: state.loss_snapshot,
+    }
+}
+
+fn seed_venue_spendability(feed: &mut PositionSizerRuntimeFeed, observed_at_ns: u64) {
+    assert!(
+        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(observed_at_ns, 100, 100))
+            .is_none()
+    );
+}
+
+fn venue_spendability_snapshot(
+    observed_at_ns: u64,
+    spendable_collateral: i64,
+    collateral_allowance: i64,
+) -> VenueSpendabilitySnapshot {
+    VenueSpendabilitySnapshot {
+        source: "operator-venue-spendability".to_string(),
+        observed_at_ns,
+        venue_id: "VENUE-A".to_string(),
+        account_id: "ACCOUNT-001".to_string(),
+        collateral_currency: "USD".to_string(),
+        spendable_collateral: Decimal::new(spendable_collateral, 0),
+        collateral_allowance: Decimal::new(collateral_allowance, 0),
+    }
+}
+
+fn order_canceled_event(client_order_id: &str, ts_event: u64) -> OrderCanceled {
+    OrderCanceled::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from("instrument-yes.VENUE-A"),
+        ClientOrderId::from(client_order_id),
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+        false,
+        Some(VenueOrderId::from("venue-order-1")),
+        Some(AccountId::from("ACCOUNT-001")),
+    )
+}
+
+fn order_accepted_event(
+    client_order_id: &str,
+    ts_event: u64,
+    account_id: AccountId,
+) -> OrderAccepted {
+    OrderAccepted::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from("instrument-yes.VENUE-A"),
+        ClientOrderId::from(client_order_id),
+        VenueOrderId::from("venue-order-1"),
+        account_id,
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+        false,
+    )
+}
+
+fn order_submitted_event(
+    client_order_id: &str,
+    ts_event: u64,
+    account_id: AccountId,
+) -> OrderSubmitted {
+    OrderSubmitted::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from("instrument-yes.VENUE-A"),
+        ClientOrderId::from(client_order_id),
+        account_id,
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+    )
+}
+
+fn order_filled_event_with(
+    client_order_id: &str,
+    trade_id: &str,
+    ts_event: u64,
+    account_id: AccountId,
+    quantity: Quantity,
+    order_side: OrderSide,
+    instrument_id: InstrumentId,
+) -> OrderFilled {
+    OrderFilled::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        instrument_id,
+        ClientOrderId::from(client_order_id),
+        VenueOrderId::from("venue-order-1"),
+        account_id,
+        TradeId::from(trade_id),
+        order_side,
+        OrderType::Limit,
+        quantity,
+        Price::from("0.40"),
+        test_currency("USD"),
+        LiquiditySide::Taker,
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+        false,
+        Some(PositionId::from("position-1")),
+        None,
+    )
+}
+
+fn order_denied_event(client_order_id: &str, ts_event: u64) -> OrderDenied {
+    OrderDenied::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from("instrument-yes.VENUE-A"),
+        ClientOrderId::from(client_order_id),
+        Ustr::from("test-denied"),
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+    )
+}
+
+fn order_rejected_event(
+    client_order_id: &str,
+    ts_event: u64,
+    account_id: AccountId,
+) -> OrderRejected {
+    OrderRejected::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from("instrument-yes.VENUE-A"),
+        ClientOrderId::from(client_order_id),
+        account_id,
+        Ustr::from("test-rejected"),
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+        false,
+        false,
+    )
+}
+
+fn order_expired_event(
+    client_order_id: &str,
+    ts_event: u64,
+    account_id: Option<AccountId>,
+) -> OrderExpired {
+    OrderExpired::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from("instrument-yes.VENUE-A"),
+        ClientOrderId::from(client_order_id),
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+        false,
+        Some(VenueOrderId::from("venue-order-1")),
+        account_id,
+    )
+}

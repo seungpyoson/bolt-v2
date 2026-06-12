@@ -1,0 +1,693 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, Mutex},
+};
+
+use nautilus_common::msgbus::{
+    TypedHandler, subscribe_account_state, subscribe_order_events, subscribe_portfolio_snapshot,
+    subscribe_position_events, unsubscribe_account_state, unsubscribe_order_events,
+    unsubscribe_portfolio_snapshot, unsubscribe_position_events,
+};
+use nautilus_model::{
+    enums::OrderSide,
+    events::{AccountState, OrderEventAny, OrderFilled, PortfolioSnapshot, PositionEvent},
+    identifiers::AccountId,
+};
+use rust_decimal::Decimal;
+
+use crate::{
+    bolt_v3_position_sizer::ProductSizingSnapshot,
+    bolt_v3_sizing_state::{
+        OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot, VenueSpendabilitySnapshot,
+    },
+    bolt_v3_submit_admission::{
+        BoltV3CompiledOrderSide, BoltV3SubmitAdmissionState, BoltV3SubmitPositionSizingFillUpdate,
+        BoltV3SubmitPositionSizingLifecycleDecision, BoltV3SubmitPositionSizingNtComponents,
+    },
+    nt_runtime_capture::{
+        account_states_pattern, order_events_pattern, portfolio_snapshots_pattern,
+        position_events_pattern,
+    },
+};
+
+const POSITION_SIZER_ORDER_TERMINAL_SOURCE: &str = stringify!(nt_order_terminal_event);
+const NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE: &str = "nt_account_free_collateral";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PositionSizerRuntimeFeedConfig {
+    pub venue_id: String,
+    pub account_id: AccountId,
+    pub collateral_currency: String,
+    pub product_state: ProductSizingSnapshot,
+    pub startup_observed_at_ns: u64,
+}
+
+#[derive(Debug)]
+pub struct PositionSizerRuntimeFeed {
+    config: PositionSizerRuntimeFeedConfig,
+    submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    component_builder: PositionSizerRuntimeComponentBuilder,
+    latest_terminal_observed_at_ns: Option<u64>,
+}
+
+pub struct PositionSizerRuntimeFeedSubscription {
+    order_events: Option<TypedHandler<OrderEventAny>>,
+    position_events: Option<TypedHandler<PositionEvent>>,
+    account_states: Option<TypedHandler<AccountState>>,
+    portfolio_snapshots: Option<TypedHandler<PortfolioSnapshot>>,
+}
+
+#[derive(Debug, Clone)]
+struct PositionSizerRuntimeComponentBuilder {
+    latest_account_free_collateral: Option<(Decimal, u64)>,
+    latest_portfolio: Option<PortfolioSizingSnapshot>,
+    latest_venue_spendability: Option<VenueSpendabilitySnapshot>,
+    live_order_attribution: BTreeMap<String, bool>,
+    terminal_order_ids_seen: BTreeSet<String>,
+    order_lifecycle: OrderLifecycleSizingSnapshot,
+    product_state: ProductSizingSnapshot,
+}
+
+#[must_use]
+pub fn subscribe_position_sizer_runtime_feed(
+    feed: Arc<Mutex<PositionSizerRuntimeFeed>>,
+) -> PositionSizerRuntimeFeedSubscription {
+    let order_feed = Arc::clone(&feed);
+    let order_events = TypedHandler::from(move |event: &OrderEventAny| {
+        order_feed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .on_order_event(event);
+    });
+    subscribe_order_events(order_events_pattern(), order_events.clone(), None);
+    let position_feed = Arc::clone(&feed);
+    let position_events = TypedHandler::from(move |event: &PositionEvent| {
+        position_feed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .on_position_event(event);
+    });
+    subscribe_position_events(position_events_pattern(), position_events.clone(), None);
+    let account_feed = Arc::clone(&feed);
+    let account_states = TypedHandler::from(move |event: &AccountState| {
+        account_feed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .on_account_state(event);
+    });
+    subscribe_account_state(account_states_pattern(), account_states.clone(), None);
+    let portfolio_feed = Arc::clone(&feed);
+    let portfolio_snapshots = TypedHandler::from(move |event: &PortfolioSnapshot| {
+        portfolio_feed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .on_portfolio_snapshot(event);
+    });
+    subscribe_portfolio_snapshot(
+        portfolio_snapshots_pattern(),
+        portfolio_snapshots.clone(),
+        None,
+    );
+
+    PositionSizerRuntimeFeedSubscription {
+        order_events: Some(order_events),
+        position_events: Some(position_events),
+        account_states: Some(account_states),
+        portfolio_snapshots: Some(portfolio_snapshots),
+    }
+}
+
+impl PositionSizerRuntimeFeedSubscription {
+    pub fn unsubscribe_all(&mut self) {
+        if let Some(order_events) = self.order_events.take() {
+            unsubscribe_order_events(order_events_pattern(), &order_events);
+        }
+        if let Some(position_events) = self.position_events.take() {
+            unsubscribe_position_events(position_events_pattern(), &position_events);
+        }
+        if let Some(account_states) = self.account_states.take() {
+            unsubscribe_account_state(account_states_pattern(), &account_states);
+        }
+        if let Some(portfolio_snapshots) = self.portfolio_snapshots.take() {
+            unsubscribe_portfolio_snapshot(portfolio_snapshots_pattern(), &portfolio_snapshots);
+        }
+    }
+}
+
+impl Drop for PositionSizerRuntimeFeedSubscription {
+    fn drop(&mut self) {
+        self.unsubscribe_all();
+    }
+}
+
+impl PositionSizerRuntimeFeed {
+    #[must_use]
+    pub fn new(
+        config: PositionSizerRuntimeFeedConfig,
+        submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    ) -> Self {
+        let component_builder = PositionSizerRuntimeComponentBuilder::new(&config);
+        Self {
+            config,
+            submit_admission,
+            component_builder,
+            latest_terminal_observed_at_ns: None,
+        }
+    }
+
+    pub fn on_account_state(
+        &mut self,
+        account_state: &AccountState,
+    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+        if account_state.account_id != self.config.account_id {
+            return None;
+        }
+        let free_collateral = account_state
+            .balances
+            .iter()
+            .find(|balance| balance.currency.code.as_str() == self.config.collateral_currency)
+            .map(|balance| balance.free.as_decimal())?;
+        self.component_builder.latest_account_free_collateral =
+            Some((free_collateral, account_state.ts_event.as_u64()));
+        self.component_builder.record_nt_account_spendability(
+            &self.config,
+            free_collateral,
+            account_state.ts_event.as_u64(),
+        );
+        self.publish_components_if_ready()
+    }
+
+    pub fn on_portfolio_snapshot(
+        &mut self,
+        portfolio_snapshot: &PortfolioSnapshot,
+    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+        if portfolio_snapshot.account_id != self.config.account_id {
+            return None;
+        }
+        let total_equity = portfolio_snapshot
+            .total_equity
+            .iter()
+            .find(|money| money.currency.code.as_str() == self.config.collateral_currency)
+            .map(|money| money.as_decimal())?;
+        self.component_builder.latest_portfolio = Some(PortfolioSizingSnapshot {
+            source: "nt_portfolio_snapshot".to_string(),
+            observed_at_ns: portfolio_snapshot.ts_event.as_u64(),
+            venue_id: self.config.venue_id.clone(),
+            account_id: self.config.account_id.to_string(),
+            collateral_currency: self.config.collateral_currency.clone(),
+            free_collateral: Decimal::ZERO,
+            total_equity,
+        });
+        self.publish_components_if_ready()
+    }
+
+    pub fn on_venue_spendability_snapshot(
+        &mut self,
+        snapshot: VenueSpendabilitySnapshot,
+    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+        self.component_builder
+            .record_venue_spendability(&self.config, snapshot);
+        self.publish_components_if_ready()
+    }
+
+    pub fn on_position_event(&mut self, _event: &PositionEvent) -> Option<()> {
+        None
+    }
+
+    #[must_use]
+    pub const fn configured_account_id(&self) -> AccountId {
+        self.config.account_id
+    }
+
+    pub fn configured_collateral_currency(&self) -> String {
+        self.config.collateral_currency.clone()
+    }
+
+    pub fn seed_open_order_cache<I>(
+        &mut self,
+        client_order_ids: I,
+        observed_at_ns: u64,
+    ) -> Option<BoltV3SubmitPositionSizingNtComponents>
+    where
+        I: IntoIterator<Item = String>,
+    {
+        self.seed_cache_snapshot(
+            client_order_ids,
+            Decimal::ZERO,
+            Decimal::ZERO,
+            observed_at_ns,
+        )
+    }
+
+    pub fn seed_cache_snapshot<I>(
+        &mut self,
+        client_order_ids: I,
+        yes_position: Decimal,
+        no_position: Decimal,
+        observed_at_ns: u64,
+    ) -> Option<BoltV3SubmitPositionSizingNtComponents>
+    where
+        I: IntoIterator<Item = String>,
+    {
+        self.component_builder.seed_cache_snapshot(
+            client_order_ids,
+            yes_position,
+            no_position,
+            observed_at_ns,
+        );
+        self.publish_components_if_ready()
+    }
+
+    pub fn seed_account_portfolio_snapshot(
+        &mut self,
+        free_collateral: Decimal,
+        total_equity: Decimal,
+        observed_at_ns: u64,
+    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+        self.component_builder.seed_account_portfolio_snapshot(
+            &self.config,
+            free_collateral,
+            total_equity,
+            observed_at_ns,
+        );
+        self.publish_components_if_ready()
+    }
+
+    #[must_use]
+    pub fn configured_binary_instrument_ids(&self) -> Option<(String, String)> {
+        match &self.config.product_state {
+            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => Some((
+                snapshot.yes_instrument_id.clone(),
+                snapshot.no_instrument_id.clone(),
+            )),
+        }
+    }
+
+    pub fn on_order_event(
+        &mut self,
+        event: &OrderEventAny,
+    ) -> Option<BoltV3SubmitPositionSizingLifecycleDecision> {
+        if let OrderEventAny::Filled(fill) = event {
+            return self.on_fill_event(fill);
+        }
+        if is_live_order_event(event) {
+            let account_id = event.account_id()?;
+            if account_id != self.config.account_id {
+                return None;
+            }
+            let client_order_id = event.client_order_id().to_string();
+            let submit_owned = self
+                .submit_admission
+                .position_sizer_has_live_reservation(&client_order_id);
+            self.component_builder.record_live_order_event(
+                client_order_id,
+                submit_owned,
+                event.ts_event().as_u64(),
+            );
+            self.publish_components_if_ready();
+            return None;
+        }
+        if !is_terminal_order_event(event) {
+            return None;
+        }
+        if event.account_id().is_none() && !matches!(event, OrderEventAny::Denied(_)) {
+            return None;
+        }
+        if let Some(account_id) = event.account_id()
+            && account_id != self.config.account_id
+        {
+            return None;
+        }
+
+        let observed_at_ns = event.ts_event().as_u64();
+        self.component_builder
+            .record_terminal_order_event(event.client_order_id().to_string(), observed_at_ns);
+        self.publish_components_if_ready();
+        let decision = self
+            .submit_admission
+            .apply_position_sizing_terminal_order_event(
+                event.client_order_id().to_string(),
+                observed_at_ns,
+                POSITION_SIZER_ORDER_TERMINAL_SOURCE.to_string(),
+            );
+        if decision.unknown_reservation {
+            return None;
+        }
+        self.latest_terminal_observed_at_ns = Some(observed_at_ns);
+        Some(decision)
+    }
+
+    fn on_fill_event(
+        &mut self,
+        fill: &OrderFilled,
+    ) -> Option<BoltV3SubmitPositionSizingLifecycleDecision> {
+        if fill.account_id != self.config.account_id {
+            return None;
+        }
+        let instrument_id = fill.instrument_id.to_string();
+        let (yes_instrument_id, no_instrument_id) = self.configured_binary_instrument_ids()?;
+        if instrument_id != yes_instrument_id && instrument_id != no_instrument_id {
+            return None;
+        }
+        let side = match fill.order_side {
+            OrderSide::Buy => BoltV3CompiledOrderSide::Buy,
+            OrderSide::Sell => BoltV3CompiledOrderSide::Sell,
+            _ => return None,
+        };
+        let observed_at_ns = fill.ts_event.as_u64();
+        let decision = self.submit_admission.apply_position_sizing_fill_update(
+            BoltV3SubmitPositionSizingFillUpdate {
+                client_order_id: fill.client_order_id.to_string(),
+                trade_id: fill.trade_id.to_string(),
+                instrument_id: instrument_id.clone(),
+                side,
+                fill_quantity: fill.last_qty.as_decimal(),
+                observed_at_ns,
+                reconciliation: fill.reconciliation,
+                evidence_label: "nt_order_fill".to_string(),
+            },
+            observed_at_ns,
+        );
+        if decision.unknown_reservation {
+            return None;
+        }
+        let fill_changes_position = decision.accepted
+            && matches!(
+                decision.action,
+                crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Revalued
+                    | crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Released
+            );
+        if fill_changes_position {
+            self.component_builder.record_fill_position_delta(
+                &instrument_id,
+                side,
+                fill.last_qty.as_decimal(),
+                observed_at_ns,
+            );
+        }
+        if decision.action == crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Released
+        {
+            self.component_builder
+                .record_terminal_order_event(fill.client_order_id.to_string(), observed_at_ns);
+            self.latest_terminal_observed_at_ns = Some(observed_at_ns);
+        }
+        if fill_changes_position {
+            self.publish_components_if_ready();
+        }
+        Some(decision)
+    }
+
+    #[must_use]
+    pub const fn latest_terminal_observed_at_ns(&self) -> Option<u64> {
+        self.latest_terminal_observed_at_ns
+    }
+
+    fn publish_components_if_ready(&mut self) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+        let submit_admission = Arc::clone(&self.submit_admission);
+        self.component_builder
+            .refresh_live_order_attribution(|client_order_id| {
+                submit_admission.position_sizer_has_live_reservation(client_order_id)
+            });
+        let components = self.component_builder.components(&self.config)?;
+        self.submit_admission
+            .update_position_sizing_nt_components(components.clone());
+        Some(components)
+    }
+}
+
+impl PositionSizerRuntimeComponentBuilder {
+    fn new(config: &PositionSizerRuntimeFeedConfig) -> Self {
+        Self {
+            latest_account_free_collateral: None,
+            latest_portfolio: None,
+            latest_venue_spendability: None,
+            live_order_attribution: BTreeMap::new(),
+            terminal_order_ids_seen: BTreeSet::new(),
+            order_lifecycle: OrderLifecycleSizingSnapshot {
+                source: "nt_order_lifecycle_seed".to_string(),
+                observed_at_ns: config.startup_observed_at_ns,
+                open_order_count: 0,
+                all_open_orders_attributed: false,
+            },
+            product_state: config.product_state.clone(),
+        }
+    }
+
+    fn seed_cache_snapshot<I>(
+        &mut self,
+        client_order_ids: I,
+        yes_position: Decimal,
+        no_position: Decimal,
+        observed_at_ns: u64,
+    ) where
+        I: IntoIterator<Item = String>,
+    {
+        let cache_open_ids = client_order_ids.into_iter().collect::<BTreeSet<_>>();
+        let existing_live_order_ids = self
+            .live_order_attribution
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let merged_live_order_ids = cache_open_ids
+            .union(&existing_live_order_ids)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        self.live_order_attribution = merged_live_order_ids
+            .difference(&self.terminal_order_ids_seen)
+            .map(|client_order_id| {
+                let attributed = self
+                    .live_order_attribution
+                    .get(client_order_id)
+                    .copied()
+                    .unwrap_or(false);
+                (client_order_id.clone(), attributed)
+            })
+            .collect();
+        self.order_lifecycle = OrderLifecycleSizingSnapshot {
+            source: "nt_open_order_cache".to_string(),
+            observed_at_ns,
+            open_order_count: self.live_order_attribution.len(),
+            all_open_orders_attributed: self.all_live_orders_attributed(),
+        };
+        match &mut self.product_state {
+            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+                snapshot.source = "nt_position_cache".to_string();
+                snapshot.observed_at_ns = observed_at_ns;
+                snapshot.yes_position = yes_position;
+                snapshot.no_position = no_position;
+            }
+        }
+    }
+
+    fn seed_account_portfolio_snapshot(
+        &mut self,
+        config: &PositionSizerRuntimeFeedConfig,
+        free_collateral: Decimal,
+        total_equity: Decimal,
+        observed_at_ns: u64,
+    ) {
+        self.latest_account_free_collateral = Some((free_collateral, observed_at_ns));
+        self.latest_portfolio = Some(PortfolioSizingSnapshot {
+            source: "nt_account_cache".to_string(),
+            observed_at_ns,
+            venue_id: config.venue_id.clone(),
+            account_id: config.account_id.to_string(),
+            collateral_currency: config.collateral_currency.clone(),
+            free_collateral,
+            total_equity,
+        });
+        self.record_nt_account_spendability(config, free_collateral, observed_at_ns);
+    }
+
+    fn record_venue_spendability(
+        &mut self,
+        config: &PositionSizerRuntimeFeedConfig,
+        snapshot: VenueSpendabilitySnapshot,
+    ) {
+        let matches_config = snapshot.venue_id == config.venue_id
+            && snapshot.account_id == config.account_id.to_string()
+            && snapshot.collateral_currency == config.collateral_currency;
+        if !matches_config {
+            return;
+        }
+        if self
+            .latest_venue_spendability
+            .as_ref()
+            .is_some_and(|current| current.observed_at_ns > snapshot.observed_at_ns)
+        {
+            return;
+        }
+        self.latest_venue_spendability = Some(snapshot);
+    }
+
+    fn record_nt_account_spendability(
+        &mut self,
+        config: &PositionSizerRuntimeFeedConfig,
+        free_collateral: Decimal,
+        observed_at_ns: u64,
+    ) {
+        match self.latest_venue_spendability.as_mut() {
+            Some(current) if current.source != NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE => {
+                current.observed_at_ns = current.observed_at_ns.max(observed_at_ns);
+            }
+            Some(current) => {
+                current.observed_at_ns = observed_at_ns;
+                current.spendable_collateral = free_collateral;
+                current.collateral_allowance = free_collateral;
+            }
+            None => {
+                self.latest_venue_spendability = Some(VenueSpendabilitySnapshot {
+                    source: NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE.to_string(),
+                    observed_at_ns,
+                    venue_id: config.venue_id.clone(),
+                    account_id: config.account_id.to_string(),
+                    collateral_currency: config.collateral_currency.clone(),
+                    spendable_collateral: free_collateral,
+                    collateral_allowance: free_collateral,
+                });
+            }
+        }
+    }
+
+    fn record_live_order_event(
+        &mut self,
+        client_order_id: String,
+        attributed: bool,
+        observed_at_ns: u64,
+    ) {
+        if !self.terminal_order_ids_seen.contains(&client_order_id) {
+            self.live_order_attribution
+                .entry(client_order_id)
+                .and_modify(|existing| *existing = *existing || attributed)
+                .or_insert(attributed);
+        }
+        self.refresh_order_lifecycle_from_event(observed_at_ns);
+    }
+
+    fn refresh_live_order_attribution<F>(&mut self, mut has_live_reservation: F)
+    where
+        F: FnMut(&str) -> bool,
+    {
+        let mut changed = false;
+        for (client_order_id, attributed) in &mut self.live_order_attribution {
+            if !*attributed && has_live_reservation(client_order_id) {
+                *attributed = true;
+                changed = true;
+            }
+        }
+        if changed {
+            self.order_lifecycle.open_order_count = self.live_order_attribution.len();
+            self.order_lifecycle.all_open_orders_attributed = self.all_live_orders_attributed();
+        }
+    }
+
+    fn record_terminal_order_event(&mut self, client_order_id: String, observed_at_ns: u64) {
+        self.terminal_order_ids_seen.insert(client_order_id.clone());
+        self.live_order_attribution.remove(&client_order_id);
+        self.refresh_order_lifecycle_from_event(observed_at_ns);
+    }
+
+    fn refresh_order_lifecycle_from_event(&mut self, observed_at_ns: u64) {
+        self.order_lifecycle = OrderLifecycleSizingSnapshot {
+            source: "nt_order_event".to_string(),
+            observed_at_ns,
+            open_order_count: self.live_order_attribution.len(),
+            all_open_orders_attributed: self.all_live_orders_attributed(),
+        };
+    }
+
+    fn all_live_orders_attributed(&self) -> bool {
+        self.live_order_attribution
+            .values()
+            .all(|attributed| *attributed)
+    }
+
+    fn record_fill_position_delta(
+        &mut self,
+        instrument_id: &str,
+        side: BoltV3CompiledOrderSide,
+        fill_quantity: Decimal,
+        observed_at_ns: u64,
+    ) {
+        let ProductSizingSnapshot::PredictionMarketBinary(snapshot) = &mut self.product_state;
+        let outcome_position = if instrument_id == snapshot.yes_instrument_id {
+            &mut snapshot.yes_position
+        } else if instrument_id == snapshot.no_instrument_id {
+            &mut snapshot.no_position
+        } else {
+            return;
+        };
+        match side {
+            BoltV3CompiledOrderSide::Buy => {
+                *outcome_position += fill_quantity;
+                snapshot.conditional_token_allowance += fill_quantity;
+            }
+            BoltV3CompiledOrderSide::Sell => {
+                *outcome_position = outcome_position
+                    .checked_sub(fill_quantity)
+                    .filter(|position| *position > Decimal::ZERO)
+                    .unwrap_or(Decimal::ZERO);
+                snapshot.conditional_token_allowance = snapshot
+                    .conditional_token_allowance
+                    .checked_sub(fill_quantity)
+                    .filter(|allowance| *allowance > Decimal::ZERO)
+                    .unwrap_or(Decimal::ZERO);
+            }
+        }
+        snapshot.source = "nt_order_fill".to_string();
+        snapshot.observed_at_ns = observed_at_ns;
+    }
+
+    fn components(
+        &self,
+        _config: &PositionSizerRuntimeFeedConfig,
+    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+        let (free_collateral, account_observed_at_ns) = self.latest_account_free_collateral?;
+        let mut portfolio = self.latest_portfolio.clone()?;
+        let venue_spendability = self.latest_venue_spendability.clone()?;
+        portfolio.free_collateral = free_collateral;
+        let mut product_state = self.product_state.clone();
+        let product_observed_at_ns = match &mut product_state {
+            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+                // NT free collateral, venue spendability, and transfer allowance are independent constraints.
+                snapshot.collateral_allowance = free_collateral
+                    .min(venue_spendability.spendable_collateral)
+                    .min(venue_spendability.collateral_allowance);
+                snapshot
+                    .observed_at_ns
+                    .max(venue_spendability.observed_at_ns)
+            }
+        };
+        let observed_at_ns = account_observed_at_ns
+            .max(portfolio.observed_at_ns)
+            .max(venue_spendability.observed_at_ns)
+            .max(self.order_lifecycle.observed_at_ns)
+            .max(product_observed_at_ns);
+        Some(BoltV3SubmitPositionSizingNtComponents {
+            source: "nt_position_sizer_runtime_components".to_string(),
+            observed_at_ns,
+            portfolio,
+            venue_spendability,
+            order_lifecycle: self.order_lifecycle.clone(),
+            product_state,
+            loss_snapshot: None,
+        })
+    }
+}
+
+fn is_terminal_order_event(event: &OrderEventAny) -> bool {
+    matches!(
+        event,
+        OrderEventAny::Denied(_)
+            | OrderEventAny::Rejected(_)
+            | OrderEventAny::Canceled(_)
+            | OrderEventAny::Expired(_)
+    )
+}
+
+fn is_live_order_event(event: &OrderEventAny) -> bool {
+    matches!(
+        event,
+        OrderEventAny::Submitted(_) | OrderEventAny::Accepted(_)
+    )
+}

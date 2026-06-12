@@ -42,21 +42,24 @@ use std::{
 
 use nautilus_model::{
     enums::{BarAggregation, BarIntervalType},
-    identifiers::{ClientOrderId, InstrumentId},
+    identifiers::{AccountId, ClientOrderId, InstrumentId},
 };
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
-    ClientBlock, DataClientReadinessProbeQuoteTargetSource, GATE_PROVIDER_CAPABILITIES,
-    GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, KillSwitchConfigBlock,
-    LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock,
+    CapitalPoolBlock, ClientBlock, DataClientReadinessProbeQuoteTargetSource,
+    GATE_PROVIDER_CAPABILITIES, GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock,
+    KillSwitchConfigBlock, LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock,
     RealizedVolatilityAggregationBlock, RealizedVolatilityJumpPolicyBlock,
     RealizedVolatilityNoiseMethodBlock, RealizedVolatilityPricingComponentBlock,
     RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceClassBlock, RiskBlock,
     SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
+use crate::bolt_v3_loss_halt_actions::{
+    LossGovernorMarketExitAction, LossGovernorTradingStateAction,
+};
 use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 
 #[derive(Debug)]
@@ -133,6 +136,7 @@ const TARGET_RESOLUTION_KIND_FIELD: &str = "resolution_kind";
 const TARGET_PROVIDER_ID_FIELD: &str = "provider_id";
 const TARGET_PROVIDER_PREFERENCE_FIELD: &str = "provider_preference";
 const TARGET_ALLOWED_PROVIDER_IDS_FIELD: &str = "allowed_provider_ids";
+const EXECUTION_ACCOUNT_ID_FIELD: &str = stringify!(account_id);
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct ResolutionFeedBindingKey {
@@ -1196,6 +1200,122 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
             ));
         }
     }
+    if let Some(loss_governor) = block.loss_governor.as_ref() {
+        if loss_governor.enabled && loss_governor.max_snapshot_age_ns == 0 {
+            errors.push(
+                "risk.loss_governor.max_snapshot_age_ns must be a positive integer".to_string(),
+            );
+        }
+        if loss_governor.enabled && loss_governor.rolling_window_ns == 0 {
+            errors.push(
+                "risk.loss_governor.rolling_window_ns must be a positive integer".to_string(),
+            );
+        }
+        if loss_governor.enabled {
+            for (label, threshold) in [
+                (
+                    "risk.loss_governor.max_per_trade_loss",
+                    loss_governor.max_per_trade_loss.as_deref(),
+                ),
+                (
+                    "risk.loss_governor.max_daily_loss",
+                    loss_governor.max_daily_loss.as_deref(),
+                ),
+                (
+                    "risk.loss_governor.max_rolling_loss",
+                    loss_governor.max_rolling_loss.as_deref(),
+                ),
+                (
+                    "risk.loss_governor.max_drawdown",
+                    loss_governor.max_drawdown.as_deref(),
+                ),
+            ] {
+                if threshold.is_none() {
+                    errors.push(format!("{label} must be configured when enabled"));
+                }
+            }
+            for (label, configured) in [
+                (
+                    "risk.loss_governor.on_loss_breach_trading_state",
+                    loss_governor.on_loss_breach_trading_state.is_some(),
+                ),
+                (
+                    "risk.loss_governor.on_untrusted_snapshot_trading_state",
+                    loss_governor.on_untrusted_snapshot_trading_state.is_some(),
+                ),
+                (
+                    "risk.loss_governor.on_loss_breach_market_exit",
+                    loss_governor.on_loss_breach_market_exit.is_some(),
+                ),
+                (
+                    "risk.loss_governor.on_untrusted_snapshot_market_exit",
+                    loss_governor.on_untrusted_snapshot_market_exit.is_some(),
+                ),
+                (
+                    "risk.loss_governor.recovery_mode",
+                    loss_governor.recovery_mode.is_some(),
+                ),
+            ] {
+                if !configured {
+                    errors.push(format!("{label} must be configured when enabled"));
+                }
+            }
+            errors.extend(validate_loss_governor_market_exit_pair(
+                "risk.loss_governor.on_loss_breach",
+                loss_governor.on_loss_breach_trading_state,
+                loss_governor.on_loss_breach_market_exit,
+            ));
+            errors.extend(validate_loss_governor_market_exit_pair(
+                "risk.loss_governor.on_untrusted_snapshot",
+                loss_governor.on_untrusted_snapshot_trading_state,
+                loss_governor.on_untrusted_snapshot_market_exit,
+            ));
+            errors.extend(validate_loss_governor_market_exit_combination(
+                loss_governor.on_loss_breach_trading_state,
+                loss_governor.on_untrusted_snapshot_trading_state,
+                loss_governor.on_loss_breach_market_exit,
+                loss_governor.on_untrusted_snapshot_market_exit,
+            ));
+        }
+        for (label, threshold) in [
+            (
+                "risk.loss_governor.max_per_trade_loss",
+                loss_governor.max_per_trade_loss.as_deref(),
+            ),
+            (
+                "risk.loss_governor.max_daily_loss",
+                loss_governor.max_daily_loss.as_deref(),
+            ),
+            (
+                "risk.loss_governor.max_rolling_loss",
+                loss_governor.max_rolling_loss.as_deref(),
+            ),
+            (
+                "risk.loss_governor.max_drawdown",
+                loss_governor.max_drawdown.as_deref(),
+            ),
+        ] {
+            let Some(value) = threshold else {
+                continue;
+            };
+            match parse_decimal_string(value) {
+                Ok(decimal) if decimal <= Decimal::ZERO => {
+                    errors.push(format!(
+                        "{label} must be a positive decimal string: `{value}`"
+                    ));
+                }
+                Ok(_) => {}
+                Err(reason) => {
+                    errors.push(format!(
+                        "{label} is not a valid decimal string ({reason}): `{value}`"
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(capital_pools) = block.capital_pools.as_ref() {
+        errors.extend(validate_capital_pools(capital_pools));
+    }
     if block.nautilus.graceful_shutdown_on_error {
         errors.push(
             "risk.nautilus.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
@@ -1251,6 +1371,150 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
         errors.extend(validate_kill_switch_block(kill_switch));
     }
     errors
+}
+
+fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut pool_ids = HashSet::new();
+    let mut enforced_pool_count = 0usize;
+
+    for pool in pools {
+        let label = format!("risk.capital_pools[{}]", pool.pool_id);
+        if pool.enforce_submit_admission {
+            enforced_pool_count += 1;
+        }
+        if pool.pool_id.trim().is_empty() {
+            errors.push("risk.capital_pools pool_id must be a non-empty string".to_string());
+        } else if !pool_ids.insert(pool.pool_id.as_str()) {
+            errors.push(format!("{label}.pool_id must be unique"));
+        }
+        if pool.venue_id.trim().is_empty() {
+            errors.push(format!("{label}.venue_id must be a non-empty string"));
+        } else if pool.enforce_submit_admission
+            && pool.venue_id != pool.venue_id.to_ascii_uppercase()
+        {
+            errors.push(format!(
+                "{label}.venue_id must be canonical uppercase when submit admission enforcement is enabled"
+            ));
+        }
+        if pool.collateral_currency.trim().is_empty() {
+            errors.push(format!(
+                "{label}.collateral_currency must be a non-empty string"
+            ));
+        }
+        if pool.product_kind != "prediction_market_binary" {
+            errors.push(format!(
+                "{label}.product_kind must be `prediction_market_binary`"
+            ));
+        }
+        validate_prediction_market_binary_product_metadata(pool, &label, &mut errors);
+        validate_positive_decimal(
+            &format!("{label}.max_pool_liability"),
+            &pool.max_pool_liability,
+            &mut errors,
+        );
+        if pool.max_snapshot_age_ns == 0 {
+            errors.push(format!(
+                "{label}.max_snapshot_age_ns must be a positive integer"
+            ));
+        }
+        if !matches!(
+            pool.sizing_policy.mode.as_str(),
+            "reject_only" | "explicit_clip_to_available"
+        ) {
+            errors.push(format!(
+                "{label}.sizing_policy.mode must be `reject_only` or `explicit_clip_to_available`"
+            ));
+        } else if pool.enforce_submit_admission
+            && pool.sizing_policy.mode == "explicit_clip_to_available"
+        {
+            errors.push(format!(
+                "{label}.sizing_policy.mode must be `reject_only` when submit admission enforcement is enabled"
+            ));
+        }
+        if let Some(max_order_liability) = pool.sizing_policy.max_order_liability.as_ref() {
+            validate_positive_decimal(
+                &format!("{label}.sizing_policy.max_order_liability"),
+                max_order_liability,
+                &mut errors,
+            );
+        }
+        if let Some(min_remaining_pool_balance) =
+            pool.sizing_policy.min_remaining_pool_balance.as_ref()
+        {
+            validate_positive_decimal(
+                &format!("{label}.sizing_policy.min_remaining_pool_balance"),
+                min_remaining_pool_balance,
+                &mut errors,
+            );
+        }
+        validate_positive_decimal(
+            &format!("{label}.sizing_policy.fee_slippage.max_fee_liability"),
+            &pool.sizing_policy.fee_slippage.max_fee_liability,
+            &mut errors,
+        );
+        validate_positive_decimal(
+            &format!("{label}.sizing_policy.fee_slippage.max_slippage_liability"),
+            &pool.sizing_policy.fee_slippage.max_slippage_liability,
+            &mut errors,
+        );
+    }
+
+    if enforced_pool_count > 1 {
+        errors.push(
+            "risk.capital_pools may enable submit admission enforcement for at most one pool"
+                .to_string(),
+        );
+    }
+
+    errors
+}
+
+fn validate_prediction_market_binary_product_metadata(
+    pool: &CapitalPoolBlock,
+    label: &str,
+    errors: &mut Vec<String>,
+) {
+    let Some(product) = pool.prediction_market_binary.as_ref() else {
+        if pool.enforce_submit_admission && pool.product_kind == "prediction_market_binary" {
+            errors.push(format!(
+                "{label}.prediction_market_binary is required when prediction-market submit admission is enforced"
+            ));
+        }
+        return;
+    };
+
+    if pool.product_kind != "prediction_market_binary" {
+        errors.push(format!(
+            "{label}.prediction_market_binary is only supported for prediction_market_binary pools"
+        ));
+    }
+    if product.yes_instrument_id == product.no_instrument_id {
+        errors.push(format!(
+            "{label}.prediction_market_binary.yes_instrument_id and no_instrument_id must differ"
+        ));
+    }
+    if product.collateral_coupled_group_id.trim().is_empty() {
+        errors.push(format!(
+            "{label}.prediction_market_binary.collateral_coupled_group_id must be a non-empty string"
+        ));
+    }
+}
+
+fn validate_positive_decimal(label: &str, value: &str, errors: &mut Vec<String>) {
+    match parse_decimal_string(value) {
+        Ok(decimal) if decimal <= Decimal::ZERO => {
+            errors.push(format!(
+                "{label} must be a positive decimal string: `{value}`"
+            ));
+        }
+        Ok(_) => {}
+        Err(reason) => {
+            errors.push(format!(
+                "{label} is not a valid decimal string ({reason}): `{value}`"
+            ));
+        }
+    }
 }
 
 fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
@@ -1780,8 +2044,84 @@ pub(crate) fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -
     errors
 }
 
+fn validate_loss_governor_market_exit_pair(
+    label_prefix: &str,
+    trading_state: Option<LossGovernorTradingStateAction>,
+    market_exit: Option<LossGovernorMarketExitAction>,
+) -> Vec<String> {
+    if !matches!(
+        market_exit,
+        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+    ) {
+        return Vec::new();
+    }
+    if matches!(
+        trading_state,
+        Some(LossGovernorTradingStateAction::Reducing)
+    ) {
+        return Vec::new();
+    }
+    vec![format!(
+        "{label_prefix}_market_exit=all_registered_strategies requires {label_prefix}_trading_state=reducing"
+    )]
+}
+
+fn validate_loss_governor_market_exit_combination(
+    on_loss_breach_trading_state: Option<LossGovernorTradingStateAction>,
+    on_untrusted_snapshot_trading_state: Option<LossGovernorTradingStateAction>,
+    on_loss_breach_market_exit: Option<LossGovernorMarketExitAction>,
+    on_untrusted_snapshot_market_exit: Option<LossGovernorMarketExitAction>,
+) -> Vec<String> {
+    if !matches!(
+        on_loss_breach_market_exit,
+        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+    ) && !matches!(
+        on_untrusted_snapshot_market_exit,
+        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+    ) {
+        return Vec::new();
+    }
+
+    let mut errors = Vec::new();
+    if matches!(
+        on_loss_breach_trading_state,
+        Some(LossGovernorTradingStateAction::Halted)
+    ) {
+        errors.push(
+            "risk.loss_governor market_exit=all_registered_strategies cannot be combined with on_loss_breach_trading_state=halted; use reducing or disable market exit"
+                .to_string(),
+        );
+    }
+    if matches!(
+        on_untrusted_snapshot_trading_state,
+        Some(LossGovernorTradingStateAction::Halted)
+    ) {
+        errors.push(
+            "risk.loss_governor market_exit=all_registered_strategies cannot be combined with on_untrusted_snapshot_trading_state=halted; use reducing or disable market exit"
+                .to_string(),
+        );
+    }
+    errors
+}
+
 pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy]) -> Vec<String> {
     let mut errors = Vec::new();
+    let loss_governor_market_exit_enabled = root
+        .risk
+        .loss_governor
+        .as_ref()
+        .is_some_and(loss_governor_market_exit_enabled);
+    if loss_governor_market_exit_enabled {
+        if strategies.is_empty() {
+            errors.push(
+                "risk.loss_governor market_exit=all_registered_strategies requires at least one loaded strategy"
+                    .to_string(),
+            );
+        }
+        errors.extend(validate_loss_governor_market_exit_strategy_accounts(
+            root, strategies,
+        ));
+    }
 
     let mut seen_instance_ids: HashSet<&str> = HashSet::new();
     let mut seen_order_id_tags: HashSet<&str> = HashSet::new();
@@ -1889,6 +2229,65 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
     errors.extend(validate_chainlink_feed_binding_coverage(root, strategies));
 
     errors
+}
+
+fn loss_governor_market_exit_enabled(
+    loss_governor: &crate::bolt_v3_config::LossGovernorBlock,
+) -> bool {
+    loss_governor.enabled
+        && (matches!(
+            loss_governor.on_loss_breach_market_exit,
+            Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+        ) || matches!(
+            loss_governor.on_untrusted_snapshot_market_exit,
+            Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+        ))
+}
+
+fn validate_loss_governor_market_exit_strategy_accounts(
+    root: &BoltV3RootConfig,
+    strategies: &[LoadedStrategy],
+) -> Vec<String> {
+    let Some(loss_governor) = root.risk.loss_governor.as_ref() else {
+        return Vec::new();
+    };
+    let mut errors = Vec::new();
+    for loaded in strategies {
+        let strategy = &loaded.config;
+        let context = format!("strategy `{}`", loaded.relative_path);
+        let execution_client_id = strategy.execution_client_id.as_str();
+        let Some(client) = root.clients.get(execution_client_id) else {
+            continue;
+        };
+        let Some(execution) = client.execution.as_ref() else {
+            continue;
+        };
+        match execution_account_id(execution) {
+            Ok(account_id) if account_id == loss_governor.account_id => {}
+            Ok(account_id) => errors.push(format!(
+                "{context}: market_exit=all_registered_strategies requires execution_client_id `{execution_client_id}` account_id `{account_id}` to match risk.loss_governor.account_id `{}`",
+                loss_governor.account_id
+            )),
+            Err(message) => errors.push(format!(
+                "{context}: market_exit=all_registered_strategies requires execution_client_id `{execution_client_id}` [execution].account_id to match risk.loss_governor.account_id `{}` ({message})",
+                loss_governor.account_id
+            )),
+        }
+    }
+    errors
+}
+
+fn execution_account_id(execution: &toml::Value) -> Result<AccountId, &'static str> {
+    let Some(table) = execution.as_table() else {
+        return Err("execution block must be a TOML table");
+    };
+    let Some(account_id) = table.get(EXECUTION_ACCOUNT_ID_FIELD) else {
+        return Err("missing account_id");
+    };
+    let Some(account_id) = account_id.as_str() else {
+        return Err("account_id must be a string");
+    };
+    AccountId::new_checked(account_id).map_err(|_| "account_id is not a valid NT account id")
 }
 
 fn validate_target_gate_provider_references(
